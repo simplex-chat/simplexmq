@@ -8,13 +8,15 @@
 
 module Main where
 
+-- import Polysemy
+import ConnStore
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import qualified Data.ByteString.Char8 as B
 import EnvSTM
 import Network.Socket
--- import Polysemy
-import Store
+import Text.Read
 import Transmission
 import Transport
 import UnliftIO.Async
@@ -44,38 +46,41 @@ runClient h = do
   c <- atomically $ newClient h
   void $ race (client c) (receive c)
 
-receive :: MonadIO m => Client -> m ()
+receive :: MonadUnliftIO m => Client -> m ()
 receive Client {handle, channel} = forever $ do
   signature <- getLn handle
   connId <- getLn handle
   command <- getLn handle
-  cmdOrError <- parseVerifyTransmission signature connId command
+  cmdOrError <- parseReadVerifyTransmission handle signature connId command
   atomically $ writeTChan channel cmdOrError
 
-parseVerifyTransmission :: Monad m => String -> String -> String -> m SomeSigned
-parseVerifyTransmission _ connId command = do
-  return (Just connId, parseCommand command)
-
-parseCommand :: String -> SomeCom
-parseCommand command = case words command of
-  ["CREATE", recipientKey] -> rCmd $ CREATE recipientKey
-  ["SUB"] -> rCmd SUB
-  ["SECURE", senderKey] -> rCmd $ SECURE senderKey
-  ["DELMSG", msgId] -> rCmd $ DELMSG msgId
-  ["SUSPEND"] -> rCmd SUSPEND
-  ["DELETE"] -> rCmd DELETE
-  ["SEND", msgBody] -> SomeCom SSender $ SEND msgBody
-  "CREATE" : _ -> err SYNTAX
-  "SUB" : _ -> err SYNTAX
-  "SECURE" : _ -> err SYNTAX
-  "DELMSG" : _ -> err SYNTAX
-  "SUSPEND" : _ -> err SYNTAX
-  "DELETE" : _ -> err SYNTAX
-  "SEND" : _ -> err SYNTAX
-  _ -> err CMD
-  where
-    rCmd = SomeCom SRecipient
-    err t = SomeCom SBroker $ ERROR t
+parseReadVerifyTransmission :: MonadUnliftIO m => Handle -> String -> String -> String -> m SomeSigned
+parseReadVerifyTransmission h signature connId command = do
+  let cmd = parseCommand command
+  cmd' <- case cmd of
+    Cmd SBroker _ -> return cmd
+    Cmd _ (CREATE _) ->
+      return
+        if signature == "" && connId == ""
+          then cmd
+          else smpError SYNTAX
+    Cmd _ (SEND msgBody) ->
+      if connId == ""
+        then return $ smpError SYNTAX
+        else case B.unpack msgBody of
+          ':' : body -> return . smpSend $ B.pack body
+          sizeStr -> case readMaybe sizeStr :: Maybe Int of
+            Just size -> do
+              body <- getBytes h size
+              s <- getLn h
+              return if s == "" then smpSend body else smpError SYNTAX
+            Nothing -> return $ smpError SYNTAX
+    Cmd _ _ ->
+      return
+        if signature == "" || connId == ""
+          then smpError SYNTAX
+          else cmd
+  return (Just connId, cmd')
 
 client :: MonadIO m => Client -> m ()
 client Client {handle, channel} = loop
@@ -83,8 +88,9 @@ client Client {handle, channel} = loop
     loop = forever $ do
       (_, cmdOrErr) <- atomically $ readTChan channel
       let response = case cmdOrErr of
-            SomeCom SRecipient _ -> "OK"
-            SomeCom SSender _ -> "OK"
-            SomeCom SBroker (ERROR t) -> "ERROR " ++ show t
+            Cmd SRecipient _ -> "OK"
+            Cmd SSender _ -> "OK"
+            Cmd SBroker (ERROR t) -> "ERROR " ++ show t
             _ -> "ERROR INTERNAL"
       putLn handle response
+      liftIO $ print cmdOrErr

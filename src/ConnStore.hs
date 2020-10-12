@@ -10,7 +10,7 @@
 -- {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
-module Store where
+module ConnStore where
 
 import Control.Concurrent.STM
 import Data.Map (Map)
@@ -74,12 +74,12 @@ runConnStoreSTM = reinterpret $ \case
     return $ Right conn
   GetConn Recipient rId -> do
     db <- input >>= embed . readTVar
-    return $ getConn db rId
+    return $ getRcpConn db rId
   GetConn Sender sId -> do
     db <- input >>= embed . readTVar
-    return $ maybeError (getConn db) $ M.lookup sId $ senders db
+    return $ maybeError (getRcpConn db) $ M.lookup sId $ senders db
   GetConn Broker _ -> do
     return $ Left InternalError
   where
     maybeError = maybe (Left AuthError)
-    getConn db rId = maybeError Right $ M.lookup rId $ connections db
+    getRcpConn db rId = maybeError Right $ M.lookup rId $ connections db

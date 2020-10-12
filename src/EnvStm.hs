@@ -3,11 +3,11 @@
 
 module EnvSTM where
 
+import ConnStore
 import Control.Concurrent.STM
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Network.Socket (ServiceName)
-import Store
 import System.IO
 import Transmission
 
