@@ -5,65 +5,54 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Main where
 
-import Control.Concurrent
-import Control.Concurrent.Async
-import Control.Concurrent.STM
-import qualified Control.Exception as E
 import Control.Monad
-import Data.Function ((&))
-import Data.Map (Map)
-import qualified Data.Map as M
-import Data.Set (Set)
-import qualified Data.Set as S
-import EnvStm
+import Control.Monad.IO.Unlift
+import Control.Monad.Reader
+import EnvSTM
 import Network.Socket
-import Polysemy
-import Polysemy.Embed
-import Polysemy.Resource
+-- import Polysemy
 import Store
-import System.IO
 import Transmission
 import Transport
+import UnliftIO.Async
+import UnliftIO.Concurrent
+import qualified UnliftIO.Exception as E
+import UnliftIO.IO
+import UnliftIO.STM
 
-newClient :: Handle -> IO Client
-newClient h = do
-  c <- newTChanIO @SomeSigned
-  return Client {handle = h, connections = S.empty, channel = c}
+port :: ServiceName
+port = "5223"
 
 main :: IO ()
 main = do
-  server <- atomically newServer
-  putStrLn $ "Listening on port " ++ port'
-  runTCPServer port' $ runClient server
+  env <- atomically $ newEnv port
+  putStrLn $ "Listening on port " ++ port
+  runReaderT (runTCPServer runClient) env
 
-port' :: String
-port' = "5223"
-
-runTCPServer :: ServiceName -> (Handle -> IO ()) -> IO ()
-runTCPServer port server =
-  E.bracket (startTCPServer port) close $ \sock -> forever $ do
+runTCPServer :: (MonadReader Env m, MonadUnliftIO m) => (Handle -> m ()) -> m ()
+runTCPServer server =
+  E.bracket startTCPServer (liftIO . close) $ \sock -> forever $ do
     h <- acceptTCPConn sock
-    hPutStrLn h "Welcome\r"
+    putLn h "Welcome"
     forkFinally (server h) (const $ hClose h)
 
-runClient :: TVar Server -> Handle -> IO ()
-runClient server h = do
-  c <- newClient h
-  void $ race (client server c) (receive c)
+runClient :: MonadUnliftIO m => Handle -> m ()
+runClient h = do
+  c <- atomically $ newClient h
+  void $ race (client c) (receive c)
 
-receive :: Client -> IO ()
+receive :: MonadIO m => Client -> m ()
 receive Client {handle, channel} = forever $ do
-  signature <- hGetLine handle
-  connId <- hGetLine handle
-  command <- hGetLine handle
+  signature <- getLn handle
+  connId <- getLn handle
+  command <- getLn handle
   cmdOrError <- parseVerifyTransmission signature connId command
   atomically $ writeTChan channel cmdOrError
 
-parseVerifyTransmission :: String -> String -> String -> IO SomeSigned
+parseVerifyTransmission :: Monad m => String -> String -> String -> m SomeSigned
 parseVerifyTransmission _ connId command = do
   return (Just connId, parseCommand command)
 
@@ -76,27 +65,26 @@ parseCommand command = case words command of
   ["SUSPEND"] -> rCmd SUSPEND
   ["DELETE"] -> rCmd DELETE
   ["SEND", msgBody] -> SomeCom SSender $ SEND msgBody
-  "CREATE" : _ -> error SYNTAX
-  "SUB" : _ -> error SYNTAX
-  "SECURE" : _ -> error SYNTAX
-  "DELMSG" : _ -> error SYNTAX
-  "SUSPEND" : _ -> error SYNTAX
-  "DELETE" : _ -> error SYNTAX
-  "SEND" : _ -> error SYNTAX
-  _ -> error CMD
+  "CREATE" : _ -> err SYNTAX
+  "SUB" : _ -> err SYNTAX
+  "SECURE" : _ -> err SYNTAX
+  "DELMSG" : _ -> err SYNTAX
+  "SUSPEND" : _ -> err SYNTAX
+  "DELETE" : _ -> err SYNTAX
+  "SEND" : _ -> err SYNTAX
+  _ -> err CMD
   where
     rCmd = SomeCom SRecipient
-    error t = SomeCom SBroker $ ERROR t
+    err t = SomeCom SBroker $ ERROR t
 
-client :: TVar Server -> Client -> IO ()
-client server Client {handle, channel} = loop
+client :: MonadIO m => Client -> m ()
+client Client {handle, channel} = loop
   where
-    loop = do
+    loop = forever $ do
       (_, cmdOrErr) <- atomically $ readTChan channel
       let response = case cmdOrErr of
             SomeCom SRecipient _ -> "OK"
             SomeCom SSender _ -> "OK"
             SomeCom SBroker (ERROR t) -> "ERROR " ++ show t
             _ -> "ERROR INTERNAL"
-      hPutStrLn handle response
-      loop
+      putLn handle response

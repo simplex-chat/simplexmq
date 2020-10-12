@@ -13,13 +13,16 @@ extra-source-files:
 
 dependencies:
   - base >= 4.7 && < 5
-  - async
+  # - async
   - bytestring
   - containers
+  - mtl
   - network
   - polysemy
   - singletons
   - stm
+  - unliftio-core
+  - unliftio
 
 executables:
   simplex-messaging:

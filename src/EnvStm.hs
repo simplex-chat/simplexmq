@@ -1,17 +1,18 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module EnvStm where
+module EnvSTM where
 
 import Control.Concurrent.STM
 import qualified Data.Map as M
 import qualified Data.Set as S
+import Network.Socket (ServiceName)
 import Store
 import System.IO
 import Transmission
 
 data Env = Env
-  { port :: String,
+  { tcpPort :: ServiceName,
     server :: TVar Server,
     connStore :: TVar ConnStoreData
   }
@@ -30,8 +31,13 @@ data Client = Client
 newServer :: STM (TVar Server)
 newServer = newTVar $ Server {clients = S.empty, connections = M.empty}
 
+newClient :: Handle -> STM Client
+newClient h = do
+  c <- newTChan
+  return Client {handle = h, connections = S.empty, channel = c}
+
 newEnv :: String -> STM Env
-newEnv port = do
+newEnv tcpPort = do
   srv <- newServer
   st <- newConnStore
-  return Env {port, server = srv, connStore = st}
+  return Env {tcpPort, server = srv, connStore = st}
