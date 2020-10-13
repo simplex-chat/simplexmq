@@ -27,6 +27,10 @@ acceptTCPConn :: MonadIO m => Socket -> m Handle
 acceptTCPConn sock = liftIO $ do
   (conn, peer) <- accept sock
   putStrLn $ "Accepted connection from " ++ show peer
+  getSocketHandle conn
+
+getSocketHandle :: MonadIO m => Socket -> m Handle
+getSocketHandle conn = liftIO $ do
   h <- socketToHandle conn ReadWriteMode
   hSetBinaryMode h True
   hSetNewlineMode h universalNewlineMode

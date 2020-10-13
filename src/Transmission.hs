@@ -21,16 +21,16 @@ $( singletons
        |]
  )
 
-type Transmission (a :: Party) = (Signed a, Maybe Signature)
-
-type Signed (a :: Party) = (Maybe ConnId, Command a)
+type Signed (a :: Party) = (ConnId, Command a)
 
 data Cmd where
   Cmd :: Sing a -> Command a -> Cmd
 
 deriving instance Show Cmd
 
-type SomeSigned = (Maybe ConnId, Cmd)
+type SomeSigned = (ConnId, Cmd)
+
+type Transmission = (Signature, SomeSigned)
 
 data Command (a :: Party) where
   CREATE :: RecipientKey -> Command Recipient
@@ -67,6 +67,9 @@ parseCommand command = case words command of
   where
     err = syntaxError errBadParameters
     rCmd = Cmd SRecipient
+
+serializeCommand :: Cmd -> String
+serializeCommand _ = "TODO"
 
 syntaxError :: Int -> Cmd
 syntaxError err = smpError $ SYNTAX err
