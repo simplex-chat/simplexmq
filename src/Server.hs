@@ -52,7 +52,10 @@ receive Client {handle, channel} = forever $ do
 
 parseReadVerifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> String -> String -> String -> m SomeSigned
 parseReadVerifyTransmission h signature connId command = do
-  let cmd = parseCommand command
+  let cmd = case parseCommand command of
+        Right (Cmd SBroker _) -> syntaxError errNotAllowed
+        Right c -> c
+        Left e -> smpError e
   cmd' <- case cmd of
     Cmd SBroker _ -> return cmd
     Cmd _ (CREATE _) -> signed False cmd errHasCredentials
@@ -68,7 +71,7 @@ parseReadVerifyTransmission h signature connId command = do
           else syntaxError errCode
     getSendMsgBody :: MsgBody -> m Cmd
     getSendMsgBody msgBody =
-      if connId == ""
+      if null connId
         then return $ syntaxError errNoConnectionId
         else case B.unpack msgBody of
           ':' : body -> return . smpSend $ B.pack body
@@ -76,7 +79,7 @@ parseReadVerifyTransmission h signature connId command = do
             Just size -> do
               body <- getBytes h size
               s <- getLn h
-              return if s == "" then smpSend body else syntaxError errMessageBodySize
+              return if null s then smpSend body else syntaxError errMessageBodySize
             Nothing -> return $ syntaxError errMessageBody
     verifyConnSignature :: Cmd -> m Cmd
     verifyConnSignature cmd@(Cmd party _) =
@@ -101,17 +104,16 @@ client :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 client Client {handle, channel} = loop
   where
     loop = forever $ do
-      (_, cmdOrErr) <- atomically $ readTChan channel
+      (connId, cmdOrErr) <- atomically $ readTChan channel
       response <- case cmdOrErr of
         Cmd SRecipient (CREATE recipientKey) -> do
           store <- asks connStore
           conn <- createConn store recipientKey
-          case conn of
-            Right Connection {recipientId, senderId} -> return $ "CONN " ++ recipientId ++ " " ++ senderId
-            Left e -> return $ "ERROR " ++ show e
-        Cmd SRecipient _ -> return "OK"
-        Cmd SSender _ -> return "OK"
-        Cmd SBroker (ERROR e) -> return $ "ERROR " ++ show e
-        _ -> return "ERROR INTERNAL"
-      putLn handle response
-      liftIO $ print cmdOrErr
+          return . Cmd SBroker $ case conn of
+            Right Connection {recipientId, senderId} -> CONN recipientId senderId
+            Left e -> ERROR e
+        Cmd SBroker _ -> return cmdOrErr
+        Cmd _ _ -> return $ Cmd SBroker OK
+      putLn handle "" -- singnature
+      putLn handle connId
+      putLn handle $ serializeCommand response

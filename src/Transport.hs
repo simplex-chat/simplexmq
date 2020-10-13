@@ -9,6 +9,7 @@ import qualified Data.ByteString.Char8 as B
 import Env.STM
 import Network.Socket
 import System.IO
+import Transmission
 
 startTCPServer :: (MonadReader Env m, MonadIO m) => m Socket
 startTCPServer = do
@@ -25,8 +26,8 @@ startTCPServer = do
 
 acceptTCPConn :: MonadIO m => Socket -> m Handle
 acceptTCPConn sock = liftIO $ do
-  (conn, peer) <- accept sock
-  putStrLn $ "Accepted connection from " ++ show peer
+  (conn, _) <- accept sock
+  -- putStrLn $ "Accepted connection from " ++ show peer
   getSocketHandle conn
 
 getSocketHandle :: MonadIO m => Socket -> m Handle
@@ -45,3 +46,16 @@ getLn = liftIO . hGetLine
 
 getBytes :: MonadIO m => Handle -> Int -> m B.ByteString
 getBytes h = liftIO . B.hGet h
+
+tGetRaw :: MonadIO m => Handle -> m RawTransmission
+tGetRaw h = do
+  signature <- getLn h
+  connId <- getLn h
+  command <- getLn h
+  return (signature, connId, command)
+
+tPutRaw :: MonadIO m => Handle -> RawTransmission -> m ()
+tPutRaw h (signature, connId, command) = do
+  putLn h signature
+  putLn h connId
+  putLn h command

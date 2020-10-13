@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -13,6 +14,7 @@ module Transmission where
 
 import qualified Data.ByteString.Char8 as B
 import Data.Singletons.TH
+import Text.Read
 
 $( singletons
      [d|
@@ -32,6 +34,8 @@ type SomeSigned = (ConnId, Cmd)
 
 type Transmission = (Signature, SomeSigned)
 
+type RawTransmission = (String, String, String)
+
 data Command (a :: Party) where
   CREATE :: RecipientKey -> Command Recipient
   SECURE :: SenderKey -> Command Recipient
@@ -47,7 +51,7 @@ data Command (a :: Party) where
 
 deriving instance Show (Command a)
 
-parseCommand :: String -> Cmd
+parseCommand :: String -> Either ErrorType Cmd
 parseCommand command = case words command of
   ["CREATE", recipientKey] -> rCmd $ CREATE recipientKey
   ["SUB"] -> rCmd SUB
@@ -55,21 +59,43 @@ parseCommand command = case words command of
   ["DELMSG", msgId] -> rCmd $ DELMSG msgId
   ["SUSPEND"] -> rCmd SUSPEND
   ["DELETE"] -> rCmd DELETE
-  ["SEND", msgBody] -> smpSend $ B.pack msgBody
-  "CREATE" : _ -> err
-  "SUB" : _ -> err
-  "SECURE" : _ -> err
-  "DELMSG" : _ -> err
-  "SUSPEND" : _ -> err
-  "DELETE" : _ -> err
-  "SEND" : _ -> err
-  _ -> syntaxError errUnknownCommand
+  ["SEND", msgBody] -> Right . smpSend $ B.pack msgBody
+  ["MSG", msgId, timestamp, msgBody] -> bCmd $ MSG msgId timestamp (B.pack msgBody)
+  ["CONN", rId, sId] -> bCmd $ CONN rId sId
+  ["OK"] -> bCmd OK
+  "ERROR" : err -> case err of
+    ["AUTH"] -> bCmd $ ERROR AUTH
+    ["INTERNAL"] -> bCmd $ ERROR INTERNAL
+    ["SYNTAX", errCode] -> maybe errParams (bCmd . ERROR . SYNTAX) $ readMaybe errCode
+    _ -> errParams
+  "CREATE" : _ -> errParams
+  "SUB" : _ -> errParams
+  "SECURE" : _ -> errParams
+  "DELMSG" : _ -> errParams
+  "SUSPEND" : _ -> errParams
+  "DELETE" : _ -> errParams
+  "SEND" : _ -> errParams
+  "MSG" : _ -> errParams
+  "CONN" : _ -> errParams
+  "OK" : _ -> errParams
+  _ -> Left $ SYNTAX errUnknownCommand
   where
-    err = syntaxError errBadParameters
-    rCmd = Cmd SRecipient
+    errParams = Left $ SYNTAX errBadParameters
+    rCmd = Right . Cmd SRecipient
+    bCmd = Right . Cmd SBroker
 
 serializeCommand :: Cmd -> String
-serializeCommand _ = "TODO"
+serializeCommand = \case
+  Cmd SRecipient (CREATE rKey) -> "CREATE " ++ rKey
+  Cmd SRecipient (SECURE sKey) -> "SECURE " ++ sKey
+  Cmd SRecipient (DELMSG msgId) -> "DELMSG " ++ msgId
+  Cmd SRecipient cmd -> show cmd
+  Cmd SSender (SEND msgBody) -> "SEND " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
+  Cmd SBroker (MSG msgId timestamp msgBody) ->
+    "MSG " ++ msgId ++ " " ++ timestamp ++ " " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
+  Cmd SBroker (CONN rId sId) -> "CONN " ++ rId ++ " " ++ sId
+  Cmd SBroker (ERROR err) -> "ERROR " ++ show err
+  Cmd SBroker OK -> "OK"
 
 syntaxError :: Int -> Cmd
 syntaxError err = smpError $ SYNTAX err
@@ -124,3 +150,6 @@ errMessageBody = 6
 
 errMessageBodySize :: Int
 errMessageBodySize = 7
+
+errNotAllowed :: Int
+errNotAllowed = 8

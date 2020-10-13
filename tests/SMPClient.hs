@@ -1,3 +1,5 @@
+{-# LANGUAGE BlockArguments #-}
+
 module SMPClient where
 
 import Control.Concurrent
@@ -10,6 +12,7 @@ import Transport
 
 runSMPClient :: HostName -> ServiceName -> (Handle -> IO a) -> IO a
 runSMPClient host port client = withSocketsDo $ do
+  threadDelay 1 -- TODO hack: thread delay for SMP server to start
   addr <- resolve
   E.bracket (open addr) hClose $ \h -> do
     line <- getLn h
@@ -25,22 +28,25 @@ runSMPClient host port client = withSocketsDo $ do
       connect sock $ addrAddress addr
       getSocketHandle sock
 
-smpServerTest :: [Transmission] -> IO [Transmission]
+testPort :: ServiceName
+testPort = "5000"
+
+testHost :: HostName
+testHost = "localhost"
+
+type TestTransmission = (Signature, ConnId, String)
+
+smpServerTest :: [TestTransmission] -> IO [TestTransmission]
 smpServerTest toSend =
   E.bracket
-    (forkIO $ runSMPServer "5000")
+    (forkIO $ runSMPServer testPort)
     killThread
-    ( const $
-        runSMPClient "localhost" "5000" $ \h ->
-          mapM (sendReceive h) toSend
-    )
+    \_ -> runSMPClient
+      "localhost"
+      testPort
+      \h -> mapM (sendReceive h) toSend
   where
-    sendReceive :: Handle -> Transmission -> IO Transmission
-    sendReceive h (signature, (connId, cmd)) = do
-      putLn h signature
-      putLn h connId
-      putLn h $ serializeCommand cmd
-      signature' <- getLn h
-      connId' <- getLn h
-      cmd' <- parseCommand <$> getLn h
-      return (signature', (connId', cmd'))
+    sendReceive :: Handle -> TestTransmission -> IO TestTransmission
+    sendReceive h t = do
+      tPutRaw h t
+      tGetRaw h

@@ -36,11 +36,13 @@ tests:
   smp-server-test:
     source-dirs: tests
     main: Test.hs
-    dependencies: simplex-messaging
+    dependencies:
+      - simplex-messaging
+      - hspec == 2.7.*
 
 ghc-options:
-  - -haddock
-  - -O2
+  # - -haddock
+  # - -O2
   - -Wall
   - -Wcompat
   - -Werror=incomplete-patterns
