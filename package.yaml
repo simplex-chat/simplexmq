@@ -2,23 +2,21 @@ name: simplex-messaging
 version: 0.1.0.0
 #synopsis:
 #description:
-homepage: https://github.com/githubuser/simplex-messaging#readme
-license: BSD3
-author: Author name here
-maintainer: example@example.com
-copyright: 2020 Author name here
-category: Web
+homepage: https://github.com/simplex-chat/simplex-messaging#readme
+license: AGPL-3
+author: Evgeny Poberezkin
+maintainer: evgeny@poberezkin.com
+copyright: 2020 Evgeny Poberezkin
+category: Web, System, Services, Cryptography
 extra-source-files:
   - README.md
 
 dependencies:
   - base >= 4.7 && < 5
-  # - async
   - bytestring
   - containers
   - mtl
   - network
-  - polysemy
   - singletons
   - stm
   - unliftio-core
