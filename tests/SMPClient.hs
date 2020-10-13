@@ -37,16 +37,12 @@ testHost = "localhost"
 type TestTransmission = (Signature, ConnId, String)
 
 smpServerTest :: [TestTransmission] -> IO [TestTransmission]
-smpServerTest toSend =
+smpServerTest commands =
   E.bracket
     (forkIO $ runSMPServer testPort)
     killThread
-    \_ -> runSMPClient
-      "localhost"
-      testPort
-      \h -> mapM (sendReceive h) toSend
+    \_ -> runSMPClient "localhost" testPort $
+      \h -> mapM (sendReceive h) commands
   where
     sendReceive :: Handle -> TestTransmission -> IO TestTransmission
-    sendReceive h t = do
-      tPutRaw h t
-      tGetRaw h
+    sendReceive h t = tPutRaw h t >> tGetRaw h
