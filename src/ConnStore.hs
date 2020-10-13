@@ -1,27 +1,13 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TemplateHaskell #-}
--- {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module ConnStore where
 
-import Control.Concurrent.STM
-import Data.Map (Map)
-import qualified Data.Map as M
-import Polysemy
-import Polysemy.Input
+import Data.Singletons
 import Transmission
 
-type SMPResult a = Either SMPError a
-
-data SMPError = CmdError | SyntaxError | AuthError | InternalError
+type SMPResult a = Either ErrorType a
 
 data Connection = Connection
   { recipientId :: ConnId,
@@ -31,23 +17,13 @@ data Connection = Connection
     active :: Bool
   }
 
-data ConnStore m a where
-  CreateConn :: RecipientKey -> ConnStore m (SMPResult Connection)
-  GetConn :: Party -> ConnId -> ConnStore m (SMPResult Connection)
+class MonadConnStore s m where
+  createConn :: s -> RecipientKey -> m (SMPResult Connection)
+  getConn :: s -> Sing (a :: Party) -> ConnId -> m (SMPResult Connection)
 
--- SecureConn :: RecipientId -> SenderKey -> ConnStore m (SMPResult ())
--- SuspendConn :: RecipientId -> ConnStore m (SMPResult ())
--- DeleteConn :: RecipientId -> ConnStore m (SMPResult ())
-
-makeSem ''ConnStore
-
-data ConnStoreData = ConnStoreData
-  { connections :: Map RecipientId Connection,
-    senders :: Map SenderId RecipientId
-  }
-
-newConnStore :: STM (TVar ConnStoreData)
-newConnStore = newTVar ConnStoreData {connections = M.empty, senders = M.empty}
+-- secureConn :: RecipientId -> SenderKey -> m (SMPResult ())
+-- suspendConn :: RecipientId -> m (SMPResult ())
+-- deleteConn :: RecipientId -> m (SMPResult ())
 
 newConnection :: RecipientKey -> Connection
 newConnection rKey =
@@ -58,28 +34,3 @@ newConnection rKey =
       senderKey = Nothing,
       active = True
     }
-
-runConnStoreSTM :: Member (Embed STM) r => Sem (ConnStore ': r) a -> Sem (Input (TVar ConnStoreData) ': r) a
-runConnStoreSTM = reinterpret $ \case
-  CreateConn rKey -> do
-    store <- input
-    db <- embed $ readTVar store
-    let conn@Connection {senderId, recipientId} = newConnection rKey
-        db' =
-          ConnStoreData
-            { connections = M.insert recipientId conn (connections db),
-              senders = M.insert senderId recipientId (senders db)
-            }
-    embed $ writeTVar store db'
-    return $ Right conn
-  GetConn Recipient rId -> do
-    db <- input >>= embed . readTVar
-    return $ getRcpConn db rId
-  GetConn Sender sId -> do
-    db <- input >>= embed . readTVar
-    return $ maybeError (getRcpConn db) $ M.lookup sId $ senders db
-  GetConn Broker _ -> do
-    return $ Left InternalError
-  where
-    maybeError = maybe (Left AuthError)
-    getRcpConn db rId = maybeError Right $ M.lookup rId $ connections db

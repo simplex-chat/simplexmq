@@ -1,12 +1,12 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
 
 module Transport where
 
 import Control.Monad.IO.Class
-import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import qualified Data.ByteString.Char8 as B
-import EnvSTM
+import Env.STM
 import Network.Socket
 import System.IO
 
@@ -39,5 +39,5 @@ putLn h = liftIO . hPutStrLn h
 getLn :: MonadIO m => Handle -> m String
 getLn = liftIO . hGetLine
 
-getBytes :: MonadUnliftIO m => Handle -> Int -> m B.ByteString
+getBytes :: MonadIO m => Handle -> Int -> m B.ByteString
 getBytes h = liftIO . B.hGet h

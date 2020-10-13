@@ -56,19 +56,23 @@ parseCommand command = case words command of
   ["SUSPEND"] -> rCmd SUSPEND
   ["DELETE"] -> rCmd DELETE
   ["SEND", msgBody] -> smpSend $ B.pack msgBody
-  "CREATE" : _ -> smpError SYNTAX
-  "SUB" : _ -> smpError SYNTAX
-  "SECURE" : _ -> smpError SYNTAX
-  "DELMSG" : _ -> smpError SYNTAX
-  "SUSPEND" : _ -> smpError SYNTAX
-  "DELETE" : _ -> smpError SYNTAX
-  "SEND" : _ -> smpError SYNTAX
-  _ -> smpError CMD
+  "CREATE" : _ -> err
+  "SUB" : _ -> err
+  "SECURE" : _ -> err
+  "DELMSG" : _ -> err
+  "SUSPEND" : _ -> err
+  "DELETE" : _ -> err
+  "SEND" : _ -> err
+  _ -> syntaxError errUnknownCommand
   where
+    err = syntaxError errBadParameters
     rCmd = Cmd SRecipient
 
+syntaxError :: Int -> Cmd
+syntaxError err = smpError $ SYNTAX err
+
 smpError :: ErrorType -> Cmd
-smpError = Cmd SBroker . ERROR
+smpError errType = Cmd SBroker $ ERROR errType
 
 smpSend :: MsgBody -> Cmd
 smpSend = Cmd SSender . SEND
@@ -95,4 +99,25 @@ type Timestamp = Encoded
 
 type MsgBody = B.ByteString
 
-data ErrorType = CMD | SYNTAX | AUTH | INTERNAL deriving (Show)
+data ErrorType = SYNTAX Int | AUTH | INTERNAL deriving (Show)
+
+errUnknownCommand :: Int
+errUnknownCommand = 1
+
+errBadParameters :: Int
+errBadParameters = 2
+
+errNoCredentials :: Int
+errNoCredentials = 3
+
+errHasCredentials :: Int
+errHasCredentials = 4
+
+errNoConnectionId :: Int
+errNoConnectionId = 5
+
+errMessageBody :: Int
+errMessageBody = 6
+
+errMessageBodySize :: Int
+errMessageBodySize = 7

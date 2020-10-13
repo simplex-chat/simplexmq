@@ -3,6 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -14,7 +15,7 @@ import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import qualified Data.ByteString.Char8 as B
-import EnvSTM
+import Env.STM
 import Network.Socket
 import Text.Read
 import Transmission
@@ -41,12 +42,12 @@ runTCPServer server =
     putLn h "Welcome"
     forkFinally (server h) (const $ hClose h)
 
-runClient :: MonadUnliftIO m => Handle -> m ()
+runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
   c <- atomically $ newClient h
   void $ race (client c) (receive c)
 
-receive :: MonadUnliftIO m => Client -> m ()
+receive :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 receive Client {handle, channel} = forever $ do
   signature <- getLn handle
   connId <- getLn handle
@@ -54,43 +55,68 @@ receive Client {handle, channel} = forever $ do
   cmdOrError <- parseReadVerifyTransmission handle signature connId command
   atomically $ writeTChan channel cmdOrError
 
-parseReadVerifyTransmission :: MonadUnliftIO m => Handle -> String -> String -> String -> m SomeSigned
+parseReadVerifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> String -> String -> String -> m SomeSigned
 parseReadVerifyTransmission h signature connId command = do
   let cmd = parseCommand command
   cmd' <- case cmd of
     Cmd SBroker _ -> return cmd
-    Cmd _ (CREATE _) ->
+    Cmd _ (CREATE _) -> signed False cmd errHasCredentials
+    Cmd _ (SEND msgBody) -> getSendMsgBody msgBody
+    Cmd _ _ -> verifyConnSignature cmd -- signed True cmd errNoCredentials
+  return (Just connId, cmd')
+  where
+    signed :: Bool -> Cmd -> Int -> m Cmd
+    signed isSigned cmd errCode =
       return
-        if signature == "" && connId == ""
+        if isSigned == (signature /= "") && isSigned == (connId /= "")
           then cmd
-          else smpError SYNTAX
-    Cmd _ (SEND msgBody) ->
+          else syntaxError errCode
+    getSendMsgBody :: MsgBody -> m Cmd
+    getSendMsgBody msgBody =
       if connId == ""
-        then return $ smpError SYNTAX
+        then return $ syntaxError errNoConnectionId
         else case B.unpack msgBody of
           ':' : body -> return . smpSend $ B.pack body
           sizeStr -> case readMaybe sizeStr :: Maybe Int of
             Just size -> do
               body <- getBytes h size
               s <- getLn h
-              return if s == "" then smpSend body else smpError SYNTAX
-            Nothing -> return $ smpError SYNTAX
-    Cmd _ _ ->
-      return
-        if signature == "" || connId == ""
-          then smpError SYNTAX
-          else cmd
-  return (Just connId, cmd')
+              return if s == "" then smpSend body else syntaxError errMessageBodySize
+            Nothing -> return $ syntaxError errMessageBody
+    verifyConnSignature :: Cmd -> m Cmd
+    verifyConnSignature cmd@(Cmd party _) =
+      if null signature || null connId
+        then return $ syntaxError errNoCredentials
+        else do
+          store <- asks connStore
+          getConn store party connId >>= \case
+            Right Connection {recipientKey, senderKey} -> do
+              res <- case party of
+                SRecipient -> verifySignature recipientKey
+                SSender -> case senderKey of
+                  Just key -> verifySignature key
+                  Nothing -> return False
+                SBroker -> return False
+              if res then return cmd else return $ smpError AUTH
+            Left err -> return $ smpError err
+    verifySignature :: Encoded -> m Bool
+    verifySignature key = return $ signature == key
 
-client :: MonadIO m => Client -> m ()
+client :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 client Client {handle, channel} = loop
   where
     loop = forever $ do
       (_, cmdOrErr) <- atomically $ readTChan channel
-      let response = case cmdOrErr of
-            Cmd SRecipient _ -> "OK"
-            Cmd SSender _ -> "OK"
-            Cmd SBroker (ERROR t) -> "ERROR " ++ show t
-            _ -> "ERROR INTERNAL"
+      response <- case cmdOrErr of
+        Cmd SRecipient (CREATE recipientKey) -> do
+          store <- asks connStore
+          conn <- createConn store recipientKey
+          case conn of
+            Right Connection {recipientId, senderId} -> return $ "CONN " ++ recipientId ++ " " ++ senderId
+            Left e -> return $ "ERROR " ++ show e
+        Cmd SRecipient _ -> return "OK"
+        Cmd SSender _ -> return "OK"
+        Cmd SBroker (ERROR e) -> return $ "ERROR " ++ show e
+        _ -> return "ERROR INTERNAL"
       putLn handle response
       liftIO $ print cmdOrErr

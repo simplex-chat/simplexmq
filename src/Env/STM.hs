@@ -1,9 +1,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module EnvSTM where
+module Env.STM where
 
-import ConnStore
+import ConnStore.STM
 import Control.Concurrent.STM
 import qualified Data.Map as M
 import qualified Data.Set as S
