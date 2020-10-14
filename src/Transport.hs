@@ -52,6 +52,12 @@ getLn = liftIO . hGetLine
 getBytes :: MonadIO m => Handle -> Int -> m B.ByteString
 getBytes h = liftIO . B.hGet h
 
+tPutRaw :: MonadIO m => Handle -> RawTransmission -> m ()
+tPutRaw h (signature, connId, command) = do
+  putLn h signature
+  putLn h connId
+  putLn h command
+
 tGetRaw :: MonadIO m => Handle -> m RawTransmission
 tGetRaw h = do
   signature <- getLn h
@@ -59,11 +65,8 @@ tGetRaw h = do
   command <- getLn h
   return (signature, connId, command)
 
-tPutRaw :: MonadIO m => Handle -> RawTransmission -> m ()
-tPutRaw h (signature, connId, command) = do
-  putLn h signature
-  putLn h connId
-  putLn h command
+tPut :: MonadIO m => Handle -> Transmission -> m ()
+tPut h (signature, (connId, command)) = tPutRaw h (signature, connId, serializeCommand command)
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
@@ -77,12 +80,12 @@ fromServer = \case
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
-tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m Transmission
+tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m TransmissionOrError
 tGet fromParty h = do
   t@(signature, connId, command) <- tGetRaw h
   let cmd = (parseCommand >=> fromParty) command >>= tCredentials t
   fullCmd <- either (return . Left) cmdWithMsgBody cmd
-  return $ mkTransmission signature connId fullCmd
+  return (signature, (connId, fullCmd))
   where
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, connId, _) cmd = case cmd of

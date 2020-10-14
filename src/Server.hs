@@ -17,6 +17,7 @@ import Control.Monad.Reader
 import Data.Singletons
 import Env.STM
 import Network.Socket
+import Numeric.Natural
 import Transmission
 import Transport
 import UnliftIO.Async
@@ -25,9 +26,9 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.IO
 import UnliftIO.STM
 
-runSMPServer :: ServiceName -> IO ()
-runSMPServer port = do
-  env <- atomically $ newEnv port
+runSMPServer :: ServiceName -> Natural -> IO ()
+runSMPServer port queueSize = do
+  env <- atomically $ newEnv port queueSize
   runReaderT (runTCPServer runClient) env
 
 runTCPServer :: (MonadReader Env m, MonadUnliftIO m) => (Handle -> m ()) -> m ()
@@ -39,30 +40,29 @@ runTCPServer server =
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
-  c <- atomically $ newClient h
-  void $ race (client c) (receive c)
+  q <- asks queueSize
+  c <- atomically $ newClient q
+  void $ race (client h c) (receive h c)
 
-receive :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
-receive Client {handle, channel} = forever $ do
-  (signature, (connId, cmdOrError)) <- tGet fromClient handle
+receive :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
+receive h Client {queue} = forever $ do
+  (signature, (connId, cmdOrError)) <- tGet fromClient h
   -- TODO maybe send Either to queue?
   cmd <-
     either
       (return . (connId,) . Cmd SBroker . ERROR)
-      (verifyTransmission handle signature connId)
+      (verifyTransmission signature connId)
       cmdOrError
-  atomically $ writeTChan channel cmd
+  atomically $ writeTBQueue queue cmd
 
-verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> Signature -> ConnId -> Cmd -> m Signed
-verifyTransmission _h signature connId cmd = do
+verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Signature -> ConnId -> Cmd -> m Signed
+verifyTransmission signature connId cmd = do
   (connId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL
     Cmd SRecipient (CREATE _) -> return cmd
     Cmd SRecipient _ -> withConnection SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> withConnection SSender $ verifySend . senderKey
   where
-    smpErr e = Cmd SBroker $ ERROR e
-    authErr = smpErr AUTH
     withConnection :: Sing (p :: Party) -> (Connection -> m Cmd) -> m Cmd
     withConnection party f = do
       store <- asks connStore
@@ -77,20 +77,21 @@ verifyTransmission _h signature connId cmd = do
     verifySignature :: PublicKey -> m Cmd
     verifySignature key = return $ if signature == key then cmd else authErr
 
-client :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
-client Client {handle, channel} = loop
+    smpErr e = Cmd SBroker $ ERROR e
+    authErr = smpErr AUTH
+
+client :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
+client h Client {queue} = loop
   where
     loop = forever $ do
-      (connId, cmdOrErr) <- atomically $ readTChan channel
-      response <- case cmdOrErr of
+      (connId, cmd) <- atomically $ readTBQueue queue
+      response <- case cmd of
         Cmd SRecipient (CREATE recipientKey) -> do
           store <- asks connStore
           conn <- createConn store recipientKey
           return . Cmd SBroker $ case conn of
             Right Connection {recipientId, senderId} -> CONN recipientId senderId
             Left e -> ERROR e
-        Cmd SBroker _ -> return cmdOrErr
+        Cmd SBroker _ -> return cmd
         Cmd _ _ -> return $ Cmd SBroker OK
-      putLn handle "" -- singnature
-      putLn handle connId
-      putLn handle $ serializeCommand response
+      tPut h ("", (connId, response)) -- empty signature

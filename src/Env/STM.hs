@@ -8,11 +8,12 @@ import Control.Concurrent.STM
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Network.Socket (ServiceName)
-import System.IO
+import Numeric.Natural
 import Transmission
 
 data Env = Env
   { tcpPort :: ServiceName,
+    queueSize :: Natural,
     server :: TVar Server,
     connStore :: TVar ConnStoreData
   }
@@ -23,21 +24,20 @@ data Server = Server
   }
 
 data Client = Client
-  { handle :: Handle,
-    connections :: S.Set RecipientId,
-    channel :: TChan Signed
+  { connections :: S.Set RecipientId,
+    queue :: TBQueue Signed
   }
 
 newServer :: STM (TVar Server)
 newServer = newTVar $ Server {clients = S.empty, connections = M.empty}
 
-newClient :: Handle -> STM Client
-newClient h = do
-  c <- newTChan
-  return Client {handle = h, connections = S.empty, channel = c}
+newClient :: Natural -> STM Client
+newClient qSize = do
+  c <- newTBQueue qSize
+  return Client {connections = S.empty, queue = c}
 
-newEnv :: String -> STM Env
-newEnv tcpPort = do
+newEnv :: String -> Natural -> STM Env
+newEnv tcpPort queueSize = do
   srv <- newServer
   st <- newConnStore
-  return Env {tcpPort, server = srv, connStore = st}
+  return Env {tcpPort, queueSize, server = srv, connStore = st}

@@ -5,6 +5,7 @@ module SMPClient where
 import Control.Concurrent
 import qualified Control.Exception as E
 import Network.Socket
+import Numeric.Natural
 import Server
 import System.IO
 import Transmission
@@ -34,12 +35,15 @@ testPort = "5000"
 testHost :: HostName
 testHost = "localhost"
 
+queueSize :: Natural
+queueSize = 2
+
 type TestTransmission = (Signature, ConnId, String)
 
 smpServerTest :: [TestTransmission] -> IO [TestTransmission]
 smpServerTest commands =
   E.bracket
-    (forkIO $ runSMPServer testPort)
+    (forkIO $ runSMPServer testPort queueSize)
     killThread
     \_ -> runSMPClient "localhost" testPort $
       \h -> mapM (sendReceive h) commands

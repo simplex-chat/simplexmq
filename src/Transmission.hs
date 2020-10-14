@@ -30,9 +30,11 @@ deriving instance Show Cmd
 
 type Signed = (ConnId, Cmd)
 
+type Transmission = (Signature, Signed)
+
 type SignedOrError = (ConnId, Either ErrorType Cmd)
 
-type Transmission = (Signature, SignedOrError)
+type TransmissionOrError = (Signature, SignedOrError)
 
 type RawTransmission = (String, String, String)
 
@@ -50,9 +52,6 @@ data Command (a :: Party) where
   OK :: Command Broker
 
 deriving instance Show (Command a)
-
-mkTransmission :: Signature -> ConnId -> Either ErrorType Cmd -> Transmission
-mkTransmission signature connId cmd = (signature, (connId, cmd))
 
 parseCommand :: String -> Either ErrorType Cmd
 parseCommand command = case words command of
