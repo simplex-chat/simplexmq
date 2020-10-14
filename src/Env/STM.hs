@@ -25,7 +25,7 @@ data Server = Server
 data Client = Client
   { handle :: Handle,
     connections :: S.Set RecipientId,
-    channel :: TChan SomeSigned
+    channel :: TChan Signed
   }
 
 newServer :: STM (TVar Server)

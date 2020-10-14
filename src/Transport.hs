@@ -67,17 +67,17 @@ tPutRaw h (signature, connId, command) = do
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
-  Cmd SBroker _ -> Left $ SYNTAX errNotAllowed
+  Cmd SBroker _ -> Left PROHIBITED
   cmd -> Right cmd
 
 fromServer :: Cmd -> Either ErrorType Cmd
 fromServer = \case
   cmd@(Cmd SBroker _) -> Right cmd
-  _ -> Left $ SYNTAX errNotAllowed
+  _ -> Left PROHIBITED
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
-tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m Transmission'
+tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m Transmission
 tGet fromParty h = do
   t@(signature, connId, command) <- tGetRaw h
   let cmd = (parseCommand >=> fromParty) command >>= tCredentials t

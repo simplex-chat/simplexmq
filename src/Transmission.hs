@@ -23,20 +23,16 @@ $( singletons
        |]
  )
 
-type Signed (a :: Party) = (ConnId, Command a)
-
 data Cmd where
   Cmd :: Sing a -> Command a -> Cmd
 
 deriving instance Show Cmd
 
-type SomeSigned = (ConnId, Cmd)
+type Signed = (ConnId, Cmd)
 
-type Transmission = (Signature, SomeSigned)
+type SignedOrError = (ConnId, Either ErrorType Cmd)
 
-type SomeSigned' = (ConnId, Either ErrorType Cmd)
-
-type Transmission' = (Signature, SomeSigned')
+type Transmission = (Signature, SignedOrError)
 
 type RawTransmission = (String, String, String)
 
@@ -55,7 +51,7 @@ data Command (a :: Party) where
 
 deriving instance Show (Command a)
 
-mkTransmission :: Signature -> ConnId -> Either ErrorType Cmd -> Transmission'
+mkTransmission :: Signature -> ConnId -> Either ErrorType Cmd -> Transmission
 mkTransmission signature connId cmd = (signature, (connId, cmd))
 
 parseCommand :: String -> Either ErrorType Cmd
@@ -66,7 +62,7 @@ parseCommand command = case words command of
   ["DELMSG", msgId] -> rCmd $ DELMSG msgId
   ["SUSPEND"] -> rCmd SUSPEND
   ["DELETE"] -> rCmd DELETE
-  ["SEND", msgBody] -> Right . smpSend $ B.pack msgBody
+  ["SEND", msgBody] -> Right . Cmd SSender . SEND $ B.pack msgBody
   ["MSG", msgId, timestamp, msgBody] -> bCmd $ MSG msgId timestamp (B.pack msgBody)
   ["CONN", rId, sId] -> bCmd $ CONN rId sId
   ["OK"] -> bCmd OK
@@ -85,7 +81,7 @@ parseCommand command = case words command of
   "MSG" : _ -> errParams
   "CONN" : _ -> errParams
   "OK" : _ -> errParams
-  _ -> Left $ SYNTAX errUnknownCommand
+  _ -> Left UNKNOWN
   where
     errParams = Left $ SYNTAX errBadParameters
     rCmd = Right . Cmd SRecipient
@@ -103,15 +99,6 @@ serializeCommand = \case
   Cmd SBroker (CONN rId sId) -> "CONN " ++ rId ++ " " ++ sId
   Cmd SBroker (ERROR err) -> "ERROR " ++ show err
   Cmd SBroker OK -> "OK"
-
-syntaxError :: Int -> Cmd
-syntaxError err = smpError $ SYNTAX err
-
-smpError :: ErrorType -> Cmd
-smpError errType = Cmd SBroker $ ERROR errType
-
-smpSend :: MsgBody -> Cmd
-smpSend = Cmd SSender . SEND
 
 type Encoded = String
 
@@ -135,10 +122,7 @@ type Timestamp = Encoded
 
 type MsgBody = B.ByteString
 
-data ErrorType = SYNTAX Int | AUTH | INTERNAL deriving (Show)
-
-errUnknownCommand :: Int
-errUnknownCommand = 1
+data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | AUTH | INTERNAL deriving (Show)
 
 errBadParameters :: Int
 errBadParameters = 2
@@ -157,6 +141,3 @@ errMessageBody = 6
 
 errMessageBodySize :: Int
 errMessageBodySize = 7
-
-errNotAllowed :: Int
-errNotAllowed = 8

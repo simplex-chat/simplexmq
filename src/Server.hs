@@ -45,10 +45,14 @@ receive :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 receive Client {handle, channel} = forever $ do
   (signature, (connId, cmdOrError)) <- tGet fromClient handle
   -- TODO maybe send Either to queue?
-  cmd <- either (return . (connId,) . Cmd SBroker . ERROR) (verifyTransmission handle signature connId) cmdOrError
+  cmd <-
+    either
+      (return . (connId,) . Cmd SBroker . ERROR)
+      (verifyTransmission handle signature connId)
+      cmdOrError
   atomically $ writeTChan channel cmd
 
-verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> Signature -> ConnId -> Cmd -> m SomeSigned
+verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> Signature -> ConnId -> Cmd -> m Signed
 verifyTransmission _h signature connId cmd = do
   cmd' <- case cmd of
     Cmd SBroker _ -> return . Cmd SBroker $ ERROR INTERNAL
@@ -68,8 +72,8 @@ verifyTransmission _h signature connId cmd = do
               Just key -> verifySignature key
               Nothing -> return False
             SBroker -> return False
-          if res then return c else return $ smpError AUTH
-        Left err -> return $ smpError err
+          if res then return c else return . Cmd SBroker $ ERROR AUTH
+        Left err -> return . Cmd SBroker $ ERROR err
     verifySignature :: Encoded -> m Bool
     verifySignature key = return $ signature == key
 
