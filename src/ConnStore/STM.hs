@@ -1,7 +1,7 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -26,27 +26,38 @@ newConnStore :: STM STMConnStore
 newConnStore = newTVar ConnStoreData {connections = M.empty, senders = M.empty}
 
 instance MonadUnliftIO m => MonadConnStore STMConnStore m where
-  createConn store rKey = atomically $ do
+  createConn store rKey = atomically do
     db <- readTVar store
-    let conn@Connection {senderId, recipientId} = newConnection rKey
+    let c@Connection {recipientId = rId, senderId = sId} = newConnection rKey
         db' =
           ConnStoreData
-            { connections = M.insert recipientId conn (connections db),
-              senders = M.insert senderId recipientId (senders db)
+            { connections = M.insert rId c (connections db),
+              senders = M.insert sId rId (senders db)
             }
     writeTVar store db'
-    return $ Right conn
-  getConn store SRecipient rId = atomically $ do
+    return $ Right c
+
+  -- TODO do not return suspended connections
+  getConn store SRecipient rId = atomically do
     db <- readTVar store
     return $ getRcpConn db rId
-  getConn store SSender sId = atomically $ do
+  getConn store SSender sId = atomically do
     db <- readTVar store
-    return $ maybeAuth (getRcpConn db) $ M.lookup sId $ senders db
-  getConn _ SBroker _ = atomically $ do
+    return $ maybe (Left AUTH) (getRcpConn db) $ M.lookup sId $ senders db
+  getConn _ SBroker _ = atomically do
     return $ Left INTERNAL
 
-maybeAuth :: (a -> Either ErrorType b) -> Maybe a -> Either ErrorType b
-maybeAuth = maybe (Left AUTH)
+  secureConn store rId sKey = atomically do
+    db <- readTVar store
+    let conn = getRcpConn db rId
+    either (return . Left) (updateConn db) conn
+    where
+      updateConn db c = case senderKey c of
+        Just _ -> return $ Left AUTH
+        Nothing -> do
+          let db' = db {connections = M.insert rId c {senderKey = Just sKey} (connections db)}
+          writeTVar store db'
+          return $ Right ()
 
 getRcpConn :: ConnStoreData -> RecipientId -> Either ErrorType Connection
-getRcpConn db rId = maybeAuth Right $ M.lookup rId $ connections db
+getRcpConn db rId = maybe (Left AUTH) Right . M.lookup rId $ connections db

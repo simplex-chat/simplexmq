@@ -26,12 +26,12 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.IO
 import UnliftIO.STM
 
-runSMPServer :: ServiceName -> Natural -> IO ()
+runSMPServer :: MonadUnliftIO m => ServiceName -> Natural -> m ()
 runSMPServer port queueSize = do
   env <- atomically $ newEnv port queueSize
   runReaderT (runTCPServer runClient) env
 
-runTCPServer :: (MonadReader Env m, MonadUnliftIO m) => (Handle -> m ()) -> m ()
+runTCPServer :: (MonadUnliftIO m, MonadReader Env m) => (Handle -> m ()) -> m ()
 runTCPServer server =
   E.bracket startTCPServer (liftIO . close) $ \sock -> forever $ do
     h <- acceptTCPConn sock
@@ -58,7 +58,7 @@ receive h Client {queue} = forever $ do
 verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Signature -> ConnId -> Cmd -> m Signed
 verifyTransmission signature connId cmd = do
   (connId,) <$> case cmd of
-    Cmd SBroker _ -> return $ smpErr INTERNAL
+    Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
     Cmd SRecipient (CREATE _) -> return cmd
     Cmd SRecipient _ -> withConnection SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> withConnection SSender $ verifySend . senderKey
@@ -80,18 +80,35 @@ verifyTransmission signature connId cmd = do
     smpErr e = Cmd SBroker $ ERROR e
     authErr = smpErr AUTH
 
-client :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
+client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
 client h Client {queue} = loop
   where
     loop = forever $ do
       (connId, cmd) <- atomically $ readTBQueue queue
-      response <- case cmd of
-        Cmd SRecipient (CREATE recipientKey) -> do
-          store <- asks connStore
-          conn <- createConn store recipientKey
-          return . Cmd SBroker $ case conn of
-            Right Connection {recipientId, senderId} -> CONN recipientId senderId
-            Left e -> ERROR e
-        Cmd SBroker _ -> return cmd
-        Cmd _ _ -> return $ Cmd SBroker OK
-      tPut h ("", (connId, response)) -- empty signature
+      signed <- processCommand connId cmd
+      tPut h ("", signed)
+
+    processCommand :: ConnId -> Cmd -> m Signed
+    processCommand connId cmd = do
+      st <- asks connStore
+      case cmd of
+        Cmd SRecipient (CREATE recipientKey) ->
+          either (mkSigned "" . ERROR) connResponce
+            <$> createConn st recipientKey
+        Cmd SRecipient SUB -> do
+          -- TODO message subscription
+          return ok
+        Cmd SRecipient (SECURE senderKey) -> do
+          mkSigned connId . either ERROR (const OK)
+            <$> secureConn st connId senderKey
+        Cmd SBroker _ -> return (connId, cmd)
+        Cmd _ _ -> return ok
+      where
+        ok :: Signed
+        ok = (connId, Cmd SBroker OK)
+
+        mkSigned :: ConnId -> Command 'Broker -> Signed
+        mkSigned cId command = (cId, Cmd SBroker command)
+
+        connResponce :: Connection -> Signed
+        connResponce Connection {recipientId = rId, senderId = sId} = mkSigned rId $ CONN rId sId

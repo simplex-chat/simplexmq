@@ -7,8 +7,6 @@ module ConnStore where
 import Data.Singletons
 import Transmission
 
-type SMPResult a = Either ErrorType a
-
 data Connection = Connection
   { recipientId :: ConnId,
     recipientKey :: PublicKey,
@@ -18,12 +16,12 @@ data Connection = Connection
   }
 
 class MonadConnStore s m where
-  createConn :: s -> RecipientKey -> m (SMPResult Connection)
-  getConn :: s -> Sing (a :: Party) -> ConnId -> m (SMPResult Connection)
+  createConn :: s -> RecipientKey -> m (Either ErrorType Connection)
+  getConn :: s -> Sing (a :: Party) -> ConnId -> m (Either ErrorType Connection)
+  secureConn :: s -> RecipientId -> SenderKey -> m (Either ErrorType ())
 
--- secureConn :: RecipientId -> SenderKey -> m (SMPResult ())
--- suspendConn :: RecipientId -> m (SMPResult ())
--- deleteConn :: RecipientId -> m (SMPResult ())
+-- suspendConn :: RecipientId -> m (Either ErrorType ())
+-- deleteConn :: RecipientId -> m (Either ErrorType ())
 
 newConnection :: RecipientKey -> Connection
 newConnection rKey =
