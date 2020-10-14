@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Server (runSMPServer) where
 
@@ -13,10 +14,8 @@ import ConnStore
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
-import qualified Data.ByteString.Char8 as B
 import Env.STM
 import Network.Socket
-import Text.Read
 import Transmission
 import Transport
 import UnliftIO.Async
@@ -44,59 +43,33 @@ runClient h = do
 
 receive :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 receive Client {handle, channel} = forever $ do
-  signature <- getLn handle
-  connId <- getLn handle
-  command <- getLn handle
-  cmdOrError <- parseReadVerifyTransmission handle signature connId command
-  atomically $ writeTChan channel cmdOrError
+  (signature, (connId, cmdOrError)) <- tGet fromClient handle
+  -- TODO maybe send Either to queue?
+  cmd <- either (return . (connId,) . Cmd SBroker . ERROR) (verifyTransmission handle signature connId) cmdOrError
+  atomically $ writeTChan channel cmd
 
-parseReadVerifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> String -> String -> String -> m SomeSigned
-parseReadVerifyTransmission h signature connId command = do
-  let cmd = case parseCommand command of
-        Right (Cmd SBroker _) -> syntaxError errNotAllowed
-        Right c -> c
-        Left e -> smpError e
+verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> Signature -> ConnId -> Cmd -> m SomeSigned
+verifyTransmission _h signature connId cmd = do
   cmd' <- case cmd of
-    Cmd SBroker _ -> return cmd
-    Cmd _ (CREATE _) -> signed False cmd errHasCredentials
-    Cmd _ (SEND msgBody) -> getSendMsgBody msgBody
-    Cmd _ _ -> verifyConnSignature cmd -- signed True cmd errNoCredentials
+    Cmd SBroker _ -> return . Cmd SBroker $ ERROR INTERNAL
+    Cmd SRecipient (CREATE _) -> return cmd
+    Cmd SSender (SEND _) -> return cmd -- TODO verify sender's signature for secured connections
+    Cmd _ _ -> verifyConnSignature cmd
   return (connId, cmd')
   where
-    signed :: Bool -> Cmd -> Int -> m Cmd
-    signed isSigned cmd errCode =
-      return
-        if isSigned == (signature /= "") && isSigned == (connId /= "")
-          then cmd
-          else syntaxError errCode
-    getSendMsgBody :: MsgBody -> m Cmd
-    getSendMsgBody msgBody =
-      if null connId
-        then return $ syntaxError errNoConnectionId
-        else case B.unpack msgBody of
-          ':' : body -> return . smpSend $ B.pack body
-          sizeStr -> case readMaybe sizeStr :: Maybe Int of
-            Just size -> do
-              body <- getBytes h size
-              s <- getLn h
-              return if null s then smpSend body else syntaxError errMessageBodySize
-            Nothing -> return $ syntaxError errMessageBody
     verifyConnSignature :: Cmd -> m Cmd
-    verifyConnSignature cmd@(Cmd party _) =
-      if null signature || null connId
-        then return $ syntaxError errNoCredentials
-        else do
-          store <- asks connStore
-          getConn store party connId >>= \case
-            Right Connection {recipientKey, senderKey} -> do
-              res <- case party of
-                SRecipient -> verifySignature recipientKey
-                SSender -> case senderKey of
-                  Just key -> verifySignature key
-                  Nothing -> return False
-                SBroker -> return False
-              if res then return cmd else return $ smpError AUTH
-            Left err -> return $ smpError err
+    verifyConnSignature c@(Cmd party _) = do
+      store <- asks connStore
+      getConn store party connId >>= \case
+        Right Connection {recipientKey, senderKey} -> do
+          res <- case party of
+            SRecipient -> verifySignature recipientKey
+            SSender -> case senderKey of
+              Just key -> verifySignature key
+              Nothing -> return False
+            SBroker -> return False
+          if res then return c else return $ smpError AUTH
+        Left err -> return $ smpError err
     verifySignature :: Encoded -> m Bool
     verifySignature key = return $ signature == key
 

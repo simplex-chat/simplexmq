@@ -40,7 +40,7 @@ tests:
 
 ghc-options:
   # - -haddock
-  # - -O2
+  - -O0
   - -Wall
   - -Wcompat
   - -Werror=incomplete-patterns

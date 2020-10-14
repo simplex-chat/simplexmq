@@ -34,6 +34,10 @@ type SomeSigned = (ConnId, Cmd)
 
 type Transmission = (Signature, SomeSigned)
 
+type SomeSigned' = (ConnId, Either ErrorType Cmd)
+
+type Transmission' = (Signature, SomeSigned')
+
 type RawTransmission = (String, String, String)
 
 data Command (a :: Party) where
@@ -51,6 +55,9 @@ data Command (a :: Party) where
 
 deriving instance Show (Command a)
 
+mkTransmission :: Signature -> ConnId -> Either ErrorType Cmd -> Transmission'
+mkTransmission signature connId cmd = (signature, (connId, cmd))
+
 parseCommand :: String -> Either ErrorType Cmd
 parseCommand command = case words command of
   ["CREATE", recipientKey] -> rCmd $ CREATE recipientKey
@@ -64,9 +71,9 @@ parseCommand command = case words command of
   ["CONN", rId, sId] -> bCmd $ CONN rId sId
   ["OK"] -> bCmd OK
   "ERROR" : err -> case err of
+    ["SYNTAX", errCode] -> maybe errParams (bCmd . ERROR . SYNTAX) $ readMaybe errCode
     ["AUTH"] -> bCmd $ ERROR AUTH
     ["INTERNAL"] -> bCmd $ ERROR INTERNAL
-    ["SYNTAX", errCode] -> maybe errParams (bCmd . ERROR . SYNTAX) $ readMaybe errCode
     _ -> errParams
   "CREATE" : _ -> errParams
   "SUB" : _ -> errParams
