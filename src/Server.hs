@@ -3,7 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -14,6 +14,7 @@ import ConnStore
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import Data.Singletons
 import Env.STM
 import Network.Socket
 import Transmission
@@ -54,28 +55,27 @@ receive Client {handle, channel} = forever $ do
 
 verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> Signature -> ConnId -> Cmd -> m Signed
 verifyTransmission _h signature connId cmd = do
-  cmd' <- case cmd of
-    Cmd SBroker _ -> return . Cmd SBroker $ ERROR INTERNAL
+  (connId,) <$> case cmd of
+    Cmd SBroker _ -> return $ smpErr INTERNAL
     Cmd SRecipient (CREATE _) -> return cmd
-    Cmd SSender (SEND _) -> return cmd -- TODO verify sender's signature for secured connections
-    Cmd _ _ -> verifyConnSignature cmd
-  return (connId, cmd')
+    Cmd SRecipient _ -> withConnection SRecipient $ verifySignature . recipientKey
+    Cmd SSender (SEND _) -> withConnection SSender $ verifySend . senderKey
   where
-    verifyConnSignature :: Cmd -> m Cmd
-    verifyConnSignature c@(Cmd party _) = do
+    smpErr e = Cmd SBroker $ ERROR e
+    authErr = smpErr AUTH
+    withConnection :: Sing (p :: Party) -> (Connection -> m Cmd) -> m Cmd
+    withConnection party f = do
       store <- asks connStore
-      getConn store party connId >>= \case
-        Right Connection {recipientKey, senderKey} -> do
-          res <- case party of
-            SRecipient -> verifySignature recipientKey
-            SSender -> case senderKey of
-              Just key -> verifySignature key
-              Nothing -> return False
-            SBroker -> return False
-          if res then return c else return . Cmd SBroker $ ERROR AUTH
-        Left err -> return . Cmd SBroker $ ERROR err
-    verifySignature :: Encoded -> m Bool
-    verifySignature key = return $ signature == key
+      conn <- getConn store party connId
+      either (return . smpErr) f conn
+    verifySend :: Maybe PublicKey -> m Cmd
+    verifySend =
+      if null signature
+        then return . maybe cmd (const authErr)
+        else maybe (return authErr) verifySignature
+    -- TODO stub
+    verifySignature :: PublicKey -> m Cmd
+    verifySignature key = return $ if signature == key then cmd else authErr
 
 client :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 client Client {handle, channel} = loop

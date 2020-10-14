@@ -21,8 +21,8 @@ main = hspec do
     noParamsSyntaxTest "SUSPEND"
     noParamsSyntaxTest "DELETE"
     describe "SEND" do
-      it "valid syntax 1" $ [("123", "1", "SEND :hello")] >#> [("", "1", "OK")]
-      it "valid syntax 2" $ [("123", "1", "SEND 11\nhello there\n")] >#> [("", "1", "OK")]
+      it "valid syntax 1" $ [("123", "1", "SEND :hello")] >#> [("", "1", "ERROR AUTH")]
+      it "valid syntax 2" $ [("123", "1", "SEND 11\nhello there\n")] >#> [("", "1", "ERROR AUTH")]
       it "no parameters" $ [("123", "1", "SEND")] >#> [("", "1", "ERROR SYNTAX 2")]
       it "many parameters" $ [("123", "1", "SEND 11 hello")] >#> [("", "1", "ERROR SYNTAX 2")]
       it "no connection ID" $ [("123", "", "SEND :hello")] >#> [("", "", "ERROR SYNTAX 5")]

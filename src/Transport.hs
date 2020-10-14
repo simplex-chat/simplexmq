@@ -103,7 +103,7 @@ tGet fromParty h = do
         if null connId
           then Left $ SYNTAX errNoConnectionId
           else Right cmd
-      -- other client commands must have both signature and connectio ID
+      -- other client commands must have both signature and connection ID
       _ ->
         if null signature || null connId
           then Left $ SYNTAX errNoCredentials
