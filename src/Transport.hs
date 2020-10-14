@@ -92,25 +92,21 @@ tGet fromParty h = do
       -- ERROR response does not always have connection ID
       Cmd SBroker (ERROR _) -> Right cmd
       -- other responses must have connection ID
-      Cmd SBroker _ ->
-        if null connId
-          then Left $ SYNTAX errNoConnectionId
-          else Right cmd
+      Cmd SBroker _
+        | null connId -> Left $ SYNTAX errNoConnectionId
+        | otherwise -> Right cmd
       -- CREATE must NOT have signature or connection ID
-      Cmd SRecipient (CREATE _) ->
-        if null signature && null connId
-          then Right cmd
-          else Left $ SYNTAX errHasCredentials
+      Cmd SRecipient (CREATE _)
+        | null signature && null connId -> Right cmd
+        | otherwise -> Left $ SYNTAX errHasCredentials
       -- SEND must have connection ID, signature is not always required
-      Cmd SSender (SEND _) ->
-        if null connId
-          then Left $ SYNTAX errNoConnectionId
-          else Right cmd
+      Cmd SSender (SEND _)
+        | null connId -> Left $ SYNTAX errNoConnectionId
+        | otherwise -> Right cmd
       -- other client commands must have both signature and connection ID
-      _ ->
-        if null signature || null connId
-          then Left $ SYNTAX errNoCredentials
-          else Right cmd
+      _
+        | null signature || null connId -> Left $ SYNTAX errNoCredentials
+        | otherwise -> Right cmd
 
     cmdWithMsgBody :: Cmd -> m (Either ErrorType Cmd)
     cmdWithMsgBody = \case

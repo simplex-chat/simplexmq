@@ -69,10 +69,9 @@ verifyTransmission signature connId cmd = do
       conn <- getConn store party connId
       either (return . smpErr) f conn
     verifySend :: Maybe PublicKey -> m Cmd
-    verifySend =
-      if null signature
-        then return . maybe cmd (const authErr)
-        else maybe (return authErr) verifySignature
+    verifySend
+      | null signature = return . maybe cmd (const authErr)
+      | otherwise = maybe (return authErr) verifySignature
     -- TODO stub
     verifySignature :: PublicKey -> m Cmd
     verifySignature key = return $ if signature == key then cmd else authErr
