@@ -10,12 +10,12 @@ import Transmission
 import Transport
 
 (>#>) :: [TestTransmission] -> [TestTransmission] -> Expectation
-commands >#> responses = smpServerTest2 commands `shouldReturn` responses
+commands >#> responses = smpServerTest commands `shouldReturn` responses
 
 main :: IO ()
 main = hspec do
   describe "SMP syntax" syntaxTests
-  fdescribe "SMP connections" connectionTests
+  describe "SMP connections" connectionTests
 
 pattern Resp :: ConnId -> Command 'Broker -> TransmissionOrError
 pattern Resp connId command = ("", (connId, Right (Cmd SBroker command)))
@@ -26,28 +26,36 @@ smpExpect result test = runSmpTest test `shouldReturn` result
 sendRecv :: Handle -> RawTransmission -> IO TransmissionOrError
 sendRecv h t = tPutRaw h t >> tGet fromServer h
 
+assert :: Bool -> IO ()
+assert True = return ()
+assert False = error "failed assertion"
+
 connectionTests :: SpecWith ()
 connectionTests = do
   it "CREATE and SECURE connection, SEND messages (no delivery yet)" $
     smpExpect True \h -> do
       Resp rId (CONN rId' sId) <- sendRecv h ("", "", "CREATE 123")
+      assert $ rId == rId'
       -- should allow unsigned
       Resp sId' OK <- sendRecv h ("", sId, "SEND :hello")
+      assert $ sId' == sId
       -- should not allow signed
       Resp sId'' (ERROR AUTH) <- sendRecv h ("456", sId, "SEND :hello")
+      assert $ sId'' == sId
       -- shoud not secure with wrong signature (password atm)
       Resp _ (ERROR AUTH) <- sendRecv h ("1234", rId, "SECURE 456")
       -- shoud not secure with sender's ID
       Resp _ (ERROR AUTH) <- sendRecv h ("123", sId, "SECURE 456")
       -- secure connection
       Resp rId'' OK <- sendRecv h ("123", rId, "SECURE 456")
-      -- should not secure if already secured
+      assert $ rId == rId''
+      -- should not allow SECURE if already secured
       Resp _ (ERROR AUTH) <- sendRecv h ("123", rId, "SECURE 456")
       -- should allow signed
       Resp _ OK <- sendRecv h ("456", sId, "SEND :hello")
       -- should not allow unsigned
       Resp _ (ERROR AUTH) <- sendRecv h ("", sId, "SEND :hello")
-      return $ rId == rId' && rId == rId'' && sId == sId' && sId == sId''
+      return True
 
 syntaxTests :: SpecWith ()
 syntaxTests = do
