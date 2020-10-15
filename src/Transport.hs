@@ -8,32 +8,56 @@
 module Transport where
 
 import Control.Monad.IO.Class
+import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import qualified Data.ByteString.Char8 as B
-import Env.STM
 import Network.Socket
 import System.IO
 import Text.Read
 import Transmission
+import UnliftIO.Concurrent
+import qualified UnliftIO.Exception as E
+import qualified UnliftIO.IO as IO
 
-startTCPServer :: (MonadReader Env m, MonadIO m) => m Socket
-startTCPServer = do
-  port <- asks tcpPort
-  liftIO . withSocketsDo $ do
-    let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-    addr <- head <$> getAddrInfo (Just hints) Nothing (Just port)
-    sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-    setSocketOption sock ReuseAddr 1
-    withFdSocket sock setCloseOnExecIfNeeded
-    bind sock $ addrAddress addr
-    listen sock 1024
-    return sock
+startTCPServer :: MonadIO m => ServiceName -> m Socket
+startTCPServer port = liftIO . withSocketsDo $ resolve >>= open
+  where
+    resolve = do
+      let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
+      head <$> getAddrInfo (Just hints) Nothing (Just port)
+    open addr = do
+      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
+      setSocketOption sock ReuseAddr 1
+      withFdSocket sock setCloseOnExecIfNeeded
+      bind sock $ addrAddress addr
+      listen sock 1024
+      return sock
+
+runTCPServer :: MonadUnliftIO m => ServiceName -> (Handle -> m ()) -> m ()
+runTCPServer port server =
+  E.bracket (startTCPServer port) (liftIO . close) $ \sock -> forever $ do
+    h <- acceptTCPConn sock
+    forkFinally (server h) (const $ IO.hClose h)
 
 acceptTCPConn :: MonadIO m => Socket -> m Handle
 acceptTCPConn sock = liftIO $ do
   (conn, _) <- accept sock
   -- putStrLn $ "Accepted connection from " ++ show peer
   getSocketHandle conn
+
+startTCPClient :: MonadIO m => HostName -> ServiceName -> m Handle
+startTCPClient host port = liftIO . withSocketsDo $ resolve >>= open
+  where
+    resolve = do
+      let hints = defaultHints {addrSocketType = Stream}
+      head <$> getAddrInfo (Just hints) (Just host) (Just port)
+    open addr = do
+      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
+      connect sock $ addrAddress addr
+      getSocketHandle sock
+
+runTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
+runTCPClient host port = E.bracket (startTCPClient host port) IO.hClose
 
 getSocketHandle :: MonadIO m => Socket -> m Handle
 getSocketHandle conn = liftIO $ do
@@ -104,7 +128,7 @@ tGet fromParty h = do
         | null connId -> Left $ SYNTAX errNoConnectionId
         | otherwise -> Right cmd
       -- other client commands must have both signature and connection ID
-      _
+      Cmd SRecipient _
         | null signature || null connId -> Left $ SYNTAX errNoCredentials
         | otherwise -> Right cmd
 

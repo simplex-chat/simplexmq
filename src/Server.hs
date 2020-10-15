@@ -21,25 +21,17 @@ import Numeric.Natural
 import Transmission
 import Transport
 import UnliftIO.Async
-import UnliftIO.Concurrent
-import qualified UnliftIO.Exception as E
 import UnliftIO.IO
 import UnliftIO.STM
 
 runSMPServer :: MonadUnliftIO m => ServiceName -> Natural -> m ()
 runSMPServer port queueSize = do
   env <- atomically $ newEnv port queueSize
-  runReaderT (runTCPServer runClient) env
-
-runTCPServer :: (MonadUnliftIO m, MonadReader Env m) => (Handle -> m ()) -> m ()
-runTCPServer server =
-  E.bracket startTCPServer (liftIO . close) $ \sock -> forever $ do
-    h <- acceptTCPConn sock
-    putLn h "Welcome to SMP"
-    forkFinally (server h) (const $ hClose h)
+  runReaderT (runTCPServer port runClient) env
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
+  putLn h "Welcome to SMP"
   q <- asks queueSize
   c <- atomically $ newClient q
   void $ race (client h c) (receive h c)
