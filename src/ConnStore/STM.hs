@@ -59,7 +59,7 @@ instance MonadUnliftIO m => MonadConnStore STMConnStore m where
 
   suspendConn :: STMConnStore -> RecipientId -> m (Either ErrorType ())
   suspendConn store rId = updateConnections store rId $ \db c ->
-    (Right (), db {connections = M.insert rId c {status = ConnSuspended} (connections db)})
+    (Right (), db {connections = M.insert rId c {status = ConnOff} (connections db)})
 
   deleteConn :: STMConnStore -> RecipientId -> m (Either ErrorType ())
   deleteConn store rId = updateConnections store rId $ \db c ->

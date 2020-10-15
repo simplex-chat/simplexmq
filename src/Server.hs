@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -35,14 +34,13 @@ runClient h = do
   putLn h "Welcome to SMP"
   q <- asks queueSize
   c <- atomically $ newClient q
-  void $ race3_ (send h c) (client c) (receive h c)
+  raceAny_ [send h c, client c, receive h c]
 
-race3_ :: MonadUnliftIO m => m a -> m a -> m a -> m ()
-race3_ m1 m2 m3 = void $
-  withAsync m1 $ \a1 ->
-    withAsync m2 $ \a2 ->
-      withAsync m3 $ \a3 ->
-        waitAnyCancel [a1, a2, a3]
+raceAny_ :: MonadUnliftIO m => [m a] -> m ()
+raceAny_ = r []
+  where
+    r as (m : ms) = withAsync m $ \a -> r (a : as) ms
+    r as [] = void $ waitAnyCancel as
 
 receive :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
 receive h Client {rcvQ} = forever $ do
@@ -100,7 +98,7 @@ client Client {rcvQ, sndQ} =
           -- TODO message subscription
           return ok
         Cmd SRecipient (KEY sKey) -> okResponse <$> secureConn st connId sKey
-        Cmd SRecipient HOLD -> okResponse <$> suspendConn st connId
+        Cmd SRecipient OFF -> okResponse <$> suspendConn st connId
         Cmd SRecipient DEL -> okResponse <$> deleteConn st connId
         Cmd SSender (SEND msgBody) -> do
           -- TODO message delivery
@@ -126,4 +124,4 @@ client Client {rcvQ, sndQ} =
         deliverTo :: MsgBody -> Connection -> Command 'Broker
         deliverTo _msgBody conn = case status conn of
           ConnActive -> OK
-          ConnSuspended -> ERR AUTH
+          ConnOff -> ERR AUTH

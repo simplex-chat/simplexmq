@@ -34,7 +34,7 @@ sendRecv h t = tPutRaw h t >> tGet fromServer h
 
 testCreateSecure :: SpecWith ()
 testCreateSecure = do
-  it "CONN and KEY connection, SEND messages (no delivery yet)" $
+  it "CONN and KEY commands, SEND messages (no delivery yet)" $
     smpTest \h -> do
       Resp rId (IDS rId1 sId) <- sendRecv h ("", "", "CONN 123")
       (rId1, rId) #== "creates connection"
@@ -68,7 +68,7 @@ testCreateSecure = do
 
 testCreateDelete :: SpecWith ()
 testCreateDelete = do
-  it "CONN, HOLD and DEL connection, SEND messages (no delivery yet)" $
+  it "CONN, OFF and DEL commands, SEND messages (no delivery yet)" $
     smpTest \h -> do
       Resp rId (IDS rId1 sId) <- sendRecv h ("", "", "CONN 123")
       (rId1, rId) #== "creates connection"
@@ -79,13 +79,13 @@ testCreateDelete = do
       Resp _ ok2 <- sendRecv h ("456", sId, "SEND :hello")
       (ok2, OK) #== "accepts signed SEND"
 
-      Resp _ err1 <- sendRecv h ("1234", rId, "HOLD")
-      (err1, ERR AUTH) #== "rejects HOLD with wrong signature (password atm)"
+      Resp _ err1 <- sendRecv h ("1234", rId, "OFF")
+      (err1, ERR AUTH) #== "rejects OFF with wrong signature (password atm)"
 
-      Resp _ err2 <- sendRecv h ("123", sId, "HOLD")
-      (err2, ERR AUTH) #== "rejects HOLD with sender's ID"
+      Resp _ err2 <- sendRecv h ("123", sId, "OFF")
+      (err2, ERR AUTH) #== "rejects OFF with sender's ID"
 
-      Resp rId2 ok3 <- sendRecv h ("123", rId, "HOLD")
+      Resp rId2 ok3 <- sendRecv h ("123", rId, "OFF")
       (ok3, OK) #== "suspends connection"
       (rId2, rId) #== "same connection ID in response 2"
 
@@ -95,8 +95,8 @@ testCreateDelete = do
       Resp _ err4 <- sendRecv h ("", sId, "SEND :hello")
       (err4, ERR AUTH) #== "reject unsigned SEND too"
 
-      Resp _ ok4 <- sendRecv h ("123", rId, "HOLD")
-      (ok4, OK) #== "accepts HOLD when suspended"
+      Resp _ ok4 <- sendRecv h ("123", rId, "OFF")
+      (ok4, OK) #== "accepts OFF when suspended"
 
       Resp _ ok5 <- sendRecv h ("123", rId, "SUB")
       (ok5, OK) #== "accepts SUB when suspended"
@@ -117,8 +117,8 @@ testCreateDelete = do
       Resp _ err8 <- sendRecv h ("", sId, "SEND :hello")
       (err8, ERR AUTH) #== "rejects unsigned SEND too when deleted"
 
-      Resp _ err9 <- sendRecv h ("123", rId, "HOLD")
-      (err9, ERR AUTH) #== "rejects HOLD when deleted"
+      Resp _ err9 <- sendRecv h ("123", rId, "OFF")
+      (err9, ERR AUTH) #== "rejects OFF when deleted"
 
       Resp _ err10 <- sendRecv h ("123", rId, "SUB")
       (err10, ERR AUTH) #== "rejects SUB when deleted"
@@ -139,7 +139,7 @@ syntaxTests = do
     it "no connection ID" $ [("123", "", "KEY 456")] >#> [("", "", "ERR SYNTAX 3")]
   noParamsSyntaxTest "SUB"
   noParamsSyntaxTest "ACK"
-  noParamsSyntaxTest "HOLD"
+  noParamsSyntaxTest "OFF"
   noParamsSyntaxTest "DEL"
   describe "SEND" do
     it "valid syntax 1" $ [("123", "1", "SEND :hello")] >#> [("", "1", "ERR AUTH")]

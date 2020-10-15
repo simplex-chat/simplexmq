@@ -43,7 +43,7 @@ data Command (a :: Party) where
   SUB :: Command Recipient
   KEY :: SenderKey -> Command Recipient
   ACK :: Command Recipient
-  HOLD :: Command Recipient
+  OFF :: Command Recipient
   DEL :: Command Recipient
   SEND :: MsgBody -> Command Sender
   MSG :: Timestamp -> MsgBody -> Command Broker
@@ -61,7 +61,7 @@ parseCommand command = case words command of
   ["SUB"] -> rCmd SUB
   ["KEY", senderKey] -> rCmd $ KEY senderKey
   ["ACK"] -> rCmd ACK
-  ["HOLD"] -> rCmd HOLD
+  ["OFF"] -> rCmd OFF
   ["DEL"] -> rCmd DEL
   ["SEND", msgBody] -> Right . Cmd SSender . SEND $ B.pack msgBody
   ["MSG", timestamp, msgBody] -> bCmd $ MSG timestamp (B.pack msgBody)
@@ -79,7 +79,7 @@ parseCommand command = case words command of
   "SUB" : _ -> errParams
   "KEY" : _ -> errParams
   "ACK" : _ -> errParams
-  "HOLD" : _ -> errParams
+  "OFF" : _ -> errParams
   "DEL" : _ -> errParams
   "SEND" : _ -> errParams
   "MSG" : _ -> errParams

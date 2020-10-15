@@ -15,7 +15,7 @@ data Connection = Connection
     status :: ConnStatus
   }
 
-data ConnStatus = ConnActive | ConnSuspended
+data ConnStatus = ConnActive | ConnOff
 
 class MonadConnStore s m where
   createConn :: s -> RecipientKey -> m (Either ErrorType Connection)
