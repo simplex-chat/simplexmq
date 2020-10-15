@@ -8,7 +8,7 @@ port :: ServiceName
 port = "5223"
 
 queuePerClient :: Natural
-queuePerClient = 100
+queuePerClient = 16
 
 main :: IO ()
 main = do

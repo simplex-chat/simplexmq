@@ -5,6 +5,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -34,18 +35,28 @@ runClient h = do
   putLn h "Welcome to SMP"
   q <- asks queueSize
   c <- atomically $ newClient q
-  void $ race (client h c) (receive h c)
+  void $ race3_ (send h c) (client c) (receive h c)
+
+race3_ :: MonadUnliftIO m => m a -> m a -> m a -> m ()
+race3_ m1 m2 m3 = void $
+  withAsync m1 $ \a1 ->
+    withAsync m2 $ \a2 ->
+      withAsync m3 $ \a3 ->
+        waitAnyCancel [a1, a2, a3]
 
 receive :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
-receive h Client {queue} = forever $ do
+receive h Client {rcvQ} = forever $ do
   (signature, (connId, cmdOrError)) <- tGet fromClient h
   -- TODO maybe send Either to queue?
-  cmd <-
-    either
-      (return . (connId,) . Cmd SBroker . ERR)
-      (verifyTransmission signature connId)
-      cmdOrError
-  atomically $ writeTBQueue queue cmd
+  signed <- case cmdOrError of
+    Left e -> return . (connId,) . Cmd SBroker $ ERR e
+    Right cmd -> verifyTransmission signature connId cmd
+  atomically $ writeTBQueue rcvQ signed
+
+send :: MonadUnliftIO m => Handle -> Client -> m ()
+send h Client {sndQ} = forever $ do
+  signed <- atomically $ readTBQueue sndQ
+  tPut h ("", signed)
 
 verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Signature -> ConnId -> Cmd -> m Signed
 verifyTransmission signature connId cmd = do
@@ -71,16 +82,15 @@ verifyTransmission signature connId cmd = do
     smpErr e = Cmd SBroker $ ERR e
     authErr = smpErr AUTH
 
-client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
-client h Client {queue} = loop
+client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
+client Client {rcvQ, sndQ} =
+  forever $
+    atomically (readTBQueue rcvQ)
+      >>= processCommand
+      >>= atomically . writeTBQueue sndQ
   where
-    loop = forever $ do
-      (connId, cmd) <- atomically $ readTBQueue queue
-      signed <- processCommand connId cmd
-      tPut h ("", signed)
-
-    processCommand :: ConnId -> Cmd -> m Signed
-    processCommand connId cmd = do
+    processCommand :: Signed -> m Signed
+    processCommand (connId, cmd) = do
       st <- asks connStore
       case cmd of
         Cmd SRecipient (CONN rKey) ->

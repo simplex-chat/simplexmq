@@ -25,7 +25,8 @@ data Server = Server
 
 data Client = Client
   { connections :: S.Set RecipientId,
-    queue :: TBQueue Signed
+    rcvQ :: TBQueue Signed,
+    sndQ :: TBQueue Signed
   }
 
 newServer :: STM (TVar Server)
@@ -33,8 +34,9 @@ newServer = newTVar $ Server {clients = S.empty, connections = M.empty}
 
 newClient :: Natural -> STM Client
 newClient qSize = do
-  c <- newTBQueue qSize
-  return Client {connections = S.empty, queue = c}
+  rcvQ <- newTBQueue qSize
+  sndQ <- newTBQueue qSize
+  return Client {connections = S.empty, rcvQ, sndQ}
 
 newEnv :: String -> Natural -> STM Env
 newEnv tcpPort queueSize = do
