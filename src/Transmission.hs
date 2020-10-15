@@ -53,6 +53,8 @@ data Command (a :: Party) where
 
 deriving instance Show (Command a)
 
+deriving instance Eq (Command a)
+
 parseCommand :: String -> Either ErrorType Cmd
 parseCommand command = case words command of
   ["CREATE", recipientKey] -> rCmd $ CREATE recipientKey
@@ -121,7 +123,7 @@ type Timestamp = Encoded
 
 type MsgBody = B.ByteString
 
-data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | AUTH | INTERNAL deriving (Show)
+data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | AUTH | INTERNAL deriving (Show, Eq)
 
 errBadParameters :: Int
 errBadParameters = 2

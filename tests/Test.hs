@@ -5,6 +5,7 @@
 
 import SMPClient
 import System.IO (Handle)
+import Test.HUnit
 import Test.Hspec
 import Transmission
 import Transport
@@ -15,47 +16,54 @@ commands >#> responses = smpServerTest commands `shouldReturn` responses
 main :: IO ()
 main = hspec do
   describe "SMP syntax" syntaxTests
-  describe "SMP connections" connectionTests
+  describe "SMP connections" do
+    createSecureSendTest
 
 pattern Resp :: ConnId -> Command 'Broker -> TransmissionOrError
 pattern Resp connId command = ("", (connId, Right (Cmd SBroker command)))
 
-smpExpect :: (Show a, Eq a) => a -> (Handle -> IO a) -> Expectation
-smpExpect result test = runSmpTest test `shouldReturn` result
+smpTest :: (Handle -> IO ()) -> Expectation
+smpTest test' = runSmpTest test' `shouldReturn` ()
 
 sendRecv :: Handle -> RawTransmission -> IO TransmissionOrError
 sendRecv h t = tPutRaw h t >> tGet fromServer h
 
-assert :: Bool -> IO ()
-assert True = return ()
-assert False = error "failed assertion"
+(#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion
+(actual, expected) #== message = assertEqual message expected actual
 
-connectionTests :: SpecWith ()
-connectionTests = do
+createSecureSendTest :: SpecWith ()
+createSecureSendTest = do
   it "CREATE and SECURE connection, SEND messages (no delivery yet)" $
-    smpExpect True \h -> do
-      Resp rId (CONN rId' sId) <- sendRecv h ("", "", "CREATE 123")
-      assert $ rId == rId'
-      -- should allow unsigned
-      Resp sId' OK <- sendRecv h ("", sId, "SEND :hello")
-      assert $ sId' == sId
-      -- should not allow signed
-      Resp sId'' (ERROR AUTH) <- sendRecv h ("456", sId, "SEND :hello")
-      assert $ sId'' == sId
-      -- shoud not secure with wrong signature (password atm)
-      Resp _ (ERROR AUTH) <- sendRecv h ("1234", rId, "SECURE 456")
-      -- shoud not secure with sender's ID
-      Resp _ (ERROR AUTH) <- sendRecv h ("123", sId, "SECURE 456")
-      -- secure connection
-      Resp rId'' OK <- sendRecv h ("123", rId, "SECURE 456")
-      assert $ rId == rId''
-      -- should not allow SECURE if already secured
-      Resp _ (ERROR AUTH) <- sendRecv h ("123", rId, "SECURE 456")
-      -- should allow signed
-      Resp _ OK <- sendRecv h ("456", sId, "SEND :hello")
-      -- should not allow unsigned
-      Resp _ (ERROR AUTH) <- sendRecv h ("", sId, "SEND :hello")
-      return True
+    smpTest \h -> do
+      Resp rId (CONN rId1 sId) <- sendRecv h ("", "", "CREATE 123")
+      (rId1, rId) #== "creates connection"
+
+      Resp sId1 ok1 <- sendRecv h ("", sId, "SEND :hello")
+      (ok1, OK) #== "accepts unsigned SEND"
+      (sId1, sId) #== "same connection ID in response 1"
+
+      Resp sId2 err1 <- sendRecv h ("456", sId, "SEND :hello")
+      (err1, ERROR AUTH) #== "rejects signed SEND"
+      (sId2, sId) #== "same connection ID in response 2"
+
+      Resp _ err2 <- sendRecv h ("1234", rId, "SECURE 456")
+      (err2, ERROR AUTH) #== "rejects SECURE with wrong signature (password atm)"
+
+      Resp _ err3 <- sendRecv h ("123", sId, "SECURE 456")
+      (err3, ERROR AUTH) #== "rejects SECURE with sender's ID"
+
+      Resp rId2 ok2 <- sendRecv h ("123", rId, "SECURE 456")
+      (ok2, OK) #== "secures connection"
+      (rId2, rId) #== "same connection ID in response 3"
+
+      Resp _ err4 <- sendRecv h ("123", rId, "SECURE 456")
+      (err4, ERROR AUTH) #== "rejects SECURE if already secured"
+
+      Resp _ ok3 <- sendRecv h ("456", sId, "SEND :hello")
+      (ok3, OK) #== "accepts signed SEND"
+
+      Resp _ err5 <- sendRecv h ("", sId, "SEND :hello")
+      (err5, ERROR AUTH) #== "accepts unsigned SEND"
 
 syntaxTests :: SpecWith ()
 syntaxTests = do

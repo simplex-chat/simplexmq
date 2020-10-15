@@ -37,6 +37,8 @@ tests:
     dependencies:
       - simplex-messaging
       - hspec == 2.7.*
+      - hspec-core == 2.7.*
+      - HUnit == 1.6.*
 
 ghc-options:
   # - -haddock
