@@ -152,5 +152,5 @@ tGet fromParty h = do
           Just size -> do
             body <- getBytes h size
             s <- getLn h
-            return if null s then Right body else Left $ SYNTAX errMessageBodySize
+            return if null s then Right body else Left SIZE
           Nothing -> return . Left $ SYNTAX errMessageBody

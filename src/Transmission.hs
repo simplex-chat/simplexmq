@@ -123,7 +123,7 @@ type Timestamp = Encoded
 
 type MsgBody = B.ByteString
 
-data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | AUTH | INTERNAL deriving (Show, Eq)
+data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL deriving (Show, Eq)
 
 errBadParameters :: Int
 errBadParameters = 2
@@ -139,6 +139,3 @@ errNoConnectionId = 5
 
 errMessageBody :: Int
 errMessageBody = 6
-
-errMessageBodySize :: Int
-errMessageBodySize = 7
