@@ -17,7 +17,8 @@ main :: IO ()
 main = hspec do
   describe "SMP syntax" syntaxTests
   describe "SMP connections" do
-    createSecureSendTest
+    testCreateSecure
+    testCreateDelete
 
 pattern Resp :: ConnId -> Command 'Broker -> TransmissionOrError
 pattern Resp connId command = ("", (connId, Right (Cmd SBroker command)))
@@ -31,8 +32,8 @@ sendRecv h t = tPutRaw h t >> tGet fromServer h
 (#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion
 (actual, expected) #== message = assertEqual message expected actual
 
-createSecureSendTest :: SpecWith ()
-createSecureSendTest = do
+testCreateSecure :: SpecWith ()
+testCreateSecure = do
   it "CREATE and SECURE connection, SEND messages (no delivery yet)" $
     smpTest \h -> do
       Resp rId (CONN rId1 sId) <- sendRecv h ("", "", "CREATE 123")
@@ -63,7 +64,64 @@ createSecureSendTest = do
       (ok3, OK) #== "accepts signed SEND"
 
       Resp _ err5 <- sendRecv h ("", sId, "SEND :hello")
-      (err5, ERROR AUTH) #== "accepts unsigned SEND"
+      (err5, ERROR AUTH) #== "rejects unsigned SEND"
+
+testCreateDelete :: SpecWith ()
+testCreateDelete = do
+  it "CREATE, SUSPEND and DELETE connection, SEND messages (no delivery yet)" $
+    smpTest \h -> do
+      Resp rId (CONN rId1 sId) <- sendRecv h ("", "", "CREATE 123")
+      (rId1, rId) #== "creates connection"
+
+      Resp _ ok1 <- sendRecv h ("123", rId, "SECURE 456")
+      (ok1, OK) #== "secures connection"
+
+      Resp _ ok2 <- sendRecv h ("456", sId, "SEND :hello")
+      (ok2, OK) #== "accepts signed SEND"
+
+      Resp _ err1 <- sendRecv h ("1234", rId, "SUSPEND")
+      (err1, ERROR AUTH) #== "rejects SUSPEND with wrong signature (password atm)"
+
+      Resp _ err2 <- sendRecv h ("123", sId, "SUSPEND")
+      (err2, ERROR AUTH) #== "rejects SUSPEND with sender's ID"
+
+      Resp rId2 ok3 <- sendRecv h ("123", rId, "SUSPEND")
+      (ok3, OK) #== "suspends connection"
+      (rId2, rId) #== "same connection ID in response 2"
+
+      Resp _ err3 <- sendRecv h ("456", sId, "SEND :hello")
+      (err3, ERROR AUTH) #== "rejects signed SEND"
+
+      Resp _ err4 <- sendRecv h ("", sId, "SEND :hello")
+      (err4, ERROR AUTH) #== "reject unsigned SEND too"
+
+      Resp _ ok4 <- sendRecv h ("123", rId, "SUSPEND")
+      (ok4, OK) #== "accepts SUSPEND when suspended"
+
+      Resp _ ok5 <- sendRecv h ("123", rId, "SUB")
+      (ok5, OK) #== "accepts SUB when suspended"
+
+      Resp _ err5 <- sendRecv h ("1234", rId, "DELETE")
+      (err5, ERROR AUTH) #== "rejects DELETE with wrong signature (password atm)"
+
+      Resp _ err6 <- sendRecv h ("123", sId, "DELETE")
+      (err6, ERROR AUTH) #== "rejects DELETE with sender's ID"
+
+      Resp rId3 ok6 <- sendRecv h ("123", rId, "DELETE")
+      (ok6, OK) #== "deletes connection"
+      (rId3, rId) #== "same connection ID in response 3"
+
+      Resp _ err7 <- sendRecv h ("456", sId, "SEND :hello")
+      (err7, ERROR AUTH) #== "rejects signed SEND when deleted"
+
+      Resp _ err8 <- sendRecv h ("", sId, "SEND :hello")
+      (err8, ERROR AUTH) #== "rejects unsigned SEND too when deleted"
+
+      Resp _ err9 <- sendRecv h ("123", rId, "SUSPEND")
+      (err9, ERROR AUTH) #== "rejects SUSPEND when deleted"
+
+      Resp _ err10 <- sendRecv h ("123", rId, "SUB")
+      (err10, ERROR AUTH) #== "rejects SUB when deleted"
 
 syntaxTests :: SpecWith ()
 syntaxTests = do

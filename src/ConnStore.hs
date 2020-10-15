@@ -12,17 +12,19 @@ data Connection = Connection
     recipientKey :: PublicKey,
     senderId :: ConnId,
     senderKey :: Maybe PublicKey,
-    active :: Bool
+    status :: ConnStatus
   }
+
+data ConnStatus = ConnActive | ConnSuspended
 
 class MonadConnStore s m where
   createConn :: s -> RecipientKey -> m (Either ErrorType Connection)
   getConn :: s -> Sing (a :: Party) -> ConnId -> m (Either ErrorType Connection)
   secureConn :: s -> RecipientId -> SenderKey -> m (Either ErrorType ())
+  suspendConn :: s -> RecipientId -> m (Either ErrorType ())
+  deleteConn :: s -> RecipientId -> m (Either ErrorType ())
 
--- suspendConn :: RecipientId -> m (Either ErrorType ())
--- deleteConn :: RecipientId -> m (Either ErrorType ())
-
+-- TODO stub
 newConnection :: RecipientKey -> Connection
 newConnection rKey =
   Connection
@@ -30,5 +32,5 @@ newConnection rKey =
       recipientKey = rKey,
       senderId = "2",
       senderKey = Nothing,
-      active = True
+      status = ConnActive
     }

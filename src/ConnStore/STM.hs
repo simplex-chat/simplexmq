@@ -1,6 +1,8 @@
-{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,6 +14,7 @@ import ConnStore
 import Control.Monad.IO.Unlift
 import Data.Map (Map)
 import qualified Data.Map as M
+import Data.Singletons
 import Transmission
 import UnliftIO.STM
 
@@ -26,38 +29,62 @@ newConnStore :: STM STMConnStore
 newConnStore = newTVar ConnStoreData {connections = M.empty, senders = M.empty}
 
 instance MonadUnliftIO m => MonadConnStore STMConnStore m where
-  createConn store rKey = atomically do
+  createConn :: STMConnStore -> RecipientKey -> m (Either ErrorType Connection)
+  createConn store rKey = atomically $ do
     db <- readTVar store
     let c@Connection {recipientId = rId, senderId = sId} = newConnection rKey
         db' =
-          ConnStoreData
+          db
             { connections = M.insert rId c (connections db),
               senders = M.insert sId rId (senders db)
             }
     writeTVar store db'
     return $ Right c
 
-  -- TODO do not return suspended connections
-  getConn store SRecipient rId = atomically do
+  getConn :: STMConnStore -> Sing (p :: Party) -> ConnId -> m (Either ErrorType Connection)
+  getConn store SRecipient rId = atomically $ do
     db <- readTVar store
     return $ getRcpConn db rId
-  getConn store SSender sId = atomically do
+  getConn store SSender sId = atomically $ do
     db <- readTVar store
-    return $ maybe (Left AUTH) (getRcpConn db) $ M.lookup sId $ senders db
-  getConn _ SBroker _ = atomically do
+    let rId = M.lookup sId $ senders db
+    return $ maybe (Left AUTH) (getRcpConn db) rId
+  getConn _ SBroker _ =
     return $ Left INTERNAL
 
-  secureConn store rId sKey = atomically do
-    db <- readTVar store
-    let conn = getRcpConn db rId
-    either (return . Left) (updateConn db) conn
-    where
-      updateConn db c = case senderKey c of
-        Just _ -> return $ Left AUTH
-        Nothing -> do
-          let db' = db {connections = M.insert rId c {senderKey = Just sKey} (connections db)}
-          writeTVar store db'
-          return $ Right ()
+  secureConn store rId sKey = updateConnections store rId $ \db c ->
+    case senderKey c of
+      Just _ -> (Left AUTH, db)
+      _ -> (Right (), db {connections = M.insert rId c {senderKey = Just sKey} (connections db)})
+
+  suspendConn :: STMConnStore -> RecipientId -> m (Either ErrorType ())
+  suspendConn store rId = updateConnections store rId $ \db c ->
+    (Right (), db {connections = M.insert rId c {status = ConnSuspended} (connections db)})
+
+  deleteConn :: STMConnStore -> RecipientId -> m (Either ErrorType ())
+  deleteConn store rId = updateConnections store rId $ \db c ->
+    ( Right (),
+      db
+        { connections = M.delete rId (connections db),
+          senders = M.delete (senderId c) (senders db)
+        }
+    )
+
+updateConnections ::
+  MonadUnliftIO m =>
+  STMConnStore ->
+  RecipientId ->
+  (ConnStoreData -> Connection -> (Either ErrorType (), ConnStoreData)) ->
+  m (Either ErrorType ())
+updateConnections store rId update = atomically $ do
+  db <- readTVar store
+  let conn = getRcpConn db rId
+  either (return . Left) (_update db) conn
+  where
+    _update db c = do
+      let (res, db') = update db c
+      writeTVar store db'
+      return res
 
 getRcpConn :: ConnStoreData -> RecipientId -> Either ErrorType Connection
 getRcpConn db rId = maybe (Left AUTH) Right . M.lookup rId $ connections db

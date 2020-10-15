@@ -83,15 +83,19 @@ client h Client {queue} = loop
     processCommand connId cmd = do
       st <- asks connStore
       case cmd of
-        Cmd SRecipient (CREATE recipientKey) ->
+        Cmd SRecipient (CREATE rKey) ->
           either (mkSigned "" . ERROR) connResponce
-            <$> createConn st recipientKey
+            <$> createConn st rKey
         Cmd SRecipient SUB -> do
           -- TODO message subscription
           return ok
-        Cmd SRecipient (SECURE senderKey) -> do
-          mkSigned connId . either ERROR (const OK)
-            <$> secureConn st connId senderKey
+        Cmd SRecipient (SECURE sKey) -> okResponse <$> secureConn st connId sKey
+        Cmd SRecipient SUSPEND -> okResponse <$> suspendConn st connId
+        Cmd SRecipient DELETE -> okResponse <$> deleteConn st connId
+        Cmd SSender (SEND msgBody) -> do
+          -- TODO message delivery
+          mkSigned connId . either ERROR (deliverTo msgBody)
+            <$> getConn st SSender connId
         Cmd SBroker _ -> return (connId, cmd)
         Cmd _ _ -> return ok
       where
@@ -103,3 +107,12 @@ client h Client {queue} = loop
 
         connResponce :: Connection -> Signed
         connResponce Connection {recipientId = rId, senderId = sId} = mkSigned rId $ CONN rId sId
+
+        okResponse :: Either ErrorType () -> Signed
+        okResponse = mkSigned connId . either ERROR (const OK)
+
+        -- TODO stub
+        deliverTo :: MsgBody -> Connection -> Command 'Broker
+        deliverTo _msgBody conn = case status conn of
+          ConnActive -> OK
+          ConnSuspended -> ERROR AUTH
