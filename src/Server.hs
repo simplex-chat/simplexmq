@@ -42,7 +42,7 @@ receive h Client {queue} = forever $ do
   -- TODO maybe send Either to queue?
   cmd <-
     either
-      (return . (connId,) . Cmd SBroker . ERROR)
+      (return . (connId,) . Cmd SBroker . ERR)
       (verifyTransmission signature connId)
       cmdOrError
   atomically $ writeTBQueue queue cmd
@@ -51,7 +51,7 @@ verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Signatur
 verifyTransmission signature connId cmd = do
   (connId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
-    Cmd SRecipient (CREATE _) -> return cmd
+    Cmd SRecipient (CONN _) -> return cmd
     Cmd SRecipient _ -> withConnection SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> withConnection SSender $ verifySend . senderKey
   where
@@ -68,7 +68,7 @@ verifyTransmission signature connId cmd = do
     verifySignature :: PublicKey -> m Cmd
     verifySignature key = return $ if signature == key then cmd else authErr
 
-    smpErr e = Cmd SBroker $ ERROR e
+    smpErr e = Cmd SBroker $ ERR e
     authErr = smpErr AUTH
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
@@ -83,18 +83,18 @@ client h Client {queue} = loop
     processCommand connId cmd = do
       st <- asks connStore
       case cmd of
-        Cmd SRecipient (CREATE rKey) ->
-          either (mkSigned "" . ERROR) connResponce
+        Cmd SRecipient (CONN rKey) ->
+          either (mkSigned "" . ERR) idsResponce
             <$> createConn st rKey
         Cmd SRecipient SUB -> do
           -- TODO message subscription
           return ok
-        Cmd SRecipient (SECURE sKey) -> okResponse <$> secureConn st connId sKey
-        Cmd SRecipient SUSPEND -> okResponse <$> suspendConn st connId
-        Cmd SRecipient DELETE -> okResponse <$> deleteConn st connId
+        Cmd SRecipient (KEY sKey) -> okResponse <$> secureConn st connId sKey
+        Cmd SRecipient HOLD -> okResponse <$> suspendConn st connId
+        Cmd SRecipient DEL -> okResponse <$> deleteConn st connId
         Cmd SSender (SEND msgBody) -> do
           -- TODO message delivery
-          mkSigned connId . either ERROR (deliverTo msgBody)
+          mkSigned connId . either ERR (deliverTo msgBody)
             <$> getConn st SSender connId
         Cmd SBroker _ -> return (connId, cmd)
         Cmd _ _ -> return ok
@@ -105,14 +105,15 @@ client h Client {queue} = loop
         mkSigned :: ConnId -> Command 'Broker -> Signed
         mkSigned cId command = (cId, Cmd SBroker command)
 
-        connResponce :: Connection -> Signed
-        connResponce Connection {recipientId = rId, senderId = sId} = mkSigned rId $ CONN rId sId
+        idsResponce :: Connection -> Signed
+        idsResponce Connection {recipientId, senderId} =
+          mkSigned recipientId $ IDS recipientId senderId
 
         okResponse :: Either ErrorType () -> Signed
-        okResponse = mkSigned connId . either ERROR (const OK)
+        okResponse = mkSigned connId . either ERR (const OK)
 
         -- TODO stub
         deliverTo :: MsgBody -> Connection -> Command 'Broker
         deliverTo _msgBody conn = case status conn of
           ConnActive -> OK
-          ConnSuspended -> ERROR AUTH
+          ConnSuspended -> ERR AUTH

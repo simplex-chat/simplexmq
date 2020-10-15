@@ -34,9 +34,9 @@ sendRecv h t = tPutRaw h t >> tGet fromServer h
 
 testCreateSecure :: SpecWith ()
 testCreateSecure = do
-  it "CREATE and SECURE connection, SEND messages (no delivery yet)" $
+  it "CONN and KEY connection, SEND messages (no delivery yet)" $
     smpTest \h -> do
-      Resp rId (CONN rId1 sId) <- sendRecv h ("", "", "CREATE 123")
+      Resp rId (IDS rId1 sId) <- sendRecv h ("", "", "CONN 123")
       (rId1, rId) #== "creates connection"
 
       Resp sId1 ok1 <- sendRecv h ("", sId, "SEND :hello")
@@ -44,120 +44,117 @@ testCreateSecure = do
       (sId1, sId) #== "same connection ID in response 1"
 
       Resp sId2 err1 <- sendRecv h ("456", sId, "SEND :hello")
-      (err1, ERROR AUTH) #== "rejects signed SEND"
+      (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same connection ID in response 2"
 
-      Resp _ err2 <- sendRecv h ("1234", rId, "SECURE 456")
-      (err2, ERROR AUTH) #== "rejects SECURE with wrong signature (password atm)"
+      Resp _ err2 <- sendRecv h ("1234", rId, "KEY 456")
+      (err2, ERR AUTH) #== "rejects KEY with wrong signature (password atm)"
 
-      Resp _ err3 <- sendRecv h ("123", sId, "SECURE 456")
-      (err3, ERROR AUTH) #== "rejects SECURE with sender's ID"
+      Resp _ err3 <- sendRecv h ("123", sId, "KEY 456")
+      (err3, ERR AUTH) #== "rejects KEY with sender's ID"
 
-      Resp rId2 ok2 <- sendRecv h ("123", rId, "SECURE 456")
+      Resp rId2 ok2 <- sendRecv h ("123", rId, "KEY 456")
       (ok2, OK) #== "secures connection"
       (rId2, rId) #== "same connection ID in response 3"
 
-      Resp _ err4 <- sendRecv h ("123", rId, "SECURE 456")
-      (err4, ERROR AUTH) #== "rejects SECURE if already secured"
+      Resp _ err4 <- sendRecv h ("123", rId, "KEY 456")
+      (err4, ERR AUTH) #== "rejects KEY if already secured"
 
       Resp _ ok3 <- sendRecv h ("456", sId, "SEND :hello")
       (ok3, OK) #== "accepts signed SEND"
 
       Resp _ err5 <- sendRecv h ("", sId, "SEND :hello")
-      (err5, ERROR AUTH) #== "rejects unsigned SEND"
+      (err5, ERR AUTH) #== "rejects unsigned SEND"
 
 testCreateDelete :: SpecWith ()
 testCreateDelete = do
-  it "CREATE, SUSPEND and DELETE connection, SEND messages (no delivery yet)" $
+  it "CONN, HOLD and DEL connection, SEND messages (no delivery yet)" $
     smpTest \h -> do
-      Resp rId (CONN rId1 sId) <- sendRecv h ("", "", "CREATE 123")
+      Resp rId (IDS rId1 sId) <- sendRecv h ("", "", "CONN 123")
       (rId1, rId) #== "creates connection"
 
-      Resp _ ok1 <- sendRecv h ("123", rId, "SECURE 456")
+      Resp _ ok1 <- sendRecv h ("123", rId, "KEY 456")
       (ok1, OK) #== "secures connection"
 
       Resp _ ok2 <- sendRecv h ("456", sId, "SEND :hello")
       (ok2, OK) #== "accepts signed SEND"
 
-      Resp _ err1 <- sendRecv h ("1234", rId, "SUSPEND")
-      (err1, ERROR AUTH) #== "rejects SUSPEND with wrong signature (password atm)"
+      Resp _ err1 <- sendRecv h ("1234", rId, "HOLD")
+      (err1, ERR AUTH) #== "rejects HOLD with wrong signature (password atm)"
 
-      Resp _ err2 <- sendRecv h ("123", sId, "SUSPEND")
-      (err2, ERROR AUTH) #== "rejects SUSPEND with sender's ID"
+      Resp _ err2 <- sendRecv h ("123", sId, "HOLD")
+      (err2, ERR AUTH) #== "rejects HOLD with sender's ID"
 
-      Resp rId2 ok3 <- sendRecv h ("123", rId, "SUSPEND")
+      Resp rId2 ok3 <- sendRecv h ("123", rId, "HOLD")
       (ok3, OK) #== "suspends connection"
       (rId2, rId) #== "same connection ID in response 2"
 
       Resp _ err3 <- sendRecv h ("456", sId, "SEND :hello")
-      (err3, ERROR AUTH) #== "rejects signed SEND"
+      (err3, ERR AUTH) #== "rejects signed SEND"
 
       Resp _ err4 <- sendRecv h ("", sId, "SEND :hello")
-      (err4, ERROR AUTH) #== "reject unsigned SEND too"
+      (err4, ERR AUTH) #== "reject unsigned SEND too"
 
-      Resp _ ok4 <- sendRecv h ("123", rId, "SUSPEND")
-      (ok4, OK) #== "accepts SUSPEND when suspended"
+      Resp _ ok4 <- sendRecv h ("123", rId, "HOLD")
+      (ok4, OK) #== "accepts HOLD when suspended"
 
       Resp _ ok5 <- sendRecv h ("123", rId, "SUB")
       (ok5, OK) #== "accepts SUB when suspended"
 
-      Resp _ err5 <- sendRecv h ("1234", rId, "DELETE")
-      (err5, ERROR AUTH) #== "rejects DELETE with wrong signature (password atm)"
+      Resp _ err5 <- sendRecv h ("1234", rId, "DEL")
+      (err5, ERR AUTH) #== "rejects DEL with wrong signature (password atm)"
 
-      Resp _ err6 <- sendRecv h ("123", sId, "DELETE")
-      (err6, ERROR AUTH) #== "rejects DELETE with sender's ID"
+      Resp _ err6 <- sendRecv h ("123", sId, "DEL")
+      (err6, ERR AUTH) #== "rejects DEL with sender's ID"
 
-      Resp rId3 ok6 <- sendRecv h ("123", rId, "DELETE")
+      Resp rId3 ok6 <- sendRecv h ("123", rId, "DEL")
       (ok6, OK) #== "deletes connection"
       (rId3, rId) #== "same connection ID in response 3"
 
       Resp _ err7 <- sendRecv h ("456", sId, "SEND :hello")
-      (err7, ERROR AUTH) #== "rejects signed SEND when deleted"
+      (err7, ERR AUTH) #== "rejects signed SEND when deleted"
 
       Resp _ err8 <- sendRecv h ("", sId, "SEND :hello")
-      (err8, ERROR AUTH) #== "rejects unsigned SEND too when deleted"
+      (err8, ERR AUTH) #== "rejects unsigned SEND too when deleted"
 
-      Resp _ err9 <- sendRecv h ("123", rId, "SUSPEND")
-      (err9, ERROR AUTH) #== "rejects SUSPEND when deleted"
+      Resp _ err9 <- sendRecv h ("123", rId, "HOLD")
+      (err9, ERR AUTH) #== "rejects HOLD when deleted"
 
       Resp _ err10 <- sendRecv h ("123", rId, "SUB")
-      (err10, ERROR AUTH) #== "rejects SUB when deleted"
+      (err10, ERR AUTH) #== "rejects SUB when deleted"
 
 syntaxTests :: SpecWith ()
 syntaxTests = do
-  it "unknown command" $ [("", "123", "HELLO")] >#> [("", "123", "ERROR UNKNOWN")]
-  describe "CREATE" do
-    it "no parameters" $ [("", "", "CREATE")] >#> [("", "", "ERROR SYNTAX 2")]
-    it "many parameters" $ [("", "", "CREATE 1 2")] >#> [("", "", "ERROR SYNTAX 2")]
-    it "has signature" $ [("123", "", "CREATE 123")] >#> [("", "", "ERROR SYNTAX 4")]
-    it "connection ID" $ [("", "1", "CREATE 123")] >#> [("", "1", "ERROR SYNTAX 4")]
+  it "unknown command" $ [("", "123", "HELLO")] >#> [("", "123", "ERR UNKNOWN")]
+  describe "CONN" do
+    it "no parameters" $ [("", "", "CONN")] >#> [("", "", "ERR SYNTAX 2")]
+    it "many parameters" $ [("", "", "CONN 1 2")] >#> [("", "", "ERR SYNTAX 2")]
+    it "has signature" $ [("123", "", "CONN 123")] >#> [("", "", "ERR SYNTAX 4")]
+    it "connection ID" $ [("", "1", "CONN 123")] >#> [("", "1", "ERR SYNTAX 4")]
+  describe "KEY" do
+    it "valid syntax" $ [("123", "1", "KEY 456")] >#> [("", "1", "ERR AUTH")]
+    it "no parameters" $ [("123", "1", "KEY")] >#> [("", "1", "ERR SYNTAX 2")]
+    it "many parameters" $ [("123", "1", "KEY 1 2")] >#> [("", "1", "ERR SYNTAX 2")]
+    it "no signature" $ [("", "1", "KEY 456")] >#> [("", "1", "ERR SYNTAX 3")]
+    it "no connection ID" $ [("123", "", "KEY 456")] >#> [("", "", "ERR SYNTAX 3")]
   noParamsSyntaxTest "SUB"
-  oneParamSyntaxTest "SECURE"
-  oneParamSyntaxTest "DELMSG"
-  noParamsSyntaxTest "SUSPEND"
-  noParamsSyntaxTest "DELETE"
+  noParamsSyntaxTest "ACK"
+  noParamsSyntaxTest "HOLD"
+  noParamsSyntaxTest "DEL"
   describe "SEND" do
-    it "valid syntax 1" $ [("123", "1", "SEND :hello")] >#> [("", "1", "ERROR AUTH")]
-    it "valid syntax 2" $ [("123", "1", "SEND 11\nhello there\n")] >#> [("", "1", "ERROR AUTH")]
-    it "no parameters" $ [("123", "1", "SEND")] >#> [("", "1", "ERROR SYNTAX 2")]
-    it "many parameters" $ [("123", "1", "SEND 11 hello")] >#> [("", "1", "ERROR SYNTAX 2")]
-    it "no connection ID" $ [("123", "", "SEND :hello")] >#> [("", "", "ERROR SYNTAX 5")]
-    it "bad message body" $ [("123", "1", "SEND hello")] >#> [("", "1", "ERROR SYNTAX 6")]
-    it "bigger body" $ [("123", "1", "SEND 4\nhello\n")] >#> [("", "1", "ERROR SIZE")]
+    it "valid syntax 1" $ [("123", "1", "SEND :hello")] >#> [("", "1", "ERR AUTH")]
+    it "valid syntax 2" $ [("123", "1", "SEND 11\nhello there\n")] >#> [("", "1", "ERR AUTH")]
+    it "no parameters" $ [("123", "1", "SEND")] >#> [("", "1", "ERR SYNTAX 2")]
+    it "many parameters" $ [("123", "1", "SEND 11 hello")] >#> [("", "1", "ERR SYNTAX 2")]
+    it "no connection ID" $ [("123", "", "SEND :hello")] >#> [("", "", "ERR SYNTAX 5")]
+    it "bad message body" $ [("123", "1", "SEND hello")] >#> [("", "1", "ERR SYNTAX 6")]
+    it "bigger body" $ [("123", "1", "SEND 4\nhello\n")] >#> [("", "1", "ERR SIZE")]
   describe "broker response not allowed" do
-    it "OK" $ [("123", "1", "OK")] >#> [("", "1", "ERROR PROHIBITED")]
+    it "OK" $ [("123", "1", "OK")] >#> [("", "1", "ERR PROHIBITED")]
   where
     noParamsSyntaxTest :: String -> SpecWith ()
     noParamsSyntaxTest cmd = describe cmd do
-      it "valid syntax" $ [("123", "1", cmd)] >#> [("", "1", "ERROR AUTH")]
-      it "parameters" $ [("123", "1", cmd ++ " 1")] >#> [("", "1", "ERROR SYNTAX 2")]
-      it "no signature" $ [("", "1", cmd)] >#> [("", "1", "ERROR SYNTAX 3")]
-      it "no connection ID" $ [("123", "", cmd)] >#> [("", "", "ERROR SYNTAX 3")]
-
-    oneParamSyntaxTest :: String -> SpecWith ()
-    oneParamSyntaxTest cmd = describe cmd do
-      it "valid syntax" $ [("123", "1", cmd ++ " 456")] >#> [("", "1", "ERROR AUTH")]
-      it "no parameters" $ [("123", "1", cmd)] >#> [("", "1", "ERROR SYNTAX 2")]
-      it "many parameters" $ [("123", "1", cmd ++ " 1 2")] >#> [("", "1", "ERROR SYNTAX 2")]
-      it "no signature" $ [("", "1", cmd ++ " 456")] >#> [("", "1", "ERROR SYNTAX 3")]
-      it "no connection ID" $ [("123", "", cmd ++ " 456")] >#> [("", "", "ERROR SYNTAX 3")]
+      it "valid syntax" $ [("123", "1", cmd)] >#> [("", "1", "ERR AUTH")]
+      it "parameters" $ [("123", "1", cmd ++ " 1")] >#> [("", "1", "ERR SYNTAX 2")]
+      it "no signature" $ [("", "1", cmd)] >#> [("", "1", "ERR SYNTAX 3")]
+      it "no connection ID" $ [("123", "", cmd)] >#> [("", "", "ERR SYNTAX 3")]

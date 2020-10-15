@@ -114,13 +114,13 @@ tGet fromParty h = do
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, connId, _) cmd = case cmd of
       -- ERROR response does not always have connection ID
-      Cmd SBroker (ERROR _) -> Right cmd
+      Cmd SBroker (ERR _) -> Right cmd
       -- other responses must have connection ID
       Cmd SBroker _
         | null connId -> Left $ SYNTAX errNoConnectionId
         | otherwise -> Right cmd
       -- CREATE must NOT have signature or connection ID
-      Cmd SRecipient (CREATE _)
+      Cmd SRecipient (CONN _)
         | null signature && null connId -> Right cmd
         | otherwise -> Left $ SYNTAX errHasCredentials
       -- SEND must have connection ID, signature is not always required
@@ -136,8 +136,8 @@ tGet fromParty h = do
     cmdWithMsgBody = \case
       Cmd SSender (SEND body) ->
         Cmd SSender . SEND <$$> getMsgBody body
-      Cmd SBroker (MSG msgId ts body) ->
-        Cmd SBroker . MSG msgId ts <$$> getMsgBody body
+      Cmd SBroker (MSG ts body) ->
+        Cmd SBroker . MSG ts <$$> getMsgBody body
       cmd -> return $ Right cmd
 
     infixl 4 <$$>

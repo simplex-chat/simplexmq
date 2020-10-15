@@ -39,17 +39,17 @@ type TransmissionOrError = (Signature, SignedOrError)
 type RawTransmission = (String, String, String)
 
 data Command (a :: Party) where
-  CREATE :: RecipientKey -> Command Recipient
-  SECURE :: SenderKey -> Command Recipient
-  DELMSG :: MsgId -> Command Recipient
+  CONN :: RecipientKey -> Command Recipient
   SUB :: Command Recipient
-  SUSPEND :: Command Recipient
-  DELETE :: Command Recipient
+  KEY :: SenderKey -> Command Recipient
+  ACK :: Command Recipient
+  HOLD :: Command Recipient
+  DEL :: Command Recipient
   SEND :: MsgBody -> Command Sender
-  MSG :: MsgId -> Timestamp -> MsgBody -> Command Broker
-  CONN :: SenderId -> RecipientId -> Command Broker
-  ERROR :: ErrorType -> Command Broker
+  MSG :: Timestamp -> MsgBody -> Command Broker
+  IDS :: RecipientId -> SenderId -> Command Broker
   OK :: Command Broker
+  ERR :: ErrorType -> Command Broker
 
 deriving instance Show (Command a)
 
@@ -57,48 +57,51 @@ deriving instance Eq (Command a)
 
 parseCommand :: String -> Either ErrorType Cmd
 parseCommand command = case words command of
-  ["CREATE", recipientKey] -> rCmd $ CREATE recipientKey
+  ["CONN", recipientKey] -> rCmd $ CONN recipientKey
   ["SUB"] -> rCmd SUB
-  ["SECURE", senderKey] -> rCmd $ SECURE senderKey
-  ["DELMSG", msgId] -> rCmd $ DELMSG msgId
-  ["SUSPEND"] -> rCmd SUSPEND
-  ["DELETE"] -> rCmd DELETE
+  ["KEY", senderKey] -> rCmd $ KEY senderKey
+  ["ACK"] -> rCmd ACK
+  ["HOLD"] -> rCmd HOLD
+  ["DEL"] -> rCmd DEL
   ["SEND", msgBody] -> Right . Cmd SSender . SEND $ B.pack msgBody
-  ["MSG", msgId, timestamp, msgBody] -> bCmd $ MSG msgId timestamp (B.pack msgBody)
-  ["CONN", rId, sId] -> bCmd $ CONN rId sId
+  ["MSG", timestamp, msgBody] -> bCmd $ MSG timestamp (B.pack msgBody)
+  ["IDS", rId, sId] -> bCmd $ IDS rId sId
   ["OK"] -> bCmd OK
-  "ERROR" : err -> case err of
-    ["SYNTAX", errCode] -> maybe errParams (bCmd . ERROR . SYNTAX) $ readMaybe errCode
-    ["AUTH"] -> bCmd $ ERROR AUTH
-    ["INTERNAL"] -> bCmd $ ERROR INTERNAL
+  "ERR" : err -> case err of
+    ["UNKNOWN"] -> bErr UNKNOWN
+    ["PROHIBITED"] -> bErr PROHIBITED
+    ["SYNTAX", errCode] -> maybe errParams (bErr . SYNTAX) $ readMaybe errCode
+    ["SIZE"] -> bErr SIZE
+    ["AUTH"] -> bErr AUTH
+    ["INTERNAL"] -> bErr INTERNAL
     _ -> errParams
-  "CREATE" : _ -> errParams
+  "CONN" : _ -> errParams
   "SUB" : _ -> errParams
-  "SECURE" : _ -> errParams
-  "DELMSG" : _ -> errParams
-  "SUSPEND" : _ -> errParams
-  "DELETE" : _ -> errParams
+  "KEY" : _ -> errParams
+  "ACK" : _ -> errParams
+  "HOLD" : _ -> errParams
+  "DEL" : _ -> errParams
   "SEND" : _ -> errParams
   "MSG" : _ -> errParams
-  "CONN" : _ -> errParams
+  "IDS" : _ -> errParams
   "OK" : _ -> errParams
   _ -> Left UNKNOWN
   where
     errParams = Left $ SYNTAX errBadParameters
     rCmd = Right . Cmd SRecipient
     bCmd = Right . Cmd SBroker
+    bErr = bCmd . ERR
 
 serializeCommand :: Cmd -> String
 serializeCommand = \case
-  Cmd SRecipient (CREATE rKey) -> "CREATE " ++ rKey
-  Cmd SRecipient (SECURE sKey) -> "SECURE " ++ sKey
-  Cmd SRecipient (DELMSG msgId) -> "DELMSG " ++ msgId
+  Cmd SRecipient (CONN rKey) -> "CONN " ++ rKey
+  Cmd SRecipient (KEY sKey) -> "KEY " ++ sKey
   Cmd SRecipient cmd -> show cmd
   Cmd SSender (SEND msgBody) -> "SEND " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
-  Cmd SBroker (MSG msgId timestamp msgBody) ->
-    "MSG " ++ msgId ++ " " ++ timestamp ++ " " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
-  Cmd SBroker (CONN rId sId) -> "CONN " ++ rId ++ " " ++ sId
-  Cmd SBroker (ERROR err) -> "ERROR " ++ show err
+  Cmd SBroker (MSG timestamp msgBody) ->
+    "MSG " ++ timestamp ++ " " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
+  Cmd SBroker (IDS rId sId) -> "IDS " ++ rId ++ " " ++ sId
+  Cmd SBroker (ERR err) -> "ERR " ++ show err
   Cmd SBroker OK -> "OK"
 
 type Encoded = String
