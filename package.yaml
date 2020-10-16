@@ -15,10 +15,12 @@ dependencies:
   - base >= 4.7 && < 5
   - bytestring
   - containers
+  - iso8601-time == 0.1.*
   - mtl
   - network
   - singletons
   - stm
+  - time == 1.9.*
   - unliftio-core
   - unliftio
 

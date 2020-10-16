@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -14,13 +15,17 @@ import ConnStore
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import qualified Data.Map.Strict as M
 import Data.Singletons
 import Env.STM
+import MsgStore
+import MsgStore.STM (MsgQueue)
 import Network.Socket
 import Numeric.Natural
 import Transmission
 import Transport
 import UnliftIO.Async
+import UnliftIO.Concurrent
 import UnliftIO.IO
 import UnliftIO.STM
 
@@ -34,7 +39,8 @@ runClient h = do
   putLn h "Welcome to SMP"
   q <- asks queueSize
   c <- atomically $ newClient q
-  raceAny_ [send h c, client c, receive h c]
+  s <- asks server
+  raceAny_ [send h c, client c s, receive h c]
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
 raceAny_ = r []
@@ -80,8 +86,8 @@ verifyTransmission signature connId cmd = do
     smpErr e = Cmd SBroker $ ERR e
     authErr = smpErr AUTH
 
-client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
-client Client {rcvQ, sndQ} =
+client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
+client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
@@ -91,21 +97,17 @@ client Client {rcvQ, sndQ} =
     processCommand (connId, cmd) = do
       st <- asks connStore
       case cmd of
-        Cmd SRecipient (CONN rKey) ->
-          either (mkSigned "" . ERR) idsResponce
-            <$> createConn st rKey
-        Cmd SRecipient SUB -> do
-          -- TODO message subscription
-          return ok
-        Cmd SRecipient (KEY sKey) -> okResponse <$> secureConn st connId sKey
-        Cmd SRecipient OFF -> okResponse <$> suspendConn st connId
-        Cmd SRecipient DEL -> okResponse <$> deleteConn st connId
-        Cmd SSender (SEND msgBody) -> do
-          -- TODO message delivery
-          mkSigned connId . either ERR (deliverTo msgBody)
-            <$> getConn st SSender connId
         Cmd SBroker _ -> return (connId, cmd)
-        Cmd _ _ -> return ok
+        Cmd SSender (SEND msgBody) -> do
+          getConn st SSender connId
+            >>= fmap (mkSigned connId) . either (return . ERR) (storeMessage msgBody)
+        Cmd SRecipient command -> case command of
+          CONN rKey -> idsResponce <$> createConn st rKey
+          SUB -> subscribeConnection >> deliverMessage tryPeekMsg
+          ACK -> deliverMessage tryDelPeekMsg
+          KEY sKey -> okResponse <$> secureConn st connId sKey
+          OFF -> okResponse <$> suspendConn st connId
+          DEL -> okResponse <$> deleteConn st connId
       where
         ok :: Signed
         ok = (connId, Cmd SBroker OK)
@@ -113,15 +115,49 @@ client Client {rcvQ, sndQ} =
         mkSigned :: ConnId -> Command 'Broker -> Signed
         mkSigned cId command = (cId, Cmd SBroker command)
 
-        idsResponce :: Connection -> Signed
-        idsResponce Connection {recipientId, senderId} =
-          mkSigned recipientId $ IDS recipientId senderId
+        idsResponce :: Either ErrorType Connection -> Signed
+        idsResponce = either (mkSigned "" . ERR) $
+          \Connection {recipientId = rId, senderId = sId} ->
+            mkSigned rId $ IDS rId sId
 
         okResponse :: Either ErrorType () -> Signed
         okResponse = mkSigned connId . either ERR (const OK)
 
-        -- TODO stub
-        deliverTo :: MsgBody -> Connection -> Command 'Broker
-        deliverTo _msgBody conn = case status conn of
-          ConnActive -> OK
-          ConnOff -> ERR AUTH
+        subscribeConnection :: m ()
+        subscribeConnection = atomically $ do
+          cs <- readTVar connections
+          when (M.notMember connId cs) $ do
+            writeTBQueue subscribedQ (connId, clnt)
+            writeTVar connections $ M.insert connId (Left ()) cs
+
+        storeMessage :: MsgBody -> Connection -> m (Command 'Broker)
+        storeMessage msgBody c = case status c of
+          ConnActive -> do
+            ms <- asks msgStore
+            q <- getMsgQueue ms (recipientId c)
+            msg <- newMessage msgBody
+            writeMsg q msg
+            return OK
+          ConnOff -> return $ ERR AUTH
+
+        deliverMessage :: (MsgQueue -> m (Maybe Message)) -> m Signed
+        deliverMessage tryPeek = do
+          ms <- asks msgStore
+          q <- getMsgQueue ms connId
+          tryPeek q >>= \case
+            Just Message {msgId, ts, msgBody} ->
+              return . mkSigned connId $ MSG msgId ts msgBody
+            Nothing -> do
+              cs <- readTVarIO connections
+              case M.lookup connId cs of
+                Nothing -> return ok
+                Just (Right _) -> return ok
+                Just (Left ()) -> do
+                  void . forkIO $ subscriber q
+                  return ok
+
+        subscriber :: MsgQueue -> m ()
+        subscriber q = do
+          Message {msgId, ts, msgBody} <- peekMsg q
+          -- TODO refactor with deliver
+          atomically $ writeTBQueue sndQ $ mkSigned connId $ MSG msgId ts msgBody

@@ -4,9 +4,11 @@
 module Env.STM where
 
 import ConnStore.STM
+import Control.Concurrent
 import Control.Concurrent.STM
-import qualified Data.Map as M
-import qualified Data.Set as S
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
+import MsgStore.STM
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Transmission
@@ -14,32 +16,37 @@ import Transmission
 data Env = Env
   { tcpPort :: ServiceName,
     queueSize :: Natural,
-    server :: TVar Server,
-    connStore :: TVar ConnStoreData
+    server :: Server,
+    connStore :: STMConnStore,
+    msgStore :: STMMsgStore
   }
 
 data Server = Server
-  { clients :: S.Set Client,
-    connections :: M.Map RecipientId Client
+  { subscribedQ :: TBQueue (RecipientId, Client),
+    connections :: Map RecipientId Client
   }
 
 data Client = Client
-  { connections :: S.Set RecipientId,
+  { connections :: TVar (Map RecipientId (Either () ThreadId)),
     rcvQ :: TBQueue Signed,
     sndQ :: TBQueue Signed
   }
 
-newServer :: STM (TVar Server)
-newServer = newTVar $ Server {clients = S.empty, connections = M.empty}
+newServer :: Natural -> STM Server
+newServer qSize = do
+  subscribedQ <- newTBQueue qSize
+  return Server {subscribedQ, connections = M.empty}
 
 newClient :: Natural -> STM Client
 newClient qSize = do
+  connections <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {connections = S.empty, rcvQ, sndQ}
+  return Client {connections, rcvQ, sndQ}
 
 newEnv :: String -> Natural -> STM Env
 newEnv tcpPort queueSize = do
-  srv <- newServer
-  st <- newConnStore
-  return Env {tcpPort, queueSize, server = srv, connStore = st}
+  server <- newServer queueSize
+  connStore <- newConnStore
+  msgStore <- newMsgStore
+  return Env {tcpPort, queueSize, server, connStore, msgStore}

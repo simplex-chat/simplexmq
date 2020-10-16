@@ -136,8 +136,8 @@ tGet fromParty h = do
     cmdWithMsgBody = \case
       Cmd SSender (SEND body) ->
         Cmd SSender . SEND <$$> getMsgBody body
-      Cmd SBroker (MSG ts body) ->
-        Cmd SBroker . MSG ts <$$> getMsgBody body
+      Cmd SBroker (MSG msgId ts body) ->
+        Cmd SBroker . MSG msgId ts <$$> getMsgBody body
       cmd -> return $ Right cmd
 
     infixl 4 <$$>

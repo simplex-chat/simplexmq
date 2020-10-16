@@ -14,6 +14,8 @@ module Transmission where
 
 import qualified Data.ByteString.Char8 as B
 import Data.Singletons.TH
+import Data.Time.Clock
+import Data.Time.ISO8601
 import Text.Read
 
 $( singletons
@@ -46,8 +48,9 @@ data Command (a :: Party) where
   OFF :: Command Recipient
   DEL :: Command Recipient
   SEND :: MsgBody -> Command Sender
-  MSG :: Timestamp -> MsgBody -> Command Broker
   IDS :: RecipientId -> SenderId -> Command Broker
+  END :: RecipientId -> Command Broker
+  MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
   OK :: Command Broker
   ERR :: ErrorType -> Command Broker
 
@@ -63,9 +66,13 @@ parseCommand command = case words command of
   ["ACK"] -> rCmd ACK
   ["OFF"] -> rCmd OFF
   ["DEL"] -> rCmd DEL
-  ["SEND", msgBody] -> Right . Cmd SSender . SEND $ B.pack msgBody
-  ["MSG", timestamp, msgBody] -> bCmd $ MSG timestamp (B.pack msgBody)
+  ["SEND"] -> errParams
+  "SEND" : msgBody -> Right . Cmd SSender . SEND . B.pack $ unwords msgBody
   ["IDS", rId, sId] -> bCmd $ IDS rId sId
+  ["END", rId] -> bCmd $ END rId
+  ["MSG", msgId, ts, msgBody] -> case parseISO8601 ts of
+    Just utc -> bCmd $ MSG msgId utc (B.pack msgBody)
+    _ -> errParams
   ["OK"] -> bCmd OK
   "ERR" : err -> case err of
     ["UNKNOWN"] -> bErr UNKNOWN
@@ -81,7 +88,6 @@ parseCommand command = case words command of
   "ACK" : _ -> errParams
   "OFF" : _ -> errParams
   "DEL" : _ -> errParams
-  "SEND" : _ -> errParams
   "MSG" : _ -> errParams
   "IDS" : _ -> errParams
   "OK" : _ -> errParams
@@ -97,12 +103,15 @@ serializeCommand = \case
   Cmd SRecipient (CONN rKey) -> "CONN " ++ rKey
   Cmd SRecipient (KEY sKey) -> "KEY " ++ sKey
   Cmd SRecipient cmd -> show cmd
-  Cmd SSender (SEND msgBody) -> "SEND " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
-  Cmd SBroker (MSG timestamp msgBody) ->
-    "MSG " ++ timestamp ++ " " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
-  Cmd SBroker (IDS rId sId) -> "IDS " ++ rId ++ " " ++ sId
+  Cmd SSender (SEND msgBody) -> "SEND" ++ serializeMsg msgBody
+  Cmd SBroker (MSG msgId ts msgBody) ->
+    unwords ["MSG", msgId, formatISO8601Millis ts] ++ serializeMsg msgBody
+  Cmd SBroker (IDS rId sId) -> unwords ["IDS", rId, sId]
+  Cmd SBroker (END rId) -> "END " ++ rId
   Cmd SBroker (ERR err) -> "ERR " ++ show err
   Cmd SBroker OK -> "OK"
+  where
+    serializeMsg msgBody = " " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
 
 type Encoded = String
 
@@ -121,8 +130,6 @@ type SenderId = ConnId
 type ConnId = Encoded
 
 type MsgId = Encoded
-
-type Timestamp = Encoded
 
 type MsgBody = B.ByteString
 

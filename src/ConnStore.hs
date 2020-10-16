@@ -34,8 +34,3 @@ newConnection rKey =
       senderKey = Nothing,
       status = ConnActive
     }
-
--- class MonadMsgStore s m where
---   addMsg :: s -> SenderId -> MsgBody -> m (Either ErrorType ())
---   getMsg :: s -> RecipientId -> m (Either ErrorType Message)
---   delMsg :: s -> RecipientId -> m (Either ErrorType ())

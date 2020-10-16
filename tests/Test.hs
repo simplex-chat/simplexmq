@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 import SMPClient
@@ -98,8 +99,8 @@ testCreateDelete = do
       Resp _ ok4 <- sendRecv h ("123", rId, "OFF")
       (ok4, OK) #== "accepts OFF when suspended"
 
-      Resp _ ok5 <- sendRecv h ("123", rId, "SUB")
-      (ok5, OK) #== "accepts SUB when suspended"
+      Resp _ (MSG _ _ msg) <- sendRecv h ("123", rId, "SUB")
+      (msg, "hello") #== "accepts SUB when suspended and delivers the message"
 
       Resp _ err5 <- sendRecv h ("1234", rId, "DEL")
       (err5, ERR AUTH) #== "rejects DEL with wrong signature (password atm)"
@@ -145,9 +146,9 @@ syntaxTests = do
     it "valid syntax 1" $ [("123", "1", "SEND :hello")] >#> [("", "1", "ERR AUTH")]
     it "valid syntax 2" $ [("123", "1", "SEND 11\nhello there\n")] >#> [("", "1", "ERR AUTH")]
     it "no parameters" $ [("123", "1", "SEND")] >#> [("", "1", "ERR SYNTAX 2")]
-    it "many parameters" $ [("123", "1", "SEND 11 hello")] >#> [("", "1", "ERR SYNTAX 2")]
     it "no connection ID" $ [("123", "", "SEND :hello")] >#> [("", "", "ERR SYNTAX 5")]
-    it "bad message body" $ [("123", "1", "SEND hello")] >#> [("", "1", "ERR SYNTAX 6")]
+    it "bad message body 1" $ [("123", "1", "SEND 11 hello")] >#> [("", "1", "ERR SYNTAX 6")]
+    it "bad message body 2" $ [("123", "1", "SEND hello")] >#> [("", "1", "ERR SYNTAX 6")]
     it "bigger body" $ [("123", "1", "SEND 4\nhello\n")] >#> [("", "1", "ERR SIZE")]
   describe "broker response not allowed" do
     it "OK" $ [("123", "1", "OK")] >#> [("", "1", "ERR PROHIBITED")]
