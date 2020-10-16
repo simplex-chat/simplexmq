@@ -44,6 +44,12 @@ testCreateSecure = do
       (ok1, OK) #== "accepts unsigned SEND"
       (sId1, sId) #== "same connection ID in response 1"
 
+      Resp _ (MSG _ _ msg1) <- tGet fromServer h
+      (msg1, "hello") #== "delivers message"
+
+      Resp _ ok4 <- sendRecv h ("123", "1", "ACK")
+      (ok4, OK) #== "replies OK when message acknowledged if no more messages"
+
       Resp sId2 err1 <- sendRecv h ("456", sId, "SEND :hello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same connection ID in response 2"
@@ -61,8 +67,14 @@ testCreateSecure = do
       Resp _ err4 <- sendRecv h ("123", rId, "KEY 456")
       (err4, ERR AUTH) #== "rejects KEY if already secured"
 
-      Resp _ ok3 <- sendRecv h ("456", sId, "SEND :hello")
+      Resp _ ok3 <- sendRecv h ("456", sId, "SEND 11\nhello again")
       (ok3, OK) #== "accepts signed SEND"
+
+      Resp _ (MSG _ _ msg) <- tGet fromServer h
+      (msg, "hello again") #== "delivers message 2"
+
+      Resp _ ok5 <- sendRecv h ("123", "1", "ACK")
+      (ok5, OK) #== "replies OK when message acknowledged 2"
 
       Resp _ err5 <- sendRecv h ("", sId, "SEND :hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
@@ -79,6 +91,9 @@ testCreateDelete = do
 
       Resp _ ok2 <- sendRecv h ("456", sId, "SEND :hello")
       (ok2, OK) #== "accepts signed SEND"
+
+      Resp _ (MSG _ _ msg1) <- tGet fromServer h
+      (msg1, "hello") #== "delivers message"
 
       Resp _ err1 <- sendRecv h ("1234", rId, "OFF")
       (err1, ERR AUTH) #== "rejects OFF with wrong signature (password atm)"
@@ -100,7 +115,7 @@ testCreateDelete = do
       (ok4, OK) #== "accepts OFF when suspended"
 
       Resp _ (MSG _ _ msg) <- sendRecv h ("123", rId, "SUB")
-      (msg, "hello") #== "accepts SUB when suspended and delivers the message"
+      (msg, "hello") #== "accepts SUB when suspended and delivers the message again (because was not ACKed)"
 
       Resp _ err5 <- sendRecv h ("1234", rId, "DEL")
       (err5, ERR AUTH) #== "rejects DEL with wrong signature (password atm)"

@@ -26,7 +26,6 @@ import Transmission
 import Transport
 import UnliftIO.Async
 import UnliftIO.Concurrent
-import qualified UnliftIO.Exception as E
 import UnliftIO.IO
 import UnliftIO.STM
 
@@ -168,7 +167,7 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
           ms <- asks msgStore
           q <- getMsgQueue ms rId
           tryPeek q >>= \case
-            Just msg -> return $ msgResponse msg
+            Just msg -> return $ msgResponse rId msg
             Nothing -> forkSubscriber q rId
 
         forkSubscriber :: MsgQueue -> RecipientId -> m Signed
@@ -176,15 +175,15 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
           cs <- readTVarIO connections
           case M.lookup rId cs of
             Just (Left ()) -> do
-              E.bracket
-                (forkIO subscriber)
-                (\_ -> trackSubscriber $ Left ())
-                (trackSubscriber . Right)
+              threadId <- forkIO subscriber
+              trackSubscriber $ Right threadId
               return ok
             _ -> return ok
           where
             trackSubscriber sThrd = atomically . modifyTVar connections $ M.insert rId sThrd
-            subscriber = peekMsg q >>= atomically . writeTBQueue sndQ . msgResponse
+            subscriber = do
+              peekMsg q >>= atomically . writeTBQueue sndQ . msgResponse rId
+              trackSubscriber $ Left ()
 
         ok :: Signed
         ok = (connId, Cmd SBroker OK)
@@ -195,5 +194,5 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
         okResponse :: Either ErrorType () -> Signed
         okResponse = mkSigned connId . either ERR (const OK)
 
-        msgResponse :: Message -> Signed
-        msgResponse Message {msgId, ts, msgBody} = mkSigned connId $ MSG msgId ts msgBody
+        msgResponse :: RecipientId -> Message -> Signed
+        msgResponse rId Message {msgId, ts, msgBody} = mkSigned rId $ MSG msgId ts msgBody
