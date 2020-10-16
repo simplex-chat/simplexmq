@@ -26,6 +26,7 @@ import Transmission
 import Transport
 import UnliftIO.Async
 import UnliftIO.Concurrent
+import qualified UnliftIO.Exception as E
 import UnliftIO.IO
 import UnliftIO.STM
 
@@ -113,26 +114,15 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
       case cmd of
         Cmd SBroker END -> unsubscribeConn >> return (connId, cmd)
         Cmd SBroker _ -> return (connId, cmd)
-        Cmd SSender (SEND msgBody) ->
-          getConn st SSender connId
-            >>= fmap (mkSigned connId) . either (return . ERR) (storeMessage msgBody)
+        Cmd SSender (SEND msgBody) -> sendMessage st msgBody
         Cmd SRecipient command -> case command of
           CONN rKey -> createConn st rKey
           SUB -> subscribeConn connId
-          ACK -> deliverMessage tryDelPeekMsg -- TODO? sending ACK without message loses the message
+          ACK -> deliverMessage tryDelPeekMsg connId -- TODO? sending ACK without message loses the message
           KEY sKey -> okResponse <$> secureConn st connId sKey
           OFF -> okResponse <$> suspendConn st connId
           DEL -> okResponse <$> deleteConn st connId
       where
-        ok :: Signed
-        ok = (connId, Cmd SBroker OK)
-
-        mkSigned :: ConnId -> Command 'Broker -> Signed
-        mkSigned cId command = (cId, Cmd SBroker command)
-
-        okResponse :: Either ErrorType () -> Signed
-        okResponse = mkSigned connId . either ERR (const OK)
-
         createConn :: MonadConnStore s m => s -> RecipientKey -> m Signed
         createConn st rKey =
           addConn st rKey >>= \case
@@ -148,17 +138,20 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
             when (M.notMember rId cs) $ do
               writeTBQueue subscribedQ (rId, clnt)
               writeTVar connections $ M.insert rId (Left ()) cs
-          deliverMessage tryPeekMsg
+          deliverMessage tryPeekMsg rId
 
         unsubscribeConn :: m ()
         unsubscribeConn = do
           cs <- readTVarIO connections
+          atomically . writeTVar connections $ M.delete connId cs
           case M.lookup connId cs of
-            Nothing -> return ()
-            Just (Left ()) -> atomically $ writeTVar connections $ M.delete connId cs
-            Just (Right threadId) -> do
-              killThread threadId
-              atomically $ writeTVar connections $ M.delete connId cs
+            Just (Right threadId) -> killThread threadId
+            _ -> return ()
+
+        sendMessage :: MonadConnStore s m => s -> MsgBody -> m Signed
+        sendMessage st msgBody =
+          getConn st SSender connId
+            >>= fmap (mkSigned connId) . either (return . ERR) (storeMessage msgBody)
 
         storeMessage :: MsgBody -> Connection -> m (Command 'Broker)
         storeMessage msgBody c = case status c of
@@ -170,25 +163,37 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
             return OK
           ConnOff -> return $ ERR AUTH
 
-        deliverMessage :: (MsgQueue -> m (Maybe Message)) -> m Signed
-        deliverMessage tryPeek = do
+        deliverMessage :: (MsgQueue -> m (Maybe Message)) -> RecipientId -> m Signed
+        deliverMessage tryPeek rId = do
           ms <- asks msgStore
-          q <- getMsgQueue ms connId
+          q <- getMsgQueue ms rId
           tryPeek q >>= \case
-            Just Message {msgId, ts, msgBody} ->
-              return . mkSigned connId $ MSG msgId ts msgBody
-            Nothing -> do
-              cs <- readTVarIO connections
-              case M.lookup connId cs of
-                Nothing -> return ok
-                Just (Right _) -> return ok
-                Just (Left ()) -> do
-                  threadId <- forkIO $ subscriber q
-                  atomically . writeTVar connections $ M.insert connId (Right threadId) cs
-                  return ok
+            Just msg -> return $ msgResponse msg
+            Nothing -> forkSubscriber q rId
 
-        subscriber :: MsgQueue -> m ()
-        subscriber q = do
-          Message {msgId, ts, msgBody} <- peekMsg q
-          -- TODO refactor with deliver
-          atomically $ writeTBQueue sndQ $ mkSigned connId $ MSG msgId ts msgBody
+        forkSubscriber :: MsgQueue -> RecipientId -> m Signed
+        forkSubscriber q rId = do
+          cs <- readTVarIO connections
+          case M.lookup rId cs of
+            Just (Left ()) -> do
+              E.bracket
+                (forkIO subscriber)
+                (\_ -> trackSubscriber $ Left ())
+                (trackSubscriber . Right)
+              return ok
+            _ -> return ok
+          where
+            trackSubscriber sThrd = atomically . modifyTVar connections $ M.insert rId sThrd
+            subscriber = peekMsg q >>= atomically . writeTBQueue sndQ . msgResponse
+
+        ok :: Signed
+        ok = (connId, Cmd SBroker OK)
+
+        mkSigned :: ConnId -> Command 'Broker -> Signed
+        mkSigned cId command = (cId, Cmd SBroker command)
+
+        okResponse :: Either ErrorType () -> Signed
+        okResponse = mkSigned connId . either ERR (const OK)
+
+        msgResponse :: Message -> Signed
+        msgResponse Message {msgId, ts, msgBody} = mkSigned connId $ MSG msgId ts msgBody

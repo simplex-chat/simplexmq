@@ -31,14 +31,12 @@ newConnStore = newTVar ConnStoreData {connections = M.empty, senders = M.empty}
 instance MonadUnliftIO m => MonadConnStore STMConnStore m where
   addConn :: STMConnStore -> RecipientKey -> m (Either ErrorType Connection)
   addConn store rKey = atomically $ do
-    db <- readTVar store
     let c@Connection {recipientId = rId, senderId = sId} = mkConnection rKey
-        db' =
-          db
-            { connections = M.insert rId c (connections db),
-              senders = M.insert sId rId (senders db)
-            }
-    writeTVar store db'
+    modifyTVar store $ \db ->
+      db
+        { connections = M.insert rId c (connections db),
+          senders = M.insert sId rId (senders db)
+        }
     return $ Right c
 
   getConn :: STMConnStore -> Sing (p :: Party) -> ConnId -> m (Either ErrorType Connection)
@@ -52,23 +50,26 @@ instance MonadUnliftIO m => MonadConnStore STMConnStore m where
   getConn _ SBroker _ =
     return $ Left INTERNAL
 
-  secureConn store rId sKey = updateConnections store rId $ \db c ->
-    case senderKey c of
-      Just _ -> (Left AUTH, db)
-      _ -> (Right (), db {connections = M.insert rId c {senderKey = Just sKey} (connections db)})
+  secureConn store rId sKey =
+    updateConnections store rId $ \db c ->
+      case senderKey c of
+        Just _ -> (Left AUTH, db)
+        _ -> (Right (), db {connections = M.insert rId c {senderKey = Just sKey} (connections db)})
 
   suspendConn :: STMConnStore -> RecipientId -> m (Either ErrorType ())
-  suspendConn store rId = updateConnections store rId $ \db c ->
-    (Right (), db {connections = M.insert rId c {status = ConnOff} (connections db)})
+  suspendConn store rId =
+    updateConnections store rId $ \db c ->
+      (Right (), db {connections = M.insert rId c {status = ConnOff} (connections db)})
 
   deleteConn :: STMConnStore -> RecipientId -> m (Either ErrorType ())
-  deleteConn store rId = updateConnections store rId $ \db c ->
-    ( Right (),
-      db
-        { connections = M.delete rId (connections db),
-          senders = M.delete (senderId c) (senders db)
-        }
-    )
+  deleteConn store rId =
+    updateConnections store rId $ \db c ->
+      ( Right (),
+        db
+          { connections = M.delete rId (connections db),
+            senders = M.delete (senderId c) (senders db)
+          }
+      )
 
 updateConnections ::
   MonadUnliftIO m =>

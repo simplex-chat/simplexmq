@@ -34,9 +34,9 @@ instance MonadUnliftIO m => MonadMsgStore STMMsgStore MsgQueue m where
         return q
 
   delMsgQueue :: STMMsgStore -> RecipientId -> m ()
-  delMsgQueue store rId = atomically $ do
-    m <- messages <$> readTVar store
-    writeTVar store . MsgStoreData $ M.delete rId m
+  delMsgQueue store rId = atomically . modifyTVar store $
+    \(MsgStoreData ms) ->
+      MsgStoreData $ M.delete rId ms
 
 instance MonadUnliftIO m => MonadMsgQueue MsgQueue m where
   writeMsg :: MsgQueue -> Message -> m ()
