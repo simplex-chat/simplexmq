@@ -29,10 +29,10 @@ newConnStore :: STM STMConnStore
 newConnStore = newTVar ConnStoreData {connections = M.empty, senders = M.empty}
 
 instance MonadUnliftIO m => MonadConnStore STMConnStore m where
-  createConn :: STMConnStore -> RecipientKey -> m (Either ErrorType Connection)
-  createConn store rKey = atomically $ do
+  addConn :: STMConnStore -> RecipientKey -> m (Either ErrorType Connection)
+  addConn store rKey = atomically $ do
     db <- readTVar store
-    let c@Connection {recipientId = rId, senderId = sId} = newConnection rKey
+    let c@Connection {recipientId = rId, senderId = sId} = mkConnection rKey
         db' =
           db
             { connections = M.insert rId c (connections db),

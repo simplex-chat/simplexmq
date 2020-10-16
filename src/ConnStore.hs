@@ -18,15 +18,15 @@ data Connection = Connection
 data ConnStatus = ConnActive | ConnOff
 
 class MonadConnStore s m where
-  createConn :: s -> RecipientKey -> m (Either ErrorType Connection)
+  addConn :: s -> RecipientKey -> m (Either ErrorType Connection)
   getConn :: s -> Sing (a :: Party) -> ConnId -> m (Either ErrorType Connection)
   secureConn :: s -> RecipientId -> SenderKey -> m (Either ErrorType ())
   suspendConn :: s -> RecipientId -> m (Either ErrorType ())
   deleteConn :: s -> RecipientId -> m (Either ErrorType ())
 
 -- TODO stub
-newConnection :: RecipientKey -> Connection
-newConnection rKey =
+mkConnection :: RecipientKey -> Connection
+mkConnection rKey =
   Connection
     { recipientId = "1",
       recipientKey = rKey,

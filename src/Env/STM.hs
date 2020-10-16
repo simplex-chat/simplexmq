@@ -23,7 +23,7 @@ data Env = Env
 
 data Server = Server
   { subscribedQ :: TBQueue (RecipientId, Client),
-    connections :: Map RecipientId Client
+    connections :: TVar (Map RecipientId Client)
   }
 
 data Client = Client
@@ -35,7 +35,8 @@ data Client = Client
 newServer :: Natural -> STM Server
 newServer qSize = do
   subscribedQ <- newTBQueue qSize
-  return Server {subscribedQ, connections = M.empty}
+  connections <- newTVar M.empty
+  return Server {subscribedQ, connections}
 
 newClient :: Natural -> STM Client
 newClient qSize = do

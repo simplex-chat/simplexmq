@@ -49,8 +49,8 @@ data Command (a :: Party) where
   DEL :: Command Recipient
   SEND :: MsgBody -> Command Sender
   IDS :: RecipientId -> SenderId -> Command Broker
-  END :: RecipientId -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
+  END :: Command Broker
   OK :: Command Broker
   ERR :: ErrorType -> Command Broker
 
@@ -69,10 +69,10 @@ parseCommand command = case words command of
   ["SEND"] -> errParams
   "SEND" : msgBody -> Right . Cmd SSender . SEND . B.pack $ unwords msgBody
   ["IDS", rId, sId] -> bCmd $ IDS rId sId
-  ["END", rId] -> bCmd $ END rId
   ["MSG", msgId, ts, msgBody] -> case parseISO8601 ts of
     Just utc -> bCmd $ MSG msgId utc (B.pack msgBody)
     _ -> errParams
+  ["END"] -> bCmd END
   ["OK"] -> bCmd OK
   "ERR" : err -> case err of
     ["UNKNOWN"] -> bErr UNKNOWN
@@ -90,6 +90,7 @@ parseCommand command = case words command of
   "DEL" : _ -> errParams
   "MSG" : _ -> errParams
   "IDS" : _ -> errParams
+  "END" : _ -> errParams
   "OK" : _ -> errParams
   _ -> Left UNKNOWN
   where
@@ -107,9 +108,8 @@ serializeCommand = \case
   Cmd SBroker (MSG msgId ts msgBody) ->
     unwords ["MSG", msgId, formatISO8601Millis ts] ++ serializeMsg msgBody
   Cmd SBroker (IDS rId sId) -> unwords ["IDS", rId, sId]
-  Cmd SBroker (END rId) -> "END " ++ rId
   Cmd SBroker (ERR err) -> "ERR " ++ show err
-  Cmd SBroker OK -> "OK"
+  Cmd SBroker resp -> show resp
   where
     serializeMsg msgBody = " " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
 
