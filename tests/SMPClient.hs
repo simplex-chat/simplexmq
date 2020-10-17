@@ -15,7 +15,7 @@ import UnliftIO.IO
 
 testSMPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
 testSMPClient host port client = do
-  threadDelay 100 -- TODO hack: thread delay for SMP server to start
+  threadDelay 1000 -- TODO hack: thread delay for SMP server to start
   runTCPClient host port $ \h -> do
     line <- getLn h
     if line == "Welcome to SMP"

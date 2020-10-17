@@ -16,8 +16,8 @@ import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.ByteString (ByteString)
 import Data.ByteString.Base64
-import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
 import Data.Singletons
