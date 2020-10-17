@@ -22,14 +22,21 @@ main :: IO ()
 main = hspec do
   describe "SMP syntax" syntaxTests
   describe "SMP connections" do
-    testCreateSecure
-    testCreateDelete
+    describe "CONN and KEY commands, SEND messages" testCreateSecure
+    describe "CONN, OFF and DEL commands, SEND messages" testCreateDelete
+  describe "SMP messages" do
+    describe "duplex communication over 2 SMP connections" testDuplex
+
+-- describe "switch subscription to another SMP connection"
 
 pattern Resp :: ConnId -> Command 'Broker -> TransmissionOrError
 pattern Resp connId command = ("", (connId, Right (Cmd SBroker command)))
 
 smpTest :: (Handle -> IO ()) -> Expectation
 smpTest test' = runSmpTest test' `shouldReturn` ()
+
+smpTestN :: Int -> ([Handle] -> IO ()) -> Expectation
+smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
 
 sendRecv :: Handle -> RawTransmission -> IO TransmissionOrError
 sendRecv h (sgn, cId, cmd) = tPutRaw h (fromRight "" $ decode sgn, cId, cmd) >> tGet fromServer h
@@ -38,8 +45,8 @@ sendRecv h (sgn, cId, cmd) = tPutRaw h (fromRight "" $ decode sgn, cId, cmd) >> 
 (actual, expected) #== message = assertEqual message expected actual
 
 testCreateSecure :: SpecWith ()
-testCreateSecure = do
-  it "CONN and KEY commands, SEND messages" $
+testCreateSecure =
+  it "should create (CONN) and secure (KEY) connection" $
     smpTest \h -> do
       Resp rId1 (IDS rId sId) <- sendRecv h ("", "", "CONN 1234")
       (rId1, "") #== "creates connection"
@@ -84,8 +91,8 @@ testCreateSecure = do
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
 testCreateDelete :: SpecWith ()
-testCreateDelete = do
-  it "CONN, OFF and DEL commands, SEND messages" $
+testCreateDelete =
+  it "should create (CONN), suspend (OFF) and delete (DEL) connection" $
     smpTest \h -> do
       Resp rId1 (IDS rId sId) <- sendRecv h ("", "", "CONN 1234")
       (rId1, "") #== "creates connection"
@@ -142,6 +149,56 @@ testCreateDelete = do
 
       Resp _ err10 <- sendRecv h ("1234", rId, "SUB")
       (err10, ERR AUTH) #== "rejects SUB when deleted"
+
+testDuplex :: SpecWith ()
+testDuplex =
+  it "should create 2 simplex connections and exchange messages" $
+    smpTestN 2 _test
+  where
+    _test [alice, bob] = duplex alice bob
+    _test _ = error "expected 2 handles"
+
+    duplex alice bob = do
+      Resp _ (IDS aRcv aSnd) <- sendRecv alice ("", "", "CONN 1234")
+      -- aSnd ID is passed to Bob out-of-band
+
+      Resp _ OK <- sendRecv bob ("", aSnd, "SEND :key efgh")
+      -- "key efgh" is ad-hoc, different from SMP protocol
+
+      Resp _ (MSG _ _ msg1) <- tGet fromServer alice
+      Resp _ OK <- sendRecv alice ("1234", aRcv, "ACK")
+      ["key", key1] <- return $ B.words msg1
+      (key1, "efgh") #== "key received from Bob"
+      Resp _ OK <- sendRecv alice ("1234", aRcv, "KEY " <> key1)
+
+      Resp _ (IDS bRcv bSnd) <- sendRecv bob ("", "", "CONN abcd")
+      Resp _ OK <- sendRecv bob ("efgh", aSnd, "SEND :reply_id " <> encode bSnd)
+      -- "reply_id ..." is ad-hoc, it is not a part of SMP protocol
+
+      Resp _ (MSG _ _ msg2) <- tGet fromServer alice
+      Resp _ OK <- sendRecv alice ("1234", aRcv, "ACK")
+      ["reply_id", bId] <- return $ B.words msg2
+      (bId, encode bSnd) #== "reply connection ID received from Bob"
+      Resp _ OK <- sendRecv alice ("", bSnd, "SEND :key 5678")
+      -- "key 5678" is ad-hoc, different from SMP protocol
+
+      Resp _ (MSG _ _ msg3) <- tGet fromServer bob
+      Resp _ OK <- sendRecv bob ("abcd", bRcv, "ACK")
+      ["key", key2] <- return $ B.words msg3
+      (key2, "5678") #== "key received from Alice"
+      Resp _ OK <- sendRecv bob ("abcd", bRcv, "KEY " <> key2)
+
+      Resp _ OK <- sendRecv bob ("efgh", aSnd, "SEND :hi alice")
+
+      Resp _ (MSG _ _ msg4) <- tGet fromServer alice
+      Resp _ OK <- sendRecv alice ("1234", aRcv, "ACK")
+      (msg4, "hi alice") #== "message received from Bob"
+
+      Resp _ OK <- sendRecv alice ("5678", bSnd, "SEND :how are you bob")
+
+      Resp _ (MSG _ _ msg5) <- tGet fromServer bob
+      Resp _ OK <- sendRecv bob ("abcd", bRcv, "ACK")
+      (msg5, "how are you bob") #== "message received from alice"
 
 syntaxTests :: SpecWith ()
 syntaxTests = do
