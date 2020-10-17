@@ -4,21 +4,24 @@
 module Env.STM where
 
 import ConnStore.STM
-import Control.Concurrent
-import Control.Concurrent.STM
+import Control.Concurrent (ThreadId)
+import Control.Monad.IO.Unlift
+import Crypto.Random
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import MsgStore.STM
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Transmission
+import UnliftIO.STM
 
 data Env = Env
   { tcpPort :: ServiceName,
     queueSize :: Natural,
     server :: Server,
     connStore :: STMConnStore,
-    msgStore :: STMMsgStore
+    msgStore :: STMMsgStore,
+    idsDrg :: TVar ChaChaDRG
   }
 
 data Server = Server
@@ -45,9 +48,10 @@ newClient qSize = do
   sndQ <- newTBQueue qSize
   return Client {connections, rcvQ, sndQ}
 
-newEnv :: String -> Natural -> STM Env
+newEnv :: (MonadUnliftIO m, MonadRandom m) => String -> Natural -> m Env
 newEnv tcpPort queueSize = do
-  server <- newServer queueSize
-  connStore <- newConnStore
-  msgStore <- newMsgStore
-  return Env {tcpPort, queueSize, server, connStore, msgStore}
+  server <- atomically $ newServer queueSize
+  connStore <- atomically newConnStore
+  msgStore <- atomically newMsgStore
+  idsDrg <- drgNew >>= newTVarIO
+  return Env {tcpPort, queueSize, server, connStore, msgStore, idsDrg}

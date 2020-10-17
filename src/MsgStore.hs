@@ -1,9 +1,7 @@
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE NamedFieldPuns #-}
 
 module MsgStore where
 
-import Control.Monad.IO.Class
 import Data.Time.Clock
 import Transmission
 
@@ -22,13 +20,3 @@ class MonadMsgQueue q m where
   tryPeekMsg :: q -> m (Maybe Message) -- non blocking
   peekMsg :: q -> m Message -- blocking
   tryDelPeekMsg :: q -> m (Maybe Message) -- atomic delete (== read) last and peek next message, if available
-
-newMessage :: MonadIO m => MsgBody -> m Message
-newMessage msgBody = do
-  ts <- liftIO getCurrentTime
-  return
-    Message
-      { msgId = "1",
-        ts,
-        msgBody
-      }

@@ -15,8 +15,13 @@ import ConnStore
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import Crypto.Random
+import Data.ByteString.Base64
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
 import Data.Singletons
+import Data.Time.Clock
 import Env.STM
 import MsgStore
 import MsgStore.STM (MsgQueue)
@@ -29,9 +34,9 @@ import UnliftIO.Concurrent
 import UnliftIO.IO
 import UnliftIO.STM
 
-runSMPServer :: MonadUnliftIO m => ServiceName -> Natural -> m ()
+runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServiceName -> Natural -> m ()
 runSMPServer port queueSize = do
-  env <- atomically $ newEnv port queueSize
+  env <- newEnv port queueSize
   runReaderT smpServer env
   where
     smpServer :: (MonadUnliftIO m, MonadReader Env m) => m ()
@@ -131,12 +136,13 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
         createConn :: MonadConnStore s m => s -> RecipientKey -> m Signed
         createConn st rKey = mkSigned "" <$> addSubscribe
           where
-            addSubscribe =
-              addConn st rKey >>= \case
+            addSubscribe = do
+              addConn st getIds rKey >>= \case
                 Right Connection {recipientId = rId, senderId = sId} -> do
                   void $ subscribeConn rId
                   return $ IDS rId sId
                 Left e -> return $ ERR e
+            getIds = liftM2 (,) (randomId 16) (randomId 16)
 
         subscribeConn :: RecipientId -> m Signed
         subscribeConn rId = do
@@ -165,8 +171,9 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
               ConnActive -> do
                 ms <- asks msgStore
                 q <- getMsgQueue ms (recipientId c)
-                msg <- newMessage msgBody
-                writeMsg q msg
+                msgId <- randomId 8
+                ts <- liftIO getCurrentTime
+                writeMsg q $ Message {msgId, ts, msgBody}
                 return OK
               ConnOff -> return $ ERR AUTH
 
@@ -199,3 +206,15 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
 
         msgResponse :: RecipientId -> Message -> Signed
         msgResponse rId Message {msgId, ts, msgBody} = mkSigned rId $ MSG msgId ts msgBody
+
+randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m Encoded
+randomId n = do
+  gVar <- asks idsDrg
+  B.unpack . encode <$> atomically (randomBytes n gVar)
+
+randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
+randomBytes n gVar = do
+  g <- readTVar gVar
+  let (bytes, g') = randomBytesGenerate n g
+  writeTVar gVar g'
+  return bytes

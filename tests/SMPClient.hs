@@ -3,6 +3,7 @@
 module SMPClient where
 
 import Control.Monad.IO.Unlift
+import Crypto.Random
 import Network.Socket
 import Numeric.Natural
 import Server
@@ -14,7 +15,7 @@ import UnliftIO.IO
 
 testSMPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
 testSMPClient host port client = do
-  threadDelay 1 -- TODO hack: thread delay for SMP server to start
+  threadDelay 100 -- TODO hack: thread delay for SMP server to start
   runTCPClient host port $ \h -> do
     line <- getLn h
     if line == "Welcome to SMP"
@@ -32,7 +33,7 @@ queueSize = 2
 
 type TestTransmission = (Signature, ConnId, String)
 
-runSmpTest :: MonadUnliftIO m => (Handle -> m a) -> m a
+runSmpTest :: (MonadUnliftIO m, MonadRandom m) => (Handle -> m a) -> m a
 runSmpTest test =
   E.bracket
     (forkIO $ runSMPServer testPort queueSize)
