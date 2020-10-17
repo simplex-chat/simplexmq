@@ -113,6 +113,8 @@ tGet fromParty h = do
   where
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, connId, _) cmd = case cmd of
+      -- IDS response should not have connection ID
+      Cmd SBroker (IDS _ _) -> Right cmd
       -- ERROR response does not always have connection ID
       Cmd SBroker (ERR _) -> Right cmd
       -- other responses must have connection ID

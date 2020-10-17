@@ -111,9 +111,9 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
     processCommand (connId, cmd) = do
       st <- asks connStore
       case cmd of
-        Cmd SBroker END -> unsubscribeConn >> return (connId, cmd)
+        Cmd SBroker END -> unsubscribeConn connId >> return (connId, cmd)
         Cmd SBroker _ -> return (connId, cmd)
-        Cmd SSender (SEND msgBody) -> sendMessage st msgBody
+        Cmd SSender (SEND msgBody) -> sendMessage st connId msgBody
         Cmd SRecipient command -> case command of
           CONN rKey -> createConn st rKey
           SUB -> subscribeConn connId
@@ -122,13 +122,21 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
           OFF -> okResponse <$> suspendConn st connId
           DEL -> okResponse <$> deleteConn st connId
       where
+        ok :: Signed
+        ok = (connId, Cmd SBroker OK)
+
+        okResponse :: Either ErrorType () -> Signed
+        okResponse = mkSigned connId . either ERR (const OK)
+
         createConn :: MonadConnStore s m => s -> RecipientKey -> m Signed
-        createConn st rKey =
-          addConn st rKey >>= \case
-            Right Connection {recipientId = rId, senderId = sId} -> do
-              void $ subscribeConn rId
-              return . mkSigned rId $ IDS rId sId
-            Left e -> return . mkSigned "" $ ERR e
+        createConn st rKey = mkSigned "" <$> addSubscribe
+          where
+            addSubscribe =
+              addConn st rKey >>= \case
+                Right Connection {recipientId = rId, senderId = sId} -> do
+                  void $ subscribeConn rId
+                  return $ IDS rId sId
+                Left e -> return $ ERR e
 
         subscribeConn :: RecipientId -> m Signed
         subscribeConn rId = do
@@ -139,28 +147,28 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
               writeTVar connections $ M.insert rId (Left ()) cs
           deliverMessage tryPeekMsg rId
 
-        unsubscribeConn :: m ()
-        unsubscribeConn = do
+        unsubscribeConn :: RecipientId -> m ()
+        unsubscribeConn rId = do
           cs <- readTVarIO connections
-          atomically . writeTVar connections $ M.delete connId cs
-          case M.lookup connId cs of
+          atomically . writeTVar connections $ M.delete rId cs
+          case M.lookup rId cs of
             Just (Right threadId) -> killThread threadId
             _ -> return ()
 
-        sendMessage :: MonadConnStore s m => s -> MsgBody -> m Signed
-        sendMessage st msgBody =
-          getConn st SSender connId
-            >>= fmap (mkSigned connId) . either (return . ERR) (storeMessage msgBody)
-
-        storeMessage :: MsgBody -> Connection -> m (Command 'Broker)
-        storeMessage msgBody c = case status c of
-          ConnActive -> do
-            ms <- asks msgStore
-            q <- getMsgQueue ms (recipientId c)
-            msg <- newMessage msgBody
-            writeMsg q msg
-            return OK
-          ConnOff -> return $ ERR AUTH
+        sendMessage :: MonadConnStore s m => s -> SenderId -> MsgBody -> m Signed
+        sendMessage st sId msgBody =
+          getConn st SSender sId
+            >>= fmap (mkSigned sId) . either (return . ERR) storeMessage
+          where
+            storeMessage :: Connection -> m (Command 'Broker)
+            storeMessage c = case status c of
+              ConnActive -> do
+                ms <- asks msgStore
+                q <- getMsgQueue ms (recipientId c)
+                msg <- newMessage msgBody
+                writeMsg q msg
+                return OK
+              ConnOff -> return $ ERR AUTH
 
         deliverMessage :: (MsgQueue -> m (Maybe Message)) -> RecipientId -> m Signed
         deliverMessage tryPeek rId = do
@@ -182,17 +190,12 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
           where
             trackSubscriber sThrd = atomically . modifyTVar connections $ M.insert rId sThrd
             subscriber = do
-              peekMsg q >>= atomically . writeTBQueue sndQ . msgResponse rId
+              msg <- peekMsg q
+              atomically . writeTBQueue sndQ $ msgResponse rId msg
               trackSubscriber $ Left ()
-
-        ok :: Signed
-        ok = (connId, Cmd SBroker OK)
 
         mkSigned :: ConnId -> Command 'Broker -> Signed
         mkSigned cId command = (cId, Cmd SBroker command)
-
-        okResponse :: Either ErrorType () -> Signed
-        okResponse = mkSigned connId . either ERR (const OK)
 
         msgResponse :: RecipientId -> Message -> Signed
         msgResponse rId Message {msgId, ts, msgBody} = mkSigned rId $ MSG msgId ts msgBody

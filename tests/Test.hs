@@ -37,8 +37,8 @@ testCreateSecure :: SpecWith ()
 testCreateSecure = do
   it "CONN and KEY commands, SEND messages (no delivery yet)" $
     smpTest \h -> do
-      Resp rId (IDS rId1 sId) <- sendRecv h ("", "", "CONN 123")
-      (rId1, rId) #== "creates connection"
+      Resp rId1 (IDS rId sId) <- sendRecv h ("", "", "CONN 123")
+      (rId1, "") #== "creates connection"
 
       Resp sId1 ok1 <- sendRecv h ("", sId, "SEND :hello")
       (ok1, OK) #== "accepts unsigned SEND"
@@ -83,8 +83,8 @@ testCreateDelete :: SpecWith ()
 testCreateDelete = do
   it "CONN, OFF and DEL commands, SEND messages (no delivery yet)" $
     smpTest \h -> do
-      Resp rId (IDS rId1 sId) <- sendRecv h ("", "", "CONN 123")
-      (rId1, rId) #== "creates connection"
+      Resp rId1 (IDS rId sId) <- sendRecv h ("", "", "CONN 123")
+      (rId1, "") #== "creates connection"
 
       Resp _ ok1 <- sendRecv h ("123", rId, "KEY 456")
       (ok1, OK) #== "secures connection"
