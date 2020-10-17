@@ -5,7 +5,6 @@ module SMPClient where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.Maybe
 import Network.Socket
 import Numeric.Natural
 import Server
@@ -44,4 +43,4 @@ smpServerTest :: [RawTransmission] -> IO [RawTransmission]
 smpServerTest commands = runSmpTest \h -> mapM (sendReceive h) commands
   where
     sendReceive :: Handle -> RawTransmission -> IO RawTransmission
-    sendReceive h t = tPutRaw h t >> fromJust <$> tGetRaw h
+    sendReceive h t = tPutRaw h t >> either (error "bad transmission") id <$> tGetRaw h
