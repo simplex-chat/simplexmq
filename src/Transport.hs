@@ -10,6 +10,8 @@ module Transport where
 import Control.Monad.IO.Class
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import Data.ByteString.Base64
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network.Socket
 import System.IO
@@ -67,27 +69,29 @@ getSocketHandle conn = liftIO $ do
   hSetBuffering h LineBuffering
   return h
 
-putLn :: MonadIO m => Handle -> String -> m ()
-putLn h = liftIO . hPutStrLn h
+putLn :: MonadIO m => Handle -> ByteString -> m ()
+putLn h = liftIO . hPutStrLn h . B.unpack
 
-getLn :: MonadIO m => Handle -> m String
-getLn = liftIO . hGetLine
+getLn :: MonadIO m => Handle -> m ByteString
+getLn h = B.pack <$> liftIO (hGetLine h)
 
-getBytes :: MonadIO m => Handle -> Int -> m B.ByteString
+getBytes :: MonadIO m => Handle -> Int -> m ByteString
 getBytes h = liftIO . B.hGet h
 
 tPutRaw :: MonadIO m => Handle -> RawTransmission -> m ()
 tPutRaw h (signature, connId, command) = do
-  putLn h signature
-  putLn h connId
+  putLn h (encode signature)
+  putLn h (encode connId)
   putLn h command
 
-tGetRaw :: MonadIO m => Handle -> m RawTransmission
-tGetRaw h = do
-  signature <- getLn h
-  connId <- getLn h
-  command <- getLn h
-  return (signature, connId, command)
+tGetRaw :: MonadIO m => Handle -> m (Maybe RawTransmission)
+tGetRaw h =
+  getDecodedLn $ \signature ->
+    getDecodedLn $ \connId -> do
+      command <- getLn h
+      return $ Just (signature, connId, command)
+  where
+    getDecodedLn f = getLn h >>= either (\_ -> return Nothing) f . decode
 
 tPut :: MonadIO m => Handle -> Transmission -> m ()
 tPut h (signature, (connId, command)) = tPutRaw h (signature, connId, serializeCommand command)
@@ -105,12 +109,17 @@ fromServer = \case
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
 tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m TransmissionOrError
-tGet fromParty h = do
-  t@(signature, connId, command) <- tGetRaw h
-  let cmd = (parseCommand >=> fromParty) command >>= tCredentials t
-  fullCmd <- either (return . Left) cmdWithMsgBody cmd
-  return (signature, (connId, fullCmd))
+tGet fromParty h = tGetRaw h >>= maybe badTransmission tParseComplete
   where
+    badTransmission :: m TransmissionOrError
+    badTransmission = return (B.empty, (B.empty, Left $ SYNTAX errBadTransmission))
+
+    tParseComplete :: RawTransmission -> m TransmissionOrError
+    tParseComplete t@(signature, connId, command) = do
+      let cmd = parseCommand command >>= fromParty >>= tCredentials t
+      fullCmd <- either (return . Left) cmdWithMsgBody cmd
+      return (signature, (connId, fullCmd))
+
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, connId, _) cmd = case cmd of
       -- IDS response should not have connection ID
@@ -119,19 +128,19 @@ tGet fromParty h = do
       Cmd SBroker (ERR _) -> Right cmd
       -- other responses must have connection ID
       Cmd SBroker _
-        | null connId -> Left $ SYNTAX errNoConnectionId
+        | B.null connId -> Left $ SYNTAX errNoConnectionId
         | otherwise -> Right cmd
       -- CREATE must NOT have signature or connection ID
       Cmd SRecipient (CONN _)
-        | null signature && null connId -> Right cmd
+        | B.null signature && B.null connId -> Right cmd
         | otherwise -> Left $ SYNTAX errHasCredentials
       -- SEND must have connection ID, signature is not always required
       Cmd SSender (SEND _)
-        | null connId -> Left $ SYNTAX errNoConnectionId
+        | B.null connId -> Left $ SYNTAX errNoConnectionId
         | otherwise -> Right cmd
       -- other client commands must have both signature and connection ID
       Cmd SRecipient _
-        | null signature || null connId -> Left $ SYNTAX errNoCredentials
+        | B.null signature || B.null connId -> Left $ SYNTAX errNoCredentials
         | otherwise -> Right cmd
 
     cmdWithMsgBody :: Cmd -> m (Either ErrorType Cmd)
@@ -154,5 +163,5 @@ tGet fromParty h = do
           Just size -> do
             body <- getBytes h size
             s <- getLn h
-            return if null s then Right body else Left SIZE
+            return if B.null s then Right body else Left SIZE
           Nothing -> return . Left $ SYNTAX errMessageBody

@@ -5,6 +5,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -16,8 +17,7 @@ import Control.Monad
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
-import Data.ByteString (ByteString)
-import Data.ByteString.Base64
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
 import Data.Singletons
@@ -79,7 +79,7 @@ receive h Client {rcvQ} = forever $ do
 send :: MonadUnliftIO m => Handle -> Client -> m ()
 send h Client {sndQ} = forever $ do
   signed <- atomically $ readTBQueue sndQ
-  tPut h ("", signed)
+  tPut h (B.empty, signed)
 
 verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Signature -> ConnId -> Cmd -> m Signed
 verifyTransmission signature connId cmd = do
@@ -96,7 +96,7 @@ verifyTransmission signature connId cmd = do
       either (return . smpErr) f conn
     verifySend :: Maybe PublicKey -> m Cmd
     verifySend
-      | null signature = return . maybe cmd (const authErr)
+      | B.null signature = return . maybe cmd (const authErr)
       | otherwise = maybe (return authErr) verifySignature
     -- TODO stub
     verifySignature :: PublicKey -> m Cmd
@@ -134,7 +134,7 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
         okResponse = mkSigned connId . either ERR (const OK)
 
         createConn :: MonadConnStore s m => s -> RecipientKey -> m Signed
-        createConn st rKey = mkSigned "" <$> addSubscribe
+        createConn st rKey = mkSigned B.empty <$> addSubscribe
           where
             addSubscribe = do
               addConn st getIds rKey >>= \case
@@ -210,7 +210,7 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m Encoded
 randomId n = do
   gVar <- asks idsDrg
-  B.unpack . encode <$> atomically (randomBytes n gVar)
+  atomically (randomBytes n gVar)
 
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 randomBytes n gVar = do

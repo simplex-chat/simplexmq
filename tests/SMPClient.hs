@@ -1,9 +1,11 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module SMPClient where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import Data.Maybe
 import Network.Socket
 import Numeric.Natural
 import Server
@@ -31,8 +33,6 @@ testHost = "localhost"
 queueSize :: Natural
 queueSize = 2
 
-type TestTransmission = (Signature, ConnId, String)
-
 runSmpTest :: (MonadUnliftIO m, MonadRandom m) => (Handle -> m a) -> m a
 runSmpTest test =
   E.bracket
@@ -40,8 +40,8 @@ runSmpTest test =
     (liftIO . killThread)
     \_ -> testSMPClient "localhost" testPort test
 
-smpServerTest :: [TestTransmission] -> IO [TestTransmission]
+smpServerTest :: [RawTransmission] -> IO [RawTransmission]
 smpServerTest commands = runSmpTest \h -> mapM (sendReceive h) commands
   where
-    sendReceive :: Handle -> TestTransmission -> IO TestTransmission
-    sendReceive h t = tPutRaw h t >> tGetRaw h
+    sendReceive :: Handle -> RawTransmission -> IO RawTransmission
+    sendReceive h t = tPutRaw h t >> fromJust <$> tGetRaw h

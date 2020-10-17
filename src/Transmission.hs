@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -12,11 +13,13 @@
 
 module Transmission where
 
+import Data.ByteString.Base64
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (ord)
 import Data.Singletons.TH
 import Data.Time.Clock
 import Data.Time.ISO8601
-import Text.Read
 
 $( singletons
      [d|
@@ -38,7 +41,7 @@ type SignedOrError = (ConnId, Either ErrorType Cmd)
 
 type TransmissionOrError = (Signature, SignedOrError)
 
-type RawTransmission = (String, String, String)
+type RawTransmission = (ByteString, ByteString, ByteString)
 
 data Command (a :: Party) where
   CONN :: RecipientKey -> Command Recipient
@@ -58,26 +61,36 @@ deriving instance Show (Command a)
 
 deriving instance Eq (Command a)
 
-parseCommand :: String -> Either ErrorType Cmd
-parseCommand command = case words command of
-  ["CONN", recipientKey] -> rCmd $ CONN recipientKey
+parseCommand :: ByteString -> Either ErrorType Cmd
+parseCommand command = case B.words command of
+  ["CONN", rKeyStr] -> case decode rKeyStr of
+    Right rKey -> rCmd $ CONN rKey
+    _ -> errParams
   ["SUB"] -> rCmd SUB
-  ["KEY", senderKey] -> rCmd $ KEY senderKey
+  ["KEY", sKeyStr] -> case decode sKeyStr of
+    Right sKey -> rCmd $ KEY sKey
+    _ -> errParams
   ["ACK"] -> rCmd ACK
   ["OFF"] -> rCmd OFF
   ["DEL"] -> rCmd DEL
   ["SEND"] -> errParams
-  "SEND" : msgBody -> Right . Cmd SSender . SEND . B.pack $ unwords msgBody
-  ["IDS", rId, sId] -> bCmd $ IDS rId sId
-  ["MSG", msgId, ts, msgBody] -> case parseISO8601 ts of
-    Just utc -> bCmd $ MSG msgId utc (B.pack msgBody)
+  "SEND" : msgBody -> Right . Cmd SSender . SEND $ B.unwords msgBody
+  ["IDS", rIdStr, sIdStr] -> case decode rIdStr of
+    Right rId -> case decode sIdStr of
+      Right sId -> bCmd $ IDS rId sId
+      _ -> errParams
+    _ -> errParams
+  ["MSG", msgIdStr, ts, msgBody] -> case decode msgIdStr of
+    Right msgId -> case parseISO8601 $ B.unpack ts of
+      Just utc -> bCmd $ MSG msgId utc msgBody
+      _ -> errParams
     _ -> errParams
   ["END"] -> bCmd END
   ["OK"] -> bCmd OK
   "ERR" : err -> case err of
     ["UNKNOWN"] -> bErr UNKNOWN
     ["PROHIBITED"] -> bErr PROHIBITED
-    ["SYNTAX", errCode] -> maybe errParams (bErr . SYNTAX) $ readMaybe errCode
+    ["SYNTAX", errCode] -> maybe errParams (bErr . SYNTAX) $ digitToInt $ B.unpack errCode
     ["SIZE"] -> bErr SIZE
     ["AUTH"] -> bErr AUTH
     ["INTERNAL"] -> bErr INTERNAL
@@ -99,21 +112,30 @@ parseCommand command = case words command of
     bCmd = Right . Cmd SBroker
     bErr = bCmd . ERR
 
-serializeCommand :: Cmd -> String
-serializeCommand = \case
-  Cmd SRecipient (CONN rKey) -> "CONN " ++ rKey
-  Cmd SRecipient (KEY sKey) -> "KEY " ++ sKey
-  Cmd SRecipient cmd -> show cmd
-  Cmd SSender (SEND msgBody) -> "SEND" ++ serializeMsg msgBody
-  Cmd SBroker (MSG msgId ts msgBody) ->
-    unwords ["MSG", msgId, formatISO8601Millis ts] ++ serializeMsg msgBody
-  Cmd SBroker (IDS rId sId) -> unwords ["IDS", rId, sId]
-  Cmd SBroker (ERR err) -> "ERR " ++ show err
-  Cmd SBroker resp -> show resp
-  where
-    serializeMsg msgBody = " " ++ show (B.length msgBody) ++ "\n" ++ B.unpack msgBody
+digitToInt :: String -> Maybe Int
+digitToInt [c] =
+  let i = ord c - zero
+   in if i >= 0 && i <= 9 then Just i else Nothing
+digitToInt _ = Nothing
 
-type Encoded = String
+zero :: Int
+zero = ord '0'
+
+serializeCommand :: Cmd -> ByteString
+serializeCommand = \case
+  Cmd SRecipient (CONN rKey) -> "CONN " <> encode rKey
+  Cmd SRecipient (KEY sKey) -> "KEY " <> encode sKey
+  Cmd SRecipient cmd -> B.pack $ show cmd
+  Cmd SSender (SEND msgBody) -> "SEND" <> serializeMsg msgBody
+  Cmd SBroker (MSG msgId ts msgBody) ->
+    B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts] <> serializeMsg msgBody
+  Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
+  Cmd SBroker (ERR err) -> "ERR " <> B.pack (show err)
+  Cmd SBroker resp -> B.pack $ show resp
+  where
+    serializeMsg msgBody = " " <> B.pack (show $ B.length msgBody) <> "\n" <> msgBody
+
+type Encoded = ByteString
 
 type PublicKey = Encoded
 
@@ -131,9 +153,12 @@ type ConnId = Encoded
 
 type MsgId = Encoded
 
-type MsgBody = B.ByteString
+type MsgBody = ByteString
 
 data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL deriving (Show, Eq)
+
+errBadTransmission :: Int
+errBadTransmission = 1
 
 errBadParameters :: Int
 errBadParameters = 2
