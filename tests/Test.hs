@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
@@ -10,6 +11,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either
 import SMPClient
 import System.IO (Handle)
+import System.Timeout
 import Test.HUnit
 import Test.Hspec
 import Transmission
@@ -26,8 +28,7 @@ main = hspec do
     describe "CONN, OFF and DEL commands, SEND messages" testCreateDelete
   describe "SMP messages" do
     describe "duplex communication over 2 SMP connections" testDuplex
-
--- describe "switch subscription to another SMP connection"
+    describe "switch subscription to another SMP connection" testSwitchSub
 
 pattern Resp :: ConnId -> Command 'Broker -> TransmissionOrError
 pattern Resp connId command = ("", (connId, Right (Cmd SBroker command)))
@@ -155,10 +156,11 @@ testDuplex =
   it "should create 2 simplex connections and exchange messages" $
     smpTestN 2 _test
   where
-    _test [alice, bob] = duplex alice bob
+    _test [alice, bob] = _testDuplex alice bob
     _test _ = error "expected 2 handles"
 
-    duplex alice bob = do
+    _testDuplex :: Handle -> Handle -> IO ()
+    _testDuplex alice bob = do
       Resp _ (IDS aRcv aSnd) <- sendRecv alice ("", "", "CONN 1234")
       -- aSnd ID is passed to Bob out-of-band
 
@@ -199,6 +201,40 @@ testDuplex =
       Resp _ (MSG _ _ msg5) <- tGet fromServer bob
       Resp _ OK <- sendRecv bob ("abcd", bRcv, "ACK")
       (msg5, "how are you bob") #== "message received from alice"
+
+testSwitchSub :: SpecWith ()
+testSwitchSub =
+  it "should create simplex connections and switch subscription to another TCP connection" $
+    smpTestN 3 _test
+  where
+    _test [rh1, rh2, sh] = _testSwitch rh1 rh2 sh
+    _test _ = error "expected 3 handles"
+
+    _testSwitch :: Handle -> Handle -> Handle -> IO ()
+    _testSwitch rh1 rh2 sh = do
+      Resp _ (IDS rId sId) <- sendRecv rh1 ("", "", "CONN 1234")
+      Resp _ ok1 <- sendRecv sh ("", sId, "SEND :test1")
+      (ok1, OK) #== "sent test message 1"
+
+      Resp _ (MSG _ _ msg1) <- tGet fromServer rh1
+      (msg1, "test1") #== "test message 1 delivered to the 1st TCP connection"
+      Resp _ OK <- sendRecv rh1 ("1234", rId, "ACK")
+
+      Resp _ ok2 <- sendRecv rh2 ("1234", rId, "SUB")
+      (ok2, OK) #== "connected to the same simplex connection via another TCP connection"
+
+      Resp _ end <- tGet fromServer rh1
+      (end, END) #== "unsubscribed the 1st connection"
+
+      Resp _ OK <- sendRecv sh ("", sId, "SEND :test2")
+
+      Resp _ (MSG _ _ msg2) <- tGet fromServer rh2
+      (msg2, "test2") #== "delivered to the 2nd TCP connection"
+      Resp _ OK <- sendRecv rh1 ("1234", rId, "ACK")
+
+      timeout 1000 (tGet fromServer rh1) >>= \case
+        Nothing -> return ()
+        Just _ -> error "nothing should be delivered to the 1st TCPconnection"
 
 syntaxTests :: SpecWith ()
 syntaxTests = do
