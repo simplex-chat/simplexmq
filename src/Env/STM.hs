@@ -15,9 +15,15 @@ import Numeric.Natural
 import Transmission
 import UnliftIO.STM
 
-data Env = Env
+data Config = Config
   { tcpPort :: ServiceName,
     queueSize :: Natural,
+    connIdBytes :: Int,
+    msgIdBytes :: Int
+  }
+
+data Env = Env
+  { config :: Config,
     server :: Server,
     connStore :: STMConnStore,
     msgStore :: STMMsgStore,
@@ -48,10 +54,10 @@ newClient qSize = do
   sndQ <- newTBQueue qSize
   return Client {connections, rcvQ, sndQ}
 
-newEnv :: (MonadUnliftIO m, MonadRandom m) => String -> Natural -> m Env
-newEnv tcpPort queueSize = do
-  server <- atomically $ newServer queueSize
+newEnv :: (MonadUnliftIO m, MonadRandom m) => Config -> m Env
+newEnv config = do
+  server <- atomically $ newServer (queueSize config)
   connStore <- atomically newConnStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  return Env {tcpPort, queueSize, server, connStore, msgStore, idsDrg}
+  return Env {config, server, connStore, msgStore, idsDrg}

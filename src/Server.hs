@@ -25,8 +25,6 @@ import Data.Time.Clock
 import Env.STM
 import MsgStore
 import MsgStore.STM (MsgQueue)
-import Network.Socket
-import Numeric.Natural
 import Transmission
 import Transport
 import UnliftIO.Async
@@ -34,15 +32,15 @@ import UnliftIO.Concurrent
 import UnliftIO.IO
 import UnliftIO.STM
 
-runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServiceName -> Natural -> m ()
-runSMPServer port queueSize = do
-  env <- newEnv port queueSize
+runSMPServer :: (MonadRandom m, MonadUnliftIO m) => Config -> m ()
+runSMPServer cfg@Config {tcpPort} = do
+  env <- newEnv cfg
   runReaderT smpServer env
   where
     smpServer :: (MonadUnliftIO m, MonadReader Env m) => m ()
     smpServer = do
       s <- asks server
-      race_ (runTCPServer port runClient) (serverThread s)
+      race_ (runTCPServer tcpPort runClient) (serverThread s)
 
     serverThread :: MonadUnliftIO m => Server -> m ()
     serverThread Server {subscribedQ, connections} = forever . atomically $ do
@@ -56,7 +54,7 @@ runSMPServer port queueSize = do
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
   putLn h "Welcome to SMP"
-  q <- asks queueSize
+  q <- asks $ queueSize . config
   c <- atomically $ newClient q
   s <- asks server
   raceAny_ [send h c, client c s, receive h c]
@@ -142,7 +140,9 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
                   void $ subscribeConn rId
                   return $ IDS rId sId
                 Left e -> return $ ERR e
-            getIds = liftM2 (,) (randomId 16) (randomId 16)
+            getIds = do
+              n <- asks $ connIdBytes . config
+              liftM2 (,) (randomId n) (randomId n)
 
         subscribeConn :: RecipientId -> m Signed
         subscribeConn rId = do
@@ -166,14 +166,18 @@ client clnt@Client {connections, rcvQ, sndQ} Server {subscribedQ} =
           getConn st SSender sId
             >>= fmap (mkSigned sId) . either (return . ERR) storeMessage
           where
+            mkMessage :: m Message
+            mkMessage = do
+              msgId <- asks (msgIdBytes . config) >>= randomId
+              ts <- liftIO getCurrentTime
+              return $ Message {msgId, ts, msgBody}
+
             storeMessage :: Connection -> m (Command 'Broker)
             storeMessage c = case status c of
               ConnActive -> do
                 ms <- asks msgStore
                 q <- getMsgQueue ms (recipientId c)
-                msgId <- randomId 8
-                ts <- liftIO getCurrentTime
-                writeMsg q $ Message {msgId, ts, msgBody}
+                mkMessage >>= writeMsg q
                 return OK
               ConnOff -> return $ ERR AUTH
 
