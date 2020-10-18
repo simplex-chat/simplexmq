@@ -1,0 +1,57 @@
+digraph SMPServer {
+  graph [fontname=arial]
+  node [fontname=arial fontsize=11 shape=box]
+  edge [fontname=arial fontsize=10 arrowhead=open arrowtail=open]
+
+  subgraph clusterPersistence {
+    label="persistence (STM)"
+    msgQueues [shape=cylinder label="Message\nqueues\npersistence"]
+    queueStore [shape=cylinder label="SMP connections\n(aka SMP queues)\npersistence"]
+  }
+
+  subgraph clusterServer {
+    label="server threads" 
+    main [shape=hexagon color=orange label="main\nthread"]
+    ss [label="server TCP socket" color=blue]
+    subgraph clusterThreads {
+      label="" 
+      node [shape=hexagon color=orange]
+      runClient [label="runClient\nthread"]
+      server [label="server\nthread"]
+    }
+    subscribedQ [shape="larrow" label="subscribed\nTBQueue"]
+    main -> {server runClient} [style=dashed label=race color=orange fontcolor=orange]
+    ss -> runClient [color=blue]
+    subscribedQ -> server
+  }
+
+  subgraph clusterConnection {
+    label="1 group per client connection"
+    cs [label="client connection TCP socket" color=blue]
+
+    subgraph clusterThreads {
+      node [shape=hexagon, color=orange]
+      label=""
+      receive [label="receive\nthread"]
+      client [label="client\nthread"]
+      send [label="send\nthread"]
+    }
+
+    runClient -> cs [style=dashed label="connect" color=blue fontcolor=blue]
+    runClient -> {client receive send} [style=dashed label=race color=orange fontcolor=orange]
+    server -> inq [label="END"]
+
+    subscriber [shape=hexagon color=orange label="subscriber\nthread\n(only sends\n1 msg atm)"]
+
+    inq [shape=rarrow label="receive\nTBQueue"]
+    outq [shape=larrow label="send\nTBQueue"]
+    cs -> receive -> inq -> client [color=blue]
+    msgQueues -> subscriber [label="Message" color=green fontcolor=green]
+    subscriber -> outq [label="MSG" color=blue fontcolor=blue constraint=false]
+    client -> queueStore [dir=both]
+    client -> subscriber [style=dashed label="1 fork\nper\nqueue" color=orange]
+    client -> msgQueues [dir="both" label="SEND,\nSUB,\nACK" color=green]
+    client -> outq -> send -> cs [color=blue]
+    client -> subscribedQ [label="(rId,\nClient)"]
+  }
+}
