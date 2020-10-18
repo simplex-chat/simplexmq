@@ -9,6 +9,7 @@ import Crypto.Random
 import Env.STM
 import Network.Socket
 import Server
+import Test.Hspec
 import Transmission
 import Transport
 import UnliftIO.Concurrent
@@ -57,3 +58,21 @@ smpServerTest commands = runSmpTest \h -> mapM (sendReceive h) commands
   where
     sendReceive :: Handle -> RawTransmission -> IO RawTransmission
     sendReceive h t = tPutRaw h t >> either (error "bad transmission") id <$> tGetRaw h
+
+smpTest :: (Handle -> IO ()) -> Expectation
+smpTest test' = runSmpTest test' `shouldReturn` ()
+
+smpTestN :: Int -> ([Handle] -> IO ()) -> Expectation
+smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
+
+smpTest2 :: (Handle -> Handle -> IO ()) -> Expectation
+smpTest2 test' = smpTestN 2 _test
+  where
+    _test [h1, h2] = test' h1 h2
+    _test _ = error "expected 2 handles"
+
+smpTest3 :: (Handle -> Handle -> Handle -> IO ()) -> Expectation
+smpTest3 test' = smpTestN 3 _test
+  where
+    _test [h1, h2, h3] = test' h1 h2 h3
+    _test _ = error "expected 3 handles"

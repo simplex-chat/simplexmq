@@ -17,9 +17,6 @@ import Test.Hspec
 import Transmission
 import Transport
 
-(>#>) :: [RawTransmission] -> [RawTransmission] -> Expectation
-commands >#> responses = smpServerTest commands `shouldReturn` responses
-
 main :: IO ()
 main = hspec do
   describe "SMP syntax" syntaxTests
@@ -33,14 +30,11 @@ main = hspec do
 pattern Resp :: ConnId -> Command 'Broker -> TransmissionOrError
 pattern Resp connId command = ("", (connId, Right (Cmd SBroker command)))
 
-smpTest :: (Handle -> IO ()) -> Expectation
-smpTest test' = runSmpTest test' `shouldReturn` ()
-
-smpTestN :: Int -> ([Handle] -> IO ()) -> Expectation
-smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
-
 sendRecv :: Handle -> RawTransmission -> IO TransmissionOrError
 sendRecv h (sgn, cId, cmd) = tPutRaw h (fromRight "" $ decode sgn, cId, cmd) >> tGet fromServer h
+
+(>#>) :: [RawTransmission] -> [RawTransmission] -> Expectation
+commands >#> responses = smpServerTest commands `shouldReturn` responses
 
 (#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion
 (actual, expected) #== message = assertEqual message expected actual
@@ -94,73 +88,73 @@ testCreateSecure =
 testCreateDelete :: SpecWith ()
 testCreateDelete =
   it "should create (CONN), suspend (OFF) and delete (DEL) connection" $
-    smpTest \h -> do
-      Resp rId1 (IDS rId sId) <- sendRecv h ("", "", "CONN 1234")
+    smpTest2 \rh sh -> do
+      Resp rId1 (IDS rId sId) <- sendRecv rh ("", "", "CONN 1234")
       (rId1, "") #== "creates connection"
 
-      Resp _ ok1 <- sendRecv h ("1234", rId, "KEY 4567")
+      Resp _ ok1 <- sendRecv rh ("1234", rId, "KEY 4567")
       (ok1, OK) #== "secures connection"
 
-      Resp _ ok2 <- sendRecv h ("4567", sId, "SEND :hello")
+      Resp _ ok2 <- sendRecv sh ("4567", sId, "SEND :hello")
       (ok2, OK) #== "accepts signed SEND"
 
-      Resp _ (MSG _ _ msg1) <- tGet fromServer h
+      Resp _ ok7 <- sendRecv sh ("4567", sId, "SEND :hello 2")
+      (ok7, OK) #== "accepts signed SEND 2 - this message is not delivered because the first is not ACKed"
+
+      Resp _ (MSG _ _ msg1) <- tGet fromServer rh
       (msg1, "hello") #== "delivers message"
 
-      Resp _ err1 <- sendRecv h ("12345678", rId, "OFF")
+      Resp _ err1 <- sendRecv rh ("12345678", rId, "OFF")
       (err1, ERR AUTH) #== "rejects OFF with wrong signature (password atm)"
 
-      Resp _ err2 <- sendRecv h ("1234", sId, "OFF")
+      Resp _ err2 <- sendRecv rh ("1234", sId, "OFF")
       (err2, ERR AUTH) #== "rejects OFF with sender's ID"
 
-      Resp rId2 ok3 <- sendRecv h ("1234", rId, "OFF")
+      Resp rId2 ok3 <- sendRecv rh ("1234", rId, "OFF")
       (ok3, OK) #== "suspends connection"
       (rId2, rId) #== "same connection ID in response 2"
 
-      Resp _ err3 <- sendRecv h ("4567", sId, "SEND :hello")
+      Resp _ err3 <- sendRecv sh ("4567", sId, "SEND :hello")
       (err3, ERR AUTH) #== "rejects signed SEND"
 
-      Resp _ err4 <- sendRecv h ("", sId, "SEND :hello")
+      Resp _ err4 <- sendRecv sh ("", sId, "SEND :hello")
       (err4, ERR AUTH) #== "reject unsigned SEND too"
 
-      Resp _ ok4 <- sendRecv h ("1234", rId, "OFF")
+      Resp _ ok4 <- sendRecv rh ("1234", rId, "OFF")
       (ok4, OK) #== "accepts OFF when suspended"
 
-      Resp _ (MSG _ _ msg) <- sendRecv h ("1234", rId, "SUB")
+      Resp _ (MSG _ _ msg) <- sendRecv rh ("1234", rId, "SUB")
       (msg, "hello") #== "accepts SUB when suspended and delivers the message again (because was not ACKed)"
 
-      Resp _ err5 <- sendRecv h ("12345678", rId, "DEL")
+      Resp _ err5 <- sendRecv rh ("12345678", rId, "DEL")
       (err5, ERR AUTH) #== "rejects DEL with wrong signature (password atm)"
 
-      Resp _ err6 <- sendRecv h ("1234", sId, "DEL")
+      Resp _ err6 <- sendRecv rh ("1234", sId, "DEL")
       (err6, ERR AUTH) #== "rejects DEL with sender's ID"
 
-      Resp rId3 ok6 <- sendRecv h ("1234", rId, "DEL")
+      Resp rId3 ok6 <- sendRecv rh ("1234", rId, "DEL")
       (ok6, OK) #== "deletes connection"
       (rId3, rId) #== "same connection ID in response 3"
 
-      Resp _ err7 <- sendRecv h ("4567", sId, "SEND :hello")
+      Resp _ err7 <- sendRecv sh ("4567", sId, "SEND :hello")
       (err7, ERR AUTH) #== "rejects signed SEND when deleted"
 
-      Resp _ err8 <- sendRecv h ("", sId, "SEND :hello")
+      Resp _ err8 <- sendRecv sh ("", sId, "SEND :hello")
       (err8, ERR AUTH) #== "rejects unsigned SEND too when deleted"
 
-      Resp _ err9 <- sendRecv h ("1234", rId, "OFF")
+      Resp _ err11 <- sendRecv rh ("1234", rId, "ACK")
+      (err11, ERR AUTH) #== "rejects ACK when conn deleted - the second message is deleted"
+
+      Resp _ err9 <- sendRecv rh ("1234", rId, "OFF")
       (err9, ERR AUTH) #== "rejects OFF when deleted"
 
-      Resp _ err10 <- sendRecv h ("1234", rId, "SUB")
+      Resp _ err10 <- sendRecv rh ("1234", rId, "SUB")
       (err10, ERR AUTH) #== "rejects SUB when deleted"
 
 testDuplex :: SpecWith ()
 testDuplex =
   it "should create 2 simplex connections and exchange messages" $
-    smpTestN 2 _test
-  where
-    _test [alice, bob] = _testDuplex alice bob
-    _test _ = error "expected 2 handles"
-
-    _testDuplex :: Handle -> Handle -> IO ()
-    _testDuplex alice bob = do
+    smpTest2 \alice bob -> do
       Resp _ (IDS aRcv aSnd) <- sendRecv alice ("", "", "CONN 1234")
       -- aSnd ID is passed to Bob out-of-band
 
@@ -205,31 +199,29 @@ testDuplex =
 testSwitchSub :: SpecWith ()
 testSwitchSub =
   it "should create simplex connections and switch subscription to another TCP connection" $
-    smpTestN 3 _test
-  where
-    _test [rh1, rh2, sh] = _testSwitch rh1 rh2 sh
-    _test _ = error "expected 3 handles"
-
-    _testSwitch :: Handle -> Handle -> Handle -> IO ()
-    _testSwitch rh1 rh2 sh = do
+    smpTest3 \rh1 rh2 sh -> do
       Resp _ (IDS rId sId) <- sendRecv rh1 ("", "", "CONN 1234")
       Resp _ ok1 <- sendRecv sh ("", sId, "SEND :test1")
       (ok1, OK) #== "sent test message 1"
+      Resp _ ok2 <- sendRecv sh ("", sId, "SEND :test2, no ACK")
+      (ok2, OK) #== "sent test message 2"
 
       Resp _ (MSG _ _ msg1) <- tGet fromServer rh1
       (msg1, "test1") #== "test message 1 delivered to the 1st TCP connection"
-      Resp _ OK <- sendRecv rh1 ("1234", rId, "ACK")
+      Resp _ (MSG _ _ msg2) <- sendRecv rh1 ("1234", rId, "ACK")
+      (msg2, "test2, no ACK") #== "test message 2 delivered, no ACK"
 
-      Resp _ ok2 <- sendRecv rh2 ("1234", rId, "SUB")
-      (ok2, OK) #== "connected to the same simplex connection via another TCP connection"
+      Resp _ (MSG _ _ msg2') <- sendRecv rh2 ("1234", rId, "SUB")
+      (msg2', "test2, no ACK") #== "same simplex connection via another TCP connection, tes2 delivered again (no ACK in 1st connection)"
+      Resp _ OK <- sendRecv rh2 ("1234", rId, "ACK")
 
       Resp _ end <- tGet fromServer rh1
       (end, END) #== "unsubscribed the 1st connection"
 
-      Resp _ OK <- sendRecv sh ("", sId, "SEND :test2")
+      Resp _ OK <- sendRecv sh ("", sId, "SEND :test3")
 
-      Resp _ (MSG _ _ msg2) <- tGet fromServer rh2
-      (msg2, "test2") #== "delivered to the 2nd TCP connection"
+      Resp _ (MSG _ _ msg3) <- tGet fromServer rh2
+      (msg3, "test3") #== "delivered to the 2nd TCP connection"
       Resp _ OK <- sendRecv rh1 ("1234", rId, "ACK")
 
       timeout 1000 (tGet fromServer rh1) >>= \case
