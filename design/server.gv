@@ -52,6 +52,6 @@ digraph SMPServer {
     client -> subscriber [style=dashed label="1 fork per\nSMP queue/\nconnection" color=orange]
     client -> msgQueues [dir="both" label="SEND,\nSUB,\nACK" color=green]
     client -> outq -> send -> cs [color=blue]
-    client -> subscribedQ [label="(rId,\nClient)"]
+    client -> subscribedQ [label="(rId, Client)"]
   }
 }
