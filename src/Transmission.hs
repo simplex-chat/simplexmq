@@ -2,7 +2,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -19,15 +18,15 @@ import Data.Kind
 import Data.Time.Clock
 import Data.Time.ISO8601
 
-data SParty :: Party -> Type where
-  SBroker :: SParty 'Broker
-  SRecipient :: SParty 'Recipient
-  SSender :: SParty 'Sender
-
-deriving instance Show (SParty a)
-
 data Party = Broker | Recipient | Sender
   deriving (Show)
+
+data SParty :: Party -> Type where
+  SBroker :: SParty Broker
+  SRecipient :: SParty Recipient
+  SSender :: SParty Sender
+
+deriving instance Show (SParty a)
 
 data Cmd where
   Cmd :: SParty a -> Command a -> Cmd

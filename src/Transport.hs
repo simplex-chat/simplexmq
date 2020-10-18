@@ -62,11 +62,14 @@ startTCPClient host port = liftIO . withSocketsDo $ resolve >>= open
 runTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
 runTCPClient host port = E.bracket (startTCPClient host port) IO.hClose
 
+smpNewlineMode :: NewlineMode
+smpNewlineMode = NewlineMode {inputNL = CRLF, outputNL = CRLF}
+
 getSocketHandle :: MonadIO m => Socket -> m Handle
 getSocketHandle conn = liftIO $ do
   h <- socketToHandle conn ReadWriteMode
   hSetBinaryMode h True
-  hSetNewlineMode h universalNewlineMode
+  hSetNewlineMode h smpNewlineMode
   hSetBuffering h LineBuffering
   return h
 
