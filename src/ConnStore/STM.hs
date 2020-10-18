@@ -16,7 +16,6 @@ import ConnStore
 import Control.Monad.IO.Unlift
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Singletons
 import Transmission
 import UnliftIO.STM
 
@@ -53,7 +52,7 @@ instance MonadUnliftIO m => MonadConnStore STMConnStore m where
                     }
                 return $ Just c
 
-  getConn :: STMConnStore -> Sing (p :: Party) -> ConnId -> m (Either ErrorType Connection)
+  getConn :: STMConnStore -> SParty (p :: Party) -> ConnId -> m (Either ErrorType Connection)
   getConn store SRecipient rId = atomically $ do
     cs <- readTVar store
     return $ getRcpConn cs rId

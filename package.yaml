@@ -20,7 +20,6 @@ dependencies:
   - iso8601-time == 0.1.*
   - mtl
   - network
-  - singletons
   - stm
   - time == 1.9.*
   - unliftio-core

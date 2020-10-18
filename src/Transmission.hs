@@ -1,12 +1,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
@@ -17,19 +15,22 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (ord)
-import Data.Singletons.TH
+import Data.Kind
 import Data.Time.Clock
 import Data.Time.ISO8601
 
-$( singletons
-     [d|
-       data Party = Broker | Recipient | Sender
-         deriving (Show)
-       |]
- )
+data SParty :: Party -> Type where
+  SBroker :: SParty 'Broker
+  SRecipient :: SParty 'Recipient
+  SSender :: SParty 'Sender
+
+deriving instance Show (SParty a)
+
+data Party = Broker | Recipient | Sender
+  deriving (Show)
 
 data Cmd where
-  Cmd :: Sing a -> Command a -> Cmd
+  Cmd :: SParty a -> Command a -> Cmd
 
 deriving instance Show Cmd
 

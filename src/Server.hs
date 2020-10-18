@@ -20,7 +20,6 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
-import Data.Singletons
 import Data.Time.Clock
 import Env.STM
 import MsgStore
@@ -87,7 +86,7 @@ verifyTransmission signature connId cmd = do
     Cmd SRecipient _ -> withConnection SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> withConnection SSender $ verifySend . senderKey
   where
-    withConnection :: Sing (p :: Party) -> (Connection -> m Cmd) -> m Cmd
+    withConnection :: SParty (p :: Party) -> (Connection -> m Cmd) -> m Cmd
     withConnection party f = do
       store <- asks connStore
       conn <- getConn store party connId

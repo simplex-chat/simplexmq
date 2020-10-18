@@ -5,7 +5,6 @@
 
 module ConnStore where
 
-import Data.Singletons
 import Transmission
 
 data Connection = Connection
@@ -20,7 +19,7 @@ data ConnStatus = ConnActive | ConnOff
 
 class MonadConnStore s m where
   addConn :: s -> m (RecipientId, SenderId) -> RecipientKey -> m (Either ErrorType Connection)
-  getConn :: s -> Sing (a :: Party) -> ConnId -> m (Either ErrorType Connection)
+  getConn :: s -> SParty (a :: Party) -> ConnId -> m (Either ErrorType Connection)
   secureConn :: s -> RecipientId -> SenderKey -> m (Either ErrorType ())
   suspendConn :: s -> RecipientId -> m (Either ErrorType ())
   deleteConn :: s -> RecipientId -> m (Either ErrorType ())
