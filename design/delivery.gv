@@ -1,0 +1,70 @@
+digraph msgDelivery {
+  graph [fontname=arial]
+  node [fontname=arial fontsize=11 shape=box style=rounded]
+  edge [fontname=arial fontsize=10 arrowhead=open arrowtail=open]
+
+  subgraph clusterSUB {
+    label="SUB"
+    lookup [label="lookup\nconnId"]
+    notify [label="notify\nserver\n(connId,\nClient)"]
+    OK [label="send OK"]
+    lookup -> forkSub [label="Nothing"]
+    lookup -> tryTakeMD1 [label="Just _"]
+    forkSub [label="forkIO\nsubscriber"]
+    tryTakeMD1 [label="tryTakeM d" color=blue]
+    forkSub -> notify -> tryTakeMD1 -> OK
+  }
+
+  subgraph clusterSubscriber {
+    label="subscriber"
+    subgraph clusterMutexes {
+      label="TMVar's"
+      node [shape=circle]
+      a; d;
+    }
+    putMD [label="putM d" color=green style=square]
+    tryTakeMA [label="tryTakeM a" color=blue]
+    EOQ [label="send EOQ"]
+    MSG [label="send MSG"]
+    subgraph {
+      node [style=square]
+      readQ
+      peekQ
+      putMD [label="putM d" color=green]
+    }
+    putMD -> tryTakeMA
+    tryTakeMA -> readQ [label="Just _"]
+    readQ -> tryPeekQ
+    tryTakeMA -> tryPeekQ [label="Nothing"]
+    tryPeekQ -> MSG [label="Just msg"]
+    tryPeekQ -> EOQ [label="Nothing"]
+    EOQ -> peekQ
+    peekQ -> MSG [label="msg"]
+    MSG -> putMD
+  }
+
+  subgraph clusterACK {
+    label="ACK"
+    tryPutMA [label="tryPutM a" color=green]
+    tryTakeMD2 [label="tryTakeM d" color=blue]
+    OK1 [label="send OK"]
+    ERR [label="send\nERR NOMSG"]
+    tryTakeMD2 -> tryPutMA -> OK1 [label="Just _"]
+    {tryPutMA tryTakeMD2} -> ERR [label="Nothing"]
+  }
+
+  subgraph clusterEND {
+    label="END"
+    killSub [label="killThread\nsubscriber"]
+    END [label="send END"]
+    killSub -> END
+  }
+
+  subgraph clusterDEL {
+    label="DEL"
+    killSub1 [label="killThread\nsubscriber"]
+    delQueue [label="delete queue"]
+    OK2 [label="send OK"]
+    killSub1 -> delQueue -> OK2
+  }
+}
