@@ -56,6 +56,9 @@ testCreateSecure =
       Resp _ ok4 <- sendRecv h ("1234", rId, "ACK")
       (ok4, OK) #== "replies OK when message acknowledged if no more messages"
 
+      Resp _ err6 <- sendRecv h ("1234", rId, "ACK")
+      (err6, ERR PROHIBITED) #== "replies ERR when message acknowledged without messages"
+
       Resp sId2 err1 <- sendRecv h ("4567", sId, "SEND :hello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same connection ID in response 2"

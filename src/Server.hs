@@ -64,9 +64,8 @@ runClient h = do
     `finally` cancelSubscribers c
 
 cancelSubscribers :: (MonadUnliftIO m) => Client -> m ()
-cancelSubscribers Client {subscriptions} = do
-  cs <- readTVarIO subscriptions
-  forM_ cs cancelSub
+cancelSubscribers Client {subscriptions} =
+  readTVarIO subscriptions >>= mapM_ cancelSub
 
 cancelSub :: (MonadUnliftIO m) => Sub -> m ()
 cancelSub = \case
@@ -84,7 +83,7 @@ receive h Client {rcvQ} = forever $ do
   (signature, (connId, cmdOrError)) <- tGet fromClient h
   -- TODO maybe send Either to queue?
   signed <- case cmdOrError of
-    Left e -> return . (connId,) . Cmd SBroker $ ERR e
+    Left e -> return . mkResp connId $ ERR e
     Right cmd -> verifyTransmission signature connId cmd
   atomically $ writeTBQueue rcvQ signed
 
@@ -92,6 +91,9 @@ send :: MonadUnliftIO m => Handle -> Client -> m ()
 send h Client {sndQ} = forever $ do
   signed <- atomically $ readTBQueue sndQ
   tPut h (B.empty, signed)
+
+mkResp :: ConnId -> Command 'Broker -> Signed
+mkResp connId command = (connId, Cmd SBroker command)
 
 verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Signature -> ConnId -> Cmd -> m Signed
 verifyTransmission signature connId cmd = do
@@ -252,9 +254,6 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             deleteConn st connId >>= \case
               Left e -> return $ err e
               Right _ -> delMsgQueue ms connId $> ok
-
-        mkResp :: ConnId -> Command 'Broker -> Signed
-        mkResp cId command = (cId, Cmd SBroker command)
 
         ok :: Signed
         ok = mkResp connId OK
