@@ -222,11 +222,16 @@ testSwitchSub =
 
       Resp _ (MSG _ _ msg3) <- tGet fromServer rh2
       (msg3, "test3") #== "delivered to the 2nd TCP connection"
-      Resp _ OK <- sendRecv rh1 ("1234", rId, "ACK")
+
+      Resp _ err <- sendRecv rh1 ("1234", rId, "ACK")
+      (err, ERR PROHIBITED) #== "rejects ACK from the 1st TCP connection"
+
+      Resp _ ok3 <- sendRecv rh2 ("1234", rId, "ACK")
+      (ok3, OK) #== "accepts ACK from the 2nd TCP connection"
 
       timeout 1000 (tGet fromServer rh1) >>= \case
         Nothing -> return ()
-        Just _ -> error "nothing should be delivered to the 1st TCPconnection"
+        Just _ -> error "nothing else is delivered to the 1st TCPconnection"
 
 syntaxTests :: SpecWith ()
 syntaxTests = do

@@ -32,27 +32,39 @@ data Env = Env
 
 data Server = Server
   { subscribedQ :: TBQueue (RecipientId, Client),
-    connections :: TVar (Map RecipientId Client)
+    subscribers :: TVar (Map RecipientId Client)
   }
 
 data Client = Client
-  { connections :: TVar (Map RecipientId (Either () ThreadId)),
+  { subscriptions :: TVar (Map RecipientId Sub),
     rcvQ :: TBQueue Signed,
     sndQ :: TBQueue Signed
+  }
+
+data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
+
+data Sub = Sub
+  { subThread :: SubscriptionThread,
+    delivered :: TMVar ()
   }
 
 newServer :: Natural -> STM Server
 newServer qSize = do
   subscribedQ <- newTBQueue qSize
-  connections <- newTVar M.empty
-  return Server {subscribedQ, connections}
+  subscribers <- newTVar M.empty
+  return Server {subscribedQ, subscribers}
 
 newClient :: Natural -> STM Client
 newClient qSize = do
-  connections <- newTVar M.empty
+  subscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {connections, rcvQ, sndQ}
+  return Client {subscriptions, rcvQ, sndQ}
+
+newSubscription :: STM Sub
+newSubscription = do
+  delivered <- newEmptyTMVar
+  return Sub {subThread = NoSub, delivered}
 
 newEnv :: (MonadUnliftIO m, MonadRandom m) => Config -> m Env
 newEnv config = do

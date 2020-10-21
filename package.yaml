@@ -29,6 +29,8 @@ executables:
   simplex-messaging:
     source-dirs: src
     main: Main.hs
+    ghc-options:
+      - -threaded
 
 library:
   source-dirs: src
@@ -45,7 +47,6 @@ tests:
 
 ghc-options:
   # - -haddock
-  - -O0
   - -Wall
   - -Wcompat
   - -Werror=incomplete-patterns
