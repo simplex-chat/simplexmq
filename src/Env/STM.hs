@@ -25,7 +25,7 @@ data Config = Config
 data Env = Env
   { config :: Config,
     server :: Server,
-    connStore :: STMConnStore,
+    connStore :: ConnStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG
   }

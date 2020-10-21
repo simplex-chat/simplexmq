@@ -13,6 +13,7 @@
 module Server (runSMPServer) where
 
 import ConnStore
+import ConnStore.STM (ConnStore)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
 import Control.Monad.IO.Unlift
@@ -102,7 +103,7 @@ verifyTransmission signature connId cmd = do
     withConnection :: SParty (p :: Party) -> (Connection -> m Cmd) -> m Cmd
     withConnection party f = do
       store <- asks connStore
-      conn <- getConn store party connId
+      conn <- atomically $ getConn store party connId
       either (return . smpErr) f conn
     verifySend :: Maybe PublicKey -> m Cmd
     verifySend
@@ -133,9 +134,9 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           CONN rKey -> createConn st rKey
           SUB -> subscribeConn connId
           ACK -> acknowledgeMsg
-          KEY sKey -> okResponse <$> secureConn st connId sKey
-          OFF -> okResponse <$> suspendConn st connId
-          DEL -> okResponse <$> deleteConn st connId
+          KEY sKey -> okResponse <$> atomically (secureConn st connId sKey)
+          OFF -> okResponse <$> atomically (suspendConn st connId)
+          DEL -> okResponse <$> atomically (deleteConn st connId)
       where
         ok :: Signed
         ok = (connId, Cmd SBroker OK)
@@ -143,15 +144,26 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         okResponse :: Either ErrorType () -> Signed
         okResponse = mkSigned connId . either ERR (const OK)
 
-        createConn :: MonadConnStore s m => s -> RecipientKey -> m Signed
+        createConn :: ConnStore -> RecipientKey -> m Signed
         createConn st rKey = mkSigned B.empty <$> addSubscribe
           where
             addSubscribe = do
-              addConn st getIds rKey >>= \case
-                Right Connection {recipientId = rId, senderId = sId} -> do
+              addConnRetry 3 >>= \case
+                Left e -> return $ ERR e
+                Right (rId, sId) -> do
                   void $ subscribeConn rId
                   return $ IDS rId sId
-                Left e -> return $ ERR e
+
+            addConnRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
+            addConnRetry 0 = return $ Left INTERNAL
+            addConnRetry n = do
+              ids <- getIds
+              atomically (addConn st rKey ids) >>= \case
+                Left DUPLICATE -> addConnRetry $ n - 1
+                Left e -> return $ Left e
+                Right _ -> return $ Right ids
+
+            getIds :: m (RecipientId, SenderId)
             getIds = do
               n <- asks $ connIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
@@ -185,9 +197,9 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             Just () -> deliverMessage tryDelPeekMsg connId
             Nothing -> return . mkSigned connId $ ERR PROHIBITED
 
-        sendMessage :: MonadConnStore s m => s -> MsgBody -> m Signed
+        sendMessage :: ConnStore -> MsgBody -> m Signed
         sendMessage st msgBody =
-          getConn st SSender connId
+          atomically (getConn st SSender connId)
             >>= fmap (mkSigned connId) . either (return . ERR) storeMessage
           where
             mkMessage :: m Message
@@ -200,9 +212,11 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             storeMessage c = case status c of
               ConnActive -> do
                 ms <- asks msgStore
-                q <- atomically $ getMsgQueue ms (recipientId c)
-                mkMessage >>= atomically . writeMsg q
-                return OK
+                msg <- mkMessage
+                atomically $ do
+                  q <- getMsgQueue ms (recipientId c)
+                  writeMsg q msg
+                  return OK
               ConnOff -> return $ ERR AUTH
 
         deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> m Signed

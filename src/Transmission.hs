@@ -155,7 +155,7 @@ type MsgId = Encoded
 
 type MsgBody = ByteString
 
-data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL deriving (Show, Eq)
+data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
 
 errBadTransmission :: Int
 errBadTransmission = 1

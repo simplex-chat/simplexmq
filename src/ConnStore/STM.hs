@@ -3,7 +3,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
@@ -13,7 +12,6 @@
 module ConnStore.STM where
 
 import ConnStore
-import Control.Monad.IO.Unlift
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Transmission
@@ -24,39 +22,30 @@ data ConnStoreData = ConnStoreData
     senders :: Map SenderId RecipientId
   }
 
-type STMConnStore = TVar ConnStoreData
+type ConnStore = TVar ConnStoreData
 
-newConnStore :: STM STMConnStore
+newConnStore :: STM ConnStore
 newConnStore = newTVar ConnStoreData {connections = M.empty, senders = M.empty}
 
-instance MonadUnliftIO m => MonadConnStore STMConnStore m where
-  addConn :: STMConnStore -> m (RecipientId, SenderId) -> RecipientKey -> m (Either ErrorType Connection)
-  addConn = _addConn (3 :: Int)
-    where
-      _addConn 0 _ _ _ = return $ Left INTERNAL
-      _addConn retry store getIds rKey = do
-        getIds >>= atomically . insertConn >>= \case
-          Nothing -> _addConn (retry - 1) store getIds rKey
-          Just c -> return $ Right c
-        where
-          insertConn ids@(rId, sId) = do
-            cs@ConnStoreData {connections, senders} <- readTVar store
-            if M.member rId connections || M.member sId senders
-              then return Nothing
-              else do
-                let c = mkConnection ids rKey
-                writeTVar store $
-                  cs
-                    { connections = M.insert rId c connections,
-                      senders = M.insert sId rId senders
-                    }
-                return $ Just c
+instance MonadConnStore ConnStore STM where
+  addConn :: ConnStore -> RecipientKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
+  addConn store rKey ids@(rId, sId) = do
+    cs@ConnStoreData {connections, senders} <- readTVar store
+    if M.member rId connections || M.member sId senders
+      then return $ Left DUPLICATE
+      else do
+        writeTVar store $
+          cs
+            { connections = M.insert rId (mkConnection rKey ids) connections,
+              senders = M.insert sId rId senders
+            }
+        return $ Right ()
 
-  getConn :: STMConnStore -> SParty (p :: Party) -> ConnId -> m (Either ErrorType Connection)
-  getConn store SRecipient rId = atomically $ do
+  getConn :: ConnStore -> SParty (p :: Party) -> ConnId -> STM (Either ErrorType Connection)
+  getConn store SRecipient rId = do
     cs <- readTVar store
     return $ getRcpConn cs rId
-  getConn store SSender sId = atomically $ do
+  getConn store SSender sId = do
     cs <- readTVar store
     let rId = M.lookup sId $ senders cs
     return $ maybe (Left AUTH) (getRcpConn cs) rId
@@ -69,12 +58,12 @@ instance MonadUnliftIO m => MonadConnStore STMConnStore m where
         Just _ -> (Left AUTH, cs)
         _ -> (Right (), cs {connections = M.insert rId c {senderKey = Just sKey} (connections cs)})
 
-  suspendConn :: STMConnStore -> RecipientId -> m (Either ErrorType ())
+  suspendConn :: ConnStore -> RecipientId -> STM (Either ErrorType ())
   suspendConn store rId =
     updateConnections store rId $ \cs c ->
       (Right (), cs {connections = M.insert rId c {status = ConnOff} (connections cs)})
 
-  deleteConn :: STMConnStore -> RecipientId -> m (Either ErrorType ())
+  deleteConn :: ConnStore -> RecipientId -> STM (Either ErrorType ())
   deleteConn store rId =
     updateConnections store rId $ \cs c ->
       ( Right (),
@@ -85,12 +74,11 @@ instance MonadUnliftIO m => MonadConnStore STMConnStore m where
       )
 
 updateConnections ::
-  MonadUnliftIO m =>
-  STMConnStore ->
+  ConnStore ->
   RecipientId ->
   (ConnStoreData -> Connection -> (Either ErrorType (), ConnStoreData)) ->
-  m (Either ErrorType ())
-updateConnections store rId update = atomically $ do
+  STM (Either ErrorType ())
+updateConnections store rId update = do
   cs <- readTVar store
   let conn = getRcpConn cs rId
   either (return . Left) (_update cs) conn
