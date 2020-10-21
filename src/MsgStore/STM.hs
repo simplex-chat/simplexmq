@@ -33,13 +33,12 @@ instance MonadMsgStore STMMsgStore MsgQueue STM where
         return q
 
   delMsgQueue :: STMMsgStore -> RecipientId -> STM ()
-  delMsgQueue store rId = modifyTVar store $
-    \(MsgStoreData ms) ->
-      MsgStoreData $ M.delete rId ms
+  delMsgQueue store rId =
+    modifyTVar store $ MsgStoreData . M.delete rId . messages
 
 instance MonadMsgQueue MsgQueue STM where
   writeMsg :: MsgQueue -> Message -> STM ()
-  writeMsg (MsgQueue q) = writeTQueue q
+  writeMsg = writeTQueue . msgQueue
 
   tryPeekMsg :: MsgQueue -> STM (Maybe Message)
   tryPeekMsg = tryPeekTQueue . msgQueue

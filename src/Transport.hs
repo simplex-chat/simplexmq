@@ -150,10 +150,6 @@ tGet fromParty h = tGetRaw h >>= either (const tError) tParseLoadBody
         Cmd SBroker . MSG msgId ts <$$> getMsgBody body
       cmd -> return $ Right cmd
 
-    infixl 4 <$$>
-    (<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
-    (<$$>) = fmap . fmap
-
     getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
     getMsgBody msgBody =
       case B.unpack msgBody of
@@ -164,3 +160,8 @@ tGet fromParty h = tGetRaw h >>= either (const tError) tParseLoadBody
             s <- getLn h
             return if B.null s then Right body else Left SIZE
           Nothing -> return . Left $ SYNTAX errMessageBody
+
+infixl 4 <$$>
+
+(<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
+(<$$>) = fmap . fmap

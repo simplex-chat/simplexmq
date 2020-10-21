@@ -21,6 +21,7 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time.Clock
 import Env.STM
@@ -127,32 +128,24 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
     processCommand (connId, cmd) = do
       st <- asks connStore
       case cmd of
-        Cmd SBroker END -> unsubscribeConn >> return (connId, cmd)
+        Cmd SBroker END -> unsubscribeConn $> (connId, cmd)
         Cmd SBroker _ -> return (connId, cmd)
         Cmd SSender (SEND msgBody) -> sendMessage st msgBody
         Cmd SRecipient command -> case command of
           CONN rKey -> createConn st rKey
           SUB -> subscribeConn connId
           ACK -> acknowledgeMsg
-          KEY sKey -> okResponse <$> atomically (secureConn st connId sKey)
-          OFF -> okResponse <$> atomically (suspendConn st connId)
-          DEL -> okResponse <$> atomically (deleteConn st connId)
+          KEY sKey -> okResp <$> atomically (secureConn st connId sKey)
+          OFF -> okResp <$> atomically (suspendConn st connId)
+          DEL -> delConnAndMsgs st
       where
-        ok :: Signed
-        ok = (connId, Cmd SBroker OK)
-
-        okResponse :: Either ErrorType () -> Signed
-        okResponse = mkSigned connId . either ERR (const OK)
-
         createConn :: ConnStore -> RecipientKey -> m Signed
-        createConn st rKey = mkSigned B.empty <$> addSubscribe
+        createConn st rKey = mkResp B.empty <$> addSubscribe
           where
-            addSubscribe = do
+            addSubscribe =
               addConnRetry 3 >>= \case
                 Left e -> return $ ERR e
-                Right (rId, sId) -> do
-                  void $ subscribeConn rId
-                  return $ IDS rId sId
+                Right (rId, sId) -> subscribeConn rId $> IDS rId sId
 
             addConnRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
             addConnRetry 0 = return $ Left INTERNAL
@@ -169,16 +162,19 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
               liftM2 (,) (randomId n) (randomId n)
 
         subscribeConn :: RecipientId -> m Signed
-        subscribeConn rId = do
-          atomically $ do
-            cs <- readTVar subscriptions
-            case M.lookup rId cs of
-              Just Sub {delivered} -> void $ tryTakeTMVar delivered
-              Nothing -> do
-                writeTBQueue subscribedQ (rId, clnt)
-                sub <- newSubscription
-                writeTVar subscriptions $ M.insert rId sub cs
-          deliverMessage tryPeekMsg rId
+        subscribeConn rId =
+          atomically (getSubscription rId) >>= deliverMessage tryPeekMsg rId
+
+        getSubscription :: RecipientId -> STM Sub
+        getSubscription rId = do
+          subs <- readTVar subscriptions
+          case M.lookup rId subs of
+            Just s -> tryTakeTMVar (delivered s) $> s
+            Nothing -> do
+              writeTBQueue subscribedQ (rId, clnt)
+              s <- newSubscription
+              writeTVar subscriptions $ M.insert rId s subs
+              return s
 
         unsubscribeConn :: m ()
         unsubscribeConn = do
@@ -187,20 +183,19 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           mapM_ cancelSub sub
 
         acknowledgeMsg :: m Signed
-        acknowledgeMsg = do
-          dlvrd <- atomically $ do
-            cs <- readTVar subscriptions
-            case M.lookup connId cs of
-              Just s -> tryTakeTMVar (delivered s)
-              Nothing -> return Nothing
-          case dlvrd of
-            Just () -> deliverMessage tryDelPeekMsg connId
-            Nothing -> return . mkSigned connId $ ERR PROHIBITED
+        acknowledgeMsg =
+          atomically (withSub connId $ \s -> const s <$$> tryTakeTMVar (delivered s))
+            >>= \case
+              Just (Just s) -> deliverMessage tryDelPeekMsg connId s
+              _ -> return $ err PROHIBITED
+
+        withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
+        withSub rId f = readTVar subscriptions >>= mapM f . M.lookup rId
 
         sendMessage :: ConnStore -> MsgBody -> m Signed
-        sendMessage st msgBody =
-          atomically (getConn st SSender connId)
-            >>= fmap (mkSigned connId) . either (return . ERR) storeMessage
+        sendMessage st msgBody = do
+          conn <- atomically $ getConn st SSender connId
+          either (return . err) storeMessage conn
           where
             mkMessage :: m Message
             mkMessage = do
@@ -208,59 +203,70 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
               ts <- liftIO getCurrentTime
               return $ Message {msgId, ts, msgBody}
 
-            storeMessage :: Connection -> m (Command 'Broker)
+            storeMessage :: Connection -> m Signed
             storeMessage c = case status c of
+              ConnOff -> return $ err AUTH
               ConnActive -> do
                 ms <- asks msgStore
                 msg <- mkMessage
                 atomically $ do
                   q <- getMsgQueue ms (recipientId c)
                   writeMsg q msg
-                  return OK
-              ConnOff -> return $ ERR AUTH
+                  return ok
 
-        deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> m Signed
-        deliverMessage tryPeek rId = do
-          ms <- asks msgStore
-          q <- atomically $ getMsgQueue ms rId
-          atomically (tryPeek q) >>= \case
-            Just msg -> do
-              atomically setDelivered
-              return $ msgResponse rId msg
-            Nothing -> forkSub q >> return ok
+        deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> Sub -> m Signed
+        deliverMessage tryPeek rId = \case
+          Sub {subThread = NoSub} -> do
+            ms <- asks msgStore
+            q <- atomically $ getMsgQueue ms rId
+            atomically (tryPeek q) >>= \case
+              Nothing -> forkSub q $> ok
+              Just msg -> atomically setDelivered $> msgResp rId msg
+          _ -> return ok
           where
             forkSub :: MsgQueue -> m ()
             forkSub q = do
-              sub <- M.lookup rId <$> readTVarIO subscriptions
-              case sub of
-                Just Sub {subThread = NoSub} -> do
-                  atomically . setSub $ \s -> s {subThread = SubPending}
-                  t <- forkIO $ subscriber q
-                  atomically . setSub $ \case
-                    s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
-                    s -> s
-                _ -> return ()
+              atomically . setSub $ \s -> s {subThread = SubPending}
+              t <- forkIO $ subscriber q
+              atomically . setSub $ \case
+                s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
+                s -> s
 
             subscriber :: MsgQueue -> m ()
             subscriber q = atomically $ do
               msg <- peekMsg q
-              writeTBQueue sndQ $ msgResponse rId msg
+              writeTBQueue sndQ $ msgResp rId msg
               setSub (\s -> s {subThread = NoSub})
-              setDelivered
+              void setDelivered
 
             setSub :: (Sub -> Sub) -> STM ()
             setSub f = modifyTVar subscriptions $ M.adjust f rId
 
-            setDelivered :: STM ()
-            setDelivered =
-              readTVar subscriptions
-                >>= mapM_ (\s -> tryPutTMVar (delivered s) ()) . M.lookup rId
+            setDelivered :: STM (Maybe Bool)
+            setDelivered = withSub rId $ \s -> tryPutTMVar (delivered s) ()
 
-        mkSigned :: ConnId -> Command 'Broker -> Signed
-        mkSigned cId command = (cId, Cmd SBroker command)
+        delConnAndMsgs :: ConnStore -> m Signed
+        delConnAndMsgs st = do
+          ms <- asks msgStore
+          atomically $
+            deleteConn st connId >>= \case
+              Left e -> return $ err e
+              Right _ -> delMsgQueue ms connId $> ok
 
-        msgResponse :: RecipientId -> Message -> Signed
-        msgResponse rId Message {msgId, ts, msgBody} = mkSigned rId $ MSG msgId ts msgBody
+        mkResp :: ConnId -> Command 'Broker -> Signed
+        mkResp cId command = (cId, Cmd SBroker command)
+
+        ok :: Signed
+        ok = mkResp connId OK
+
+        err :: ErrorType -> Signed
+        err = mkResp connId . ERR
+
+        okResp :: Either ErrorType () -> Signed
+        okResp = either err $ const ok
+
+        msgResp :: RecipientId -> Message -> Signed
+        msgResp rId Message {msgId, ts, msgBody} = mkResp rId $ MSG msgId ts msgBody
 
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m Encoded
 randomId n = do
