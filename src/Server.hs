@@ -200,20 +200,18 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             storeMessage c = case status c of
               ConnActive -> do
                 ms <- asks msgStore
-                q <- getMsgQueue ms (recipientId c)
-                mkMessage >>= writeMsg q
+                q <- atomically $ getMsgQueue ms (recipientId c)
+                mkMessage >>= atomically . writeMsg q
                 return OK
               ConnOff -> return $ ERR AUTH
 
-        deliverMessage :: (MsgQueue -> m (Maybe Message)) -> RecipientId -> m Signed
+        deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> m Signed
         deliverMessage tryPeek rId = do
           ms <- asks msgStore
-          q <- getMsgQueue ms rId
-          tryPeek q >>= \case
+          q <- atomically $ getMsgQueue ms rId
+          atomically (tryPeek q) >>= \case
             Just msg -> do
-              atomically $ do
-                sub <- M.lookup rId <$> readTVar subscriptions
-                forM_ sub $ \Sub {delivered} -> tryPutTMVar delivered ()
+              atomically setDelivered
               return $ msgResponse rId msg
             Nothing -> forkSub q >> return ok
           where
@@ -229,21 +227,20 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
                     s -> s
                 _ -> return ()
 
+            subscriber :: MsgQueue -> m ()
+            subscriber q = atomically $ do
+              msg <- peekMsg q
+              writeTBQueue sndQ $ msgResponse rId msg
+              setSub (\s -> s {subThread = NoSub})
+              setDelivered
+
             setSub :: (Sub -> Sub) -> STM ()
             setSub f = modifyTVar subscriptions $ M.adjust f rId
 
-            subscriber :: MsgQueue -> m ()
-            subscriber q = do
-              msg <- peekMsg q
-              atomically $ do
-                writeTBQueue sndQ $ msgResponse rId msg
-                -- setSub (\s -> s {subThread = NoSub})
-                cs <- readTVar subscriptions
-                let sub = M.lookup rId cs
-                forM_ sub $ \s@Sub {delivered} -> do
-                  void $ tryPutTMVar delivered ()
-                  let cs' = M.insert rId s {subThread = NoSub} cs
-                  writeTVar subscriptions cs'
+            setDelivered :: STM ()
+            setDelivered =
+              readTVar subscriptions
+                >>= mapM_ (\s -> tryPutTMVar (delivered s) ()) . M.lookup rId
 
         mkSigned :: ConnId -> Command 'Broker -> Signed
         mkSigned cId command = (cId, Cmd SBroker command)

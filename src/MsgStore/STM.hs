@@ -6,7 +6,6 @@
 
 module MsgStore.STM where
 
-import Control.Monad.IO.Unlift
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import MsgStore
@@ -22,9 +21,9 @@ type STMMsgStore = TVar MsgStoreData
 newMsgStore :: STM STMMsgStore
 newMsgStore = newTVar $ MsgStoreData M.empty
 
-instance MonadUnliftIO m => MonadMsgStore STMMsgStore MsgQueue m where
-  getMsgQueue :: STMMsgStore -> RecipientId -> m MsgQueue
-  getMsgQueue store rId = atomically $ do
+instance MonadMsgStore STMMsgStore MsgQueue STM where
+  getMsgQueue :: STMMsgStore -> RecipientId -> STM MsgQueue
+  getMsgQueue store rId = do
     m <- messages <$> readTVar store
     maybe (newQ m) return $ M.lookup rId m
     where
@@ -33,23 +32,21 @@ instance MonadUnliftIO m => MonadMsgStore STMMsgStore MsgQueue m where
         writeTVar store . MsgStoreData $ M.insert rId q m'
         return q
 
-  delMsgQueue :: STMMsgStore -> RecipientId -> m ()
-  delMsgQueue store rId = atomically . modifyTVar store $
+  delMsgQueue :: STMMsgStore -> RecipientId -> STM ()
+  delMsgQueue store rId = modifyTVar store $
     \(MsgStoreData ms) ->
       MsgStoreData $ M.delete rId ms
 
-instance MonadUnliftIO m => MonadMsgQueue MsgQueue m where
-  writeMsg :: MsgQueue -> Message -> m ()
-  writeMsg (MsgQueue q) msg = atomically $ writeTQueue q msg
+instance MonadMsgQueue MsgQueue STM where
+  writeMsg :: MsgQueue -> Message -> STM ()
+  writeMsg (MsgQueue q) = writeTQueue q
 
-  tryPeekMsg :: MsgQueue -> m (Maybe Message)
-  tryPeekMsg = atomically . tryPeekTQueue . msgQueue
+  tryPeekMsg :: MsgQueue -> STM (Maybe Message)
+  tryPeekMsg = tryPeekTQueue . msgQueue
 
-  peekMsg :: MsgQueue -> m Message
-  peekMsg = atomically . peekTQueue . msgQueue
+  peekMsg :: MsgQueue -> STM Message
+  peekMsg = peekTQueue . msgQueue
 
   -- atomic delete (== read) last and peek next message if available
-  tryDelPeekMsg :: MsgQueue -> m (Maybe Message)
-  tryDelPeekMsg (MsgQueue q) =
-    atomically $
-      tryReadTQueue q >> tryPeekTQueue q
+  tryDelPeekMsg :: MsgQueue -> STM (Maybe Message)
+  tryDelPeekMsg (MsgQueue q) = tryReadTQueue q >> tryPeekTQueue q
