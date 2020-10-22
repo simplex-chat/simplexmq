@@ -35,8 +35,8 @@ cfg :: Config
 cfg =
   Config
     { tcpPort = testPort,
-      queueSize = 1,
-      connIdBytes = 12,
+      tbqSize = 1,
+      queueIdBytes = 12,
       msgIdBytes = 6
     }
 

@@ -33,18 +33,18 @@ data Cmd where
 
 deriving instance Show Cmd
 
-type Signed = (ConnId, Cmd)
+type Signed = (QueueId, Cmd)
 
 type Transmission = (Signature, Signed)
 
-type SignedOrError = (ConnId, Either ErrorType Cmd)
+type SignedOrError = (QueueId, Either ErrorType Cmd)
 
 type TransmissionOrError = (Signature, SignedOrError)
 
 type RawTransmission = (ByteString, ByteString, ByteString)
 
 data Command (a :: Party) where
-  CONN :: RecipientKey -> Command Recipient
+  NEW :: RecipientKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SenderKey -> Command Recipient
   ACK :: Command Recipient
@@ -63,8 +63,8 @@ deriving instance Eq (Command a)
 
 parseCommand :: ByteString -> Either ErrorType Cmd
 parseCommand command = case B.words command of
-  ["CONN", rKeyStr] -> case decode rKeyStr of
-    Right rKey -> rCmd $ CONN rKey
+  ["NEW", rKeyStr] -> case decode rKeyStr of
+    Right rKey -> rCmd $ NEW rKey
     _ -> errParams
   ["SUB"] -> rCmd SUB
   ["KEY", sKeyStr] -> case decode sKeyStr of
@@ -95,7 +95,7 @@ parseCommand command = case B.words command of
     ["AUTH"] -> bErr AUTH
     ["INTERNAL"] -> bErr INTERNAL
     _ -> errParams
-  "CONN" : _ -> errParams
+  "NEW" : _ -> errParams
   "SUB" : _ -> errParams
   "KEY" : _ -> errParams
   "ACK" : _ -> errParams
@@ -123,7 +123,7 @@ zero = ord '0'
 
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
-  Cmd SRecipient (CONN rKey) -> "CONN " <> encode rKey
+  Cmd SRecipient (NEW rKey) -> "NEW " <> encode rKey
   Cmd SRecipient (KEY sKey) -> "KEY " <> encode sKey
   Cmd SRecipient cmd -> B.pack $ show cmd
   Cmd SSender (SEND msgBody) -> "SEND" <> serializeMsg msgBody
@@ -145,11 +145,11 @@ type RecipientKey = PublicKey
 
 type SenderKey = PublicKey
 
-type RecipientId = ConnId
+type RecipientId = QueueId
 
-type SenderId = ConnId
+type SenderId = QueueId
 
-type ConnId = Encoded
+type QueueId = Encoded
 
 type MsgId = Encoded
 

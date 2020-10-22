@@ -80,20 +80,20 @@ getBytes :: MonadIO m => Handle -> Int -> m ByteString
 getBytes h = liftIO . B.hGet h
 
 tPutRaw :: MonadIO m => Handle -> RawTransmission -> m ()
-tPutRaw h (signature, connId, command) = do
+tPutRaw h (signature, queueId, command) = do
   putLn h (encode signature)
-  putLn h (encode connId)
+  putLn h (encode queueId)
   putLn h command
 
 tGetRaw :: MonadIO m => Handle -> m (Either String RawTransmission)
 tGetRaw h = do
   signature <- decode <$> getLn h
-  connId <- decode <$> getLn h
+  queueId <- decode <$> getLn h
   command <- getLn h
-  return $ liftM2 (,,command) signature connId
+  return $ liftM2 (,,command) signature queueId
 
 tPut :: MonadIO m => Handle -> Transmission -> m ()
-tPut h (signature, (connId, command)) = tPutRaw h (signature, connId, serializeCommand command)
+tPut h (signature, (queueId, command)) = tPutRaw h (signature, queueId, serializeCommand command)
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
@@ -114,32 +114,32 @@ tGet fromParty h = tGetRaw h >>= either (const tError) tParseLoadBody
     tError = return (B.empty, (B.empty, Left $ SYNTAX errBadTransmission))
 
     tParseLoadBody :: RawTransmission -> m TransmissionOrError
-    tParseLoadBody t@(signature, connId, command) = do
+    tParseLoadBody t@(signature, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (signature, (connId, fullCmd))
+      return (signature, (queueId, fullCmd))
 
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
-    tCredentials (signature, connId, _) cmd = case cmd of
-      -- IDS response should not have connection ID
+    tCredentials (signature, queueId, _) cmd = case cmd of
+      -- IDS response should not have queue ID
       Cmd SBroker (IDS _ _) -> Right cmd
-      -- ERROR response does not always have connection ID
+      -- ERROR response does not always have queue ID
       Cmd SBroker (ERR _) -> Right cmd
-      -- other responses must have connection ID
+      -- other responses must have queue ID
       Cmd SBroker _
-        | B.null connId -> Left $ SYNTAX errNoConnectionId
+        | B.null queueId -> Left $ SYNTAX errNoConnectionId
         | otherwise -> Right cmd
-      -- CREATE must NOT have signature or connection ID
-      Cmd SRecipient (CONN _)
-        | B.null signature && B.null connId -> Right cmd
+      -- CREATE must NOT have signature or queue ID
+      Cmd SRecipient (NEW _)
+        | B.null signature && B.null queueId -> Right cmd
         | otherwise -> Left $ SYNTAX errHasCredentials
-      -- SEND must have connection ID, signature is not always required
+      -- SEND must have queue ID, signature is not always required
       Cmd SSender (SEND _)
-        | B.null connId -> Left $ SYNTAX errNoConnectionId
+        | B.null queueId -> Left $ SYNTAX errNoConnectionId
         | otherwise -> Right cmd
-      -- other client commands must have both signature and connection ID
+      -- other client commands must have both signature and queue ID
       Cmd SRecipient _
-        | B.null signature || B.null connId -> Left $ SYNTAX errNoCredentials
+        | B.null signature || B.null queueId -> Left $ SYNTAX errNoCredentials
         | otherwise -> Right cmd
 
     cmdWithMsgBody :: Cmd -> m (Either ErrorType Cmd)

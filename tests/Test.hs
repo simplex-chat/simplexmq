@@ -20,18 +20,18 @@ import Transport
 main :: IO ()
 main = hspec do
   describe "SMP syntax" syntaxTests
-  describe "SMP connections" do
-    describe "CONN and KEY commands, SEND messages" testCreateSecure
-    describe "CONN, OFF and DEL commands, SEND messages" testCreateDelete
+  describe "SMP queues" do
+    describe "NEW and KEY commands, SEND messages" testCreateSecure
+    describe "NEW, OFF and DEL commands, SEND messages" testCreateDelete
   describe "SMP messages" do
     describe "duplex communication over 2 SMP connections" testDuplex
-    describe "switch subscription to another SMP connection" testSwitchSub
+    describe "switch subscription to another SMP queue" testSwitchSub
 
-pattern Resp :: ConnId -> Command 'Broker -> TransmissionOrError
-pattern Resp connId command = ("", (connId, Right (Cmd SBroker command)))
+pattern Resp :: QueueId -> Command 'Broker -> TransmissionOrError
+pattern Resp queueId command = ("", (queueId, Right (Cmd SBroker command)))
 
 sendRecv :: Handle -> RawTransmission -> IO TransmissionOrError
-sendRecv h (sgn, cId, cmd) = tPutRaw h (fromRight "" $ decode sgn, cId, cmd) >> tGet fromServer h
+sendRecv h (sgn, qId, cmd) = tPutRaw h (fromRight "" $ decode sgn, qId, cmd) >> tGet fromServer h
 
 (>#>) :: [RawTransmission] -> [RawTransmission] -> Expectation
 commands >#> responses = smpServerTest commands `shouldReturn` responses
@@ -41,14 +41,14 @@ commands >#> responses = smpServerTest commands `shouldReturn` responses
 
 testCreateSecure :: SpecWith ()
 testCreateSecure =
-  it "should create (CONN) and secure (KEY) connection" $
+  it "should create (NEW) and secure (KEY) queue" $
     smpTest \h -> do
-      Resp rId1 (IDS rId sId) <- sendRecv h ("", "", "CONN 1234")
-      (rId1, "") #== "creates connection"
+      Resp rId1 (IDS rId sId) <- sendRecv h ("", "", "NEW 1234")
+      (rId1, "") #== "creates queue"
 
       Resp sId1 ok1 <- sendRecv h ("", sId, "SEND :hello")
       (ok1, OK) #== "accepts unsigned SEND"
-      (sId1, sId) #== "same connection ID in response 1"
+      (sId1, sId) #== "same queue ID in response 1"
 
       Resp _ (MSG _ _ msg1) <- tGet fromServer h
       (msg1, "hello") #== "delivers message"
@@ -61,7 +61,7 @@ testCreateSecure =
 
       Resp sId2 err1 <- sendRecv h ("4567", sId, "SEND :hello")
       (err1, ERR AUTH) #== "rejects signed SEND"
-      (sId2, sId) #== "same connection ID in response 2"
+      (sId2, sId) #== "same queue ID in response 2"
 
       Resp _ err2 <- sendRecv h ("12345678", rId, "KEY 4567")
       (err2, ERR AUTH) #== "rejects KEY with wrong signature (password atm)"
@@ -70,8 +70,8 @@ testCreateSecure =
       (err3, ERR AUTH) #== "rejects KEY with sender's ID"
 
       Resp rId2 ok2 <- sendRecv h ("1234", rId, "KEY 4567")
-      (ok2, OK) #== "secures connection"
-      (rId2, rId) #== "same connection ID in response 3"
+      (ok2, OK) #== "secures queue"
+      (rId2, rId) #== "same queue ID in response 3"
 
       Resp _ err4 <- sendRecv h ("1234", rId, "KEY 4567")
       (err4, ERR AUTH) #== "rejects KEY if already secured"
@@ -90,13 +90,13 @@ testCreateSecure =
 
 testCreateDelete :: SpecWith ()
 testCreateDelete =
-  it "should create (CONN), suspend (OFF) and delete (DEL) connection" $
+  it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 \rh sh -> do
-      Resp rId1 (IDS rId sId) <- sendRecv rh ("", "", "CONN 1234")
-      (rId1, "") #== "creates connection"
+      Resp rId1 (IDS rId sId) <- sendRecv rh ("", "", "NEW 1234")
+      (rId1, "") #== "creates queue"
 
       Resp _ ok1 <- sendRecv rh ("1234", rId, "KEY 4567")
-      (ok1, OK) #== "secures connection"
+      (ok1, OK) #== "secures queue"
 
       Resp _ ok2 <- sendRecv sh ("4567", sId, "SEND :hello")
       (ok2, OK) #== "accepts signed SEND"
@@ -114,8 +114,8 @@ testCreateDelete =
       (err2, ERR AUTH) #== "rejects OFF with sender's ID"
 
       Resp rId2 ok3 <- sendRecv rh ("1234", rId, "OFF")
-      (ok3, OK) #== "suspends connection"
-      (rId2, rId) #== "same connection ID in response 2"
+      (ok3, OK) #== "suspends queue"
+      (rId2, rId) #== "same queue ID in response 2"
 
       Resp _ err3 <- sendRecv sh ("4567", sId, "SEND :hello")
       (err3, ERR AUTH) #== "rejects signed SEND"
@@ -136,8 +136,8 @@ testCreateDelete =
       (err6, ERR AUTH) #== "rejects DEL with sender's ID"
 
       Resp rId3 ok6 <- sendRecv rh ("1234", rId, "DEL")
-      (ok6, OK) #== "deletes connection"
-      (rId3, rId) #== "same connection ID in response 3"
+      (ok6, OK) #== "deletes queue"
+      (rId3, rId) #== "same queue ID in response 3"
 
       Resp _ err7 <- sendRecv sh ("4567", sId, "SEND :hello")
       (err7, ERR AUTH) #== "rejects signed SEND when deleted"
@@ -158,7 +158,7 @@ testDuplex :: SpecWith ()
 testDuplex =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 \alice bob -> do
-      Resp _ (IDS aRcv aSnd) <- sendRecv alice ("", "", "CONN 1234")
+      Resp _ (IDS aRcv aSnd) <- sendRecv alice ("", "", "NEW 1234")
       -- aSnd ID is passed to Bob out-of-band
 
       Resp _ OK <- sendRecv bob ("", aSnd, "SEND :key efgh")
@@ -170,14 +170,14 @@ testDuplex =
       (key1, "efgh") #== "key received from Bob"
       Resp _ OK <- sendRecv alice ("1234", aRcv, "KEY " <> key1)
 
-      Resp _ (IDS bRcv bSnd) <- sendRecv bob ("", "", "CONN abcd")
+      Resp _ (IDS bRcv bSnd) <- sendRecv bob ("", "", "NEW abcd")
       Resp _ OK <- sendRecv bob ("efgh", aSnd, "SEND :reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, it is not a part of SMP protocol
 
       Resp _ (MSG _ _ msg2) <- tGet fromServer alice
       Resp _ OK <- sendRecv alice ("1234", aRcv, "ACK")
       ["reply_id", bId] <- return $ B.words msg2
-      (bId, encode bSnd) #== "reply connection ID received from Bob"
+      (bId, encode bSnd) #== "reply queue ID received from Bob"
       Resp _ OK <- sendRecv alice ("", bSnd, "SEND :key 5678")
       -- "key 5678" is ad-hoc, different from SMP protocol
 
@@ -203,7 +203,7 @@ testSwitchSub :: SpecWith ()
 testSwitchSub =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 \rh1 rh2 sh -> do
-      Resp _ (IDS rId sId) <- sendRecv rh1 ("", "", "CONN 1234")
+      Resp _ (IDS rId sId) <- sendRecv rh1 ("", "", "NEW 1234")
       Resp _ ok1 <- sendRecv sh ("", sId, "SEND :test1")
       (ok1, OK) #== "sent test message 1"
       Resp _ ok2 <- sendRecv sh ("", sId, "SEND :test2, no ACK")
@@ -215,11 +215,11 @@ testSwitchSub =
       (msg2, "test2, no ACK") #== "test message 2 delivered, no ACK"
 
       Resp _ (MSG _ _ msg2') <- sendRecv rh2 ("1234", rId, "SUB")
-      (msg2', "test2, no ACK") #== "same simplex connection via another TCP connection, tes2 delivered again (no ACK in 1st connection)"
+      (msg2', "test2, no ACK") #== "same simplex queue via another TCP connection, tes2 delivered again (no ACK in 1st queue)"
       Resp _ OK <- sendRecv rh2 ("1234", rId, "ACK")
 
       Resp _ end <- tGet fromServer rh1
-      (end, END) #== "unsubscribed the 1st connection"
+      (end, END) #== "unsubscribed the 1st TCP connection"
 
       Resp _ OK <- sendRecv sh ("", sId, "SEND :test3")
 
@@ -234,22 +234,22 @@ testSwitchSub =
 
       timeout 1000 (tGet fromServer rh1) >>= \case
         Nothing -> return ()
-        Just _ -> error "nothing else is delivered to the 1st TCPconnection"
+        Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
 syntaxTests :: SpecWith ()
 syntaxTests = do
   it "unknown command" $ [("", "1234", "HELLO")] >#> [("", "1234", "ERR UNKNOWN")]
-  describe "CONN" do
-    it "no parameters" $ [("", "", "CONN")] >#> [("", "", "ERR SYNTAX 2")]
-    it "many parameters" $ [("", "", "CONN 1 2")] >#> [("", "", "ERR SYNTAX 2")]
-    it "has signature" $ [("1234", "", "CONN 1234")] >#> [("", "", "ERR SYNTAX 4")]
-    it "connection ID" $ [("", "1", "CONN 1234")] >#> [("", "1", "ERR SYNTAX 4")]
+  describe "NEW" do
+    it "no parameters" $ [("", "", "NEW")] >#> [("", "", "ERR SYNTAX 2")]
+    it "many parameters" $ [("", "", "NEW 1 2")] >#> [("", "", "ERR SYNTAX 2")]
+    it "has signature" $ [("1234", "", "NEW 1234")] >#> [("", "", "ERR SYNTAX 4")]
+    it "queue ID" $ [("", "1", "NEW 1234")] >#> [("", "1", "ERR SYNTAX 4")]
   describe "KEY" do
     it "valid syntax" $ [("1234", "1", "KEY 4567")] >#> [("", "1", "ERR AUTH")]
     it "no parameters" $ [("1234", "1", "KEY")] >#> [("", "1", "ERR SYNTAX 2")]
     it "many parameters" $ [("1234", "1", "KEY 1 2")] >#> [("", "1", "ERR SYNTAX 2")]
     it "no signature" $ [("", "1", "KEY 4567")] >#> [("", "1", "ERR SYNTAX 3")]
-    it "no connection ID" $ [("1234", "", "KEY 4567")] >#> [("", "", "ERR SYNTAX 3")]
+    it "no queue ID" $ [("1234", "", "KEY 4567")] >#> [("", "", "ERR SYNTAX 3")]
   noParamsSyntaxTest "SUB"
   noParamsSyntaxTest "ACK"
   noParamsSyntaxTest "OFF"
@@ -258,7 +258,7 @@ syntaxTests = do
     it "valid syntax 1" $ [("1234", "1", "SEND :hello")] >#> [("", "1", "ERR AUTH")]
     it "valid syntax 2" $ [("1234", "1", "SEND 11\nhello there\n")] >#> [("", "1", "ERR AUTH")]
     it "no parameters" $ [("1234", "1", "SEND")] >#> [("", "1", "ERR SYNTAX 2")]
-    it "no connection ID" $ [("1234", "", "SEND :hello")] >#> [("", "", "ERR SYNTAX 5")]
+    it "no queue ID" $ [("1234", "", "SEND :hello")] >#> [("", "", "ERR SYNTAX 5")]
     it "bad message body 1" $ [("1234", "1", "SEND 11 hello")] >#> [("", "1", "ERR SYNTAX 6")]
     it "bad message body 2" $ [("1234", "1", "SEND hello")] >#> [("", "1", "ERR SYNTAX 6")]
     it "bigger body" $ [("1234", "1", "SEND 4\nhello\n")] >#> [("", "1", "ERR SIZE")]
@@ -270,4 +270,4 @@ syntaxTests = do
       it "valid syntax" $ [("1234", "1", cmd)] >#> [("", "1", "ERR AUTH")]
       it "parameters" $ [("1234", "1", cmd <> " 1")] >#> [("", "1", "ERR SYNTAX 2")]
       it "no signature" $ [("", "1", cmd)] >#> [("", "1", "ERR SYNTAX 3")]
-      it "no connection ID" $ [("1234", "", cmd)] >#> [("", "", "ERR SYNTAX 3")]
+      it "no queue ID" $ [("1234", "", cmd)] >#> [("", "", "ERR SYNTAX 3")]

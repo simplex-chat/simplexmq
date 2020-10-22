@@ -7,8 +7,8 @@ cfg :: Config
 cfg =
   Config
     { tcpPort = "5223",
-      queueSize = 16,
-      connIdBytes = 12,
+      tbqSize = 16,
+      queueIdBytes = 12,
       msgIdBytes = 6
     }
 

@@ -3,7 +3,6 @@
 
 module Env.STM where
 
-import ConnStore.STM
 import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
@@ -12,20 +11,21 @@ import qualified Data.Map.Strict as M
 import MsgStore.STM
 import Network.Socket (ServiceName)
 import Numeric.Natural
+import QueueStore.STM
 import Transmission
 import UnliftIO.STM
 
 data Config = Config
   { tcpPort :: ServiceName,
-    queueSize :: Natural,
-    connIdBytes :: Int,
+    tbqSize :: Natural,
+    queueIdBytes :: Int,
     msgIdBytes :: Int
   }
 
 data Env = Env
   { config :: Config,
     server :: Server,
-    connStore :: ConnStore,
+    queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG
   }
@@ -68,8 +68,8 @@ newSubscription = do
 
 newEnv :: (MonadUnliftIO m, MonadRandom m) => Config -> m Env
 newEnv config = do
-  server <- atomically $ newServer (queueSize config)
-  connStore <- atomically newConnStore
+  server <- atomically $ newServer (tbqSize config)
+  queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  return Env {config, server, connStore, msgStore, idsDrg}
+  return Env {config, server, queueStore, msgStore, idsDrg}
