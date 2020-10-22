@@ -6,7 +6,7 @@ digraph SMPServer {
   subgraph clusterPersistence {
     label="persistence (STM)"
     msgQueues [shape=cylinder label="Message\nqueues"]
-    queueStore [shape=cylinder label="SMP connections\n(aka SMP queues)"]
+    queueStore [shape=cylinder label="SMP queue\nrecords"]
   }
 
   subgraph clusterServer {
@@ -49,7 +49,7 @@ digraph SMPServer {
     msgQueues -> subscriber [label="Message" color=green fontcolor=green]
     subscriber -> outq [label="MSG" color=blue fontcolor=blue constraint=false]
     client -> queueStore [dir=both]
-    client -> subscriber [style=dashed label="1 fork per\nSMP queue/\nconnection" color=orange]
+    client -> subscriber [style=dashed label="1 fork per\nSMP queue" color=orange]
     client -> msgQueues [dir="both" label="SEND,\nSUB,\nACK" color=green]
     client -> outq -> send -> cs [color=blue]
     client -> subscribedQ [label="(rId, Client)"]
