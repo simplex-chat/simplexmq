@@ -9,12 +9,12 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module QueueStore.STM where
+module Simplex.Messaging.Server.QueueStore.STM where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import QueueStore
-import Transmission
+import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.Transmission
 import UnliftIO.STM
 
 data QueueStoreData = QueueStoreData

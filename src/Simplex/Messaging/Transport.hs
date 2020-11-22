@@ -6,18 +6,18 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Transport where
+module Simplex.Messaging.Transport where
 
 import Control.Monad.IO.Class
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
+import qualified  Data.ByteString.Char8 as B
 import Network.Socket
+import Simplex.Messaging.Server.Transmission
 import System.IO
 import Text.Read
-import Transmission
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import qualified UnliftIO.IO as IO

@@ -10,12 +10,12 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either
 import SMPClient
+import Simplex.Messaging.Server.Transmission
+import Simplex.Messaging.Transport
 import System.IO (Handle)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
-import Transmission
-import Transport
 
 main :: IO ()
 main = hspec do

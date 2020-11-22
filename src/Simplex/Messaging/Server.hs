@@ -10,7 +10,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Server (runSMPServer) where
+module Simplex.Messaging.Server (runSMPServer) where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
@@ -22,13 +22,13 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time.Clock
-import Env.STM
-import MsgStore
-import MsgStore.STM (MsgQueue)
-import QueueStore
-import QueueStore.STM (QueueStore)
-import Transmission
-import Transport
+import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.MsgStore
+import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
+import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
+import Simplex.Messaging.Server.Transmission
+import Simplex.Messaging.Transport
 import UnliftIO.Async
 import UnliftIO.Concurrent
 import UnliftIO.Exception

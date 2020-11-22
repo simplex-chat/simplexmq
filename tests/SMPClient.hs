@@ -6,12 +6,12 @@ module SMPClient where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Env.STM
 import Network.Socket
-import Server
+import Simplex.Messaging.Server
+import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.Transmission
+import Simplex.Messaging.Transport
 import Test.Hspec
-import Transmission
-import Transport
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.IO

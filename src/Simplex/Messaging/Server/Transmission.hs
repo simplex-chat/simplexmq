@@ -8,7 +8,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Transmission where
+module Simplex.Messaging.Server.Transmission where
 
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)

@@ -3,9 +3,9 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module QueueStore where
+module Simplex.Messaging.Server.QueueStore where
 
-import Transmission
+import Simplex.Messaging.Server.Transmission
 
 data QueueRec = QueueRec
   { recipientId :: QueueId,

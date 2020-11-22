@@ -1,18 +1,18 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Env.STM where
+module Simplex.Messaging.Server.Env.STM where
 
 import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import MsgStore.STM
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import QueueStore.STM
-import Transmission
+import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Server.Transmission
 import UnliftIO.STM
 
 data Config = Config

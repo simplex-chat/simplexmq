@@ -1,7 +1,7 @@
 module Main where
 
-import Env.STM
-import Server (runSMPServer)
+import Simplex.Messaging.Server (runSMPServer)
+import Simplex.Messaging.Server.Env.STM
 
 cfg :: Config
 cfg =
