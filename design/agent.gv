@@ -3,11 +3,6 @@ digraph SMPAgent {
   node [fontname=arial fontsize=11 shape=box]
   edge [fontname=arial fontsize=10 arrowhead=open arrowtail=open]
 
-  subgraph clusterPersistence {
-    label="persistence"
-    connectionsStore [shape=cylinder label="duplex\nconnection\nrecords"]
-  }
-
   subgraph clusterAgent {
     label="agent threads" 
     main [shape=hexagon color=orange label="main\nthread"]
@@ -22,14 +17,18 @@ digraph SMPAgent {
     main -> {runUser runServer} [style=dashed label=race color=orange fontcolor=orange]
     aSock -> runUser [color=darkgreen]
 
-    acInq [shape=rarrow label="agent\nserver\ncommands\nTBQueue"]
+    acInq [shape=larrow label="agent\nserver\ncommands\nTBQueue"]
     acInq -> runServer [color=darkgreen]
+    runServer -> amInq [color=darkgreen label="unknown\nconnection\nor\nwrong\nconnection\nstate"]
 
-    amInq [shape=larrow label="agent\nserver\nmessages\nTBQueue"]
+    amInq [shape=rarrow label="agent\nserver\nmessages\nTBQueue"]
     amInq -> msgSubscriber [color=blue]
 
     msgSubscriber -> connectionsStore [dir=both]
     runUser -> connectionsStore [dir=both]
+    runServer -> connectionsStore [dir=both]
+
+    connectionsStore [shape=cylinder label="duplex\nconnection\nrecords"]
   }
 
   subgraph clusterUser {
@@ -40,21 +39,20 @@ digraph SMPAgent {
       graph [fontsize=11]
       label="user threads"
       node [shape=hexagon, color=orange]
-      uRcv [label="receive"]
       uAgent [label="user"]
       uSnd [label="send"]
     }
 
     runUser -> uSock [style=dashed label="connect" color=darkgreen fontcolor=darkgreen]
-    runUser -> {uAgent uRcv uSnd} [style=dashed label=race color=orange fontcolor=orange]
+    runUser -> {uAgent uSnd} [style=dashed label=race color=orange fontcolor=orange]
 
-    uInq [shape=rarrow label="receive\nTBQueue"]
     uOutq [shape=larrow label="send\nTBQueue"]
-    uSock -> uRcv -> uInq -> uAgent [color=darkgreen]
-    uAgent -> uOutq -> uSnd -> uSock [color=darkgreen]
+    uSock -> uAgent [color=darkgreen]
+    uAgent -> uOutq [color=darkgreen label="SMAP\ncommand\nsyntax\nerror"]
+    uOutq -> uSnd -> uSock [color=darkgreen]
 
-    msgSubscriber -> uOutq [color=blue]
-    uAgent -> acInq [color=darkgreen]
+    msgSubscriber -> uOutq [color=blue label="SMAP\nmessages\nand\ncommand\nresponses"]
+    uAgent -> acInq [color=darkgreen label="SMAP\nprotocol\ncommand"]
   }
 
   subgraph clusterServer {
@@ -65,19 +63,17 @@ digraph SMPAgent {
       graph [fontsize=11]
       label="server threads"
       node [shape=hexagon, color=orange]
-      sRcv [label="receive"]
       sAgent [label="server"]
       sSnd [label="send"]
     }
 
-    runServer -> {sAgent sRcv sSnd} [style=dashed label=race color=orange fontcolor=orange]
+    runServer -> {sAgent sSnd} [style=dashed label=race color=orange fontcolor=orange]
 
-    sInq [shape=rarrow label="receive\nTBQueue"]
-    sOutq [shape=rarrow label="send\nTBQueue"]
-    sSock -> sRcv -> sInq -> sAgent [color=blue]
-    runServer -> sOutq [color=darkgreen]
+    sOutq [shape=larrow label="send\nTBQueue"]
+    sSock -> sAgent [color=blue]
+    runServer -> sOutq [color=darkgreen label="SMP\nprotocol\ncommand"]
     sOutq -> sSnd -> sSock [color=blue]
 
-    sAgent -> amInq [color=blue]
+    sAgent -> amInq [color=blue label="wrapped\nSMP\nmessages\nand\ncommand\nresponses"]
   }
 }
