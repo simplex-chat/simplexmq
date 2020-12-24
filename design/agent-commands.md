@@ -63,19 +63,19 @@ Is made by the [recipient](#Recipient-and-sender-terminology).
 
 - **Q - Shouldn't user connection group be created after server responds, or even after sender joins and invites back?**
 
-  A -
+  A - Agent has to correlate commands with responses anyway (replying on the fact that responses arrive in the same order that the commands were sent, occasionally interleaved with messages), so all the information needed to create the connection will be available in the command buffer anyway. It is probably better to create connection in the agent after the queue was successfully created in the server, and send an error to the user if SMP server responded with error.
 
 - **Q - How does flow go from runUser thread to user connection group "user" thread? Does runUser pass the the initial `create` command further to "user" thread through socket?**
 
-  A -
+  A - runUser does not receive any TCP traffic other than initial TCP handshake, when it does it forks all user group threads. It does not participate in commands/messages flow. Commands go from "user" to "runServer" (via TBQueue), responses,messages and acknowledgements (see protocol changes) from "message subscriber" to "send" (via TBQueue)
 
 - **Q - Does sender agent persist partial info about connection record at this point, or only when receives an opposing queue from the sender?**
 
-  A -
+  A - Yes, it should create connection with one queue (status "PENDING"), the status of the second queue will be "NONE" - see sequence diagram. In types it is `Maybe ConnState` with "NONE" corresponding to `Nothing`, as we don't need to have the second queue record. Also, protocol allows not to have reply queue, so the connection can remain unidirectional.
 
 - **Q - Shouldn't agent at this point answer with Duplex [`connection`](#connection) command? SMP agent commands have conflicting comments in the Duplex protocol. What is that command used for at all at this point?**
 
-  A -
+  A - There is no need to split creating connection and creating the invitation - it was initially two commands, and now it's merged into one - it creates the queue on SMP server, connection record in the agent and the invitation string to be sent out-of-band to the other party - need to fix any contradictions.
 
 #### `join`
 
