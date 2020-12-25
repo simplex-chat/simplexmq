@@ -16,12 +16,12 @@ digraph SMPAgent {
     graph [color=gray]
     node [shape=hexagon color=orange]
     label="agent threads" 
-    connectUser
-    runUser
+    connectClnt
+    runClnt
   }
 
-  main -> {runUser connectUser} [style=dashed label="race" color=orange fontcolor=orange]
-  aSock -> connectUser [color=darkgreen]
+  main -> {runClnt connectClnt} [style=dashed label="race" color=orange fontcolor=orange]
+  aSock -> connectClnt [color=darkgreen]
 
   subgraph clusterUserTCP {
     graph [color=gray]
@@ -87,9 +87,9 @@ digraph SMPAgent {
     uAgent -> userState [dir=both color=red]
     {uAgent uProcess} -> connectionsStore [dir=both color="#880000"]
 
-    connectUser -> uSock [style=dashed label="connect" color=darkgreen fontcolor=darkgreen]
-    connectUser -> {uRcv uSnd} [style=dashed label="race" color=orange fontcolor=orange]
-    runUser -> {uAgent uProcess} [style=dashed label="race" color=orange fontcolor=orange]
+    connectClnt -> uSock [style=dashed label="connect" color=darkgreen fontcolor=darkgreen]
+    connectClnt -> {uRcv uSnd} [style=dashed label="race" color=orange fontcolor=orange]
+    runClnt -> {uAgent uProcess} [style=dashed label="race" color=orange fontcolor=orange]
 
     userState [label="connected\nservers,\nsubscribed\nqueues\n(STM)" shape="folder"]
     uRespq [shape=rarrow label="user\nSMP\nTBQueue"]

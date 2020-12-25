@@ -29,6 +29,7 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
 import Simplex.Messaging.Server.Transmission
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util
 import UnliftIO.Async
 import UnliftIO.Concurrent
 import UnliftIO.Exception
@@ -63,20 +64,14 @@ runClient h = do
   raceAny_ [send h c, client c s, receive h c]
     `finally` cancelSubscribers c
 
-cancelSubscribers :: (MonadUnliftIO m) => Client -> m ()
+cancelSubscribers :: MonadUnliftIO m => Client -> m ()
 cancelSubscribers Client {subscriptions} =
   readTVarIO subscriptions >>= mapM_ cancelSub
 
-cancelSub :: (MonadUnliftIO m) => Sub -> m ()
+cancelSub :: MonadUnliftIO m => Sub -> m ()
 cancelSub = \case
   Sub {subThread = SubThread t} -> killThread t
   _ -> return ()
-
-raceAny_ :: MonadUnliftIO m => [m a] -> m ()
-raceAny_ = r []
-  where
-    r as (m : ms) = withAsync m $ \a -> r (a : as) ms
-    r as [] = void $ waitAnyCancel as
 
 receive :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
 receive h Client {rcvQ} = forever $ do

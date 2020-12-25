@@ -1,16 +1,22 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Command where
 
+import Control.Monad.IO.Class
 import Data.ByteString.Char8 (ByteString)
 import Data.Kind
 import Data.Time.Clock
 import Network.Socket
 import Simplex.Messaging.Server.Transmission (Encoded, MsgBody, PublicKey, QueueId)
+import Simplex.Messaging.Transport
+import System.IO
 
 data AParty = Agent | User
   deriving (Show)
@@ -20,6 +26,9 @@ data SAParty :: AParty -> Type where
   SUser :: SAParty User
 
 deriving instance Show (SAParty a)
+
+data ACmd where
+  ACmd :: SAParty a -> ACommand a -> ACmd
 
 data ACommand (a :: AParty) where
   NEW :: SMPServer -> Maybe ConnectionName -> AckMode -> ACommand User
@@ -39,7 +48,7 @@ data ACommand (a :: AParty) where
   OFF :: ConnAlias -> ACommand User
   DEL :: ConnAlias -> ACommand User
   OK :: ConnAlias -> ACommand Agent
-  ERR :: ConnAlias -> ErrorType -> ACommand Agent
+  ERR :: ErrorType -> ACommand Agent
 
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
@@ -85,3 +94,12 @@ data ErrorType = UNKNOWN | PROHIBITED -- etc.
 data AckStatus = AckOk | AckError AckErrorType
 
 data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
+
+parseCommand :: SAParty p -> ByteString -> Either ErrorType (ACommand p)
+parseCommand _ _ = Left UNKNOWN
+
+serializeCommand :: ACommand p -> ByteString
+serializeCommand _ = ""
+
+aCmdGet :: forall m p. MonadIO m => SAParty p -> Handle -> m (Either ErrorType (ACommand p))
+aCmdGet _ h = getLn h >>= (\_ -> return $ Left UNKNOWN)

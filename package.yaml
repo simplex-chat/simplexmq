@@ -37,6 +37,14 @@ executables:
     ghc-options:
       - -threaded
 
+  smp-agent:
+    source-dirs: apps/smp-agent
+    main: Main.hs
+    dependencies:
+      - simplex-messaging
+    ghc-options:
+      - -threaded
+
 tests:
   smp-server-test:
     source-dirs: tests

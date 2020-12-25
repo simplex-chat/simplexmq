@@ -13,7 +13,7 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
-import qualified  Data.ByteString.Char8 as B
+import qualified Data.ByteString.Char8 as B
 import Network.Socket
 import Simplex.Messaging.Server.Transmission
 import System.IO
