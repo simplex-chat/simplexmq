@@ -52,51 +52,54 @@ digraph SMPAgent {
 
     subgraph clusterUserThreads {
       graph [fontsize=11 color=gray]
-      label="user threads\nNote: `process commands` sends\nall commands to `commands TBQueue`s\n(invalid commands with attached responses),\nand only valid commands to `server TBQueue`.\nIt is used to respond in correct order."
+      label="user threads\nNote: `user agent` sends\nall commands to `commands TBQueue`s\n(invalid commands with attached responses),\nand only valid commands to `server TBQueue`.\nIt is used to respond in correct order."
       node [shape=hexagon, color=orange]
-      uAgent [label="process\ncommands"]
+      uAgent [label="user\nagent"]
       uProcess [label="process\nresponses"]
     }
 
     uRcv -> uInq -> uAgent [color=darkgreen]
     uProcess -> uOutq -> uSnd [color=darkgreen]
 
+    userState [label="connected\nservers,\nsubscribed\nqueues\n(STM)" shape="folder"]
+
+    uRespq [shape=larrow label="user\nSMP\nTBQueue"]
+
     subgraph clusterClient {
       graph [color=gray]
       label="1 group per SMP client/server connection"
       runClient [shape=hexagon, color=orange]
-      sOutq [shape=larrow label="srv snd\nTBQueue"]
-      iInq [shape=larrow  label="srv rcv\nTBQueue"]
-      sCmdq [shape=rarrow label="commands\nTBQueue"]
+      sOutq [shape=rarrow label="srv send\nTBQueue"]
       sSock [label="SMP client connection TCP socket" color=blue]
+
+      subgraph clusterQueue {
+        graph [fontsize=11 color=gray]
+        label="1 per SMP queue\n(+ 1 TBQueue\nw/out SMP qID)"
+        sCmdq [shape=rarrow label="commands\nTBQueue"]
+      }
 
       subgraph clusterServerThreads {
         graph [fontsize=11 color=gray]
         label="SMP client threads"
         node [shape=hexagon, color=orange]
-        sAgent [label="client\nthread"]
-        sRcv [label="server\nreceive"]
+        sAgent [label="server\nreceive"]
         sSnd [label="server\nsend"]
       }
 
-      runClient -> {sAgent sRcv sSnd} [style=dashed label=race color=orange fontcolor=orange]
-      sSock -> sRcv -> iInq -> sAgent [color=blue]
-      uAgent -> sOutq -> sSnd -> sSock [color=blue]
+      runClient -> {sAgent sSnd} [style=dashed label=race color=orange fontcolor=orange]
+      {uAgent uProcess} -> sOutq -> sSnd -> sSock -> sAgent [color=blue]
     }
 
-    uAgent -> userState [dir=both color=red]
+    {uAgent uProcess} -> userState [dir=both color="#FF8888"]
     {uAgent uProcess} -> connectionsStore [dir=both color="#880000"]
 
     connectClnt -> uSock [style=dashed label="connect" color=darkgreen fontcolor=darkgreen]
     connectClnt -> {uRcv uSnd} [style=dashed label="race" color=orange fontcolor=orange]
     runClnt -> {uAgent uProcess} [style=dashed label="race" color=orange fontcolor=orange]
 
-    userState [label="connected\nservers,\nsubscribed\nqueues\n(STM)" shape="folder"]
-    uRespq [shape=rarrow label="user\nSMP\nTBQueue"]
-
-    uAgent -> sCmdq
-    sCmdq -> sAgent
-    sAgent -> uRespq -> uProcess
+    sSnd -> sCmdq
+    sCmdq -> sAgent [style=dashed]
+    {sAgent uAgent} -> uRespq -> uProcess
 
     uAgent -> runClient [style=dashed label="fork" color=orange fontcolor=orange]
   }
