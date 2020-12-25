@@ -18,7 +18,6 @@ Legend:
     - [`join`](#join)
     - [`accept`](#accept)
     - [`subscribe`](#subscribe)
-    - [`list`](#list)
     - [`getStatus`](#getStatus)
     - [`send`](#send)
     - [`acknowledge`](#acknowledge)
@@ -116,8 +115,6 @@ Is made by the [recipient](#Recipient-and-sender-terminology).
   A -
 
 #### `subscribe`
-
-#### `list`
 
 #### `getStatus`
 
