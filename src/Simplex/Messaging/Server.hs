@@ -35,8 +35,8 @@ import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
 
-runSMPServer :: (MonadRandom m, MonadUnliftIO m) => Config -> m ()
-runSMPServer cfg@Config {tcpPort} = do
+runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServerConfig -> m ()
+runSMPServer cfg@ServerConfig {tcpPort} = do
   env <- newEnv cfg
   runReaderT smpServer env
   where

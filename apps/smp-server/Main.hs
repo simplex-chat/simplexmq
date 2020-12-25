@@ -3,9 +3,9 @@ module Main where
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 
-cfg :: Config
+cfg :: ServerConfig
 cfg =
-  Config
+  ServerConfig
     { tcpPort = "5223",
       tbqSize = 16,
       queueIdBytes = 12,

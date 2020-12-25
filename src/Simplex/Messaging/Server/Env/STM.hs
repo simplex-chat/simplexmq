@@ -15,7 +15,7 @@ import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Transmission
 import UnliftIO.STM
 
-data Config = Config
+data ServerConfig = ServerConfig
   { tcpPort :: ServiceName,
     tbqSize :: Natural,
     queueIdBytes :: Int,
@@ -23,7 +23,7 @@ data Config = Config
   }
 
 data Env = Env
-  { config :: Config,
+  { config :: ServerConfig,
     server :: Server,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
@@ -66,7 +66,7 @@ newSubscription = do
   delivered <- newEmptyTMVar
   return Sub {subThread = NoSub, delivered}
 
-newEnv :: (MonadUnliftIO m, MonadRandom m) => Config -> m Env
+newEnv :: (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config = do
   server <- atomically $ newServer (tbqSize config)
   queueStore <- atomically newQueueStore

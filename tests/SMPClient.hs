@@ -31,9 +31,9 @@ testSMPClient client = do
       then client h
       else error "not connected"
 
-cfg :: Config
+cfg :: ServerConfig
 cfg =
-  Config
+  ServerConfig
     { tcpPort = testPort,
       tbqSize = 1,
       queueIdBytes = 12,
