@@ -7,9 +7,9 @@ digraph SMPAgent {
   aSock [label="user agent TCP socket" color=darkgreen]
 
   subgraph clusterPersistence {
-    graph [fontsize=11]
+    graph [fontsize=11 color=gray]
     label="persistence (sqlite)\nQ: can multiple threads use it"
-    connectionsStore [shape=cylinder label="connection\nrecords,\nSMP queues,\nrecent\nmessages"]
+    connectionsStore [shape=cylinder label="duplex connections,\nSMP queues,\nrecent messages"]
   }
 
   subgraph clusterAgent {
@@ -25,7 +25,7 @@ digraph SMPAgent {
 
   subgraph clusterUserTCP {
     graph [color=gray]
-    label="1 group per user connection"
+    label="1 group per user TCP connection"
     uSock [label="user connection TCP socket" color=darkgreen]
 
     subgraph clusterUserTCPThreads {
@@ -42,7 +42,7 @@ digraph SMPAgent {
 
   subgraph clusterUser {
     graph [color=gray]
-    label="1 group per user connection"
+    label="1 group per user TCP connection"
 
     subgraph clusterUserInterface {
       label="user queues"
