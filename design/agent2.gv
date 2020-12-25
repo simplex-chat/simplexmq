@@ -60,7 +60,8 @@ digraph SMPAgent {
     }
 
     uRcv -> uInq -> uAgent [color=darkgreen]
-    {uAgent uProcess} -> uOutq -> uSnd [color=darkgreen]
+    uProcess -> uOutq -> uSnd [color=darkgreen]
+    {uRcv uAgent} -> uOutq [color=green]
 
     uRespq [shape=rarrow label="user\nSMP\nTBQueue"]
 
