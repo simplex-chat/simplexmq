@@ -65,7 +65,8 @@ digraph SMPAgent {
       graph [color=gray]
       label="1 group per SMP client/server connection"
       runClient [shape=hexagon, color=orange]
-      sOutq [shape=larrow label="server\nTBQueue"]
+      sOutq [shape=larrow label="srv snd\nTBQueue"]
+      iInq [shape=larrow  label="srv rcv\nTBQueue"]
       sCmdq [shape=rarrow label="commands\nTBQueue"]
       sSock [label="SMP client connection TCP socket" color=blue]
 
@@ -74,11 +75,12 @@ digraph SMPAgent {
         label="SMP client threads"
         node [shape=hexagon, color=orange]
         sAgent [label="client\nthread"]
-        sSnd [label="send to\nserver"]
+        sRcv [label="server\nreceive"]
+        sSnd [label="server\nsend"]
       }
 
-      runClient -> {sAgent sSnd} [style=dashed label=race color=orange fontcolor=orange]
-      sSock -> sAgent [color=blue]
+      runClient -> {sAgent sRcv sSnd} [style=dashed label=race color=orange fontcolor=orange]
+      sSock -> sRcv -> iInq -> sAgent [color=blue]
       uAgent -> sOutq -> sSnd -> sSock [color=blue]
     }
 
@@ -93,7 +95,7 @@ digraph SMPAgent {
     uRespq [shape=rarrow label="user\nSMP\nTBQueue"]
 
     uAgent -> sCmdq
-    sCmdq -> uProcess [style=dashed]
+    sCmdq -> sAgent
     sAgent -> uRespq -> uProcess
 
     uAgent -> runClient [style=dashed label="fork" color=orange fontcolor=orange]
