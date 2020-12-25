@@ -58,6 +58,8 @@ Here and further recipient is referred to the side that initiates the connection
 
 #### `create`
 
+🚧 **To be fixed according to agent2.gv**
+
 Requests recipient SMP server to create a new SMP queue. 
 
 Is made by the [recipient](#Recipient-and-sender-terminology).
@@ -87,6 +89,8 @@ Is made by the [recipient](#Recipient-and-sender-terminology).
 
 #### `join`
 
+🚧 **To be fixed according to agent2.gv**
+
 Replies via out-of-band invitation with sender's key and profile.
 
 Is made by the [sender](#Recipient-and-sender-terminology).
@@ -97,6 +101,8 @@ Is made by the [sender](#Recipient-and-sender-terminology).
 - Recipient agent secures previously created queue with Duplex [`accept`](#accept) command
 
 #### `accept`
+
+🚧 **To be fixed according to agent2.gv**
 
 Secures SMP queue with sender's key.
 
