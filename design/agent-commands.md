@@ -11,6 +11,7 @@ Legend:
 ## Table of contents
 
 - [Recipient and sender terminology](#Recipient-and-sender-terminology)
+- [Agent design comparison](#agent-design-comparison)
 - [Communication between user client and client-side SMP agent](#Communication-between-user-client-and-client-side-SMP-agent)
   - [User client commands](#User-client-commands)
     - [`create`](#create)
@@ -43,6 +44,13 @@ Legend:
 ## Recipient and sender terminology
 
 Here and further recipient is referred to the side that initiates the connection, i.e. creates the initial SMP queue and sends an out-of-band invitation to the sender. Sender is referred to the side that joins this SMP queue through the out-of-band invitation and then creates another SMP queue in the opposite direction for the recipient. This is to distinguish the sides for commands that imply specific direction, conceptually in Duplex connection once connection is established both sides act both as a recipient and a sender through different SMP queues.
+
+## Agent design comparison
+
+| Option | Pros | Cons |
+| ------ | ---- | ---- | 
+| agent.gv | one TCP connection to a specific SMP server host is re-used by multiple users. | responses from the same server to multiple users are mixed and have to be correlated not only with commands but with the users as well, this correlation is not present in the design yet |
+| agent2.gv | easier correlation of commands with responses, clear separation of internal user agent API (TBQueues) from TCP api (although this can be done with the first design as well) | if there are multiple users, there may be multiple TCP connections to the same SMP host |
 
 ## Communication between user client and client-side SMP agent
 
