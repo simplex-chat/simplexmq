@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -11,6 +10,7 @@ module Simplex.Messaging.Agent.Command where
 
 import Control.Monad.IO.Class
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.Time.Clock
 import Network.Socket
@@ -50,6 +50,8 @@ data ACommand (a :: AParty) where
   OK :: ConnAlias -> ACommand Agent
   ERR :: ErrorType -> ACommand Agent
 
+deriving instance Show (ACommand a)
+
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
@@ -57,7 +59,7 @@ data AMessage where
   A_MSG :: AgentMsgId -> UTCTime -> MsgBody -> AMessage
   A_ACK :: AgentMsgId -> AckStatus -> AMessage
 
-data SMPServer = SMPServer HostName ServiceName KeyFingerprint
+data SMPServer = SMPServer HostName ServiceName KeyFingerprint deriving (Show)
 
 type KeyFingerprint = Encoded
 
@@ -67,39 +69,46 @@ type ConnectionName = ByteString
 
 type OtherPartyId = Encoded
 
-data Mode = On | Off
+data Mode = On | Off deriving (Show)
 
-newtype AckMode = AckMode Mode
+newtype AckMode = AckMode Mode deriving (Show)
 
-newtype SubMode = SubMode Mode
+newtype SubMode = SubMode Mode deriving (Show)
 
 data SMPQueueInfo = SMPQueueInfo SMPServer QueueId EncryptionKey
+  deriving (Show)
 
 type EncryptionKey = PublicKey
 
 type VerificationKey = PublicKey
 
-data QueueDirection = SND | RCV
+data QueueDirection = SND | RCV deriving (Show)
 
 data ConnState = New | Pending | Confirmed | Secured | Active | Disabled
+  deriving (Show)
 
 type AgentMsgId = Int
 
 data MsgStatus = MsgOk | MsgError MsgErrorType
+  deriving (Show)
 
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
+  deriving (Show)
 
 data ErrorType = UNKNOWN | PROHIBITED -- etc.
+  deriving (Show)
 
 data AckStatus = AckOk | AckError AckErrorType
+  deriving (Show)
 
 data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
+  deriving (Show)
 
 parseCommand :: SAParty p -> ByteString -> Either ErrorType (ACommand p)
 parseCommand _ _ = Left UNKNOWN
 
 serializeCommand :: ACommand p -> ByteString
-serializeCommand _ = ""
+serializeCommand = B.pack . show
 
 aCmdGet :: forall m p. MonadIO m => SAParty p -> Handle -> m (Either ErrorType (ACommand p))
 aCmdGet _ h = getLn h >>= (\_ -> return $ Left UNKNOWN)

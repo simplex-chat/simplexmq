@@ -1,4 +1,6 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -30,14 +32,27 @@ connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
 
 runClient :: MonadUnliftIO m => AgentClient -> m ()
-runClient c = return ()
+runClient c = race_ (respond c) (process c)
+
+receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
+receive h AgentClient {rcvQ} = forever $ do
+  cmdOrError <- aCmdGet SUser h
+  atomically $ writeTBQueue rcvQ cmdOrError
 
 send :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 send h AgentClient {sndQ} = forever $ do
   cmd <- atomically $ readTBQueue sndQ
   putLn h $ serializeCommand cmd
 
-receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
-receive h AgentClient {rcvQ} = forever $ do
-  cmdOrError <- aCmdGet SUser h
-  atomically $ writeTBQueue rcvQ cmdOrError
+process :: MonadUnliftIO m => AgentClient -> m ()
+process AgentClient {rcvQ, respQ} = forever $ do
+  atomically (readTBQueue rcvQ)
+    >>= \case
+      Left e -> liftIO $ print e
+      Right cmd -> liftIO $ print cmd
+  atomically $ writeTBQueue respQ ()
+
+respond :: MonadUnliftIO m => AgentClient -> m ()
+respond AgentClient {respQ, sndQ} = forever . atomically $ do
+  readTBQueue respQ
+  writeTBQueue sndQ $ ERR UNKNOWN
