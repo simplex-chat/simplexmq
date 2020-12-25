@@ -82,8 +82,8 @@ digraph SMPAgent {
       uAgent -> sOutq -> sSnd -> sSock [color=blue]
     }
 
-    {uAgent sAgent} -> userState [dir=both color=red]
-    {uAgent sAgent uProcess} -> connectionsStore [dir=both color="#880000"]
+    uAgent -> userState [dir=both color=red]
+    {uAgent uProcess} -> connectionsStore [dir=both color="#880000"]
 
     connectUser -> uSock [style=dashed label="connect" color=darkgreen fontcolor=darkgreen]
     connectUser -> {uRcv uSnd} [style=dashed label="race" color=orange fontcolor=orange]
@@ -98,5 +98,4 @@ digraph SMPAgent {
 
     uAgent -> runClient [style=dashed label="fork" color=orange fontcolor=orange]
   }
-
 }
