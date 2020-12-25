@@ -116,6 +116,16 @@ Is made by the [recipient](#Recipient-and-sender-terminology).
 
 #### `subscribe`
 
+Subscribes/unsubscribes user to/from SMP queue.
+
+> agent client -> user connection TCP socket -> "user receive" thread -> user receive TBQueue -> "process commands" thread -> \*
+>
+> \* -> commands TBQueue -> client thread; client thread is blocked until receives answer from SMP server -> \#
+>
+> \* -> srv snd TBQueue -> "server send" thread -> Either `subscribe` or `suspend` SMP command is sent through SMP client connection TCP socket -> SMP server responds with first available message or if there is none with SMP `ok` command back to SMP client connection TCP socket -> "server receive" thread -> srv rcv TBQueue -> client thread; client thread becomes unblocked -> \#
+>
+> \# -> user SMP TBQueue -> "process responses" thread -> queue is persisted as Disabled -> Duplex [`ok`](#ok) command sent to user send TBQueue -> "user send" thread -> user connection TCP socket -> agent client
+
 #### `getStatus`
 
 #### `send`
