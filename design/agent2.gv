@@ -1,0 +1,102 @@
+digraph SMPAgent {
+  graph [fontname=arial]
+  node [fontname=arial fontsize=11 shape=box]
+  edge [fontname=arial fontsize=10 arrowhead=open arrowtail=open]
+
+  main [shape=hexagon color=orange label="main\nthread"]
+  aSock [label="user agent TCP socket" color=darkgreen]
+
+  subgraph clusterPersistence {
+    graph [fontsize=11]
+    label="persistence (sqlite)\nQ: can multiple threads use it"
+    connectionsStore [shape=cylinder label="connection\nrecords,\nSMP queues,\nrecent\nmessages"]
+  }
+
+  subgraph clusterAgent {
+    graph [color=gray]
+    node [shape=hexagon color=orange]
+    label="agent threads" 
+    connectUser
+    runUser
+  }
+
+  main -> {runUser connectUser} [style=dashed label="race" color=orange fontcolor=orange]
+  aSock -> connectUser [color=darkgreen]
+
+  subgraph clusterUserTCP {
+    graph [color=gray]
+    label="1 group per user connection"
+    uSock [label="user connection TCP socket" color=darkgreen]
+
+    subgraph clusterUserTCPThreads {
+      graph [fontsize=11 color=gray]
+      label="user TCP threads"
+      node [shape=hexagon, color=orange]
+      uRcv [label="user\nreceive"]
+      uSnd [label="user\nsend"]
+    }
+
+    uSock -> uRcv [color=darkgreen]
+    uSnd -> uSock [color=darkgreen]
+  }
+
+  subgraph clusterUser {
+    graph [color=gray]
+    label="1 group per user connection"
+
+    subgraph clusterUserInterface {
+      label="user queues"
+      uInq [shape=rarrow label="user\nreceive\nTBQueue"]
+      uOutq [shape=larrow label="user\nsend\nTBQueue"]
+    }
+
+    subgraph clusterUserThreads {
+      graph [fontsize=11 color=gray]
+      label="user threads\nNote: `process commands` sends\nall commands to `commands TBQueue`s\n(invalid commands with attached responses),\nand only valid commands to `server TBQueue`.\nIt is used to respond in correct order."
+      node [shape=hexagon, color=orange]
+      uAgent [label="process\ncommands"]
+      uProcess [label="process\nresponses"]
+    }
+
+    uRcv -> uInq -> uAgent [color=darkgreen]
+    uProcess -> uOutq -> uSnd [color=darkgreen]
+
+    subgraph clusterClient {
+      graph [color=gray]
+      label="1 group per SMP client/server connection"
+      runClient [shape=hexagon, color=orange]
+      sOutq [shape=larrow label="server\nTBQueue"]
+      sCmdq [shape=rarrow label="commands\nTBQueue"]
+      sSock [label="SMP client connection TCP socket" color=blue]
+
+      subgraph clusterServerThreads {
+        graph [fontsize=11 color=gray]
+        label="SMP client threads"
+        node [shape=hexagon, color=orange]
+        sAgent [label="client\nthread"]
+        sSnd [label="send to\nserver"]
+      }
+
+      runClient -> {sAgent sSnd} [style=dashed label=race color=orange fontcolor=orange]
+      sSock -> sAgent [color=blue]
+      uAgent -> sOutq -> sSnd -> sSock [color=blue]
+    }
+
+    {uAgent sAgent} -> userState [dir=both color=red]
+    {uAgent sAgent uProcess} -> connectionsStore [dir=both color="#880000"]
+
+    connectUser -> uSock [style=dashed label="connect" color=darkgreen fontcolor=darkgreen]
+    connectUser -> {uRcv uSnd} [style=dashed label="race" color=orange fontcolor=orange]
+    runUser -> {uAgent uProcess} [style=dashed label="race" color=orange fontcolor=orange]
+
+    userState [label="connected\nservers,\nsubscribed\nqueues\n(STM)" shape="folder"]
+    uRespq [shape=rarrow label="user\nSMP\nTBQueue"]
+
+    uAgent -> sCmdq
+    sCmdq -> uProcess [style=dashed]
+    sAgent -> uRespq -> uProcess
+
+    uAgent -> runClient [style=dashed label="fork" color=orange fontcolor=orange]
+  }
+
+}
