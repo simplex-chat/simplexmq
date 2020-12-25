@@ -109,10 +109,10 @@ Is made by the [recipient](#Recipient-and-sender-terminology).
 
 > recipient user client -> user connection TCP socket -> user connection group "user" thread -> agent server commands queue -> runServer thread -> SMP `secure` command sent to server connection group "send" queue -> server connection group "send" thread -> SMP server connection TCP socket -> recipient's SMP server
 
-- Sender's agent at this point repeatedly sends Duplex [`helloMsg`](#helloMsg) command to the recipient SMP server, which should be succeful once sender queue is secured by the recipient agent with key provided by the sender in the Duplex [`join`](#join) command
+- Sender's agent at this point repeatedly sends Duplex [`helloMsg`](#helloMsg) command to the recipient SMP server, which should be successful once sender queue is secured by the recipient agent with key provided by the sender in the Duplex [`join`](#join) command
 - **Q - Does this command go through user agent TCP socket (main socket)? This relates to the question whether user connection groups for the recipient agent should be created during Duplex [`create`](#create) command**
 
-  A -
+  A - User connection group is created during TCP handshake.
 
 #### `subscribe`
 
@@ -178,8 +178,8 @@ TODO
 
 - **Q - When does agent set up server connection groups?**
 
-  A -
+  A - When it sees the new hostname:port combination - see the map of servers inside [AgentClient](https://github.com/simplex-chat/simplex-messaging/blob/client/src/Simplex/Messaging/Agent/Env.hs#L33)
 
 - **Q - Replace command keywords with command names in the Duplex protocol sequence diagram?**
 
-  A -
+  A - Let's keep keywords, I also use them as constructors in code, they are part of the actual command syntax.
