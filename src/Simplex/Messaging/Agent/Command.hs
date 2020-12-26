@@ -12,7 +12,7 @@ import Control.Monad.IO.Class
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind
-import Data.Time.Clock
+import Data.Time.Clock (UTCTime)
 import Network.Socket
 import Simplex.Messaging.Server.Transmission (Encoded, MsgBody, PublicKey, QueueId)
 import Simplex.Messaging.Transport
@@ -40,7 +40,7 @@ data ACommand (a :: AParty) where
   SUB :: ConnAlias -> SubMode -> ACommand User
   END :: ConnAlias -> ACommand Agent
   QST :: ConnAlias -> QueueDirection -> ACommand User
-  STAT :: ConnAlias -> QueueDirection -> Maybe ConnState -> Maybe SubMode -> ACommand Agent
+  STAT :: ConnAlias -> QueueDirection -> Maybe QueueState -> Maybe SubMode -> ACommand Agent
   SEND :: ConnAlias -> MsgBody -> ACommand User
   MSG :: ConnAlias -> AgentMsgId -> UTCTime -> UTCTime -> MsgStatus -> MsgBody -> ACommand Agent
   ACK :: ConnAlias -> AgentMsgId -> ACommand User
@@ -84,7 +84,7 @@ type VerificationKey = PublicKey
 
 data QueueDirection = SND | RCV deriving (Show)
 
-data ConnState = New | Pending | Confirmed | Secured | Active | Disabled
+data QueueState = New | Confirmed | Secured | Active | Disabled
   deriving (Show)
 
 type AgentMsgId = Int
