@@ -40,7 +40,7 @@ data ACommand (a :: AParty) where
   SUB :: ConnAlias -> SubMode -> ACommand User
   END :: ConnAlias -> ACommand Agent
   QST :: ConnAlias -> QueueDirection -> ACommand User
-  STAT :: ConnAlias -> QueueDirection -> Maybe QueueState -> Maybe SubMode -> ACommand Agent
+  STAT :: ConnAlias -> QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
   SEND :: ConnAlias -> MsgBody -> ACommand User
   MSG :: ConnAlias -> AgentMsgId -> UTCTime -> UTCTime -> MsgStatus -> MsgBody -> ACommand Agent
   ACK :: ConnAlias -> AgentMsgId -> ACommand User
@@ -55,9 +55,9 @@ deriving instance Show (ACommand a)
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
-  A_DEL :: AMessage
-  A_MSG :: AgentMsgId -> UTCTime -> MsgBody -> AMessage
+  A_MSG :: MsgBody -> AMessage
   A_ACK :: AgentMsgId -> AckStatus -> AMessage
+  A_DEL :: AMessage
 
 data SMPServer = SMPServer HostName ServiceName KeyFingerprint deriving (Show)
 
@@ -84,7 +84,7 @@ type VerificationKey = PublicKey
 
 data QueueDirection = SND | RCV deriving (Show)
 
-data QueueState = New | Confirmed | Secured | Active | Disabled
+data QueueStatus = New | Confirmed | Secured | Active | Disabled
   deriving (Show)
 
 type AgentMsgId = Int
