@@ -18,7 +18,8 @@ import UnliftIO.STM
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     tbqSize :: Natural,
-    connIdBytes :: Int
+    connIdBytes :: Int,
+    dbFile :: String
   }
 
 data Env = Env

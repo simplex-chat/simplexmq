@@ -8,7 +8,8 @@ cfg =
   AgentConfig
     { tcpPort = "5224",
       tbqSize = 16,
-      connIdBytes = 12
+      connIdBytes = 12,
+      dbFile = "smp-agent.db"
     }
 
 main :: IO ()
