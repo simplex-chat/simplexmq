@@ -3,7 +3,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.Messaging.Agent.Env where
+module Simplex.Messaging.Agent.Env.SQLite where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random

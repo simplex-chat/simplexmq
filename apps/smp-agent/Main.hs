@@ -1,7 +1,7 @@
 module Main where
 
 import Simplex.Messaging.Agent (runSMPAgent)
-import Simplex.Messaging.Agent.Env
+import Simplex.Messaging.Agent.Env.SQLite
 
 cfg :: AgentConfig
 cfg =
