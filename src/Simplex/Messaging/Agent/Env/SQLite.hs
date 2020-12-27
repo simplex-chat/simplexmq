@@ -9,9 +9,11 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import qualified Database.SQLite.Simple as DB
 import Network.Socket (HostName, ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Command
+import Simplex.Messaging.Agent.Store.SQLite.Schema
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
 
@@ -24,7 +26,8 @@ data AgentConfig = AgentConfig
 
 data Env = Env
   { config :: AgentConfig,
-    idsDrg :: TVar ChaChaDRG
+    idsDrg :: TVar ChaChaDRG,
+    db :: DB.Connection
   }
 
 data AgentClient = AgentClient
@@ -51,7 +54,14 @@ newServerClient qSize = do
   sndQ <- newTBQueue qSize
   return ServerClient {sndQ, commands = M.empty}
 
+openDB :: MonadUnliftIO m => AgentConfig -> m DB.Connection
+openDB AgentConfig {dbFile} = liftIO $ do
+  db <- DB.open dbFile
+  createSchema db
+  return db
+
 newEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newEnv config = do
   idsDrg <- drgNew >>= newTVarIO
-  return Env {config, idsDrg}
+  db <- openDB config
+  return Env {config, idsDrg, db}
