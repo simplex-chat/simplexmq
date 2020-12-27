@@ -35,9 +35,10 @@ runClient :: MonadUnliftIO m => AgentClient -> m ()
 runClient c = race_ (respond c) (process c)
 
 receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
-receive h AgentClient {rcvQ} = forever $ do
-  cmdOrError <- aCmdGet SUser h
-  atomically $ writeTBQueue rcvQ cmdOrError
+receive h AgentClient {rcvQ, sndQ} = forever $ do
+  aCmdGet SUser h >>= \case
+    Right cmd -> atomically $ writeTBQueue rcvQ cmd
+    Left e -> atomically $ writeTBQueue sndQ $ ERR e
 
 send :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 send h AgentClient {sndQ} = forever $ do
@@ -46,10 +47,8 @@ send h AgentClient {sndQ} = forever $ do
 
 process :: MonadUnliftIO m => AgentClient -> m ()
 process AgentClient {rcvQ, respQ} = forever $ do
-  atomically (readTBQueue rcvQ)
-    >>= \case
-      Left e -> liftIO $ print e
-      Right cmd -> liftIO $ print cmd
+  cmd <- atomically (readTBQueue rcvQ)
+  liftIO $ print cmd
   atomically $ writeTBQueue respQ ()
 
 respond :: MonadUnliftIO m => AgentClient -> m ()
