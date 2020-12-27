@@ -7,13 +7,7 @@ import Database.SQLite.Simple
 
 createSchema :: Connection -> IO ()
 createSchema conn =
-  mapM_
-    (execute_ conn)
-    [ recipientQueues --,
-    -- senderQueues,
-    -- connections,
-    -- messages
-    ]
+  mapM_ (execute_ conn) [recipientQueues, senderQueues, connections, messages]
 
 recipientQueues :: Query
 recipientQueues =
