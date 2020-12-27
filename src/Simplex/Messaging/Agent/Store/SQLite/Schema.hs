@@ -6,8 +6,8 @@ module Simplex.Messaging.Agent.Store.SQLite.Schema where
 import Database.SQLite.Simple
 
 createSchema :: Connection -> IO ()
-createSchema conn = do
-  map
+createSchema conn =
+  mapM_
     (execute_ conn)
     [ recipientQueues --,
     -- senderQueues,
