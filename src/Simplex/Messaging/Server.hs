@@ -217,7 +217,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             q <- atomically $ getMsgQueue ms rId
             atomically (tryPeek q) >>= \case
               Nothing -> forkSub q $> ok
-              Just msg -> atomically setDelivered $> msgResp corrId rId msg
+              Just msg -> atomically setDelivered $> mkResp corrId rId (msgCmd msg)
           _ -> return ok
           where
             forkSub :: MsgQueue -> m ()
@@ -231,7 +231,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             subscriber :: MsgQueue -> m ()
             subscriber q = atomically $ do
               msg <- peekMsg q
-              writeTBQueue sndQ $ msgResp B.empty rId msg
+              writeTBQueue sndQ $ mkResp B.empty rId (msgCmd msg)
               setSub (\s -> s {subThread = NoSub})
               void setDelivered
 
@@ -258,8 +258,8 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         okResp :: Either ErrorType () -> Signed
         okResp = either err $ const ok
 
-        msgResp :: CorrelationId -> RecipientId -> Message -> Signed
-        msgResp _corrId rId Message {msgId, ts, msgBody} = mkResp _corrId rId $ MSG msgId ts msgBody
+        msgCmd :: Message -> Command 'Broker
+        msgCmd Message {msgId, ts, msgBody} = MSG msgId ts msgBody
 
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m Encoded
 randomId n = do
