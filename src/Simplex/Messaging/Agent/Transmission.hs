@@ -6,7 +6,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.Messaging.Agent.Command where
+module Simplex.Messaging.Agent.Transmission where
 
 import Control.Monad.IO.Class
 import Data.ByteString.Char8 (ByteString)

@@ -10,7 +10,7 @@ module Simplex.Messaging.Agent.Store where
 
 import Data.Kind
 import Data.Time.Clock (UTCTime)
-import Simplex.Messaging.Agent.Command
+import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server.Transmission (Encoded, PublicKey, QueueId)
 
 data ReceiveQueue = ReceiveQueue

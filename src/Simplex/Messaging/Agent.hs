@@ -9,8 +9,8 @@ module Simplex.Messaging.Agent (runSMPAgent) where
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
-import Simplex.Messaging.Agent.Command
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Transport
 import UnliftIO.Async
 import UnliftIO.IO
