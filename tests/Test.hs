@@ -25,7 +25,7 @@ main = hspec do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
 
-pattern Resp :: CorrelationId -> QueueId -> Command 'Broker -> TransmissionOrError
+pattern Resp :: CorrId -> QueueId -> Command 'Broker -> TransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
 
 sendRecv :: Handle -> (ByteString, ByteString, ByteString, ByteString) -> IO TransmissionOrError

@@ -51,7 +51,7 @@ runSMPServer cfg@ServerConfig {tcpPort} = do
       (rId, clnt) <- readTBQueue subscribedQ
       cs <- readTVar subscribers
       case M.lookup rId cs of
-        Just Client {rcvQ} -> writeTBQueue rcvQ (B.empty, rId, Cmd SBroker END)
+        Just Client {rcvQ} -> writeTBQueue rcvQ (CorrId B.empty, rId, Cmd SBroker END)
         Nothing -> return ()
       writeTVar subscribers $ M.insert rId clnt cs
 
@@ -86,7 +86,7 @@ send h Client {sndQ} = forever $ do
   signed <- atomically $ readTBQueue sndQ
   tPut h (B.empty, signed)
 
-mkResp :: CorrelationId -> QueueId -> Command 'Broker -> Signed
+mkResp :: CorrId -> QueueId -> Command 'Broker -> Signed
 mkResp corrId queueId command = (corrId, queueId, Cmd SBroker command)
 
 verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Transmission -> m Signed
@@ -231,7 +231,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             subscriber :: MsgQueue -> m ()
             subscriber q = atomically $ do
               msg <- peekMsg q
-              writeTBQueue sndQ $ mkResp B.empty rId (msgCmd msg)
+              writeTBQueue sndQ $ mkResp (CorrId B.empty) rId (msgCmd msg)
               setSub (\s -> s {subThread = NoSub})
               void setDelivered
 
