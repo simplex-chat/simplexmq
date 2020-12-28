@@ -57,7 +57,7 @@ smpServerTest :: [RawTransmission] -> IO [RawTransmission]
 smpServerTest commands = runSmpTest \h -> mapM (sendReceive h) commands
   where
     sendReceive :: Handle -> RawTransmission -> IO RawTransmission
-    sendReceive h t = tPutRaw h t >> either (error "bad transmission") id <$> tGetRaw h
+    sendReceive h t = tPutRaw h t >> tGetRaw h
 
 smpTest :: (Handle -> IO ()) -> Expectation
 smpTest test' = runSmpTest test' `shouldReturn` ()
