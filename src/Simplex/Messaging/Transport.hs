@@ -80,20 +80,22 @@ getBytes :: MonadIO m => Handle -> Int -> m ByteString
 getBytes h = liftIO . B.hGet h
 
 tPutRaw :: MonadIO m => Handle -> RawTransmission -> m ()
-tPutRaw h (signature, queueId, command) = do
-  putLn h (encode signature)
-  putLn h (encode queueId)
+tPutRaw h (signature, corrId, queueId, command) = do
+  putLn h signature
+  putLn h corrId
+  putLn h queueId
   putLn h command
 
-tGetRaw :: MonadIO m => Handle -> m (Either String RawTransmission)
+tGetRaw :: MonadIO m => Handle -> m RawTransmission
 tGetRaw h = do
-  signature <- decode <$> getLn h
-  queueId <- decode <$> getLn h
+  signature <- getLn h
+  corrId <- getLn h
+  queueId <- getLn h
   command <- getLn h
-  return $ liftM2 (,,command) signature queueId
+  return (signature, corrId, queueId, command)
 
 tPut :: MonadIO m => Handle -> Transmission -> m ()
-tPut h (signature, (queueId, command)) = tPutRaw h (signature, queueId, serializeCommand command)
+tPut h (signature, (corrId, queueId, command)) = tPutRaw h (encode signature, corrId, encode queueId, serializeCommand command)
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
@@ -108,19 +110,22 @@ fromServer = \case
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
 tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m TransmissionOrError
-tGet fromParty h = tGetRaw h >>= either (const tError) tParseLoadBody
+tGet fromParty h = do
+  (signature, corrId, queueId, command) <- tGetRaw h
+  let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
+  either (const $ tError corrId) tParseLoadBody decodedTransmission
   where
-    tError :: m TransmissionOrError
-    tError = return (B.empty, (B.empty, Left $ SYNTAX errBadTransmission))
+    tError :: ByteString -> m TransmissionOrError
+    tError corrId = return (B.empty, (corrId, B.empty, Left $ SYNTAX errBadTransmission))
 
     tParseLoadBody :: RawTransmission -> m TransmissionOrError
-    tParseLoadBody t@(signature, queueId, command) = do
+    tParseLoadBody t@(signature, corrId, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (signature, (queueId, fullCmd))
+      return (signature, (corrId, queueId, fullCmd))
 
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
-    tCredentials (signature, queueId, _) cmd = case cmd of
+    tCredentials (signature, _, queueId, _) cmd = case cmd of
       -- IDS response should not have queue ID
       Cmd SBroker (IDS _ _) -> Right cmd
       -- ERROR response does not always have queue ID

@@ -33,15 +33,15 @@ data Cmd where
 
 deriving instance Show Cmd
 
-type Signed = (QueueId, Cmd)
+type Signed = (CorrelationId, QueueId, Cmd)
 
 type Transmission = (Signature, Signed)
 
-type SignedOrError = (QueueId, Either ErrorType Cmd)
+type SignedOrError = (CorrelationId, QueueId, Either ErrorType Cmd)
 
 type TransmissionOrError = (Signature, SignedOrError)
 
-type RawTransmission = (ByteString, ByteString, ByteString)
+type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
 
 data Command (a :: Party) where
   NEW :: RecipientKey -> Command Recipient
@@ -136,6 +136,8 @@ serializeCommand = \case
     serializeMsg msgBody = " " <> B.pack (show $ B.length msgBody) <> "\n" <> msgBody
 
 type Encoded = ByteString
+
+type CorrelationId = ByteString
 
 type PublicKey = Encoded
 
