@@ -16,17 +16,18 @@ servers =
   \   host_address TEXT\
   \ )"
 
+-- TODO unique constraints on (server_id, rcv_id) and (server_id, snd_id) 
 recipientQueues :: Query
 recipientQueues =
   "CREATE TABLE IF NOT EXISTS recipient_queues\
   \ ( recipient_queue_id INTEGER PRIMARY KEY,\
   \   server_id INTEGER REFERENCES servers(server_id),\
-  \   rcv_id TEXT,\
-  \   rcv_private_key TEXT,\
-  \   snd_id TEXT,\
-  \   snd_key TEXT,\
-  \   decrypt_key TEXT,\
-  \   verify_key TEXT,\
+  \   rcv_id BLOB,\
+  \   rcv_private_key BLOB,\
+  \   snd_id BLOB,\
+  \   snd_key BLOB,\
+  \   decrypt_key BLOB,\
+  \   verify_key BLOB,\
   \   status TEXT,\
   \   ack_mode INTEGER\
   \ )"
@@ -36,10 +37,10 @@ senderQueues =
   "CREATE TABLE IF NOT EXISTS sender_queues\
   \ ( sender_queue_id INTEGER PRIMARY KEY,\
   \   server_id INTEGER REFERENCES servers(server_id),\
-  \   snd_id TEXT,\
-  \   snd_private_key TEXT,\
-  \   encrypt_key TEXT,\
-  \   sign_key TEXT,\
+  \   snd_id BLOB,\
+  \   snd_private_key BLOB,\
+  \   encrypt_key BLOB,\
+  \   sign_key BLOB,\
   \   status TEXT,\
   \   ack_mode INTEGER\
   \ )"
