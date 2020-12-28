@@ -36,7 +36,7 @@ runClient c = race_ (respond c) (process c)
 
 receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 receive h AgentClient {rcvQ, sndQ} = forever $ do
-  aCmdGet SUser h >>= \case
+  aCmdGet SClient h >>= \case
     Right cmd -> atomically $ writeTBQueue rcvQ cmd
     Left e -> atomically $ writeTBQueue sndQ $ ERR e
 

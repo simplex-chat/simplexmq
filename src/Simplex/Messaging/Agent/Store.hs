@@ -38,13 +38,13 @@ data SendQueue = SendQueue
 data ConnType = CSend | CReceive | CDuplex
 
 data Connection (d :: ConnType) where
-  ReceiveConnection :: ConnAlias -> ReceiveQueue -> Connection CSend
-  SendConnection :: ConnAlias -> SendQueue -> Connection CReceive
+  ReceiveConnection :: ConnAlias -> ReceiveQueue -> Connection CReceive
+  SendConnection :: ConnAlias -> SendQueue -> Connection CSend
   DuplexConnection :: ConnAlias -> ReceiveQueue -> SendQueue -> Connection CDuplex
 
 data SConnType :: ConnType -> Type where
-  SCSend :: SConnType CSend
   SCReceive :: SConnType CReceive
+  SCSend :: SConnType CSend
   SCDuplex :: SConnType CDuplex
 
 deriving instance Show (SConnType d)
