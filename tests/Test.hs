@@ -10,7 +10,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPClient
 import Simplex.Messaging.Server.Transmission
-import Simplex.Messaging.Transport
 import System.IO (Handle)
 import System.Timeout
 import Test.HUnit
