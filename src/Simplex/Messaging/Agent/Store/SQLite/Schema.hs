@@ -7,13 +7,20 @@ import Database.SQLite.Simple
 
 createSchema :: Connection -> IO ()
 createSchema conn =
-  mapM_ (execute_ conn) [recipientQueues, senderQueues, connections, messages]
+  mapM_ (execute_ conn) [servers, recipientQueues, senderQueues, connections, messages]
+
+servers :: Query
+servers =
+  "CREATE TABLE IF NOT EXISTS servers\
+  \ ( server_id INTEGER PRIMARY KEY,\
+  \   host_address TEXT\
+  \ )"
 
 recipientQueues :: Query
 recipientQueues =
   "CREATE TABLE IF NOT EXISTS recipient_queues\
   \ ( recipient_queue_id INTEGER PRIMARY KEY,\
-  \   server TEXT,\
+  \   server_id INTEGER REFERENCES servers(server_id),\
   \   rcv_id TEXT,\
   \   rcv_private_key TEXT,\
   \   snd_id TEXT,\
@@ -28,7 +35,7 @@ senderQueues :: Query
 senderQueues =
   "CREATE TABLE IF NOT EXISTS sender_queues\
   \ ( sender_queue_id INTEGER PRIMARY KEY,\
-  \   server TEXT,\
+  \   server_id INTEGER REFERENCES servers(server_id),\
   \   snd_id TEXT,\
   \   snd_private_key TEXT,\
   \   encrypt_key TEXT,\
