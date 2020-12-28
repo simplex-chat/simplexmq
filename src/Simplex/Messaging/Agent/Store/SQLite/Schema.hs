@@ -16,7 +16,7 @@ servers =
   \   host_address TEXT\
   \ )"
 
--- TODO unique constraints on (server_id, rcv_id) and (server_id, snd_id) 
+-- TODO unique constraints on (server_id, rcv_id) and (server_id, snd_id)
 recipientQueues :: Query
 recipientQueues =
   "CREATE TABLE IF NOT EXISTS recipient_queues\
