@@ -31,8 +31,8 @@ data Env = Env
   }
 
 data AgentClient = AgentClient
-  { rcvQ :: TBQueue (ACommand Client),
-    sndQ :: TBQueue (ACommand Agent),
+  { rcvQ :: TBQueue (ATransmission Client),
+    sndQ :: TBQueue (ATransmission Agent),
     respQ :: TBQueue (),
     servers :: Map (HostName, ServiceName) ServerClient
   }

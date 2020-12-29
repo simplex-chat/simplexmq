@@ -9,8 +9,10 @@ module Simplex.Messaging.Agent (runSMPAgent) where
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import qualified Data.ByteString.Char8 as B
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Server.Transmission (CorrId (..))
 import Simplex.Messaging.Transport
 import UnliftIO.Async
 import UnliftIO.IO
@@ -35,23 +37,22 @@ runClient :: MonadUnliftIO m => AgentClient -> m ()
 runClient c = race_ (respond c) (process c)
 
 receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
-receive h AgentClient {rcvQ, sndQ} = forever $ do
-  aCmdGet SClient h >>= \case
-    Right cmd -> atomically $ writeTBQueue rcvQ cmd
-    Left e -> atomically $ writeTBQueue sndQ $ ERR e
+receive h AgentClient {rcvQ, sndQ} =
+  forever $
+    tGet SClient h >>= \(corrId, cAlias, command) -> atomically $ case command of
+      Right cmd -> writeTBQueue rcvQ (corrId, cAlias, cmd)
+      Left e -> writeTBQueue sndQ (corrId, cAlias, ERR e)
 
 send :: MonadUnliftIO m => Handle -> AgentClient -> m ()
-send h AgentClient {sndQ} = forever $ do
-  cmd <- atomically $ readTBQueue sndQ
-  putLn h $ serializeCommand cmd
+send h AgentClient {sndQ} = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
 process :: MonadUnliftIO m => AgentClient -> m ()
 process AgentClient {rcvQ, respQ} = forever $ do
-  cmd <- atomically (readTBQueue rcvQ)
+  (corrId, cAlias, cmd) <- atomically (readTBQueue rcvQ)
   liftIO $ print cmd
   atomically $ writeTBQueue respQ ()
 
 respond :: MonadUnliftIO m => AgentClient -> m ()
 respond AgentClient {respQ, sndQ} = forever . atomically $ do
   readTBQueue respQ
-  writeTBQueue sndQ $ ERR UNKNOWN
+  writeTBQueue sndQ (CorrId B.empty, B.empty, ERR UNKNOWN)

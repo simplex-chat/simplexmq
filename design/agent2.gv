@@ -71,12 +71,6 @@ digraph SMPAgent {
       sOutq [shape=rarrow label="srv send\nTBQueue"]
       sSock [label="SMP client connection TCP socket" color=blue]
 
-      subgraph clusterQueue {
-        graph [fontsize=11]
-        label="1 per SMP queue\n(+ 1 TBQueue\nw/out SMP qID)"
-        sCmdq [shape=rarrow label="commands\nTBQueue"]
-      }
-
       subgraph clusterServerThreads {
         graph [fontsize=11]
         label="SMP client threads"
@@ -89,7 +83,7 @@ digraph SMPAgent {
       {uAgent uProcess} -> sOutq -> sSnd -> sSock -> sAgent [color=blue]
     }
 
-    userState [label="connected\nservers,\nsubscribed\nqueues\n(STM)" shape="folder"]
+    userState [label="connected\nservers,\nsubscribed\nqueues,\nsent\ncommands\n(STM)" shape="folder"]
 
     {uAgent uProcess} -> userState [dir=both color="#FF8888"]
     {uAgent uProcess} -> connectionsStore [dir=both color="#880000"]
@@ -98,8 +92,6 @@ digraph SMPAgent {
     connectClnt -> {uRcv uSnd} [style=dashed label="race" color=orange fontcolor=orange]
     runClnt -> {uAgent uProcess} [style=dashed label="race" color=orange fontcolor=orange]
 
-    sSnd -> sCmdq
-    sCmdq -> sAgent [style=dashed]
     sAgent -> uRespq -> uProcess
 
     uAgent -> runClient [style=dashed label="fork" color=orange fontcolor=orange]

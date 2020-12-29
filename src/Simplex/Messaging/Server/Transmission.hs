@@ -145,7 +145,7 @@ serializeCommand = \case
 type Encoded = ByteString
 
 -- newtype to avoid accidentally changing order of transmission parts
-newtype CorrId = CorrId {bs :: ByteString} deriving (Eq)
+newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Show)
 
 instance IsString CorrId where
   fromString = CorrId . fromString
@@ -182,8 +182,8 @@ errNoCredentials = 3
 errHasCredentials :: Int
 errHasCredentials = 4
 
-errNoConnectionId :: Int
-errNoConnectionId = 5
+errNoQueueId :: Int
+errNoQueueId = 5
 
 errMessageBody :: Int
 errMessageBody = 6
@@ -237,19 +237,19 @@ tGet fromParty h = do
     tCredentials (signature, _, queueId, _) cmd = case cmd of
       -- IDS response should not have queue ID
       Cmd SBroker (IDS _ _) -> Right cmd
-      -- ERROR response does not always have queue ID
+      -- ERR response does not always have queue ID
       Cmd SBroker (ERR _) -> Right cmd
       -- other responses must have queue ID
       Cmd SBroker _
-        | B.null queueId -> Left $ SYNTAX errNoConnectionId
+        | B.null queueId -> Left $ SYNTAX errNoQueueId
         | otherwise -> Right cmd
-      -- CREATE must NOT have signature or queue ID
+      -- NEW must NOT have signature or queue ID
       Cmd SRecipient (NEW _)
         | B.null signature && B.null queueId -> Right cmd
         | otherwise -> Left $ SYNTAX errHasCredentials
       -- SEND must have queue ID, signature is not always required
       Cmd SSender (SEND _)
-        | B.null queueId -> Left $ SYNTAX errNoConnectionId
+        | B.null queueId -> Left $ SYNTAX errNoQueueId
         | otherwise -> Right cmd
       -- other client commands must have both signature and queue ID
       Cmd SRecipient _
