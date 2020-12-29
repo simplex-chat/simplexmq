@@ -3,6 +3,7 @@
 
 module Simplex.Messaging.Agent.ServerClient where
 
+import Control.Monad
 import Control.Monad.IO.Unlift
 import Data.Maybe
 import Network.Socket (HostName, ServiceName)
@@ -41,14 +42,17 @@ newServerClient cfg smpRcvQ host port = do
   return c
   where
     runClient :: ServiceName -> ServerClient -> m ()
-    runClient p c =
+    runClient p c = do
+      liftIO $ print (host, p)
       runTCPClient host p $ \h -> do
+        liftIO $ putStrLn "SMP connected"
         _line <- getLn h -- "Welcome to SMP"
+        liftIO $ print _line
         -- TODO test connection failure
         race_ (send h c) (receive h)
 
     send :: Handle -> ServerClient -> m ()
-    send h ServerClient {smpSndQ} = atomically (readTBQueue smpSndQ) >>= SMP.tPut h
+    send h ServerClient {smpSndQ} = forever $ atomically (readTBQueue smpSndQ) >>= SMP.tPut h
 
     receive :: Handle -> m ()
-    receive h = SMP.tGet SMP.fromServer h >>= atomically . writeTBQueue smpRcvQ
+    receive h = forever $ SMP.tGet SMP.fromServer h >>= atomically . writeTBQueue smpRcvQ
