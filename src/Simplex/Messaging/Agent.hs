@@ -1,8 +1,10 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent (runSMPAgent) where
 
@@ -34,7 +36,7 @@ connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
 
 runClient :: MonadUnliftIO m => AgentClient -> m ()
-runClient c = race_ (respond c) (process c)
+runClient c = race_ (processSmp c) (client c)
 
 receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 receive h AgentClient {rcvQ, sndQ} =
@@ -46,13 +48,17 @@ receive h AgentClient {rcvQ, sndQ} =
 send :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 send h AgentClient {sndQ} = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
-process :: MonadUnliftIO m => AgentClient -> m ()
-process AgentClient {rcvQ, respQ} = forever $ do
+client :: forall m. MonadUnliftIO m => AgentClient -> m ()
+client AgentClient {rcvQ, sndQ} = forever $ do
   (corrId, cAlias, cmd) <- atomically (readTBQueue rcvQ)
-  liftIO $ print cmd
-  atomically $ writeTBQueue respQ ()
+  processCommand cmd >>= \case
+    Left e -> atomically $ writeTBQueue sndQ (corrId, cAlias, ERR e)
+    Right _ -> return ()
+  where
+    processCommand :: ACommand 'Client -> m (Either ErrorType ())
+    processCommand _ = return $ Left PROHIBITED
 
-respond :: MonadUnliftIO m => AgentClient -> m ()
-respond AgentClient {respQ, sndQ} = forever . atomically $ do
+processSmp :: MonadUnliftIO m => AgentClient -> m ()
+processSmp AgentClient {respQ, sndQ} = forever . atomically $ do
   readTBQueue respQ
   writeTBQueue sndQ (CorrId B.empty, B.empty, ERR UNKNOWN)
