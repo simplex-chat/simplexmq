@@ -145,7 +145,7 @@ serializeCommand = \case
 type Encoded = ByteString
 
 -- newtype to avoid accidentally changing order of transmission parts
-newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Show)
+newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
 
 instance IsString CorrId where
   fromString = CorrId . fromString

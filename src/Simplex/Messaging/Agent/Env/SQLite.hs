@@ -12,8 +12,11 @@ import qualified Data.Map.Strict as M
 import qualified Database.SQLite.Simple as DB
 import Network.Socket (HostName, ServiceName)
 import Numeric.Natural
+import Simplex.Messaging.Agent.ServerClient
+import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Server.Transmission (PublicKey)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
 
@@ -21,7 +24,8 @@ data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     tbqSize :: Natural,
     connIdBytes :: Int,
-    dbFile :: String
+    dbFile :: String,
+    smpConfig :: ServerClientConfig
   }
 
 data Env = Env
@@ -33,13 +37,20 @@ data Env = Env
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission Client),
     sndQ :: TBQueue (ATransmission Agent),
-    respQ :: TBQueue (),
-    servers :: Map (HostName, ServiceName) ServerClient
+    respQ :: TBQueue SMP.TransmissionOrError,
+    servers :: TVar (Map (HostName, ServiceName) ServerClient),
+    commands :: TVar (Map SMP.CorrId Request)
   }
 
-data ServerClient = ServerClient
-  { sndQ :: TBQueue SMP.Transmission,
-    commands :: Map SMP.QueueId (TBQueue SMP.Cmd)
+data Request = Request
+  { fromClient :: ATransmission Client,
+    toSMP :: SMP.Transmission,
+    state :: RequestState
+  }
+
+data RequestState = NEWRequestState
+  { recipientKey :: PublicKey,
+    recipientPrivateKey :: PrivateKey
   }
 
 newAgentClient :: Natural -> STM AgentClient
@@ -47,12 +58,9 @@ newAgentClient qSize = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   respQ <- newTBQueue qSize
-  return AgentClient {rcvQ, sndQ, respQ, servers = M.empty}
-
-newServerClient :: Natural -> STM ServerClient
-newServerClient qSize = do
-  sndQ <- newTBQueue qSize
-  return ServerClient {sndQ, commands = M.empty}
+  servers <- newTVar M.empty
+  commands <- newTVar M.empty
+  return AgentClient {rcvQ, sndQ, respQ, servers, commands}
 
 openDB :: MonadUnliftIO m => AgentConfig -> m DB.Connection
 openDB AgentConfig {dbFile} = liftIO $ do

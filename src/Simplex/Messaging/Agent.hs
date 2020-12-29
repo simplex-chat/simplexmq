@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -12,9 +13,13 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
+import qualified Data.Map as M
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.ServerClient (ServerClient (..), newServerClient)
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Server.Transmission (CorrId (..))
+import Simplex.Messaging.Server (randomBytes)
+import Simplex.Messaging.Server.Transmission (Cmd (..), CorrId (..), SParty (..))
+import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
 import UnliftIO.IO
@@ -35,7 +40,7 @@ runSMPAgent cfg@AgentConfig {tcpPort} = do
 connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
 
-runClient :: MonadUnliftIO m => AgentClient -> m ()
+runClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 runClient c = race_ (processSmp c) (client c)
 
 receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
@@ -48,17 +53,48 @@ receive h AgentClient {rcvQ, sndQ} =
 send :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 send h AgentClient {sndQ} = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
-client :: forall m. MonadUnliftIO m => AgentClient -> m ()
-client AgentClient {rcvQ, sndQ} = forever $ do
-  (corrId, cAlias, cmd) <- atomically (readTBQueue rcvQ)
-  processCommand cmd >>= \case
+client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+client AgentClient {rcvQ, sndQ, respQ, commands} = forever $ do
+  t@(corrId, cAlias, cmd) <- atomically $ readTBQueue rcvQ
+  processCommand t cmd >>= \case
     Left e -> atomically $ writeTBQueue sndQ (corrId, cAlias, ERR e)
     Right _ -> return ()
   where
-    processCommand :: ACommand 'Client -> m (Either ErrorType ())
-    processCommand _ = return $ Left PROHIBITED
+    processCommand :: ATransmission 'Client -> ACommand 'Client -> m (Either ErrorType ())
+    processCommand t = \case
+      NEW SMPServer {host, port, keyHash} (AckMode mode) -> do
+        cfg <- asks $ smpConfig . config
+        srv <- newServerClient cfg respQ host port
+        t <- mkSmpNEW t
+        atomically $ writeTBQueue (smpSndQ srv) t
+        liftIO $ putStrLn "sending NEW to server"
+        liftIO $ print t
+        return $ Right ()
+      _ -> return $ Left PROHIBITED
+
+    mkSmpNEW :: ATransmission 'Client -> m SMP.Transmission
+    mkSmpNEW t = do
+      g <- asks idsDrg
+      smpCorrId <- atomically $ CorrId <$> randomBytes 4 g
+      recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
+      let recipientPrivateKey = recipientKey
+          toSMP = ("", (smpCorrId, "", Cmd SRecipient $ SMP.NEW recipientKey))
+          req =
+            Request
+              { fromClient = t,
+                toSMP,
+                state = NEWRequestState {recipientKey, recipientPrivateKey}
+              }
+      atomically . modifyTVar commands $ M.insert smpCorrId req
+      return toSMP
 
 processSmp :: MonadUnliftIO m => AgentClient -> m ()
-processSmp AgentClient {respQ, sndQ} = forever . atomically $ do
-  readTBQueue respQ
-  writeTBQueue sndQ (CorrId B.empty, B.empty, ERR UNKNOWN)
+processSmp AgentClient {respQ, sndQ, commands} = forever $ do
+  (_, (smpCorrId, qId, cmdOrErr)) <- atomically $ readTBQueue respQ
+  liftIO $ putStrLn "received from server"
+  liftIO $ print (smpCorrId, qId, cmdOrErr)
+  req <- atomically $ M.lookup smpCorrId <$> readTVar commands
+  atomically $ case req of -- TODO empty correlation ID is ok - it can be a message
+    Nothing -> writeTBQueue sndQ ("", "", ERR $ SMP smpErrCorrelationId)
+    Just Request {fromClient = (corrId, cAlias, cmd), toSMP, state} -> do
+      writeTBQueue sndQ (corrId, cAlias, ERR UNKNOWN)

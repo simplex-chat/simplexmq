@@ -10,7 +10,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Simplex.Messaging.Server (runSMPServer) where
+-- TODO move randomBytes to another module
+module Simplex.Messaging.Server (runSMPServer, randomBytes) where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad

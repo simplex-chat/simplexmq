@@ -1,5 +1,4 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -23,6 +22,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
 import Data.Typeable ()
 import Network.Socket
+import Numeric.Natural
 import Simplex.Messaging.Server.Transmission (CorrId (..), Encoded, MsgBody, PublicKey, QueueId, errBadParameters, errMessageBody)
 import Simplex.Messaging.Transport
 import System.IO
@@ -123,7 +123,7 @@ data MsgStatus = MsgOk | MsgError MsgErrorType
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
   deriving (Show)
 
-data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SIZE -- etc. TODO SYNTAX Natural
+data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SMP Natural | SIZE -- etc. TODO SYNTAX Natural
   deriving (Show)
 
 data AckStatus = AckOk | AckError AckErrorType
@@ -137,6 +137,9 @@ errBadInvitation = 10
 
 errNoConnAlias :: Int
 errNoConnAlias = 11
+
+smpErrCorrelationId :: Natural
+smpErrCorrelationId = 1
 
 parseCommand :: ByteString -> Either ErrorType ACmd
 parseCommand command = case B.words command of
