@@ -57,7 +57,7 @@ import qualified Database.SQLite.Simple as DB
 -- VALUES (
 --   {conn_alias},
 --   {recipient_queue_id},
---   {sender_queue_id}
+--   NULL
 -- );
 
 -- COMMIT;
