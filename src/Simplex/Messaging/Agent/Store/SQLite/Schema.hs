@@ -12,8 +12,11 @@ servers =
   [s|
     CREATE TABLE IF NOT EXISTS servers
       ( server_id INTEGER PRIMARY KEY,
-        host_address TEXT
-      )  
+        host_address TEXT,
+        port INT,
+        key_hash BLOB,
+        UNIQUE (host_address, port)
+      )
     |]
 
 -- TODO unique constraints on (server_id, rcv_id) and (server_id, snd_id)
