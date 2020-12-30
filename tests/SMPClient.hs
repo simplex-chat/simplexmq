@@ -17,10 +17,10 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.IO
 
 testHost :: HostName
-testHost = "139.162.207.114"
+testHost = "localhost"
 
 testPort :: ServiceName
-testPort = "5223"
+testPort = "5000"
 
 testSMPClient :: MonadUnliftIO m => (Handle -> m a) -> m a
 testSMPClient client = do
