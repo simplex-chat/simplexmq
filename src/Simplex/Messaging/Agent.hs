@@ -13,15 +13,19 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
+import Data.Int
 import qualified Data.Map as M
+import Data.Maybe (fromMaybe)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.ServerClient (ServerClient (..), newServerClient)
+import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server (randomBytes)
 import Simplex.Messaging.Server.Transmission (Cmd (..), CorrId (..), SParty (..))
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
+import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
 
@@ -54,19 +58,30 @@ send :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 send h AgentClient {sndQ} = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-client AgentClient {rcvQ, sndQ, respQ, commands} = forever $ do
+client AgentClient {rcvQ, sndQ, respQ, servers, commands} = forever $ do
   t@(corrId, cAlias, cmd) <- atomically $ readTBQueue rcvQ
   processCommand t cmd >>= \case
     Left e -> atomically $ writeTBQueue sndQ (corrId, cAlias, ERR e)
     Right _ -> return ()
   where
+    handler :: SomeException -> m (Either StoreError Int64)
+    handler e = do
+      liftIO (print e)
+      return $ Right 1
+
     processCommand :: ATransmission 'Client -> ACommand 'Client -> m (Either ErrorType ())
     processCommand t = \case
-      NEW SMPServer {host, port, keyHash} (AckMode mode) -> do
+      NEW server@SMPServer {host, port, keyHash} (AckMode mode) -> do
         cfg <- asks $ smpConfig . config
-        srv <- newServerClient cfg respQ host port
-        t <- mkSmpNEW t
-        atomically $ writeTBQueue (smpSndQ srv) t
+        maybeServer <- atomically $ M.lookup (host, fromMaybe "5223" port) <$> readTVar servers
+        srv <- case maybeServer of
+          Nothing -> do
+            conn <- asks db
+            _serverId <- addServer conn server `catch` handler
+            newServerClient cfg respQ host port
+          Just s -> return s
+        _t <- mkSmpNEW t
+        atomically $ writeTBQueue (smpSndQ srv) _t
         liftIO $ putStrLn "sending NEW to server"
         liftIO $ print t
         return $ Right ()

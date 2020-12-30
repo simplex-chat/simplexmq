@@ -12,6 +12,7 @@ import Data.Kind
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server.Transmission (Encoded, PublicKey, QueueId)
+import Data.Int (Int64)
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
@@ -68,7 +69,10 @@ data DeliveryStatus
   | MDConfirmed -- SMP: OK received / ACK sent
   | MDAcknowledged AckStatus -- SAMP: RCVD sent to agent client / ACK received from agent client and sent to the server
 
+type SMPServerId = Int64
+
 class MonadAgentStore s m where
+  addServer :: s -> SMPServer -> m (Either StoreError SMPServerId)
   createRcvConn :: s -> Maybe ConnAlias -> ReceiveQueue -> m (Either StoreError (Connection CReceive))
   createSndConn :: s -> Maybe ConnAlias -> SendQueue -> m (Either StoreError (Connection CSend))
   getConn :: s -> ConnAlias -> m (Either StoreError SomeConn)

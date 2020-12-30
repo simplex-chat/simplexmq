@@ -17,7 +17,7 @@ servers =
         key_hash BLOB,
         UNIQUE (host_address, port)
       )
-    |]
+  |]
 
 -- TODO unique constraints on (server_id, rcv_id) and (server_id, snd_id)
 recipientQueues :: Query
@@ -35,7 +35,7 @@ recipientQueues =
         status TEXT,
         ack_mode INTEGER
       )
-    |]
+  |]
 
 senderQueues :: Query
 senderQueues =

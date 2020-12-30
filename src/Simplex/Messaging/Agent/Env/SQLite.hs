@@ -19,6 +19,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server.Transmission (PublicKey)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
+import Simplex.Messaging.Agent.Store.SQLite
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
@@ -31,7 +32,7 @@ data AgentConfig = AgentConfig
 data Env = Env
   { config :: AgentConfig,
     idsDrg :: TVar ChaChaDRG,
-    db :: DB.Connection
+    db :: SQLiteStore
   }
 
 data AgentClient = AgentClient
@@ -62,10 +63,10 @@ newAgentClient qSize = do
   commands <- newTVar M.empty
   return AgentClient {rcvQ, sndQ, respQ, servers, commands}
 
-openDB :: MonadUnliftIO m => AgentConfig -> m DB.Connection
+openDB :: MonadUnliftIO m => AgentConfig -> m SQLiteStore
 openDB AgentConfig {dbFile} = liftIO $ do
-  db <- DB.open dbFile
-  createSchema db
+  db <- SQLiteStore <$> DB.open dbFile
+  createSchema $ conn db
   return db
 
 newEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
