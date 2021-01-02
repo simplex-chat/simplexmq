@@ -11,13 +11,12 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either
 import GHC.IO.Exception (IOErrorType (..))
 import Network.Socket
 import System.IO
 import System.IO.Error
 import UnliftIO.Concurrent
-import UnliftIO.Exception (SomeException (..))
+import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import qualified UnliftIO.IO as IO
 
@@ -44,24 +43,22 @@ runTCPServer port server =
 acceptTCPConn :: MonadIO m => Socket -> m Handle
 acceptTCPConn sock = liftIO $ do
   (conn, _) <- accept sock
-  -- putStrLn $ "Accepted connection from " ++ show peer
   getSocketHandle conn
 
 startTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> m Handle
 startTCPClient host port =
   liftIO . withSocketsDo $
-    fromRight (error "can't connect")
-      <$> (resolve >>= foldM tryOpen (Left err))
+    resolve >>= foldM tryOpen (Left err) >>= either E.throwIO return
   where
-    err :: SomeException
-    err = SomeException $ mkIOError NoSuchThing "no address tried" Nothing Nothing
+    err :: IOException
+    err = mkIOError NoSuchThing "no address" Nothing Nothing
 
     resolve :: IO [AddrInfo]
     resolve = do
       let hints = defaultHints {addrSocketType = Stream}
       getAddrInfo (Just hints) (Just host) (Just port)
 
-    tryOpen :: Either SomeException Handle -> AddrInfo -> IO (Either SomeException Handle)
+    tryOpen :: Exception e => Either e Handle -> AddrInfo -> IO (Either e Handle)
     tryOpen h@(Right _) _ = return h
     tryOpen (Left _) addr = E.try $ open addr
 
