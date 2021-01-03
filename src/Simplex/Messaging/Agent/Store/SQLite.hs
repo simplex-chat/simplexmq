@@ -8,6 +8,7 @@
 module Simplex.Messaging.Agent.Store.SQLite where
 
 import Control.Monad.IO.Unlift
+import Data.Int (Int64)
 import Database.SQLite.Simple (NamedParam (..))
 import qualified Database.SQLite.Simple as DB
 import Multiline (s)
@@ -57,19 +58,23 @@ newSQLiteStore dbFile = do
       }
 
 withLock :: MonadUnliftIO m => SQLiteStore -> (SQLiteStore -> TMVar ()) -> (DB.Connection -> m a) -> m a
-withLock store tableLock query = do
-  let lock = tableLock store
+withLock st tableLock f = do
+  let lock = tableLock st
   E.bracket_
     (atomically $ takeTMVar lock)
     (atomically $ putTMVar lock ())
-    (query $ conn store)
+    (f $ conn st)
+
+insertWithLock :: MonadUnliftIO m => SQLiteStore -> (SQLiteStore -> TMVar ()) -> DB.Query -> [DB.NamedParam] -> m Int64
+insertWithLock st tableLock q qParams = do
+  withLock st tableLock $ \c -> liftIO $ do
+    DB.executeNamed c q qParams
+    DB.lastInsertRowId c
 
 instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
   addServer :: SQLiteStore -> SMPServer -> m (Either StoreError SMPServerId)
-  addServer store SMPServer {host, port, keyHash} =
-    withLock store serversLock $ \c -> liftIO $ do
-      DB.executeNamed c addServerQuery [":host_address" := host, ":port" := port, ":key_hash" := keyHash]
-      Right <$> DB.lastInsertRowId c
+  addServer st SMPServer {host, port, keyHash} =
+    Right <$> insertWithLock st serversLock addServerQuery [":host_address" := host, ":port" := port, ":key_hash" := keyHash]
 
 --   createRcvConn :: DB.Connection -> Maybe ConnAlias -> ReceiveQueue -> m (Either StoreError (Connection CReceive))
 --   createRcvConn conn connAlias q = do
