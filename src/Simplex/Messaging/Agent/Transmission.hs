@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -23,10 +24,20 @@ import Data.Type.Equality
 import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
-import Simplex.Messaging.Server.Transmission (CorrId (..), Encoded, MsgBody, PublicKey, QueueId, errBadParameters, errMessageBody)
+import Simplex.Messaging.Server.Transmission
+  ( CorrId (..),
+    Encoded,
+    MsgBody,
+    PublicKey,
+    QueueId,
+    errBadParameters,
+    errMessageBody,
+  )
+import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import System.IO
 import Text.Read
+import UnliftIO.Exception
 
 type ARawTransmission = (ByteString, ByteString, ByteString)
 
@@ -123,8 +134,16 @@ data MsgStatus = MsgOk | MsgError MsgErrorType
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
   deriving (Show)
 
-data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SMP Natural | SIZE -- etc. TODO SYNTAX Natural
-  deriving (Show)
+data ErrorType
+  = UNKNOWN
+  | UNSUPPORTED -- TODO remove once all commands implemented
+  | PROHIBITED
+  | SYNTAX Int
+  | BROKER Natural
+  | SMP SMP.ErrorType
+  | SIZE
+  | INTERNAL -- etc. TODO SYNTAX Natural
+  deriving (Show, Exception)
 
 data AckStatus = AckOk | AckError AckErrorType
   deriving (Show)
@@ -138,8 +157,14 @@ errBadInvitation = 10
 errNoConnAlias :: Int
 errNoConnAlias = 11
 
+smpErrTCPConnection :: Natural
+smpErrTCPConnection = 1
+
 smpErrCorrelationId :: Natural
-smpErrCorrelationId = 1
+smpErrCorrelationId = 2
+
+smpUnexpectedResponse :: Natural
+smpUnexpectedResponse = 3
 
 parseCommand :: ByteString -> Either ErrorType ACmd
 parseCommand command = case B.words command of

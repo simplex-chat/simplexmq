@@ -69,7 +69,9 @@ startTCPClient host port =
       getSocketHandle sock
 
 runTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
-runTCPClient host port = E.bracket (startTCPClient host port) IO.hClose
+runTCPClient host port client = do
+  h <- startTCPClient host port
+  client h `E.finally` IO.hClose h
 
 getSocketHandle :: MonadIO m => Socket -> m Handle
 getSocketHandle conn = liftIO $ do

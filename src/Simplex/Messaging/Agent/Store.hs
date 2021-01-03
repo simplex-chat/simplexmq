@@ -8,11 +8,11 @@
 
 module Simplex.Messaging.Agent.Store where
 
+import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server.Transmission (Encoded, PublicKey, QueueId)
-import Data.Int (Int64)
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
@@ -71,7 +71,7 @@ data DeliveryStatus
 
 type SMPServerId = Int64
 
-class MonadAgentStore s m where
+class Monad m => MonadAgentStore s m where
   addServer :: s -> SMPServer -> m (Either StoreError SMPServerId)
   createRcvConn :: s -> Maybe ConnAlias -> ReceiveQueue -> m (Either StoreError (Connection CReceive))
   createSndConn :: s -> Maybe ConnAlias -> SendQueue -> m (Either StoreError (Connection CSend))

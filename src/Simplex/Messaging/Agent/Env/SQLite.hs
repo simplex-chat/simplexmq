@@ -14,18 +14,19 @@ import Network.Socket (HostName, ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.ServerClient
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server.Transmission (PublicKey)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
-import Simplex.Messaging.Agent.Store.SQLite
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     tbqSize :: Natural,
     connIdBytes :: Int,
     dbFile :: String,
+    smpTcpPort :: ServiceName,
     smpConfig :: ServerClientConfig
   }
 

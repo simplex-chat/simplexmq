@@ -5,10 +5,8 @@ module Simplex.Messaging.Agent.ServerClient where
 
 import Control.Monad
 import Control.Monad.IO.Unlift
-import Data.Maybe
 import Network.Socket (HostName, ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Agent.Store
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
@@ -16,8 +14,7 @@ import UnliftIO.IO
 import UnliftIO.STM
 
 data ServerClientConfig = ServerClientConfig
-  { tcpPort :: ServiceName,
-    tbqSize :: Natural,
+  { tbqSize :: Natural,
     corrIdBytes :: Natural
   }
 
@@ -33,26 +30,26 @@ newServerClient ::
   ServerClientConfig ->
   TBQueue SMP.TransmissionOrError ->
   HostName ->
-  Maybe ServiceName ->
+  ServiceName ->
   m ServerClient
 newServerClient cfg smpRcvQ host port = do
   smpSndQ <- atomically . newTBQueue $ tbqSize cfg
   let c = ServerClient {smpSndQ, smpRcvQ}
-  _srvA <- async $ runClient (fromMaybe (tcpPort cfg) port) c
+  _srvA <- async $ runTCPClient host p (client c)
+  -- TODO because exception can be thrown inside async it is not caught by newSMPServer
+  -- there possibly needs to be another channel to communicate with ServerClient if it fails
+  -- alternatively, there may be just timeout on sent commands -
+  -- in this case late responses should be just ignored rather than result in smpErrCorrelationId
   return c
   where
-    runClient :: ServiceName -> ServerClient -> m ()
-    runClient p c = do
-      liftIO $ print (host, p)
-      runTCPClient host p $ \h -> do
-        liftIO $ putStrLn "SMP connected"
-        _line <- getLn h -- "Welcome to SMP"
-        liftIO $ print _line
-        -- TODO test connection failure
-        race_ (send h c) (receive h)
+    client :: ServerClient -> Handle -> m ()
+    client c h = do
+      _line <- getLn h -- "Welcome to SMP"
+      -- TODO test connection failure
+      send c h `race_` receive h
 
-    send :: Handle -> ServerClient -> m ()
-    send h ServerClient {smpSndQ} = forever $ atomically (readTBQueue smpSndQ) >>= SMP.tPut h
+    send :: ServerClient -> Handle -> m ()
+    send ServerClient {smpSndQ} h = forever $ atomically (readTBQueue smpSndQ) >>= SMP.tPut h
 
     receive :: Handle -> m ()
     receive h = forever $ SMP.tGet SMP.fromServer h >>= atomically . writeTBQueue smpRcvQ

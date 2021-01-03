@@ -13,10 +13,10 @@ cfg =
       tbqSize = 16,
       connIdBytes = 12,
       dbFile = "smp-agent.db",
+      smpTcpPort = "5223",
       smpConfig =
         ServerClientConfig
-          { tcpPort = "5223",
-            tbqSize = 16,
+          { tbqSize = 16,
             corrIdBytes = 4
           }
     }
