@@ -24,6 +24,7 @@ dependencies:
   - sqlite-simple == 0.4.*
   - stm
   - template-haskell == 2.15.*
+  - text == 1.2.*
   - time == 1.9.*
   - unliftio == 0.2.*
   - unliftio-core == 0.1.*

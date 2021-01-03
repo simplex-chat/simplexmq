@@ -73,8 +73,8 @@ type SMPServerId = Int64
 
 class Monad m => MonadAgentStore s m where
   addServer :: s -> SMPServer -> m (Either StoreError SMPServerId)
-  createRcvConn :: s -> Maybe ConnAlias -> ReceiveQueue -> m (Either StoreError (Connection CReceive))
-  createSndConn :: s -> Maybe ConnAlias -> SendQueue -> m (Either StoreError (Connection CSend))
+  createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m (Either StoreError (Connection CReceive))
+  createSndConn :: s -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CSend))
   getConn :: s -> ConnAlias -> m (Either StoreError SomeConn)
   deleteConn :: s -> ConnAlias -> m (Either StoreError ())
   addSndQueue :: s -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CDuplex))
