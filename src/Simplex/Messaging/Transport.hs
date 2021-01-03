@@ -13,6 +13,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import GHC.IO.Exception (IOErrorType (..))
 import Network.Socket
+import Simplex.Messaging.Util
 import System.IO
 import System.IO.Error
 import UnliftIO.Concurrent
@@ -89,8 +90,3 @@ getLn h = B.pack <$> liftIO (hGetLine h)
 
 getBytes :: MonadIO m => Handle -> Int -> m ByteString
 getBytes h = liftIO . B.hGet h
-
-infixl 4 <$$>
-
-(<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
-(<$$>) = fmap . fmap

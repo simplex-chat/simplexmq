@@ -22,6 +22,7 @@ import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util
 import System.IO
 import Text.Read
 

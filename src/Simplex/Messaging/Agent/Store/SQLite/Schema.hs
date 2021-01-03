@@ -12,19 +12,19 @@ servers =
   [s|
     CREATE TABLE IF NOT EXISTS servers
       ( server_id INTEGER PRIMARY KEY,
-        host_address TEXT NOT NULL,
+        host TEXT NOT NULL,
         port INT NOT NULL,
         key_hash BLOB,
-        UNIQUE (host_address, port)
+        UNIQUE (host, port)
       )
   |]
 
 -- TODO unique constraints on (server_id, rcv_id) and (server_id, snd_id)
-recipientQueues :: Query
-recipientQueues =
+receiveQueues :: Query
+receiveQueues =
   [s|
-    CREATE TABLE IF NOT EXISTS recipient_queues
-      ( recipient_queue_id INTEGER PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS receive_queues
+      ( receive_queue_id INTEGER PRIMARY KEY,
         server_id INTEGER REFERENCES servers(server_id) NOT NULL,
         rcv_id BLOB NOT NULL,
         rcv_private_key BLOB NOT NULL,
@@ -39,11 +39,11 @@ recipientQueues =
       )
   |]
 
-senderQueues :: Query
-senderQueues =
+sendQueues :: Query
+sendQueues =
   [s|
-    CREATE TABLE IF NOT EXISTS sender_queues
-      ( sender_queue_id INTEGER PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS send_queues
+      ( send_queue_id INTEGER PRIMARY KEY,
         server_id INTEGER REFERENCES servers(server_id) NOT NULL,
         snd_id BLOB NOT NULL,
         snd_private_key BLOB NOT NULL,
@@ -60,8 +60,8 @@ connections =
     CREATE TABLE IF NOT EXISTS connections
       ( connection_id INTEGER PRIMARY KEY,
         conn_alias TEXT UNIQUE,
-        recipient_queue_id INTEGER REFERENCES recipient_queues(recipient_queue_id),
-        sender_queue_id INTEGER REFERENCES sender_queues(sender_queue_id)
+        receive_queue_id INTEGER REFERENCES recipient_queues(receive_queue_id),
+        send_queue_id INTEGER REFERENCES sender_queues(send_queue_id)
       )
   |]
 
@@ -81,4 +81,4 @@ messages =
 
 createSchema :: Connection -> IO ()
 createSchema conn =
-  mapM_ (execute_ conn) [servers, recipientQueues, senderQueues, connections, messages]
+  mapM_ (execute_ conn) [servers, receiveQueues, sendQueues, connections, messages]

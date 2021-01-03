@@ -35,6 +35,7 @@ import Simplex.Messaging.Server.Transmission
   )
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util
 import System.IO
 import Text.Read
 import UnliftIO.Exception
@@ -108,7 +109,7 @@ type ConnAlias = ByteString
 
 type OtherPartyId = Encoded
 
-data Mode = On | Off deriving (Show)
+data Mode = On | Off deriving (Show, Read)
 
 newtype AckMode = AckMode Mode deriving (Show)
 
@@ -124,7 +125,7 @@ type VerificationKey = PublicKey
 data QueueDirection = SND | RCV deriving (Show)
 
 data QueueStatus = New | Confirmed | Secured | Active | Disabled
-  deriving (Show)
+  deriving (Show, Read)
 
 type AgentMsgId = Int
 
