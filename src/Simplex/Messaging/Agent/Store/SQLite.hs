@@ -12,7 +12,10 @@ import Database.SQLite.Simple (NamedParam (..))
 import qualified Database.SQLite.Simple as DB
 import Multiline (s)
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Transmission
+import qualified UnliftIO.Exception as E
+import UnliftIO.STM
 
 addServerQuery :: DB.Query
 addServerQuery =
@@ -25,13 +28,48 @@ addServerQuery =
       key_hash=excluded.key_hash;
   |]
 
-newtype SQLiteStore = SQLiteStore {conn :: DB.Connection}
+data SQLiteStore = SQLiteStore
+  { conn :: DB.Connection,
+    serversLock :: TMVar (),
+    recipientQueuesLock :: TMVar (),
+    senderQueuesLock :: TMVar (),
+    connectionsLock :: TMVar (),
+    messagesLock :: TMVar ()
+  }
+
+newSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
+newSQLiteStore dbFile = do
+  conn <- liftIO $ DB.open dbFile
+  liftIO $ createSchema conn
+  serversLock <- newTMVarIO ()
+  recipientQueuesLock <- newTMVarIO ()
+  senderQueuesLock <- newTMVarIO ()
+  connectionsLock <- newTMVarIO ()
+  messagesLock <- newTMVarIO ()
+  return
+    SQLiteStore
+      { conn,
+        serversLock,
+        recipientQueuesLock,
+        senderQueuesLock,
+        connectionsLock,
+        messagesLock
+      }
+
+withLock :: MonadUnliftIO m => SQLiteStore -> (SQLiteStore -> TMVar ()) -> (DB.Connection -> m a) -> m a
+withLock store tableLock query = do
+  let lock = tableLock store
+  E.bracket_
+    (atomically $ takeTMVar lock)
+    (atomically $ putTMVar lock ())
+    (query $ conn store)
 
 instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
   addServer :: SQLiteStore -> SMPServer -> m (Either StoreError SMPServerId)
-  addServer store SMPServer {host, port, keyHash} = liftIO $ do
-    DB.executeNamed (conn store) addServerQuery [":host_address" := host, ":port" := port, ":key_hash" := keyHash]
-    Right <$> DB.lastInsertRowId (conn store)
+  addServer store SMPServer {host, port, keyHash} =
+    withLock store serversLock $ \c -> liftIO $ do
+      DB.executeNamed c addServerQuery [":host_address" := host, ":port" := port, ":key_hash" := keyHash]
+      Right <$> DB.lastInsertRowId c
 
 --   createRcvConn :: DB.Connection -> Maybe ConnAlias -> ReceiveQueue -> m (Either StoreError (Connection CReceive))
 --   createRcvConn conn connAlias q = do

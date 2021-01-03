@@ -35,7 +35,7 @@ newServerClient ::
 newServerClient cfg smpRcvQ host port = do
   smpSndQ <- atomically . newTBQueue $ tbqSize cfg
   let c = ServerClient {smpSndQ, smpRcvQ}
-  _srvA <- async $ runTCPClient host p (client c)
+  _srvA <- async $ runTCPClient host port (client c)
   -- TODO because exception can be thrown inside async it is not caught by newSMPServer
   -- there possibly needs to be another channel to communicate with ServerClient if it fails
   -- alternatively, there may be just timeout on sent commands -

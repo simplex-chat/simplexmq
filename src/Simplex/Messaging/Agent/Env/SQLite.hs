@@ -15,7 +15,6 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.ServerClient
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server.Transmission (PublicKey)
 import qualified Simplex.Messaging.Server.Transmission as SMP
@@ -64,14 +63,8 @@ newAgentClient qSize = do
   commands <- newTVar M.empty
   return AgentClient {rcvQ, sndQ, respQ, servers, commands}
 
-openDB :: MonadUnliftIO m => AgentConfig -> m SQLiteStore
-openDB AgentConfig {dbFile} = liftIO $ do
-  db <- SQLiteStore <$> DB.open dbFile
-  createSchema $ conn db
-  return db
-
 newEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newEnv config = do
   idsDrg <- drgNew >>= newTVarIO
-  db <- openDB config
+  db <- newSQLiteStore $ dbFile config
   return Env {config, idsDrg, db}
