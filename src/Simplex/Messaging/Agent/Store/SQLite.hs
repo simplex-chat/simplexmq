@@ -156,6 +156,33 @@ insertRcvConnection store connAlias rcvQueueId =
     "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,?,NULL);"
     (Only connAlias :. Only rcvQueueId)
 
+instance ToRow SendQueue where
+  toRow SendQueue {sndId, sndPrivateKey, encryptKey, signKey, status, ackMode} =
+    toRow (sndId, sndPrivateKey, encryptKey, signKey, status, ackMode)
+
+instance FromRow SendQueue where
+  fromRow = SendQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field
+
+insertSndQueue :: MonadUnliftIO m => SQLiteStore -> SMPServerId -> SendQueue -> m QueueRowId
+insertSndQueue store serverId sndQueue =
+  insertWithLock
+    store
+    sndQueuesLock
+    [s|
+      INSERT INTO send_queues
+        ( server_id, snd_id, snd_private_key, encrypt_key, sign_key, status, ack_mode)
+      VALUES (?,?,?,?,?,?,?);
+    |]
+    (Only serverId :. sndQueue)
+
+insertSndConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ConnectionRowId
+insertSndConnection store connAlias sndQueueId =
+  insertWithLock
+    store
+    connectionsLock
+    "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,NULL,?);"
+    (Only connAlias :. Only sndQueueId)
+
 instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
   addServer store smpServer = upsertServer store smpServer
 
@@ -168,6 +195,16 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
         qId <- insertRcvQueue st serverId rcvQueue -- TODO test for duplicate connAlias
         insertRcvConnection st connAlias qId
         return $ ReceiveConnection connAlias rcvQueue
+
+  createSndConn :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CSend))
+  createSndConn st connAlias sndQueue =
+    upsertServer st (server (sndQueue :: SendQueue))
+      >>= either (return . Left) (fmap Right . addConnection)
+    where
+      addConnection serverId = do
+        qId <- insertSndQueue st serverId sndQueue -- TODO test for duplicate connAlias
+        insertSndConnection st connAlias qId
+        return $ SendConnection connAlias sndQueue
 
 -- id <- query conn "INSERT ..."
 -- query conn "INSERT ..."
