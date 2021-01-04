@@ -101,7 +101,7 @@ data SMPServer = SMPServer
     port :: Maybe ServiceName,
     keyHash :: Maybe KeyHash
   }
-  deriving (Show)
+  deriving (Eq, Show)
 
 type KeyHash = Encoded
 
@@ -109,9 +109,9 @@ type ConnAlias = ByteString
 
 type OtherPartyId = Encoded
 
-data Mode = On | Off deriving (Show, Read)
+data Mode = On | Off deriving (Eq, Show, Read)
 
-newtype AckMode = AckMode Mode deriving (Show)
+newtype AckMode = AckMode Mode deriving (Eq, Show)
 
 newtype SubMode = SubMode Mode deriving (Show)
 
@@ -125,7 +125,7 @@ type VerificationKey = PublicKey
 data QueueDirection = SND | RCV deriving (Show)
 
 data QueueStatus = New | Confirmed | Secured | Active | Disabled
-  deriving (Show, Read)
+  deriving (Eq, Show, Read)
 
 type AgentMsgId = Int
 

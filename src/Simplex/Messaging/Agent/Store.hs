@@ -25,6 +25,7 @@ data ReceiveQueue = ReceiveQueue
     status :: QueueStatus,
     ackMode :: AckMode -- whether acknowledgement will be sent (via SendQueue if present)
   }
+  deriving (Eq, Show)
 
 data SendQueue = SendQueue
   { server :: SMPServer,
@@ -35,13 +36,18 @@ data SendQueue = SendQueue
     status :: QueueStatus,
     ackMode :: AckMode -- whether acknowledgement is expected (via ReceiveQueue if present)
   }
+  deriving (Eq, Show)
 
-data ConnType = CSend | CReceive | CDuplex
+data ConnType = CSend | CReceive | CDuplex deriving (Eq, Show)
 
 data Connection (d :: ConnType) where
   ReceiveConnection :: ConnAlias -> ReceiveQueue -> Connection CReceive
   SendConnection :: ConnAlias -> SendQueue -> Connection CSend
   DuplexConnection :: ConnAlias -> ReceiveQueue -> SendQueue -> Connection CDuplex
+
+deriving instance Show (Connection d)
+
+deriving instance Eq (Connection d)
 
 data SConnType :: ConnType -> Type where
   SCReceive :: SConnType CReceive
@@ -93,3 +99,4 @@ data StoreError
   | SEMsgNotFound
   | SEBadConnType ConnType
   | SEBadQueueStatus
+  deriving (Eq, Show)

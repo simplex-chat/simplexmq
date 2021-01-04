@@ -107,8 +107,8 @@ upsertServer SQLiteStore {conn} srv@SMPServer {host, port} = liftIO $ do
     conn
     [s|
       INSERT INTO servers (host, port, key_hash) VALUES (?, ?, ?)
-      ON CONFLICT (host_address, port) DO UPDATE SET
-        host_address=excluded.host_address,
+      ON CONFLICT (host, port) DO UPDATE SET
+        host=excluded.host,
         port=excluded.port,
         key_hash=excluded.key_hash;
       |]

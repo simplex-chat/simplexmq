@@ -17,7 +17,7 @@ import System.Timeout
 import Test.HUnit
 import Test.Hspec
 
-serverTests :: SpecWith ()
+serverTests :: Spec
 serverTests = do
   describe "SMP syntax" syntaxTests
   describe "SMP queues" do
@@ -39,7 +39,7 @@ commands >#> responses = smpServerTest commands `shouldReturn` responses
 (#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion
 (actual, expected) #== message = assertEqual message expected actual
 
-testCreateSecure :: SpecWith ()
+testCreateSecure :: Spec
 testCreateSecure =
   it "should create (NEW) and secure (KEY) queue" $
     smpTest \h -> do
@@ -88,7 +88,7 @@ testCreateSecure =
       Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, "SEND :hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-testCreateDelete :: SpecWith ()
+testCreateDelete :: Spec
 testCreateDelete =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 \rh sh -> do
@@ -154,7 +154,7 @@ testCreateDelete =
       Resp "cdab" _ err10 <- sendRecv rh ("1234", "cdab", rId, "SUB")
       (err10, ERR AUTH) #== "rejects SUB when deleted"
 
-testDuplex :: SpecWith ()
+testDuplex :: Spec
 testDuplex =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 \alice bob -> do
@@ -199,7 +199,7 @@ testDuplex =
       Resp "bcda" _ OK <- sendRecv bob ("abcd", "bcda", bRcv, "ACK")
       (msg5, "how are you bob") #== "message received from alice"
 
-testSwitchSub :: SpecWith ()
+testSwitchSub :: Spec
 testSwitchSub =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 \rh1 rh2 sh -> do
@@ -236,7 +236,7 @@ testSwitchSub =
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
-syntaxTests :: SpecWith ()
+syntaxTests :: Spec
 syntaxTests = do
   it "unknown command" $ [("", "abcd", "1234", "HELLO")] >#> [("", "abcd", "1234", "ERR UNKNOWN")]
   describe "NEW" do
@@ -265,7 +265,7 @@ syntaxTests = do
   describe "broker response not allowed" do
     it "OK" $ [("1234", "bcda", "12345678", "OK")] >#> [("", "bcda", "12345678", "ERR PROHIBITED")]
   where
-    noParamsSyntaxTest :: ByteString -> SpecWith ()
+    noParamsSyntaxTest :: ByteString -> Spec
     noParamsSyntaxTest cmd = describe (B.unpack cmd) do
       it "valid syntax" $ [("1234", "abcd", "12345678", cmd)] >#> [("", "abcd", "12345678", "ERR AUTH")]
       it "parameters" $ [("1234", "bcda", "12345678", cmd <> " 1")] >#> [("", "bcda", "12345678", "ERR SYNTAX 2")]
