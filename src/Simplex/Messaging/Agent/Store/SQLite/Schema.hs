@@ -13,7 +13,7 @@ servers =
     CREATE TABLE IF NOT EXISTS servers
       ( server_id INTEGER PRIMARY KEY,
         host TEXT NOT NULL,
-        port INT NOT NULL,
+        port TEXT,
         key_hash BLOB,
         UNIQUE (host, port)
       )

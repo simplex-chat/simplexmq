@@ -68,19 +68,6 @@ newSQLiteStore dbFile = do
         messagesLock
       }
 
--- data ReceiveQueueRec = ReceiveQueueRec
---   { rowId :: Maybe Int64,
---     serverId :: Int64,
---     rcvId :: QueueId,
---     rcvPrivateKey :: PrivateKey,
---     sndId :: Maybe QueueId,
---     sndKey :: Maybe PublicKey,
---     decryptKey :: PrivateKey,
---     verifyKey :: Maybe PublicKey,
---     status :: QueueStatus,
---     ackMode :: AckMode
---   }
-
 type QueueRowId = Int64
 
 type ConnectionRowId = Int64
@@ -114,12 +101,25 @@ instance ToRow SMPServer where
 instance FromRow SMPServer where
   fromRow = SMPServer <$> field <*> field <*> field
 
-upsertServer :: MonadUnliftIO m => SQLiteStore -> SMPServer -> m SMPServerId
-upsertServer store =
-  insertWithLock
-    store
-    serversLock
-    "INSERT INTO servers (host, port, key_hash) VALUES (?, ?, ?)"
+upsertServer :: MonadUnliftIO m => SQLiteStore -> SMPServer -> m (Either StoreError SMPServerId)
+upsertServer SQLiteStore {conn} srv@SMPServer {host, port} = liftIO $ do
+  DB.execute
+    conn
+    [s|
+      INSERT INTO servers (host, port, key_hash) VALUES (?, ?, ?)
+      ON CONFLICT (host_address, port) DO UPDATE SET
+        host_address=excluded.host_address,
+        port=excluded.port,
+        key_hash=excluded.key_hash;
+      |]
+    srv
+  DB.queryNamed
+    conn
+    "SELECT server_id FROM servers WHERE host = :host AND port = :port"
+    [":host" := host, ":port" := port]
+    >>= \case
+      [Only serverId] -> return (Right serverId)
+      _ -> return (Left SEInternal)
 
 instance ToField AckMode where toField (AckMode mode) = toField $ show mode
 
@@ -157,14 +157,17 @@ insertRcvConnection store connAlias rcvQueueId =
     (Only connAlias :. Only rcvQueueId)
 
 instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
-  addServer store smpServer = Right <$> upsertServer store smpServer
+  addServer store smpServer = upsertServer store smpServer
 
   createRcvConn :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m (Either StoreError (Connection CReceive))
-  createRcvConn st connAlias rcvQueue = do
-    serverId <- upsertServer st $ server (rcvQueue :: ReceiveQueue)
-    qId <- insertRcvQueue st serverId rcvQueue -- TODO test for duplicate connAlias
-    insertRcvConnection st connAlias qId
-    return $ Right (ReceiveConnection connAlias rcvQueue)
+  createRcvConn st connAlias rcvQueue =
+    upsertServer st (server (rcvQueue :: ReceiveQueue))
+      >>= either (return . Left) (fmap Right . addConnection)
+    where
+      addConnection serverId = do
+        qId <- insertRcvQueue st serverId rcvQueue -- TODO test for duplicate connAlias
+        insertRcvConnection st connAlias qId
+        return $ ReceiveConnection connAlias rcvQueue
 
 -- id <- query conn "INSERT ..."
 -- query conn "INSERT ..."
