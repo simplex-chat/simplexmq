@@ -154,14 +154,30 @@ getRcvQueue st@SQLiteStore {conn} queueRowId = liftIO $ do
     DB.queryNamed
       conn
       [s|
-          SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
-          FROM receive_queues
-          WHERE receive_queue_id = :rowId;
+        SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
+        FROM receive_queues
+        WHERE receive_queue_id = :rowId;
         |]
       [":rowId" := queueRowId]
   case r of
     [Only serverId :. rcvQueue] ->
       (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$$> getServer st serverId
+    _ -> return (Left SENotFound)
+
+getSndQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m (Either StoreError SendQueue)
+getSndQueue st@SQLiteStore {conn} queueRowId = liftIO $ do
+  r <-
+    DB.queryNamed
+      conn
+      [s|
+        SELECT server_id, snd_id, snd_private_key, encrypt_key, sign_key, status, ack_mode
+        FROM send_queues
+        WHERE send_queue_id = :rowId;
+        |]
+      [":rowId" := queueRowId]
+  case r of
+    [Only serverId :. sndQueue] ->
+      (\srv -> (sndQueue {server = srv} :: SendQueue)) <$$> getServer st serverId
     _ -> return (Left SENotFound)
 
 insertRcvQueue :: MonadUnliftIO m => SQLiteStore -> SMPServerId -> ReceiveQueue -> m QueueRowId
