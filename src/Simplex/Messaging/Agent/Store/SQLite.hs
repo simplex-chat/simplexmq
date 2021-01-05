@@ -113,13 +113,25 @@ upsertServer SQLiteStore {conn} srv@SMPServer {host, port} = liftIO $ do
         key_hash=excluded.key_hash;
       |]
     srv
-  DB.queryNamed
-    conn
-    "SELECT server_id FROM servers WHERE host = :host AND port = :port"
-    [":host" := host, ":port" := port]
-    >>= \case
-      [Only serverId] -> return (Right serverId)
-      _ -> return (Left SEInternal)
+  r <-
+    DB.queryNamed
+      conn
+      "SELECT server_id FROM servers WHERE host = :host AND port = :port"
+      [":host" := host, ":port" := port]
+  return $ case r of
+    [Only serverId] -> Right serverId
+    _ -> Left SEInternal
+
+getServer :: MonadUnliftIO m => SQLiteStore -> SMPServerId -> m (Either StoreError SMPServer)
+getServer SQLiteStore {conn} serverId = liftIO $ do
+  r <-
+    DB.queryNamed
+      conn
+      "SELECT host, port, key_hash FROM servers WHERE server_id = :server_id"
+      [":server_id" := serverId]
+  return $ case r of
+    [smpServer] -> Right smpServer
+    _ -> Left SENotFound
 
 instance ToField AckMode where toField (AckMode mode) = toField $ show mode
 
@@ -136,30 +148,21 @@ instance ToRow ReceiveQueue where
 instance FromRow ReceiveQueue where
   fromRow = ReceiveQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
 
--- selectRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m (Either StoreError ReceiveQueue)
--- selectRcvQueue SQLiteStore {conn} queueId =
---   liftIO $
---     do
---       DB.query
---         conn
---         [s|
---           SELECT
---             server_id,
---             rcv_id,
---             rcv_private_key,
---             snd_id,
---             snd_key,
---             decrypt_key,
---             verify_key,
---             status,
---             ack_mode
---           FROM receive_queues
---           WHERE receive_queue_id = ?;
---         |]
---         queueId
---       >>= \case
---         [(server, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status, ackMode)] -> return (Right ReceiveQueue {server, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status, ackMode})
---         _ -> return (Left SEInternal)
+getRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m (Either StoreError ReceiveQueue)
+getRcvQueue st@SQLiteStore {conn} queueRowId = liftIO $ do
+  r <-
+    DB.queryNamed
+      conn
+      [s|
+          SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
+          FROM receive_queues
+          WHERE receive_queue_id = :rowId;
+        |]
+      [":rowId" := queueRowId]
+  case r of
+    [Only serverId :. rcvQueue] ->
+      (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$$> getServer st serverId
+    _ -> return (Left SENotFound)
 
 insertRcvQueue :: MonadUnliftIO m => SQLiteStore -> SMPServerId -> ReceiveQueue -> m QueueRowId
 insertRcvQueue store serverId rcvQueue =

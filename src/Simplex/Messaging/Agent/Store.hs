@@ -95,8 +95,7 @@ class Monad m => MonadAgentStore s m where
 
 data StoreError
   = SEInternal
-  | SEConnNotFound
-  | SEMsgNotFound
+  | SENotFound
   | SEBadConnType ConnType
   | SEBadQueueStatus
   deriving (Eq, Show)
