@@ -136,6 +136,31 @@ instance ToRow ReceiveQueue where
 instance FromRow ReceiveQueue where
   fromRow = ReceiveQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
 
+-- selectRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m (Either StoreError ReceiveQueue)
+-- selectRcvQueue SQLiteStore {conn} queueId =
+--   liftIO $
+--     do
+--       DB.query
+--         conn
+--         [s|
+--           SELECT
+--             server_id,
+--             rcv_id,
+--             rcv_private_key,
+--             snd_id,
+--             snd_key,
+--             decrypt_key,
+--             verify_key,
+--             status,
+--             ack_mode
+--           FROM receive_queues
+--           WHERE receive_queue_id = ?;
+--         |]
+--         queueId
+--       >>= \case
+--         [(server, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status, ackMode)] -> return (Right ReceiveQueue {server, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status, ackMode})
+--         _ -> return (Left SEInternal)
+
 insertRcvQueue :: MonadUnliftIO m => SQLiteStore -> SMPServerId -> ReceiveQueue -> m QueueRowId
 insertRcvQueue store serverId rcvQueue =
   insertWithLock
@@ -182,6 +207,19 @@ insertSndConnection store connAlias sndQueueId =
     connectionsLock
     "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,NULL,?);"
     (Only connAlias :. Only sndQueueId)
+
+-- instance FromRow SomeConn where
+--   fromRow =
+
+-- selectConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> m (Either StoreError SomeConn)
+-- selectConnection SQLiteStore {conn} connAlias = liftIO $ do
+--   DB.query
+--     conn
+--     "SELECT * FROM connections WHERE conn_alias = ?"
+--     connAlias
+--     >>= \case
+--       [Only someConn] -> return (Right someConn)
+--       _ -> return (Left SEInternal)
 
 instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
   addServer store smpServer = upsertServer store smpServer
