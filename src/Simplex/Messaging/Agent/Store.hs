@@ -11,6 +11,7 @@ module Simplex.Messaging.Agent.Store where
 import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock (UTCTime)
+import Data.Type.Equality
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server.Transmission (Encoded, PublicKey, QueueId)
 
@@ -54,10 +55,25 @@ data SConnType :: ConnType -> Type where
   SCSend :: SConnType CSend
   SCDuplex :: SConnType CDuplex
 
+deriving instance Eq (SConnType d)
+
 deriving instance Show (SConnType d)
+
+instance TestEquality SConnType where
+  testEquality SCReceive SCReceive = Just Refl
+  testEquality SCSend SCSend = Just Refl
+  testEquality SCDuplex SCDuplex = Just Refl
+  testEquality _ _ = Nothing
 
 data SomeConn where
   SomeConn :: SConnType d -> Connection d -> SomeConn
+
+instance Eq SomeConn where
+  SomeConn d c == SomeConn d' c' = case testEquality d d' of
+    Just Refl -> c == c'
+    _ -> False
+
+deriving instance Show SomeConn
 
 data MessageDelivery = MessageDelivery
   { connAlias :: ConnAlias,
@@ -96,6 +112,7 @@ class Monad m => MonadAgentStore s m where
 data StoreError
   = SEInternal
   | SENotFound
+  | SEBadConn
   | SEBadConnType ConnType
   | SEBadQueueStatus
   deriving (Eq, Show)

@@ -27,7 +27,7 @@ storeTests = withStore do
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
-  it "should create receiver connection and return receiver connection data type" $ \store -> do
+  it "should create and get receive connection" $ \store -> do
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -42,10 +42,12 @@ testCreateRcvConn = do
             }
     createRcvConn store "1" rcvQueue
       `shouldReturn` Right (ReceiveConnection "1" rcvQueue)
+    getConn store "1"
+      `shouldReturn` Right (SomeConn SCReceive $ ReceiveConnection "1" rcvQueue)
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
-  it "should create sender connection and return sender connection data type" $ \store -> do
+  it "should create and get send connection" $ \store -> do
     let sndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -58,3 +60,5 @@ testCreateSndConn = do
             }
     createSndConn store "2" sndQueue
       `shouldReturn` Right (SendConnection "2" sndQueue)
+    getConn store "2"
+      `shouldReturn` Right (SomeConn SCSend $ SendConnection "2" sndQueue)

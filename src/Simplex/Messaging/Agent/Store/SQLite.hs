@@ -227,18 +227,16 @@ insertSndConnection store connAlias sndQueueId =
     "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,NULL,?);"
     (Only connAlias :. Only sndQueueId)
 
--- instance FromRow SomeConn where
---   fromRow =
-
--- selectConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> m (Either StoreError SomeConn)
--- selectConnection SQLiteStore {conn} connAlias = liftIO $ do
---   DB.query
---     conn
---     "SELECT * FROM connections WHERE conn_alias = ?"
---     connAlias
---     >>= \case
---       [Only someConn] -> return (Right someConn)
---       _ -> return (Left SEInternal)
+getConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> m (Either StoreError (Maybe QueueRowId, Maybe QueueRowId))
+getConnection SQLiteStore {conn} connAlias = liftIO $ do
+  r <-
+    DB.queryNamed
+      conn
+      "SELECT receive_queue_id, send_queue_id FROM connections WHERE conn_alias = :conn_alias"
+      [":conn_alias" := connAlias]
+  return $ case r of
+    [queueIds] -> Right queueIds
+    _ -> Left SEInternal
 
 instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
   addServer store smpServer = upsertServer store smpServer
@@ -262,3 +260,19 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
         qId <- insertSndQueue st serverId sndQueue -- TODO test for duplicate connAlias
         insertSndConnection st connAlias qId
         return $ SendConnection connAlias sndQueue
+
+  getConn :: SQLiteStore -> ConnAlias -> m (Either StoreError SomeConn)
+  getConn st connAlias =
+    getConnection st connAlias >>= \case
+      Left e -> return $ Left e
+      Right (Just rcvQId, Just sndQId) -> do
+        rcvQ <- getRcvQueue st rcvQId
+        sndQ <- getSndQueue st sndQId
+        return $ SomeConn SCDuplex <$> (DuplexConnection connAlias <$> rcvQ <*> sndQ)
+      Right (Just rcvQId, _) ->
+        getRcvQueue st rcvQId
+          >>= return . fmap (SomeConn SCReceive . ReceiveConnection connAlias)
+      Right (_, Just sndQId) ->
+        getSndQueue st sndQId
+          >>= return . fmap (SomeConn SCSend . SendConnection connAlias)
+      Right (_, _) -> return $ Left SEBadConn
