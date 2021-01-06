@@ -95,6 +95,11 @@ insertWithLock st tableLock queryStr q = do
     DB.execute c queryStr q
     DB.lastInsertRowId c
 
+updateWithLock :: (MonadUnliftIO m, ToRow q) => SQLiteStore -> (SQLiteStore -> TMVar ()) -> DB.Query -> q -> m ()
+updateWithLock st tableLock queryStr q = do
+  withLock st tableLock $ \c -> liftIO $ do
+    DB.execute c queryStr q
+
 instance ToRow SMPServer where
   toRow SMPServer {host, port, keyHash} = toRow (host, port, keyHash)
 
@@ -111,7 +116,7 @@ upsertServer SQLiteStore {conn} srv@SMPServer {host, port} = liftIO $ do
         host=excluded.host,
         port=excluded.port,
         key_hash=excluded.key_hash;
-      |]
+    |]
     srv
   r <-
     DB.queryNamed
@@ -157,7 +162,7 @@ getRcvQueue st@SQLiteStore {conn} queueRowId = liftIO $ do
         SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
         FROM receive_queues
         WHERE receive_queue_id = :rowId;
-        |]
+      |]
       [":rowId" := queueRowId]
   case r of
     [Only serverId :. rcvQueue] ->
@@ -173,7 +178,7 @@ getSndQueue st@SQLiteStore {conn} queueRowId = liftIO $ do
         SELECT server_id, snd_id, snd_private_key, encrypt_key, sign_key, status, ack_mode
         FROM send_queues
         WHERE send_queue_id = :rowId;
-        |]
+      |]
       [":rowId" := queueRowId]
   case r of
     [Only serverId :. sndQueue] ->
@@ -199,6 +204,18 @@ insertRcvConnection store connAlias rcvQueueId =
     connectionsLock
     "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,?,NULL);"
     (Only connAlias :. Only rcvQueueId)
+
+updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
+updateRcvConnectionWithSndQueue store connAlias sndQueueId =
+  updateWithLock
+    store
+    connectionsLock
+    [s|
+      UPDATE connections
+      SET send_queue_id = ?
+      WHERE conn_alias = ?;
+    |]
+    (Only sndQueueId :. Only connAlias)
 
 instance ToRow SendQueue where
   toRow SendQueue {sndId, sndPrivateKey, encryptKey, signKey, status, ackMode} =
@@ -276,3 +293,17 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
         getSndQueue st sndQId
           >>= return . fmap (SomeConn SCSend . SendConnection connAlias)
       Right (_, _) -> return $ Left SEBadConn
+
+-- WIP
+  -- addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CDuplex))
+  -- addSndQueue st connAlias sndQueue = do
+  --   upsertServer st (server (sndQueue :: SendQueue))
+  --     >>= either (return . Left) (fmap Right . updateConnection)
+  --   where
+  --     updateConnection serverId = do
+  --       qId <- insertSndQueue st serverId sndQueue
+  --       _ <- updateRcvConnectionWithSndQueue st connAlias qId  -- TODO check that connection is ReceiveConnection
+  --       getConn st connAlias
+  --         >>= either (return . Left) (fmap Right . updatedConn)
+  --       where
+  --         updatedConn = SomeConn SCDuplex . updatedConn
