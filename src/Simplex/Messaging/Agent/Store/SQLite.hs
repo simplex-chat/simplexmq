@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -153,6 +154,7 @@ instance ToRow ReceiveQueue where
 instance FromRow ReceiveQueue where
   fromRow = ReceiveQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
 
+-- TODO refactor into a single query with join
 getRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m (Either StoreError ReceiveQueue)
 getRcvQueue st@SQLiteStore {conn} queueRowId = liftIO $ do
   r <-
@@ -169,6 +171,7 @@ getRcvQueue st@SQLiteStore {conn} queueRowId = liftIO $ do
       (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$$> getServer st serverId
     _ -> return (Left SENotFound)
 
+-- TODO refactor into a single query with join
 getSndQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m (Either StoreError SendQueue)
 getSndQueue st@SQLiteStore {conn} queueRowId = liftIO $ do
   r <-
@@ -278,6 +281,7 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
         insertSndConnection st connAlias qId
         return $ SendConnection connAlias sndQueue
 
+  -- TODO refactor ito a single query with join, and parse as `Only connAlias :. rcvQueue :. sndQueue`
   getConn :: SQLiteStore -> ConnAlias -> m (Either StoreError SomeConn)
   getConn st connAlias =
     getConnection st connAlias >>= \case
@@ -295,26 +299,20 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
       Right (_, _) -> return $ Left SEBadConn
 
   -- TODO make transactional
-  addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CDuplex))
-  addSndQueue st connAlias sndQueue = do
-    serverId <- upsertServer st (server (sndQueue :: SendQueue))
-    case serverId of
-      Left e -> return $ Left e
-      Right servId -> do
-        conn <- getConnection st connAlias
-        case conn of
-          Left e -> return $ Left e
-          Right (Just _, Just _) -> return $ Left (SEBadConnType CDuplex)
-          Right (_, Just _) -> return $ Left (SEBadConnType CSend)
-          Right (Just _, _) -> do -- Add send queue only if connection is ReceiveConnection
-            qId <- insertSndQueue st servId sndQueue
-            _ <- updateRcvConnectionWithSndQueue st connAlias qId
-            updatedConn <- getConnection st connAlias
-            case updatedConn of
-              Left e -> return $ Left e
-              Right (Just rcvQId, Just sndQId) -> do
-                rcvQ <- getRcvQueue st rcvQId
-                sndQ <- getSndQueue st sndQId
-                return $ DuplexConnection connAlias <$> rcvQ <*> sndQ
-              Right (_, _) -> return $ Left SEBadConn
-          Right (_, _) -> return $ Left SEBadConn
+  addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError ())
+  addSndQueue st connAlias sndQueue =
+    getConn st connAlias
+      >>= either (return . Left) checkUpdateConn
+    where
+      checkUpdateConn :: SomeConn -> m (Either StoreError ())
+      checkUpdateConn = \case
+        SomeConn SCDuplex _ -> return $ Left (SEBadConnType CDuplex)
+        SomeConn SCSend _ -> return $ Left (SEBadConnType CSend)
+        SomeConn SCReceive _ ->
+          upsertServer st (server (sndQueue :: SendQueue))
+            >>= either (return . Left) (fmap Right . updateConn)
+
+      updateConn :: SMPServerId -> m ()
+      updateConn servId =
+        insertSndQueue st servId sndQueue
+          >>= updateRcvConnectionWithSndQueue st connAlias

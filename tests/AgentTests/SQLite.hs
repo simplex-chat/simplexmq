@@ -56,7 +56,7 @@ testCreateRcvConn = do
               ackMode = AckMode On
             }
     addSndQueue store "1" sndQueue
-      `shouldReturn` Right (DuplexConnection "1" rcvQueue sndQueue)
+      `shouldReturn` Right ()
     getConn store "1"
       `shouldReturn` Right (SomeConn SCDuplex $ DuplexConnection "1" rcvQueue sndQueue)
 
