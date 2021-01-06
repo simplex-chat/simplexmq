@@ -301,13 +301,20 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
     case serverId of
       Left e -> return $ Left e
       Right servId -> do
-        qId <- insertSndQueue st servId sndQueue
-        _ <- updateRcvConnectionWithSndQueue st connAlias qId -- TODO check that connection is ReceiveConnection
-        updatedConn <- getConnection st connAlias
-        case updatedConn of
+        conn <- getConnection st connAlias
+        case conn of
           Left e -> return $ Left e
-          Right (Just rcvQId, Just sndQId) -> do
-            rcvQ <- getRcvQueue st rcvQId
-            sndQ <- getSndQueue st sndQId
-            return $ DuplexConnection connAlias <$> rcvQ <*> sndQ
+          Right (Just _, Just _) -> return $ Left (SEBadConnType CDuplex)
+          Right (_, Just _) -> return $ Left (SEBadConnType CSend)
+          Right (Just _, _) -> do -- Add send queue only if connection is ReceiveConnection
+            qId <- insertSndQueue st servId sndQueue
+            _ <- updateRcvConnectionWithSndQueue st connAlias qId
+            updatedConn <- getConnection st connAlias
+            case updatedConn of
+              Left e -> return $ Left e
+              Right (Just rcvQId, Just sndQId) -> do
+                rcvQ <- getRcvQueue st rcvQId
+                sndQ <- getSndQueue st sndQId
+                return $ DuplexConnection connAlias <$> rcvQ <*> sndQ
+              Right (_, _) -> return $ Left SEBadConn
           Right (_, _) -> return $ Left SEBadConn

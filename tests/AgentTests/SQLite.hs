@@ -24,6 +24,7 @@ storeTests = withStore do
   describe "store methods" do
     describe "createRcvConn" testCreateRcvConn
     describe "createSndConn" testCreateSndConn
+    describe "addSndQueue" testAddSndQueue
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -76,3 +77,30 @@ testCreateSndConn = do
       `shouldReturn` Right (SendConnection "2" sndQueue)
     getConn store "2"
       `shouldReturn` Right (SomeConn SCSend $ SendConnection "2" sndQueue)
+
+testAddSndQueue :: SpecWith SQLiteStore
+testAddSndQueue = do
+  it "should return error on attempts to add send queue to SendConnection or DuplexConnection" $ \store -> do
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "6789",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    _ <- createSndConn store "3" sndQueue
+    let anotherSndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "7890",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    addSndQueue store "3" anotherSndQueue
+      `shouldReturn` Left (SEBadConnType CSend)
