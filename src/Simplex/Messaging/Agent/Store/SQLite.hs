@@ -294,6 +294,7 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
           >>= return . fmap (SomeConn SCSend . SendConnection connAlias)
       Right (_, _) -> return $ Left SEBadConn
 
+  -- TODO make transactional
   addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CDuplex))
   addSndQueue st connAlias sndQueue = do
     serverId <- upsertServer st (server (sndQueue :: SendQueue))

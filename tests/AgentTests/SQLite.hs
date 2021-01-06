@@ -27,7 +27,7 @@ storeTests = withStore do
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
-  it "should create and get receive connection" $ \store -> do
+  it "should create receive connection and add send queue" $ \store -> do
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -44,6 +44,20 @@ testCreateRcvConn = do
       `shouldReturn` Right (ReceiveConnection "1" rcvQueue)
     getConn store "1"
       `shouldReturn` Right (SomeConn SCReceive $ ReceiveConnection "1" rcvQueue)
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "1234",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    addSndQueue store "1" sndQueue
+      `shouldReturn` Right (DuplexConnection "1" rcvQueue sndQueue)
+    getConn store "1"
+      `shouldReturn` Right (SomeConn SCDuplex $ DuplexConnection "1" rcvQueue sndQueue)
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
