@@ -294,16 +294,19 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
           >>= return . fmap (SomeConn SCSend . SendConnection connAlias)
       Right (_, _) -> return $ Left SEBadConn
 
--- WIP
-  -- addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CDuplex))
-  -- addSndQueue st connAlias sndQueue = do
-  --   upsertServer st (server (sndQueue :: SendQueue))
-  --     >>= either (return . Left) (fmap Right . updateConnection)
-  --   where
-  --     updateConnection serverId = do
-  --       qId <- insertSndQueue st serverId sndQueue
-  --       _ <- updateRcvConnectionWithSndQueue st connAlias qId  -- TODO check that connection is ReceiveConnection
-  --       getConn st connAlias
-  --         >>= either (return . Left) (fmap Right . updatedConn)
-  --       where
-  --         updatedConn = SomeConn SCDuplex . updatedConn
+  addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CDuplex))
+  addSndQueue st connAlias sndQueue = do
+    serverId <- upsertServer st (server (sndQueue :: SendQueue))
+    case serverId of
+      Left e -> return $ Left e
+      Right servId -> do
+        qId <- insertSndQueue st servId sndQueue
+        _ <- updateRcvConnectionWithSndQueue st connAlias qId -- TODO check that connection is ReceiveConnection
+        updatedConn <- getConnection st connAlias
+        case updatedConn of
+          Left e -> return $ Left e
+          Right (Just rcvQId, Just sndQId) -> do
+            rcvQ <- getRcvQueue st rcvQId
+            sndQ <- getSndQueue st sndQId
+            return $ DuplexConnection connAlias <$> rcvQ <*> sndQ
+          Right (_, _) -> return $ Left SEBadConn
