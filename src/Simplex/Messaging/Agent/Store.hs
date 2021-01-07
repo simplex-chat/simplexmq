@@ -100,7 +100,7 @@ class Monad m => MonadAgentStore s m where
   getConn :: s -> ConnAlias -> m (Either StoreError SomeConn)
   deleteConn :: s -> ConnAlias -> m (Either StoreError ())
   addSndQueue :: s -> ConnAlias -> SendQueue -> m (Either StoreError ())
-  addRcvQueue :: s -> ConnAlias -> SendQueue -> m (Either StoreError ())
+  addRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m (Either StoreError ())
   removeSndAuth :: s -> ConnAlias -> m (Either StoreError ())
   updateQueueStatus :: s -> ConnAlias -> QueueDirection -> QueueStatus -> m (Either StoreError ())
   createMsg :: s -> ConnAlias -> QueueDirection -> AMessage -> m (Either StoreError MessageDelivery)

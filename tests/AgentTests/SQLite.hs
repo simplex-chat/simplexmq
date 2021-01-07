@@ -25,6 +25,7 @@ storeTests = withStore do
     describe "createRcvConn" testCreateRcvConn
     describe "createSndConn" testCreateSndConn
     describe "addSndQueue" testAddSndQueue
+    describe "addRcvQueue" testAddRcvQueue
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -62,7 +63,7 @@ testCreateRcvConn = do
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
-  it "should create and get send connection" $ \store -> do
+  it "should create send connection and add receive queue" $ \store -> do
     let sndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -77,6 +78,22 @@ testCreateSndConn = do
       `shouldReturn` Right (SendConnection "2" sndQueue)
     getConn store "2"
       `shouldReturn` Right (SomeConn SCSend $ SendConnection "2" sndQueue)
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "2345",
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    addRcvQueue store "2" rcvQueue
+      `shouldReturn` Right ()
+    getConn store "2"
+      `shouldReturn` Right (SomeConn SCDuplex $ DuplexConnection "2" rcvQueue sndQueue)
 
 testAddSndQueue :: SpecWith SQLiteStore
 testAddSndQueue = do
@@ -104,3 +121,62 @@ testAddSndQueue = do
             }
     addSndQueue store "3" anotherSndQueue
       `shouldReturn` Left (SEBadConnType CSend)
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "6789",
+              rcvPrivateKey = "abcd",
+              sndId = Just "6789",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    _ <- addRcvQueue store "3" rcvQueue
+    addSndQueue store "3" anotherSndQueue
+      `shouldReturn` Left (SEBadConnType CDuplex)
+
+testAddRcvQueue :: SpecWith SQLiteStore
+testAddRcvQueue = do
+  it "should return error on attempts to add receive queue to ReceiveConnection or DuplexConnection" $ \store -> do
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "3456",
+              rcvPrivateKey = "abcd",
+              sndId = Just "3456",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    _ <- createRcvConn store "4" rcvQueue
+    let anotherRcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "4567",
+              rcvPrivateKey = "abcd",
+              sndId = Just "4567",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    addRcvQueue store "4" anotherRcvQueue
+      `shouldReturn` Left (SEBadConnType CReceive)
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "3456",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    _ <- addSndQueue store "4" sndQueue
+    addRcvQueue store "4" anotherRcvQueue
+      `shouldReturn` Left (SEBadConnType CDuplex)

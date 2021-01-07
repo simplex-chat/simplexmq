@@ -19,7 +19,6 @@ servers =
       )
   |]
 
--- TODO unique constraints on (server_id, rcv_id) and (server_id, snd_id)
 receiveQueues :: Query
 receiveQueues =
   [s|
@@ -50,7 +49,8 @@ sendQueues =
         encrypt_key BLOB NOT NULL,
         sign_key BLOB NOT NULL,
         status TEXT NOT NULL,
-        ack_mode INTEGER NOT NULL
+        ack_mode INTEGER NOT NULL,
+        UNIQUE (server_id, snd_id)
       )
   |]
 

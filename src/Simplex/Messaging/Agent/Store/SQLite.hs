@@ -96,8 +96,8 @@ insertWithLock st tableLock queryStr q = do
     DB.execute c queryStr q
     DB.lastInsertRowId c
 
-updateWithLock :: (MonadUnliftIO m, ToRow q) => SQLiteStore -> (SQLiteStore -> TMVar ()) -> DB.Query -> q -> m ()
-updateWithLock st tableLock queryStr q = do
+executeWithLock :: (MonadUnliftIO m, ToRow q) => SQLiteStore -> (SQLiteStore -> TMVar ()) -> DB.Query -> q -> m ()
+executeWithLock st tableLock queryStr q = do
   withLock st tableLock $ \c -> liftIO $ do
     DB.execute c queryStr q
 
@@ -210,7 +210,7 @@ insertRcvConnection store connAlias rcvQueueId =
 
 updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
 updateRcvConnectionWithSndQueue store connAlias sndQueueId =
-  updateWithLock
+  executeWithLock
     store
     connectionsLock
     [s|
@@ -246,6 +246,18 @@ insertSndConnection store connAlias sndQueueId =
     connectionsLock
     "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,NULL,?);"
     (Only connAlias :. Only sndQueueId)
+
+updateSndConnectionWithRcvQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
+updateSndConnectionWithRcvQueue store connAlias rcvQueueId =
+  executeWithLock
+    store
+    connectionsLock
+    [s|
+      UPDATE connections
+      SET receive_queue_id = ?
+      WHERE conn_alias = ?;
+    |]
+    (Only rcvQueueId :. Only connAlias)
 
 getConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> m (Either StoreError (Maybe QueueRowId, Maybe QueueRowId))
 getConnection SQLiteStore {conn} connAlias = liftIO $ do
@@ -316,3 +328,22 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
       updateConn servId =
         insertSndQueue st servId sndQueue
           >>= updateRcvConnectionWithSndQueue st connAlias
+
+  -- TODO make transactional
+  addRcvQueue :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m (Either StoreError ())
+  addRcvQueue st connAlias rcvQueue =
+    getConn st connAlias
+      >>= either (return . Left) checkUpdateConn
+    where
+      checkUpdateConn :: SomeConn -> m (Either StoreError ())
+      checkUpdateConn = \case
+        SomeConn SCDuplex _ -> return $ Left (SEBadConnType CDuplex)
+        SomeConn SCReceive _ -> return $ Left (SEBadConnType CReceive)
+        SomeConn SCSend _ ->
+          upsertServer st (server (rcvQueue :: ReceiveQueue))
+            >>= either (return . Left) (fmap Right . updateConn)
+
+      updateConn :: SMPServerId -> m ()
+      updateConn servId =
+        insertRcvQueue st servId rcvQueue
+          >>= updateSndConnectionWithRcvQueue st connAlias
