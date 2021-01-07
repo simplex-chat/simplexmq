@@ -26,6 +26,9 @@ storeTests = withStore do
     describe "createSndConn" testCreateSndConn
     describe "addSndQueue" testAddSndQueue
     describe "addRcvQueue" testAddRcvQueue
+    describe "deleteConnReceive" testDeleteConnReceive
+    describe "deleteConnSend" testDeleteConnSend
+    describe "deleteConnDuplex" testDeleteConnDuplex
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -180,3 +183,81 @@ testAddRcvQueue = do
     _ <- addSndQueue store "conn1" sndQueue
     addRcvQueue store "conn1" anotherRcvQueue
       `shouldReturn` Left (SEBadConnType CDuplex)
+
+testDeleteConnReceive :: SpecWith SQLiteStore
+testDeleteConnReceive = do
+  it "should create receive connection and delete it" $ \store -> do
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "1234",
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    _ <- createRcvConn store "conn1" rcvQueue
+    getConn store "conn1"
+      `shouldReturn` Right (SomeConn SCReceive $ ReceiveConnection "conn1" rcvQueue)
+    deleteConn store "conn1"
+      `shouldReturn` Right ()
+    getConn store "conn1"
+      `shouldReturn` Left SEInternal
+
+testDeleteConnSend :: SpecWith SQLiteStore
+testDeleteConnSend = do
+  it "should create send connection and delete it" $ \store -> do
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "1234",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    _ <- createSndConn store "conn1" sndQueue
+    getConn store "conn1"
+      `shouldReturn` Right (SomeConn SCSend $ SendConnection "conn1" sndQueue)
+    deleteConn store "conn1"
+      `shouldReturn` Right ()
+    getConn store "conn1"
+      `shouldReturn` Left SEInternal
+
+testDeleteConnDuplex :: SpecWith SQLiteStore
+testDeleteConnDuplex = do
+  it "should create duplex connection and delete it" $ \store -> do
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "1234",
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    _ <- createRcvConn store "conn1" rcvQueue
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "3456",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    _ <- addSndQueue store "conn1" sndQueue
+    getConn store "conn1"
+      `shouldReturn` Right (SomeConn SCDuplex $ DuplexConnection "conn1" rcvQueue sndQueue)
+    deleteConn store "conn1"
+      `shouldReturn` Right ()
+    getConn store "conn1"
+      `shouldReturn` Left SEInternal

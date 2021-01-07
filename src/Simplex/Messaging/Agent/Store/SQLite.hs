@@ -270,6 +270,30 @@ getConnection SQLiteStore {conn} connAlias = liftIO $ do
     [queueIds] -> Right queueIds
     _ -> Left SEInternal
 
+deleteRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m ()
+deleteRcvQueue store rcvQueueId = do
+  executeWithLock
+    store
+    rcvQueuesLock
+    "DELETE FROM receive_queues WHERE receive_queue_id = ?"
+    (Only rcvQueueId)
+
+deleteSndQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m ()
+deleteSndQueue store sndQueueId = do
+  executeWithLock
+    store
+    sndQueuesLock
+    "DELETE FROM send_queues WHERE send_queue_id = ?"
+    (Only sndQueueId)
+
+deleteConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> m ()
+deleteConnection store connAlias = do
+  executeWithLock
+    store
+    connectionsLock
+    "DELETE FROM connections WHERE conn_alias = ?"
+    (Only connAlias)
+
 instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
   addServer store smpServer = upsertServer store smpServer
 
@@ -347,3 +371,52 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
       updateConn servId =
         insertRcvQueue st servId rcvQueue
           >>= updateSndConnectionWithRcvQueue st connAlias
+
+  -- TODO think about design of one-to-one relationships between connections ans send/receive queues
+  -- - Make wide `connections` table? -> Leads to inability to constrain queue fields on SQL level
+  -- - Make bi-directional foreign keys deferred on queue side?
+  --   * Involves populating foreign keys on queues' tables and reworking store
+  --   * Enables cascade deletes
+  --   ? See https://sqlite.org/foreignkeys.html#fk_deferred
+  -- - Keep as is and just wrap in transaction?
+  deleteConn :: SQLiteStore -> ConnAlias -> m (Either StoreError ())
+  deleteConn st connAlias =
+    getConnection st connAlias >>= \case
+      Left e -> return $ Left e
+      Right (Just rcvQId, Just sndQId) -> do
+        _ <- deleteRcvQueue st rcvQId
+        _ <- deleteSndQueue st sndQId
+        _ <- deleteConnection st connAlias
+        return $ Right ()
+      Right (Just rcvQId, _) -> do
+        _ <- deleteRcvQueue st rcvQId
+        _ <- deleteConnection st connAlias
+        return $ Right ()
+      Right (_, Just sndQId) -> do
+        _ <- deleteSndQueue st sndQId
+        _ <- deleteConnection st connAlias
+        return $ Right ()
+      Right (_, _) -> return $ Left SEBadConn
+
+-- ? Need to work around ambiguous occurence of sndId
+-- deleteConn :: SQLiteStore -> ConnAlias -> m (Either StoreError ())
+-- deleteConn st connAlias =
+--   getConn st connAlias
+--     >>= either (return . Left) checkDeleteConn
+--   where
+--     checkDeleteConn :: SomeConn -> m (Either StoreError ())
+--     checkDeleteConn = \case
+--       SomeConn SCDuplex conn -> do
+--         _ <- deleteRcvQueue st $ rcvId (ReceiveQueue (conn :: Connection CDuplex))
+--         _ <- deleteSndQueue st $ sndId (SendQueue (conn :: Connection CDuplex))
+--         either (return . Left) (fmap Right . delConn)
+--       SomeConn SCReceive conn -> do
+--         _ <- deleteRcvQueue st $ rcvId (ReceiveQueue (conn :: Connection CReceive))
+--         either (return . Left) (fmap Right . delConn)
+--       SomeConn SCSend conn -> do
+--         _ <- deleteSndQueue st $ sndId (SendQueue (conn :: Connection CSend))
+--         either (return . Left) (fmap Right . delConn)
+
+--     delConn :: ConnAlias -> m ()
+--     delConn cAlias =
+--       deleteConnection st cAlias

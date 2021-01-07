@@ -60,8 +60,8 @@ connections =
     CREATE TABLE IF NOT EXISTS connections
       ( connection_id INTEGER PRIMARY KEY,
         conn_alias TEXT UNIQUE,
-        receive_queue_id INTEGER REFERENCES recipient_queues(receive_queue_id),
-        send_queue_id INTEGER REFERENCES sender_queues(send_queue_id)
+        receive_queue_id INTEGER REFERENCES recipient_queues(receive_queue_id) UNIQUE,
+        send_queue_id INTEGER REFERENCES sender_queues(send_queue_id) UNIQUE
       )
   |]
 
