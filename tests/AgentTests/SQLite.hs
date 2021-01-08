@@ -46,7 +46,7 @@ testCreateRcvConn = do
               ackMode = AckMode On
             }
     createRcvConn store "conn1" rcvQueue
-      `shouldReturn` Right (ReceiveConnection "conn1" rcvQueue)
+      `shouldReturn` Right ()
     getConn store "conn1"
       `shouldReturn` Right (SomeConn SCReceive $ ReceiveConnection "conn1" rcvQueue)
     let sndQueue =
@@ -78,7 +78,7 @@ testCreateSndConn = do
               ackMode = AckMode On
             }
     createSndConn store "conn1" sndQueue
-      `shouldReturn` Right (SendConnection "conn1" sndQueue)
+      `shouldReturn` Right ()
     getConn store "conn1"
       `shouldReturn` Right (SomeConn SCSend $ SendConnection "conn1" sndQueue)
     let rcvQueue =

@@ -297,25 +297,25 @@ deleteConnection store connAlias = do
 instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
   addServer store smpServer = upsertServer store smpServer
 
-  createRcvConn :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m (Either StoreError (Connection CReceive))
+  createRcvConn :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m (Either StoreError ())
   createRcvConn st connAlias rcvQueue =
     upsertServer st (server (rcvQueue :: ReceiveQueue))
       >>= either (return . Left) (fmap Right . addConnection)
     where
       addConnection serverId = do
         qId <- insertRcvQueue st serverId rcvQueue -- TODO test for duplicate connAlias
-        insertRcvConnection st connAlias qId
-        return $ ReceiveConnection connAlias rcvQueue
+        _ <- insertRcvConnection st connAlias qId
+        return ()
 
-  createSndConn :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError (Connection CSend))
+  createSndConn :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError ())
   createSndConn st connAlias sndQueue =
     upsertServer st (server (sndQueue :: SendQueue))
       >>= either (return . Left) (fmap Right . addConnection)
     where
       addConnection serverId = do
         qId <- insertSndQueue st serverId sndQueue -- TODO test for duplicate connAlias
-        insertSndConnection st connAlias qId
-        return $ SendConnection connAlias sndQueue
+        _ <- insertSndConnection st connAlias qId
+        return ()
 
   -- TODO refactor ito a single query with join, and parse as `Only connAlias :. rcvQueue :. sndQueue`
   getConn :: SQLiteStore -> ConnAlias -> m (Either StoreError SomeConn)
