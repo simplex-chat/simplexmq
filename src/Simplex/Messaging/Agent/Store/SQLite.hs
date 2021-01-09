@@ -377,3 +377,25 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     forM_ sndQId $ deleteSndQueue st
     deleteConnection st connAlias
     when (isNothing rcvQId && isNothing sndQId) $ throwError SEBadConn
+
+  removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
+  removeSndAuth _st _connAlias = throwError SEInternal
+
+  updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
+  updateQueueStatus _st _connAlias _dir _status = throwError SEInternal
+
+  createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AMessage -> m MessageDelivery
+  createMsg _st _connAlias _dir _msg = throwError SEInternal
+
+  getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
+  getLastMsg _st _connAlias _dir = throwError SEInternal
+
+  getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
+  getMsg _st _connAlias _dir _msgId = throwError SEInternal
+
+  -- TODO missing status parameter?
+  updateMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  updateMsgStatus _st _connAlias _dir _msgId = throwError SEInternal
+
+  deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  deleteMsg _st _connAlias _dir _msgId = throwError SEInternal
