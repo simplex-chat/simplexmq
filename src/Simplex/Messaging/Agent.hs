@@ -20,9 +20,10 @@ import Network.Socket
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.ServerClient (ServerClient (..), newServerClient)
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Server.Transmission (Cmd (..), CorrId (..), PublicKey, RecipientId, SParty (..), SenderId)
+import Simplex.Messaging.Server.Transmission (Cmd (..), CorrId (..), SParty (..))
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
@@ -71,9 +72,12 @@ withStore ::
   (forall n. (MonadUnliftIO n, MonadError StoreError n) => n a) ->
   m a
 withStore action =
-  runExceptT action >>= \case
-    Left _ -> throwError INTERNAL
+  runExceptT (action `E.catch` handleInternal) >>= \case
     Right c -> return c
+    Left e -> throwError $ STORE e
+  where
+    handleInternal :: (MonadError StoreError m') => SomeException -> m' a
+    handleInternal _ = throwError SEInternal
 
 processCommand ::
   forall m.

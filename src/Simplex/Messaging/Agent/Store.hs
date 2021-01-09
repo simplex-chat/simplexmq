@@ -1,5 +1,4 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -10,11 +9,11 @@
 
 module Simplex.Messaging.Agent.Store where
 
-import Control.Exception
 import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
+import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server.Transmission (Encoded, PublicKey, QueueId)
 
@@ -41,8 +40,6 @@ data SendQueue = SendQueue
     ackMode :: AckMode -- whether acknowledgement is expected (via ReceiveQueue if present)
   }
   deriving (Eq, Show)
-
-data ConnType = CSend | CReceive | CDuplex deriving (Eq, Show)
 
 data Connection (d :: ConnType) where
   ReceiveConnection :: ConnAlias -> ReceiveQueue -> Connection CReceive
@@ -111,11 +108,3 @@ class Monad m => MonadAgentStore s m where
   getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
   updateMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
   deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-
-data StoreError
-  = SEInternal
-  | SENotFound
-  | SEBadConn
-  | SEBadConnType ConnType
-  | SEBadQueueStatus
-  deriving (Eq, Show, Exception)

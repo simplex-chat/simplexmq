@@ -25,6 +25,7 @@ import Data.Type.Equality
 import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
+import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Server.Transmission
   ( CorrId (..),
     Encoded,
@@ -144,6 +145,7 @@ data ErrorType
   | BROKER Natural
   | SMP SMP.ErrorType
   | SIZE
+  | STORE StoreError
   | INTERNAL -- etc. TODO SYNTAX Natural
   deriving (Show, Exception)
 

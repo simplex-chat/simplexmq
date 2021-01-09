@@ -30,6 +30,7 @@ import Database.SQLite.Simple.ToField
 import Multiline (s)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema
+import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Util
 import Text.Read
