@@ -19,6 +19,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Data.Int (Int64)
+import Data.Maybe
 import qualified Data.Text as T
 import Database.SQLite.Simple hiding (Connection)
 import qualified Database.SQLite.Simple as DB
@@ -30,7 +31,6 @@ import Multiline (s)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Server.Transmission (PublicKey, QueueId)
 import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E
@@ -308,38 +308,34 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   addServer store smpServer = upsertServer store smpServer
 
   createRcvConn :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
-  createRcvConn st connAlias rcvQueue =
+  createRcvConn st connAlias rcvQueue = do
     -- TODO test for duplicate connAlias
-    upsertServer st (server (rcvQueue :: ReceiveQueue))
-      >>= addConnection
-    where
-      addConnection serverId =
-        insertRcvQueue st serverId rcvQueue
-          >>= insertRcvConnection st connAlias
+    srvId <- upsertServer st (server (rcvQueue :: ReceiveQueue))
+    rcvQId <- insertRcvQueue st srvId rcvQueue
+    insertRcvConnection st connAlias rcvQId
 
   createSndConn :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
-  createSndConn st connAlias sndQueue =
-    upsertServer st (server (sndQueue :: SendQueue))
-      >>= addConnection
-    where
-      addConnection serverId =
-        -- TODO test for duplicate connAlias
-        insertSndQueue st serverId sndQueue
-          >>= insertSndConnection st connAlias
+  createSndConn st connAlias sndQueue = do
+    -- TODO test for duplicate connAlias
+    srvId <- upsertServer st (server (sndQueue :: SendQueue))
+    sndQ <- insertSndQueue st srvId sndQueue
+    insertSndConnection st connAlias sndQ
 
   -- TODO refactor ito a single query with join, and parse as `Only connAlias :. rcvQueue :. sndQueue`
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
-  getConn st connAlias =
+  getConn st connAlias = do
     getConnection st connAlias >>= \case
       (Just rcvQId, Just sndQId) -> do
         rcvQ <- getRcvQueue st rcvQId
         sndQ <- getSndQueue st sndQId
         return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
-      (Just rcvQId, _) ->
-        SomeConn SCReceive . ReceiveConnection connAlias <$> getRcvQueue st rcvQId
-      (_, Just sndQId) ->
-        SomeConn SCSend . SendConnection connAlias <$> getSndQueue st sndQId
-      (_, _) -> throwError SEBadConn
+      (Just rcvQId, _) -> do
+        rcvQ <- getRcvQueue st rcvQId
+        return $ SomeConn SCReceive (ReceiveConnection connAlias rcvQ)
+      (_, Just sndQId) -> do
+        sndQ <- getSndQueue st sndQId
+        return $ SomeConn SCSend (SendConnection connAlias sndQ)
+      _ -> throwError SEBadConn
 
   -- TODO make transactional
   addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
@@ -348,14 +344,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       >>= \case
         SomeConn SCDuplex _ -> throwError (SEBadConnType CDuplex)
         SomeConn SCSend _ -> throwError (SEBadConnType CSend)
-        SomeConn SCReceive _ ->
-          upsertServer st (server (sndQueue :: SendQueue))
-            >>= updateConn
-    where
-      updateConn :: SMPServerId -> m ()
-      updateConn servId =
-        insertSndQueue st servId sndQueue
-          >>= updateRcvConnectionWithSndQueue st connAlias
+        SomeConn SCReceive _ -> do
+          srvId <- upsertServer st (server (sndQueue :: SendQueue))
+          sndQ <- insertSndQueue st srvId sndQueue
+          updateRcvConnectionWithSndQueue st connAlias sndQ
 
   -- TODO make transactional
   addRcvQueue :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
@@ -364,14 +356,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       >>= \case
         SomeConn SCDuplex _ -> throwError (SEBadConnType CDuplex)
         SomeConn SCReceive _ -> throwError (SEBadConnType CReceive)
-        SomeConn SCSend _ ->
-          upsertServer st (server (rcvQueue :: ReceiveQueue))
-            >>= updateConn
-    where
-      updateConn :: SMPServerId -> m ()
-      updateConn servId =
-        insertRcvQueue st servId rcvQueue
-          >>= updateSndConnectionWithRcvQueue st connAlias
+        SomeConn SCSend _ -> do
+          srvId <- upsertServer st (server (rcvQueue :: ReceiveQueue))
+          rcvQ <- insertRcvQueue st srvId rcvQueue
+          updateSndConnectionWithRcvQueue st connAlias rcvQ
 
   -- TODO think about design of one-to-one relationships between connections ans send/receive queues
   -- - Make wide `connections` table? -> Leads to inability to constrain queue fields on SQL level
@@ -381,16 +369,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   --   ? See https://sqlite.org/foreignkeys.html#fk_deferred
   -- - Keep as is and just wrap in transaction?
   deleteConn :: SQLiteStore -> ConnAlias -> m ()
-  deleteConn st connAlias =
-    getConnection st connAlias >>= \case
-      (Just rcvQId, Just sndQId) -> do
-        deleteRcvQueue st rcvQId
-        deleteSndQueue st sndQId
-        deleteConnection st connAlias
-      (Just rcvQId, _) -> do
-        deleteRcvQueue st rcvQId
-        deleteConnection st connAlias
-      (_, Just sndQId) -> do
-        deleteSndQueue st sndQId
-        deleteConnection st connAlias
-      (_, _) -> throwError SEBadConn
+  deleteConn st connAlias = do
+    (rcvQId, sndQId) <- getConnection st connAlias
+    forM_ rcvQId $ deleteRcvQueue st
+    forM_ sndQId $ deleteSndQueue st
+    deleteConnection st connAlias
+    when (isNothing rcvQId && isNothing sndQId) $ throwError SEBadConn
