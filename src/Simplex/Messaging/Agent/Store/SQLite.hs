@@ -13,6 +13,7 @@
 
 module Simplex.Messaging.Agent.Store.SQLite where
 
+import Control.Monad
 import Control.Monad.IO.Unlift
 import Data.Int (Int64)
 import qualified Data.Text as T
@@ -200,13 +201,14 @@ insertRcvQueue store serverId rcvQueue =
     |]
     (Only serverId :. rcvQueue)
 
-insertRcvConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ConnectionRowId
+insertRcvConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
 insertRcvConnection store connAlias rcvQueueId =
-  insertWithLock
-    store
-    connectionsLock
-    "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,?,NULL);"
-    (Only connAlias :. Only rcvQueueId)
+  void $
+    insertWithLock
+      store
+      connectionsLock
+      "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,?,NULL);"
+      (Only connAlias :. Only rcvQueueId)
 
 updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
 updateRcvConnectionWithSndQueue store connAlias sndQueueId =
@@ -239,13 +241,14 @@ insertSndQueue store serverId sndQueue =
     |]
     (Only serverId :. sndQueue)
 
-insertSndConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ConnectionRowId
+insertSndConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
 insertSndConnection store connAlias sndQueueId =
-  insertWithLock
-    store
-    connectionsLock
-    "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,NULL,?);"
-    (Only connAlias :. Only sndQueueId)
+  void $
+    insertWithLock
+      store
+      connectionsLock
+      "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,NULL,?);"
+      (Only connAlias :. Only sndQueueId)
 
 updateSndConnectionWithRcvQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
 updateSndConnectionWithRcvQueue store connAlias rcvQueueId =
@@ -302,20 +305,20 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
     upsertServer st (server (rcvQueue :: ReceiveQueue))
       >>= either (return . Left) (fmap Right . addConnection)
     where
-      addConnection serverId = do
-        qId <- insertRcvQueue st serverId rcvQueue -- TODO test for duplicate connAlias
-        _ <- insertRcvConnection st connAlias qId
-        return ()
+      addConnection serverId =
+        -- TODO test for duplicate connAlias
+        insertRcvQueue st serverId rcvQueue
+          >>= insertRcvConnection st connAlias
 
   createSndConn :: SQLiteStore -> ConnAlias -> SendQueue -> m (Either StoreError ())
   createSndConn st connAlias sndQueue =
     upsertServer st (server (sndQueue :: SendQueue))
       >>= either (return . Left) (fmap Right . addConnection)
     where
-      addConnection serverId = do
-        qId <- insertSndQueue st serverId sndQueue -- TODO test for duplicate connAlias
-        _ <- insertSndConnection st connAlias qId
-        return ()
+      addConnection serverId =
+        -- TODO test for duplicate connAlias
+        insertSndQueue st serverId sndQueue
+          >>= insertSndConnection st connAlias
 
   -- TODO refactor ito a single query with join, and parse as `Only connAlias :. rcvQueue :. sndQueue`
   getConn :: SQLiteStore -> ConnAlias -> m (Either StoreError SomeConn)
@@ -327,11 +330,9 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
         sndQ <- getSndQueue st sndQId
         return $ SomeConn SCDuplex <$> (DuplexConnection connAlias <$> rcvQ <*> sndQ)
       Right (Just rcvQId, _) ->
-        getRcvQueue st rcvQId
-          >>= return . fmap (SomeConn SCReceive . ReceiveConnection connAlias)
+        fmap (SomeConn SCReceive . ReceiveConnection connAlias) <$> getRcvQueue st rcvQId
       Right (_, Just sndQId) ->
-        getSndQueue st sndQId
-          >>= return . fmap (SomeConn SCSend . SendConnection connAlias)
+        fmap (SomeConn SCSend . SendConnection connAlias) <$> getSndQueue st sndQId
       Right (_, _) -> return $ Left SEBadConn
 
   -- TODO make transactional
@@ -384,39 +385,13 @@ instance MonadUnliftIO m => MonadAgentStore SQLiteStore m where
     getConnection st connAlias >>= \case
       Left e -> return $ Left e
       Right (Just rcvQId, Just sndQId) -> do
-        _ <- deleteRcvQueue st rcvQId
-        _ <- deleteSndQueue st sndQId
-        _ <- deleteConnection st connAlias
-        return $ Right ()
+        deleteRcvQueue st rcvQId
+        deleteSndQueue st sndQId
+        Right <$> deleteConnection st connAlias
       Right (Just rcvQId, _) -> do
-        _ <- deleteRcvQueue st rcvQId
-        _ <- deleteConnection st connAlias
-        return $ Right ()
+        deleteRcvQueue st rcvQId
+        Right <$> deleteConnection st connAlias
       Right (_, Just sndQId) -> do
-        _ <- deleteSndQueue st sndQId
-        _ <- deleteConnection st connAlias
-        return $ Right ()
+        deleteSndQueue st sndQId
+        Right <$> deleteConnection st connAlias
       Right (_, _) -> return $ Left SEBadConn
-
--- ? Need to work around ambiguous occurence of sndId
--- deleteConn :: SQLiteStore -> ConnAlias -> m (Either StoreError ())
--- deleteConn st connAlias =
---   getConn st connAlias
---     >>= either (return . Left) checkDeleteConn
---   where
---     checkDeleteConn :: SomeConn -> m (Either StoreError ())
---     checkDeleteConn = \case
---       SomeConn SCDuplex conn -> do
---         _ <- deleteRcvQueue st $ rcvId (ReceiveQueue (conn :: Connection CDuplex))
---         _ <- deleteSndQueue st $ sndId (SendQueue (conn :: Connection CDuplex))
---         either (return . Left) (fmap Right . delConn)
---       SomeConn SCReceive conn -> do
---         _ <- deleteRcvQueue st $ rcvId (ReceiveQueue (conn :: Connection CReceive))
---         either (return . Left) (fmap Right . delConn)
---       SomeConn SCSend conn -> do
---         _ <- deleteSndQueue st $ sndId (SendQueue (conn :: Connection CSend))
---         either (return . Left) (fmap Right . delConn)
-
---     delConn :: ConnAlias -> m ()
---     delConn cAlias =
---       deleteConnection st cAlias
