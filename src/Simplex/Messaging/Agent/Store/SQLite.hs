@@ -117,12 +117,12 @@ upsertServer SQLiteStore {conn} srv@SMPServer {host, port} = do
     DB.execute
       conn
       [s|
-      INSERT INTO servers (host, port, key_hash) VALUES (?, ?, ?)
-      ON CONFLICT (host, port) DO UPDATE SET
-        host=excluded.host,
-        port=excluded.port,
-        key_hash=excluded.key_hash;
-    |]
+        INSERT INTO servers (host, port, key_hash) VALUES (?, ?, ?)
+        ON CONFLICT (host, port) DO UPDATE SET
+          host=excluded.host,
+          port=excluded.port,
+          key_hash=excluded.key_hash;
+      |]
       srv
     DB.queryNamed
       conn
@@ -323,7 +323,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   -- TODO refactor ito a single query with join, and parse as `Only connAlias :. rcvQueue :. sndQueue`
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
-  getConn st connAlias = do
+  getConn st connAlias =
     getConnection st connAlias >>= \case
       (Just rcvQId, Just sndQId) -> do
         rcvQ <- getRcvQueue st rcvQId

@@ -50,8 +50,9 @@ data Request = Request
   }
 
 data RequestState = NEWRequestState
-  { recipientKey :: PublicKey,
-    recipientPrivateKey :: PrivateKey
+  { connAlias :: ConnAlias,
+    smpServer :: SMPServer,
+    rcvPrivateKey :: PrivateKey
   }
 
 newAgentClient :: Natural -> STM AgentClient

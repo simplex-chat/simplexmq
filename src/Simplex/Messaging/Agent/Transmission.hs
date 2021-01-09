@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -29,7 +30,7 @@ import Simplex.Messaging.Server.Transmission
     Encoded,
     MsgBody,
     PublicKey,
-    QueueId,
+    SenderId,
     errBadParameters,
     errMessageBody,
   )
@@ -115,7 +116,7 @@ newtype AckMode = AckMode Mode deriving (Eq, Show)
 
 newtype SubMode = SubMode Mode deriving (Show)
 
-data SMPQueueInfo = SMPQueueInfo SMPServer QueueId EncryptionKey
+data SMPQueueInfo = SMPQueueInfo SMPServer SenderId EncryptionKey
   deriving (Show)
 
 type EncryptionKey = PublicKey
@@ -214,7 +215,12 @@ parseCommand command = case B.words command of
     errInv = Left $ SYNTAX errBadInvitation
 
 serializeCommand :: ACommand p -> ByteString
-serializeCommand = B.pack . show
+serializeCommand = \case
+  INV (SMPQueueInfo srv qId ek) -> "INV smp::" <> server srv <> "::" <> encode qId <> "::" <> encode ek
+  c -> B.pack $ show c
+  where
+    server :: SMPServer -> ByteString
+    server SMPServer {host, port, keyHash} = B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
 
 tPutRaw :: MonadIO m => Handle -> ARawTransmission -> m ()
 tPutRaw h (corrId, connAlias, command) = do
