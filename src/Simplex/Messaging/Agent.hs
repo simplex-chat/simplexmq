@@ -20,6 +20,7 @@ import Network.Socket
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.ServerClient (ServerClient (..), newServerClient)
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Server (randomBytes)
@@ -68,11 +69,12 @@ client c@AgentClient {rcvQ, sndQ} = forever $ do
     Right _ -> return ()
 
 withStore ::
-  (MonadUnliftIO m, MonadError ErrorType m) =>
-  (forall n. (MonadUnliftIO n, MonadError StoreError n) => n a) ->
+  (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m) =>
+  (forall m'. (MonadUnliftIO m', MonadError StoreError m') => SQLiteStore -> m' a) ->
   m a
-withStore action =
-  runExceptT (action `E.catch` handleInternal) >>= \case
+withStore action = do
+  store <- asks db
+  runExceptT (action store `E.catch` handleInternal) >>= \case
     Right c -> return c
     Left e -> throwError $ STORE e
   where
@@ -163,10 +165,9 @@ processResponse
             (NEW _ _, NEWRequestState {connAlias, smpServer, rcvPrivateKey}) -> do
               -- TODO all good - process response
               g <- asks idsDrg
-              st <- asks db
               encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
               let decryptKey = encryptKey
-              withStore $
+              withStore $ \st ->
                 createRcvConn st connAlias $
                   ReceiveQueue
                     { server = smpServer,

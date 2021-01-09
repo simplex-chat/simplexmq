@@ -12,6 +12,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Store.SQLite where
 
@@ -81,10 +82,10 @@ type ConnectionRowId = Int64
 fromFieldToReadable :: forall a. (Read a, E.Typeable a) => Field -> Ok a
 fromFieldToReadable = \case
   f@(Field (SQLText t) _) ->
-    let s = T.unpack t
-     in case readMaybe s of
+    let str = T.unpack t
+     in case readMaybe str of
           Just x -> Ok x
-          _ -> returnError ConversionFailed f ("invalid string: " ++ s)
+          _ -> returnError ConversionFailed f ("invalid string: " <> str)
   f -> returnError ConversionFailed f "expecting SQLText column type"
 
 withLock :: MonadUnliftIO m => SQLiteStore -> (SQLiteStore -> TMVar ()) -> (DB.Connection -> m a) -> m a
