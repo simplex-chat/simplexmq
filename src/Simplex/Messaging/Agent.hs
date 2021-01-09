@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent (runSMPAgent) where
@@ -29,11 +30,6 @@ import UnliftIO.Exception (Exception, SomeException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.IO
 import UnliftIO.STM
-
-instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
-  withRunInIO inner = ExceptT . E.try $
-    withRunInIO $ \run ->
-      inner (run . (either E.throwIO pure <=< runExceptT))
 
 runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m ()
 runSMPAgent cfg@AgentConfig {tcpPort} = do
@@ -70,6 +66,15 @@ client c@AgentClient {rcvQ, sndQ} = forever $ do
     Left e -> atomically $ writeTBQueue sndQ (corrId, cAlias, ERR e)
     Right _ -> return ()
 
+withStore ::
+  (MonadUnliftIO m, MonadError ErrorType m) =>
+  (forall n. (MonadUnliftIO n, MonadError StoreError n) => n a) ->
+  m a
+withStore action =
+  runExceptT action >>= \case
+    Left _ -> throwError INTERNAL
+    Right c -> return c
+
 processCommand :: forall m. (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m) => AgentClient -> ATransmission 'Client -> ACommand 'Client -> m ()
 processCommand AgentClient {respQ, servers, commands} t = \case
   NEW smpServer _ -> do
@@ -95,7 +100,7 @@ processCommand AgentClient {respQ, servers, commands} t = \case
     newSMPServer s host port = do
       cfg <- asks $ smpConfig . config
       store <- asks db
-      _serverId <- addServer store s `E.catch` replyError INTERNAL
+      _serverId <- withStore (addServer store s) `E.catch` replyError INTERNAL
       srv <- newServerClient cfg respQ host port `E.catch` replyError (BROKER smpErrTCPConnection)
       atomically . modifyTVar servers $ M.insert (host, port) srv
       return srv

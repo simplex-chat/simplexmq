@@ -13,7 +13,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import GHC.IO.Exception (IOErrorType (..))
 import Network.Socket
-import Simplex.Messaging.Util
 import System.IO
 import System.IO.Error
 import UnliftIO.Concurrent

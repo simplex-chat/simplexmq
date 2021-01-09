@@ -4,6 +4,7 @@
 
 module AgentTests.SQLite where
 
+import Control.Monad.Except
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
@@ -19,6 +20,12 @@ withStore =
   before (newSQLiteStore testDB)
     . after (\store -> DB.close (conn store) >> removeFile testDB)
 
+returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
+action `returnsResult` r = runExceptT action `shouldReturn` Right r
+
+throwsError :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> e -> Expectation
+action `throwsError` e = runExceptT action `shouldReturn` Left e
+
 storeTests :: Spec
 storeTests = withStore do
   describe "store methods" do
@@ -26,9 +33,11 @@ storeTests = withStore do
     describe "createSndConn" testCreateSndConn
     describe "addSndQueue" testAddSndQueue
     describe "addRcvQueue" testAddRcvQueue
-    describe "deleteConnReceive" testDeleteConnReceive
-    describe "deleteConnSend" testDeleteConnSend
-    describe "deleteConnDuplex" testDeleteConnDuplex
+    describe "deleteConnReceive" do
+      describe "Receive connection" testDeleteConnReceive
+      describe "Send connection" testDeleteConnSend
+
+-- describe "deleteConnDuplex" testDeleteConnDuplex
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -46,9 +55,9 @@ testCreateRcvConn = do
               ackMode = AckMode On
             }
     createRcvConn store "conn1" rcvQueue
-      `shouldReturn` Right ()
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Right (SomeConn SCReceive $ ReceiveConnection "conn1" rcvQueue)
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
     let sndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -60,9 +69,9 @@ testCreateRcvConn = do
               ackMode = AckMode On
             }
     addSndQueue store "conn1" sndQueue
-      `shouldReturn` Right ()
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex $ DuplexConnection "conn1" rcvQueue sndQueue)
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
@@ -78,9 +87,9 @@ testCreateSndConn = do
               ackMode = AckMode On
             }
     createSndConn store "conn1" sndQueue
-      `shouldReturn` Right ()
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Right (SomeConn SCSend $ SendConnection "conn1" sndQueue)
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -94,9 +103,9 @@ testCreateSndConn = do
               ackMode = AckMode On
             }
     addRcvQueue store "conn1" rcvQueue
-      `shouldReturn` Right ()
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex $ DuplexConnection "conn1" rcvQueue sndQueue)
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
 
 testAddSndQueue :: SpecWith SQLiteStore
 testAddSndQueue = do
@@ -111,7 +120,8 @@ testAddSndQueue = do
               status = New,
               ackMode = AckMode On
             }
-    _ <- createSndConn store "conn1" sndQueue
+    createSndConn store "conn1" sndQueue
+      `returnsResult` ()
     let anotherSndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -123,7 +133,7 @@ testAddSndQueue = do
               ackMode = AckMode On
             }
     addSndQueue store "conn1" anotherSndQueue
-      `shouldReturn` Left (SEBadConnType CSend)
+      `throwsError` SEBadConnType CSend
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -136,9 +146,10 @@ testAddSndQueue = do
               status = New,
               ackMode = AckMode On
             }
-    _ <- addRcvQueue store "conn1" rcvQueue
+    addRcvQueue store "conn1" rcvQueue
+      `returnsResult` ()
     addSndQueue store "conn1" anotherSndQueue
-      `shouldReturn` Left (SEBadConnType CDuplex)
+      `throwsError` SEBadConnType CDuplex
 
 testAddRcvQueue :: SpecWith SQLiteStore
 testAddRcvQueue = do
@@ -155,7 +166,8 @@ testAddRcvQueue = do
               status = New,
               ackMode = AckMode On
             }
-    _ <- createRcvConn store "conn1" rcvQueue
+    createRcvConn store "conn1" rcvQueue
+      `returnsResult` ()
     let anotherRcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -169,7 +181,7 @@ testAddRcvQueue = do
               ackMode = AckMode On
             }
     addRcvQueue store "conn1" anotherRcvQueue
-      `shouldReturn` Left (SEBadConnType CReceive)
+      `throwsError` SEBadConnType CReceive
     let sndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -180,9 +192,10 @@ testAddRcvQueue = do
               status = New,
               ackMode = AckMode On
             }
-    _ <- addSndQueue store "conn1" sndQueue
+    addSndQueue store "conn1" sndQueue
+      `returnsResult` ()
     addRcvQueue store "conn1" anotherRcvQueue
-      `shouldReturn` Left (SEBadConnType CDuplex)
+      `throwsError` SEBadConnType CDuplex
 
 testDeleteConnReceive :: SpecWith SQLiteStore
 testDeleteConnReceive = do
@@ -190,22 +203,23 @@ testDeleteConnReceive = do
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
+              rcvId = "2345",
               rcvPrivateKey = "abcd",
-              sndId = Just "2345",
+              sndId = Just "3456",
               sndKey = Nothing,
               decryptKey = "dcba",
               verifyKey = Nothing,
               status = New,
               ackMode = AckMode On
             }
-    _ <- createRcvConn store "conn1" rcvQueue
+    createRcvConn store "conn1" rcvQueue
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Right (SomeConn SCReceive $ ReceiveConnection "conn1" rcvQueue)
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
     deleteConn store "conn1"
-      `shouldReturn` Right ()
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Left SEInternal
+      `throwsError` SEInternal
 
 testDeleteConnSend :: SpecWith SQLiteStore
 testDeleteConnSend = do
@@ -213,20 +227,21 @@ testDeleteConnSend = do
     let sndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "1234",
+              sndId = "2345",
               sndPrivateKey = "abcd",
               encryptKey = "dcba",
               signKey = "edcb",
               status = New,
               ackMode = AckMode On
             }
-    _ <- createSndConn store "conn1" sndQueue
+    createSndConn store "conn1" sndQueue
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Right (SomeConn SCSend $ SendConnection "conn1" sndQueue)
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
     deleteConn store "conn1"
-      `shouldReturn` Right ()
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Left SEInternal
+      `throwsError` SEInternal
 
 testDeleteConnDuplex :: SpecWith SQLiteStore
 testDeleteConnDuplex = do
@@ -243,21 +258,23 @@ testDeleteConnDuplex = do
               status = New,
               ackMode = AckMode On
             }
-    _ <- createRcvConn store "conn1" rcvQueue
+    createRcvConn store "conn1" rcvQueue
+      `returnsResult` ()
     let sndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "3456",
+              sndId = "4567",
               sndPrivateKey = "abcd",
               encryptKey = "dcba",
               signKey = "edcb",
               status = New,
               ackMode = AckMode On
             }
-    _ <- addSndQueue store "conn1" sndQueue
+    addSndQueue store "conn1" sndQueue
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex $ DuplexConnection "conn1" rcvQueue sndQueue)
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
     deleteConn store "conn1"
-      `shouldReturn` Right ()
+      `returnsResult` ()
     getConn store "conn1"
-      `shouldReturn` Left SEInternal
+      `throwsError` SEInternal

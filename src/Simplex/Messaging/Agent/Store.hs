@@ -1,5 +1,7 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -8,6 +10,7 @@
 
 module Simplex.Messaging.Agent.Store where
 
+import Control.Exception
 import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock (UTCTime)
@@ -94,20 +97,20 @@ data DeliveryStatus
 type SMPServerId = Int64
 
 class Monad m => MonadAgentStore s m where
-  addServer :: s -> SMPServer -> m (Either StoreError SMPServerId)
-  createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m (Either StoreError ())
-  createSndConn :: s -> ConnAlias -> SendQueue -> m (Either StoreError ())
-  getConn :: s -> ConnAlias -> m (Either StoreError SomeConn)
-  deleteConn :: s -> ConnAlias -> m (Either StoreError ())
-  addSndQueue :: s -> ConnAlias -> SendQueue -> m (Either StoreError ())
-  addRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m (Either StoreError ())
-  removeSndAuth :: s -> ConnAlias -> m (Either StoreError ())
-  updateQueueStatus :: s -> ConnAlias -> QueueDirection -> QueueStatus -> m (Either StoreError ())
-  createMsg :: s -> ConnAlias -> QueueDirection -> AMessage -> m (Either StoreError MessageDelivery)
-  getLastMsg :: s -> ConnAlias -> QueueDirection -> m (Either StoreError MessageDelivery)
-  getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m (Either StoreError MessageDelivery)
-  updateMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m (Either StoreError ())
-  deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m (Either StoreError ())
+  addServer :: s -> SMPServer -> m SMPServerId
+  createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m ()
+  createSndConn :: s -> ConnAlias -> SendQueue -> m ()
+  getConn :: s -> ConnAlias -> m SomeConn
+  deleteConn :: s -> ConnAlias -> m ()
+  addSndQueue :: s -> ConnAlias -> SendQueue -> m ()
+  addRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m ()
+  removeSndAuth :: s -> ConnAlias -> m ()
+  updateQueueStatus :: s -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
+  createMsg :: s -> ConnAlias -> QueueDirection -> AMessage -> m MessageDelivery
+  getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
+  getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
+  updateMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
 
 data StoreError
   = SEInternal
@@ -115,4 +118,4 @@ data StoreError
   | SEBadConn
   | SEBadConnType ConnType
   | SEBadQueueStatus
-  deriving (Eq, Show)
+  deriving (Eq, Show, Exception)

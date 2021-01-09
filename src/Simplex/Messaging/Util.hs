@@ -1,8 +1,15 @@
 module Simplex.Messaging.Util where
 
-import Control.Monad (void)
+import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import UnliftIO.Async
+import UnliftIO.Exception (Exception)
+import qualified UnliftIO.Exception as E
+
+instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
+  withRunInIO inner = ExceptT . E.try $
+    withRunInIO $ \run ->
+      inner (run . (either E.throwIO pure <=< runExceptT))
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
 raceAny_ = r []
