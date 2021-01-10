@@ -222,11 +222,11 @@ parseCommand command = case B.words command of
     --   ["ACK", mode] -> AckMode <$> getMode mode
     --   _ -> errParams
 
-    getMode :: ByteString -> Either ErrorType Mode
-    getMode mode = case mode of
-      "ON" -> Right On
-      "OFF" -> Right Off
-      _ -> errParams
+    -- getMode :: ByteString -> Either ErrorType Mode
+    -- getMode mode = case mode of
+    --   "ON" -> Right On
+    --   "OFF" -> Right Off
+    --   _ -> errParams
 
     errParams :: Either ErrorType a
     errParams = Left $ SYNTAX errBadParameters
@@ -236,11 +236,19 @@ parseCommand command = case B.words command of
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  INV (SMPQueueInfo srv qId ek) -> "INV smp::" <> server srv <> "::" <> encode qId <> "::" <> encode ek
+  INV qInfo -> "INV " <> smpQueueInfo qInfo
+  JOIN qInfo rMode ->
+    "JOIN " <> smpQueueInfo qInfo <> " "
+      <> case rMode of
+        ReplyOff -> "NO_REPLY"
+        ReplyOn srv -> server srv
   c -> B.pack $ show c
   where
     server :: SMPServer -> ByteString
     server SMPServer {host, port, keyHash} = B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
+
+    smpQueueInfo :: SMPQueueInfo -> ByteString
+    smpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> server srv <> "::" <> encode qId <> "::" <> encode ek
 
 tPutRaw :: MonadIO m => Handle -> ARawTransmission -> m ()
 tPutRaw h (corrId, connAlias, command) = do
