@@ -15,6 +15,7 @@ import Simplex.Messaging.Agent.ServerClient
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Server.Transmission (PublicKey, SenderId)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
 
@@ -47,11 +48,19 @@ data Request = Request
     state :: RequestState
   }
 
-data RequestState = NEWRequestState
-  { connAlias :: ConnAlias,
-    smpServer :: SMPServer,
-    rcvPrivateKey :: PrivateKey
-  }
+data RequestState
+  = NEWRequestState
+      { connAlias :: ConnAlias,
+        smpServer :: SMPServer,
+        rcvPrivateKey :: PrivateKey
+      }
+  | ConfSENDRequestState
+      { connAlias :: ConnAlias,
+        smpServer :: SMPServer,
+        senderId :: SenderId,
+        sndPrivateKey :: PrivateKey,
+        encKey :: PublicKey
+      }
 
 newAgentClient :: Natural -> STM AgentClient
 newAgentClient qSize = do
