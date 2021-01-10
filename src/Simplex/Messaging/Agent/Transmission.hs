@@ -179,9 +179,11 @@ parseCommand command = case B.words command of
   -- ["NEW", srv, am] -> newConn srv $ ackMode am
   ["INV", qInfo] -> ACmd SAgent . INV <$> smpQueueInfo qInfo
   "JOIN" : qInfo : ws -> joinConn qInfo ws
+  ["CON"] -> Right . ACmd SAgent $ CON
   "NEW" : _ -> errParams
   "INV" : _ -> errParams
   "JOIN" : _ -> errParams
+  "CON" : _ -> errParams
   _ -> Left UNKNOWN
   where
     newConn :: ByteString -> Either ErrorType ACmd
@@ -243,6 +245,7 @@ serializeCommand = \case
       <> case rMode of
         ReplyOff -> "NO_REPLY"
         ReplyOn srv -> server srv
+  CON -> "CON"
   c -> B.pack $ show c
   where
     server :: SMPServer -> ByteString
