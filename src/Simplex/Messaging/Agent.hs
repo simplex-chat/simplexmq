@@ -89,7 +89,7 @@ processCommand ::
   m ()
 processCommand AgentClient {respQ, servers, commands} t@(_, connAlias, cmd) =
   case cmd of
-    NEW smpServer _ -> do
+    NEW smpServer -> do
       srv <- getSMPServer smpServer
       smpT <- mkSmpNEW smpServer
       atomically $ writeTBQueue (smpSndQ srv) smpT
@@ -162,7 +162,7 @@ processResponse
       Right resp -> case resp of
         Cmd SBroker (SMP.IDS recipientId senderId) -> case smpCmd of
           Cmd SRecipient (SMP.NEW _) -> case (cmd, state) of
-            (NEW _ _, NEWRequestState {connAlias, smpServer, rcvPrivateKey}) -> do
+            (NEW _, NEWRequestState {connAlias, smpServer, rcvPrivateKey}) -> do
               -- TODO all good - process response
               g <- asks idsDrg
               encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
