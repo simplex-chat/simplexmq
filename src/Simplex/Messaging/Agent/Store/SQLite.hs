@@ -405,16 +405,20 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
   removeSndAuth _st _connAlias = throwError SEInternal
 
-  -- TODO finalize
-  -- updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
-  -- updateQueueStatus st connAlias qDirection status = do
-  --   (rcvQId, sndQId) <- getConnection st connAlias
-  --   case qDirection of
-  --     RCV -> do
-  --       updateRcvQueueStatus st rcvQId status
-  --     SND -> do
-  --       updateSndQueueStatus st sndQId status
-  --   when (isNothing rcvQId && isNothing sndQId) $ throwError SEBadConn
+  -- TODO test
+  updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
+  updateQueueStatus st connAlias qDirection status = do
+    case qDirection of
+      RCV -> do
+        (rcvQId, _) <- getConnection st connAlias
+        case rcvQId of
+          Just qId -> updateRcvQueueStatus st qId status
+          Nothing -> throwError SEBadConn
+      SND -> do
+        (_, sndQId) <- getConnection st connAlias
+        case sndQId of
+          Just qId -> updateSndQueueStatus st qId status
+          Nothing -> throwError SEBadConn
 
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AMessage -> m MessageDelivery
   createMsg _st _connAlias _dir _msg = throwError SEInternal
