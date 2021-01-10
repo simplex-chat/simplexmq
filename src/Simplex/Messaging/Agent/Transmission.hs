@@ -236,6 +236,7 @@ parseCommand command = case B.words command of
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
+  NEW srv -> "NEW " <> server srv
   INV qInfo -> "INV " <> smpQueueInfo qInfo
   JOIN qInfo rMode ->
     "JOIN " <> smpQueueInfo qInfo <> " "
