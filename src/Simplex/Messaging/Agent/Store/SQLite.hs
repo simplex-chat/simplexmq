@@ -306,6 +306,30 @@ deleteConnection store connAlias = do
     "DELETE FROM connections WHERE conn_alias = ?"
     (Only connAlias)
 
+updateRcvQueueStatus :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> QueueStatus -> m ()
+updateRcvQueueStatus store rcvQueueId status =
+  executeWithLock
+    store
+    rcvQueuesLock
+    [s|
+      UPDATE receive_queues
+      SET status = ?
+      WHERE receive_queue_id = ?;
+    |]
+    (Only status :. Only rcvQueueId)
+
+updateSndQueueStatus :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> QueueStatus -> m ()
+updateSndQueueStatus store sndQueueId status =
+  executeWithLock
+    store
+    sndQueuesLock
+    [s|
+      UPDATE send_queues
+      SET status = ?
+      WHERE send_queue_id = ?;
+    |]
+    (Only status :. Only sndQueueId)
+
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   addServer store smpServer = upsertServer store smpServer
 
@@ -381,8 +405,16 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
   removeSndAuth _st _connAlias = throwError SEInternal
 
-  updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
-  updateQueueStatus _st _connAlias _dir _status = throwError SEInternal
+  -- TODO finalize
+  -- updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
+  -- updateQueueStatus st connAlias qDirection status = do
+  --   (rcvQId, sndQId) <- getConnection st connAlias
+  --   case qDirection of
+  --     RCV -> do
+  --       updateRcvQueueStatus st rcvQId status
+  --     SND -> do
+  --       updateSndQueueStatus st sndQId status
+  --   when (isNothing rcvQId && isNothing sndQId) $ throwError SEBadConn
 
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AMessage -> m MessageDelivery
   createMsg _st _connAlias _dir _msg = throwError SEInternal
