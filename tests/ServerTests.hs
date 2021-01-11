@@ -33,8 +33,8 @@ pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker
 sendRecv :: Handle -> (ByteString, ByteString, ByteString, ByteString) -> IO TransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
 
-(>#>) :: [RawTransmission] -> [RawTransmission] -> Expectation
-commands >#> responses = smpServerTest commands `shouldReturn` responses
+(>#>) :: RawTransmission -> RawTransmission -> Expectation
+command >#> response = smpServerTest command `shouldReturn` response
 
 (#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion
 (actual, expected) #== message = assertEqual message expected actual
@@ -238,36 +238,36 @@ testSwitchSub =
 
 syntaxTests :: Spec
 syntaxTests = do
-  it "unknown command" $ [("", "abcd", "1234", "HELLO")] >#> [("", "abcd", "1234", "ERR UNKNOWN")]
+  it "unknown command" $ ("", "abcd", "1234", "HELLO") >#> ("", "abcd", "1234", "ERR UNKNOWN")
   describe "NEW" do
-    it "no parameters" $ [("", "bcda", "", "NEW")] >#> [("", "bcda", "", "ERR SYNTAX 2")]
-    it "many parameters" $ [("", "cdab", "", "NEW 1 2")] >#> [("", "cdab", "", "ERR SYNTAX 2")]
-    it "has signature" $ [("1234", "dabc", "", "NEW 1234")] >#> [("", "dabc", "", "ERR SYNTAX 4")]
-    it "queue ID" $ [("", "abcd", "12345678", "NEW 1234")] >#> [("", "abcd", "12345678", "ERR SYNTAX 4")]
+    it "no parameters" $ ("", "bcda", "", "NEW") >#> ("", "bcda", "", "ERR SYNTAX 2")
+    it "many parameters" $ ("", "cdab", "", "NEW 1 2") >#> ("", "cdab", "", "ERR SYNTAX 2")
+    it "has signature" $ ("1234", "dabc", "", "NEW 1234") >#> ("", "dabc", "", "ERR SYNTAX 4")
+    it "queue ID" $ ("", "abcd", "12345678", "NEW 1234") >#> ("", "abcd", "12345678", "ERR SYNTAX 4")
   describe "KEY" do
-    it "valid syntax" $ [("1234", "bcda", "12345678", "KEY 4567")] >#> [("", "bcda", "12345678", "ERR AUTH")]
-    it "no parameters" $ [("1234", "cdab", "12345678", "KEY")] >#> [("", "cdab", "12345678", "ERR SYNTAX 2")]
-    it "many parameters" $ [("1234", "dabc", "12345678", "KEY 1 2")] >#> [("", "dabc", "12345678", "ERR SYNTAX 2")]
-    it "no signature" $ [("", "abcd", "12345678", "KEY 4567")] >#> [("", "abcd", "12345678", "ERR SYNTAX 3")]
-    it "no queue ID" $ [("1234", "bcda", "", "KEY 4567")] >#> [("", "bcda", "", "ERR SYNTAX 3")]
+    it "valid syntax" $ ("1234", "bcda", "12345678", "KEY 4567") >#> ("", "bcda", "12345678", "ERR AUTH")
+    it "no parameters" $ ("1234", "cdab", "12345678", "KEY") >#> ("", "cdab", "12345678", "ERR SYNTAX 2")
+    it "many parameters" $ ("1234", "dabc", "12345678", "KEY 1 2") >#> ("", "dabc", "12345678", "ERR SYNTAX 2")
+    it "no signature" $ ("", "abcd", "12345678", "KEY 4567") >#> ("", "abcd", "12345678", "ERR SYNTAX 3")
+    it "no queue ID" $ ("1234", "bcda", "", "KEY 4567") >#> ("", "bcda", "", "ERR SYNTAX 3")
   noParamsSyntaxTest "SUB"
   noParamsSyntaxTest "ACK"
   noParamsSyntaxTest "OFF"
   noParamsSyntaxTest "DEL"
   describe "SEND" do
-    it "valid syntax 1" $ [("1234", "cdab", "12345678", "SEND :hello")] >#> [("", "cdab", "12345678", "ERR AUTH")]
-    it "valid syntax 2" $ [("1234", "dabc", "12345678", "SEND 11\nhello there\n")] >#> [("", "dabc", "12345678", "ERR AUTH")]
-    it "no parameters" $ [("1234", "abcd", "12345678", "SEND")] >#> [("", "abcd", "12345678", "ERR SYNTAX 2")]
-    it "no queue ID" $ [("1234", "bcda", "", "SEND :hello")] >#> [("", "bcda", "", "ERR SYNTAX 5")]
-    it "bad message body 1" $ [("1234", "cdab", "12345678", "SEND 11 hello")] >#> [("", "cdab", "12345678", "ERR SYNTAX 6")]
-    it "bad message body 2" $ [("1234", "dabc", "12345678", "SEND hello")] >#> [("", "dabc", "12345678", "ERR SYNTAX 6")]
-    it "bigger body" $ [("1234", "abcd", "12345678", "SEND 4\nhello\n")] >#> [("", "abcd", "12345678", "ERR SIZE")]
+    it "valid syntax 1" $ ("1234", "cdab", "12345678", "SEND :hello") >#> ("", "cdab", "12345678", "ERR AUTH")
+    it "valid syntax 2" $ ("1234", "dabc", "12345678", "SEND 11\nhello there\n") >#> ("", "dabc", "12345678", "ERR AUTH")
+    it "no parameters" $ ("1234", "abcd", "12345678", "SEND") >#> ("", "abcd", "12345678", "ERR SYNTAX 2")
+    it "no queue ID" $ ("1234", "bcda", "", "SEND :hello") >#> ("", "bcda", "", "ERR SYNTAX 5")
+    it "bad message body 1" $ ("1234", "cdab", "12345678", "SEND 11 hello") >#> ("", "cdab", "12345678", "ERR SYNTAX 6")
+    it "bad message body 2" $ ("1234", "dabc", "12345678", "SEND hello") >#> ("", "dabc", "12345678", "ERR SYNTAX 6")
+    it "bigger body" $ ("1234", "abcd", "12345678", "SEND 4\nhello\n") >#> ("", "abcd", "12345678", "ERR SIZE")
   describe "broker response not allowed" do
-    it "OK" $ [("1234", "bcda", "12345678", "OK")] >#> [("", "bcda", "12345678", "ERR PROHIBITED")]
+    it "OK" $ ("1234", "bcda", "12345678", "OK") >#> ("", "bcda", "12345678", "ERR PROHIBITED")
   where
     noParamsSyntaxTest :: ByteString -> Spec
     noParamsSyntaxTest cmd = describe (B.unpack cmd) do
-      it "valid syntax" $ [("1234", "abcd", "12345678", cmd)] >#> [("", "abcd", "12345678", "ERR AUTH")]
-      it "parameters" $ [("1234", "bcda", "12345678", cmd <> " 1")] >#> [("", "bcda", "12345678", "ERR SYNTAX 2")]
-      it "no signature" $ [("", "cdab", "12345678", cmd)] >#> [("", "cdab", "12345678", "ERR SYNTAX 3")]
-      it "no queue ID" $ [("1234", "dabc", "", cmd)] >#> [("", "dabc", "", "ERR SYNTAX 3")]
+      it "valid syntax" $ ("1234", "abcd", "12345678", cmd) >#> ("", "abcd", "12345678", "ERR AUTH")
+      it "parameters" $ ("1234", "bcda", "12345678", cmd <> " 1") >#> ("", "bcda", "12345678", "ERR SYNTAX 2")
+      it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", "ERR SYNTAX 3")
+      it "no queue ID" $ ("1234", "dabc", "", cmd) >#> ("", "dabc", "", "ERR SYNTAX 3")
