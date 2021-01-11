@@ -15,7 +15,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Server.Transmission (Encoded, PublicKey, QueueId)
+import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, QueueId)
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
@@ -84,8 +84,6 @@ data MessageDelivery = MessageDelivery
     direction :: QueueDirection,
     msgStatus :: DeliveryStatus
   }
-
-type PrivateKey = Encoded
 
 data DeliveryStatus
   = MDTransmitted -- SMP: SEND sent / MSG received

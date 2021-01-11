@@ -12,10 +12,9 @@ import qualified Data.Map.Strict as M
 import Network.Socket (HostName, ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.ServerClient
-import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Server.Transmission (PublicKey, SenderId)
+import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, SenderId)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
 
