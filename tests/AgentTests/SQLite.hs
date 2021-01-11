@@ -72,7 +72,7 @@ testCreateRcvConn = do
     addSndQueue store "conn1" sndQueue
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn2" rcvQueue sndQueue)
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
