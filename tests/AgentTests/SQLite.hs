@@ -34,11 +34,14 @@ storeTests = withStore do
     describe "createSndConn" testCreateSndConn
     describe "addSndQueue" testAddSndQueue
     describe "addRcvQueue" testAddRcvQueue
-    describe "deleteConnReceive" do
+    describe "deleteConn" do
       describe "Receive connection" testDeleteConnReceive
       describe "Send connection" testDeleteConnSend
-
--- describe "deleteConnDuplex" testDeleteConnDuplex
+      describe "Duplex connection" testDeleteConnDuplex
+    describe "updateQueueStatus" do
+      describe "updateQueueStatusCorrect" testUpdateQueueStatus
+      describe "updateQueueStatusBadDirectionSnd" testUpdateQueueStatusBadDirectionSnd
+      describe "updateQueueStatusBadDirectionRcv" testUpdateQueueStatusBadDirectionRcv
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -279,3 +282,89 @@ testDeleteConnDuplex = do
       `returnsResult` ()
     getConn store "conn1"
       `throwsError` SEInternal
+
+testUpdateQueueStatus :: SpecWith SQLiteStore
+testUpdateQueueStatus = do
+  it "should update receive and send queues' statuses" $ \store -> do
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "1234",
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    createRcvConn store "conn1" rcvQueue
+      `returnsResult` ()
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "3456",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    addSndQueue store "conn1" sndQueue
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
+    updateQueueStatus store "conn1" RCV Secured
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue {status = Secured} sndQueue)
+    updateQueueStatus store "conn1" SND Confirmed
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue {status = Secured} sndQueue {status = Confirmed})
+
+testUpdateQueueStatusBadDirectionSnd :: SpecWith SQLiteStore
+testUpdateQueueStatusBadDirectionSnd = do
+  it "should return error on attempt to update status of send queue in receive connection" $ \store -> do
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "1234",
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    createRcvConn store "conn1" rcvQueue
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
+    updateQueueStatus store "conn1" SND Confirmed
+      `throwsError` SEBadConn
+    getConn store "conn1"
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
+
+testUpdateQueueStatusBadDirectionRcv :: SpecWith SQLiteStore
+testUpdateQueueStatusBadDirectionRcv = do
+  it "should return error on attempt to update status of receive queue in send connection" $ \store -> do
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "1234",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    createSndConn store "conn1" sndQueue
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
+    updateQueueStatus store "conn1" RCV Confirmed
+      `throwsError` SEBadConn
+    getConn store "conn1"
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
