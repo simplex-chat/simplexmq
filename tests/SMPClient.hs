@@ -53,11 +53,8 @@ runSmpTestN nClients test = withSmpServer $ run [] nClients
     run hs 0 = test hs
     run hs n = testSMPClient $ \h -> run (h : hs) (n - 1)
 
-smpServerTest :: [RawTransmission] -> IO [RawTransmission]
-smpServerTest commands = runSmpTest \h -> mapM (sendReceive h) commands
-  where
-    sendReceive :: Handle -> RawTransmission -> IO RawTransmission
-    sendReceive h t = tPutRaw h t >> tGetRaw h
+smpServerTest :: RawTransmission -> IO RawTransmission
+smpServerTest cmd = runSmpTest $ \h -> tPutRaw h cmd >> tGetRaw h
 
 smpTest :: (Handle -> IO ()) -> Expectation
 smpTest test' = runSmpTest test' `shouldReturn` ()
