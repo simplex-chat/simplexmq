@@ -405,7 +405,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
   removeSndAuth _st _connAlias = throwError SEInternal
 
-  -- TODO test
   updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
   updateQueueStatus st connAlias qDirection status = do
     case qDirection of
