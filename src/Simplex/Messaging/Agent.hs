@@ -158,7 +158,7 @@ processCommand AgentClient {respQ, servers, commands} t@(_, connAlias, cmd) =
               signKey,
               -- verifyKey,
               status = New,
-              ackMode = AckMode On -- whether acknowledgement is expected (via ReceiveQueue if present)
+              ackMode = AckMode On
             }
       let toSMP = ("", (smpCorrId, senderId, Cmd SSender $ SMP.SEND msg))
           req =
