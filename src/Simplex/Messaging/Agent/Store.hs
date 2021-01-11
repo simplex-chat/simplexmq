@@ -36,6 +36,7 @@ data SendQueue = SendQueue
     sndPrivateKey :: PrivateKey,
     encryptKey :: PublicKey,
     signKey :: PrivateKey,
+    -- verifyKey :: Maybe PublicKey,
     status :: QueueStatus,
     ackMode :: AckMode -- whether acknowledgement is expected (via ReceiveQueue if present)
   }

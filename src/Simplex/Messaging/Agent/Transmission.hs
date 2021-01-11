@@ -70,22 +70,22 @@ data ACmd where
 deriving instance Show ACmd
 
 data ACommand (p :: AParty) where
-  NEW :: SMPServer -> AckMode -> ACommand Client
+  NEW :: SMPServer -> ACommand Client
   INV :: SMPQueueInfo -> ACommand Agent
-  JOIN :: SMPQueueInfo -> Maybe SMPServer -> AckMode -> ACommand Client
+  JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client
   CON :: ACommand Agent
   CONF :: OtherPartyId -> ACommand Agent
   LET :: OtherPartyId -> ACommand Client
   SUB :: SubMode -> ACommand Client
   END :: ACommand Agent
-  QST :: QueueDirection -> ACommand Client
-  STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
+  -- QST :: QueueDirection -> ACommand Client
+  -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
   SEND :: MsgBody -> ACommand Client
   MSG :: AgentMsgId -> UTCTime -> UTCTime -> MsgStatus -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
-  RCVD :: AgentMsgId -> ACommand Agent
-  OFF :: ACommand Client
-  DEL :: ACommand Client
+  -- RCVD :: AgentMsgId -> ACommand Agent
+  -- OFF :: ACommand Client
+  -- DEL :: ACommand Client
   OK :: ACommand Agent
   ERR :: ErrorType -> ACommand Agent
 
@@ -95,8 +95,9 @@ data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
   A_MSG :: MsgBody -> AMessage
-  A_ACK :: AgentMsgId -> AckStatus -> AMessage
-  A_DEL :: AMessage
+
+-- A_ACK :: AgentMsgId -> AckStatus -> AMessage
+-- A_DEL :: AMessage
 
 data SMPServer = SMPServer
   { host :: HostName,
@@ -119,6 +120,8 @@ newtype SubMode = SubMode Mode deriving (Show)
 
 data SMPQueueInfo = SMPQueueInfo SMPServer SenderId EncryptionKey
   deriving (Show)
+
+data ReplyMode = ReplyOn SMPServer | ReplyOff deriving (Show)
 
 type EncryptionKey = PublicKey
 
@@ -172,15 +175,32 @@ smpUnexpectedResponse = 3
 
 parseCommand :: ByteString -> Either ErrorType ACmd
 parseCommand command = case B.words command of
-  ["NEW", srv] -> newConn srv . Right $ AckMode On
-  ["NEW", srv, am] -> newConn srv $ ackMode am
+  ["NEW", srv] -> newConn srv -- . Right $ AckMode On
+  -- ["NEW", srv, am] -> newConn srv $ ackMode am
   ["INV", qInfo] -> ACmd SAgent . INV <$> smpQueueInfo qInfo
+  "JOIN" : qInfo : ws -> joinConn qInfo ws
+  ["CON"] -> Right . ACmd SAgent $ CON
   "NEW" : _ -> errParams
   "INV" : _ -> errParams
+  "JOIN" : _ -> errParams
+  "CON" : _ -> errParams
   _ -> Left UNKNOWN
   where
-    newConn :: ByteString -> Either ErrorType AckMode -> Either ErrorType ACmd
-    newConn srv am = ACmd SClient <$> liftM2 NEW (smpServer srv) am
+    newConn :: ByteString -> Either ErrorType ACmd
+    newConn srv = ACmd SClient . NEW <$> smpServer srv
+
+    joinConn :: ByteString -> [ByteString] -> Either ErrorType ACmd
+    joinConn qInfo ws = do
+      q <- smpQueueInfo qInfo
+      case ws of
+        [] -> let SMPQueueInfo srv _ _ = q in joinCmd q $ ReplyOn srv
+        ["NO_REPLY"] -> joinCmd q ReplyOff
+        [srv] -> do
+          s <- smpServer srv
+          joinCmd q $ ReplyOn s
+        _ -> errParams
+      where
+        joinCmd q r = return $ ACmd SClient $ JOIN q r
 
     smpServer :: ByteString -> Either ErrorType SMPServer
     smpServer srv =
@@ -199,16 +219,16 @@ parseCommand command = case B.words command of
     srvPart :: String -> Maybe String
     srvPart s = if length s > 1 then Just $ tail s else Nothing
 
-    ackMode :: ByteString -> Either ErrorType AckMode
-    ackMode am = case B.split '=' am of
-      ["ACK", mode] -> AckMode <$> getMode mode
-      _ -> errParams
+    -- ackMode :: ByteString -> Either ErrorType AckMode
+    -- ackMode am = case B.split '=' am of
+    --   ["ACK", mode] -> AckMode <$> getMode mode
+    --   _ -> errParams
 
-    getMode :: ByteString -> Either ErrorType Mode
-    getMode mode = case mode of
-      "ON" -> Right On
-      "OFF" -> Right Off
-      _ -> errParams
+    -- getMode :: ByteString -> Either ErrorType Mode
+    -- getMode mode = case mode of
+    --   "ON" -> Right On
+    --   "OFF" -> Right Off
+    --   _ -> errParams
 
     errParams :: Either ErrorType a
     errParams = Left $ SYNTAX errBadParameters
@@ -218,11 +238,21 @@ parseCommand command = case B.words command of
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  INV (SMPQueueInfo srv qId ek) -> "INV smp::" <> server srv <> "::" <> encode qId <> "::" <> encode ek
+  NEW srv -> "NEW " <> server srv
+  INV qInfo -> "INV " <> smpQueueInfo qInfo
+  JOIN qInfo rMode ->
+    "JOIN " <> smpQueueInfo qInfo <> " "
+      <> case rMode of
+        ReplyOff -> "NO_REPLY"
+        ReplyOn srv -> server srv
+  CON -> "CON"
   c -> B.pack $ show c
   where
     server :: SMPServer -> ByteString
     server SMPServer {host, port, keyHash} = B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
+
+    smpQueueInfo :: SMPQueueInfo -> ByteString
+    smpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> server srv <> "::" <> encode qId <> "::" <> encode ek
 
 tPutRaw :: MonadIO m => Handle -> ARawTransmission -> m ()
 tPutRaw h (corrId, connAlias, command) = do
@@ -258,7 +288,7 @@ tGet party h = tGetRaw h >>= tParseLoadBody
     tConnAlias :: ARawTransmission -> ACommand p -> Either ErrorType (ACommand p)
     tConnAlias (_, connAlias, _) cmd = case cmd of
       -- NEW has optional connAlias
-      NEW _ _ -> Right cmd
+      NEW _ -> Right cmd
       -- ERROR response does not always have connAlias
       ERR _ -> Right cmd
       -- other responses must have connAlias
