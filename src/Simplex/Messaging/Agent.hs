@@ -139,19 +139,33 @@ processCommand AgentClient {respQ, servers, commands} t@(_, connAlias, cmd) =
       return toSMP
 
     mkConfSEND :: SMPServer -> SMP.SenderId -> PublicKey -> m SMP.Transmission
-    mkConfSEND smpServer senderId encKey = do
+    mkConfSEND smpServer senderId encryptKey = do
       g <- asks idsDrg
       smpCorrId <- atomically $ CorrId <$> randomBytes 4 g
       senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
+      verifyKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       -- TODO create connection with NEW status, it will be upgraded to CONFIRMED status once SMP server replies OK to SEND
-      msg <- mkConfirmation encKey senderKey
+      msg <- mkConfirmation encryptKey senderKey
       let sndPrivateKey = senderKey
-          toSMP = ("", (smpCorrId, senderId, Cmd SSender $ SMP.SEND msg))
+          signKey = verifyKey
+      withStore $ \st ->
+        createSndConn st connAlias $
+          SendQueue
+            { server = smpServer,
+              sndId = senderId,
+              sndPrivateKey,
+              encryptKey,
+              signKey,
+              -- verifyKey,
+              status = New,
+              ackMode = AckMode On -- whether acknowledgement is expected (via ReceiveQueue if present)
+            }
+      let toSMP = ("", (smpCorrId, senderId, Cmd SSender $ SMP.SEND msg))
           req =
             Request
               { fromClient = t,
                 toSMP,
-                state = ConfSENDRequestState {connAlias, smpServer, senderId, sndPrivateKey, encKey}
+                state = ConfSENDRequestState {connAlias, smpServer, senderId, sndPrivateKey, encryptKey}
               }
       atomically . modifyTVar commands $ M.insert smpCorrId req -- TODO check ID collision
       return toSMP
@@ -171,6 +185,7 @@ processSmp c@AgentClient {respQ, sndQ, commands} = forever $ do
   case req of -- TODO empty correlation ID is ok - it can be a message
     Nothing -> atomically $ writeTBQueue sndQ ("", "", ERR $ BROKER smpErrCorrelationId)
     Just r@Request {fromClient = (corrId, cAlias, _)} ->
+      -- TODO remove matched correlation ID
       runExceptT (processResponse c r cmdOrErr) >>= \case
         Left e -> atomically $ writeTBQueue sndQ (corrId, cAlias, ERR e)
         Right _ -> return ()
@@ -192,7 +207,6 @@ processResponse
         Cmd SBroker (SMP.IDS recipientId senderId) -> case smpCmd of
           Cmd SRecipient (SMP.NEW _) -> case (cmd, state) of
             (NEW _, NEWRequestState {connAlias, smpServer, rcvPrivateKey}) -> do
-              -- TODO all good - process response
               g <- asks idsDrg
               encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
               let decryptKey = encryptKey
@@ -210,6 +224,20 @@ processResponse
                       ackMode = AckMode On
                     }
               respond . INV $ SMPQueueInfo smpServer senderId encryptKey
+            _ -> throwError INTERNAL
+          _ -> throwError $ BROKER smpUnexpectedResponse
+        Cmd SBroker (SMP.OK) -> case smpCmd of
+          Cmd SSender (SMP.SEND _) -> case (cmd, state) of
+            (JOIN _ _, ConfSENDRequestState {connAlias}) -> do
+              withStore $ \st -> updateQueueStatus st connAlias SND Confirmed
+              respond OK
+            _ -> throwError INTERNAL
+          _ -> throwError $ BROKER smpUnexpectedResponse
+        Cmd SBroker (SMP.ERR e) -> case smpCmd of
+          Cmd SSender (SMP.SEND _) -> case (cmd, state) of
+            (JOIN _ _, ConfSENDRequestState {connAlias}) -> do
+              withStore $ \st -> deleteConn st connAlias
+              respond . ERR $ SMP e
             _ -> throwError INTERNAL
           _ -> throwError $ BROKER smpUnexpectedResponse
         _ -> throwError UNSUPPORTED

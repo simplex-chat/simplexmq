@@ -59,7 +59,7 @@ data RequestState
         smpServer :: SMPServer,
         senderId :: SenderId,
         sndPrivateKey :: PrivateKey,
-        encKey :: PublicKey
+        encryptKey :: PublicKey
       }
 
 newAgentClient :: Natural -> STM AgentClient
