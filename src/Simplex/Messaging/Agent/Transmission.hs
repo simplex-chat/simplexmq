@@ -158,11 +158,14 @@ data AckStatus = AckOk | AckError AckErrorType
 data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
   deriving (Show)
 
+errBadEncoding :: Int
+errBadEncoding = 10
+
 errBadInvitation :: Int
-errBadInvitation = 10
+errBadInvitation = 12
 
 errNoConnAlias :: Int
-errNoConnAlias = 11
+errNoConnAlias = 13
 
 smpErrTCPConnection :: Natural
 smpErrTCPConnection = 1
@@ -211,10 +214,12 @@ parseCommand command = case B.words command of
     smpQueueInfo :: ByteString -> Either ErrorType SMPQueueInfo
     smpQueueInfo qInfo = case splitOn "::" $ B.unpack qInfo of
       ["smp", srv, qId, ek] -> liftM3 SMPQueueInfo (smpServer $ B.pack srv) (dec64 qId) (dec64 ek)
-      _ -> errInv
+      _ -> Left $ SYNTAX errBadInvitation
 
     dec64 :: String -> Either ErrorType ByteString
-    dec64 s = either (const errInv) Right . decode $ B.pack s
+    dec64 s = case decode $ B.pack s of
+      Left _ -> Left $ SYNTAX errBadEncoding
+      Right b -> Right b
 
     srvPart :: String -> Maybe String
     srvPart s = if length s > 1 then Just $ tail s else Nothing
@@ -233,9 +238,6 @@ parseCommand command = case B.words command of
     errParams :: Either ErrorType a
     errParams = Left $ SYNTAX errBadParameters
 
-    errInv :: Either ErrorType a
-    errInv = Left $ SYNTAX errBadInvitation
-
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
   NEW srv -> "NEW " <> server srv
@@ -246,6 +248,7 @@ serializeCommand = \case
         ReplyOff -> "NO_REPLY"
         ReplyOn srv -> server srv
   CON -> "CON"
+  ERR e -> "ERR " <> B.pack (show e)
   c -> B.pack $ show c
   where
     server :: SMPServer -> ByteString
@@ -287,8 +290,9 @@ tGet party h = tGetRaw h >>= tParseLoadBody
 
     tConnAlias :: ARawTransmission -> ACommand p -> Either ErrorType (ACommand p)
     tConnAlias (_, connAlias, _) cmd = case cmd of
-      -- NEW has optional connAlias
+      -- NEW and JOIN have optional connAlias
       NEW _ -> Right cmd
+      JOIN _ _ -> Right cmd
       -- ERROR response does not always have connAlias
       ERR _ -> Right cmd
       -- other responses must have connAlias
