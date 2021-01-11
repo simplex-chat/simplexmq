@@ -38,9 +38,10 @@ storeTests = withStore do
       describe "Receive connection" testDeleteConnReceive
       describe "Send connection" testDeleteConnSend
       describe "Duplex connection" testDeleteConnDuplex
-    describe "updateQueueStatus" testUpdateQueueStatus
-    describe "updateQueueStatusBadDirectionSnd" testUpdateQueueStatusBadDirectionSnd
-    describe "updateQueueStatusBadDirectionRcv" testUpdateQueueStatusBadDirectionRcv
+    describe "updateQueueStatus" do
+      describe "updateQueueStatusCorrect" testUpdateQueueStatus
+      describe "updateQueueStatusBadDirectionSnd" testUpdateQueueStatusBadDirectionSnd
+      describe "updateQueueStatusBadDirectionRcv" testUpdateQueueStatusBadDirectionRcv
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
