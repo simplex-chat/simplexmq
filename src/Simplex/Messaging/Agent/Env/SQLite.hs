@@ -9,6 +9,7 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
@@ -21,6 +22,7 @@ data AgentConfig = AgentConfig
     tbqSize :: Natural,
     connIdBytes :: Int,
     dbFile :: String,
+    -- TODO smpTcpPort is currently not used, 5223 is hard-coded in Client.hs
     smpTcpPort :: ServiceName
   }
 
