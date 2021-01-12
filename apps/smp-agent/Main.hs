@@ -4,6 +4,7 @@ module Main where
 
 import Simplex.Messaging.Agent (runSMPAgent)
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Client (smpDefaultConfig)
 
 cfg :: AgentConfig
 cfg =
@@ -12,7 +13,7 @@ cfg =
       tbqSize = 16,
       connIdBytes = 12,
       dbFile = "smp-agent.db",
-      smpTcpPort = "5223"
+      smpCfg = smpDefaultConfig
     }
 
 main :: IO ()

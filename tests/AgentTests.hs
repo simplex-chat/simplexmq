@@ -14,7 +14,7 @@ import Test.Hspec
 agentTests :: Spec
 agentTests = do
   describe "SQLite store" storeTests
-  xdescribe "SMP agent protocol syntax" syntaxTests
+  describe "SMP agent protocol syntax" syntaxTests
 
 (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
 command >#> response = smpAgentTest command `shouldReturn` response

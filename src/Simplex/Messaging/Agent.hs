@@ -142,7 +142,11 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
             }
       liftIO (sendSMPMessage c "" senderId msg)
         `E.catch` smpClientError
-        `E.catch` replyError INTERNAL
+      -- `E.catch` replyError INTERNAL
+      -- TODO the problem here is that while the intention of the 2nd catch was to catch
+      -- all other exceptions, because smpClientError "throwError" via left channel
+      -- and of how ExceptT instance of UnliftIO is implemented, the second `catch` catches
+      -- Left channel... The only solution is to use runtime exceptions and not ExceptT
       withStore $ \st -> updateQueueStatus st connAlias SND Confirmed
       respond OK
 
@@ -164,8 +168,8 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
       where
         newSMPClient :: m SMPClient
         newSMPClient = do
-          qSize <- asks $ tbqSize . config
-          c <- liftIO (getSMPClient srv qSize) `E.catch` replyError (BROKER smpErrTCPConnection)
+          cfg <- asks $ smpCfg . config
+          c <- liftIO (getSMPClient srv cfg) `E.catch` replyError (BROKER smpErrTCPConnection)
           atomically . modifyTVar smpClients $ M.insert srv c
           return c
 

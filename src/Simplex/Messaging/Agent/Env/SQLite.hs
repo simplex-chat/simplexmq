@@ -22,8 +22,7 @@ data AgentConfig = AgentConfig
     tbqSize :: Natural,
     connIdBytes :: Int,
     dbFile :: String,
-    -- TODO smpTcpPort is currently not used, 5223 is hard-coded in Client.hs
-    smpTcpPort :: ServiceName
+    smpCfg :: SMPClientConfig
   }
 
 data Env = Env
@@ -35,6 +34,7 @@ data Env = Env
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission Client),
     sndQ :: TBQueue (ATransmission Agent),
+    -- TODO rename, respQ is only for messages and notifications, not for responses
     respQ :: TBQueue SMP.TransmissionOrError,
     smpClients :: TVar (Map SMPServer SMPClient)
   }

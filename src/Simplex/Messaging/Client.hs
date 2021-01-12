@@ -12,6 +12,8 @@ module Simplex.Messaging.Client
     sendSMPMessage,
     sendSMPCommand,
     SMPClientError (..),
+    SMPClientConfig (..),
+    smpDefaultConfig,
   )
 where
 
@@ -23,6 +25,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe
+import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Transmission (SMPServer (..))
 import Simplex.Messaging.Server.Transmission
@@ -38,17 +41,25 @@ data SMPClient = SMPClient
     rcvQ :: TBQueue TransmissionOrError
   }
 
+data SMPClientConfig = SMPClientConfig
+  { qSize :: Natural,
+    defaultPort :: ServiceName
+  }
+
+smpDefaultConfig :: SMPClientConfig
+smpDefaultConfig = SMPClientConfig 16 "5223"
+
 data Request = Request
   { queueId :: QueueId,
     responseVar :: TMVar (Either SMPClientError Cmd)
   }
 
-getSMPClient :: SMPServer -> Natural -> IO SMPClient
-getSMPClient SMPServer {host, port} qSize = do
+getSMPClient :: SMPServer -> SMPClientConfig -> IO SMPClient
+getSMPClient SMPServer {host, port} SMPClientConfig {qSize, defaultPort} = do
   c <-
     atomically $
       SMPClient undefined <$> newTVar 0 <*> newTVar M.empty <*> newTBQueue qSize <*> newTBQueue qSize
-  action <- async $ runTCPClient host (fromMaybe "5223" port) (client c)
+  action <- async $ runTCPClient host (fromMaybe defaultPort port) (client c)
   return c {action}
   where
     client :: SMPClient -> Handle -> IO ()
@@ -78,8 +89,6 @@ getSMPClient SMPServer {host, port} qSize = do
                 Left e -> Left $ SMPResponseError e
               else Left SMPQueueIdError
 
--- TODO process responses
-
 data SMPClientError
   = SMPServerError ErrorType
   | SMPResponseError ErrorType
@@ -104,10 +113,10 @@ sendSMPMessage c sKey qId msg = do
     _ -> throwIO SMPUnexpectedResponse
 
 sendSMPCommand :: SMPClient -> PrivateKey -> QueueId -> Cmd -> IO Cmd
-sendSMPCommand c@SMPClient {sentCommands, clientCorrId} pKey qId cmd = do
+sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
   corrId <- atomically getNextCorrId
   t <- signTransmission (corrId, qId, cmd)
-  atomically (sendReceive corrId t) >>= either throwIO return
+  atomically (send corrId t) >>= atomically . takeTMVar >>= either throwIO return
   where
     getNextCorrId :: STM CorrId
     getNextCorrId = do
@@ -119,9 +128,9 @@ sendSMPCommand c@SMPClient {sentCommands, clientCorrId} pKey qId cmd = do
     signTransmission :: Signed -> IO Transmission
     signTransmission signed = return (pKey, signed)
 
-    sendReceive :: CorrId -> Transmission -> STM (Either SMPClientError Cmd)
-    sendReceive corrId t = do
+    send :: CorrId -> Transmission -> STM (TMVar (Either SMPClientError Cmd))
+    send corrId t = do
       r <- newEmptyTMVar
       modifyTVar sentCommands . M.insert corrId $ Request qId r
-      writeTBQueue (sndQ c) t
-      takeTMVar r
+      writeTBQueue sndQ t
+      return r

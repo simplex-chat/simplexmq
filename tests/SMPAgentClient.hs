@@ -11,6 +11,7 @@ import SMPClient (testPort, withSmpServer)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Client (SMPClientConfig (..))
 import Simplex.Messaging.Transport
 import UnliftIO.Concurrent
 import UnliftIO.Directory
@@ -39,7 +40,11 @@ cfg =
       tbqSize = 1,
       connIdBytes = 12,
       dbFile = testDB,
-      smpTcpPort = testPort
+      smpCfg =
+        SMPClientConfig
+          { qSize = 1,
+            defaultPort = testPort
+          }
     }
 
 withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => m a -> m a
