@@ -75,7 +75,7 @@ getSMPClient SMPServer {host, port} SMPClientConfig {qSize, defaultPort} = do
     receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
 
     process :: SMPClient -> IO ()
-    process SMPClient {rcvQ, sentCommands} = atomically $ do
+    process SMPClient {rcvQ, sentCommands} = forever . atomically $ do
       (_, (corrId, qId, respOrErr)) <- readTBQueue rcvQ
       cs <- readTVar sentCommands
       case M.lookup corrId cs of
@@ -84,9 +84,7 @@ getSMPClient SMPServer {host, port} SMPClientConfig {qSize, defaultPort} = do
           modifyTVar sentCommands $ M.delete corrId
           putTMVar responseVar $
             if queueId == qId
-              then case respOrErr of
-                Right resp -> Right resp
-                Left e -> Left $ SMPResponseError e
+              then either (Left . SMPResponseError) Right respOrErr
               else Left SMPQueueIdError
 
 data SMPClientError
