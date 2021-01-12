@@ -1,6 +1,6 @@
 # simplex-messaging
 
-[![GitHub build](https://github.com/simplex-chat/simplex-messaging/workflows/build/badge.svg)](https://github.com/simplex-chat/simplex-messaging/actions?query=workflow%3Abuild)
+[![build](https://github.com/simplex-chat/simplex-messaging/workflows/CI/badge.svg)](https://github.com/simplex-chat/simplex-messaging/actions?query=workflow%3ACI)
 [![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplex-messaging)](https://github.com/simplex-chat/simplex-messaging/releases)
 
 ## SMP server demo

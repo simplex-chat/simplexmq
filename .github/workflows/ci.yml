@@ -1,6 +1,6 @@
 # Base: https://github.com/haskell/actions/tree/main/setup#usage
 
-name: build
+name: CI
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
   pull_request:
 
 jobs:
-  test:
-    name: Tests
+  build:
+    name: build
     runs-on: ubuntu-latest # TODO matrix testing
     steps:
       - name: Clone project
