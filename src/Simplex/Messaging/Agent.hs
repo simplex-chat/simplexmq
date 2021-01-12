@@ -87,7 +87,12 @@ processCommand ::
   m ()
 processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
   case cmd of
-    NEW smpServer -> do
+    NEW smpServer -> createNewConnection smpServer
+    JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
+    _ -> throwError PROHIBITED
+  where
+    createNewConnection :: SMPServer -> m ()
+    createNewConnection smpServer = do
       c <- getSMPServerClient smpServer
       g <- asks idsDrg
       recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
@@ -112,7 +117,9 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
               ackMode = AckMode On
             }
       respond . INV $ SMPQueueInfo smpServer senderId encryptKey
-    JOIN (SMPQueueInfo smpServer senderId encryptKey) _ -> do
+
+    joinConnection :: SMPQueueInfo -> ReplyMode -> m ()
+    joinConnection (SMPQueueInfo smpServer senderId encryptKey) _ -> do
       c <- getSMPServerClient smpServer
       g <- asks idsDrg
       senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
@@ -138,8 +145,7 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
         `E.catch` replyError INTERNAL
       withStore $ \st -> updateQueueStatus st connAlias SND Confirmed
       respond OK
-    _ -> throwError PROHIBITED
-  where
+
     smpClientError :: SMPClientError -> m a
     smpClientError = \case
       SMPServerError e -> throwError $ SMP e

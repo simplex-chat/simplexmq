@@ -37,28 +37,7 @@ data AgentClient = AgentClient
     sndQ :: TBQueue (ATransmission Agent),
     respQ :: TBQueue SMP.TransmissionOrError,
     smpClients :: TVar (Map SMPServer SMPClient)
-    -- commands :: TVar (Map SMP.CorrId Request)
   }
-
--- data Request = Request
---   { fromClient :: ATransmission Client,
---     toSMP :: SMP.Transmission,
---     state :: RequestState
---   }
-
--- data RequestState
---   = NEWRequestState
---       { connAlias :: ConnAlias,
---         smpServer :: SMPServer,
---         rcvPrivateKey :: PrivateKey
---       }
---   | ConfSENDRequestState
---       { connAlias :: ConnAlias,
---         smpServer :: SMPServer,
---         senderId :: SenderId,
---         sndPrivateKey :: PrivateKey,
---         encryptKey :: PublicKey
---       }
 
 newAgentClient :: Natural -> STM AgentClient
 newAgentClient qSize = do
