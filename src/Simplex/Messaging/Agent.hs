@@ -40,7 +40,7 @@ runSMPAgent cfg@AgentConfig {tcpPort} = do
   where
     smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpAgent = runTCPServer tcpPort $ \h -> do
-      putLn h "Welcome to SMP Agent v0.1"
+      putLn h "Welcome to SMP v0.2.0 agent"
       q <- asks $ tbqSize . config
       c <- atomically $ newAgentClient q
       race_ (connectClient h c) (runClient c)
