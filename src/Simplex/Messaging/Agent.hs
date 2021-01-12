@@ -119,7 +119,7 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
       respond . INV $ SMPQueueInfo smpServer senderId encryptKey
 
     joinConnection :: SMPQueueInfo -> ReplyMode -> m ()
-    joinConnection (SMPQueueInfo smpServer senderId encryptKey) _ -> do
+    joinConnection (SMPQueueInfo smpServer senderId encryptKey) _ = do
       c <- getSMPServerClient smpServer
       g <- asks idsDrg
       senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
