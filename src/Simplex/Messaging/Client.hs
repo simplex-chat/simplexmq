@@ -11,6 +11,7 @@ module Simplex.Messaging.Client
     createSMPQueue,
     sendSMPMessage,
     sendSMPCommand,
+    SMPClientError (..),
   )
 where
 

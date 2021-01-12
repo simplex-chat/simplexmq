@@ -104,7 +104,7 @@ data SMPServer = SMPServer
     port :: Maybe ServiceName,
     keyHash :: Maybe KeyHash
   }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 type KeyHash = Encoded
 
