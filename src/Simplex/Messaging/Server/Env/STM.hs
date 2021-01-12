@@ -1,21 +1,21 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Env.STM where
+module Simplex.Messaging.Server.Env.STM where
 
 import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import MsgStore.STM
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import QueueStore.STM
-import Transmission
+import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Server.Transmission
 import UnliftIO.STM
 
-data Config = Config
+data ServerConfig = ServerConfig
   { tcpPort :: ServiceName,
     tbqSize :: Natural,
     queueIdBytes :: Int,
@@ -23,7 +23,7 @@ data Config = Config
   }
 
 data Env = Env
-  { config :: Config,
+  { config :: ServerConfig,
     server :: Server,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
@@ -66,7 +66,7 @@ newSubscription = do
   delivered <- newEmptyTMVar
   return Sub {subThread = NoSub, delivered}
 
-newEnv :: (MonadUnliftIO m, MonadRandom m) => Config -> m Env
+newEnv :: (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config = do
   server <- atomically $ newServer (tbqSize config)
   queueStore <- atomically newQueueStore

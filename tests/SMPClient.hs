@@ -6,12 +6,12 @@ module SMPClient where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Env.STM
 import Network.Socket
-import Server
+import Simplex.Messaging.Server
+import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.Transmission
+import Simplex.Messaging.Transport
 import Test.Hspec
-import Transmission
-import Transport
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.IO
@@ -27,13 +27,13 @@ testSMPClient client = do
   threadDelay 5000 -- TODO hack: thread delay for SMP server to start
   runTCPClient testHost testPort $ \h -> do
     line <- getLn h
-    if line == "Welcome to SMP"
+    if line == "Welcome to SMP v0.2.0"
       then client h
       else error "not connected"
 
-cfg :: Config
+cfg :: ServerConfig
 cfg =
-  Config
+  ServerConfig
     { tcpPort = testPort,
       tbqSize = 1,
       queueIdBytes = 12,
@@ -53,11 +53,8 @@ runSmpTestN nClients test = withSmpServer $ run [] nClients
     run hs 0 = test hs
     run hs n = testSMPClient $ \h -> run (h : hs) (n - 1)
 
-smpServerTest :: [RawTransmission] -> IO [RawTransmission]
-smpServerTest commands = runSmpTest \h -> mapM (sendReceive h) commands
-  where
-    sendReceive :: Handle -> RawTransmission -> IO RawTransmission
-    sendReceive h t = tPutRaw h t >> either (error "bad transmission") id <$> tGetRaw h
+smpServerTest :: RawTransmission -> IO RawTransmission
+smpServerTest cmd = runSmpTest $ \h -> tPutRaw h cmd >> tGetRaw h
 
 smpTest :: (Handle -> IO ()) -> Expectation
 smpTest test' = runSmpTest test' `shouldReturn` ()

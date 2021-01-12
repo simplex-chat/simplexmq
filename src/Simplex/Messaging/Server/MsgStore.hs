@@ -1,9 +1,9 @@
 {-# LANGUAGE FunctionalDependencies #-}
 
-module MsgStore where
+module Simplex.Messaging.Server.MsgStore where
 
 import Data.Time.Clock
-import Transmission
+import Simplex.Messaging.Server.Transmission
 
 data Message = Message
   { msgId :: Encoded,

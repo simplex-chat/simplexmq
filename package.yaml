@@ -20,7 +20,11 @@ dependencies:
   - iso8601-time == 0.1.*
   - mtl
   - network == 3.1.*
+  - split == 0.2.*
+  - sqlite-simple == 0.4.*
   - stm
+  - template-haskell == 2.15.*
+  - text == 1.2.*
   - time == 1.9.*
   - unliftio == 0.2.*
   - unliftio-core == 0.1.*
@@ -31,6 +35,14 @@ library:
 executables:
   smp-server:
     source-dirs: apps/smp-server
+    main: Main.hs
+    dependencies:
+      - simplex-messaging
+    ghc-options:
+      - -threaded
+
+  smp-agent:
+    source-dirs: apps/smp-agent
     main: Main.hs
     dependencies:
       - simplex-messaging
