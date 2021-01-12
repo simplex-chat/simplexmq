@@ -39,9 +39,11 @@ storeTests = withStore do
       describe "Send connection" testDeleteConnSend
       describe "Duplex connection" testDeleteConnDuplex
     describe "updateQueueStatus" do
-      describe "updateQueueStatusCorrect" testUpdateQueueStatus
-      describe "updateQueueStatusBadDirectionSnd" testUpdateQueueStatusBadDirectionSnd
-      describe "updateQueueStatusBadDirectionRcv" testUpdateQueueStatusBadDirectionRcv
+      describe "Receive connection" testUpdateQueueStatusConnReceive
+      describe "Send connection" testUpdateQueueStatusConnSend
+      describe "Duplex connection" testUpdateQueueStatusConnDuplex
+      describe "Bad queue direction - SND" testUpdateQueueStatusBadDirectionSnd
+      describe "Bad queue direction - RCV" testUpdateQueueStatusBadDirectionRcv
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -113,7 +115,7 @@ testCreateSndConn = do
 
 testAddSndQueue :: SpecWith SQLiteStore
 testAddSndQueue = do
-  it "should return error on attempts to add send queue to SendConnection or DuplexConnection" $ \store -> do
+  it "should throw error on attempts to add send queue to SendConnection or DuplexConnection" $ \store -> do
     let sndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -157,7 +159,7 @@ testAddSndQueue = do
 
 testAddRcvQueue :: SpecWith SQLiteStore
 testAddRcvQueue = do
-  it "should return error on attempts to add receive queue to ReceiveConnection or DuplexConnection" $ \store -> do
+  it "should throw error on attempts to add receive queue to ReceiveConnection or DuplexConnection" $ \store -> do
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -283,9 +285,55 @@ testDeleteConnDuplex = do
     getConn store "conn1"
       `throwsError` SEInternal
 
-testUpdateQueueStatus :: SpecWith SQLiteStore
-testUpdateQueueStatus = do
-  it "should update receive and send queues' statuses" $ \store -> do
+testUpdateQueueStatusConnReceive :: SpecWith SQLiteStore
+testUpdateQueueStatusConnReceive = do
+  it "should update status of receive queue in receive connection" $ \store -> do
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "1234",
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    createRcvConn store "conn1" rcvQueue
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
+    updateQueueStatus store "conn1" RCV Confirmed
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue {status = Confirmed})
+
+testUpdateQueueStatusConnSend :: SpecWith SQLiteStore
+testUpdateQueueStatusConnSend = do
+  it "should update status of send queue in send connection" $ \store -> do
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "1234",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    createSndConn store "conn1" sndQueue
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
+    updateQueueStatus store "conn1" SND Confirmed
+      `returnsResult` ()
+    getConn store "conn1"
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue {status = Confirmed})
+
+testUpdateQueueStatusConnDuplex :: SpecWith SQLiteStore
+testUpdateQueueStatusConnDuplex = do
+  it "should update statuses of receive and send queues in duplex connection" $ \store -> do
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -325,7 +373,7 @@ testUpdateQueueStatus = do
 
 testUpdateQueueStatusBadDirectionSnd :: SpecWith SQLiteStore
 testUpdateQueueStatusBadDirectionSnd = do
-  it "should return error on attempt to update status of send queue in receive connection" $ \store -> do
+  it "should throw error on attempt to update status of send queue in receive connection" $ \store -> do
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -349,7 +397,7 @@ testUpdateQueueStatusBadDirectionSnd = do
 
 testUpdateQueueStatusBadDirectionRcv :: SpecWith SQLiteStore
 testUpdateQueueStatusBadDirectionRcv = do
-  it "should return error on attempt to update status of receive queue in send connection" $ \store -> do
+  it "should throw error on attempt to update status of receive queue in send connection" $ \store -> do
     let sndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
