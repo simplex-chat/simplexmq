@@ -14,6 +14,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.Bifunctor (first)
 import qualified Data.Map as M
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
@@ -79,6 +80,15 @@ withStore action = do
     handleInternal :: (MonadError StoreError m') => SomeException -> m' a
     handleInternal _ = throwError SEInternal
 
+liftSMP :: (MonadUnliftIO m, MonadError ErrorType m) => ExceptT SMPClientError IO a -> m a
+liftSMP action =
+  liftIO (first smpClientError <$> runExceptT action) >>= liftEither
+  where
+    smpClientError :: SMPClientError -> ErrorType
+    smpClientError = \case
+      SMPServerError e -> SMP e
+      _ -> INTERNAL -- TODO handle other errors
+
 processCommand ::
   forall m.
   (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m) =>
@@ -97,10 +107,7 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
       g <- asks idsDrg
       recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let rcvPrivateKey = recipientKey
-      (recipientId, senderId) <-
-        liftIO (createSMPQueue c recipientKey)
-          `E.catch` smpClientError
-          `E.catch` replyError INTERNAL
+      (recipientId, senderId) <- liftSMP $ createSMPQueue c recipientKey
       encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let decryptKey = encryptKey
       withStore $ \st ->
@@ -140,21 +147,9 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
               status = New,
               ackMode = AckMode On
             }
-      liftIO (sendSMPMessage c "" senderId msg)
-        `E.catch` smpClientError
-      -- `E.catch` replyError INTERNAL
-      -- TODO the problem here is that while the intention of the 2nd catch was to catch
-      -- all other exceptions, because smpClientError "throwError" via left channel
-      -- and of how ExceptT instance of UnliftIO is implemented, the second `catch` catches
-      -- Left channel... The only solution is to use runtime exceptions and not ExceptT
+      liftSMP $ sendSMPMessage c "" senderId msg
       withStore $ \st -> updateQueueStatus st connAlias SND Confirmed
       respond OK
-
-    smpClientError :: SMPClientError -> m a
-    smpClientError = \case
-      SMPServerError e -> throwError $ SMP e
-      _ -> throwError INTERNAL
-    -- TODO
 
     replyError :: ErrorType -> SomeException -> m a
     replyError err e = do
