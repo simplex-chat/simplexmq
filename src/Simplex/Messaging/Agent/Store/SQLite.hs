@@ -22,6 +22,7 @@ import Control.Monad.IO.Unlift
 import Data.Int (Int64)
 import Data.Maybe
 import qualified Data.Text as T
+import Data.Time
 import Database.SQLite.Simple hiding (Connection)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
@@ -330,6 +331,28 @@ updateSndQueueStatus store sndQueueId status =
     |]
     (Only status :. Only sndQueueId)
 
+instance ToField QueueDirection where toField = toField . show
+
+-- instance FromField QueueDirection where fromField = fromFieldToReadable
+
+instance ToField AMessage where toField (AMessage msg) = toField . show msg
+-- instance ToField AMessage where toField = toField . show
+
+-- instance FromField AMessage where fromField = AMessage <$$> fromFieldToReadable
+
+insertMsg :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+insertMsg store connAlias qDirection agentMsgId msg = do
+  tstamp <- liftIO getCurrentTime
+  void $
+    insertWithLock
+      store
+      messagesLock
+      [s|
+        INSERT INTO messages (conn_alias, agent_msg_id, timestamp, message, direction, msg_status)
+        VALUES (?,?,?,?,?,?);
+      |]
+      (Only connAlias :. Only agentMsgId :. Only tstamp :. Only qDirection :. Only msg :. MDTransmitted)
+
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   addServer store smpServer = upsertServer store smpServer
 
@@ -419,8 +442,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           Just qId -> updateSndQueueStatus st qId status
           Nothing -> throwError SEBadConn
 
-  createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AMessage -> m MessageDelivery
-  createMsg _st _connAlias _dir _msg = throwError SEInternal
+  createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+  createMsg st connAlias qDirection agentMsgId msg = do
+    return ()
 
   getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
   getLastMsg _st _connAlias _dir = throwError SEInternal
