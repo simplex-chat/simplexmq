@@ -21,6 +21,7 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
+import Control.Monad.Trans.Except
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -84,7 +85,10 @@ getSMPClient SMPServer {host, port} SMPClientConfig {qSize, defaultPort} = do
           modifyTVar sentCommands $ M.delete corrId
           putTMVar responseVar $
             if queueId == qId
-              then either (Left . SMPResponseError) Right respOrErr
+              then case respOrErr of
+                Left e -> Left $ SMPResponseError e
+                Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
+                Right r -> Right r
               else Left SMPQueueIdError
 
 data SMPClientError
@@ -96,25 +100,23 @@ data SMPClientError
   | SMPClientError
   deriving (Eq, Show, Exception)
 
-createSMPQueue :: SMPClient -> RecipientKey -> IO (RecipientId, SenderId)
+createSMPQueue :: SMPClient -> RecipientKey -> ExceptT SMPClientError IO (RecipientId, SenderId)
 createSMPQueue c rKey = do
   sendSMPCommand c "" "" (Cmd SRecipient $ NEW rKey) >>= \case
     Cmd _ (IDS rId sId) -> return (rId, sId)
-    Cmd _ (ERR e) -> throwIO $ SMPServerError e
-    _ -> throwIO SMPUnexpectedResponse
+    _ -> throwE SMPUnexpectedResponse
 
-sendSMPMessage :: SMPClient -> SenderKey -> QueueId -> MsgBody -> IO ()
+sendSMPMessage :: SMPClient -> SenderKey -> QueueId -> MsgBody -> ExceptT SMPClientError IO ()
 sendSMPMessage c sKey qId msg = do
   sendSMPCommand c sKey qId (Cmd SSender $ SEND msg) >>= \case
     Cmd _ OK -> return ()
-    Cmd _ (ERR e) -> throwIO $ SMPServerError e
-    _ -> throwIO SMPUnexpectedResponse
+    _ -> throwE SMPUnexpectedResponse
 
-sendSMPCommand :: SMPClient -> PrivateKey -> QueueId -> Cmd -> IO Cmd
-sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
+sendSMPCommand :: SMPClient -> PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
+sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = ExceptT $ do
   corrId <- atomically getNextCorrId
   t <- signTransmission (corrId, qId, cmd)
-  atomically (send corrId t) >>= atomically . takeTMVar >>= either throwIO return
+  atomically (send corrId t) >>= atomically . takeTMVar
   where
     getNextCorrId :: STM CorrId
     getNextCorrId = do
