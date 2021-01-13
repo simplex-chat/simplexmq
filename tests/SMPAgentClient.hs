@@ -10,8 +10,8 @@ import Network.Socket
 import SMPClient (testPort, withSmpServer)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.ServerClient
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Client (SMPClientConfig (..))
 import Simplex.Messaging.Transport
 import UnliftIO.Concurrent
 import UnliftIO.Directory
@@ -40,11 +40,10 @@ cfg =
       tbqSize = 1,
       connIdBytes = 12,
       dbFile = testDB,
-      smpTcpPort = testPort,
-      smpConfig =
-        ServerClientConfig
-          { tbqSize = 1,
-            corrIdBytes = 4
+      smpCfg =
+        SMPClientConfig
+          { qSize = 1,
+            defaultPort = testPort
           }
     }
 
