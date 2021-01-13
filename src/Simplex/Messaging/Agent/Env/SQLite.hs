@@ -9,13 +9,11 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Network.Socket (HostName, ServiceName)
+import Network.Socket
 import Numeric.Natural
-import Simplex.Messaging.Agent.ServerClient
-import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Server.Transmission (PublicKey, SenderId)
+import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
 
@@ -24,8 +22,7 @@ data AgentConfig = AgentConfig
     tbqSize :: Natural,
     connIdBytes :: Int,
     dbFile :: String,
-    smpTcpPort :: ServiceName,
-    smpConfig :: ServerClientConfig
+    smpCfg :: SMPClientConfig
   }
 
 data Env = Env
@@ -37,39 +34,18 @@ data Env = Env
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission Client),
     sndQ :: TBQueue (ATransmission Agent),
+    -- TODO rename, respQ is only for messages and notifications, not for responses
     respQ :: TBQueue SMP.TransmissionOrError,
-    servers :: TVar (Map (HostName, ServiceName) ServerClient),
-    commands :: TVar (Map SMP.CorrId Request)
+    smpClients :: TVar (Map SMPServer SMPClient)
   }
-
-data Request = Request
-  { fromClient :: ATransmission Client,
-    toSMP :: SMP.Transmission,
-    state :: RequestState
-  }
-
-data RequestState
-  = NEWRequestState
-      { connAlias :: ConnAlias,
-        smpServer :: SMPServer,
-        rcvPrivateKey :: PrivateKey
-      }
-  | ConfSENDRequestState
-      { connAlias :: ConnAlias,
-        smpServer :: SMPServer,
-        senderId :: SenderId,
-        sndPrivateKey :: PrivateKey,
-        encryptKey :: PublicKey
-      }
 
 newAgentClient :: Natural -> STM AgentClient
 newAgentClient qSize = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   respQ <- newTBQueue qSize
-  servers <- newTVar M.empty
-  commands <- newTVar M.empty
-  return AgentClient {rcvQ, sndQ, respQ, servers, commands}
+  smpClients <- newTVar M.empty
+  return AgentClient {rcvQ, sndQ, respQ, smpClients}
 
 newEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newEnv config = do

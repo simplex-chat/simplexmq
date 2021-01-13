@@ -153,6 +153,8 @@ instance IsString CorrId where
 
 type PublicKey = Encoded
 
+type PrivateKey = Encoded
+
 type Signature = Encoded
 
 type RecipientKey = PublicKey
