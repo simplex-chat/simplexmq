@@ -9,6 +9,7 @@
 
 module Simplex.Messaging.Agent.Store where
 
+import Data.ByteString
 import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock (UTCTime)

@@ -44,6 +44,7 @@ storeTests = withStore do
       describe "Duplex connection" testUpdateQueueStatusConnDuplex
       describe "Bad queue direction - SND" testUpdateQueueStatusBadDirectionSnd
       describe "Bad queue direction - RCV" testUpdateQueueStatusBadDirectionRcv
+    describe "createMsg" testCreateMsg
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -416,3 +417,26 @@ testUpdateQueueStatusBadDirectionRcv = do
       `throwsError` SEBadConn
     getConn store "conn1"
       `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
+
+testCreateMsg :: SpecWith SQLiteStore
+testCreateMsg = do
+  it "should create message in connection in RCV direction" $ \store -> do
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "1234",
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    createRcvConn store "conn1" rcvQueue
+      `returnsResult` ()
+    let msg = A_MSG "hello"
+    let msgId = 1
+    createMsg store "conn1" RCV msgId msg
+      `returnsResult` ()
+    -- TODO check message is created

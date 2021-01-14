@@ -333,14 +333,8 @@ updateSndQueueStatus store sndQueueId status =
 
 instance ToField QueueDirection where toField = toField . show
 
--- instance FromField QueueDirection where fromField = fromFieldToReadable
-
-instance ToField AMessage where toField (AMessage msg) = toField . show msg
--- instance ToField AMessage where toField = toField . show
-
--- instance FromField AMessage where fromField = AMessage <$$> fromFieldToReadable
-
-insertMsg :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+-- TODO add parser and serializer for DeliveryStatus? Pass DeliveryStatus?
+insertMsg :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> Message -> m ()
 insertMsg store connAlias qDirection agentMsgId msg = do
   tstamp <- liftIO getCurrentTime
   void $
@@ -349,9 +343,9 @@ insertMsg store connAlias qDirection agentMsgId msg = do
       messagesLock
       [s|
         INSERT INTO messages (conn_alias, agent_msg_id, timestamp, message, direction, msg_status)
-        VALUES (?,?,?,?,?,?);
+        VALUES (?,?,?,?,?,"MDTransmitted");
       |]
-      (Only connAlias :. Only agentMsgId :. Only tstamp :. Only qDirection :. Only msg :. MDTransmitted)
+      (Only connAlias :. Only agentMsgId :. Only tstamp :. Only qDirection :. Only msg)
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   addServer store smpServer = upsertServer store smpServer
@@ -444,7 +438,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
   createMsg st connAlias qDirection agentMsgId msg = do
-    return ()
+    -- TODO check queue direction is eligible
+    insertMsg st connAlias qDirection agentMsgId $ serializeMsg msg
 
   getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
   getLastMsg _st _connAlias _dir = throwError SEInternal
