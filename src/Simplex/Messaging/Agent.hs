@@ -48,7 +48,7 @@ connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-runClient c = race_ (processSmp c) (client c)
+runClient c = race_ (subscriber c) (client c)
 
 receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 receive h AgentClient {rcvQ, sndQ} =
@@ -177,8 +177,8 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
     respond :: ACommand 'Agent -> m ()
     respond c = atomically $ writeTBQueue sndQ (corrId, connAlias, c)
 
-processSmp :: MonadUnliftIO m => AgentClient -> m ()
-processSmp AgentClient {respQ} = forever $ do
+subscriber :: MonadUnliftIO m => AgentClient -> m ()
+subscriber AgentClient {msgQ} = forever $ do
   -- TODO this will only process messages and notifications
-  (_, (_smpCorrId, _qId, _cmdOrErr)) <- atomically $ readTBQueue respQ
+  (_, (_smpCorrId, _qId, _cmdOrErr)) <- atomically $ readTBQueue msgQ
   return ()
