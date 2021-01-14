@@ -14,7 +14,6 @@ module Simplex.Messaging.Agent.Transmission where
 
 import Control.Monad
 import Control.Monad.IO.Class
--- import Numeric.Natural
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
