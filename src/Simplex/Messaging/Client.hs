@@ -1,9 +1,10 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase, DataKinds #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables, PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Client
   ( SMPClient,
@@ -24,8 +25,8 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
-import Control.Monad.Trans.Except
 import Control.Monad.Trans.Class
+import Control.Monad.Trans.Except
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -33,10 +34,10 @@ import Data.Maybe
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Transmission (SMPServer (..))
+import Simplex.Messaging.Server.MsgStore (Message (..)) -- move to Simplex.Messaging.Core
 import Simplex.Messaging.Server.Transmission
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
-import Simplex.Messaging.Server.MsgStore (Message(..)) -- move to Simplex.Messaging.Core
 import System.IO
 
 data SMPClient = SMPClient
@@ -98,7 +99,7 @@ getSMPClient SMPServer {host, port} SMPClientConfig {qSize, defaultPort} = do
         Nothing ->
           case respOrErr of
             Right (Cmd _ (MSG msgId ts msgBody)) ->
-              writeTBQueue messageQ (qId, Message{msgId, ts, msgBody})
+              writeTBQueue messageQ (qId, Message {msgId, ts, msgBody})
             Right (Cmd _ END) -> writeTBQueue endSubQ qId
             -- TODO maybe have one more queue to write unexpected responses
             _ -> return ()
@@ -134,11 +135,11 @@ sendSMPMessage c sKey qId msg =
     _ -> throwE SMPUnexpectedResponse
 
 ackSMPMessage :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
-ackSMPMessage c@SMPClient{messageQ} rKey qId =
+ackSMPMessage c@SMPClient {messageQ} rKey qId =
   sendSMPCommand c rKey qId (Cmd SRecipient ACK) >>= \case
     Cmd _ OK -> return ()
     Cmd _ (MSG msgId ts msgBody) ->
-      lift . atomically $ writeTBQueue messageQ (qId, Message{msgId, ts, msgBody})
+      lift . atomically $ writeTBQueue messageQ (qId, Message {msgId, ts, msgBody})
     _ -> throwE SMPUnexpectedResponse
 
 sendSMPCommand :: SMPClient -> PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
