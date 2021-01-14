@@ -95,6 +95,7 @@ data DeliveryStatus
 
 type SMPServerId = Int64
 
+-- TODO rework types - decouple Transmission types from Store? Convert on the agent instead?
 class Monad m => MonadAgentStore s m where
   addServer :: s -> SMPServer -> m SMPServerId
   createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m ()

@@ -429,17 +429,27 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         (rcvQId, _) <- getConnection st connAlias
         case rcvQId of
           Just qId -> updateRcvQueueStatus st qId status
-          Nothing -> throwError SEBadConn
+          Nothing -> throwError SEBadQueueDirection
       SND -> do
         (_, sndQId) <- getConnection st connAlias
         case sndQId of
           Just qId -> updateSndQueueStatus st qId status
-          Nothing -> throwError SEBadConn
+          Nothing -> throwError SEBadQueueDirection
 
+  -- TODO decrease duplication of queue direction checks?
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
   createMsg st connAlias qDirection agentMsgId msg = do
-    -- TODO check queue direction is eligible
-    insertMsg st connAlias qDirection agentMsgId $ serializeMsg msg
+    case qDirection of
+      RCV -> do
+        (rcvQId, _) <- getConnection st connAlias
+        case rcvQId of
+          Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeMsg msg
+          Nothing -> throwError SEBadQueueDirection
+      SND -> do
+        (_, sndQId) <- getConnection st connAlias
+        case sndQId of
+          Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeMsg msg
+          Nothing -> throwError SEBadQueueDirection
 
   getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
   getLastMsg _st _connAlias _dir = throwError SEInternal
