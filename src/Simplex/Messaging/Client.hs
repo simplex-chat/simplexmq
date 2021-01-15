@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -9,11 +10,17 @@ module Simplex.Messaging.Client
   ( SMPClient,
     getSMPClient,
     createSMPQueue,
+    subscribeSMPQueue,
+    secureSMPQueue,
     sendSMPMessage,
+    ackSMPMessage,
     sendSMPCommand,
+    suspendSMPQueue,
+    deleteSMPQueue,
     SMPClientError (..),
     SMPClientConfig (..),
     smpDefaultConfig,
+    SMPServerTransmission,
   )
 where
 
@@ -21,6 +28,7 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
+import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
@@ -36,11 +44,15 @@ import System.IO
 
 data SMPClient = SMPClient
   { action :: Async (),
+    smpServer :: SMPServer,
     clientCorrId :: TVar Natural,
     sentCommands :: TVar (Map CorrId Request),
     sndQ :: TBQueue Transmission,
-    rcvQ :: TBQueue TransmissionOrError
+    rcvQ :: TBQueue TransmissionOrError,
+    msgQ :: TBQueue SMPServerTransmission
   }
+
+type SMPServerTransmission = (SMPServer, RecipientId, Cmd)
 
 data SMPClientConfig = SMPClientConfig
   { qSize :: Natural,
@@ -55,14 +67,20 @@ data Request = Request
     responseVar :: TMVar (Either SMPClientError Cmd)
   }
 
-getSMPClient :: SMPServer -> SMPClientConfig -> IO SMPClient
-getSMPClient SMPServer {host, port} SMPClientConfig {qSize, defaultPort} = do
-  c <-
-    atomically $
-      SMPClient undefined <$> newTVar 0 <*> newTVar M.empty <*> newTBQueue qSize <*> newTBQueue qSize
+getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO SMPClient
+getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPort} msgQ = do
+  c <- atomically mkSMPClient
   action <- async $ runTCPClient host (fromMaybe defaultPort port) (client c)
   return c {action}
   where
+    mkSMPClient :: STM SMPClient
+    mkSMPClient = do
+      clientCorrId <- newTVar 0
+      sentCommands <- newTVar M.empty
+      sndQ <- newTBQueue qSize
+      rcvQ <- newTBQueue qSize
+      return SMPClient {action = undefined, smpServer, clientCorrId, sentCommands, sndQ, rcvQ, msgQ}
+
     client :: SMPClient -> Handle -> IO ()
     client c h = do
       _line <- getLn h -- "Welcome to SMP"
@@ -80,7 +98,9 @@ getSMPClient SMPServer {host, port} SMPClientConfig {qSize, defaultPort} = do
       (_, (corrId, qId, respOrErr)) <- readTBQueue rcvQ
       cs <- readTVar sentCommands
       case M.lookup corrId cs of
-        Nothing -> return () -- TODO send to message channel or error channel
+        Nothing -> case respOrErr of
+          Right resp -> writeTBQueue msgQ (smpServer, qId, resp)
+          Left _ -> return ()
         Just Request {queueId, responseVar} -> do
           modifyTVar sentCommands $ M.delete corrId
           putTMVar responseVar $
@@ -101,14 +121,42 @@ data SMPClientError
   deriving (Eq, Show, Exception)
 
 createSMPQueue :: SMPClient -> RecipientKey -> ExceptT SMPClientError IO (RecipientId, SenderId)
-createSMPQueue c rKey = do
+createSMPQueue c rKey =
   sendSMPCommand c "" "" (Cmd SRecipient $ NEW rKey) >>= \case
     Cmd _ (IDS rId sId) -> return (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
+subscribeSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
+subscribeSMPQueue c@SMPClient {smpServer, msgQ} rKey rId =
+  sendSMPCommand c rKey rId (Cmd SRecipient SUB) >>= \case
+    Cmd _ OK -> return ()
+    cmd@(Cmd _ MSG {}) ->
+      lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
+    _ -> throwE SMPUnexpectedResponse
+
+secureSMPQueue :: SMPClient -> RecipientKey -> QueueId -> SenderKey -> ExceptT SMPClientError IO ()
+secureSMPQueue c rKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rKey rId
+
 sendSMPMessage :: SMPClient -> SenderKey -> QueueId -> MsgBody -> ExceptT SMPClientError IO ()
-sendSMPMessage c sKey qId msg = do
-  sendSMPCommand c sKey qId (Cmd SSender $ SEND msg) >>= \case
+sendSMPMessage c sKey sId msg = okSMPCommand (Cmd SSender $ SEND msg) c sKey sId
+
+ackSMPMessage :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
+ackSMPMessage c@SMPClient {smpServer, msgQ} rKey rId =
+  sendSMPCommand c rKey rId (Cmd SRecipient ACK) >>= \case
+    Cmd _ OK -> return ()
+    cmd@(Cmd _ MSG {}) ->
+      lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
+    _ -> throwE SMPUnexpectedResponse
+
+suspendSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
+suspendSMPQueue = okSMPCommand $ Cmd SRecipient OFF
+
+deleteSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
+deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
+
+okSMPCommand :: Cmd -> SMPClient -> PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+okSMPCommand cmd c pKey qId =
+  sendSMPCommand c pKey qId cmd >>= \case
     Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
