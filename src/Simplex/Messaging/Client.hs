@@ -120,29 +120,30 @@ data SMPClientError
   | SMPClientError
   deriving (Eq, Show, Exception)
 
-createSMPQueue :: SMPClient -> RecipientKey -> ExceptT SMPClientError IO (RecipientId, SenderId)
-createSMPQueue c rKey =
+createSMPQueue :: SMPClient -> PrivateKey -> RecipientKey -> ExceptT SMPClientError IO (RecipientId, SenderId)
+createSMPQueue c _rpKey rKey =
+  -- TODO add signing this request too - requires changes in the server
   sendSMPCommand c "" "" (Cmd SRecipient $ NEW rKey) >>= \case
     Cmd _ (IDS rId sId) -> return (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
-subscribeSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
-subscribeSMPQueue c@SMPClient {smpServer, msgQ} rKey rId =
-  sendSMPCommand c rKey rId (Cmd SRecipient SUB) >>= \case
+subscribeSMPQueue :: SMPClient -> PrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
+subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
+  sendSMPCommand c rpKey rId (Cmd SRecipient SUB) >>= \case
     Cmd _ OK -> return ()
     Cmd _ cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
-secureSMPQueue :: SMPClient -> RecipientKey -> QueueId -> SenderKey -> ExceptT SMPClientError IO ()
-secureSMPQueue c rKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rKey rId
+secureSMPQueue :: SMPClient -> PrivateKey -> RecipientId -> SenderKey -> ExceptT SMPClientError IO ()
+secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
 
-sendSMPMessage :: SMPClient -> SenderKey -> QueueId -> MsgBody -> ExceptT SMPClientError IO ()
-sendSMPMessage c sKey sId msg = okSMPCommand (Cmd SSender $ SEND msg) c sKey sId
+sendSMPMessage :: SMPClient -> PrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
+sendSMPMessage c spKey sId msg = okSMPCommand (Cmd SSender $ SEND msg) c spKey sId
 
 ackSMPMessage :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
-ackSMPMessage c@SMPClient {smpServer, msgQ} rKey rId =
-  sendSMPCommand c rKey rId (Cmd SRecipient ACK) >>= \case
+ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
+  sendSMPCommand c rpKey rId (Cmd SRecipient ACK) >>= \case
     Cmd _ OK -> return ()
     Cmd _ cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)

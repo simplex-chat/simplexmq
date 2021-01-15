@@ -108,7 +108,7 @@ processCommand AgentClient {sndQ, msgQ, smpClients} (corrId, connAlias, cmd) =
       g <- asks idsDrg
       recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let rcvPrivateKey = recipientKey
-      (recipientId, senderId) <- liftSMP $ createSMPQueue c recipientKey
+      (recipientId, senderId) <- liftSMP $ createSMPQueue c rcvPrivateKey recipientKey
       encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let decryptKey = encryptKey
       withStore $ \st ->

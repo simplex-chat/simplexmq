@@ -382,7 +382,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       _ -> throwError SEBadConn
 
   getReceiveQueue :: SQLiteStore -> SMPServer -> RecipientId -> m ReceiveQueue
-  getReceiveQueue st smpServer recipientId = throwError SEInternal
+  getReceiveQueue _st _smpServer _recipientId = throwError SEInternal
 
   -- TODO make transactional
   addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
