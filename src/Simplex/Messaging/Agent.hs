@@ -15,6 +15,7 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.Bifunctor (first)
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.Map as M
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
@@ -23,7 +24,7 @@ import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Server.Transmission (PublicKey)
+import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
@@ -177,14 +178,37 @@ processCommand AgentClient {sndQ, msgQ, smpClients} (corrId, connAlias, cmd) =
     respond :: ACommand 'Agent -> m ()
     respond c = atomically $ writeTBQueue sndQ (corrId, connAlias, c)
 
-subscriber :: MonadUnliftIO m => AgentClient -> m ()
-subscriber AgentClient {msgQ} = forever $ do
+subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+subscriber c@AgentClient {msgQ} = forever $ do
   -- TODO this will only process messages and notifications
-  (_srv, _qId, _cmd) <- atomically $ readTBQueue msgQ
-  -- case respOrErr of
-  --   Right (Cmd _ (MSG msgId ts msgBody)) ->
-  --     writeTBQueue messageQ (qId, Message {msgId, ts, msgBody})
-  --   Right (Cmd _ END) -> writeTBQueue endSubQ qId
-  --   -- TODO maybe have one more queue to write unexpected responses
-  --   _ -> return ()
-  return ()
+  t <- atomically $ readTBQueue msgQ
+  runExceptT (processSMPTransmission c t) >>= \case
+    Left e -> liftIO $ print e
+    Right _ -> return ()
+
+processSMPTransmission ::
+  (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m) =>
+  AgentClient ->
+  SMPServerTransmission ->
+  m ()
+processSMPTransmission _c (srv, qId, cmd) = do
+  case cmd of
+    SMP.MSG _msgId _ts msgBody -> do
+      -- TODO deduplicate with previously received
+      ReceiveQueue {decryptKey} <- withStore $ \st -> getReceiveQueue st srv qId
+      agentMsg <- liftEither . parseMessage =<< decryptMessage decryptKey msgBody
+      case agentMsg of
+        SMPConfirmation _senderKey -> return ()
+        SMPMessage {agentMessage} ->
+          case agentMessage of
+            HELLO _verifyKey _ -> return ()
+            REPLY _qInfo -> return ()
+            A_MSG _msgBody -> return ()
+      return ()
+    SMP.END -> return ()
+    _ -> liftIO $ do
+      putStrLn "unexpected response"
+      print cmd
+
+decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
+decryptMessage _decryptKey = return

@@ -92,13 +92,25 @@ deriving instance Show (ACommand p)
 
 type Message = ByteString
 
+data SMPMessage
+  = SMPConfirmation PublicKey
+  | SMPMessage
+      { agentMsgId :: Integer,
+        agentTimestamp :: UTCTime,
+        previousMsgHash :: ByteString,
+        agentMessage :: AMessage
+      }
+
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
   A_MSG :: MsgBody -> AMessage
 
-parseMessage :: Message -> Either ErrorType AMessage
-parseMessage msg = case B.words msg of
+parseMessage :: Message -> Either ErrorType SMPMessage
+parseMessage _ = Left INTERNAL
+
+parseAgentMessage :: ByteString -> Either ErrorType AMessage
+parseAgentMessage msg = case B.words msg of
   ["HELLO", key, ackMode] -> HELLO key <$> parseAckMode ackMode
   ["REPLY", qInfo] -> REPLY <$> parseSmpQueueInfo qInfo
   ["A_MSG", msgBody] -> Right $ A_MSG msgBody

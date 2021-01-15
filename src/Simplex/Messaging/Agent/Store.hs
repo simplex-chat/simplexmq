@@ -15,13 +15,13 @@ import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, QueueId)
+import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, RecipientId, SenderId)
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
-    rcvId :: QueueId,
+    rcvId :: RecipientId,
     rcvPrivateKey :: PrivateKey,
-    sndId :: Maybe QueueId,
+    sndId :: Maybe SenderId,
     sndKey :: Maybe PublicKey,
     decryptKey :: PrivateKey,
     verifyKey :: Maybe PublicKey,
@@ -32,7 +32,7 @@ data ReceiveQueue = ReceiveQueue
 
 data SendQueue = SendQueue
   { server :: SMPServer,
-    sndId :: QueueId,
+    sndId :: SenderId,
     sndPrivateKey :: PrivateKey,
     encryptKey :: PublicKey,
     signKey :: PrivateKey,
@@ -98,6 +98,7 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m ()
   createSndConn :: s -> ConnAlias -> SendQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
+  getReceiveQueue :: s -> SMPServer -> RecipientId -> m ReceiveQueue
   deleteConn :: s -> ConnAlias -> m ()
   addSndQueue :: s -> ConnAlias -> SendQueue -> m ()
   addRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m ()

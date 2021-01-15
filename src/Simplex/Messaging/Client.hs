@@ -52,7 +52,7 @@ data SMPClient = SMPClient
     msgQ :: TBQueue SMPServerTransmission
   }
 
-type SMPServerTransmission = (SMPServer, RecipientId, Cmd)
+type SMPServerTransmission = (SMPServer, RecipientId, Command 'Broker)
 
 data SMPClientConfig = SMPClientConfig
   { qSize :: Natural,
@@ -99,8 +99,8 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
       cs <- readTVar sentCommands
       case M.lookup corrId cs of
         Nothing -> case respOrErr of
-          Right resp -> writeTBQueue msgQ (smpServer, qId, resp)
-          Left _ -> return ()
+          Right (Cmd SBroker cmd) -> writeTBQueue msgQ (smpServer, qId, cmd)
+          _ -> return ()
         Just Request {queueId, responseVar} -> do
           modifyTVar sentCommands $ M.delete corrId
           putTMVar responseVar $
@@ -130,7 +130,7 @@ subscribeSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientEr
 subscribeSMPQueue c@SMPClient {smpServer, msgQ} rKey rId =
   sendSMPCommand c rKey rId (Cmd SRecipient SUB) >>= \case
     Cmd _ OK -> return ()
-    cmd@(Cmd _ MSG {}) ->
+    Cmd _ cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
@@ -144,7 +144,7 @@ ackSMPMessage :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError 
 ackSMPMessage c@SMPClient {smpServer, msgQ} rKey rId =
   sendSMPCommand c rKey rId (Cmd SRecipient ACK) >>= \case
     Cmd _ OK -> return ()
-    cmd@(Cmd _ MSG {}) ->
+    Cmd _ cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 

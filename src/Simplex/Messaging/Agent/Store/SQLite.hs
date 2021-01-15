@@ -34,6 +34,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Server.Transmission (RecipientId)
 import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E
@@ -379,6 +380,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         sndQ <- getSndQueue st sndQId
         return $ SomeConn SCSend (SendConnection connAlias sndQ)
       _ -> throwError SEBadConn
+
+  getReceiveQueue :: SQLiteStore -> SMPServer -> RecipientId -> m ReceiveQueue
+  getReceiveQueue st smpServer recipientId = throwError SEInternal
 
   -- TODO make transactional
   addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
