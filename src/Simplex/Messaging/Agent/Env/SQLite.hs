@@ -14,7 +14,6 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
-import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
 
 data AgentConfig = AgentConfig
@@ -34,7 +33,7 @@ data Env = Env
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission Client),
     sndQ :: TBQueue (ATransmission Agent),
-    msgQ :: TBQueue SMP.TransmissionOrError,
+    msgQ :: TBQueue SMPServerTransmission,
     smpClients :: TVar (Map SMPServer SMPClient)
   }
 
