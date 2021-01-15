@@ -12,4 +12,5 @@ data StoreError
   | SEBadConn
   | SEBadConnType ConnType
   | SEBadQueueStatus
+  | SEBadQueueDirection
   deriving (Eq, Show, Exception)
