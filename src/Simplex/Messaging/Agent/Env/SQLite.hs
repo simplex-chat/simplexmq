@@ -14,7 +14,6 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
-import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.STM
 
 data AgentConfig = AgentConfig
@@ -34,8 +33,7 @@ data Env = Env
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission Client),
     sndQ :: TBQueue (ATransmission Agent),
-    -- TODO rename, respQ is only for messages and notifications, not for responses
-    respQ :: TBQueue SMP.TransmissionOrError,
+    msgQ :: TBQueue SMPServerTransmission,
     smpClients :: TVar (Map SMPServer SMPClient)
   }
 
@@ -43,9 +41,9 @@ newAgentClient :: Natural -> STM AgentClient
 newAgentClient qSize = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  respQ <- newTBQueue qSize
+  msgQ <- newTBQueue qSize
   smpClients <- newTVar M.empty
-  return AgentClient {rcvQ, sndQ, respQ, smpClients}
+  return AgentClient {rcvQ, sndQ, msgQ, smpClients}
 
 newEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newEnv config = do

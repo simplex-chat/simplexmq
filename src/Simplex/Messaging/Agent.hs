@@ -48,7 +48,7 @@ connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-runClient c = race_ (processSmp c) (client c)
+runClient c = race_ (subscriber c) (client c)
 
 receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 receive h AgentClient {rcvQ, sndQ} =
@@ -95,7 +95,7 @@ processCommand ::
   AgentClient ->
   ATransmission 'Client ->
   m ()
-processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
+processCommand AgentClient {sndQ, msgQ, smpClients} (corrId, connAlias, cmd) =
   case cmd of
     NEW smpServer -> createNewConnection smpServer
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
@@ -164,7 +164,7 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
         newSMPClient :: m SMPClient
         newSMPClient = do
           cfg <- asks $ smpCfg . config
-          c <- liftIO (getSMPClient srv cfg) `E.catch` replyError (BROKER smpErrTCPConnection)
+          c <- liftIO (getSMPClient srv cfg msgQ) `E.catch` replyError (BROKER smpErrTCPConnection)
           atomically . modifyTVar smpClients $ M.insert srv c
           return c
 
@@ -177,8 +177,14 @@ processCommand AgentClient {sndQ, smpClients} (corrId, connAlias, cmd) =
     respond :: ACommand 'Agent -> m ()
     respond c = atomically $ writeTBQueue sndQ (corrId, connAlias, c)
 
-processSmp :: MonadUnliftIO m => AgentClient -> m ()
-processSmp AgentClient {respQ} = forever $ do
+subscriber :: MonadUnliftIO m => AgentClient -> m ()
+subscriber AgentClient {msgQ} = forever $ do
   -- TODO this will only process messages and notifications
-  (_, (_smpCorrId, _qId, _cmdOrErr)) <- atomically $ readTBQueue respQ
+  (_srv, _qId, _cmd) <- atomically $ readTBQueue msgQ
+  -- case respOrErr of
+  --   Right (Cmd _ (MSG msgId ts msgBody)) ->
+  --     writeTBQueue messageQ (qId, Message {msgId, ts, msgBody})
+  --   Right (Cmd _ END) -> writeTBQueue endSubQ qId
+  --   -- TODO maybe have one more queue to write unexpected responses
+  --   _ -> return ()
   return ()
