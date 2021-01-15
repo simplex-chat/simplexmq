@@ -47,6 +47,7 @@ storeTests = withStore do
     describe "createMsg" do
       describe "A_MSG in RCV direction" testCreateMsgRcv
       describe "A_MSG in SND direction" testCreateMsgSnd
+      describe "HELLO message" testCreateMsgHello
       describe "REPLY message" testCreateMsgReply
       describe "Bad queue direction - SND" testCreateMsgBadDirectionSnd
       describe "Bad queue direction - RCV" testCreateMsgBadDirectionRcv
@@ -465,6 +466,31 @@ testCreateMsgSnd = do
     let msgId = 1
     -- TODO getMsg to check message
     createMsg store "conn1" SND msgId msg
+      `returnsResult` ()
+
+testCreateMsgHello :: SpecWith SQLiteStore
+testCreateMsgHello = do
+  it "should create a HELLO message" $ \store -> do
+    let rcvQueue =
+          ReceiveQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              rcvId = "1234",
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    createRcvConn store "conn1" rcvQueue
+      `returnsResult` ()
+    let verificationKey = "abcd"
+    let am = AckMode On
+    let msg = HELLO verificationKey am
+    let msgId = 1
+    -- TODO getMsg to check message
+    createMsg store "conn1" RCV msgId msg
       `returnsResult` ()
 
 testCreateMsgReply :: SpecWith SQLiteStore

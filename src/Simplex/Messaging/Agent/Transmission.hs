@@ -99,7 +99,7 @@ data AMessage where
 
 parseMessage :: Message -> Either ErrorType AMessage
 parseMessage msg = case B.words msg of
-  -- ["HELLO", key, ackMode] -> Right $ HELLO key $ ackMode am
+  ["HELLO", key, ackMode] -> HELLO key <$> parseAckMode ackMode
   ["REPLY", qInfo] -> REPLY <$> parseSmpQueueInfo qInfo
   ["A_MSG", msgBody] -> Right $ A_MSG msgBody
   _ -> Left UNKNOWN
@@ -122,6 +122,20 @@ parseDec64 s = case decode $ B.pack s of
 
 parseSrvPart :: String -> Maybe String
 parseSrvPart s = if length s > 1 then Just $ tail s else Nothing
+
+parseAckMode :: ByteString -> Either ErrorType AckMode
+parseAckMode am = case B.split '=' am of
+  ["ACK", mode] -> AckMode <$> getMode mode
+  _ -> errParams
+
+getMode :: ByteString -> Either ErrorType Mode
+getMode mode = case mode of
+  "ON" -> Right On
+  "OFF" -> Right Off
+  _ -> errParams
+
+errParams :: Either ErrorType a
+errParams = Left $ SYNTAX errBadParameters
 
 serializeMsg :: AMessage -> Message
 serializeMsg = \case
@@ -215,7 +229,7 @@ smpUnexpectedResponse = 3
 parseCommand :: ByteString -> Either ErrorType ACmd
 parseCommand command = case B.words command of
   ["NEW", srv] -> newConn srv -- . Right $ AckMode On
-  -- ["NEW", srv, am] -> newConn srv $ ackMode am
+  -- ["NEW", srv, am] -> newConn srv $ parseAckMode am
   ["INV", qInfo] -> ACmd SAgent . INV <$> parseSmpQueueInfo qInfo
   "JOIN" : qInfo : ws -> joinConn qInfo ws
   ["CON"] -> Right . ACmd SAgent $ CON
@@ -240,20 +254,6 @@ parseCommand command = case B.words command of
         _ -> errParams
       where
         joinCmd q r = return $ ACmd SClient $ JOIN q r
-
-    -- ackMode :: ByteString -> Either ErrorType AckMode
-    -- ackMode am = case B.split '=' am of
-    --   ["ACK", mode] -> AckMode <$> getMode mode
-    --   _ -> errParams
-
-    -- getMode :: ByteString -> Either ErrorType Mode
-    -- getMode mode = case mode of
-    --   "ON" -> Right On
-    --   "OFF" -> Right Off
-    --   _ -> errParams
-
-    errParams :: Either ErrorType a
-    errParams = Left $ SYNTAX errBadParameters
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
