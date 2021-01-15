@@ -14,7 +14,6 @@ module Simplex.Messaging.Agent.Transmission where
 
 import Control.Monad
 import Control.Monad.IO.Class
--- import Numeric.Natural
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -91,13 +90,64 @@ data ACommand (p :: AParty) where
 
 deriving instance Show (ACommand p)
 
+type Message = ByteString
+
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
   A_MSG :: MsgBody -> AMessage
 
--- A_ACK :: AgentMsgId -> AckStatus -> AMessage
--- A_DEL :: AMessage
+parseMessage :: Message -> Either ErrorType AMessage
+parseMessage msg = case B.words msg of
+  ["HELLO", key, ackMode] -> HELLO key <$> parseAckMode ackMode
+  ["REPLY", qInfo] -> REPLY <$> parseSmpQueueInfo qInfo
+  ["A_MSG", msgBody] -> Right $ A_MSG msgBody
+  _ -> Left UNKNOWN
+
+parseSmpQueueInfo :: ByteString -> Either ErrorType SMPQueueInfo
+parseSmpQueueInfo qInfo = case splitOn "::" $ B.unpack qInfo of
+  ["smp", srv, qId, ek] -> liftM3 SMPQueueInfo (parseSmpServer $ B.pack srv) (parseDec64 qId) (parseDec64 ek)
+  _ -> Left $ SYNTAX errBadInvitation
+
+parseSmpServer :: ByteString -> Either ErrorType SMPServer
+parseSmpServer srv =
+  let (s, kf) = span (/= '#') $ B.unpack srv
+      (h, p) = span (/= ':') s
+   in SMPServer h (parseSrvPart p) <$> traverse parseDec64 (parseSrvPart kf)
+
+parseDec64 :: String -> Either ErrorType ByteString
+parseDec64 s = case decode $ B.pack s of
+  Left _ -> Left $ SYNTAX errBadEncoding
+  Right b -> Right b
+
+parseSrvPart :: String -> Maybe String
+parseSrvPart s = if length s > 1 then Just $ tail s else Nothing
+
+parseAckMode :: ByteString -> Either ErrorType AckMode
+parseAckMode am = case B.split '=' am of
+  ["ACK", mode] -> AckMode <$> getMode mode
+  _ -> errParams
+
+getMode :: ByteString -> Either ErrorType Mode
+getMode mode = case mode of
+  "ON" -> Right On
+  "OFF" -> Right Off
+  _ -> errParams
+
+errParams :: Either ErrorType a
+errParams = Left $ SYNTAX errBadParameters
+
+serializeMsg :: AMessage -> Message
+serializeMsg = \case
+  HELLO _verKey _ackMode -> "HELLO" -- TODO
+  REPLY qInfo -> "REPLY" <> serializeSmpQueueInfo qInfo
+  A_MSG msgBody -> "A_MSG" <> msgBody -- ? whitespaces missing
+
+serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
+serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> serializeServer srv <> "::" <> encode qId <> "::" <> encode ek
+
+serializeServer :: SMPServer -> ByteString
+serializeServer SMPServer {host, port, keyHash} = B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
 
 data SMPServer = SMPServer
   { host :: HostName,
@@ -179,8 +229,8 @@ smpUnexpectedResponse = 3
 parseCommand :: ByteString -> Either ErrorType ACmd
 parseCommand command = case B.words command of
   ["NEW", srv] -> newConn srv -- . Right $ AckMode On
-  -- ["NEW", srv, am] -> newConn srv $ ackMode am
-  ["INV", qInfo] -> ACmd SAgent . INV <$> smpQueueInfo qInfo
+  -- ["NEW", srv, am] -> newConn srv $ parseAckMode am
+  ["INV", qInfo] -> ACmd SAgent . INV <$> parseSmpQueueInfo qInfo
   "JOIN" : qInfo : ws -> joinConn qInfo ws
   ["CON"] -> Right . ACmd SAgent $ CON
   "NEW" : _ -> errParams
@@ -190,72 +240,33 @@ parseCommand command = case B.words command of
   _ -> Left UNKNOWN
   where
     newConn :: ByteString -> Either ErrorType ACmd
-    newConn srv = ACmd SClient . NEW <$> smpServer srv
+    newConn srv = ACmd SClient . NEW <$> parseSmpServer srv
 
     joinConn :: ByteString -> [ByteString] -> Either ErrorType ACmd
     joinConn qInfo ws = do
-      q <- smpQueueInfo qInfo
+      q <- parseSmpQueueInfo qInfo
       case ws of
         [] -> let SMPQueueInfo srv _ _ = q in joinCmd q $ ReplyOn srv
         ["NO_REPLY"] -> joinCmd q ReplyOff
         [srv] -> do
-          s <- smpServer srv
+          s <- parseSmpServer srv
           joinCmd q $ ReplyOn s
         _ -> errParams
       where
         joinCmd q r = return $ ACmd SClient $ JOIN q r
 
-    smpServer :: ByteString -> Either ErrorType SMPServer
-    smpServer srv =
-      let (s, kf) = span (/= '#') $ B.unpack srv
-          (h, p) = span (/= ':') s
-       in SMPServer h (srvPart p) <$> traverse dec64 (srvPart kf)
-
-    smpQueueInfo :: ByteString -> Either ErrorType SMPQueueInfo
-    smpQueueInfo qInfo = case splitOn "::" $ B.unpack qInfo of
-      ["smp", srv, qId, ek] -> liftM3 SMPQueueInfo (smpServer $ B.pack srv) (dec64 qId) (dec64 ek)
-      _ -> Left $ SYNTAX errBadInvitation
-
-    dec64 :: String -> Either ErrorType ByteString
-    dec64 s = case decode $ B.pack s of
-      Left _ -> Left $ SYNTAX errBadEncoding
-      Right b -> Right b
-
-    srvPart :: String -> Maybe String
-    srvPart s = if length s > 1 then Just $ tail s else Nothing
-
-    -- ackMode :: ByteString -> Either ErrorType AckMode
-    -- ackMode am = case B.split '=' am of
-    --   ["ACK", mode] -> AckMode <$> getMode mode
-    --   _ -> errParams
-
-    -- getMode :: ByteString -> Either ErrorType Mode
-    -- getMode mode = case mode of
-    --   "ON" -> Right On
-    --   "OFF" -> Right Off
-    --   _ -> errParams
-
-    errParams :: Either ErrorType a
-    errParams = Left $ SYNTAX errBadParameters
-
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW srv -> "NEW " <> server srv
-  INV qInfo -> "INV " <> smpQueueInfo qInfo
+  NEW srv -> "NEW " <> serializeServer srv
+  INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode ->
-    "JOIN " <> smpQueueInfo qInfo <> " "
+    "JOIN " <> serializeSmpQueueInfo qInfo <> " "
       <> case rMode of
         ReplyOff -> "NO_REPLY"
-        ReplyOn srv -> server srv
+        ReplyOn srv -> serializeServer srv
   CON -> "CON"
   ERR e -> "ERR " <> B.pack (show e)
   c -> B.pack $ show c
-  where
-    server :: SMPServer -> ByteString
-    server SMPServer {host, port, keyHash} = B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
-
-    smpQueueInfo :: SMPQueueInfo -> ByteString
-    smpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> server srv <> "::" <> encode qId <> "::" <> encode ek
 
 tPutRaw :: MonadIO m => Handle -> ARawTransmission -> m ()
 tPutRaw h (corrId, connAlias, command) = do
