@@ -19,7 +19,12 @@ testDB = "smp-agent.test.db"
 withStore :: SpecWith SQLiteStore -> Spec
 withStore =
   before (newSQLiteStore testDB)
-    . after (\store -> DB.close (conn store) >> removeFile testDB)
+    . after (\store -> DB.close (conn store) >> removeFile testDB >> checkNotExists testDB)
+  where
+    checkNotExists :: FilePath -> IO ()
+    checkNotExists fPath = do
+      x <- doesFileExist fPath
+      when x $ checkNotExists fPath
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r
