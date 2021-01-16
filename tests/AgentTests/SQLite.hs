@@ -20,7 +20,7 @@ testDB = "smp-agent.test.db"
 
 withStore :: SpecWith SQLiteStore -> Spec
 withStore = do
-  filename <- (randomIO :: IO Word32) >>= \r -> testDB <> show r
+  filename <- runIO ((randomIO :: IO Word32) >>= \r -> return $ testDB <> show r)
   before (newSQLiteStore filename)
     . after (\store -> DB.close (conn store) >> removeFile filename)
 
