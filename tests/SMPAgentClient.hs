@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module SMPAgentClient where
@@ -56,7 +57,7 @@ withSmpAgent =
 
 testSMPAgentClient :: MonadUnliftIO m => (Handle -> m a) -> m a
 testSMPAgentClient client = do
-  threadDelay 25000 -- TODO hack: thread delay for SMP agent to start
+  threadDelay 100_000 -- TODO hack: thread delay for SMP agent to start
   runTCPClient agentTestHost agentTestPort $ \h -> do
     line <- getLn h
     if line == "Welcome to SMP v0.2.0 agent"
