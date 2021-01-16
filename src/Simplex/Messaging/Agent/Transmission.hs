@@ -20,6 +20,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.List.Split (splitOn)
 import Data.Time.Clock (UTCTime)
+import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
 import Network.Socket
@@ -106,8 +107,17 @@ data AMessage where
   REPLY :: SMPQueueInfo -> AMessage
   A_MSG :: MsgBody -> AMessage
 
-parseMessage :: Message -> Either ErrorType SMPMessage
-parseMessage _ = Left INTERNAL
+parseSMPMessage :: ByteString -> Either ErrorType SMPMessage
+parseSMPMessage _ = Left INTERNAL
+
+serializeSMPMessage :: SMPMessage -> ByteString
+serializeSMPMessage = \case
+  SMPConfirmation sKey -> "KEY " <> sKey <> "\r\n\r\n"
+  SMPMessage {agentMsgId, agentTimestamp, previousMsgHash, agentMessage} ->
+    "\r\n" <> messageHeader agentMsgId agentTimestamp previousMsgHash <> "\r\n" <> serializeAgentMessage agentMessage
+  where
+    messageHeader agentMsgId agentTimestamp previousMsgHash =
+      B.unwords [B.pack $ show agentMsgId, B.pack (formatISO8601Millis agentTimestamp), encode previousMsgHash]
 
 parseAgentMessage :: ByteString -> Either ErrorType AMessage
 parseAgentMessage msg = case B.words msg of
@@ -149,11 +159,11 @@ getMode mode = case mode of
 errParams :: Either ErrorType a
 errParams = Left $ SYNTAX errBadParameters
 
-serializeMsg :: AMessage -> Message
-serializeMsg = \case
+serializeAgentMessage :: AMessage -> ByteString
+serializeAgentMessage = \case
   HELLO _verKey _ackMode -> "HELLO" -- TODO
-  REPLY qInfo -> "REPLY" <> serializeSmpQueueInfo qInfo
-  A_MSG msgBody -> "A_MSG" <> msgBody -- ? whitespaces missing
+  REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
+  A_MSG msgBody -> "A_MSG " <> msgBody -- ? whitespaces missing
 
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
 serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> serializeServer srv <> "::" <> encode qId <> "::" <> encode ek

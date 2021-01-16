@@ -17,6 +17,7 @@ import Crypto.Random
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Map as M
+import Data.Time.Clock
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
@@ -24,10 +25,11 @@ import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey)
+import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, SenderId)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
+import UnliftIO.Concurrent
 import UnliftIO.Exception (SomeException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.IO
@@ -96,7 +98,7 @@ processCommand ::
   AgentClient ->
   ATransmission 'Client ->
   m ()
-processCommand AgentClient {sndQ, msgQ, smpClients} (corrId, connAlias, cmd) =
+processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
   case cmd of
     NEW smpServer -> createNewConnection smpServer
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
@@ -104,11 +106,11 @@ processCommand AgentClient {sndQ, msgQ, smpClients} (corrId, connAlias, cmd) =
   where
     createNewConnection :: SMPServer -> m ()
     createNewConnection smpServer = do
-      c <- getSMPServerClient smpServer
+      smp <- getSMPServerClient c smpServer
       g <- asks idsDrg
       recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let rcvPrivateKey = recipientKey
-      (recipientId, senderId) <- liftSMP $ createSMPQueue c rcvPrivateKey recipientKey
+      (recipientId, senderId) <- liftSMP $ createSMPQueue smp rcvPrivateKey recipientKey
       encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let decryptKey = encryptKey
       withStore $ \st ->
@@ -127,8 +129,8 @@ processCommand AgentClient {sndQ, msgQ, smpClients} (corrId, connAlias, cmd) =
       respond . INV $ SMPQueueInfo smpServer senderId encryptKey
 
     joinConnection :: SMPQueueInfo -> ReplyMode -> m ()
-    joinConnection (SMPQueueInfo smpServer senderId encryptKey) _ = do
-      c <- getSMPServerClient smpServer
+    joinConnection (SMPQueueInfo smpServer senderId encryptKey) _replySrv = do
+      smp <- getSMPServerClient c smpServer
       g <- asks idsDrg
       senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       verifyKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
@@ -148,35 +150,56 @@ processCommand AgentClient {sndQ, msgQ, smpClients} (corrId, connAlias, cmd) =
               status = New,
               ackMode = AckMode On
             }
-      liftSMP $ sendSMPMessage c "" senderId msg
+      liftSMP $ sendSMPMessage smp "" senderId msg
       withStore $ \st -> updateQueueStatus st connAlias SND Confirmed
+      sendHello smp encryptKey sndPrivateKey senderId
+      withStore $ \st -> updateQueueStatus st connAlias SND Active
+      -- qInfo <- createReplyQueue replySrv
+      -- sendReplyQueue qInfo
       respond OK
-
-    replyError :: ErrorType -> SomeException -> m a
-    replyError err e = do
-      liftIO . putStrLn $ "Exception: " ++ show e -- TODO remove
-      throwError err
-
-    getSMPServerClient :: SMPServer -> m SMPClient
-    getSMPServerClient srv =
-      atomically (M.lookup srv <$> readTVar smpClients)
-        >>= maybe newSMPClient return
-      where
-        newSMPClient :: m SMPClient
-        newSMPClient = do
-          cfg <- asks $ smpCfg . config
-          c <- liftIO (getSMPClient srv cfg msgQ) `E.catch` replyError (BROKER smpErrTCPConnection)
-          atomically . modifyTVar smpClients $ M.insert srv c
-          return c
 
     mkConfirmation :: PublicKey -> PublicKey -> m SMP.MsgBody
     mkConfirmation _encKey senderKey = do
-      let msg = "KEY " <> senderKey <> "\r\n\r\n"
+      let msg = serializeSMPMessage $ SMPConfirmation senderKey
+      -- TODO encryption
+      return msg
+
+    sendHello :: SMPClient -> PrivateKey -> PrivateKey -> SenderId -> m ()
+    sendHello smp encKey spKey sId = do
+      msg <- mkHello "" $ AckMode On -- TODO verifyKey
+      _send 20 msg
+      where
+        mkHello :: PublicKey -> AckMode -> m ByteString
+        mkHello verifyKey ackMode =
+          mkAgentMessage encKey $ HELLO verifyKey ackMode
+
+        _send :: Int -> ByteString -> m ()
+        _send 0 _ = throwError INTERNAL -- TODO different error
+        _send retry msg = do
+          liftSMP (sendSMPMessage smp spKey sId msg)
+            `catchError` ( \case
+                             SMP SMP.AUTH -> do
+                               liftIO $ threadDelay 100000
+                               _send (retry - 1) msg
+                             _ -> throwError INTERNAL -- TODO wrap client error in some constructor
+                         )
+
+    mkAgentMessage :: PrivateKey -> AMessage -> m ByteString
+    mkAgentMessage _encKey agentMessage = do
+      agentTimestamp <- liftIO getCurrentTime
+      let msg =
+            serializeSMPMessage
+              SMPMessage
+                { agentMsgId = 0,
+                  agentTimestamp,
+                  previousMsgHash = "",
+                  agentMessage
+                }
       -- TODO encryption
       return msg
 
     respond :: ACommand 'Agent -> m ()
-    respond c = atomically $ writeTBQueue sndQ (corrId, connAlias, c)
+    respond resp = atomically $ writeTBQueue sndQ (corrId, connAlias, resp)
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
@@ -191,14 +214,25 @@ processSMPTransmission ::
   AgentClient ->
   SMPServerTransmission ->
   m ()
-processSMPTransmission _c (srv, qId, cmd) = do
+processSMPTransmission c (srv, rId, cmd) = do
   case cmd of
     SMP.MSG _msgId _ts msgBody -> do
       -- TODO deduplicate with previously received
-      ReceiveQueue {decryptKey} <- withStore $ \st -> getReceiveQueue st srv qId
-      agentMsg <- liftEither . parseMessage =<< decryptMessage decryptKey msgBody
+      (connAlias, ReceiveQueue {decryptKey, rcvPrivateKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
+      agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
       case agentMsg of
-        SMPConfirmation _senderKey -> return ()
+        SMPConfirmation senderKey -> do
+          -- TODO check if the queue needs to be secured
+          case status of
+            New -> do
+              withStore $ \st -> updateQueueStatus st connAlias RCV Confirmed
+              -- TODO update sender key in the store
+              smp <- getSMPServerClient c srv -- TODO extract from process command
+              liftSMP $ secureSMPQueue smp rcvPrivateKey rId senderKey
+              withStore $ \st -> updateQueueStatus st connAlias RCV Secured
+            s -> do
+              -- TODO maybe send notification to the user
+              liftIO . putStrLn $ "unexpected SMP confirmation, queue status " <> show s
         SMPMessage {agentMessage} ->
           case agentMessage of
             HELLO _verifyKey _ -> return ()
@@ -212,3 +246,25 @@ processSMPTransmission _c (srv, qId, cmd) = do
 
 decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return
+
+getSMPServerClient ::
+  forall m.
+  (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m) =>
+  AgentClient ->
+  SMPServer ->
+  m SMPClient
+getSMPServerClient AgentClient {smpClients, msgQ} srv =
+  atomically (M.lookup srv <$> readTVar smpClients)
+    >>= maybe newSMPClient return
+  where
+    newSMPClient :: m SMPClient
+    newSMPClient = do
+      cfg <- asks $ smpCfg . config
+      c <- liftIO (getSMPClient srv cfg msgQ) `E.catch` throwErr (BROKER smpErrTCPConnection)
+      atomically . modifyTVar smpClients $ M.insert srv c
+      return c
+
+    throwErr :: ErrorType -> SomeException -> m a
+    throwErr err e = do
+      liftIO . putStrLn $ "Exception: " ++ show e -- TODO remove
+      throwError err

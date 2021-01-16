@@ -381,7 +381,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         return $ SomeConn SCSend (SendConnection connAlias sndQ)
       _ -> throwError SEBadConn
 
-  getReceiveQueue :: SQLiteStore -> SMPServer -> RecipientId -> m ReceiveQueue
+  getReceiveQueue :: SQLiteStore -> SMPServer -> RecipientId -> m (ConnAlias, ReceiveQueue)
   getReceiveQueue _st _smpServer _recipientId = throwError SEInternal
 
   -- TODO make transactional
@@ -447,12 +447,12 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       RCV -> do
         (rcvQId, _) <- getConnection st connAlias
         case rcvQId of
-          Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeMsg msg
+          Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
           Nothing -> throwError SEBadQueueDirection
       SND -> do
         (_, sndQId) <- getConnection st connAlias
         case sndQId of
-          Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeMsg msg
+          Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
           Nothing -> throwError SEBadQueueDirection
 
   getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
