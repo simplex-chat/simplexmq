@@ -19,11 +19,19 @@ testDB :: String
 testDB = "smp-agent.test.db"
 
 withStore :: SpecWith SQLiteStore -> Spec
-withStore test = do
-  f <- (testDB <>) . show <$> runIO (randomIO :: IO Word32)
-  before (newSQLiteStore f) $ after (removeStore f) test
+withStore = before createStore . after removeStore
   where
-    removeStore f store = DB.close (conn store) >> removeFile f
+    createStore :: IO SQLiteStore
+    createStore = do
+      -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
+      -- IO operations on multiple similarly named files; error specific to some environments
+      r <- randomIO :: IO Word32
+      newSQLiteStore $ testDB <> show r
+
+    removeStore :: SQLiteStore -> IO ()
+    removeStore store = do
+      DB.close $ conn store
+      removeFile $ dbFilename store
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r
