@@ -6,5 +6,5 @@ import Test.Hspec
 
 main :: IO ()
 main = hspec do
-  -- describe "SMP server" serverTests
+  describe "SMP server" serverTests
   describe "SMP client agent" agentTests

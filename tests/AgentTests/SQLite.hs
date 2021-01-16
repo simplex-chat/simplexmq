@@ -19,13 +19,11 @@ testDB :: String
 testDB = "smp-agent.test.db"
 
 withStore :: SpecWith SQLiteStore -> Spec
-withStore = do
-  filename <- runIO ((randomIO :: IO Word32) >>= \r -> return $ testDB <> show r)
-  before (newSQLiteStore filename)
-    . after (\store -> DB.close (conn store) >> removeFile filename)
-
-  -- before ((randomIO :: IO Word32) >>= \r -> newSQLiteStore (testDB <> show r))
-  --   . after (\store -> DB.close (conn store) >> removeFile testDB)
+withStore test = do
+  f <- (testDB <>) . show <$> runIO (randomIO :: IO Word32)
+  before (newSQLiteStore f) $ after (removeStore f) test
+  where
+    removeStore f store = DB.close (conn store) >> removeFile f
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r
