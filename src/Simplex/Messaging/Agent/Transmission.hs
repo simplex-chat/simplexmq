@@ -70,12 +70,14 @@ data ACmd where
 deriving instance Show ACmd
 
 data ACommand (p :: AParty) where
-  NEW :: SMPServer -> ACommand Client
+  NEW :: SMPServer -> ACommand Client -- response INV
   INV :: SMPQueueInfo -> ACommand Agent
-  JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client
-  CON :: ACommand Agent
-  CONF :: OtherPartyId -> ACommand Agent
-  LET :: OtherPartyId -> ACommand Client
+  JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client -- response OK
+  CON :: ACommand Agent -- notification that connection is established
+  -- TODO currently it automatically allows whoever sends the confirmation
+  READY :: ACommand Agent
+  -- CONF :: OtherPartyId -> ACommand Agent
+  -- LET :: OtherPartyId -> ACommand Client
   SUB :: SubMode -> ACommand Client
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client

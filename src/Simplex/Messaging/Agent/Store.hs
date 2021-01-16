@@ -104,6 +104,8 @@ class Monad m => MonadAgentStore s m where
   addRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m ()
   removeSndAuth :: s -> ConnAlias -> m ()
   updateQueueStatus :: s -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
+  updateReceiveQueueStatus :: s -> RecipientId -> QueueStatus -> m ()
+  updateSendQueueStatus :: s -> SenderId -> QueueStatus -> m ()
   createMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
   getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
   getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery

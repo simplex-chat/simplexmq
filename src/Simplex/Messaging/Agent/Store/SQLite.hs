@@ -34,7 +34,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Server.Transmission (RecipientId)
+import Simplex.Messaging.Server.Transmission (RecipientId, SenderId)
 import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E
@@ -440,6 +440,12 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           Just qId -> updateSndQueueStatus st qId status
           Nothing -> throwError SEBadQueueDirection
 
+  updateReceiveQueueStatus :: SQLiteStore -> RecipientId -> QueueStatus -> m ()
+  updateReceiveQueueStatus _st _rId _status = throwError SENotImplemented
+
+  updateSendQueueStatus :: SQLiteStore -> SenderId -> QueueStatus -> m ()
+  updateSendQueueStatus _st _sId _status = throwError SENotImplemented
+
   -- TODO decrease duplication of queue direction checks?
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
   createMsg st connAlias qDirection agentMsgId msg = do
@@ -456,14 +462,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           Nothing -> throwError SEBadQueueDirection
 
   getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
-  getLastMsg _st _connAlias _dir = throwError SEInternal
+  getLastMsg _st _connAlias _dir = throwError SENotImplemented
 
   getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
-  getMsg _st _connAlias _dir _msgId = throwError SEInternal
+  getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
 
   -- TODO missing status parameter?
   updateMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  updateMsgStatus _st _connAlias _dir _msgId = throwError SEInternal
+  updateMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
 
   deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  deleteMsg _st _connAlias _dir _msgId = throwError SEInternal
+  deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented
