@@ -241,6 +241,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Right _ -> return ()
 
 processSMPTransmission ::
+  forall m.
   (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m) =>
   AgentClient ->
   SMPServerTransmission ->
@@ -249,19 +250,14 @@ processSMPTransmission c (srv, rId, cmd) = do
   case cmd of
     SMP.MSG _msgId _ts msgBody -> do
       -- TODO deduplicate with previously received
-      (connAlias, ReceiveQueue {decryptKey, rcvPrivateKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
+      (connAlias, rcvQueue@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
       agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
       case agentMsg of
         SMPConfirmation senderKey -> do
-          -- TODO check if the queue needs to be secured
           case status of
-            New -> do
-              withStore $ \st -> updateQueueStatus st connAlias RCV Confirmed
-              -- TODO update sender key in the store
-              smp <- getSMPServerClient c srv
-              liftSMP $ secureSMPQueue smp rcvPrivateKey rId senderKey
-              withStore $ \st -> updateQueueStatus st connAlias RCV Secured
-            s -> do
+            New ->
+              secureQueue rcvQueue connAlias senderKey
+            s ->
               -- TODO maybe send notification to the user
               liftIO . putStrLn $ "unexpected SMP confirmation, queue status " <> show s
         SMPMessage {agentMessage} ->
@@ -274,6 +270,14 @@ processSMPTransmission c (srv, rId, cmd) = do
     _ -> liftIO $ do
       putStrLn "unexpected response"
       print cmd
+  where
+    secureQueue :: ReceiveQueue -> ConnAlias -> SMP.SenderKey -> m ()
+    secureQueue ReceiveQueue {rcvPrivateKey} connAlias senderKey = do
+      withStore $ \st -> updateQueueStatus st connAlias RCV Confirmed
+      -- TODO update sender key in the store
+      smp <- getSMPServerClient c srv
+      liftSMP $ secureSMPQueue smp rcvPrivateKey rId senderKey
+      withStore $ \st -> updateQueueStatus st connAlias RCV Secured
 
 decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return
