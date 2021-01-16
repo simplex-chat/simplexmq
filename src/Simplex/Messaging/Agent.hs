@@ -25,7 +25,7 @@ import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, SenderId)
+import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
@@ -106,43 +106,27 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
   where
     createNewConnection :: SMPServer -> m ()
     createNewConnection smpServer = do
-      qInfo <- createRcvSMPQueue smpServer
+      -- TODO create connection alias if not passed
+      -- make connAlias Maybe?
+      qInfo <- newReceiveConnection smpServer
       respond $ INV qInfo
 
     joinConnection :: SMPQueueInfo -> ReplyMode -> m ()
-    joinConnection (SMPQueueInfo smpServer senderId encryptKey) replyMode = do
+    joinConnection qInfo replyMode = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
-      smp <- getSMPServerClient c smpServer
-      g <- asks idsDrg
-      senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
-      verifyKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
-      msg <- mkConfirmation encryptKey senderKey
-      let sndPrivateKey = senderKey
-          signKey = verifyKey
-      withStore $ \st ->
-        createSndConn st connAlias $
-          SendQueue
-            { server = smpServer,
-              sndId = senderId,
-              sndPrivateKey,
-              encryptKey,
-              signKey,
-              -- verifyKey,
-              status = New,
-              ackMode = AckMode On
-            }
-      liftSMP $ sendSMPMessage smp "" senderId msg
-      withStore $ \st -> updateQueueStatus st connAlias SND Confirmed
-      sendHello smp encryptKey sndPrivateKey senderId
-      withStore $ \st -> updateQueueStatus st connAlias SND Active
-      case replyMode of
-        ReplyOff -> return ()
-        ReplyOn srv -> do
-          smp' <- getSMPServerClient c srv
-          qInfo <- createRcvSMPQueue srv
-          sendReplySMPQueue smp' encryptKey sndPrivateKey senderId qInfo
+      (sndQueue, senderKey) <- newSendConnection qInfo
+      sendConfirmation sndQueue senderKey
+      sendHello sndQueue
+      sendReplyQueue sndQueue replyMode
       respond OK
+
+    sendReplyQueue :: SendQueue -> ReplyMode -> m ()
+    sendReplyQueue sndQueue = \case
+      ReplyOff -> return ()
+      ReplyOn srv -> do
+        qInfo <- newReceiveConnection srv
+        sendAgentMessage sndQueue $ REPLY qInfo
 
     mkConfirmation :: PublicKey -> PublicKey -> m SMP.MsgBody
     mkConfirmation _encKey senderKey = do
@@ -150,28 +134,30 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
       -- TODO encryption
       return msg
 
-    sendHello :: SMPClient -> PrivateKey -> PrivateKey -> SenderId -> m ()
-    sendHello smp encKey spKey sId = do
+    sendHello :: SendQueue -> m ()
+    sendHello SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
+      smp <- getSMPServerClient c server
       msg <- mkHello "" $ AckMode On -- TODO verifyKey
-      _send 20 msg
+      _send smp 20 msg
+      withStore $ \st -> updateQueueStatus st connAlias SND Active
       where
         mkHello :: PublicKey -> AckMode -> m ByteString
         mkHello verifyKey ackMode =
-          mkAgentMessage encKey $ HELLO verifyKey ackMode
+          mkAgentMessage encryptKey $ HELLO verifyKey ackMode
 
-        _send :: Int -> ByteString -> m ()
-        _send 0 _ = throwError INTERNAL -- TODO different error
-        _send retry msg = do
-          liftSMP (sendSMPMessage smp spKey sId msg)
+        _send :: SMPClient -> Int -> ByteString -> m ()
+        _send _ 0 _ = throwError INTERNAL -- TODO different error
+        _send smp retry msg = do
+          liftSMP (sendSMPMessage smp sndPrivateKey sndId msg)
             `catchError` ( \case
                              SMP SMP.AUTH -> do
                                liftIO $ threadDelay 100000
-                               _send (retry - 1) msg
+                               _send smp (retry - 1) msg
                              _ -> throwError INTERNAL -- TODO wrap client error in some constructor
                          )
 
-    createRcvSMPQueue :: SMPServer -> m SMPQueueInfo
-    createRcvSMPQueue smpServer = do
+    newReceiveConnection :: SMPServer -> m SMPQueueInfo
+    newReceiveConnection smpServer = do
       smp <- getSMPServerClient c smpServer
       g <- asks idsDrg
       recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
@@ -194,10 +180,40 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
             }
       return $ SMPQueueInfo smpServer senderId encryptKey
 
-    sendReplySMPQueue :: SMPClient -> PrivateKey -> PrivateKey -> SenderId -> SMPQueueInfo -> m ()
-    sendReplySMPQueue smp encKey spKey sId qInfo = do
-      msg <- mkAgentMessage encKey $ REPLY qInfo
-      liftSMP $ sendSMPMessage smp spKey sId msg
+    newSendConnection :: SMPQueueInfo -> m (SendQueue, SMP.SenderKey)
+    newSendConnection (SMPQueueInfo smpServer senderId encryptKey) = do
+      g <- asks idsDrg
+      senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
+      verifyKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
+      let sndPrivateKey = senderKey
+          signKey = verifyKey
+          sndQueue =
+            SendQueue
+              { server = smpServer,
+                sndId = senderId,
+                sndPrivateKey,
+                encryptKey,
+                signKey,
+                -- verifyKey,
+                status = New,
+                ackMode = AckMode On
+              }
+      withStore $ \st -> createSndConn st connAlias sndQueue
+      return (sndQueue, senderKey)
+
+    sendConfirmation :: SendQueue -> SMP.SenderKey -> m ()
+    sendConfirmation SendQueue {server, sndId, encryptKey} senderKey = do
+      -- TODO send initial confirmation with signature - change in SMP server
+      smp <- getSMPServerClient c server
+      msg <- mkConfirmation encryptKey senderKey
+      liftSMP $ sendSMPMessage smp "" sndId msg
+      withStore $ \st -> updateQueueStatus st connAlias SND Confirmed
+
+    sendAgentMessage :: SendQueue -> AMessage -> m ()
+    sendAgentMessage SendQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg = do
+      smp <- getSMPServerClient c server
+      msg <- mkAgentMessage encryptKey agentMsg
+      liftSMP $ sendSMPMessage smp sndPrivateKey sndId msg
 
     mkAgentMessage :: PrivateKey -> AMessage -> m ByteString
     mkAgentMessage _encKey agentMessage = do
