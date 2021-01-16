@@ -5,11 +5,13 @@
 module AgentTests.SQLite where
 
 import Control.Monad.Except
+import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
+import System.Random
 import Test.Hspec
 import UnliftIO.Directory
 
@@ -17,9 +19,19 @@ testDB :: String
 testDB = "smp-agent.test.db"
 
 withStore :: SpecWith SQLiteStore -> Spec
-withStore =
-  before (newSQLiteStore testDB)
-    . after (\store -> DB.close (conn store) >> removeFile testDB)
+withStore = before createStore . after removeStore
+  where
+    createStore :: IO SQLiteStore
+    createStore = do
+      -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
+      -- IO operations on multiple similarly named files; error specific to some environments
+      r <- randomIO :: IO Word32
+      newSQLiteStore $ testDB <> show r
+
+    removeStore :: SQLiteStore -> IO ()
+    removeStore store = do
+      DB.close $ conn store
+      removeFile $ dbFilename store
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r

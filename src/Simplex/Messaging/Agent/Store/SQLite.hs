@@ -49,7 +49,8 @@ addRcvQueueQuery =
   |]
 
 data SQLiteStore = SQLiteStore
-  { conn :: DB.Connection,
+  { dbFilename :: String,
+    conn :: DB.Connection,
     serversLock :: TMVar (),
     rcvQueuesLock :: TMVar (),
     sndQueuesLock :: TMVar (),
@@ -58,8 +59,8 @@ data SQLiteStore = SQLiteStore
   }
 
 newSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
-newSQLiteStore dbFile = do
-  conn <- liftIO $ DB.open dbFile
+newSQLiteStore dbFilename = do
+  conn <- liftIO $ DB.open dbFilename
   liftIO $ createSchema conn
   serversLock <- newTMVarIO ()
   rcvQueuesLock <- newTMVarIO ()
@@ -68,7 +69,8 @@ newSQLiteStore dbFile = do
   messagesLock <- newTMVarIO ()
   return
     SQLiteStore
-      { conn,
+      { dbFilename,
+        conn,
         serversLock,
         rcvQueuesLock,
         sndQueuesLock,
