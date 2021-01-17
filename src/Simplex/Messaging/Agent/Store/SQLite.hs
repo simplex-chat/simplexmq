@@ -439,20 +439,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
   removeSndAuth _st _connAlias = throwError SENotImplemented
 
-  -- updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
-  -- updateQueueStatus st connAlias qDirection status = do
-  --   case qDirection of
-  --     RCV -> do
-  --       (rcvQId, _) <- getConnection st connAlias
-  --       case rcvQId of
-  --         Just qId -> updateReceiveQueueStatus st qId status
-  --         Nothing -> throwError SEBadQueueDirection
-  --     SND -> do
-  --       (_, sndQId) <- getConnection st connAlias
-  --       case sndQId of
-  --         Just qId -> updateSendQueueStatus st qId status
-  --         Nothing -> throwError SEBadQueueDirection
-
   -- TODO throw error if queue doesn't exist
   updateRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
   updateRcvQueueStatus st ReceiveQueue {rcvId, server = SMPServer {host, port}} status =
