@@ -273,7 +273,10 @@ tGet fromParty h = do
         ':' : body -> return . Right $ B.pack body
         str -> case readMaybe str :: Maybe Int of
           Just size -> do
+            liftIO $ print size
             body <- getBytes h size
+            liftIO $ print $ B.unpack body
             s <- getLn h
+            liftIO $ print $ B.unpack s
             return $ if B.null s then Right body else Left SIZE
           Nothing -> return . Left $ SYNTAX errMessageBody

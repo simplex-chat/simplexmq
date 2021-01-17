@@ -181,7 +181,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
   case cmd of
     SMP.MSG _msgId _ts msgBody -> do
       -- TODO deduplicate with previously received
-      (connAlias, rcvQueue@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
+      (connAlias, rcvQueue@ReceiveQueue {rcvId, decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
       agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
       case agentMsg of
         SMPConfirmation senderKey -> do
@@ -197,7 +197,9 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
               liftIO . putStrLn $ "unexpected SMP confirmation, queue status " <> show s
         SMPMessage {agentMessage} ->
           case agentMessage of
-            HELLO _verifyKey _ -> return ()
+            HELLO _verifyKey _ -> do
+              -- TODO send status update to the user?
+              withStore $ \st -> updateReceiveQueueStatus st rcvId Active
             REPLY qInfo -> do
               (sndQueue, senderKey) <- newSendQueue qInfo
               withStore $ \st -> addSndQueue st connAlias sndQueue
