@@ -175,10 +175,31 @@ getRcvQueue st@SQLiteStore {conn} queueRowId = do
         conn
         [s|
         SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
-        FROM receive_queues
-        WHERE receive_queue_id = :rowId;
-      |]
+          FROM receive_queues
+          WHERE receive_queue_id = :rowId;
+        |]
         [":rowId" := queueRowId]
+  case r of
+    [Only serverId :. rcvQueue] ->
+      (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$> getServer st serverId
+    _ -> throwError SENotFound
+
+getRcvQueueByRecipientId :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> m ReceiveQueue
+getRcvQueueByRecipientId st@SQLiteStore {conn} rcvId host port = do
+  r <-
+    liftIO $
+      DB.queryNamed
+        conn
+        [s|
+          SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
+          FROM receive_queues
+          WHERE rcv_id = :rcvId AND server_id IN (
+            SELECT server_id
+            FROM servers
+            WHERE host = :host AND port = :port
+          );
+        |]
+        [":rcvId" := rcvId, ":host" := host, ":port" := port]
   case r of
     [Only serverId :. rcvQueue] ->
       (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$> getServer st serverId
@@ -283,6 +304,27 @@ getConnection SQLiteStore {conn} connAlias = do
         conn
         "SELECT receive_queue_id, send_queue_id FROM connections WHERE conn_alias = :conn_alias"
         [":conn_alias" := connAlias]
+  case r of
+    [queueIds] -> return queueIds
+    _ -> throwError SEInternal
+
+instance FromRow ConnAlias where
+  fromRow = field
+
+getConnAliasByRcvQueue :: (MonadError StoreError m, MonadUnliftIO m) => SQLiteStore -> RecipientId -> m ConnAlias
+getConnAliasByRcvQueue SQLiteStore {conn} rcvId = do
+  r <-
+    liftIO $
+      DB.queryNamed
+        conn
+        [s|
+          SELECT c.conn_alias
+          FROM connections c
+          JOIN receive_queues rq
+          ON c.receive_queue_id = rq.receive_queue_id
+          WHERE rq.rcv_id = :rcvId;
+        |]
+        [":rcvId" := rcvId]
   case r of
     [queueIds] -> return queueIds
     _ -> throwError SEInternal
@@ -395,7 +437,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       _ -> throwError SEBadConn
 
   getReceiveQueue :: SQLiteStore -> SMPServer -> RecipientId -> m (ConnAlias, ReceiveQueue)
-  getReceiveQueue _st _smpServer _recipientId = throwError SEInternal
+  getReceiveQueue st SMPServer {host, port} recipientId = do
+    rcvQueue <- getRcvQueueByRecipientId st recipientId host port
+    connAlias <- getConnAliasByRcvQueue st recipientId
+    return (connAlias, rcvQueue)
 
   -- TODO make transactional
   addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
