@@ -22,7 +22,6 @@ dependencies:
   - iso8601-time == 0.1.*
   - mtl
   - network == 3.1.*
-  - split == 0.2.*
   - sqlite-simple == 0.4.*
   - stm
   - template-haskell == 2.15.*

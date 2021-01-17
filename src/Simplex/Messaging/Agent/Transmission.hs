@@ -13,7 +13,6 @@
 module Simplex.Messaging.Agent.Transmission where
 
 import Control.Applicative ((<|>))
-import Control.Monad
 import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -24,7 +23,6 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import Data.Functor
 import Data.Kind
-import Data.List.Split (splitOn)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
@@ -120,26 +118,26 @@ data AMessage where
 parseSMPMessage :: ByteString -> Either ErrorType SMPMessage
 parseSMPMessage =
   first (const $ SYNTAX errBadMessage)
-    . A.parseOnly (smpMessageParser <* A.endOfLine <* A.endOfInput)
+    . A.parseOnly (smpMessageP <* A.endOfLine <* A.endOfInput)
   where
-    smpMessageParser :: Parser SMPMessage
-    smpMessageParser =
-      smpConfirmation <* A.endOfLine
-        <|> A.endOfLine *> smpMessage
+    smpMessageP :: Parser SMPMessage
+    smpMessageP =
+      smpConfirmationP <* A.endOfLine
+        <|> A.endOfLine *> smpClientMessageP
 
-    smpConfirmation :: Parser SMPMessage
-    smpConfirmation = SMPConfirmation <$> (A.string "KEY " *> base64 <* A.endOfLine)
+    smpConfirmationP :: Parser SMPMessage
+    smpConfirmationP = SMPConfirmation <$> ("KEY " *> base64P <* A.endOfLine)
 
-    smpMessage :: Parser SMPMessage
-    smpMessage =
+    smpClientMessageP :: Parser SMPMessage
+    smpClientMessageP =
       SMPMessage
         <$> A.decimal
-        <*> (A.char ' ' *> tsIso8601)
-        <*> (A.char ' ' *> base64)
-        <*> (A.endOfLine *> agentMessageParser)
+        <*> (A.space *> tsIso8601P)
+        <*> (A.space *> base64P)
+        <*> (A.endOfLine *> agentMessageP)
 
-    tsIso8601 :: Parser UTCTime
-    tsIso8601 =
+    tsIso8601P :: Parser UTCTime
+    tsIso8601P =
       A.takeTill (== ' ')
         >>= parseMaybe "invalid timestamp"
           . parseISO8601
@@ -162,57 +160,47 @@ serializeSMPMessage = \case
       B.unwords [B.pack $ show msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
     smpMessage smpHeader aHeader aBody = B.intercalate "\n" [smpHeader, aHeader, aBody, ""]
 
-agentMessageParser :: Parser AMessage
-agentMessageParser = hello <|> reply <|> a_msg
+agentMessageP :: Parser AMessage
+agentMessageP = hello <|> reply <|> a_msg
   where
-    hello = A.string "HELLO " *> (HELLO <$> base64 <*> ackMode)
-    reply = A.string "REPLY " *> (REPLY <$> smpQueueInfo)
+    hello = "HELLO " *> (HELLO <$> base64P <*> ackMode)
+    reply = "REPLY " *> (REPLY <$> smpQueueInfoP)
     a_msg = do
-      size <- A.string "MSG " *> A.decimal :: Parser Int
+      size <- "MSG " *> A.decimal :: Parser Int
       A_MSG <$> (A.endOfLine *> A.take size <* A.endOfLine)
+    ackMode = " NO_ACK" $> AckMode Off <|> pure (AckMode On)
 
-smpQueueInfo :: Parser SMPQueueInfo
-smpQueueInfo = A.string "smp::" *> (SMPQueueInfo <$> (smpServer <* A.string "::") <*> (base64 <* A.string "::") <*> base64)
+smpQueueInfoP :: Parser SMPQueueInfo
+smpQueueInfoP =
+  SMPQueueInfo <$> ("smp::" *> smpServerP <* "::") <*> (base64P <* "::") <*> base64P
 
-smpServer :: Parser SMPServer
-smpServer = SMPServer <$> server <*> port <*> msgHash
+smpServerP :: Parser SMPServer
+smpServerP = SMPServer <$> server <*> port <*> msgHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
     port = A.char ':' *> (Just . show <$> (A.decimal :: Parser Int)) <|> pure Nothing
-    msgHash = A.char '#' *> (Just <$> base64) <|> pure Nothing
+    msgHash = A.char '#' *> (Just <$> base64P) <|> pure Nothing
 
-ackMode :: Parser AckMode
-ackMode = A.string " NO_ACK" $> AckMode Off <|> pure (AckMode On)
-
-base64 :: Parser ByteString
-base64 = do
+base64P :: Parser ByteString
+base64P = do
   str <- A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
   pad <- A.takeWhile (== '=')
   either fail pure $ decode (str <> pad)
 
 parseAgentMessage :: ByteString -> Either ErrorType AMessage
-parseAgentMessage msg =
-  first (const UNKNOWN) $
-    A.parseOnly (agentMessageParser <* A.endOfInput) msg
+parseAgentMessage = parse agentMessageP UNKNOWN
 
 parseSmpQueueInfo :: ByteString -> Either ErrorType SMPQueueInfo
-parseSmpQueueInfo qInfo = case splitOn "::" $ B.unpack qInfo of
-  ["smp", srv, qId, ek] -> liftM3 SMPQueueInfo (parseSmpServer $ B.pack srv) (parseDec64 qId) (parseDec64 ek)
-  _ -> Left $ SYNTAX errBadInvitation
+parseSmpQueueInfo = parse smpQueueInfoP $ SYNTAX errBadInvitation
 
 parseSmpServer :: ByteString -> Either ErrorType SMPServer
-parseSmpServer srv =
-  let (s, kf) = span (/= '#') $ B.unpack srv
-      (h, p) = span (/= ':') s
-   in SMPServer h (parseSrvPart p) <$> traverse parseDec64 (parseSrvPart kf)
+parseSmpServer = parse smpServerP $ SYNTAX errBadServer
+
+parse :: Parser a -> e -> (ByteString -> Either e a)
+parse parser err = first (const err) . A.parseOnly (parser <* A.endOfInput)
 
 parseDec64 :: String -> Either ErrorType ByteString
-parseDec64 s = case decode $ B.pack s of
-  Left _ -> Left $ SYNTAX errBadEncoding
-  Right b -> Right b
-
-parseSrvPart :: String -> Maybe String
-parseSrvPart s = if length s > 1 then Just $ tail s else Nothing
+parseDec64 = parse base64P (SYNTAX errBadEncoding) . B.pack
 
 parseAckMode :: ByteString -> Either ErrorType AckMode
 parseAckMode am = case B.split '=' am of
@@ -310,6 +298,9 @@ errNoConnAlias = 13
 
 errBadMessage :: Int
 errBadMessage = 14
+
+errBadServer :: Int
+errBadServer = 15
 
 smpErrTCPConnection :: Natural
 smpErrTCPConnection = 1

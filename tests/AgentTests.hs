@@ -37,7 +37,7 @@ syntaxTests = do
       -- TODO: add tests with defined connection alias
       it "no parameters" $ ("221", "", "NEW") >#> ("221", "", "ERR SYNTAX 2")
       it "many parameters" $ ("222", "", "NEW localhost:5000 hi") >#> ("222", "", "ERR SYNTAX 2")
-      it "invalid server keyHash" $ ("223", "", "NEW localhost:5000#1") >#> ("223", "", "ERR SYNTAX 10")
+      it "invalid server keyHash" $ ("223", "", "NEW localhost:5000#1") >#> ("223", "", "ERR SYNTAX 15")
 
   describe "JOIN" do
     describe "valid" do
