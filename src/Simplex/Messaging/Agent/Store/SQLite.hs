@@ -30,6 +30,7 @@ import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok
 import Database.SQLite.Simple.ToField
 import Multiline (s)
+import Network.Socket
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Store.Types
@@ -39,7 +40,6 @@ import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Network.Socket
 
 addRcvQueueQuery :: Query
 addRcvQueueQuery =
@@ -326,7 +326,7 @@ getConnAliasByRcvQueue SQLiteStore {conn} rcvId = do
         |]
         [":rcvId" := rcvId]
   case r of
-    [queueIds] -> return queueIds
+    [connAlias] -> return connAlias
     _ -> throwError SEInternal
 
 deleteRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m ()
