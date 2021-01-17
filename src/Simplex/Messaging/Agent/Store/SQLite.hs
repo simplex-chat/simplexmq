@@ -39,6 +39,7 @@ import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Network.Socket
 
 addRcvQueueQuery :: Query
 addRcvQueueQuery =
@@ -310,29 +311,39 @@ deleteConnection store connAlias = do
     "DELETE FROM connections WHERE conn_alias = ?"
     (Only connAlias)
 
-updateRcvQueueStatus :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> QueueStatus -> m ()
-updateRcvQueueStatus store rcvQueueId status =
+updateReceiveQueueStatus :: MonadUnliftIO m => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
+updateReceiveQueueStatus store rcvQueueId host port status =
   executeWithLock
     store
     rcvQueuesLock
     [s|
       UPDATE receive_queues
       SET status = ?
-      WHERE receive_queue_id = ?;
+      WHERE rcv_id = ?
+      AND server_id IN (
+        SELECT server_id
+        FROM servers
+        WHERE host = ? AND port = ?
+      );
     |]
-    (Only status :. Only rcvQueueId)
+    (Only status :. Only rcvQueueId :. Only host :. Only port)
 
-updateSndQueueStatus :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> QueueStatus -> m ()
-updateSndQueueStatus store sndQueueId status =
+updateSendQueueStatus :: MonadUnliftIO m => SQLiteStore -> SenderId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
+updateSendQueueStatus store sndQueueId host port status =
   executeWithLock
     store
     sndQueuesLock
     [s|
       UPDATE send_queues
       SET status = ?
-      WHERE send_queue_id = ?;
+      WHERE snd_id = ?
+      AND server_id IN (
+        SELECT server_id
+        FROM servers
+        WHERE host = ? AND port = ?
+      );
     |]
-    (Only status :. Only sndQueueId)
+    (Only status :. Only sndQueueId :. Only host :. Only port)
 
 instance ToField QueueDirection where toField = toField . show
 
@@ -426,27 +437,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     when (isNothing rcvQId && isNothing sndQId) $ throwError SEBadConn
 
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
-  removeSndAuth _st _connAlias = throwError SEInternal
+  removeSndAuth _st _connAlias = throwError SENotImplemented
 
-  updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
-  updateQueueStatus st connAlias qDirection status = do
-    case qDirection of
-      RCV -> do
-        (rcvQId, _) <- getConnection st connAlias
-        case rcvQId of
-          Just qId -> updateRcvQueueStatus st qId status
-          Nothing -> throwError SEBadQueueDirection
-      SND -> do
-        (_, sndQId) <- getConnection st connAlias
-        case sndQId of
-          Just qId -> updateSndQueueStatus st qId status
-          Nothing -> throwError SEBadQueueDirection
+  -- TODO throw error if queue doesn't exist
+  updateRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
+  updateRcvQueueStatus st ReceiveQueue {rcvId, server = SMPServer {host, port}} status =
+    updateReceiveQueueStatus st rcvId host port status
 
-  updateReceiveQueueStatus :: SQLiteStore -> RecipientId -> QueueStatus -> m ()
-  updateReceiveQueueStatus _st _rId _status = throwError SENotImplemented
-
-  updateSendQueueStatus :: SQLiteStore -> SenderId -> QueueStatus -> m ()
-  updateSendQueueStatus _st _sId _status = throwError SENotImplemented
+  -- TODO throw error if queue doesn't exist
+  updateSndQueueStatus :: SQLiteStore -> SendQueue -> QueueStatus -> m ()
+  updateSndQueueStatus st SendQueue {sndId, server = SMPServer {host, port}} status =
+    updateSendQueueStatus st sndId host port status
 
   -- TODO decrease duplication of queue direction checks?
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
