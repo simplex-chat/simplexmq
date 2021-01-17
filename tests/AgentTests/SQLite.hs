@@ -63,6 +63,7 @@ storeTests = withStore do
       describe "REPLY message" testCreateMsgReply
       describe "Bad queue direction - SND" testCreateMsgBadDirectionSnd
       describe "Bad queue direction - RCV" testCreateMsgBadDirectionRcv
+    describe "getReceiveQueue" testGetReceiveQueue
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -560,3 +561,26 @@ testCreateMsgBadDirectionRcv = do
     let msgId = 1
     createMsg store "conn1" RCV msgId msg
       `throwsError` SEBadQueueDirection
+
+testGetReceiveQueue :: SpecWith SQLiteStore
+testGetReceiveQueue = do
+  it "should get receive queue and conn alias" $ \store -> do
+    let smpServer = SMPServer "smp.simplex.im" (Just "5223") (Just "1234")
+    let cAlias = "conn1"
+    let recipientId = "1234"
+    let rcvQueue =
+          ReceiveQueue
+            { server = smpServer,
+              rcvId = recipientId,
+              rcvPrivateKey = "abcd",
+              sndId = Just "2345",
+              sndKey = Nothing,
+              decryptKey = "dcba",
+              verifyKey = Nothing,
+              status = New,
+              ackMode = AckMode On
+            }
+    createRcvConn store cAlias rcvQueue
+      `returnsResult` ()
+    getReceiveQueue store smpServer recipientId
+      `returnsResult` (cAlias, rcvQueue)
