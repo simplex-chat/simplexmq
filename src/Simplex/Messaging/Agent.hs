@@ -113,23 +113,24 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
       respond $ INV qInfo
 
     joinConnection :: SMPQueueInfo -> ReplyMode -> m ()
-    joinConnection qInfo replyMode = do
+    joinConnection qInfo@(SMPQueueInfo srv _ _) replyMode = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
       (sndQueue, senderKey) <- newSendQueue qInfo
       withStore $ \st -> createSndConn st connAlias sndQueue
       sendConfirmation c sndQueue senderKey
       sendHello c sndQueue
-      sendReplyQueue sndQueue replyMode
-      respond OK
+      case replyMode of
+        ReplyOn -> sendReplyQInfo srv sndQueue
+        ReplyVia srv' -> sendReplyQInfo srv' sndQueue
+        ReplyOff -> return ()
+      respond CON
 
-    sendReplyQueue :: SendQueue -> ReplyMode -> m ()
-    sendReplyQueue sndQueue = \case
-      ReplyOff -> return ()
-      ReplyOn srv -> do
-        (rcvQueue, qInfo) <- newReceiveQueue srv
-        withStore $ \st -> addRcvQueue st connAlias rcvQueue
-        sendAgentMessage sndQueue $ REPLY qInfo
+    sendReplyQInfo :: SMPServer -> SendQueue -> m ()
+    sendReplyQInfo srv sndQueue = do
+      (rcvQueue, qInfo) <- newReceiveQueue srv
+      withStore $ \st -> addRcvQueue st connAlias rcvQueue
+      sendAgentMessage sndQueue $ REPLY qInfo
 
     newReceiveQueue :: SMPServer -> m (ReceiveQueue, SMPQueueInfo)
     newReceiveQueue server = do

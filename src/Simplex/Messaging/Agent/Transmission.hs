@@ -188,30 +188,10 @@ base64P = do
   either fail pure $ decode (str <> pad)
 
 parseAgentMessage :: ByteString -> Either ErrorType AMessage
-parseAgentMessage = parse agentMessageP UNKNOWN
-
-parseSmpQueueInfo :: ByteString -> Either ErrorType SMPQueueInfo
-parseSmpQueueInfo = parse smpQueueInfoP $ SYNTAX errBadInvitation
-
-parseSmpServer :: ByteString -> Either ErrorType SMPServer
-parseSmpServer = parse smpServerP $ SYNTAX errBadServer
+parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
 
 parse :: Parser a -> e -> (ByteString -> Either e a)
 parse parser err = first (const err) . A.parseOnly (parser <* A.endOfInput)
-
-parseDec64 :: String -> Either ErrorType ByteString
-parseDec64 = parse base64P (SYNTAX errBadEncoding) . B.pack
-
-parseAckMode :: ByteString -> Either ErrorType AckMode
-parseAckMode am = case B.split '=' am of
-  ["ACK", mode] -> AckMode <$> getMode mode
-  _ -> errParams
-
-getMode :: ByteString -> Either ErrorType Mode
-getMode mode = case mode of
-  "ON" -> Right On
-  "OFF" -> Right Off
-  _ -> errParams
 
 errParams :: Either ErrorType a
 errParams = Left $ SYNTAX errBadParameters
@@ -250,7 +230,7 @@ newtype SubMode = SubMode Mode deriving (Show)
 data SMPQueueInfo = SMPQueueInfo SMPServer SenderId EncryptionKey
   deriving (Show)
 
-data ReplyMode = ReplyOn SMPServer | ReplyOff deriving (Show)
+data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Show)
 
 type EncryptionKey = PublicKey
 
@@ -290,6 +270,9 @@ data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
 errBadEncoding :: Int
 errBadEncoding = 10
 
+errBadCommand :: Int
+errBadCommand = 11
+
 errBadInvitation :: Int
 errBadInvitation = 12
 
@@ -311,47 +294,40 @@ smpErrCorrelationId = 2
 smpUnexpectedResponse :: Natural
 smpUnexpectedResponse = 3
 
-parseCommand :: ByteString -> Either ErrorType ACmd
-parseCommand command = case B.words command of
-  ["NEW", srv] -> newConn srv -- . Right $ AckMode On
-  -- ["NEW", srv, am] -> newConn srv $ parseAckMode am
-  ["INV", qInfo] -> ACmd SAgent . INV <$> parseSmpQueueInfo qInfo
-  "JOIN" : qInfo : ws -> joinConn qInfo ws
-  ["CON"] -> Right . ACmd SAgent $ CON
-  "NEW" : _ -> errParams
-  "INV" : _ -> errParams
-  "JOIN" : _ -> errParams
-  "CON" : _ -> errParams
-  _ -> Left UNKNOWN
+parseCommandP :: Parser ACmd
+parseCommandP =
+  "NEW " *> newCmd
+    <|> "INV " *> invResp
+    <|> "JOIN " *> joinCmd
+    <|> "CON" $> ACmd SAgent CON
+    <|> "OK" $> ACmd SAgent OK
   where
-    newConn :: ByteString -> Either ErrorType ACmd
-    newConn srv = ACmd SClient . NEW <$> parseSmpServer srv
+    newCmd = ACmd SClient . NEW <$> smpServerP
+    invResp = ACmd SAgent . INV <$> smpQueueInfoP
+    joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
+    replyMode =
+      " NO_REPLY" $> ReplyOff
+        <|> A.space *> (ReplyVia <$> smpServerP)
+        <|> pure ReplyOn
 
-    joinConn :: ByteString -> [ByteString] -> Either ErrorType ACmd
-    joinConn qInfo ws = do
-      q <- parseSmpQueueInfo qInfo
-      case ws of
-        [] -> let SMPQueueInfo srv _ _ = q in joinCmd q $ ReplyOn srv
-        ["NO_REPLY"] -> joinCmd q ReplyOff
-        [srv] -> do
-          s <- parseSmpServer srv
-          joinCmd q $ ReplyOn s
-        _ -> errParams
-      where
-        joinCmd q r = return $ ACmd SClient $ JOIN q r
+parseCommand :: ByteString -> Either ErrorType ACmd
+parseCommand = parse parseCommandP $ SYNTAX errBadCommand
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
   NEW srv -> "NEW " <> serializeServer srv
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
-  JOIN qInfo rMode ->
-    "JOIN " <> serializeSmpQueueInfo qInfo <> " "
-      <> case rMode of
-        ReplyOff -> "NO_REPLY"
-        ReplyOn srv -> serializeServer srv
+  JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
   CON -> "CON"
   ERR e -> "ERR " <> B.pack (show e)
+  OK -> "OK"
   c -> B.pack $ show c
+  where
+    replyMode :: ReplyMode -> ByteString
+    replyMode = \case
+      ReplyOff -> " NO_REPLY"
+      ReplyVia srv -> " " <> serializeServer srv
+      ReplyOn -> ""
 
 tPutRaw :: MonadIO m => Handle -> ARawTransmission -> m ()
 tPutRaw h (corrId, connAlias, command) = do
