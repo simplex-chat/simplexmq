@@ -310,7 +310,7 @@ deleteConnection store connAlias = do
     "DELETE FROM connections WHERE conn_alias = ?"
     (Only connAlias)
 
-updateRcvQueueStatus :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> QueueStatus -> m ()
+updateRcvQueueStatus :: MonadUnliftIO m => SQLiteStore -> RecipientId -> QueueStatus -> m ()
 updateRcvQueueStatus store rcvQueueId status =
   executeWithLock
     store
@@ -318,11 +318,11 @@ updateRcvQueueStatus store rcvQueueId status =
     [s|
       UPDATE receive_queues
       SET status = ?
-      WHERE receive_queue_id = ?;
+      WHERE rcv_id = ?;
     |]
     (Only status :. Only rcvQueueId)
 
-updateSndQueueStatus :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> QueueStatus -> m ()
+updateSndQueueStatus :: MonadUnliftIO m => SQLiteStore -> SenderId -> QueueStatus -> m ()
 updateSndQueueStatus store sndQueueId status =
   executeWithLock
     store
@@ -330,7 +330,7 @@ updateSndQueueStatus store sndQueueId status =
     [s|
       UPDATE send_queues
       SET status = ?
-      WHERE send_queue_id = ?;
+      WHERE snd_id = ?;
     |]
     (Only status :. Only sndQueueId)
 
@@ -426,27 +426,27 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     when (isNothing rcvQId && isNothing sndQId) $ throwError SEBadConn
 
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
-  removeSndAuth _st _connAlias = throwError SEInternal
+  removeSndAuth _st _connAlias = throwError SENotImplemented
 
-  updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
-  updateQueueStatus st connAlias qDirection status = do
-    case qDirection of
-      RCV -> do
-        (rcvQId, _) <- getConnection st connAlias
-        case rcvQId of
-          Just qId -> updateRcvQueueStatus st qId status
-          Nothing -> throwError SEBadQueueDirection
-      SND -> do
-        (_, sndQId) <- getConnection st connAlias
-        case sndQId of
-          Just qId -> updateSndQueueStatus st qId status
-          Nothing -> throwError SEBadQueueDirection
+  -- updateQueueStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> QueueStatus -> m ()
+  -- updateQueueStatus st connAlias qDirection status = do
+  --   case qDirection of
+  --     RCV -> do
+  --       (rcvQId, _) <- getConnection st connAlias
+  --       case rcvQId of
+  --         Just qId -> updateRcvQueueStatus st qId status
+  --         Nothing -> throwError SEBadQueueDirection
+  --     SND -> do
+  --       (_, sndQId) <- getConnection st connAlias
+  --       case sndQId of
+  --         Just qId -> updateSndQueueStatus st qId status
+  --         Nothing -> throwError SEBadQueueDirection
 
   updateReceiveQueueStatus :: SQLiteStore -> RecipientId -> QueueStatus -> m ()
-  updateReceiveQueueStatus _st _rId _status = throwError SENotImplemented
+  updateReceiveQueueStatus st rId status = updateRcvQueueStatus st rId status
 
   updateSendQueueStatus :: SQLiteStore -> SenderId -> QueueStatus -> m ()
-  updateSendQueueStatus _st _sId _status = throwError SENotImplemented
+  updateSendQueueStatus st sId status = updateSndQueueStatus st sId status
 
   -- TODO decrease duplication of queue direction checks?
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
