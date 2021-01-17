@@ -20,6 +20,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.List.Split (splitOn)
 import Data.Time.Clock (UTCTime)
+import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
 import Network.Socket
@@ -69,12 +70,14 @@ data ACmd where
 deriving instance Show ACmd
 
 data ACommand (p :: AParty) where
-  NEW :: SMPServer -> ACommand Client
+  NEW :: SMPServer -> ACommand Client -- response INV
   INV :: SMPQueueInfo -> ACommand Agent
-  JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client
-  CON :: ACommand Agent
-  CONF :: OtherPartyId -> ACommand Agent
-  LET :: OtherPartyId -> ACommand Client
+  JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client -- response OK
+  CON :: ACommand Agent -- notification that connection is established
+  -- TODO currently it automatically allows whoever sends the confirmation
+  READY :: ACommand Agent
+  -- CONF :: OtherPartyId -> ACommand Agent
+  -- LET :: OtherPartyId -> ACommand Client
   SUB :: SubMode -> ACommand Client
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
@@ -92,13 +95,34 @@ deriving instance Show (ACommand p)
 
 type Message = ByteString
 
+data SMPMessage
+  = SMPConfirmation PublicKey
+  | SMPMessage
+      { agentMsgId :: Integer,
+        agentTimestamp :: UTCTime,
+        previousMsgHash :: ByteString,
+        agentMessage :: AMessage
+      }
+
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
   A_MSG :: MsgBody -> AMessage
 
-parseMessage :: Message -> Either ErrorType AMessage
-parseMessage msg = case B.words msg of
+parseSMPMessage :: ByteString -> Either ErrorType SMPMessage
+parseSMPMessage _ = Left INTERNAL
+
+serializeSMPMessage :: SMPMessage -> ByteString
+serializeSMPMessage = \case
+  SMPConfirmation sKey -> "KEY " <> sKey <> "\r\n\r\n"
+  SMPMessage {agentMsgId, agentTimestamp, previousMsgHash, agentMessage} ->
+    "\r\n" <> messageHeader agentMsgId agentTimestamp previousMsgHash <> "\r\n" <> serializeAgentMessage agentMessage
+  where
+    messageHeader agentMsgId agentTimestamp previousMsgHash =
+      B.unwords [B.pack $ show agentMsgId, B.pack (formatISO8601Millis agentTimestamp), encode previousMsgHash]
+
+parseAgentMessage :: ByteString -> Either ErrorType AMessage
+parseAgentMessage msg = case B.words msg of
   ["HELLO", key, ackMode] -> HELLO key <$> parseAckMode ackMode
   ["REPLY", qInfo] -> REPLY <$> parseSmpQueueInfo qInfo
   ["A_MSG", msgBody] -> Right $ A_MSG msgBody
@@ -137,11 +161,11 @@ getMode mode = case mode of
 errParams :: Either ErrorType a
 errParams = Left $ SYNTAX errBadParameters
 
-serializeMsg :: AMessage -> Message
-serializeMsg = \case
+serializeAgentMessage :: AMessage -> ByteString
+serializeAgentMessage = \case
   HELLO _verKey _ackMode -> "HELLO" -- TODO
-  REPLY qInfo -> "REPLY" <> serializeSmpQueueInfo qInfo
-  A_MSG msgBody -> "A_MSG" <> msgBody -- ? whitespaces missing
+  REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
+  A_MSG msgBody -> "A_MSG " <> msgBody -- ? whitespaces missing
 
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
 serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> serializeServer srv <> "::" <> encode qId <> "::" <> encode ek
