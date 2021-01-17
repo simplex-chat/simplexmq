@@ -212,12 +212,12 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
       print cmd
   where
     secureQueue :: ReceiveQueue -> SMP.SenderKey -> m ()
-    secureQueue ReceiveQueue {rcvId, rcvPrivateKey} senderKey = do
-      withStore $ \st -> updateReceiveQueueStatus st rcvId Confirmed
+    secureQueue rcvQ@ReceiveQueue {rcvPrivateKey} senderKey = do
+      withStore $ \st -> updateRcvQueueStatus st rcvQ Confirmed
       -- TODO update sender key in the store
       smp <- getSMPServerClient c srv
       liftSMP $ secureSMPQueue smp rcvPrivateKey rId senderKey
-      withStore $ \st -> updateReceiveQueueStatus st rcvId Secured
+      withStore $ \st -> updateRcvQueueStatus st rcvQ Secured
 
 decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return
@@ -272,12 +272,12 @@ sendConfirmation ::
   SendQueue ->
   SMP.SenderKey ->
   m ()
-sendConfirmation c SendQueue {server, sndId} senderKey = do
+sendConfirmation c sndQ@SendQueue {server, sndId} senderKey = do
   -- TODO send initial confirmation with signature - change in SMP server
   smp <- getSMPServerClient c server
   msg <- mkConfirmation
   liftSMP $ sendSMPMessage smp "" sndId msg
-  withStore $ \st -> updateSendQueueStatus st sndId Confirmed
+  withStore $ \st -> updateSndQueueStatus st sndQ Confirmed
   where
     mkConfirmation :: m SMP.MsgBody
     mkConfirmation = do
@@ -291,11 +291,11 @@ sendHello ::
   AgentClient ->
   SendQueue ->
   m ()
-sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
+sendHello c sndQ@SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
   smp <- getSMPServerClient c server
   msg <- mkHello "" $ AckMode On -- TODO verifyKey
   _send smp 20 msg
-  withStore $ \st -> updateSendQueueStatus st sndId Active
+  withStore $ \st -> updateSndQueueStatus st sndQ Active
   where
     mkHello :: PublicKey -> AckMode -> m ByteString
     mkHello verifyKey ackMode =

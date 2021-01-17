@@ -103,8 +103,8 @@ class Monad m => MonadAgentStore s m where
   addSndQueue :: s -> ConnAlias -> SendQueue -> m ()
   addRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m ()
   removeSndAuth :: s -> ConnAlias -> m ()
-  updateReceiveQueueStatus :: s -> RecipientId -> QueueStatus -> m () -- ? server is needed to find unique record for update
-  updateSendQueueStatus :: s -> SenderId -> QueueStatus -> m () -- ? server is needed to find unique record for update
+  updateRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
+  updateSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
   createMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
   getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
   getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery

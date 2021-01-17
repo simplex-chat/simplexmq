@@ -51,8 +51,8 @@ storeTests = withStore do
       describe "Send connection" testDeleteConnSend
       describe "Duplex connection" testDeleteConnDuplex
     describe "Update queue status" do
-      describe "Receive queue" testUpdateReceiveQueueStatus
-      describe "Send queue" testUpdateSendQueueStatus
+      describe "Receive queue" testupdateRcvQueueStatus
+      describe "Send queue" testupdateSndQueueStatus
       describe "Duplex connection" testUpdateQueueStatusConnDuplex
       xdescribe "Nonexistent send queue" testUpdateNonexistentSendQueueStatus
       xdescribe "Nonexistent receive queue" testUpdateNonexistentReceiveQueueStatus
@@ -304,8 +304,8 @@ testDeleteConnDuplex = do
     getConn store "conn1"
       `throwsError` SEInternal
 
-testUpdateReceiveQueueStatus :: SpecWith SQLiteStore
-testUpdateReceiveQueueStatus = do
+testupdateRcvQueueStatus :: SpecWith SQLiteStore
+testupdateRcvQueueStatus = do
   it "should update status of receive queue" $ \store -> do
     let rcvQueue =
           ReceiveQueue
@@ -323,13 +323,13 @@ testUpdateReceiveQueueStatus = do
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
-    updateReceiveQueueStatus store "1234" Confirmed
+    updateRcvQueueStatus store rcvQueue Confirmed
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue {status = Confirmed})
 
-testUpdateSendQueueStatus :: SpecWith SQLiteStore
-testUpdateSendQueueStatus = do
+testupdateSndQueueStatus :: SpecWith SQLiteStore
+testupdateSndQueueStatus = do
   it "should update status of send queue" $ \store -> do
     let sndQueue =
           SendQueue
@@ -345,7 +345,7 @@ testUpdateSendQueueStatus = do
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
-    updateSendQueueStatus store "1234" Confirmed
+    updateSndQueueStatus store sndQueue Confirmed
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue {status = Confirmed})
@@ -381,11 +381,11 @@ testUpdateQueueStatusConnDuplex = do
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
-    updateReceiveQueueStatus store "1234" Secured
+    updateRcvQueueStatus store rcvQueue Secured
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue {status = Secured} sndQueue)
-    updateSendQueueStatus store "3456" Confirmed
+    updateSndQueueStatus store sndQueue Confirmed
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue {status = Secured} sndQueue {status = Confirmed})
@@ -393,6 +393,22 @@ testUpdateQueueStatusConnDuplex = do
 testUpdateNonexistentSendQueueStatus :: SpecWith SQLiteStore
 testUpdateNonexistentSendQueueStatus = do
   it "should throw error on attempt to update status of nonexistent send queue" $ \store -> do
+    let sndQueue =
+          SendQueue
+            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+              sndId = "1234",
+              sndPrivateKey = "abcd",
+              encryptKey = "dcba",
+              signKey = "edcb",
+              status = New,
+              ackMode = AckMode On
+            }
+    updateSndQueueStatus store sndQueue Confirmed
+      `throwsError` SEInternal
+
+testUpdateNonexistentReceiveQueueStatus :: SpecWith SQLiteStore
+testUpdateNonexistentReceiveQueueStatus = do
+  it "should throw error on attempt to update status of nonexistent receive queue" $ \store -> do
     let rcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
@@ -405,36 +421,8 @@ testUpdateNonexistentSendQueueStatus = do
               status = New,
               ackMode = AckMode On
             }
-    createRcvConn store "conn1" rcvQueue
-      `returnsResult` ()
-    getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
-    updateSendQueueStatus store "1234" Confirmed
-      `throwsError` SEBadQueueDirection
-    getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
-
-testUpdateNonexistentReceiveQueueStatus :: SpecWith SQLiteStore
-testUpdateNonexistentReceiveQueueStatus = do
-  it "should throw error on attempt to update status of nonexistent receive queue" $ \store -> do
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "1234",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New,
-              ackMode = AckMode On
-            }
-    createSndConn store "conn1" sndQueue
-      `returnsResult` ()
-    getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
-    updateReceiveQueueStatus store "1234" Confirmed
-      `throwsError` SEBadQueueDirection
-    getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
+    updateRcvQueueStatus store rcvQueue Confirmed
+      `throwsError` SEInternal
 
 testCreateMsgRcv :: SpecWith SQLiteStore
 testCreateMsgRcv = do
