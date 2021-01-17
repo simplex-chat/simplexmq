@@ -137,16 +137,7 @@ parseSMPMessage =
         <*> (A.endOfLine *> agentMessageP)
 
     tsIso8601P :: Parser UTCTime
-    tsIso8601P =
-      A.takeTill (== ' ')
-        >>= parseMaybe "invalid timestamp"
-          . parseISO8601
-          . B.unpack
-
-    parseMaybe :: String -> Maybe a -> Parser a
-    parseMaybe s = \case
-      Nothing -> fail s
-      Just ts -> pure ts
+    tsIso8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
 
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
