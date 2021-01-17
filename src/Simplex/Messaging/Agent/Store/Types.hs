@@ -13,4 +13,5 @@ data StoreError
   | SEBadConnType ConnType
   | SEBadQueueStatus
   | SEBadQueueDirection
+  | SENotImplemented -- TODO remove
   deriving (Eq, Show, Exception)
