@@ -191,7 +191,7 @@ serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
   HELLO _verKey _ackMode -> "HELLO" -- TODO
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
-  A_MSG msgBody -> "A_MSG " <> msgBody -- ? whitespaces missing
+  A_MSG msgBody -> "A_MSG " <> msgBody
 
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
 serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> serializeServer srv <> "::" <> encode qId <> "::" <> encode ek
