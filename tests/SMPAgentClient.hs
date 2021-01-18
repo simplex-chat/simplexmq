@@ -59,7 +59,7 @@ testSMPAgentClient :: MonadUnliftIO m => (Handle -> m a) -> m a
 testSMPAgentClient client = do
   threadDelay 50_000 -- TODO hack: thread delay for SMP agent to start
   runTCPClient agentTestHost agentTestPort $ \h -> do
-    line <- getLn h
+    line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.2.0 agent"
       then client h
       else error "not connected"

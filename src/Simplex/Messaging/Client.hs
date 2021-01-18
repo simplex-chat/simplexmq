@@ -28,6 +28,7 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import qualified Data.ByteString.Char8 as B
@@ -94,14 +95,17 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
     receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
 
     process :: SMPClient -> IO ()
-    process SMPClient {rcvQ, sentCommands} = forever . atomically $ do
-      (_, (corrId, qId, respOrErr)) <- readTBQueue rcvQ
-      cs <- readTVar sentCommands
+    process SMPClient {rcvQ, sentCommands} = forever $ do
+      (_, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
+      cs <- readTVarIO sentCommands
       case M.lookup corrId cs of
-        Nothing -> case respOrErr of
-          Right (Cmd SBroker cmd) -> writeTBQueue msgQ (smpServer, qId, cmd)
-          _ -> return ()
-        Just Request {queueId, responseVar} -> do
+        Nothing -> do
+          putStrLn "SMPClient: uncorrelated response"
+          print (qId, respOrErr)
+          case respOrErr of
+            Right (Cmd SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
+            _ -> return ()
+        Just Request {queueId, responseVar} -> atomically $ do
           modifyTVar sentCommands $ M.delete corrId
           putTMVar responseVar $
             if queueId == qId
@@ -162,10 +166,15 @@ okSMPCommand cmd c pKey qId =
     _ -> throwE SMPUnexpectedResponse
 
 sendSMPCommand :: SMPClient -> PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
-sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = ExceptT $ do
+sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, smpServer} pKey qId cmd = ExceptT $ do
+  liftIO $ putStrLn $ "sending to " <> show smpServer
+  liftIO $ print cmd
   corrId <- atomically getNextCorrId
   t <- signTransmission (corrId, qId, cmd)
-  atomically (send corrId t) >>= atomically . takeTMVar
+  resp <- atomically (send corrId t) >>= atomically . takeTMVar
+  liftIO $ putStrLn $ "response from " <> show smpServer
+  liftIO $ print resp
+  return resp
   where
     getNextCorrId :: STM CorrId
     getNextCorrId = do

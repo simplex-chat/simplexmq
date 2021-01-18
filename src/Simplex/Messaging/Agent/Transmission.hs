@@ -190,12 +190,12 @@ errParams = Left $ SYNTAX errBadParameters
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
-  HELLO _verKey _ackMode -> "HELLO" -- TODO
+  HELLO verifyKey ackMode -> "HELLO " <> encode verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
   A_MSG msgBody -> "A_MSG " <> msgBody
 
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
-serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> serializeServer srv <> "::" <> encode qId <> "::" <> encode ek
+serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = B.intercalate "::" ["smp", serializeServer srv, encode qId, encode ek]
 
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} = B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
@@ -321,13 +321,13 @@ serializeCommand = \case
       ReplyVia srv -> " " <> serializeServer srv
       ReplyOn -> ""
 
-tPutRaw :: MonadIO m => Handle -> ARawTransmission -> m ()
+tPutRaw :: Handle -> ARawTransmission -> IO ()
 tPutRaw h (corrId, connAlias, command) = do
   putLn h corrId
   putLn h connAlias
   putLn h command
 
-tGetRaw :: MonadIO m => Handle -> m ARawTransmission
+tGetRaw :: Handle -> IO ARawTransmission
 tGetRaw h = do
   corrId <- getLn h
   connAlias <- getLn h
@@ -335,11 +335,12 @@ tGetRaw h = do
   return (corrId, connAlias, command)
 
 tPut :: MonadIO m => Handle -> ATransmission p -> m ()
-tPut h (corrId, connAlias, command) = tPutRaw h (bs corrId, connAlias, serializeCommand command)
+tPut h (corrId, connAlias, command) =
+  liftIO $ tPutRaw h (bs corrId, connAlias, serializeCommand command)
 
 -- | get client and agent transmissions
 tGet :: forall m p. MonadIO m => SAParty p -> Handle -> m (ATransmissionOrError p)
-tGet party h = tGetRaw h >>= tParseLoadBody
+tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
     tParseLoadBody t@(corrId, connAlias, command) = do
@@ -370,13 +371,14 @@ tGet party h = tGetRaw h >>= tParseLoadBody
       MSG agentMsgId srvTS agentTS status body -> MSG agentMsgId srvTS agentTS status <$$> getMsgBody body
       cmd -> return $ Right cmd
 
+    -- TODO refactor with server
     getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
     getMsgBody msgBody =
       case B.unpack msgBody of
         ':' : body -> return . Right $ B.pack body
         str -> case readMaybe str :: Maybe Int of
-          Just size -> do
-            body <- getBytes h size
+          Just size -> liftIO $ do
+            body <- B.hGet h size
             s <- getLn h
             return $ if B.null s then Right body else Left SIZE
           Nothing -> return . Left $ SYNTAX errMessageBody

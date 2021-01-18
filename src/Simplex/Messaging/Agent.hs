@@ -42,7 +42,7 @@ runSMPAgent cfg@AgentConfig {tcpPort} = do
   where
     smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpAgent = runTCPServer tcpPort $ \h -> do
-      putLn h "Welcome to SMP v0.2.0 agent"
+      liftIO $ putLn h "Welcome to SMP v0.2.0 agent"
       q <- asks $ tbqSize . config
       c <- atomically $ newAgentClient q
       race_ (connectClient h c) (runClient c)
@@ -135,10 +135,12 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     newReceiveQueue :: SMPServer -> m (ReceiveQueue, SMPQueueInfo)
     newReceiveQueue server = do
       smp <- getSMPServerClient c server
+      liftIO $ putStrLn "created smp client"
       g <- asks idsDrg
       recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let rcvPrivateKey = recipientKey
       (rcvId, sId) <- liftSMP $ createSMPQueue smp rcvPrivateKey recipientKey
+      liftIO $ print (rcvId, sId)
       encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let decryptKey = encryptKey
           rcvQueue =
@@ -179,20 +181,27 @@ processSMPTransmission ::
   SMPServerTransmission ->
   m ()
 processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
+  liftIO $ putStrLn "SMP received"
+  liftIO $ print (srv, rId, cmd)
   case cmd of
     SMP.MSG _msgId _ts msgBody -> do
       -- TODO deduplicate with previously received
+      liftIO $ putStrLn "SMP.MSG"
       (connAlias, rcvQueue@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
+      liftIO $ print (connAlias, rcvQueue)
       agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
+      liftIO $ putStrLn "Agent message"
+      liftIO $ print agentMsg
       case agentMsg of
         SMPConfirmation senderKey -> do
           case status of
-            New ->
+            New -> do
               -- TODO currently it automatically allows whoever sends the confirmation
               -- Commands CONF and LET are not implemented yet
               -- They are probably not needed in v0.2?
               -- TODO notification that connection confirmed?
               secureQueue rcvQueue senderKey
+              sendAck c rcvQueue
             s ->
               -- TODO maybe send notification to the user
               liftIO . putStrLn $ "unexpected SMP confirmation, queue status " <> show s
@@ -201,12 +210,14 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
             HELLO _verifyKey _ -> do
               -- TODO send status update to the user?
               withStore $ \st -> updateRcvQueueStatus st rcvQueue Active
+              sendAck c rcvQueue
             REPLY qInfo -> do
               (sndQueue, senderKey) <- newSendQueue qInfo
               withStore $ \st -> addSndQueue st connAlias sndQueue
               sendConfirmation c sndQueue senderKey
               sendHello c sndQueue
               atomically $ writeTBQueue sndQ ("", connAlias, CON)
+              sendAck c rcvQueue
             A_MSG _msgBody -> return ()
       return ()
     SMP.END -> return ()
@@ -296,7 +307,7 @@ sendHello ::
   m ()
 sendHello c sq@SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
   smp <- getSMPServerClient c server
-  msg <- mkHello "" $ AckMode On -- TODO verifyKey
+  msg <- mkHello "5678" $ AckMode On -- TODO verifyKey
   _send smp 20 msg
   withStore $ \st -> updateSndQueueStatus st sq Active
   where
@@ -315,6 +326,11 @@ sendHello c sq@SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
                          _ -> throwError INTERNAL -- TODO wrap client error in some constructor
                      )
 
+sendAck :: (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m) => AgentClient -> ReceiveQueue -> m ()
+sendAck c ReceiveQueue {server, rcvId, rcvPrivateKey} = do
+  smp <- getSMPServerClient c server
+  liftSMP $ ackSMPMessage smp rcvPrivateKey rcvId
+
 mkAgentMessage :: (MonadUnliftIO m) => PrivateKey -> AMessage -> m ByteString
 mkAgentMessage _encKey agentMessage = do
   agentTimestamp <- liftIO getCurrentTime
@@ -323,7 +339,7 @@ mkAgentMessage _encKey agentMessage = do
           SMPMessage
             { agentMsgId = 0,
               agentTimestamp,
-              previousMsgHash = "",
+              previousMsgHash = "1234", -- TODO hash of the previous message
               agentMessage
             }
   -- TODO encryption
