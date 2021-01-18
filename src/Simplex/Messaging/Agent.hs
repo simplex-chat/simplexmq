@@ -102,6 +102,8 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
   case cmd of
     NEW smpServer -> createNewConnection smpServer
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
+    SEND msgBody -> sendMessage msgBody
+    ACK aMsgId -> ackMessage aMsgId
     _ -> throwError PROHIBITED
   where
     createNewConnection :: SMPServer -> m ()
@@ -126,11 +128,35 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         ReplyOff -> return ()
       respond CON
 
+    sendMessage :: SMP.MsgBody -> m ()
+    sendMessage msgBody =
+      withStore (`getConn` connAlias) >>= \case
+        SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
+        SomeConn _ (SendConnection _ sq) -> sendMsg sq
+        -- TODO possibly there should be a separate error type trying to send the message to the connection without SendQueue
+        _ -> throwError PROHIBITED -- NOT_READY ?
+      where
+        sendMsg sq = do
+          sendAgentMessage sq $ A_MSG msgBody
+          -- TODO respond $ SENT aMsgId
+          respond OK
+
+    ackMessage :: AgentMsgId -> m ()
+    ackMessage _aMsgId =
+      withStore (`getConn` connAlias) >>= \case
+        SomeConn _ (DuplexConnection _ rq _) -> ackMsg rq
+        SomeConn _ (ReceiveConnection _ rq) -> ackMsg rq
+        -- TODO possibly there should be a separate error type trying to send the message to the connection without SendQueue
+        -- NOT_READY ?
+        _ -> throwError PROHIBITED
+      where
+        ackMsg rq = sendAck c rq >> respond OK
+
     sendReplyQInfo :: SMPServer -> SendQueue -> m ()
-    sendReplyQInfo srv sndQueue = do
-      (rcvQueue, qInfo) <- newReceiveQueue srv
-      withStore $ \st -> addRcvQueue st connAlias rcvQueue
-      sendAgentMessage sndQueue $ REPLY qInfo
+    sendReplyQInfo srv sq = do
+      (rq, qInfo) <- newReceiveQueue srv
+      withStore $ \st -> addRcvQueue st connAlias rq
+      sendAgentMessage sq $ REPLY qInfo
 
     newReceiveQueue :: SMPServer -> m (ReceiveQueue, SMPQueueInfo)
     newReceiveQueue server = do
@@ -184,7 +210,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
   liftIO $ putStrLn "SMP received"
   liftIO $ print (srv, rId, cmd)
   case cmd of
-    SMP.MSG _msgId _ts msgBody -> do
+    SMP.MSG _ srvTs msgBody -> do
       -- TODO deduplicate with previously received
       liftIO $ putStrLn "SMP.MSG"
       (connAlias, rcvQueue@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
@@ -205,7 +231,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
             s ->
               -- TODO maybe send notification to the user
               liftIO . putStrLn $ "unexpected SMP confirmation, queue status " <> show s
-        SMPMessage {agentMessage} ->
+        SMPMessage {agentMessage, agentMsgId, agentTimestamp} ->
           case agentMessage of
             HELLO _verifyKey _ -> do
               -- TODO send status update to the user?
@@ -218,7 +244,10 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
               sendHello c sndQueue
               atomically $ writeTBQueue sndQ ("", connAlias, CON)
               sendAck c rcvQueue
-            A_MSG _msgBody -> return ()
+            A_MSG body -> do
+              -- TODO check message status
+              let msg = MSG agentMsgId agentTimestamp srvTs MsgOk body
+              atomically $ writeTBQueue sndQ ("", connAlias, msg)
       return ()
     SMP.END -> return ()
     _ -> liftIO $ do
