@@ -116,9 +116,7 @@ data AMessage where
   deriving (Show)
 
 parseSMPMessage :: ByteString -> Either ErrorType SMPMessage
-parseSMPMessage =
-  first (const $ SYNTAX errBadMessage)
-    . A.parseOnly (smpMessageP <* A.endOfLine <* A.endOfInput)
+parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
   where
     smpMessageP :: Parser SMPMessage
     smpMessageP =
@@ -131,10 +129,10 @@ parseSMPMessage =
     smpClientMessageP :: Parser SMPMessage
     smpClientMessageP =
       SMPMessage
-        <$> A.decimal
-        <*> (A.space *> tsIso8601P)
-        <*> (A.space *> base64P)
-        <*> (A.endOfLine *> agentMessageP)
+        <$> A.decimal <* A.space
+        <*> tsIso8601P <* A.space
+        <*> base64P <* A.endOfLine
+        <*> agentMessageP
 
     tsIso8601P :: Parser UTCTime
     tsIso8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
@@ -152,12 +150,15 @@ serializeSMPMessage = \case
     smpMessage smpHeader aHeader aBody = B.intercalate "\n" [smpHeader, aHeader, aBody, ""]
 
 agentMessageP :: Parser AMessage
-agentMessageP = hello <|> reply <|> a_msg
+agentMessageP =
+  "HELLO " *> hello
+    <|> "REPLY " *> reply
+    <|> "MSG " *> a_msg
   where
-    hello = "HELLO " *> (HELLO <$> base64P <*> ackMode)
-    reply = "REPLY " *> (REPLY <$> smpQueueInfoP)
+    hello = HELLO <$> base64P <*> ackMode
+    reply = REPLY <$> smpQueueInfoP
     a_msg = do
-      size <- "MSG " *> A.decimal :: Parser Int
+      size :: Int <- A.decimal
       A_MSG <$> (A.endOfLine *> A.take size <* A.endOfLine)
     ackMode = " NO_ACK" $> AckMode Off <|> pure (AckMode On)
 
