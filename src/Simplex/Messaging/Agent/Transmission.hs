@@ -243,7 +243,6 @@ data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | Msg
 
 data ErrorType
   = UNKNOWN
-  | UNSUPPORTED -- TODO remove once all commands implemented
   | PROHIBITED
   | SYNTAX Int
   | BROKER Natural
@@ -294,6 +293,7 @@ parseCommandP =
     <|> "SEND " *> sendCmd
     <|> "MSG " *> message
     <|> "ACK " *> acknowledge
+    -- <|> "ERR " *> agentError - TODO
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where

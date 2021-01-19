@@ -47,9 +47,6 @@ testDuplexConnection1 alice bob = do
   ("14", "alice", Right OK) <- sendRecv bob ("14", "alice", "SEND 9\nhello too")
   ("", "bob", Right (MSG _ _ _ _ "hello too")) <- tGet SAgent alice
   ("4", "bob", Right OK) <- sendRecv alice ("4", "bob", "ACK 0")
-  ("4", "bob", e) <- sendRecv alice ("4", "bob", "ACK 0")
-  putStrLn "*****"
-  print e
   return ()
 
 syntaxTests :: Spec
