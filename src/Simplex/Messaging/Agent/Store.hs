@@ -42,40 +42,6 @@ data SendQueue = SendQueue
   }
   deriving (Eq, Show)
 
-data Connection (d :: ConnType) where
-  ReceiveConnection :: ConnAlias -> ReceiveQueue -> Connection CReceive
-  SendConnection :: ConnAlias -> SendQueue -> Connection CSend
-  DuplexConnection :: ConnAlias -> ReceiveQueue -> SendQueue -> Connection CDuplex
-
-deriving instance Show (Connection d)
-
-deriving instance Eq (Connection d)
-
-data SConnType :: ConnType -> Type where
-  SCReceive :: SConnType CReceive
-  SCSend :: SConnType CSend
-  SCDuplex :: SConnType CDuplex
-
-deriving instance Eq (SConnType d)
-
-deriving instance Show (SConnType d)
-
-instance TestEquality SConnType where
-  testEquality SCReceive SCReceive = Just Refl
-  testEquality SCSend SCSend = Just Refl
-  testEquality SCDuplex SCDuplex = Just Refl
-  testEquality _ _ = Nothing
-
-data SomeConn where
-  SomeConn :: SConnType d -> Connection d -> SomeConn
-
-instance Eq SomeConn where
-  SomeConn d c == SomeConn d' c' = case testEquality d d' of
-    Just Refl -> c == c'
-    _ -> False
-
-deriving instance Show SomeConn
-
 data MessageDelivery = MessageDelivery
   { connAlias :: ConnAlias,
     agentMsgId :: Int,
@@ -95,9 +61,10 @@ type SMPServerId = Int64
 -- TODO rework types - decouple Transmission types from Store? Convert on the agent instead?
 class Monad m => MonadAgentStore s m where
   addServer :: s -> SMPServer -> m SMPServerId
+  getRcvQueue :: s -> ConnAlias -> m ReceiveQueue
+  getSndQueue :: s -> ConnAlias -> m SendQueue
   createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m ()
   createSndConn :: s -> ConnAlias -> SendQueue -> m ()
-  getConn :: s -> ConnAlias -> m SomeConn
   getReceiveQueue :: s -> SMPServer -> RecipientId -> m (ConnAlias, ReceiveQueue)
   deleteConn :: s -> ConnAlias -> m ()
   addSndQueue :: s -> ConnAlias -> SendQueue -> m ()

@@ -167,8 +167,8 @@ instance FromRow ReceiveQueue where
   fromRow = ReceiveQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
 
 -- TODO refactor into a single query with join
-getRcvQueue :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> QueueRowId -> m ReceiveQueue
-getRcvQueue st@SQLiteStore {conn} queueRowId = do
+_getRcvQueue :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> QueueRowId -> m ReceiveQueue
+_getRcvQueue st@SQLiteStore {conn} queueRowId = do
   r <-
     liftIO $
       DB.queryNamed
@@ -206,8 +206,8 @@ getRcvQueueByRecipientId st@SQLiteStore {conn} rcvId host port = do
     _ -> throwError SENotFound
 
 -- TODO refactor into a single query with join
-getSndQueue :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> QueueRowId -> m SendQueue
-getSndQueue st@SQLiteStore {conn} queueRowId = do
+_getSndQueue :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> QueueRowId -> m SendQueue
+_getSndQueue st@SQLiteStore {conn} queueRowId = do
   r <-
     liftIO $
       DB.queryNamed
@@ -404,7 +404,18 @@ insertMsg store connAlias qDirection agentMsgId msg = do
       (Only connAlias :. Only agentMsgId :. Only tstamp :. Only qDirection :. Only msg)
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
-  addServer store smpServer = upsertServer store smpServer
+  addServer :: SQLiteStore -> SMPServer -> m SMPServerId
+  addServer st smpServer = upsertServer st smpServer
+
+  getRcvQueue :: SQLiteStore -> ConnAlias -> m ReceiveQueue
+  getRcvQueue st connAlias = do
+    (Just rcvQId, _) <- getConnection st connAlias
+    _getRcvQueue st rcvQId
+
+  getSndQueue :: SQLiteStore -> ConnAlias -> m SendQueue
+  getSndQueue st connAlias = do
+    (_, Just sndQId) <- getConnection st connAlias
+    _getSndQueue st sndQId
 
   createRcvConn :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
   createRcvConn st connAlias rcvQueue = do
@@ -420,22 +431,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     sndQ <- insertSndQueue st srvId sndQueue
     insertSndConnection st connAlias sndQ
 
-  -- TODO refactor ito a single query with join, and parse as `Only connAlias :. rcvQueue :. sndQueue`
-  getConn :: SQLiteStore -> ConnAlias -> m SomeConn
-  getConn st connAlias =
-    getConnection st connAlias >>= \case
-      (Just rcvQId, Just sndQId) -> do
-        rcvQ <- getRcvQueue st rcvQId
-        sndQ <- getSndQueue st sndQId
-        return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
-      (Just rcvQId, _) -> do
-        rcvQ <- getRcvQueue st rcvQId
-        return $ SomeConn SCReceive (ReceiveConnection connAlias rcvQ)
-      (_, Just sndQId) -> do
-        sndQ <- getSndQueue st sndQId
-        return $ SomeConn SCSend (SendConnection connAlias sndQ)
-      _ -> throwError SEBadConn
-
   getReceiveQueue :: SQLiteStore -> SMPServer -> RecipientId -> m (ConnAlias, ReceiveQueue)
   getReceiveQueue st SMPServer {host, port} recipientId = do
     rcvQueue <- getRcvQueueByRecipientId st recipientId host port
@@ -444,27 +439,27 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   -- TODO make transactional
   addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
-  addSndQueue st connAlias sndQueue =
-    getConn st connAlias
-      >>= \case
-        SomeConn SCDuplex _ -> throwError (SEBadConnType CDuplex)
-        SomeConn SCSend _ -> throwError (SEBadConnType CSend)
-        SomeConn SCReceive _ -> do
-          srvId <- upsertServer st (server (sndQueue :: SendQueue))
-          sndQ <- insertSndQueue st srvId sndQueue
-          updateRcvConnectionWithSndQueue st connAlias sndQ
+  addSndQueue st connAlias sndQueue = return ()
+    -- getConn st connAlias
+    --   >>= \case
+    --     SomeConn SCDuplex _ -> throwError (SEBadConnType CDuplex)
+    --     SomeConn SCSend _ -> throwError (SEBadConnType CSend)
+    --     SomeConn SCReceive _ -> do
+    --       srvId <- upsertServer st (server (sndQueue :: SendQueue))
+    --       sndQ <- insertSndQueue st srvId sndQueue
+    --       updateRcvConnectionWithSndQueue st connAlias sndQ
 
   -- TODO make transactional
   addRcvQueue :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
-  addRcvQueue st connAlias rcvQueue =
-    getConn st connAlias
-      >>= \case
-        SomeConn SCDuplex _ -> throwError (SEBadConnType CDuplex)
-        SomeConn SCReceive _ -> throwError (SEBadConnType CReceive)
-        SomeConn SCSend _ -> do
-          srvId <- upsertServer st (server (rcvQueue :: ReceiveQueue))
-          rcvQ <- insertRcvQueue st srvId rcvQueue
-          updateSndConnectionWithRcvQueue st connAlias rcvQ
+  addRcvQueue st connAlias rcvQueue = return ()
+    -- getConn st connAlias
+    --   >>= \case
+    --     SomeConn SCDuplex _ -> throwError (SEBadConnType CDuplex)
+    --     SomeConn SCReceive _ -> throwError (SEBadConnType CReceive)
+    --     SomeConn SCSend _ -> do
+    --       srvId <- upsertServer st (server (rcvQueue :: ReceiveQueue))
+    --       rcvQ <- insertRcvQueue st srvId rcvQueue
+    --       updateSndConnectionWithRcvQueue st connAlias rcvQ
 
   -- TODO think about design of one-to-one relationships between connections ans send/receive queues
   -- - Make wide `connections` table? -> Leads to inability to constrain queue fields on SQL level
