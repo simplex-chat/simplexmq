@@ -40,18 +40,25 @@ cfg =
       msgIdBytes = 6
     }
 
+withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
+withSmpServerOn port =
+  E.bracket
+    (forkIO $ runSMPServer cfg {tcpPort = port})
+    (liftIO . killThread)
+    . const
+
 withSmpServer :: (MonadUnliftIO m, MonadRandom m) => m a -> m a
-withSmpServer = E.bracket (forkIO $ runSMPServer cfg) (liftIO . killThread) . const
+withSmpServer = withSmpServerOn testPort
 
 runSmpTest :: (MonadUnliftIO m, MonadRandom m) => (Handle -> m a) -> m a
 runSmpTest test = withSmpServer $ testSMPClient test
 
 runSmpTestN :: forall m a. (MonadUnliftIO m, MonadRandom m) => Int -> ([Handle] -> m a) -> m a
-runSmpTestN nClients test = withSmpServer $ run [] nClients
+runSmpTestN nClients test = withSmpServer $ run nClients []
   where
-    run :: [Handle] -> Int -> m a
-    run hs 0 = test hs
-    run hs n = testSMPClient $ \h -> run (h : hs) (n - 1)
+    run :: Int -> [Handle] -> m a
+    run 0 hs = test hs
+    run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
 
 smpServerTest :: RawTransmission -> IO RawTransmission
 smpServerTest cmd = runSmpTest $ \h -> tPutRaw h cmd >> tGetRaw h
