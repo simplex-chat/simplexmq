@@ -225,8 +225,6 @@ fromServer = \case
 tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m TransmissionOrError
 tGet fromParty h = do
   (signature, corrId, queueId, command) <- liftIO $ tGetRaw h
-  liftIO $ putStrLn "received"
-  liftIO $ print (signature, corrId, queueId, command)
   let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
   either (const $ tError corrId) tParseLoadBody decodedTransmission
   where

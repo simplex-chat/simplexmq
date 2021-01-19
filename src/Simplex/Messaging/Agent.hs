@@ -161,7 +161,6 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     newReceiveQueue :: SMPServer -> m (ReceiveQueue, SMPQueueInfo)
     newReceiveQueue server = do
       smp <- getSMPServerClient c server
-      liftIO $ putStrLn "created smp client"
       g <- asks idsDrg
       recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
       let rcvPrivateKey = recipientKey
@@ -207,17 +206,11 @@ processSMPTransmission ::
   SMPServerTransmission ->
   m ()
 processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
-  liftIO $ putStrLn "SMP received"
-  liftIO $ print (srv, rId, cmd)
   case cmd of
     SMP.MSG _ srvTs msgBody -> do
       -- TODO deduplicate with previously received
-      liftIO $ putStrLn "SMP.MSG"
       (connAlias, rcvQueue@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
-      liftIO $ print (connAlias, rcvQueue)
       agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
-      liftIO $ putStrLn "Agent message"
-      liftIO $ print agentMsg
       case agentMsg of
         SMPConfirmation senderKey -> do
           case status of

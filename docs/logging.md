@@ -15,8 +15,8 @@ We can also consider logging the database operations that change the data.
 ### Client connected / disconnected
 
 ```
-n |--> $ : connected
-n -X>| $ : disconnected
+client n connected to Agent
+client n disconnected from Agent
 ```
 
 where `n` is a sequential number of a connected agent client, starting from 1 (over the agent run-time).
@@ -24,14 +24,14 @@ where `n` is a sequential number of a connected agent client, starting from 1 (o
 ### Server connected / disconnected
 
 ```
-$ |--> host:port : connected
-$ -X>| host:port : disconnected
+Agent connected to host:port
+Agent disconnected from host:port
 ```
 
 ### Received command from the client
 
 ```
-n --> $ : corrId connAlias parsed_command // raw_command
+n --> A : corrId connAlias parsed_command // raw_command
 ```
 
 `raw_command` is added only in case of parsing failure.
@@ -39,13 +39,13 @@ n --> $ : corrId connAlias parsed_command // raw_command
 ### Sent command to SMP server
 
 ```
-$ --> host:port : corrId queueId parsed_command
+A --> host:port : corrId queueId parsed_command
 ```
 
 ### Received response / message from the SMP server
 
 ```
-$ <-- host:port : corrId queueId parsed_command // raw_command
+A <-- host:port : corrId queueId parsed_command // raw_command
 ```
 
 In case the response is a message or notification, corrId should be replaced with `_`
@@ -53,11 +53,18 @@ In case the response is a message or notification, corrId should be replaced wit
 ### Interpreted ("unwrapped") SMP message as agent message
 
 ```
-$ : connAlias parsed_message // raw_message 
+Agent msg : connAlias parsed_message // raw_message 
 ```
 
 ### Sent response / message to the client
 
 ```
-n <-- $ : corrId connAlias parsed_command // raw_command
+n <-- A : corrId connAlias parsed_command // raw_command
+```
+
+### Database changes
+
+```
+DB : insert/delete/update table key
+DB : insert/delete/update table key
 ```

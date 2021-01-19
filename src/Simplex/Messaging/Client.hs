@@ -28,7 +28,6 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
-import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import qualified Data.ByteString.Char8 as B
@@ -100,8 +99,6 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
       cs <- readTVarIO sentCommands
       case M.lookup corrId cs of
         Nothing -> do
-          putStrLn "SMPClient: uncorrelated response"
-          print (qId, respOrErr)
           case respOrErr of
             Right (Cmd SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
             _ -> return ()
@@ -166,15 +163,10 @@ okSMPCommand cmd c pKey qId =
     _ -> throwE SMPUnexpectedResponse
 
 sendSMPCommand :: SMPClient -> PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
-sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, smpServer} pKey qId cmd = ExceptT $ do
-  liftIO $ putStrLn $ "sending to " <> show smpServer
-  liftIO $ print cmd
+sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = ExceptT $ do
   corrId <- atomically getNextCorrId
   t <- signTransmission (corrId, qId, cmd)
-  resp <- atomically (send corrId t) >>= atomically . takeTMVar
-  liftIO $ putStrLn $ "response from " <> show smpServer
-  liftIO $ print resp
-  return resp
+  atomically (send corrId t) >>= atomically . takeTMVar
   where
     getNextCorrId :: STM CorrId
     getNextCorrId = do

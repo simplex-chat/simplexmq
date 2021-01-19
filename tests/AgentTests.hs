@@ -7,7 +7,6 @@
 module AgentTests where
 
 import AgentTests.SQLite
-import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
@@ -39,6 +38,18 @@ testDuplexConnection1 alice bob = do
   ("1", "bob", Right (INV qInfo)) <- sendRecv alice ("1", "bob", "NEW localhost:5000")
   ("11", "alice", Right CON) <- sendRecv bob ("11", "alice", "JOIN " <> serializeSmpQueueInfo qInfo)
   ("", "bob", Right CON) <- tGet SAgent alice
+  ("2", "bob", Right OK) <- sendRecv alice ("2", "bob", "SEND :hello")
+  ("3", "bob", Right OK) <- sendRecv alice ("3", "bob", "SEND :how are you?")
+  ("", "alice", Right (MSG _ _ _ _ "hello")) <- tGet SAgent bob
+  ("12", "alice", Right OK) <- sendRecv bob ("12", "alice", "ACK 0")
+  ("", "alice", Right (MSG _ _ _ _ "how are you?")) <- tGet SAgent bob
+  ("13", "alice", Right OK) <- sendRecv bob ("13", "alice", "ACK 0")
+  ("14", "alice", Right OK) <- sendRecv bob ("14", "alice", "SEND 9\nhello too")
+  ("", "bob", Right (MSG _ _ _ _ "hello too")) <- tGet SAgent alice
+  ("4", "bob", Right OK) <- sendRecv alice ("4", "bob", "ACK 0")
+  ("4", "bob", e) <- sendRecv alice ("4", "bob", "ACK 0")
+  putStrLn "*****"
+  print e
   return ()
 
 syntaxTests :: Spec
