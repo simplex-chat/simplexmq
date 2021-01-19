@@ -15,10 +15,18 @@ We can also consider logging the database operations that change the data.
 ### Client connected / disconnected
 
 ```
-n (dis)connected
+n |--> $ : connected
+n -X>| $ : disconnected
 ```
 
 where `n` is a sequential number of a connected agent client, starting from 1 (over the agent run-time).
+
+### Server connected / disconnected
+
+```
+$ |--> host:port : connected
+$ -X>| host:port : disconnected
+```
 
 ### Received command from the client
 
