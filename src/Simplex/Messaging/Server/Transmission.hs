@@ -191,14 +191,14 @@ errNoQueueId = 5
 errMessageBody :: Int
 errMessageBody = 6
 
-tPutRaw :: MonadIO m => Handle -> RawTransmission -> m ()
+tPutRaw :: Handle -> RawTransmission -> IO ()
 tPutRaw h (signature, corrId, queueId, command) = do
   putLn h signature
   putLn h corrId
   putLn h queueId
   putLn h command
 
-tGetRaw :: MonadIO m => Handle -> m RawTransmission
+tGetRaw :: Handle -> IO RawTransmission
 tGetRaw h = do
   signature <- getLn h
   corrId <- getLn h
@@ -207,7 +207,8 @@ tGetRaw h = do
   return (signature, corrId, queueId, command)
 
 tPut :: MonadIO m => Handle -> Transmission -> m ()
-tPut h (signature, (corrId, queueId, command)) = tPutRaw h (encode signature, bs corrId, encode queueId, serializeCommand command)
+tPut h (signature, (corrId, queueId, command)) =
+  liftIO $ tPutRaw h (encode signature, bs corrId, encode queueId, serializeCommand command)
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
@@ -223,7 +224,7 @@ fromServer = \case
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
 tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m TransmissionOrError
 tGet fromParty h = do
-  (signature, corrId, queueId, command) <- tGetRaw h
+  (signature, corrId, queueId, command) <- liftIO $ tGetRaw h
   let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
   either (const $ tError corrId) tParseLoadBody decodedTransmission
   where
@@ -272,8 +273,8 @@ tGet fromParty h = do
       case B.unpack msgBody of
         ':' : body -> return . Right $ B.pack body
         str -> case readMaybe str :: Maybe Int of
-          Just size -> do
-            body <- getBytes h size
+          Just size -> liftIO $ do
+            body <- B.hGet h size
             s <- getLn h
             return $ if B.null s then Right body else Left SIZE
           Nothing -> return . Left $ SYNTAX errMessageBody

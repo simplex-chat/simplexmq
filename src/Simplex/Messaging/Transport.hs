@@ -2,6 +2,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Transport where
@@ -20,8 +21,8 @@ import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import qualified UnliftIO.IO as IO
 
-startTCPServer :: MonadIO m => ServiceName -> m Socket
-startTCPServer port = liftIO . withSocketsDo $ resolve >>= open
+startTCPServer :: ServiceName -> IO Socket
+startTCPServer port = withSocketsDo $ resolve >>= open
   where
     resolve = do
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
@@ -36,18 +37,18 @@ startTCPServer port = liftIO . withSocketsDo $ resolve >>= open
 
 runTCPServer :: MonadUnliftIO m => ServiceName -> (Handle -> m ()) -> m ()
 runTCPServer port server =
-  E.bracket (startTCPServer port) (liftIO . close) $ \sock -> forever $ do
-    h <- acceptTCPConn sock
+  E.bracket (liftIO $ startTCPServer port) (liftIO . close) $ \sock -> forever $ do
+    h <- liftIO $ acceptTCPConn sock
     forkFinally (server h) (const $ IO.hClose h)
 
-acceptTCPConn :: MonadIO m => Socket -> m Handle
-acceptTCPConn sock = liftIO $ do
+acceptTCPConn :: Socket -> IO Handle
+acceptTCPConn sock = do
   (conn, _) <- accept sock
   getSocketHandle conn
 
-startTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> m Handle
+startTCPClient :: HostName -> ServiceName -> IO Handle
 startTCPClient host port =
-  liftIO . withSocketsDo $
+  withSocketsDo $
     resolve >>= foldM tryOpen (Left err) >>= either E.throwIO return
   where
     err :: IOException
@@ -70,22 +71,19 @@ startTCPClient host port =
 
 runTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
 runTCPClient host port client = do
-  h <- startTCPClient host port
+  h <- liftIO $ startTCPClient host port
   client h `E.finally` IO.hClose h
 
-getSocketHandle :: MonadIO m => Socket -> m Handle
-getSocketHandle conn = liftIO $ do
+getSocketHandle :: Socket -> IO Handle
+getSocketHandle conn = do
   h <- socketToHandle conn ReadWriteMode
   hSetBinaryMode h True
   hSetNewlineMode h NewlineMode {inputNL = CRLF, outputNL = CRLF}
   hSetBuffering h LineBuffering
   return h
 
-putLn :: MonadIO m => Handle -> ByteString -> m ()
-putLn h = liftIO . hPutStrLn h . B.unpack
+putLn :: Handle -> ByteString -> IO ()
+putLn h = B.hPut h . (<> "\r\n")
 
-getLn :: MonadIO m => Handle -> m ByteString
-getLn h = B.pack <$> liftIO (hGetLine h)
-
-getBytes :: MonadIO m => Handle -> Int -> m ByteString
-getBytes h = liftIO . B.hGet h
+getLn :: Handle -> IO ByteString
+getLn h = B.pack <$> hGetLine h

@@ -58,7 +58,7 @@ runSMPServer cfg@ServerConfig {tcpPort} = do
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
-  putLn h "Welcome to SMP v0.2.0"
+  liftIO $ putLn h "Welcome to SMP v0.2.0"
   q <- asks $ tbqSize . config
   c <- atomically $ newClient q
   s <- asks server
