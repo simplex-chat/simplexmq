@@ -5,6 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Client
   ( SMPClient,
@@ -27,13 +28,17 @@ where
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
+import Data.ByteString.Base64
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe
+import Data.Text.Encoding
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Transmission (SMPServer (..))
@@ -88,10 +93,39 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
       raceAny_ [send c h, process c, receive c h]
 
     send :: SMPClient -> Handle -> IO ()
-    send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
+    send SMPClient {sndQ} h = forever $ do
+      t <- atomically $ readTBQueue sndQ
+      tPut h t
+      logServer "-->" t
 
     receive :: SMPClient -> Handle -> IO ()
-    receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
+    receive SMPClient {rcvQ} h = forever $ do
+      t <- tGet fromServer h
+      logServerRcv t
+      atomically $ writeTBQueue rcvQ t
+
+    logServerRcv :: TransmissionOrError -> IO ()
+    logServerRcv (_, (corrId, qId, cmdOrErr)) =
+      log' $ case cmdOrErr of
+        Right cmd -> cmd
+        Left e -> Cmd SBroker $ ERR e
+      where
+        log' cmd = logServer "<--" ("", (corrId, qId, cmd))
+
+    logServer :: ByteString -> Transmission -> IO ()
+    logServer dir (_, (CorrId corrId, qId, cmd)) = do
+      logInfo . decodeUtf8 $ B.unwords ["A", dir, server, ":", corrId, secret qId, showCommand cmd]
+      where
+        secret bs = encode $ B.take 3 bs
+        server = B.pack $ host <> maybe "" (":" <>) port
+        showCommand = \case
+          Cmd _ (NEW key) -> B.unwords ["NEW", secret key]
+          Cmd _ (IDS rId sId) -> B.unwords ["IDS", secret rId, secret sId]
+          Cmd _ (KEY key) -> B.unwords ["KEY", secret key]
+          Cmd _ (SEND body) -> B.unwords ["SEND", B.pack . show $ B.length body]
+          Cmd _ (MSG _ _ body) -> B.unwords ["MSG", B.pack . show $ B.length body]
+          Cmd _ (ERR e) -> B.unwords ["ERR", B.pack $ show e]
+          Cmd _ c -> B.pack $ show c
 
     process :: SMPClient -> IO ()
     process SMPClient {rcvQ, sentCommands} = forever $ do

@@ -27,26 +27,31 @@ data AgentConfig = AgentConfig
 data Env = Env
   { config :: AgentConfig,
     idsDrg :: TVar ChaChaDRG,
-    db :: SQLiteStore
+    db :: SQLiteStore,
+    clientCounter :: TVar Int
   }
 
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission Client),
     sndQ :: TBQueue (ATransmission Agent),
     msgQ :: TBQueue SMPServerTransmission,
-    smpClients :: TVar (Map SMPServer SMPClient)
+    smpClients :: TVar (Map SMPServer SMPClient),
+    clientId :: Int
   }
 
-newAgentClient :: Natural -> STM AgentClient
-newAgentClient qSize = do
+newAgentClient :: TVar Int -> Natural -> STM AgentClient
+newAgentClient cc qSize = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
   smpClients <- newTVar M.empty
-  return AgentClient {rcvQ, sndQ, msgQ, smpClients}
+  clientId <- (+ 1) <$> readTVar cc
+  writeTVar cc clientId
+  return AgentClient {rcvQ, sndQ, msgQ, smpClients, clientId}
 
 newEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newEnv config = do
   idsDrg <- drgNew >>= newTVarIO
   db <- newSQLiteStore $ dbFile config
-  return Env {config, idsDrg, db}
+  clientCounter <- newTVarIO 0
+  return Env {config, idsDrg, db, clientCounter}

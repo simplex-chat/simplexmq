@@ -10,13 +10,16 @@
 
 module Simplex.Messaging.Agent (runSMPAgent) where
 
+import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import qualified Data.Map as M
+import Data.Text.Encoding
 import Data.Time.Clock
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
@@ -25,7 +28,7 @@ import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey)
+import Simplex.Messaging.Server.Transmission (CorrId (..), PrivateKey, PublicKey)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
@@ -44,24 +47,40 @@ runSMPAgent cfg@AgentConfig {tcpPort} = do
     smpAgent = runTCPServer tcpPort $ \h -> do
       liftIO $ putLn h "Welcome to SMP v0.2.0 agent"
       q <- asks $ tbqSize . config
-      c <- atomically $ newAgentClient q
+      n <- asks clientCounter
+      c <- atomically $ newAgentClient n q
+      logInfo $ "client " <> showText (clientId c) <> " connected to Agent"
       race_ (connectClient h c) (runClient c)
 
 connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
-connectClient h c = race_ (send h c) (receive h c)
+connectClient h c = do
+  race_ (send h c) (receive h c)
+  logInfo $ "client " <> showText (clientId c) <> " disconnected from Agent"
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 runClient c = race_ (subscriber c) (client c)
 
-receive :: MonadUnliftIO m => Handle -> AgentClient -> m ()
-receive h AgentClient {rcvQ, sndQ} =
-  forever $
-    tGet SClient h >>= \(corrId, cAlias, command) -> atomically $ case command of
-      Right cmd -> writeTBQueue rcvQ (corrId, cAlias, cmd)
-      Left e -> writeTBQueue sndQ (corrId, cAlias, ERR e)
+receive :: forall m. MonadUnliftIO m => Handle -> AgentClient -> m ()
+receive h c@AgentClient {rcvQ, sndQ} = forever $ do
+  (corrId, cAlias, cmdOrErr) <- tGet SClient h
+  case cmdOrErr of
+    Right cmd -> write rcvQ (corrId, cAlias, cmd)
+    Left e -> write sndQ (corrId, cAlias, ERR e)
+  where
+    write :: TBQueue (ATransmission p) -> ATransmission p -> m ()
+    write q t = do
+      logClient c "-->" t
+      atomically $ writeTBQueue q t
 
 send :: MonadUnliftIO m => Handle -> AgentClient -> m ()
-send h AgentClient {sndQ} = forever $ atomically (readTBQueue sndQ) >>= tPut h
+send h c@AgentClient {sndQ} = forever $ do
+  t <- atomically $ readTBQueue sndQ
+  tPut h t
+  logClient c "<--" t
+
+logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> m ()
+logClient AgentClient {clientId} dir (CorrId corrId, cAlias, cmd) = do
+  logInfo . decodeUtf8 $ B.unwords [B.pack $ show clientId, dir, "A :", corrId, cAlias, serializeCommand cmd]
 
 client :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 client c@AgentClient {rcvQ, sndQ} = forever $ do
