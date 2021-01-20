@@ -130,12 +130,12 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
     smpClientMessageP =
       SMPMessage
         <$> A.decimal <* A.space
-        <*> tsIso8601P <* A.space
+        <*> tsISO8601P <* A.space
         <*> base64P <* A.endOfLine
         <*> agentMessageP
 
-    tsIso8601P :: Parser UTCTime
-    tsIso8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
+tsISO8601P :: Parser UTCTime
+tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
 
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
@@ -164,7 +164,7 @@ agentMessageP =
 
 smpQueueInfoP :: Parser SMPQueueInfo
 smpQueueInfoP =
-  SMPQueueInfo <$> ("smp::" *> smpServerP <* "::") <*> (base64P <* "::") <*> base64P
+  "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> base64P)
 
 smpServerP :: Parser SMPServer
 smpServerP = SMPServer <$> server <*> port <*> msgHash
@@ -190,12 +190,12 @@ errParams = Left $ SYNTAX errBadParameters
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
-  HELLO _verKey _ackMode -> "HELLO" -- TODO
+  HELLO verifyKey ackMode -> "HELLO " <> encode verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
-  A_MSG msgBody -> "A_MSG " <> msgBody
+  A_MSG body -> "MSG " <> serializeMsg body <> "\n"
 
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
-serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = "smp::" <> serializeServer srv <> "::" <> encode qId <> "::" <> encode ek
+serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = B.intercalate "::" ["smp", serializeServer srv, encode qId, encode ek]
 
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} = B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
@@ -233,7 +233,7 @@ data QueueDirection = SND | RCV deriving (Show)
 data QueueStatus = New | Confirmed | Secured | Active | Disabled
   deriving (Eq, Show, Read)
 
-type AgentMsgId = Int
+type AgentMsgId = Integer
 
 data MsgStatus = MsgOk | MsgError MsgErrorType
   deriving (Show)
@@ -243,7 +243,6 @@ data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | Msg
 
 data ErrorType
   = UNKNOWN
-  | UNSUPPORTED -- TODO remove once all commands implemented
   | PROHIBITED
   | SYNTAX Int
   | BROKER Natural
@@ -291,16 +290,30 @@ parseCommandP =
   "NEW " *> newCmd
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
+    <|> "SEND " *> sendCmd
+    <|> "MSG " *> message
+    <|> "ACK " *> acknowledge
+    -- <|> "ERR " *> agentError - TODO
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
     newCmd = ACmd SClient . NEW <$> smpServerP
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
+    sendCmd = ACmd SClient <$> (SEND <$> A.takeByteString)
+    message =
+      let sp = A.space; msgId = A.decimal <* sp; ts = tsISO8601P <* sp; body = A.takeByteString
+       in ACmd SAgent <$> (MSG <$> msgId <*> ts <*> ts <*> status <* sp <*> body)
+    acknowledge = ACmd SClient <$> (ACK <$> A.decimal)
     replyMode =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)
         <|> pure ReplyOn
+    status = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
+    msgErrorType =
+      "ID " *> (MsgBadId <$> A.decimal)
+        <|> "NO_ID " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
+        <|> "HASH" $> MsgBadHash
 
 parseCommand :: ByteString -> Either ErrorType ACmd
 parseCommand = parse parseCommandP $ SYNTAX errBadCommand
@@ -310,6 +323,10 @@ serializeCommand = \case
   NEW srv -> "NEW " <> serializeServer srv
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
+  SEND msgBody -> "SEND " <> serializeMsg msgBody
+  MSG aMsgId aTs ts st body ->
+    B.unwords ["MSG", B.pack $ show aMsgId, B.pack $ formatISO8601Millis aTs, B.pack $ formatISO8601Millis ts, msgStatus st, serializeMsg body]
+  ACK aMsgId -> "ACK " <> B.pack (show aMsgId)
   CON -> "CON"
   ERR e -> "ERR " <> B.pack (show e)
   OK -> "OK"
@@ -320,14 +337,27 @@ serializeCommand = \case
       ReplyOff -> " NO_REPLY"
       ReplyVia srv -> " " <> serializeServer srv
       ReplyOn -> ""
+    msgStatus :: MsgStatus -> ByteString
+    msgStatus = \case
+      MsgOk -> "OK"
+      MsgError e ->
+        "ERR" <> case e of
+          MsgSkipped fromMsgId toMsgId ->
+            B.unwords ["NO_ID", B.pack $ show fromMsgId, B.pack $ show toMsgId]
+          MsgBadId aMsgId -> "ID " <> B.pack (show aMsgId)
+          MsgBadHash -> "HASH"
 
-tPutRaw :: MonadIO m => Handle -> ARawTransmission -> m ()
+-- TODO - save function as in the server Transmission - re-use?
+serializeMsg :: ByteString -> ByteString
+serializeMsg body = B.pack (show $ B.length body) <> "\n" <> body
+
+tPutRaw :: Handle -> ARawTransmission -> IO ()
 tPutRaw h (corrId, connAlias, command) = do
   putLn h corrId
   putLn h connAlias
   putLn h command
 
-tGetRaw :: MonadIO m => Handle -> m ARawTransmission
+tGetRaw :: Handle -> IO ARawTransmission
 tGetRaw h = do
   corrId <- getLn h
   connAlias <- getLn h
@@ -335,11 +365,12 @@ tGetRaw h = do
   return (corrId, connAlias, command)
 
 tPut :: MonadIO m => Handle -> ATransmission p -> m ()
-tPut h (corrId, connAlias, command) = tPutRaw h (bs corrId, connAlias, serializeCommand command)
+tPut h (corrId, connAlias, command) =
+  liftIO $ tPutRaw h (bs corrId, connAlias, serializeCommand command)
 
 -- | get client and agent transmissions
 tGet :: forall m p. MonadIO m => SAParty p -> Handle -> m (ATransmissionOrError p)
-tGet party h = tGetRaw h >>= tParseLoadBody
+tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
     tParseLoadBody t@(corrId, connAlias, command) = do
@@ -370,13 +401,14 @@ tGet party h = tGetRaw h >>= tParseLoadBody
       MSG agentMsgId srvTS agentTS status body -> MSG agentMsgId srvTS agentTS status <$$> getMsgBody body
       cmd -> return $ Right cmd
 
+    -- TODO refactor with server
     getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
     getMsgBody msgBody =
       case B.unpack msgBody of
         ':' : body -> return . Right $ B.pack body
         str -> case readMaybe str :: Maybe Int of
-          Just size -> do
-            body <- getBytes h size
+          Just size -> liftIO $ do
+            body <- B.hGet h size
             s <- getLn h
             return $ if B.null s then Right body else Left SIZE
           Nothing -> return . Left $ SYNTAX errMessageBody

@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -9,18 +11,43 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
 import Simplex.Messaging.Agent.Transmission
+import System.IO (Handle)
 import Test.Hspec
 
 agentTests :: Spec
 agentTests = do
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" syntaxTests
+  describe "Establishing duplex connection" do
+    it "should connect via one server and one agent" $
+      smpAgentTest2_1 testDuplexConnection1
+    it "should connect via one server and two agents" $
+      smpAgentTest2 testDuplexConnection1
+
+sendRecv :: Handle -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
+sendRecv h (corrId, connAlias, cmd) = tPutRaw h (corrId, connAlias, cmd) >> tGet SAgent h
 
 (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
 command >#> response = smpAgentTest command `shouldReturn` response
 
 (>#>=) :: ARawTransmission -> ((ByteString, ByteString, [ByteString]) -> Bool) -> Expectation
 command >#>= p = smpAgentTest command >>= (`shouldSatisfy` p . \(cId, cAlias, cmd) -> (cId, cAlias, B.words cmd))
+
+testDuplexConnection1 :: Handle -> Handle -> IO ()
+testDuplexConnection1 alice bob = do
+  ("1", "bob", Right (INV qInfo)) <- sendRecv alice ("1", "bob", "NEW localhost:5000")
+  ("11", "alice", Right CON) <- sendRecv bob ("11", "alice", "JOIN " <> serializeSmpQueueInfo qInfo)
+  ("", "bob", Right CON) <- tGet SAgent alice
+  ("2", "bob", Right OK) <- sendRecv alice ("2", "bob", "SEND :hello")
+  ("3", "bob", Right OK) <- sendRecv alice ("3", "bob", "SEND :how are you?")
+  ("", "alice", Right (MSG _ _ _ _ "hello")) <- tGet SAgent bob
+  ("12", "alice", Right OK) <- sendRecv bob ("12", "alice", "ACK 0")
+  ("", "alice", Right (MSG _ _ _ _ "how are you?")) <- tGet SAgent bob
+  ("13", "alice", Right OK) <- sendRecv bob ("13", "alice", "ACK 0")
+  ("14", "alice", Right OK) <- sendRecv bob ("14", "alice", "SEND 9\nhello too")
+  ("", "bob", Right (MSG _ _ _ _ "hello too")) <- tGet SAgent alice
+  ("4", "bob", Right OK) <- sendRecv alice ("4", "bob", "ACK 0")
+  return ()
 
 syntaxTests :: Spec
 syntaxTests = do

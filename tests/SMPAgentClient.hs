@@ -1,6 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module SMPAgentClient where
 
@@ -14,6 +15,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPClientConfig (..))
 import Simplex.Messaging.Transport
+import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
@@ -25,14 +27,53 @@ agentTestHost = "localhost"
 agentTestPort :: ServiceName
 agentTestPort = "5001"
 
+agentTestPort2 :: ServiceName
+agentTestPort2 = "5011"
+
 testDB :: String
 testDB = "smp-agent.test.protocol.db"
+
+testDB2 :: String
+testDB2 = "smp-agent2.test.protocol.db"
 
 smpAgentTest :: ARawTransmission -> IO ARawTransmission
 smpAgentTest cmd = runSmpAgentTest $ \h -> tPutRaw h cmd >> tGetRaw h
 
 runSmpAgentTest :: (MonadUnliftIO m, MonadRandom m) => (Handle -> m a) -> m a
 runSmpAgentTest test = withSmpServer . withSmpAgent $ testSMPAgentClient test
+
+runSmpAgentTestN :: forall m a. (MonadUnliftIO m, MonadRandom m) => [(ServiceName, String)] -> ([Handle] -> m a) -> m a
+runSmpAgentTestN agents test = withSmpServer $ run agents []
+  where
+    run :: [(ServiceName, String)] -> [Handle] -> m a
+    run [] hs = test hs
+    run (a@(p, _) : as) hs = withSmpAgentOn a $ testSMPAgentClientOn p $ \h -> run as (h : hs)
+
+runSmpAgentTestN_1 :: forall m a. (MonadUnliftIO m, MonadRandom m) => Int -> ([Handle] -> m a) -> m a
+runSmpAgentTestN_1 nClients test = withSmpServer . withSmpAgent $ run nClients []
+  where
+    run :: Int -> [Handle] -> m a
+    run 0 hs = test hs
+    run n hs = testSMPAgentClient $ \h -> run (n - 1) (h : hs)
+
+smpAgentTestN :: [(ServiceName, String)] -> ([Handle] -> IO ()) -> Expectation
+smpAgentTestN agents test' = runSmpAgentTestN agents test' `shouldReturn` ()
+
+smpAgentTestN_1 :: Int -> ([Handle] -> IO ()) -> Expectation
+smpAgentTestN_1 n test' = runSmpAgentTestN_1 n test' `shouldReturn` ()
+
+smpAgentTest2 :: (Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest2 test' =
+  smpAgentTestN [(agentTestPort, testDB), (agentTestPort2, testDB2)] _test
+  where
+    _test [h1, h2] = test' h1 h2
+    _test _ = error "expected 2 handles"
+
+smpAgentTest2_1 :: (Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest2_1 test' = smpAgentTestN_1 2 _test
+  where
+    _test [h1, h2] = test' h1 h2
+    _test _ = error "expected 2 handles"
 
 cfg :: AgentConfig
 cfg =
@@ -48,18 +89,24 @@ cfg =
           }
     }
 
-withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => m a -> m a
-withSmpAgent =
+withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> m a -> m a
+withSmpAgentOn (port', db') =
   E.bracket
-    (forkIO $ runSMPAgent cfg)
-    (liftIO . killThread >=> const (removeFile testDB))
+    (forkIO $ runSMPAgent cfg {tcpPort = port', dbFile = db'})
+    (liftIO . killThread >=> const (removeFile db'))
     . const
 
-testSMPAgentClient :: MonadUnliftIO m => (Handle -> m a) -> m a
-testSMPAgentClient client = do
+withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => m a -> m a
+withSmpAgent = withSmpAgentOn (agentTestPort, testDB)
+
+testSMPAgentClientOn :: MonadUnliftIO m => ServiceName -> (Handle -> m a) -> m a
+testSMPAgentClientOn port' client = do
   threadDelay 50_000 -- TODO hack: thread delay for SMP agent to start
-  runTCPClient agentTestHost agentTestPort $ \h -> do
-    line <- getLn h
+  runTCPClient agentTestHost port' $ \h -> do
+    line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.2.0 agent"
       then client h
       else error "not connected"
+
+testSMPAgentClient :: MonadUnliftIO m => (Handle -> m a) -> m a
+testSMPAgentClient = testSMPAgentClientOn agentTestPort
