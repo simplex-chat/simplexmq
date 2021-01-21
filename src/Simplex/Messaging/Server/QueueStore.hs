@@ -5,26 +5,26 @@
 
 module Simplex.Messaging.Server.QueueStore where
 
-import Simplex.Messaging.Server.Transmission
+import qualified Simplex.Messaging.Protocol as SMP
 
 data QueueRec = QueueRec
-  { recipientId :: QueueId,
-    senderId :: QueueId,
-    recipientKey :: PublicKey,
-    senderKey :: Maybe PublicKey,
+  { recipientId :: SMP.QueueId,
+    senderId :: SMP.QueueId,
+    recipientKey :: SMP.PublicKey,
+    senderKey :: Maybe SMP.PublicKey,
     status :: QueueStatus
   }
 
 data QueueStatus = QueueActive | QueueOff
 
 class MonadQueueStore s m where
-  addQueue :: s -> RecipientKey -> (RecipientId, SenderId) -> m (Either ErrorType ())
-  getQueue :: s -> SParty (a :: Party) -> QueueId -> m (Either ErrorType QueueRec)
-  secureQueue :: s -> RecipientId -> SenderKey -> m (Either ErrorType ())
-  suspendQueue :: s -> RecipientId -> m (Either ErrorType ())
-  deleteQueue :: s -> RecipientId -> m (Either ErrorType ())
+  addQueue :: s -> SMP.RecipientKey -> (SMP.RecipientId, SMP.SenderId) -> m (Either SMP.ErrorType ())
+  getQueue :: s -> SMP.SParty (a :: SMP.Party) -> SMP.QueueId -> m (Either SMP.ErrorType QueueRec)
+  secureQueue :: s -> SMP.RecipientId -> SMP.SenderKey -> m (Either SMP.ErrorType ())
+  suspendQueue :: s -> SMP.RecipientId -> m (Either SMP.ErrorType ())
+  deleteQueue :: s -> SMP.RecipientId -> m (Either SMP.ErrorType ())
 
-mkQueueRec :: RecipientKey -> (RecipientId, SenderId) -> QueueRec
+mkQueueRec :: SMP.RecipientKey -> (SMP.RecipientId, SMP.SenderId) -> QueueRec
 mkQueueRec recipientKey (recipientId, senderId) =
   QueueRec
     { recipientId,

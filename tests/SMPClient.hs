@@ -7,9 +7,9 @@ module SMPClient where
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Network.Socket
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Env.STM
-import Simplex.Messaging.Server.Transmission
 import Simplex.Messaging.Transport
 import Test.Hspec
 import UnliftIO.Concurrent
@@ -60,8 +60,8 @@ runSmpTestN nClients test = withSmpServer $ run nClients []
     run 0 hs = test hs
     run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
 
-smpServerTest :: RawTransmission -> IO RawTransmission
-smpServerTest cmd = runSmpTest $ \h -> tPutRaw h cmd >> tGetRaw h
+smpServerTest :: SMP.RawTransmission -> IO SMP.RawTransmission
+smpServerTest cmd = runSmpTest $ \h -> SMP.tPutRaw h cmd >> SMP.tGetRaw h
 
 smpTest :: (Handle -> IO ()) -> Expectation
 smpTest test' = runSmpTest test' `shouldReturn` ()

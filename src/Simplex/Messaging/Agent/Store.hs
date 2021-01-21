@@ -15,16 +15,16 @@ import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, RecipientId, SenderId)
+import qualified Simplex.Messaging.Protocol as SMP
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
-    rcvId :: RecipientId,
-    rcvPrivateKey :: PrivateKey,
-    sndId :: Maybe SenderId,
-    sndKey :: Maybe PublicKey,
-    decryptKey :: PrivateKey,
-    verifyKey :: Maybe PublicKey,
+    rcvId :: SMP.RecipientId,
+    rcvPrivateKey :: SMP.PrivateKey,
+    sndId :: Maybe SMP.SenderId,
+    sndKey :: Maybe SMP.PublicKey,
+    decryptKey :: SMP.PrivateKey,
+    verifyKey :: Maybe SMP.PublicKey,
     status :: QueueStatus,
     ackMode :: AckMode -- whether acknowledgement will be sent (via SendQueue if present)
   }
@@ -32,10 +32,10 @@ data ReceiveQueue = ReceiveQueue
 
 data SendQueue = SendQueue
   { server :: SMPServer,
-    sndId :: SenderId,
-    sndPrivateKey :: PrivateKey,
-    encryptKey :: PublicKey,
-    signKey :: PrivateKey,
+    sndId :: SMP.SenderId,
+    sndPrivateKey :: SMP.PrivateKey,
+    encryptKey :: SMP.PublicKey,
+    signKey :: SMP.PrivateKey,
     -- verifyKey :: Maybe PublicKey,
     status :: QueueStatus,
     ackMode :: AckMode -- whether acknowledgement is expected (via ReceiveQueue if present)
@@ -98,7 +98,7 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m ()
   createSndConn :: s -> ConnAlias -> SendQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
-  getReceiveQueue :: s -> SMPServer -> RecipientId -> m (ConnAlias, ReceiveQueue)
+  getReceiveQueue :: s -> SMPServer -> SMP.RecipientId -> m (ConnAlias, ReceiveQueue)
   deleteConn :: s -> ConnAlias -> m ()
   addSndQueue :: s -> ConnAlias -> SendQueue -> m ()
   addRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m ()

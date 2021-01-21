@@ -13,13 +13,13 @@ module Simplex.Messaging.Server.QueueStore.STM where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.Transmission
 import UnliftIO.STM
 
 data QueueStoreData = QueueStoreData
-  { queues :: Map RecipientId QueueRec,
-    senders :: Map SenderId RecipientId
+  { queues :: Map SMP.RecipientId QueueRec,
+    senders :: Map SMP.SenderId SMP.RecipientId
   }
 
 type QueueStore = TVar QueueStoreData
@@ -28,11 +28,11 @@ newQueueStore :: STM QueueStore
 newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty}
 
 instance MonadQueueStore QueueStore STM where
-  addQueue :: QueueStore -> RecipientKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
+  addQueue :: QueueStore -> SMP.RecipientKey -> (SMP.RecipientId, SMP.SenderId) -> STM (Either SMP.ErrorType ())
   addQueue store rKey ids@(rId, sId) = do
     cs@QueueStoreData {queues, senders} <- readTVar store
     if M.member rId queues || M.member sId senders
-      then return $ Left DUPLICATE
+      then return $ Left SMP.DUPLICATE
       else do
         writeTVar store $
           cs
@@ -41,29 +41,29 @@ instance MonadQueueStore QueueStore STM where
             }
         return $ Right ()
 
-  getQueue :: QueueStore -> SParty (p :: Party) -> QueueId -> STM (Either ErrorType QueueRec)
-  getQueue store SRecipient rId = do
+  getQueue :: QueueStore -> SMP.SParty (p :: SMP.Party) -> SMP.QueueId -> STM (Either SMP.ErrorType QueueRec)
+  getQueue store SMP.SRecipient rId = do
     cs <- readTVar store
     return $ getRcpQueue cs rId
-  getQueue store SSender sId = do
+  getQueue store SMP.SSender sId = do
     cs <- readTVar store
     let rId = M.lookup sId $ senders cs
-    return $ maybe (Left AUTH) (getRcpQueue cs) rId
-  getQueue _ SBroker _ =
-    return $ Left INTERNAL
+    return $ maybe (Left SMP.AUTH) (getRcpQueue cs) rId
+  getQueue _ SMP.SBroker _ =
+    return $ Left SMP.INTERNAL
 
   secureQueue store rId sKey =
     updateQueues store rId $ \cs c ->
       case senderKey c of
-        Just _ -> (Left AUTH, cs)
+        Just _ -> (Left SMP.AUTH, cs)
         _ -> (Right (), cs {queues = M.insert rId c {senderKey = Just sKey} (queues cs)})
 
-  suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
+  suspendQueue :: QueueStore -> SMP.RecipientId -> STM (Either SMP.ErrorType ())
   suspendQueue store rId =
     updateQueues store rId $ \cs c ->
       (Right (), cs {queues = M.insert rId c {status = QueueOff} (queues cs)})
 
-  deleteQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
+  deleteQueue :: QueueStore -> SMP.RecipientId -> STM (Either SMP.ErrorType ())
   deleteQueue store rId =
     updateQueues store rId $ \cs c ->
       ( Right (),
@@ -75,9 +75,9 @@ instance MonadQueueStore QueueStore STM where
 
 updateQueues ::
   QueueStore ->
-  RecipientId ->
-  (QueueStoreData -> QueueRec -> (Either ErrorType (), QueueStoreData)) ->
-  STM (Either ErrorType ())
+  SMP.RecipientId ->
+  (QueueStoreData -> QueueRec -> (Either SMP.ErrorType (), QueueStoreData)) ->
+  STM (Either SMP.ErrorType ())
 updateQueues store rId update = do
   cs <- readTVar store
   let conn = getRcpQueue cs rId
@@ -88,5 +88,5 @@ updateQueues store rId update = do
       writeTVar store cs'
       return res
 
-getRcpQueue :: QueueStoreData -> RecipientId -> Either ErrorType QueueRec
-getRcpQueue cs rId = maybe (Left AUTH) Right . M.lookup rId $ queues cs
+getRcpQueue :: QueueStoreData -> SMP.RecipientId -> Either SMP.ErrorType QueueRec
+getRcpQueue cs rId = maybe (Left SMP.AUTH) Right . M.lookup rId $ queues cs

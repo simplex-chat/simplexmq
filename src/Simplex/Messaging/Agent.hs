@@ -24,9 +24,8 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey)
-import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -254,7 +253,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
       liftSMP $ secureSMPQueue smp rcvPrivateKey rId senderKey
       withStore $ \st -> updateRcvQueueStatus st rq Secured
 
-decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
+decryptMessage :: MonadUnliftIO m => SMP.PrivateKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return
 
 getSMPServerClient ::
@@ -332,7 +331,7 @@ sendHello c sq@SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
   _send smp 20 msg
   withStore $ \st -> updateSndQueueStatus st sq Active
   where
-    mkHello :: PublicKey -> AckMode -> m ByteString
+    mkHello :: SMP.PublicKey -> AckMode -> m ByteString
     mkHello verifyKey ackMode =
       mkAgentMessage encryptKey $ HELLO verifyKey ackMode
 
@@ -352,7 +351,7 @@ sendAck c ReceiveQueue {server, rcvId, rcvPrivateKey} = do
   smp <- getSMPServerClient c server
   liftSMP $ ackSMPMessage smp rcvPrivateKey rcvId
 
-mkAgentMessage :: (MonadUnliftIO m) => PrivateKey -> AMessage -> m ByteString
+mkAgentMessage :: (MonadUnliftIO m) => SMP.PrivateKey -> AMessage -> m ByteString
 mkAgentMessage _encKey agentMessage = do
   agentTimestamp <- liftIO getCurrentTime
   let msg =

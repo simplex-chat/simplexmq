@@ -37,7 +37,7 @@ import Data.Maybe
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Transmission (SMPServer (..))
-import Simplex.Messaging.Server.Transmission
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
 import System.IO
@@ -46,13 +46,13 @@ data SMPClient = SMPClient
   { action :: Async (),
     smpServer :: SMPServer,
     clientCorrId :: TVar Natural,
-    sentCommands :: TVar (Map CorrId Request),
-    sndQ :: TBQueue Transmission,
-    rcvQ :: TBQueue TransmissionOrError,
+    sentCommands :: TVar (Map SMP.CorrId Request),
+    sndQ :: TBQueue SMP.Transmission,
+    rcvQ :: TBQueue SMP.TransmissionOrError,
     msgQ :: TBQueue SMPServerTransmission
   }
 
-type SMPServerTransmission = (SMPServer, RecipientId, Command 'Broker)
+type SMPServerTransmission = (SMPServer, SMP.RecipientId, SMP.Command 'SMP.Broker)
 
 data SMPClientConfig = SMPClientConfig
   { qSize :: Natural,
@@ -63,8 +63,8 @@ smpDefaultConfig :: SMPClientConfig
 smpDefaultConfig = SMPClientConfig 16 "5223"
 
 data Request = Request
-  { queueId :: QueueId,
-    responseVar :: TMVar (Either SMPClientError Cmd)
+  { queueId :: SMP.QueueId,
+    responseVar :: TMVar (Either SMPClientError SMP.Cmd)
   }
 
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO SMPClient
@@ -88,10 +88,10 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
       raceAny_ [send c h, process c, receive c h]
 
     send :: SMPClient -> Handle -> IO ()
-    send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
+    send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= SMP.tPut h
 
     receive :: SMPClient -> Handle -> IO ()
-    receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
+    receive SMPClient {rcvQ} h = forever $ SMP.tGet SMP.fromServer h >>= atomically . writeTBQueue rcvQ
 
     process :: SMPClient -> IO ()
     process SMPClient {rcvQ, sentCommands} = forever $ do
@@ -100,7 +100,7 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
       case M.lookup corrId cs of
         Nothing -> do
           case respOrErr of
-            Right (Cmd SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
+            Right (SMP.Cmd SMP.SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
             _ -> return ()
         Just Request {queueId, responseVar} -> atomically $ do
           modifyTVar sentCommands $ M.delete corrId
@@ -108,77 +108,77 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
             if queueId == qId
               then case respOrErr of
                 Left e -> Left $ SMPResponseError e
-                Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
+                Right (SMP.Cmd _ (SMP.ERR e)) -> Left $ SMPServerError e
                 Right r -> Right r
               else Left SMPQueueIdError
 
 data SMPClientError
-  = SMPServerError ErrorType
-  | SMPResponseError ErrorType
+  = SMPServerError SMP.ErrorType
+  | SMPResponseError SMP.ErrorType
   | SMPQueueIdError
   | SMPUnexpectedResponse
   | SMPResponseTimeout
   | SMPClientError
   deriving (Eq, Show, Exception)
 
-createSMPQueue :: SMPClient -> PrivateKey -> RecipientKey -> ExceptT SMPClientError IO (RecipientId, SenderId)
+createSMPQueue :: SMPClient -> SMP.PrivateKey -> SMP.RecipientKey -> ExceptT SMPClientError IO (SMP.RecipientId, SMP.SenderId)
 createSMPQueue c _rpKey rKey =
   -- TODO add signing this request too - requires changes in the server
-  sendSMPCommand c "" "" (Cmd SRecipient $ NEW rKey) >>= \case
-    Cmd _ (IDS rId sId) -> return (rId, sId)
+  sendSMPCommand c "" "" (SMP.Cmd SMP.SRecipient $ SMP.NEW rKey) >>= \case
+    SMP.Cmd _ (SMP.IDS rId sId) -> return (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
-subscribeSMPQueue :: SMPClient -> PrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
+subscribeSMPQueue :: SMPClient -> SMP.PrivateKey -> SMP.RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
-  sendSMPCommand c rpKey rId (Cmd SRecipient SUB) >>= \case
-    Cmd _ OK -> return ()
-    Cmd _ cmd@MSG {} ->
+  sendSMPCommand c rpKey rId (SMP.Cmd SMP.SRecipient SMP.SUB) >>= \case
+    SMP.Cmd _ SMP.OK -> return ()
+    SMP.Cmd _ cmd@SMP.MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
-secureSMPQueue :: SMPClient -> PrivateKey -> RecipientId -> SenderKey -> ExceptT SMPClientError IO ()
-secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
+secureSMPQueue :: SMPClient -> SMP.PrivateKey -> SMP.RecipientId -> SMP.SenderKey -> ExceptT SMPClientError IO ()
+secureSMPQueue c rpKey rId senderKey = okSMPCommand (SMP.Cmd SMP.SRecipient $ SMP.KEY senderKey) c rpKey rId
 
-sendSMPMessage :: SMPClient -> PrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
-sendSMPMessage c spKey sId msg = okSMPCommand (Cmd SSender $ SEND msg) c spKey sId
+sendSMPMessage :: SMPClient -> SMP.PrivateKey -> SMP.SenderId -> SMP.MsgBody -> ExceptT SMPClientError IO ()
+sendSMPMessage c spKey sId msg = okSMPCommand (SMP.Cmd SMP.SSender $ SMP.SEND msg) c spKey sId
 
-ackSMPMessage :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
+ackSMPMessage :: SMPClient -> SMP.RecipientKey -> SMP.QueueId -> ExceptT SMPClientError IO ()
 ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
-  sendSMPCommand c rpKey rId (Cmd SRecipient ACK) >>= \case
-    Cmd _ OK -> return ()
-    Cmd _ cmd@MSG {} ->
+  sendSMPCommand c rpKey rId (SMP.Cmd SMP.SRecipient SMP.ACK) >>= \case
+    SMP.Cmd _ SMP.OK -> return ()
+    SMP.Cmd _ cmd@SMP.MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
-suspendSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
-suspendSMPQueue = okSMPCommand $ Cmd SRecipient OFF
+suspendSMPQueue :: SMPClient -> SMP.RecipientKey -> SMP.QueueId -> ExceptT SMPClientError IO ()
+suspendSMPQueue = okSMPCommand $ SMP.Cmd SMP.SRecipient SMP.OFF
 
-deleteSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
-deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
+deleteSMPQueue :: SMPClient -> SMP.RecipientKey -> SMP.QueueId -> ExceptT SMPClientError IO ()
+deleteSMPQueue = okSMPCommand $ SMP.Cmd SMP.SRecipient SMP.DEL
 
-okSMPCommand :: Cmd -> SMPClient -> PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+okSMPCommand :: SMP.Cmd -> SMPClient -> SMP.PrivateKey -> SMP.QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c pKey qId cmd >>= \case
-    Cmd _ OK -> return ()
+    SMP.Cmd _ SMP.OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
-sendSMPCommand :: SMPClient -> PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
+sendSMPCommand :: SMPClient -> SMP.PrivateKey -> SMP.QueueId -> SMP.Cmd -> ExceptT SMPClientError IO SMP.Cmd
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = ExceptT $ do
   corrId <- atomically getNextCorrId
   t <- signTransmission (corrId, qId, cmd)
   atomically (send corrId t) >>= atomically . takeTMVar
   where
-    getNextCorrId :: STM CorrId
+    getNextCorrId :: STM SMP.CorrId
     getNextCorrId = do
       i <- (+ 1) <$> readTVar clientCorrId
       writeTVar clientCorrId i
-      return . CorrId . B.pack $ show i
+      return . SMP.CorrId . B.pack $ show i
 
     -- TODO this is a stub - to replace with cryptographic signature
-    signTransmission :: Signed -> IO Transmission
+    signTransmission :: SMP.Signed -> IO SMP.Transmission
     signTransmission signed = return (pKey, signed)
 
-    send :: CorrId -> Transmission -> STM (TMVar (Either SMPClientError Cmd))
+    send :: SMP.CorrId -> SMP.Transmission -> STM (TMVar (Either SMPClientError SMP.Cmd))
     send corrId t = do
       r <- newEmptyTMVar
       modifyTVar sentCommands . M.insert corrId $ Request qId r
