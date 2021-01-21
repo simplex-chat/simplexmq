@@ -179,6 +179,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
       agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
       case agentMsg of
         SMPConfirmation senderKey -> do
+          logServer "<--" c srv rId "MSG <KEY>"
           case status of
             New -> do
               -- TODO currently it automatically allows whoever sends the confirmation
@@ -196,24 +197,27 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
         SMPMessage {agentMessage, agentMsgId, agentTimestamp} ->
           case agentMessage of
             HELLO _verifyKey _ -> do
+              logServer "<--" c srv rId "MSG <HELLO>"
               -- TODO send status update to the user?
               withStore $ \st -> updateRcvQueueStatus st rq Active
               sendAck c rq
             REPLY qInfo -> do
+              logServer "<--" c srv rId "MSG <REPLY>"
               -- TODO move senderKey inside SendQueue
               (sq, senderKey) <- newSendQueue qInfo
               withStore $ \st -> addSndQueue st connAlias sq
               connectToSendQueue c sq senderKey
               notify connAlias CON
               sendAck c rq
-            A_MSG body ->
+            A_MSG body -> do
+              logServer "<--" c srv rId "MSG <MSG>"
               -- TODO check message status
               notify connAlias $ MSG agentMsgId agentTimestamp srvTs MsgOk body
       return ()
-    SMP.END -> return ()
-    _ -> liftIO $ do
-      putStrLn "unexpected response"
-      print cmd
+    SMP.END -> do
+      logServer "<--" c srv rId "END"
+      return ()
+    _ -> logServer "<--" c srv rId $ "unexpected:" <> (B.pack . show) cmd
   where
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
