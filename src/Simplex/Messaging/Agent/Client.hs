@@ -85,22 +85,25 @@ getSMPServerClient AgentClient {smpClients, msgQ} srv =
       liftIO . putStrLn $ "Exception: " ++ show e -- TODO remove
       throwError err
 
-withSMP :: AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
+withSMP :: forall a m. AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
 withSMP c srv action =
-  ( getSMPServerClient c srv >>= \smp ->
-      liftIO (first smpClientError <$> runExceptT (action smp)) >>= liftEither
-  )
-    `catchError` logSMPError
+  (getSMPServerClient c srv >>= runAction) `catchError` logServerError
   where
+    runAction :: SMPClient -> m a
+    runAction smp =
+      liftIO (first smpClientError <$> runExceptT (action smp))
+        >>= liftEither
+
     smpClientError :: SMPClientError -> ErrorType
     smpClientError = \case
       SMPServerError e -> SMP e
-      _ -> INTERNAL -- TODO handle other errors
-    logSMPError err = do
-      logServer "<--" c srv "" $ case err of
-        SMP e -> "ERR" <> (B.pack . show) e
-        e -> (B.pack . show) e
-      throwError err
+      -- TODO handle other errors
+      _ -> INTERNAL
+
+    logServerError :: ErrorType -> m a
+    logServerError e = do
+      logServer "<--" c srv "" $ (B.pack . show) e
+      throwError e
 
 withLogSMP :: AgentMonad m => AgentClient -> SMPServer -> SMP.QueueId -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
 withLogSMP c srv qId cmdStr action = do
