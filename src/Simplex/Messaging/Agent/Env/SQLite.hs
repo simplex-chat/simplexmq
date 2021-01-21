@@ -7,12 +7,9 @@ module Simplex.Messaging.Agent.Env.SQLite where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import UnliftIO.STM
 
@@ -30,24 +27,6 @@ data Env = Env
     db :: SQLiteStore,
     clientCounter :: TVar Int
   }
-
-data AgentClient = AgentClient
-  { rcvQ :: TBQueue (ATransmission Client),
-    sndQ :: TBQueue (ATransmission Agent),
-    msgQ :: TBQueue SMPServerTransmission,
-    smpClients :: TVar (Map SMPServer SMPClient),
-    clientId :: Int
-  }
-
-newAgentClient :: TVar Int -> Natural -> STM AgentClient
-newAgentClient cc qSize = do
-  rcvQ <- newTBQueue qSize
-  sndQ <- newTBQueue qSize
-  msgQ <- newTBQueue qSize
-  smpClients <- newTVar M.empty
-  clientId <- (+ 1) <$> readTVar cc
-  writeTVar cc clientId
-  return AgentClient {rcvQ, sndQ, msgQ, smpClients, clientId}
 
 newEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newEnv config = do
