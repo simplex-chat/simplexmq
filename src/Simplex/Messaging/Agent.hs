@@ -77,7 +77,7 @@ send h c@AgentClient {sndQ} = forever $ do
 
 logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> m ()
 logClient AgentClient {clientId} dir (CorrId corrId, cAlias, cmd) = do
-  logInfo . decodeUtf8 $ B.unwords [B.pack $ show clientId, dir, "A :", corrId, cAlias, serializeCommand cmd]
+  logInfo . decodeUtf8 $ B.unwords [B.pack $ show clientId, dir, "A :", corrId, cAlias, B.takeWhile (/= ' ') $ serializeCommand cmd]
 
 client :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 client c@AgentClient {rcvQ, sndQ} = forever $ do
