@@ -2,6 +2,7 @@
 
 module Main where
 
+import Control.Logger.Simple
 import Simplex.Messaging.Agent (runSMPAgent)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Client (smpDefaultConfig)
@@ -16,7 +17,12 @@ cfg =
       smpCfg = smpDefaultConfig
     }
 
+logCfg :: LogConfig
+logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
+
 main :: IO ()
 main = do
   putStrLn $ "SMP agent listening on port " ++ tcpPort (cfg :: AgentConfig)
-  runSMPAgent cfg
+  setLogLevel LogInfo -- LogError
+  withGlobalLogging logCfg $
+    runSMPAgent cfg
