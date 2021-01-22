@@ -9,6 +9,7 @@ import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
+import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import System.Random

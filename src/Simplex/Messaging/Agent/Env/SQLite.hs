@@ -12,6 +12,7 @@ import qualified Data.Map.Strict as M
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.SQLite
+import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import UnliftIO.STM

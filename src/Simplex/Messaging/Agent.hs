@@ -20,7 +20,7 @@ import qualified Data.Map as M
 import Data.Time.Clock
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite
+import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
