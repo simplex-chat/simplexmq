@@ -13,6 +13,7 @@ module Simplex.Messaging.Server.QueueStore.STM where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Simplex.Messaging.Common
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import UnliftIO.STM

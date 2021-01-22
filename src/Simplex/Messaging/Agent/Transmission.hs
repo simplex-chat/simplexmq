@@ -30,6 +30,7 @@ import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.Types
+import Simplex.Messaging.Common (CorrId (..), Encoded, MsgBody, PublicKey, SenderId, errBadParameters, errMessageBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
@@ -39,9 +40,9 @@ import UnliftIO.Exception
 
 type ARawTransmission = (ByteString, ByteString, ByteString)
 
-type ATransmission p = (SMP.CorrId, ConnAlias, ACommand p)
+type ATransmission p = (CorrId, ConnAlias, ACommand p)
 
-type ATransmissionOrError p = (SMP.CorrId, ConnAlias, Either ErrorType (ACommand p))
+type ATransmissionOrError p = (CorrId, ConnAlias, Either ErrorType (ACommand p))
 
 data AParty = Agent | Client
   deriving (Eq, Show)
@@ -77,8 +78,8 @@ data ACommand (p :: AParty) where
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
-  SEND :: SMP.MsgBody -> ACommand Client
-  MSG :: AgentMsgId -> UTCTime -> UTCTime -> MsgStatus -> SMP.MsgBody -> ACommand Agent
+  SEND :: MsgBody -> ACommand Client
+  MSG :: AgentMsgId -> UTCTime -> UTCTime -> MsgStatus -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
   -- RCVD :: AgentMsgId -> ACommand Agent
   -- OFF :: ACommand Client
@@ -91,7 +92,7 @@ deriving instance Show (ACommand p)
 type Message = ByteString
 
 data SMPMessage
-  = SMPConfirmation SMP.PublicKey
+  = SMPConfirmation PublicKey
   | SMPMessage
       { agentMsgId :: Integer,
         agentTimestamp :: UTCTime,
@@ -103,7 +104,7 @@ data SMPMessage
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
-  A_MSG :: SMP.MsgBody -> AMessage
+  A_MSG :: MsgBody -> AMessage
   deriving (Show)
 
 parseSMPMessage :: ByteString -> Either ErrorType SMPMessage
@@ -177,7 +178,7 @@ parse :: Parser a -> e -> (ByteString -> Either e a)
 parse parser err = first (const err) . A.parseOnly (parser <* A.endOfInput)
 
 errParams :: Either ErrorType a
-errParams = Left $ SYNTAX SMP.errBadParameters
+errParams = Left $ SYNTAX errBadParameters
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
@@ -198,11 +199,11 @@ data SMPServer = SMPServer
   }
   deriving (Eq, Ord, Show)
 
-type KeyHash = SMP.Encoded
+type KeyHash = Encoded
 
 type ConnAlias = ByteString
 
-type OtherPartyId = SMP.Encoded
+type OtherPartyId = Encoded
 
 data Mode = On | Off deriving (Eq, Show, Read)
 
@@ -210,14 +211,14 @@ newtype AckMode = AckMode Mode deriving (Eq, Show)
 
 newtype SubMode = SubMode Mode deriving (Show)
 
-data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
+data SMPQueueInfo = SMPQueueInfo SMPServer SenderId EncryptionKey
   deriving (Show)
 
 data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Show)
 
-type EncryptionKey = SMP.PublicKey
+type EncryptionKey = PublicKey
 
-type VerificationKey = SMP.PublicKey
+type VerificationKey = PublicKey
 
 data QueueDirection = SND | RCV deriving (Show)
 
@@ -356,7 +357,7 @@ tGetRaw h = do
   return (corrId, connAlias, command)
 
 tPut :: MonadIO m => Handle -> ATransmission p -> m ()
-tPut h (SMP.CorrId corrId, connAlias, command) =
+tPut h (CorrId corrId, connAlias, command) =
   liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
 
 -- | get client and agent transmissions
@@ -367,7 +368,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     tParseLoadBody t@(corrId, connAlias, command) = do
       let cmd = parseCommand command >>= fromParty >>= tConnAlias t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (SMP.CorrId corrId, connAlias, fullCmd)
+      return (CorrId corrId, connAlias, fullCmd)
 
     fromParty :: ACmd -> Either ErrorType (ACommand p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
@@ -393,7 +394,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       cmd -> return $ Right cmd
 
     -- TODO refactor with server
-    getMsgBody :: SMP.MsgBody -> m (Either ErrorType SMP.MsgBody)
+    getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
     getMsgBody msgBody =
       case B.unpack msgBody of
         ':' : body -> return . Right $ B.pack body
@@ -402,4 +403,4 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
             body <- B.hGet h size
             s <- getLn h
             return $ if B.null s then Right body else Left SIZE
-          Nothing -> return . Left $ SYNTAX SMP.errMessageBody
+          Nothing -> return . Left $ SYNTAX errMessageBody

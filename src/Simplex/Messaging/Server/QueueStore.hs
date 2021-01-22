@@ -5,6 +5,7 @@
 
 module Simplex.Messaging.Server.QueueStore where
 
+import Simplex.Messaging.Common
 import Simplex.Messaging.Protocol
 
 data QueueRec = QueueRec

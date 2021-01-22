@@ -24,6 +24,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
+import Simplex.Messaging.Common (MsgBody, PrivateKey, PublicKey, SenderKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server (randomBytes)
 import Simplex.Messaging.Transport
@@ -127,7 +128,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         ReplyOff -> return ()
       respond CON
 
-    sendMessage :: SMP.MsgBody -> m ()
+    sendMessage :: MsgBody -> m ()
     sendMessage msgBody =
       withStore (`getConn` connAlias) >>= \case
         SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
@@ -245,7 +246,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
       putStrLn "unexpected response"
       print cmd
   where
-    secureQueue :: ReceiveQueue -> SMP.SenderKey -> m ()
+    secureQueue :: ReceiveQueue -> SenderKey -> m ()
     secureQueue rq@ReceiveQueue {rcvPrivateKey} senderKey = do
       withStore $ \st -> updateRcvQueueStatus st rq Confirmed
       -- TODO update sender key in the store
@@ -253,7 +254,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
       liftSMP $ secureSMPQueue smp rcvPrivateKey rId senderKey
       withStore $ \st -> updateRcvQueueStatus st rq Secured
 
-decryptMessage :: MonadUnliftIO m => SMP.PrivateKey -> ByteString -> m ByteString
+decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return
 
 getSMPServerClient ::
@@ -279,7 +280,7 @@ getSMPServerClient AgentClient {smpClients, msgQ} srv =
       throwError err
 
 newSendQueue ::
-  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SendQueue, SMP.SenderKey)
+  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SendQueue, SenderKey)
 newSendQueue (SMPQueueInfo smpServer senderId encryptKey) = do
   g <- asks idsDrg
   senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
@@ -304,7 +305,7 @@ sendConfirmation ::
   (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m) =>
   AgentClient ->
   SendQueue ->
-  SMP.SenderKey ->
+  SenderKey ->
   m ()
 sendConfirmation c sq@SendQueue {server, sndId} senderKey = do
   -- TODO send initial confirmation with signature - change in SMP server
@@ -313,7 +314,7 @@ sendConfirmation c sq@SendQueue {server, sndId} senderKey = do
   liftSMP $ sendSMPMessage smp "" sndId msg
   withStore $ \st -> updateSndQueueStatus st sq Confirmed
   where
-    mkConfirmation :: m SMP.MsgBody
+    mkConfirmation :: m MsgBody
     mkConfirmation = do
       let msg = serializeSMPMessage $ SMPConfirmation senderKey
       -- TODO encryption
@@ -331,7 +332,7 @@ sendHello c sq@SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
   _send smp 20 msg
   withStore $ \st -> updateSndQueueStatus st sq Active
   where
-    mkHello :: SMP.PublicKey -> AckMode -> m ByteString
+    mkHello :: PublicKey -> AckMode -> m ByteString
     mkHello verifyKey ackMode =
       mkAgentMessage encryptKey $ HELLO verifyKey ackMode
 
@@ -351,7 +352,7 @@ sendAck c ReceiveQueue {server, rcvId, rcvPrivateKey} = do
   smp <- getSMPServerClient c server
   liftSMP $ ackSMPMessage smp rcvPrivateKey rcvId
 
-mkAgentMessage :: (MonadUnliftIO m) => SMP.PrivateKey -> AMessage -> m ByteString
+mkAgentMessage :: (MonadUnliftIO m) => PrivateKey -> AMessage -> m ByteString
 mkAgentMessage _encKey agentMessage = do
   agentTimestamp <- liftIO getCurrentTime
   let msg =

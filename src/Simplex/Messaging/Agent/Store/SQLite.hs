@@ -35,7 +35,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Common
 import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E
@@ -184,7 +184,7 @@ getRcvQueue st@SQLiteStore {conn} queueRowId = do
       (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$> getServer st serverId
     _ -> throwError SENotFound
 
-getRcvQueueByRecipientId :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> SMP.RecipientId -> HostName -> Maybe ServiceName -> m ReceiveQueue
+getRcvQueueByRecipientId :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> m ReceiveQueue
 getRcvQueueByRecipientId st@SQLiteStore {conn} rcvId host port = do
   r <-
     liftIO $
@@ -311,7 +311,7 @@ getConnection SQLiteStore {conn} connAlias = do
 instance FromRow ConnAlias where
   fromRow = field
 
-getConnAliasByRcvQueue :: (MonadError StoreError m, MonadUnliftIO m) => SQLiteStore -> SMP.RecipientId -> m ConnAlias
+getConnAliasByRcvQueue :: (MonadError StoreError m, MonadUnliftIO m) => SQLiteStore -> RecipientId -> m ConnAlias
 getConnAliasByRcvQueue SQLiteStore {conn} rcvId = do
   r <-
     liftIO $
@@ -353,7 +353,7 @@ deleteConnection store connAlias = do
     "DELETE FROM connections WHERE conn_alias = ?"
     (Only connAlias)
 
-updateReceiveQueueStatus :: MonadUnliftIO m => SQLiteStore -> SMP.RecipientId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
+updateReceiveQueueStatus :: MonadUnliftIO m => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
 updateReceiveQueueStatus store rcvQueueId host port status =
   executeWithLock
     store
@@ -370,7 +370,7 @@ updateReceiveQueueStatus store rcvQueueId host port status =
     |]
     (Only status :. Only rcvQueueId :. Only host :. Only port)
 
-updateSendQueueStatus :: MonadUnliftIO m => SQLiteStore -> SMP.SenderId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
+updateSendQueueStatus :: MonadUnliftIO m => SQLiteStore -> SenderId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
 updateSendQueueStatus store sndQueueId host port status =
   executeWithLock
     store
@@ -436,7 +436,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         return $ SomeConn SCSend (SendConnection connAlias sndQ)
       _ -> throwError SEBadConn
 
-  getReceiveQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m (ConnAlias, ReceiveQueue)
+  getReceiveQueue :: SQLiteStore -> SMPServer -> RecipientId -> m (ConnAlias, ReceiveQueue)
   getReceiveQueue st SMPServer {host, port} recipientId = do
     rcvQueue <- getRcvQueueByRecipientId st recipientId host port
     connAlias <- getConnAliasByRcvQueue st recipientId
