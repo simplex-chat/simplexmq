@@ -23,7 +23,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time.Clock
-import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
@@ -52,7 +52,7 @@ runSMPServer cfg@ServerConfig {tcpPort} = do
       (rId, clnt) <- readTBQueue subscribedQ
       cs <- readTVar subscribers
       case M.lookup rId cs of
-        Just Client {rcvQ} -> writeTBQueue rcvQ (SMP.CorrId B.empty, rId, SMP.Cmd SMP.SBroker SMP.END)
+        Just Client {rcvQ} -> writeTBQueue rcvQ (CorrId B.empty, rId, Cmd SBroker END)
         Nothing -> return ()
       writeTVar subscribers $ M.insert rId clnt cs
 
@@ -76,43 +76,43 @@ cancelSub = \case
 
 receive :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
 receive h Client {rcvQ} = forever $ do
-  (signature, (corrId, queueId, cmdOrError)) <- SMP.tGet SMP.fromClient h
+  (signature, (corrId, queueId, cmdOrError)) <- tGet fromClient h
   signed <- case cmdOrError of
-    Left e -> return . mkResp corrId queueId $ SMP.ERR e
+    Left e -> return . mkResp corrId queueId $ ERR e
     Right cmd -> verifyTransmission (signature, (corrId, queueId, cmd))
   atomically $ writeTBQueue rcvQ signed
 
 send :: MonadUnliftIO m => Handle -> Client -> m ()
 send h Client {sndQ} = forever $ do
   signed <- atomically $ readTBQueue sndQ
-  SMP.tPut h (B.empty, signed)
+  tPut h (B.empty, signed)
 
-mkResp :: SMP.CorrId -> SMP.QueueId -> SMP.Command 'SMP.Broker -> SMP.Signed
-mkResp corrId queueId command = (corrId, queueId, SMP.Cmd SMP.SBroker command)
+mkResp :: CorrId -> QueueId -> Command 'Broker -> Signed
+mkResp corrId queueId command = (corrId, queueId, Cmd SBroker command)
 
-verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => SMP.Transmission -> m SMP.Signed
+verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Transmission -> m Signed
 verifyTransmission (signature, (corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
-    SMP.Cmd SMP.SBroker _ -> return $ smpErr SMP.INTERNAL -- it can only be client command, because `fromClient` was used
-    SMP.Cmd SMP.SRecipient (SMP.NEW _) -> return cmd
-    SMP.Cmd SMP.SRecipient _ -> withQueueRec SMP.SRecipient $ verifySignature . recipientKey
-    SMP.Cmd SMP.SSender (SMP.SEND _) -> withQueueRec SMP.SSender $ verifySend . senderKey
+    Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
+    Cmd SRecipient (NEW _) -> return cmd
+    Cmd SRecipient _ -> withQueueRec SRecipient $ verifySignature . recipientKey
+    Cmd SSender (SEND _) -> withQueueRec SSender $ verifySend . senderKey
   where
-    withQueueRec :: SMP.SParty (p :: SMP.Party) -> (QueueRec -> m SMP.Cmd) -> m SMP.Cmd
+    withQueueRec :: SParty (p :: Party) -> (QueueRec -> m Cmd) -> m Cmd
     withQueueRec party f = do
       st <- asks queueStore
       qr <- atomically $ getQueue st party queueId
       either (return . smpErr) f qr
-    verifySend :: Maybe SMP.PublicKey -> m SMP.Cmd
+    verifySend :: Maybe PublicKey -> m Cmd
     verifySend
       | B.null signature = return . maybe cmd (const authErr)
       | otherwise = maybe (return authErr) verifySignature
     -- TODO stub
-    verifySignature :: SMP.PublicKey -> m SMP.Cmd
+    verifySignature :: PublicKey -> m Cmd
     verifySignature key = return $ if signature == key then cmd else authErr
 
-    smpErr e = SMP.Cmd SMP.SBroker $ SMP.ERR e
-    authErr = smpErr SMP.AUTH
+    smpErr e = Cmd SBroker $ ERR e
+    authErr = smpErr AUTH
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
 client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
@@ -121,48 +121,48 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
       >>= processCommand
       >>= atomically . writeTBQueue sndQ
   where
-    processCommand :: SMP.Signed -> m SMP.Signed
+    processCommand :: Signed -> m Signed
     processCommand (corrId, queueId, cmd) = do
       st <- asks queueStore
       case cmd of
-        SMP.Cmd SMP.SBroker SMP.END -> unsubscribeQueue $> (corrId, queueId, cmd)
-        SMP.Cmd SMP.SBroker _ -> return (corrId, queueId, cmd)
-        SMP.Cmd SMP.SSender (SMP.SEND msgBody) -> sendMessage st msgBody
-        SMP.Cmd SMP.SRecipient command -> case command of
-          SMP.NEW rKey -> createQueue st rKey
-          SMP.SUB -> subscribeQueue queueId
-          SMP.ACK -> acknowledgeMsg
-          SMP.KEY sKey -> okResp <$> atomically (secureQueue st queueId sKey)
-          SMP.OFF -> okResp <$> atomically (suspendQueue st queueId)
-          SMP.DEL -> delQueueAndMsgs st
+        Cmd SBroker END -> unsubscribeQueue $> (corrId, queueId, cmd)
+        Cmd SBroker _ -> return (corrId, queueId, cmd)
+        Cmd SSender (SEND msgBody) -> sendMessage st msgBody
+        Cmd SRecipient command -> case command of
+          NEW rKey -> createQueue st rKey
+          SUB -> subscribeQueue queueId
+          ACK -> acknowledgeMsg
+          KEY sKey -> okResp <$> atomically (secureQueue st queueId sKey)
+          OFF -> okResp <$> atomically (suspendQueue st queueId)
+          DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> SMP.RecipientKey -> m SMP.Signed
+        createQueue :: QueueStore -> RecipientKey -> m Signed
         createQueue st rKey = mkResp corrId B.empty <$> addSubscribe
           where
             addSubscribe =
               addQueueRetry 3 >>= \case
-                Left e -> return $ SMP.ERR e
-                Right (rId, sId) -> subscribeQueue rId $> SMP.IDS rId sId
+                Left e -> return $ ERR e
+                Right (rId, sId) -> subscribeQueue rId $> IDS rId sId
 
-            addQueueRetry :: Int -> m (Either SMP.ErrorType (SMP.RecipientId, SMP.SenderId))
-            addQueueRetry 0 = return $ Left SMP.INTERNAL
+            addQueueRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
+            addQueueRetry 0 = return $ Left INTERNAL
             addQueueRetry n = do
               ids <- getIds
               atomically (addQueue st rKey ids) >>= \case
-                Left SMP.DUPLICATE -> addQueueRetry $ n - 1
+                Left DUPLICATE -> addQueueRetry $ n - 1
                 Left e -> return $ Left e
                 Right _ -> return $ Right ids
 
-            getIds :: m (SMP.RecipientId, SMP.SenderId)
+            getIds :: m (RecipientId, SenderId)
             getIds = do
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
 
-        subscribeQueue :: SMP.RecipientId -> m SMP.Signed
+        subscribeQueue :: RecipientId -> m Signed
         subscribeQueue rId =
           atomically (getSubscription rId) >>= deliverMessage tryPeekMsg rId
 
-        getSubscription :: SMP.RecipientId -> STM Sub
+        getSubscription :: RecipientId -> STM Sub
         getSubscription rId = do
           subs <- readTVar subscriptions
           case M.lookup rId subs of
@@ -179,19 +179,19 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             \cs -> (M.lookup queueId cs, M.delete queueId cs)
           mapM_ cancelSub sub
 
-        acknowledgeMsg :: m SMP.Signed
+        acknowledgeMsg :: m Signed
         acknowledgeMsg =
           atomically (withSub queueId $ \s -> const s <$$> tryTakeTMVar (delivered s))
             >>= \case
               Just (Just s) -> deliverMessage tryDelPeekMsg queueId s
-              _ -> return $ err SMP.PROHIBITED
+              _ -> return $ err PROHIBITED
 
-        withSub :: SMP.RecipientId -> (Sub -> STM a) -> STM (Maybe a)
+        withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
         withSub rId f = readTVar subscriptions >>= mapM f . M.lookup rId
 
-        sendMessage :: QueueStore -> SMP.MsgBody -> m SMP.Signed
+        sendMessage :: QueueStore -> MsgBody -> m Signed
         sendMessage st msgBody = do
-          qr <- atomically $ getQueue st SMP.SSender queueId
+          qr <- atomically $ getQueue st SSender queueId
           either (return . err) storeMessage qr
           where
             mkMessage :: m Message
@@ -200,9 +200,9 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
               ts <- liftIO getCurrentTime
               return $ Message {msgId, ts, msgBody}
 
-            storeMessage :: QueueRec -> m SMP.Signed
+            storeMessage :: QueueRec -> m Signed
             storeMessage qr = case status qr of
-              QueueOff -> return $ err SMP.AUTH
+              QueueOff -> return $ err AUTH
               QueueActive -> do
                 ms <- asks msgStore
                 msg <- mkMessage
@@ -211,7 +211,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
                   writeMsg q msg
                   return ok
 
-        deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> SMP.RecipientId -> Sub -> m SMP.Signed
+        deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> Sub -> m Signed
         deliverMessage tryPeek rId = \case
           Sub {subThread = NoSub} -> do
             ms <- asks msgStore
@@ -232,7 +232,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             subscriber :: MsgQueue -> m ()
             subscriber q = atomically $ do
               msg <- peekMsg q
-              writeTBQueue sndQ $ mkResp (SMP.CorrId B.empty) rId (msgCmd msg)
+              writeTBQueue sndQ $ mkResp (CorrId B.empty) rId (msgCmd msg)
               setSub (\s -> s {subThread = NoSub})
               void setDelivered
 
@@ -242,7 +242,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             setDelivered :: STM (Maybe Bool)
             setDelivered = withSub rId $ \s -> tryPutTMVar (delivered s) ()
 
-        delQueueAndMsgs :: QueueStore -> m SMP.Signed
+        delQueueAndMsgs :: QueueStore -> m Signed
         delQueueAndMsgs st = do
           ms <- asks msgStore
           atomically $
@@ -250,19 +250,19 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
               Left e -> return $ err e
               Right _ -> delMsgQueue ms queueId $> ok
 
-        ok :: SMP.Signed
-        ok = mkResp corrId queueId SMP.OK
+        ok :: Signed
+        ok = mkResp corrId queueId OK
 
-        err :: SMP.ErrorType -> SMP.Signed
-        err = mkResp corrId queueId . SMP.ERR
+        err :: ErrorType -> Signed
+        err = mkResp corrId queueId . ERR
 
-        okResp :: Either SMP.ErrorType () -> SMP.Signed
+        okResp :: Either ErrorType () -> Signed
         okResp = either err $ const ok
 
-        msgCmd :: Message -> SMP.Command 'SMP.Broker
-        msgCmd Message {msgId, ts, msgBody} = SMP.MSG msgId ts msgBody
+        msgCmd :: Message -> Command 'Broker
+        msgCmd Message {msgId, ts, msgBody} = MSG msgId ts msgBody
 
-randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m SMP.Encoded
+randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m Encoded
 randomId n = do
   gVar <- asks idsDrg
   atomically (randomBytes n gVar)

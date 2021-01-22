@@ -3,17 +3,17 @@
 module Simplex.Messaging.Server.MsgStore where
 
 import Data.Time.Clock
-import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Protocol
 
 data Message = Message
-  { msgId :: SMP.Encoded,
+  { msgId :: Encoded,
     ts :: UTCTime,
-    msgBody :: SMP.MsgBody
+    msgBody :: MsgBody
   }
 
 class MonadMsgStore s q m | s -> q where
-  getMsgQueue :: s -> SMP.RecipientId -> m q
-  delMsgQueue :: s -> SMP.RecipientId -> m ()
+  getMsgQueue :: s -> RecipientId -> m q
+  delMsgQueue :: s -> RecipientId -> m ()
 
 class MonadMsgQueue q m where
   writeMsg :: q -> Message -> m () -- non blocking

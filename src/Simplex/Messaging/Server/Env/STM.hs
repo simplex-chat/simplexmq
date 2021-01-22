@@ -10,7 +10,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore.STM
 import UnliftIO.STM
@@ -31,14 +31,14 @@ data Env = Env
   }
 
 data Server = Server
-  { subscribedQ :: TBQueue (SMP.RecipientId, Client),
-    subscribers :: TVar (Map SMP.RecipientId Client)
+  { subscribedQ :: TBQueue (RecipientId, Client),
+    subscribers :: TVar (Map RecipientId Client)
   }
 
 data Client = Client
-  { subscriptions :: TVar (Map SMP.RecipientId Sub),
-    rcvQ :: TBQueue SMP.Signed,
-    sndQ :: TBQueue SMP.Signed
+  { subscriptions :: TVar (Map RecipientId Sub),
+    rcvQ :: TBQueue Signed,
+    sndQ :: TBQueue Signed
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
