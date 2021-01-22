@@ -356,8 +356,8 @@ tGetRaw h = do
   return (corrId, connAlias, command)
 
 tPut :: MonadIO m => Handle -> ATransmission p -> m ()
-tPut h (corrId, connAlias, command) =
-  liftIO $ tPutRaw h (SMP.bs corrId, connAlias, serializeCommand command)
+tPut h (SMP.CorrId corrId, connAlias, command) =
+  liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
 
 -- | get client and agent transmissions
 tGet :: forall m p. MonadIO m => SAParty p -> Handle -> m (ATransmissionOrError p)
