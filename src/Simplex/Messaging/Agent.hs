@@ -104,15 +104,15 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
   case cmd of
     NEW smpServer -> createNewConnection smpServer
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
+    SUB -> subscribeConnection
     SEND msgBody -> sendMessage msgBody
     ACK aMsgId -> ackMessage aMsgId
-    _ -> throwError PROHIBITED
   where
     createNewConnection :: SMPServer -> m ()
     createNewConnection server = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
-      (rq, qInfo) <- newReceiveQueue c server
+      (rq, qInfo) <- newReceiveQueue c server connAlias
       withStore $ \st -> createRcvConn st connAlias rq
       respond $ INV qInfo
 
@@ -128,6 +128,16 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         ReplyVia srv' -> sendReplyQInfo srv' sq
         ReplyOff -> return ()
       respond CON
+
+    subscribeConnection :: m ()
+    subscribeConnection =
+      withStore (`getConn` connAlias) >>= \case
+        SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
+        SomeConn _ (ReceiveConnection _ rq) -> subscribe rq
+        -- TODO possibly there should be a separate error type trying to send the message to the connection without ReceiveQueue
+        _ -> throwError PROHIBITED
+      where
+        subscribe rq = subscribeQueue c rq connAlias >> respond OK
 
     sendMessage :: SMP.MsgBody -> m ()
     sendMessage msgBody =
@@ -147,7 +157,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
       withStore (`getConn` connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> ackMsg rq
         SomeConn _ (ReceiveConnection _ rq) -> ackMsg rq
-        -- TODO possibly there should be a separate error type trying to send the message to the connection without SendQueue
+        -- TODO possibly there should be a separate error type trying to send the message to the connection without ReceiveQueue
         -- NOT_READY ?
         _ -> throwError PROHIBITED
       where
@@ -155,7 +165,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
 
     sendReplyQInfo :: SMPServer -> SendQueue -> m ()
     sendReplyQInfo srv sq = do
-      (rq, qInfo) <- newReceiveQueue c srv
+      (rq, qInfo) <- newReceiveQueue c srv connAlias
       withStore $ \st -> addRcvQueue st connAlias rq
       sendAgentMessage c sq $ REPLY qInfo
 

@@ -82,7 +82,7 @@ data ACommand (p :: AParty) where
   READY :: ACommand Agent
   -- CONF :: OtherPartyId -> ACommand Agent
   -- LET :: OtherPartyId -> ACommand Client
-  SUB :: SubMode -> ACommand Client
+  SUB :: ACommand Client
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
@@ -217,8 +217,6 @@ data Mode = On | Off deriving (Eq, Show, Read)
 
 newtype AckMode = AckMode Mode deriving (Eq, Show)
 
-newtype SubMode = SubMode Mode deriving (Show)
-
 data SMPQueueInfo = SMPQueueInfo SMPServer SenderId EncryptionKey
   deriving (Show)
 
@@ -290,6 +288,7 @@ parseCommandP =
   "NEW " *> newCmd
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
+    <|> "SUB" $> ACmd SClient SUB
     <|> "SEND " *> sendCmd
     <|> "MSG " *> message
     <|> "ACK " *> acknowledge
@@ -323,6 +322,7 @@ serializeCommand = \case
   NEW srv -> "NEW " <> serializeServer srv
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
+  SUB -> "SUB"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   MSG aMsgId aTs ts st body ->
     B.unwords ["MSG", B.pack $ show aMsgId, B.pack $ formatISO8601Millis aTs, B.pack $ formatISO8601Millis ts, msgStatus st, serializeMsg body]
