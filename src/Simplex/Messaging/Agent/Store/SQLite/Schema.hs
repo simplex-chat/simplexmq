@@ -5,11 +5,11 @@
 module Simplex.Messaging.Agent.Store.SQLite.Schema where
 
 import Database.SQLite.Simple
-import Multiline (s)
+import Database.SQLite.Simple.QQ (sql)
 
 servers :: Query
 servers =
-  [s|
+  [sql|
     CREATE TABLE IF NOT EXISTS servers
       ( server_id INTEGER PRIMARY KEY,
         host TEXT NOT NULL,
@@ -21,7 +21,7 @@ servers =
 
 receiveQueues :: Query
 receiveQueues =
-  [s|
+  [sql|
     CREATE TABLE IF NOT EXISTS receive_queues
       ( receive_queue_id INTEGER PRIMARY KEY,
         server_id INTEGER REFERENCES servers(server_id) NOT NULL,
@@ -40,7 +40,7 @@ receiveQueues =
 
 sendQueues :: Query
 sendQueues =
-  [s|
+  [sql|
     CREATE TABLE IF NOT EXISTS send_queues
       ( send_queue_id INTEGER PRIMARY KEY,
         server_id INTEGER REFERENCES servers(server_id) NOT NULL,
@@ -56,7 +56,7 @@ sendQueues =
 
 connections :: Query
 connections =
-  [s|
+  [sql|
     CREATE TABLE IF NOT EXISTS connections
       ( connection_id INTEGER PRIMARY KEY,
         conn_alias TEXT UNIQUE,
@@ -67,7 +67,7 @@ connections =
 
 messages :: Query
 messages =
-  [s|
+  [sql|
     CREATE TABLE IF NOT EXISTS messages
       ( message_id INTEGER PRIMARY KEY,
         conn_alias TEXT REFERENCES connections(conn_alias),
