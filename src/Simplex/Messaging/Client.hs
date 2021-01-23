@@ -37,8 +37,9 @@ import Data.Maybe
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Transmission (SMPServer (..))
-import Simplex.Messaging.Server.Transmission
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Types
 import Simplex.Messaging.Util
 import System.IO
 

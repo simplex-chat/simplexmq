@@ -11,7 +11,8 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPClient
-import Simplex.Messaging.Server.Transmission
+import Simplex.Messaging.Types
+import Simplex.Messaging.Protocol
 import System.IO (Handle)
 import System.Timeout
 import Test.HUnit
