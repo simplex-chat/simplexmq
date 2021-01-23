@@ -42,7 +42,7 @@ type ARawTransmission = (ByteString, ByteString, ByteString)
 
 type ATransmission p = (CorrId, ConnAlias, ACommand p)
 
-type ATransmissionOrError p = (CorrId, ConnAlias, Either ErrorType (ACommand p))
+type ATransmissionOrError p = (CorrId, ConnAlias, Either AgentErrorType (ACommand p))
 
 data AParty = Agent | Client
   deriving (Eq, Show)
@@ -85,7 +85,7 @@ data ACommand (p :: AParty) where
   -- OFF :: ACommand Client
   -- DEL :: ACommand Client
   OK :: ACommand Agent
-  ERR :: ErrorType -> ACommand Agent
+  ERR :: AgentErrorType -> ACommand Agent
 
 deriving instance Show (ACommand p)
 
@@ -107,7 +107,7 @@ data AMessage where
   A_MSG :: MsgBody -> AMessage
   deriving (Show)
 
-parseSMPMessage :: ByteString -> Either ErrorType SMPMessage
+parseSMPMessage :: ByteString -> Either AgentErrorType SMPMessage
 parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
   where
     smpMessageP :: Parser SMPMessage
@@ -171,13 +171,13 @@ base64P = do
   pad <- A.takeWhile (== '=')
   either fail pure $ decode (str <> pad)
 
-parseAgentMessage :: ByteString -> Either ErrorType AMessage
+parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
 
 parse :: Parser a -> e -> (ByteString -> Either e a)
 parse parser err = first (const err) . A.parseOnly (parser <* A.endOfInput)
 
-errParams :: Either ErrorType a
+errParams :: Either AgentErrorType a
 errParams = Left $ SYNTAX errBadParameters
 
 serializeAgentMessage :: AMessage -> ByteString
@@ -233,7 +233,7 @@ data MsgStatus = MsgOk | MsgError MsgErrorType
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
   deriving (Show)
 
-data ErrorType
+data AgentErrorType
   = UNKNOWN
   | PROHIBITED
   | SYNTAX Int
@@ -307,7 +307,7 @@ parseCommandP =
         <|> "NO_ID " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
         <|> "HASH" $> MsgBadHash
 
-parseCommand :: ByteString -> Either ErrorType ACmd
+parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse parseCommandP $ SYNTAX errBadCommand
 
 serializeCommand :: ACommand p -> ByteString
@@ -370,12 +370,12 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
       return (CorrId corrId, connAlias, fullCmd)
 
-    fromParty :: ACmd -> Either ErrorType (ACommand p)
+    fromParty :: ACmd -> Either AgentErrorType (ACommand p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
       Just Refl -> Right cmd
       _ -> Left PROHIBITED
 
-    tConnAlias :: ARawTransmission -> ACommand p -> Either ErrorType (ACommand p)
+    tConnAlias :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnAlias (_, connAlias, _) cmd = case cmd of
       -- NEW and JOIN have optional connAlias
       NEW _ -> Right cmd
@@ -387,14 +387,14 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         | B.null connAlias -> Left $ SYNTAX errNoConnAlias
         | otherwise -> Right cmd
 
-    cmdWithMsgBody :: ACommand p -> m (Either ErrorType (ACommand p))
+    cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
     cmdWithMsgBody = \case
       SEND body -> SEND <$$> getMsgBody body
       MSG agentMsgId srvTS agentTS status body -> MSG agentMsgId srvTS agentTS status <$$> getMsgBody body
       cmd -> return $ Right cmd
 
     -- TODO refactor with server
-    getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
+    getMsgBody :: MsgBody -> m (Either AgentErrorType MsgBody)
     getMsgBody msgBody =
       case B.unpack msgBody of
         ':' : body -> return . Right $ B.pack body

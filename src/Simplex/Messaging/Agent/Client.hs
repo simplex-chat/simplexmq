@@ -66,7 +66,7 @@ newAgentClient cc qSize = do
   writeTVar cc clientId
   return AgentClient {rcvQ, sndQ, msgQ, smpClients, clientId}
 
-type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m)
+type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient AgentClient {smpClients, msgQ} srv =
@@ -80,7 +80,7 @@ getSMPServerClient AgentClient {smpClients, msgQ} srv =
       atomically . modifyTVar smpClients $ M.insert srv c
       return c
 
-    throwErr :: ErrorType -> SomeException -> m a
+    throwErr :: AgentErrorType -> SomeException -> m a
     throwErr err e = do
       liftIO . putStrLn $ "Exception: " ++ show e -- TODO remove
       throwError err
@@ -94,13 +94,13 @@ withSMP c srv action =
       liftIO (first smpClientError <$> runExceptT (action smp))
         >>= liftEither
 
-    smpClientError :: SMPClientError -> ErrorType
+    smpClientError :: SMPClientError -> AgentErrorType
     smpClientError = \case
       SMPServerError e -> SMP e
       -- TODO handle other errors
       _ -> INTERNAL
 
-    logServerError :: ErrorType -> m a
+    logServerError :: AgentErrorType -> m a
     logServerError e = do
       logServer "<--" c srv "" $ (B.pack . show) e
       throwError e
