@@ -34,7 +34,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Types
+import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E
@@ -335,7 +335,7 @@ updateReceiveQueueStatus store rcvQueueId host port status =
     |]
     (Only status :. Only rcvQueueId :. Only host :. Only port)
 
-updateSendQueueStatus :: MonadUnliftIO m => SQLiteStore -> SenderId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
+updateSendQueueStatus :: MonadUnliftIO m => SQLiteStore -> SMP.SenderId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
 updateSendQueueStatus store sndQueueId host port status =
   executeWithLock
     store
@@ -357,7 +357,7 @@ instance ToField QueueDirection where toField = toField . show
 -- TODO add parser and serializer for DeliveryStatus? Pass DeliveryStatus?
 insertMsg :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> Message -> m ()
 insertMsg store connAlias qDirection agentMsgId msg = do
-  tstamp <- liftIO getCurrentTime
+  ts <- liftIO getCurrentTime
   void $
     insertWithLock
       store
@@ -366,4 +366,4 @@ insertMsg store connAlias qDirection agentMsgId msg = do
         INSERT INTO messages (conn_alias, agent_msg_id, timestamp, message, direction, msg_status)
         VALUES (?,?,?,?,?,"MDTransmitted");
       |]
-      (Only connAlias :. Only agentMsgId :. Only tstamp :. Only qDirection :. Only msg)
+      (Only connAlias :. Only agentMsgId :. Only ts :. Only qDirection :. Only msg)

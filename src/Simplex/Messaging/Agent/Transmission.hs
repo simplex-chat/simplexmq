@@ -30,8 +30,9 @@ import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.Types
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Types (CorrId (..), Encoded, ErrorType, MsgBody, PublicKey, SenderId, errBadParameters, errMessageBody)
+import Simplex.Messaging.Types (CorrId (..), Encoded, ErrorType, MsgBody, PublicKey, errBadParameters, errMessageBody)
 import Simplex.Messaging.Util
 import System.IO
 import Text.Read
@@ -208,7 +209,7 @@ data Mode = On | Off deriving (Eq, Show, Read)
 
 newtype AckMode = AckMode Mode deriving (Eq, Show)
 
-data SMPQueueInfo = SMPQueueInfo SMPServer SenderId EncryptionKey
+data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
   deriving (Show)
 
 data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Show)
