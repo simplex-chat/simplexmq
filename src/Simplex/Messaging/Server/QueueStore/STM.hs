@@ -13,9 +13,9 @@ module Simplex.Messaging.Server.QueueStore.STM where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Simplex.Messaging.Types
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Types
 import UnliftIO.STM
 
 data QueueStoreData = QueueStoreData
@@ -29,7 +29,7 @@ newQueueStore :: STM QueueStore
 newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty}
 
 instance MonadQueueStore QueueStore STM where
-  addQueue :: QueueStore -> RecipientKey -> (RecipientId, SenderId) -> STM (Either SMPErrorType ())
+  addQueue :: QueueStore -> RecipientKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
   addQueue store rKey ids@(rId, sId) = do
     cs@QueueStoreData {queues, senders} <- readTVar store
     if M.member rId queues || M.member sId senders
@@ -42,7 +42,7 @@ instance MonadQueueStore QueueStore STM where
             }
         return $ Right ()
 
-  getQueue :: QueueStore -> SParty (p :: Party) -> QueueId -> STM (Either SMPErrorType QueueRec)
+  getQueue :: QueueStore -> SParty (p :: Party) -> QueueId -> STM (Either ErrorType QueueRec)
   getQueue store SRecipient rId = do
     cs <- readTVar store
     return $ getRcpQueue cs rId
@@ -59,12 +59,12 @@ instance MonadQueueStore QueueStore STM where
         Just _ -> (Left AUTH, cs)
         _ -> (Right (), cs {queues = M.insert rId c {senderKey = Just sKey} (queues cs)})
 
-  suspendQueue :: QueueStore -> RecipientId -> STM (Either SMPErrorType ())
+  suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
   suspendQueue store rId =
     updateQueues store rId $ \cs c ->
       (Right (), cs {queues = M.insert rId c {status = QueueOff} (queues cs)})
 
-  deleteQueue :: QueueStore -> RecipientId -> STM (Either SMPErrorType ())
+  deleteQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
   deleteQueue store rId =
     updateQueues store rId $ \cs c ->
       ( Right (),
@@ -77,8 +77,8 @@ instance MonadQueueStore QueueStore STM where
 updateQueues ::
   QueueStore ->
   RecipientId ->
-  (QueueStoreData -> QueueRec -> (Either SMPErrorType (), QueueStoreData)) ->
-  STM (Either SMPErrorType ())
+  (QueueStoreData -> QueueRec -> (Either ErrorType (), QueueStoreData)) ->
+  STM (Either ErrorType ())
 updateQueues store rId update = do
   cs <- readTVar store
   let conn = getRcpQueue cs rId
@@ -89,5 +89,5 @@ updateQueues store rId update = do
       writeTVar store cs'
       return res
 
-getRcpQueue :: QueueStoreData -> RecipientId -> Either SMPErrorType QueueRec
+getRcpQueue :: QueueStoreData -> RecipientId -> Either ErrorType QueueRec
 getRcpQueue cs rId = maybe (Left AUTH) Right . M.lookup rId $ queues cs

@@ -23,7 +23,6 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time.Clock
-import Simplex.Messaging.Types
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore
@@ -31,6 +30,7 @@ import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Types
 import Simplex.Messaging.Util
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -145,7 +145,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
                 Left e -> return $ ERR e
                 Right (rId, sId) -> subscribeQueue rId $> IDS rId sId
 
-            addQueueRetry :: Int -> m (Either SMPErrorType (RecipientId, SenderId))
+            addQueueRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
             addQueueRetry 0 = return $ Left INTERNAL
             addQueueRetry n = do
               ids <- getIds
@@ -254,10 +254,10 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         ok :: Signed
         ok = mkResp corrId queueId OK
 
-        err :: SMPErrorType -> Signed
+        err :: ErrorType -> Signed
         err = mkResp corrId queueId . ERR
 
-        okResp :: Either SMPErrorType () -> Signed
+        okResp :: Either ErrorType () -> Signed
         okResp = either err $ const ok
 
         msgCmd :: Message -> Command 'Broker

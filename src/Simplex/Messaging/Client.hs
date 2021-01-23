@@ -37,9 +37,9 @@ import Data.Maybe
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Transmission (SMPServer (..))
-import Simplex.Messaging.Types
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Types
 import Simplex.Messaging.Util
 import System.IO
 
@@ -114,8 +114,8 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
               else Left SMPQueueIdError
 
 data SMPClientError
-  = SMPServerError SMPErrorType
-  | SMPResponseError SMPErrorType
+  = SMPServerError ErrorType
+  | SMPResponseError ErrorType
   | SMPQueueIdError
   | SMPUnexpectedResponse
   | SMPResponseTimeout

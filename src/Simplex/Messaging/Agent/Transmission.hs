@@ -30,8 +30,8 @@ import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.Types
-import Simplex.Messaging.Types (CorrId (..), Encoded, MsgBody, PublicKey, SMPErrorType, SenderId, errBadParameters, errMessageBody)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Types (CorrId (..), Encoded, ErrorType, MsgBody, PublicKey, SenderId, errBadParameters, errMessageBody)
 import Simplex.Messaging.Util
 import System.IO
 import Text.Read
@@ -237,7 +237,7 @@ data AgentErrorType
   | PROHIBITED
   | SYNTAX Int
   | BROKER Natural
-  | SMP SMPErrorType
+  | SMP ErrorType
   | SIZE
   | STORE StoreError
   | INTERNAL -- etc. TODO SYNTAX Natural

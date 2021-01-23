@@ -45,7 +45,7 @@ type Signed = (CorrId, QueueId, Cmd)
 
 type Transmission = (Signature, Signed)
 
-type SignedOrError = (CorrId, QueueId, Either SMPErrorType Cmd)
+type SignedOrError = (CorrId, QueueId, Either ErrorType Cmd)
 
 type TransmissionOrError = (Signature, SignedOrError)
 
@@ -63,13 +63,13 @@ data Command (a :: Party) where
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
   END :: Command Broker
   OK :: Command Broker
-  ERR :: SMPErrorType -> Command Broker
+  ERR :: ErrorType -> Command Broker
 
 deriving instance Show (Command a)
 
 deriving instance Eq (Command a)
 
-parseCommand :: ByteString -> Either SMPErrorType Cmd
+parseCommand :: ByteString -> Either ErrorType Cmd
 parseCommand command = case B.words command of
   ["NEW", rKeyStr] -> case decode rKeyStr of
     Right rKey -> rCmd $ NEW rKey
@@ -162,19 +162,19 @@ tPut :: MonadIO m => Handle -> Transmission -> m ()
 tPut h (signature, (corrId, queueId, command)) =
   liftIO $ tPutRaw h (encode signature, bs corrId, encode queueId, serializeCommand command)
 
-fromClient :: Cmd -> Either SMPErrorType Cmd
+fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
   Cmd SBroker _ -> Left PROHIBITED
   cmd -> Right cmd
 
-fromServer :: Cmd -> Either SMPErrorType Cmd
+fromServer :: Cmd -> Either ErrorType Cmd
 fromServer = \case
   cmd@(Cmd SBroker _) -> Right cmd
   _ -> Left PROHIBITED
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
-tGet :: forall m. MonadIO m => (Cmd -> Either SMPErrorType Cmd) -> Handle -> m TransmissionOrError
+tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m TransmissionOrError
 tGet fromParty h = do
   (signature, corrId, queueId, command) <- liftIO $ tGetRaw h
   let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
@@ -189,7 +189,7 @@ tGet fromParty h = do
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
       return (signature, (CorrId corrId, queueId, fullCmd))
 
-    tCredentials :: RawTransmission -> Cmd -> Either SMPErrorType Cmd
+    tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, _, queueId, _) cmd = case cmd of
       -- IDS response should not have queue ID
       Cmd SBroker (IDS _ _) -> Right cmd
@@ -212,7 +212,7 @@ tGet fromParty h = do
         | B.null signature || B.null queueId -> Left $ SYNTAX errNoCredentials
         | otherwise -> Right cmd
 
-    cmdWithMsgBody :: Cmd -> m (Either SMPErrorType Cmd)
+    cmdWithMsgBody :: Cmd -> m (Either ErrorType Cmd)
     cmdWithMsgBody = \case
       Cmd SSender (SEND body) ->
         Cmd SSender . SEND <$$> getMsgBody body
@@ -220,7 +220,7 @@ tGet fromParty h = do
         Cmd SBroker . MSG msgId ts <$$> getMsgBody body
       cmd -> return $ Right cmd
 
-    getMsgBody :: MsgBody -> m (Either SMPErrorType MsgBody)
+    getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
     getMsgBody msgBody =
       case B.unpack msgBody of
         ':' : body -> return . Right $ B.pack body

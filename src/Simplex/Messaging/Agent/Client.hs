@@ -40,8 +40,8 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
-import Simplex.Messaging.Types (MsgBody, PrivateKey, PublicKey, QueueId, SMPErrorType (AUTH), SenderKey)
 import Simplex.Messaging.Server (randomBytes)
+import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, PrivateKey, PublicKey, QueueId, SenderKey)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (SomeException)
 import qualified UnliftIO.Exception as E
