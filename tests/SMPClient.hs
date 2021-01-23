@@ -7,9 +7,9 @@ module SMPClient where
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Network.Socket
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Env.STM
-import Simplex.Messaging.Server.Transmission
 import Simplex.Messaging.Transport
 import Test.Hspec
 import UnliftIO.Concurrent

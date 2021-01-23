@@ -43,8 +43,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, RecipientId, SenderKey)
-import qualified Simplex.Messaging.Server.Transmission as SMP
+import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, PrivateKey, PublicKey, QueueId, RecipientId, SenderKey)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -70,7 +69,7 @@ newAgentClient cc qSize = do
   writeTVar cc clientId
   return AgentClient {rcvQ, sndQ, msgQ, smpClients, subscribed, clientId}
 
-type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m)
+type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient AgentClient {smpClients, msgQ} srv =
@@ -100,18 +99,18 @@ withSMP c srv action =
       liftIO (first smpClientError <$> runExceptT (action smp))
         >>= liftEither
 
-    smpClientError :: SMPClientError -> ErrorType
+    smpClientError :: SMPClientError -> AgentErrorType
     smpClientError = \case
       SMPServerError e -> SMP e
       -- TODO handle other errors
       _ -> INTERNAL
 
-    logServerError :: ErrorType -> m a
+    logServerError :: AgentErrorType -> m a
     logServerError e = do
       logServer "<--" c srv "" $ (B.pack . show) e
       throwError e
 
-withLogSMP :: AgentMonad m => AgentClient -> SMPServer -> SMP.QueueId -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
+withLogSMP :: AgentMonad m => AgentClient -> SMPServer -> QueueId -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
 withLogSMP c srv qId cmdStr action = do
   logServer "-->" c srv qId cmdStr
   res <- withSMP c srv action
@@ -157,7 +156,7 @@ removeSubscription :: AgentMonad m => AgentClient -> ConnAlias -> m ()
 removeSubscription c connAlias =
   atomically . modifyTVar (subscribed c) $ M.delete connAlias
 
-logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> SMP.QueueId -> ByteString -> m ()
+logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> (B.pack . show) clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 
@@ -174,7 +173,7 @@ sendConfirmation c SendQueue {server, sndId} senderKey = do
   withLogSMP c server sndId "SEND <KEY>" $ \smp ->
     sendSMPMessage smp "" sndId msg
   where
-    mkConfirmation :: m SMP.MsgBody
+    mkConfirmation :: m MsgBody
     mkConfirmation = do
       let msg = serializeSMPMessage $ SMPConfirmation senderKey
       -- TODO encryption
@@ -194,7 +193,7 @@ sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
     send 0 _ _ = throwE SMPResponseTimeout -- TODO different error
     send retry msg smp =
       sendSMPMessage smp sndPrivateKey sndId msg `catchE` \case
-        SMPServerError SMP.AUTH -> do
+        SMPServerError AUTH -> do
           threadDelay 100000
           send (retry - 1) msg smp
         e -> throwE e

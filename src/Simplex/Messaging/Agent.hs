@@ -21,14 +21,14 @@ import Data.Text.Encoding
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite
+import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPServerTransmission)
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Server.Transmission (CorrId (..), PrivateKey)
-import qualified Simplex.Messaging.Server.Transmission as SMP
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Types (CorrId (..), MsgBody, PrivateKey, SenderKey)
 import UnliftIO.Async
 import UnliftIO.Exception (SomeException)
 import qualified UnliftIO.Exception as E
@@ -139,7 +139,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
       where
         subscribe rq = subscribeQueue c rq connAlias >> respond OK
 
-    sendMessage :: SMP.MsgBody -> m ()
+    sendMessage :: MsgBody -> m ()
     sendMessage msgBody =
       withStore (`getConn` connAlias) >>= \case
         SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
@@ -233,7 +233,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
 
-connectToSendQueue :: AgentMonad m => AgentClient -> SendQueue -> SMP.SenderKey -> m ()
+connectToSendQueue :: AgentMonad m => AgentClient -> SendQueue -> SenderKey -> m ()
 connectToSendQueue c sq senderKey = do
   sendConfirmation c sq senderKey
   withStore $ \st -> updateSndQueueStatus st sq Confirmed
@@ -244,7 +244,7 @@ decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return
 
 newSendQueue ::
-  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SendQueue, SMP.SenderKey)
+  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SendQueue, SenderKey)
 newSendQueue (SMPQueueInfo smpServer senderId encryptKey) = do
   g <- asks idsDrg
   senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair

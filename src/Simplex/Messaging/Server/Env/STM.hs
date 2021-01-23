@@ -10,9 +10,10 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
 import Numeric.Natural
+import Simplex.Messaging.Types
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore.STM
-import Simplex.Messaging.Server.Transmission
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig

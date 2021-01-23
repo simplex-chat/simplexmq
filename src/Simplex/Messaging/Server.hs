@@ -23,13 +23,14 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time.Clock
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
-import Simplex.Messaging.Server.Transmission
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Types
 import Simplex.Messaging.Util
 import UnliftIO.Async
 import UnliftIO.Concurrent
