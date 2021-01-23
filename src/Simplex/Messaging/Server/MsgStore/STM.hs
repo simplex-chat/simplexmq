@@ -8,8 +8,8 @@ module Simplex.Messaging.Server.MsgStore.STM where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Simplex.Messaging.Types
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.Transmission
 import UnliftIO.STM
 
 newtype MsgQueue = MsgQueue {msgQueue :: TQueue Message}
