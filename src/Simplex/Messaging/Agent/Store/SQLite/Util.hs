@@ -27,8 +27,8 @@ import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok
+import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField
-import Multiline (s)
 import Network.Socket
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Types
@@ -42,7 +42,7 @@ import UnliftIO.STM
 
 addRcvQueueQuery :: Query
 addRcvQueueQuery =
-  [s|
+  [sql|
     INSERT INTO receive_queues
       ( server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode)
     VALUES
@@ -88,7 +88,7 @@ upsertServer SQLiteStore {conn} srv@SMPServer {host, port} = do
   r <- liftIO $ do
     DB.execute
       conn
-      [s|
+      [sql|
         INSERT INTO servers (host, port, key_hash) VALUES (?, ?, ?)
         ON CONFLICT (host, port) DO UPDATE SET
           host=excluded.host,
@@ -138,7 +138,7 @@ getRcvQueue st@SQLiteStore {conn} queueRowId = do
     liftIO $
       DB.queryNamed
         conn
-        [s|
+        [sql|
         SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
           FROM receive_queues
           WHERE receive_queue_id = :rowId;
@@ -155,7 +155,7 @@ getRcvQueueByRecipientId st@SQLiteStore {conn} rcvId host port = do
     liftIO $
       DB.queryNamed
         conn
-        [s|
+        [sql|
           SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
           FROM receive_queues
           WHERE rcv_id = :rcvId AND server_id IN (
@@ -177,7 +177,7 @@ getSndQueue st@SQLiteStore {conn} queueRowId = do
     liftIO $
       DB.queryNamed
         conn
-        [s|
+        [sql|
         SELECT server_id, snd_id, snd_private_key, encrypt_key, sign_key, status, ack_mode
         FROM send_queues
         WHERE send_queue_id = :rowId;
@@ -193,7 +193,7 @@ insertRcvQueue store serverId rcvQueue =
   insertWithLock
     store
     rcvQueuesLock
-    [s|
+    [sql|
       INSERT INTO receive_queues
         ( server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode)
       VALUES (?,?,?,?,?,?,?,?,?);
@@ -214,7 +214,7 @@ updateRcvConnectionWithSndQueue store connAlias sndQueueId =
   executeWithLock
     store
     connectionsLock
-    [s|
+    [sql|
       UPDATE connections
       SET send_queue_id = ?
       WHERE conn_alias = ?;
@@ -233,7 +233,7 @@ insertSndQueue store serverId sndQueue =
   insertWithLock
     store
     sndQueuesLock
-    [s|
+    [sql|
       INSERT INTO send_queues
         ( server_id, snd_id, snd_private_key, encrypt_key, sign_key, status, ack_mode)
       VALUES (?,?,?,?,?,?,?);
@@ -254,7 +254,7 @@ updateSndConnectionWithRcvQueue store connAlias rcvQueueId =
   executeWithLock
     store
     connectionsLock
-    [s|
+    [sql|
       UPDATE connections
       SET receive_queue_id = ?
       WHERE conn_alias = ?;
@@ -282,7 +282,7 @@ getConnAliasByRcvQueue SQLiteStore {conn} rcvId = do
     liftIO $
       DB.queryNamed
         conn
-        [s|
+        [sql|
           SELECT c.conn_alias
           FROM connections c
           JOIN receive_queues rq
@@ -323,7 +323,7 @@ updateReceiveQueueStatus store rcvQueueId host port status =
   executeWithLock
     store
     rcvQueuesLock
-    [s|
+    [sql|
       UPDATE receive_queues
       SET status = ?
       WHERE rcv_id = ?
@@ -340,7 +340,7 @@ updateSendQueueStatus store sndQueueId host port status =
   executeWithLock
     store
     sndQueuesLock
-    [s|
+    [sql|
       UPDATE send_queues
       SET status = ?
       WHERE snd_id = ?
@@ -362,7 +362,7 @@ insertMsg store connAlias qDirection agentMsgId msg = do
     insertWithLock
       store
       messagesLock
-      [s|
+      [sql|
         INSERT INTO messages (conn_alias, agent_msg_id, timestamp, message, direction, msg_status)
         VALUES (?,?,?,?,?,"MDTransmitted");
       |]
