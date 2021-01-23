@@ -46,7 +46,7 @@ import Simplex.Messaging.Server (randomBytes)
 import Simplex.Messaging.Server.Transmission (PrivateKey, PublicKey, RecipientId, SenderKey)
 import qualified Simplex.Messaging.Server.Transmission as SMP
 import UnliftIO.Concurrent
-import UnliftIO.Exception (SomeException)
+import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -74,21 +74,22 @@ type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError ErrorType m)
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient AgentClient {smpClients, msgQ} srv =
-  atomically (M.lookup srv <$> readTVar smpClients)
-    >>= maybe newSMPClient return
+  readTVarIO smpClients
+    >>= maybe newSMPClient return . M.lookup srv
   where
     newSMPClient :: m SMPClient
     newSMPClient = do
-      cfg <- asks $ smpCfg . config
-      c <- liftIO (getSMPClient srv cfg msgQ) `E.catch` throwErr (BROKER smpErrTCPConnection)
+      c <- connectClient
+      logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
       -- TODO how can agent know client lost the connection?
       atomically . modifyTVar smpClients $ M.insert srv c
       return c
 
-    throwErr :: ErrorType -> SomeException -> m a
-    throwErr err e = do
-      liftIO . putStrLn $ "Exception: " ++ show e -- TODO remove
-      throwError err
+    connectClient :: m SMPClient
+    connectClient = do
+      cfg <- asks $ smpCfg . config
+      liftIO (getSMPClient srv cfg msgQ)
+        `E.catch` \(_ :: IOException) -> throwError (BROKER smpErrTCPConnection)
 
 withSMP :: forall a m. AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
 withSMP c srv action =
@@ -157,10 +158,11 @@ removeSubscription c connAlias =
   atomically . modifyTVar (subscribed c) $ M.delete connAlias
 
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> SMP.QueueId -> ByteString -> m ()
-logServer dir AgentClient {clientId} SMPServer {host, port} qId cmdStr =
-  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> (B.pack . show) clientId <> ")", dir, server, ":", logSecret qId, cmdStr]
-  where
-    server = B.pack $ host <> maybe "" (":" <>) port
+logServer dir AgentClient {clientId} srv qId cmdStr =
+  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> (B.pack . show) clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
+
+showServer :: SMPServer -> ByteString
+showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs

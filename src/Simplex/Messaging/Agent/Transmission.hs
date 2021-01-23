@@ -360,11 +360,7 @@ tPutRaw h (corrId, connAlias, command) = do
   putLn h command
 
 tGetRaw :: Handle -> IO ARawTransmission
-tGetRaw h = do
-  corrId <- getLn h
-  connAlias <- getLn h
-  command <- getLn h
-  return (corrId, connAlias, command)
+tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 tPut :: MonadIO m => Handle -> ATransmission p -> m ()
 tPut h (corrId, connAlias, command) =
