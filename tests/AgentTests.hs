@@ -23,9 +23,12 @@ agentTests = do
   describe "SMP agent protocol syntax" syntaxTests
   describe "Establishing duplex connection" do
     it "should connect via one server and one agent" $
-      smpAgentTest2_1 testDuplexConnection1
-    it "should connect via one server and two agents" $
-      smpAgentTest2 testDuplexConnection1
+      smpAgentTest2_1 testDuplexConnection
+    it "should connect via one server and 2 agents" $
+      smpAgentTest2 testDuplexConnection
+  describe "Connection subscriptions" do
+    it "should connect via one server and one agent" $
+      smpAgentTest3_1 testSubscription
 
 (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
 command >#> response = smpAgentTest command `shouldReturn` response
@@ -48,8 +51,8 @@ h <#= p = tGet SAgent h >>= (`shouldSatisfy` p)
 pattern Msg :: MsgBody -> Either AgentErrorType (ACommand 'Agent)
 pattern Msg msg <- Right (MSG _ _ _ _ msg)
 
-testDuplexConnection1 :: Handle -> Handle -> IO ()
-testDuplexConnection1 alice bob = do
+testDuplexConnection :: Handle -> Handle -> IO ()
+testDuplexConnection alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW localhost:5000")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
@@ -70,6 +73,27 @@ testDuplexConnection1 alice bob = do
   bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", ERR (SMP AUTH))
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   10000 `timeout` tGet SAgent alice >>= \case
+    Nothing -> return ()
+    Just _ -> error "nothing else should be delivered to alice"
+
+testSubscription :: Handle -> Handle -> Handle -> IO ()
+testSubscription alice1 alice2 bob = do
+  ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW localhost:5000")
+  let qInfo' = serializeSmpQueueInfo qInfo
+  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
+  bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", OK)
+  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", OK)
+  alice1 <# ("", "bob", CON)
+  alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
+  alice1 #: ("2", "bob", "ACK 0") #> ("2", "bob", OK)
+  alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+  alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
+  alice2 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+  alice1 <# ("", "bob", END)
+  alice2 #: ("22", "bob", "ACK 0") #> ("22", "bob", OK)
+  bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", OK)
+  alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
+  10000 `timeout` tGet SAgent alice1 >>= \case
     Nothing -> return ()
     Just _ -> error "nothing else should be delivered to alice"
 
