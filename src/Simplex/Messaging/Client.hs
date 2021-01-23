@@ -114,8 +114,8 @@ getSMPClient smpServer@SMPServer {host, port} SMPClientConfig {qSize, defaultPor
               else Left SMPQueueIdError
 
 data SMPClientError
-  = SMPServerError ErrorType
-  | SMPResponseError ErrorType
+  = SMPServerError SMPErrorType
+  | SMPResponseError SMPErrorType
   | SMPQueueIdError
   | SMPUnexpectedResponse
   | SMPResponseTimeout

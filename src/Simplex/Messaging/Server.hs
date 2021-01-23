@@ -145,7 +145,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
                 Left e -> return $ ERR e
                 Right (rId, sId) -> subscribeQueue rId $> IDS rId sId
 
-            addQueueRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
+            addQueueRetry :: Int -> m (Either SMPErrorType (RecipientId, SenderId))
             addQueueRetry 0 = return $ Left INTERNAL
             addQueueRetry n = do
               ids <- getIds
@@ -254,10 +254,10 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         ok :: Signed
         ok = mkResp corrId queueId OK
 
-        err :: ErrorType -> Signed
+        err :: SMPErrorType -> Signed
         err = mkResp corrId queueId . ERR
 
-        okResp :: Either ErrorType () -> Signed
+        okResp :: Either SMPErrorType () -> Signed
         okResp = either err $ const ok
 
         msgCmd :: Message -> Command 'Broker

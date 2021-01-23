@@ -40,8 +40,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
-import Simplex.Messaging.Common (MsgBody, PrivateKey, PublicKey, QueueId, SenderKey)
-import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Common (MsgBody, PrivateKey, PublicKey, QueueId, SMPErrorType (AUTH), SenderKey)
 import Simplex.Messaging.Server (randomBytes)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (SomeException)
@@ -172,7 +171,7 @@ sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
     send 0 _ _ = throwE SMPResponseTimeout -- TODO different error
     send retry msg smp =
       sendSMPMessage smp sndPrivateKey sndId msg `catchE` \case
-        SMPServerError SMP.AUTH -> do
+        SMPServerError AUTH -> do
           threadDelay 100000
           send (retry - 1) msg smp
         e -> throwE e

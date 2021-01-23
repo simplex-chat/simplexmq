@@ -29,7 +29,7 @@ newQueueStore :: STM QueueStore
 newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty}
 
 instance MonadQueueStore QueueStore STM where
-  addQueue :: QueueStore -> RecipientKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
+  addQueue :: QueueStore -> RecipientKey -> (RecipientId, SenderId) -> STM (Either SMPErrorType ())
   addQueue store rKey ids@(rId, sId) = do
     cs@QueueStoreData {queues, senders} <- readTVar store
     if M.member rId queues || M.member sId senders
@@ -42,7 +42,7 @@ instance MonadQueueStore QueueStore STM where
             }
         return $ Right ()
 
-  getQueue :: QueueStore -> SParty (p :: Party) -> QueueId -> STM (Either ErrorType QueueRec)
+  getQueue :: QueueStore -> SParty (p :: Party) -> QueueId -> STM (Either SMPErrorType QueueRec)
   getQueue store SRecipient rId = do
     cs <- readTVar store
     return $ getRcpQueue cs rId
@@ -59,12 +59,12 @@ instance MonadQueueStore QueueStore STM where
         Just _ -> (Left AUTH, cs)
         _ -> (Right (), cs {queues = M.insert rId c {senderKey = Just sKey} (queues cs)})
 
-  suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
+  suspendQueue :: QueueStore -> RecipientId -> STM (Either SMPErrorType ())
   suspendQueue store rId =
     updateQueues store rId $ \cs c ->
       (Right (), cs {queues = M.insert rId c {status = QueueOff} (queues cs)})
 
-  deleteQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
+  deleteQueue :: QueueStore -> RecipientId -> STM (Either SMPErrorType ())
   deleteQueue store rId =
     updateQueues store rId $ \cs c ->
       ( Right (),
@@ -77,8 +77,8 @@ instance MonadQueueStore QueueStore STM where
 updateQueues ::
   QueueStore ->
   RecipientId ->
-  (QueueStoreData -> QueueRec -> (Either ErrorType (), QueueStoreData)) ->
-  STM (Either ErrorType ())
+  (QueueStoreData -> QueueRec -> (Either SMPErrorType (), QueueStoreData)) ->
+  STM (Either SMPErrorType ())
 updateQueues store rId update = do
   cs <- readTVar store
   let conn = getRcpQueue cs rId
@@ -89,5 +89,5 @@ updateQueues store rId update = do
       writeTVar store cs'
       return res
 
-getRcpQueue :: QueueStoreData -> RecipientId -> Either ErrorType QueueRec
+getRcpQueue :: QueueStoreData -> RecipientId -> Either SMPErrorType QueueRec
 getRcpQueue cs rId = maybe (Left AUTH) Right . M.lookup rId $ queues cs
