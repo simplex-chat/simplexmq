@@ -182,10 +182,10 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTransmission -> m ()
 processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
+  (connAlias, rq@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
   case cmd of
     SMP.MSG _ srvTs msgBody -> do
       -- TODO deduplicate with previously received
-      (connAlias, rq@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
       agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
       case agentMsg of
         SMPConfirmation senderKey -> do
@@ -225,8 +225,9 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
               notify connAlias $ MSG agentMsgId agentTimestamp srvTs MsgOk body
       return ()
     SMP.END -> do
+      removeSubscription c connAlias
       logServer "<--" c srv rId "END"
-      return ()
+      notify connAlias END
     _ -> logServer "<--" c srv rId $ "unexpected:" <> (B.pack . show) cmd
   where
     notify :: ConnAlias -> ACommand 'Agent -> m ()

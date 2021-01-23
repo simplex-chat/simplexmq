@@ -289,6 +289,7 @@ parseCommandP =
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
     <|> "SUB" $> ACmd SClient SUB
+    <|> "END" $> ACmd SAgent END
     <|> "SEND " *> sendCmd
     <|> "MSG " *> message
     <|> "ACK " *> acknowledge
@@ -323,6 +324,7 @@ serializeCommand = \case
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
   SUB -> "SUB"
+  END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   MSG aMsgId aTs ts st body ->
     B.unwords ["MSG", B.pack $ show aMsgId, B.pack $ formatISO8601Millis aTs, B.pack $ formatISO8601Millis ts, msgStatus st, serializeMsg body]

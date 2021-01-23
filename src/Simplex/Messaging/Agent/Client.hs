@@ -20,6 +20,7 @@ module Simplex.Messaging.Agent.Client
     sendAgentMessage,
     sendAck,
     logServer,
+    removeSubscription,
   )
 where
 
@@ -151,9 +152,9 @@ addSubscription :: MonadUnliftIO m => AgentClient -> ReceiveQueue -> ConnAlias -
 addSubscription c ReceiveQueue {server, rcvId} connAlias =
   atomically . modifyTVar (subscribed c) $ M.insert connAlias (server, rcvId)
 
--- removeSubscription :: AgentMonad m => AgentClient -> ConnAlias -> m ()
--- removeSubscription c connAlias =
---   atomically . modifyTVar (subscribed c) $ M.delete connAlias
+removeSubscription :: AgentMonad m => AgentClient -> ConnAlias -> m ()
+removeSubscription c connAlias =
+  atomically . modifyTVar (subscribed c) $ M.delete connAlias
 
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> SMP.QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} SMPServer {host, port} qId cmdStr =
