@@ -11,7 +11,9 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Types (ErrorType (..))
 import System.IO (Handle)
+import System.Timeout
 import Test.Hspec
 
 agentTests :: Spec
@@ -47,7 +49,15 @@ testDuplexConnection1 alice bob = do
   ("14", "alice", Right OK) <- sendRecv bob ("14", "alice", "SEND 9\nhello too")
   ("", "bob", Right (MSG _ _ _ _ "hello too")) <- tGet SAgent alice
   ("4", "bob", Right OK) <- sendRecv alice ("4", "bob", "ACK 0")
-  return ()
+  ("15", "alice", Right OK) <- sendRecv bob ("15", "alice", "SEND 9\nmessage 1")
+  ("16", "alice", Right OK) <- sendRecv bob ("16", "alice", "SEND 9\nmessage 2")
+  ("", "bob", Right (MSG _ _ _ _ "message 1")) <- tGet SAgent alice
+  ("5", "bob", Right OK) <- sendRecv alice ("5", "bob", "OFF")
+  ("17", "alice", Right (ERR (SMP AUTH))) <- sendRecv bob ("17", "alice", "SEND 9\nmessage 3")
+  ("6", "bob", Right OK) <- sendRecv alice ("6", "bob", "DEL")
+  10000 `timeout` tGet SAgent alice >>= \case
+    Nothing -> return ()
+    Just _ -> error "nothing else should be delivered to alice"
 
 syntaxTests :: Spec
 syntaxTests = do
