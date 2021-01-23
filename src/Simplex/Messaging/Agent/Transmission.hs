@@ -87,6 +87,8 @@ data ACommand (p :: AParty) where
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
 
+deriving instance Eq (ACommand p)
+
 deriving instance Show (ACommand p)
 
 type Message = ByteString
@@ -210,9 +212,9 @@ data Mode = On | Off deriving (Eq, Show, Read)
 newtype AckMode = AckMode Mode deriving (Eq, Show)
 
 data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
-  deriving (Show)
+  deriving (Eq, Show)
 
-data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Show)
+data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Eq, Show)
 
 type EncryptionKey = PublicKey
 
@@ -226,10 +228,10 @@ data QueueStatus = New | Confirmed | Secured | Active | Disabled
 type AgentMsgId = Integer
 
 data MsgStatus = MsgOk | MsgError MsgErrorType
-  deriving (Show)
+  deriving (Eq, Show)
 
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
-  deriving (Show)
+  deriving (Eq, Show)
 
 data AgentErrorType
   = UNKNOWN
@@ -240,7 +242,7 @@ data AgentErrorType
   | SIZE
   | STORE StoreError
   | INTERNAL -- etc. TODO SYNTAX Natural
-  deriving (Show, Exception)
+  deriving (Eq, Show, Exception)
 
 data AckStatus = AckOk | AckError AckErrorType
   deriving (Show)
