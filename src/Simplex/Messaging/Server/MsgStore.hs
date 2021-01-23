@@ -3,7 +3,7 @@
 module Simplex.Messaging.Server.MsgStore where
 
 import Data.Time.Clock
-import Simplex.Messaging.Common
+import Simplex.Messaging.Types
 
 data Message = Message
   { msgId :: Encoded,

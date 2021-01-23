@@ -15,7 +15,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Common
+import Simplex.Messaging.Types
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,

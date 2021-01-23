@@ -6,7 +6,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.Messaging.Common where
+module Simplex.Messaging.Types where
 
 import Data.ByteString.Char8 (ByteString)
 import Data.String

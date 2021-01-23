@@ -34,7 +34,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Common
+import Simplex.Messaging.Types
 import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E

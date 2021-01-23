@@ -25,7 +25,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPServerTransmission)
-import Simplex.Messaging.Common (CorrId (..), MsgBody, PrivateKey, SenderKey)
+import Simplex.Messaging.Types (CorrId (..), MsgBody, PrivateKey, SenderKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server (randomBytes)
 import Simplex.Messaging.Transport

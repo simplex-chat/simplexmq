@@ -30,7 +30,7 @@ import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.Types
-import Simplex.Messaging.Common (CorrId (..), Encoded, MsgBody, PublicKey, SMPErrorType, SenderId, errBadParameters, errMessageBody)
+import Simplex.Messaging.Types (CorrId (..), Encoded, MsgBody, PublicKey, SMPErrorType, SenderId, errBadParameters, errMessageBody)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
 import System.IO

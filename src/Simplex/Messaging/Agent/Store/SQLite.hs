@@ -25,7 +25,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Common
+import Simplex.Messaging.Types
 import UnliftIO.STM
 
 newSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore

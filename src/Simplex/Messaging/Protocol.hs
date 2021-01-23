@@ -20,7 +20,7 @@ import Data.Char (ord)
 import Data.Kind
 import Data.Time.Clock
 import Data.Time.ISO8601
-import Simplex.Messaging.Common
+import Simplex.Messaging.Types
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
 import System.IO
