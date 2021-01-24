@@ -29,12 +29,6 @@ type RecipientKey = PublicKey
 
 type SenderKey = PublicKey
 
-type RecipientId = QueueId
-
-type SenderId = QueueId
-
-type QueueId = Encoded
-
 type MsgId = Encoded
 
 type MsgBody = ByteString

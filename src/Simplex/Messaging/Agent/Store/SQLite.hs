@@ -25,7 +25,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Types
+import qualified Simplex.Messaging.Protocol as SMP
 import UnliftIO.STM
 
 newSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
@@ -81,7 +81,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         return $ SomeConn SCSend (SendConnection connAlias sndQ)
       _ -> throwError SEBadConn
 
-  getReceiveQueue :: SQLiteStore -> SMPServer -> RecipientId -> m (ConnAlias, ReceiveQueue)
+  getReceiveQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m (ConnAlias, ReceiveQueue)
   getReceiveQueue st SMPServer {host, port} recipientId = do
     rcvQueue <- getRcvQueueByRecipientId st recipientId host port
     connAlias <- getConnAliasByRcvQueue st recipientId

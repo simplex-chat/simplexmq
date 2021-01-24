@@ -85,7 +85,8 @@ cfg =
       smpCfg =
         SMPClientConfig
           { qSize = 1,
-            defaultPort = testPort
+            defaultPort = testPort,
+            tcpTimeout = 500_000
           }
     }
 

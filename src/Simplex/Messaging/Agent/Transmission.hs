@@ -30,8 +30,9 @@ import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.Types
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Types (CorrId (..), Encoded, ErrorType, MsgBody, PublicKey, SenderId, errBadParameters, errMessageBody)
+import Simplex.Messaging.Types (CorrId (..), Encoded, ErrorType, MsgBody, PublicKey, errBadParameters, errMessageBody)
 import Simplex.Messaging.Util
 import System.IO
 import Text.Read
@@ -73,7 +74,7 @@ data ACommand (p :: AParty) where
   READY :: ACommand Agent
   -- CONF :: OtherPartyId -> ACommand Agent
   -- LET :: OtherPartyId -> ACommand Client
-  SUB :: SubMode -> ACommand Client
+  SUB :: ACommand Client
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
@@ -208,9 +209,7 @@ data Mode = On | Off deriving (Eq, Show, Read)
 
 newtype AckMode = AckMode Mode deriving (Eq, Show)
 
-newtype SubMode = SubMode Mode deriving (Show)
-
-data SMPQueueInfo = SMPQueueInfo SMPServer SenderId EncryptionKey
+data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
   deriving (Show)
 
 data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Show)
@@ -281,6 +280,8 @@ parseCommandP =
   "NEW " *> newCmd
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
+    <|> "SUB" $> ACmd SClient SUB
+    <|> "END" $> ACmd SAgent END
     <|> "SEND " *> sendCmd
     <|> "MSG " *> message
     <|> "ACK " *> acknowledge
@@ -314,6 +315,8 @@ serializeCommand = \case
   NEW srv -> "NEW " <> serializeServer srv
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
+  SUB -> "SUB"
+  END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   MSG aMsgId aTs ts st body ->
     B.unwords ["MSG", B.pack $ show aMsgId, B.pack $ formatISO8601Millis aTs, B.pack $ formatISO8601Millis ts, msgStatus st, serializeMsg body]
@@ -349,11 +352,7 @@ tPutRaw h (corrId, connAlias, command) = do
   putLn h command
 
 tGetRaw :: Handle -> IO ARawTransmission
-tGetRaw h = do
-  corrId <- getLn h
-  connAlias <- getLn h
-  command <- getLn h
-  return (corrId, connAlias, command)
+tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 tPut :: MonadIO m => Handle -> ATransmission p -> m ()
 tPut h (CorrId corrId, connAlias, command) =
