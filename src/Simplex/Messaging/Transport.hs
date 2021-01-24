@@ -24,9 +24,9 @@ import qualified UnliftIO.IO as IO
 startTCPServer :: ServiceName -> IO Socket
 startTCPServer port = withSocketsDo $ resolve >>= open
   where
-    resolve = do
+    resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-      head <$> getAddrInfo (Just hints) Nothing (Just port)
+       in head <$> getAddrInfo (Just hints) Nothing (Just port)
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
@@ -42,9 +42,7 @@ runTCPServer port server =
     forkFinally (server h) (const $ IO.hClose h)
 
 acceptTCPConn :: Socket -> IO Handle
-acceptTCPConn sock = do
-  (conn, _) <- accept sock
-  getSocketHandle conn
+acceptTCPConn sock = accept sock >>= getSocketHandle . fst
 
 startTCPClient :: HostName -> ServiceName -> IO Handle
 startTCPClient host port =
@@ -55,13 +53,13 @@ startTCPClient host port =
     err = mkIOError NoSuchThing "no address" Nothing Nothing
 
     resolve :: IO [AddrInfo]
-    resolve = do
+    resolve =
       let hints = defaultHints {addrSocketType = Stream}
-      getAddrInfo (Just hints) (Just host) (Just port)
+       in getAddrInfo (Just hints) (Just host) (Just port)
 
     tryOpen :: Exception e => Either e Handle -> AddrInfo -> IO (Either e Handle)
-    tryOpen h@(Right _) _ = return h
     tryOpen (Left _) addr = E.try $ open addr
+    tryOpen h _ = return h
 
     open :: AddrInfo -> IO Handle
     open addr = do

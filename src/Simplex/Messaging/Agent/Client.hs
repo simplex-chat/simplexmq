@@ -12,6 +12,7 @@ module Simplex.Messaging.Agent.Client
     newAgentClient,
     AgentMonad,
     getSMPServerClient,
+    closeSMPServerClients,
     newReceiveQueue,
     subscribeQueue,
     sendConfirmation,
@@ -90,8 +91,11 @@ getSMPServerClient AgentClient {smpClients, msgQ} srv =
     connectClient :: m SMPClient
     connectClient = do
       cfg <- asks $ smpCfg . config
-      liftIO (getSMPClient srv cfg msgQ)
+      liftIO (getSMPClient srv cfg msgQ $ return ())
         `E.catch` \(_ :: IOException) -> throwError (BROKER smpErrTCPConnection)
+
+closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
+closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient
 
 withSMP :: forall a m. AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
 withSMP c srv action =

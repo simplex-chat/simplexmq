@@ -10,6 +10,7 @@
 module Simplex.Messaging.Client
   ( SMPClient,
     getSMPClient,
+    closeSMPClient,
     createSMPQueue,
     subscribeSMPQueue,
     secureSMPQueue,
@@ -49,6 +50,7 @@ import System.Timeout
 
 data SMPClient = SMPClient
   { action :: Async (),
+    connected :: TVar Bool,
     smpServer :: SMPServer,
     clientCorrId :: TVar Natural,
     sentCommands :: TVar (Map CorrId Request),
@@ -78,16 +80,20 @@ data Request = Request
     responseVar :: TMVar (Either SMPClientError Cmd)
   }
 
-getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO SMPClient
+getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO SMPClient
 getSMPClient
   smpServer@SMPServer {host, port}
   SMPClientConfig {qSize, defaultPort, tcpTimeout}
-  msgQ = do
+  msgQ
+  disconnected = do
     c <- atomically mkSMPClient
     started <- newEmptyTMVarIO
-    action <- async $ runTCPClient host (fromMaybe defaultPort port) (client c started)
+    action <-
+      async $
+        runTCPClient host (fromMaybe defaultPort port) (client c started)
+          `finally` atomically (putTMVar started False)
     tcpTimeout `timeout` atomically (takeTMVar started) >>= \case
-      Just _ -> return c {action}
+      Just True -> return c {action}
       _ -> throwIO err
     where
       err :: IOException
@@ -95,18 +101,32 @@ getSMPClient
 
       mkSMPClient :: STM SMPClient
       mkSMPClient = do
+        connected <- newTVar False
         clientCorrId <- newTVar 0
         sentCommands <- newTVar M.empty
         sndQ <- newTBQueue qSize
         rcvQ <- newTBQueue qSize
-        return SMPClient {action = undefined, smpServer, clientCorrId, sentCommands, sndQ, rcvQ, msgQ}
+        return
+          SMPClient
+            { action = undefined,
+              connected,
+              smpServer,
+              clientCorrId,
+              sentCommands,
+              sndQ,
+              rcvQ,
+              msgQ
+            }
 
-      client :: SMPClient -> TMVar () -> Handle -> IO ()
+      client :: SMPClient -> TMVar Bool -> Handle -> IO ()
       client c started h = do
         _ <- getLn h -- "Welcome to SMP"
-        atomically $ putTMVar started ()
+        atomically $ do
+          modifyTVar (connected c) (const True)
+          putTMVar started True
         -- TODO call continuation on disconnection after raceAny_ exits
         raceAny_ [send c h, process c, receive c h]
+          `finally` putStrLn "SMP server disconnected"
 
       send :: SMPClient -> Handle -> IO ()
       send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
@@ -133,6 +153,9 @@ getSMPClient
                   Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
                   Right r -> Right r
                 else Left SMPQueueIdError
+
+closeSMPClient :: SMPClient -> IO ()
+closeSMPClient = uninterruptibleCancel . action
 
 data SMPClientError
   = SMPServerError ErrorType

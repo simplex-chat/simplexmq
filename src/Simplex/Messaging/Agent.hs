@@ -17,6 +17,7 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.Text as T
 import Data.Text.Encoding
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -46,13 +47,17 @@ runSMPAgent cfg@AgentConfig {tcpPort} = do
       q <- asks $ tbqSize . config
       n <- asks clientCounter
       c <- atomically $ newAgentClient n q
-      logInfo $ "client " <> showText (clientId c) <> " connected to Agent"
+      logConnection c True
       race_ (connectClient h c) (runClient c)
+        `E.finally` (closeSMPServerClients c >> logConnection c False)
 
 connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
-connectClient h c = do
-  race_ (send h c) (receive h c)
-  logInfo $ "client " <> showText (clientId c) <> " disconnected from Agent"
+connectClient h c = race_ (send h c) (receive h c)
+
+logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
+logConnection c connected =
+  let event = if connected then "connected to" else "disconnected from"
+   in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 runClient c = race_ (subscriber c) (client c)
@@ -183,6 +188,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
       where
         delete rq = do
           deleteQueue c rq
+          removeSubscription c connAlias
           withStore (`deleteConn` connAlias)
           respond OK
 
