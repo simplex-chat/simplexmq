@@ -51,22 +51,6 @@ executables:
       - simplex-messaging
     ghc-options:
       - -threaded
-  
-  server-test:
-    source-dirs: apps/server-test
-    main: Main.hs
-    dependencies:
-      - network == 3.1.*
-    ghc-options:
-      - -threaded
-
-  client-test:
-    source-dirs: apps/client-test
-    main: Main.hs
-    dependencies:
-      - network == 3.1.*
-    ghc-options:
-      - -threaded
 
 tests:
   smp-server-test:
