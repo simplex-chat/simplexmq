@@ -13,12 +13,14 @@ module Simplex.Messaging.Agent.Client
     AgentMonad,
     getSMPServerClient,
     newReceiveQueue,
+    subscribeQueue,
     sendConfirmation,
     sendHello,
     secureQueue,
     sendAgentMessage,
     sendAck,
     logServer,
+    removeSubscription,
   )
 where
 
@@ -40,10 +42,11 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
+import Simplex.Messaging.Protocol (QueueId, RecipientId)
 import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, PrivateKey, PublicKey, QueueId, SenderKey)
+import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, PrivateKey, PublicKey, SenderKey)
 import UnliftIO.Concurrent
-import UnliftIO.Exception (SomeException)
+import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -52,6 +55,7 @@ data AgentClient = AgentClient
     sndQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue SMPServerTransmission,
     smpClients :: TVar (Map SMPServer SMPClient),
+    subscribed :: TVar (Map ConnAlias (SMPServer, RecipientId)),
     clientId :: Int
   }
 
@@ -61,28 +65,31 @@ newAgentClient cc qSize = do
   sndQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
   smpClients <- newTVar M.empty
+  subscribed <- newTVar M.empty
   clientId <- (+ 1) <$> readTVar cc
   writeTVar cc clientId
-  return AgentClient {rcvQ, sndQ, msgQ, smpClients, clientId}
+  return AgentClient {rcvQ, sndQ, msgQ, smpClients, subscribed, clientId}
 
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient AgentClient {smpClients, msgQ} srv =
-  atomically (M.lookup srv <$> readTVar smpClients)
-    >>= maybe newSMPClient return
+  readTVarIO smpClients
+    >>= maybe newSMPClient return . M.lookup srv
   where
     newSMPClient :: m SMPClient
     newSMPClient = do
-      cfg <- asks $ smpCfg . config
-      c <- liftIO (getSMPClient srv cfg msgQ) `E.catch` throwErr (BROKER smpErrTCPConnection)
+      c <- connectClient
+      logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
+      -- TODO how can agent know client lost the connection?
       atomically . modifyTVar smpClients $ M.insert srv c
       return c
 
-    throwErr :: AgentErrorType -> SomeException -> m a
-    throwErr err e = do
-      liftIO . putStrLn $ "Exception: " ++ show e -- TODO remove
-      throwError err
+    connectClient :: m SMPClient
+    connectClient = do
+      cfg <- asks $ smpCfg . config
+      liftIO (getSMPClient srv cfg msgQ)
+        `E.catch` \(_ :: IOException) -> throwError (BROKER smpErrTCPConnection)
 
 withSMP :: forall a m. AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
 withSMP c srv action =
@@ -111,8 +118,8 @@ withLogSMP c srv qId cmdStr action = do
   logServer "<--" c srv qId "OK"
   return res
 
-newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> m (ReceiveQueue, SMPQueueInfo)
-newReceiveQueue c srv = do
+newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (ReceiveQueue, SMPQueueInfo)
+newReceiveQueue c srv connAlias = do
   g <- asks idsDrg
   recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
   let rcvPrivateKey = recipientKey
@@ -121,7 +128,7 @@ newReceiveQueue c srv = do
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
   encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
   let decryptKey = encryptKey
-      rcvQueue =
+      rq =
         ReceiveQueue
           { server = srv,
             rcvId,
@@ -133,13 +140,29 @@ newReceiveQueue c srv = do
             status = New,
             ackMode = AckMode On
           }
-  return (rcvQueue, SMPQueueInfo srv sId encryptKey)
+  addSubscription c rq connAlias
+  return (rq, SMPQueueInfo srv sId encryptKey)
+
+subscribeQueue :: AgentMonad m => AgentClient -> ReceiveQueue -> ConnAlias -> m ()
+subscribeQueue c rq@ReceiveQueue {server, rcvPrivateKey, rcvId} connAlias = do
+  withLogSMP c server rcvId "SUB" $ \smp ->
+    subscribeSMPQueue smp rcvPrivateKey rcvId
+  addSubscription c rq connAlias
+
+addSubscription :: MonadUnliftIO m => AgentClient -> ReceiveQueue -> ConnAlias -> m ()
+addSubscription c ReceiveQueue {server, rcvId} connAlias =
+  atomically . modifyTVar (subscribed c) $ M.insert connAlias (server, rcvId)
+
+removeSubscription :: AgentMonad m => AgentClient -> ConnAlias -> m ()
+removeSubscription c connAlias =
+  atomically . modifyTVar (subscribed c) $ M.delete connAlias
 
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
-logServer dir AgentClient {clientId} SMPServer {host, port} qId cmdStr =
-  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> (B.pack . show) clientId <> ")", dir, server, ":", logSecret qId, cmdStr]
-  where
-    server = B.pack $ host <> maybe "" (":" <>) port
+logServer dir AgentClient {clientId} srv qId cmdStr =
+  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> (B.pack . show) clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
+
+showServer :: SMPServer -> ByteString
+showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs

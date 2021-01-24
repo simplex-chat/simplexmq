@@ -20,8 +20,8 @@ import Data.Char (ord)
 import Data.Kind
 import Data.Time.Clock
 import Data.Time.ISO8601
-import Simplex.Messaging.Types
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Types
 import Simplex.Messaging.Util
 import System.IO
 import Text.Read
@@ -50,6 +50,12 @@ type SignedOrError = (CorrId, QueueId, Either ErrorType Cmd)
 type TransmissionOrError = (Signature, SignedOrError)
 
 type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
+
+type RecipientId = QueueId
+
+type SenderId = QueueId
+
+type QueueId = Encoded
 
 data Command (a :: Party) where
   NEW :: RecipientKey -> Command Recipient

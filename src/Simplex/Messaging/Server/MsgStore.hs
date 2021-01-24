@@ -3,6 +3,7 @@
 module Simplex.Messaging.Server.MsgStore where
 
 import Data.Time.Clock
+import Simplex.Messaging.Protocol (RecipientId)
 import Simplex.Messaging.Types
 
 data Message = Message

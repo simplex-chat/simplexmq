@@ -233,7 +233,7 @@ testSwitchSub =
       Resp "bcda" _ ok3 <- sendRecv rh2 ("1234", "bcda", rId, "ACK")
       (ok3, OK) #== "accepts ACK from the 2nd TCP connection"
 
-      timeout 1000 (tGet fromServer rh1) >>= \case
+      1000 `timeout` tGet fromServer rh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
