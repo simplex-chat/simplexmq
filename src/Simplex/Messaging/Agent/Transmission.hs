@@ -33,6 +33,7 @@ import Simplex.Messaging.Agent.Store.Types
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Types (CorrId (..), Encoded, ErrorType, MsgBody, PublicKey, errBadParameters, errMessageBody)
+import qualified Simplex.Messaging.Types as ST
 import Simplex.Messaging.Util
 import System.IO
 import Text.Read
@@ -71,7 +72,6 @@ data ACommand (p :: AParty) where
   JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client -- response OK
   CON :: ACommand Agent -- notification that connection is established
   -- TODO currently it automatically allows whoever sends the confirmation
-  READY :: ACommand Agent
   -- CONF :: OtherPartyId -> ACommand Agent
   -- LET :: OtherPartyId -> ACommand Client
   SUB :: ACommand Client
@@ -82,10 +82,12 @@ data ACommand (p :: AParty) where
   MSG :: AgentMsgId -> UTCTime -> UTCTime -> MsgStatus -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
   -- RCVD :: AgentMsgId -> ACommand Agent
-  -- OFF :: ACommand Client
-  -- DEL :: ACommand Client
+  OFF :: ACommand Client
+  DEL :: ACommand Client
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
+
+deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
 
@@ -210,9 +212,9 @@ data Mode = On | Off deriving (Eq, Show, Read)
 newtype AckMode = AckMode Mode deriving (Eq, Show)
 
 data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
-  deriving (Show)
+  deriving (Eq, Show)
 
-data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Show)
+data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Eq, Show)
 
 type EncryptionKey = PublicKey
 
@@ -226,10 +228,10 @@ data QueueStatus = New | Confirmed | Secured | Active | Disabled
 type AgentMsgId = Integer
 
 data MsgStatus = MsgOk | MsgError MsgErrorType
-  deriving (Show)
+  deriving (Eq, Show)
 
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
-  deriving (Show)
+  deriving (Eq, Show)
 
 data AgentErrorType
   = UNKNOWN
@@ -240,7 +242,7 @@ data AgentErrorType
   | SIZE
   | STORE StoreError
   | INTERNAL -- etc. TODO SYNTAX Natural
-  deriving (Show, Exception)
+  deriving (Eq, Show, Exception)
 
 data AckStatus = AckOk | AckError AckErrorType
   deriving (Show)
@@ -285,7 +287,9 @@ parseCommandP =
     <|> "SEND " *> sendCmd
     <|> "MSG " *> message
     <|> "ACK " *> acknowledge
-    -- <|> "ERR " *> agentError - TODO
+    <|> "OFF" $> ACmd SClient OFF
+    <|> "DEL" $> ACmd SClient DEL
+    <|> "ERR " *> agentError
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
@@ -297,6 +301,9 @@ parseCommandP =
       let sp = A.space; msgId = A.decimal <* sp; ts = tsISO8601P <* sp; body = A.takeByteString
        in ACmd SAgent <$> (MSG <$> msgId <*> ts <*> ts <*> status <* sp <*> body)
     acknowledge = ACmd SClient <$> (ACK <$> A.decimal)
+    -- TODO other error types
+    agentError = ACmd SAgent . ERR <$> ("SMP " *> smpErrorType)
+    smpErrorType = "AUTH" $> SMP ST.AUTH
     replyMode =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)
@@ -321,10 +328,11 @@ serializeCommand = \case
   MSG aMsgId aTs ts st body ->
     B.unwords ["MSG", B.pack $ show aMsgId, B.pack $ formatISO8601Millis aTs, B.pack $ formatISO8601Millis ts, msgStatus st, serializeMsg body]
   ACK aMsgId -> "ACK " <> B.pack (show aMsgId)
+  OFF -> "OFF"
+  DEL -> "DEL"
   CON -> "CON"
   ERR e -> "ERR " <> B.pack (show e)
   OK -> "OK"
-  c -> B.pack $ show c
   where
     replyMode :: ReplyMode -> ByteString
     replyMode = \case

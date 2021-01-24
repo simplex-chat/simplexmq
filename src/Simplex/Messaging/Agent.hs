@@ -107,6 +107,8 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     SUB -> subscribeConnection
     SEND msgBody -> sendMessage msgBody
     ACK aMsgId -> ackMessage aMsgId
+    OFF -> suspendConnection
+    DEL -> deleteConnection
   where
     createNewConnection :: SMPServer -> m ()
     createNewConnection server = do
@@ -162,6 +164,27 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         _ -> throwError PROHIBITED
       where
         ackMsg rq = sendAck c rq >> respond OK
+
+    suspendConnection :: m ()
+    suspendConnection =
+      withStore (`getConn` connAlias) >>= \case
+        SomeConn _ (DuplexConnection _ rq _) -> suspend rq
+        SomeConn _ (ReceiveConnection _ rq) -> suspend rq
+        _ -> throwError PROHIBITED
+      where
+        suspend rq = suspendQueue c rq >> respond OK
+
+    deleteConnection :: m ()
+    deleteConnection =
+      withStore (`getConn` connAlias) >>= \case
+        SomeConn _ (DuplexConnection _ rq _) -> delete rq
+        SomeConn _ (ReceiveConnection _ rq) -> delete rq
+        _ -> throwError PROHIBITED
+      where
+        delete rq = do
+          deleteQueue c rq
+          withStore (`deleteConn` connAlias)
+          respond OK
 
     sendReplyQInfo :: SMPServer -> SendQueue -> m ()
     sendReplyQInfo srv sq = do

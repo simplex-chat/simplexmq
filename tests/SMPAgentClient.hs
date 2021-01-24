@@ -30,11 +30,17 @@ agentTestPort = "5001"
 agentTestPort2 :: ServiceName
 agentTestPort2 = "5011"
 
+agentTestPort3 :: ServiceName
+agentTestPort3 = "5021"
+
 testDB :: String
 testDB = "smp-agent.test.protocol.db"
 
 testDB2 :: String
 testDB2 = "smp-agent2.test.protocol.db"
+
+testDB3 :: String
+testDB3 = "smp-agent3.test.protocol.db"
 
 smpAgentTest :: ARawTransmission -> IO ARawTransmission
 smpAgentTest cmd = runSmpAgentTest $ \h -> tPutRaw h cmd >> tGetRaw h
@@ -74,6 +80,21 @@ smpAgentTest2_1 test' = smpAgentTestN_1 2 _test
   where
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
+
+smpAgentTest3 :: (Handle -> Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest3 test' =
+  smpAgentTestN
+    [(agentTestPort, testDB), (agentTestPort2, testDB2), (agentTestPort3, testDB3)]
+    _test
+  where
+    _test [h1, h2, h3] = test' h1 h2 h3
+    _test _ = error "expected 3 handles"
+
+smpAgentTest3_1 :: (Handle -> Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest3_1 test' = smpAgentTestN_1 3 _test
+  where
+    _test [h1, h2, h3] = test' h1 h2 h3
+    _test _ = error "expected 3 handles"
 
 cfg :: AgentConfig
 cfg =

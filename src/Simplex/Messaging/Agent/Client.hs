@@ -19,6 +19,8 @@ module Simplex.Messaging.Agent.Client
     secureQueue,
     sendAgentMessage,
     sendAck,
+    suspendQueue,
+    deleteQueue,
     logServer,
     removeSubscription,
   )
@@ -208,6 +210,16 @@ sendAck :: AgentMonad m => AgentClient -> ReceiveQueue -> m ()
 sendAck c ReceiveQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "ACK" $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId
+
+suspendQueue :: AgentMonad m => AgentClient -> ReceiveQueue -> m ()
+suspendQueue c ReceiveQueue {server, rcvId, rcvPrivateKey} =
+  withLogSMP c server rcvId "OFF" $ \smp ->
+    suspendSMPQueue smp rcvPrivateKey rcvId
+
+deleteQueue :: AgentMonad m => AgentClient -> ReceiveQueue -> m ()
+deleteQueue c ReceiveQueue {server, rcvId, rcvPrivateKey} =
+  withLogSMP c server rcvId "DEL" $ \smp ->
+    deleteSMPQueue smp rcvPrivateKey rcvId
 
 sendAgentMessage :: AgentMonad m => AgentClient -> SendQueue -> AMessage -> m ()
 sendAgentMessage c SendQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg = do
