@@ -124,9 +124,8 @@ getSMPClient
         atomically $ do
           modifyTVar (connected c) (const True)
           putTMVar started True
-        -- TODO call continuation on disconnection after raceAny_ exits
         raceAny_ [send c h, process c, receive c h]
-          `finally` putStrLn "SMP server disconnected"
+          `finally` disconnected
 
       send :: SMPClient -> Handle -> IO ()
       send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h

@@ -91,8 +91,13 @@ getSMPServerClient AgentClient {smpClients, msgQ} srv =
     connectClient :: m SMPClient
     connectClient = do
       cfg <- asks $ smpCfg . config
-      liftIO (getSMPClient srv cfg msgQ $ return ())
+      liftIO (getSMPClient srv cfg msgQ clientDisconnected)
         `E.catch` \(_ :: IOException) -> throwError (BROKER smpErrTCPConnection)
+
+    clientDisconnected :: IO ()
+    clientDisconnected = do
+      atomically . modifyTVar smpClients $ M.delete srv
+      logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
 closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient
