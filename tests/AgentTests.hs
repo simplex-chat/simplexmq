@@ -7,7 +7,7 @@
 
 module AgentTests where
 
-import AgentTests.SQLite
+import AgentTests.SQLiteTests (storeTests)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient

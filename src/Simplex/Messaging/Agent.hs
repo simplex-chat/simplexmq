@@ -22,7 +22,7 @@ import Data.Text.Encoding
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Types
+import Simplex.Messaging.Agent.Store.SQLite.Util (SQLiteStore)
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPServerTransmission)
