@@ -100,20 +100,27 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
 
     clientDisconnected :: IO ()
     clientDisconnected = do
-      removeServerSubs >>= mapM_ (mapM_ removeNotifySub)
+      removeSubs >>= mapM_ (mapM_ notifySub)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-    removeServerSubs :: IO (Maybe (Set ConnAlias))
-    removeServerSubs = atomically $ do
+    removeSubs :: IO (Maybe (Set ConnAlias))
+    removeSubs = atomically $ do
       modifyTVar smpClients $ M.delete srv
-      ss <- readTVar (subscrSrvrs c)
-      writeTVar (subscrSrvrs c) $ M.delete srv ss
-      return $ M.lookup srv ss
+      cs <- M.lookup srv <$> readTVar (subscrSrvrs c)
+      modifyTVar (subscrSrvrs c) $ M.delete srv
+      modifyTVar (subscrConns c) $ maybe id deleteKeys cs
+      return cs
+      where
+        deleteKeys :: Ord k => Set k -> Map k a -> Map k a
+        deleteKeys ks m = S.foldr' M.delete m ks
 
-    removeNotifySub :: ConnAlias -> IO ()
-    removeNotifySub connAlias = atomically $ do
-      modifyTVar (subscrConns c) $ M.delete connAlias
-      writeTBQueue (sndQ c) ("", connAlias, END)
+    notifySub :: ConnAlias -> IO ()
+    notifySub connAlias = atomically $ writeTBQueue (sndQ c) ("", connAlias, END)
+
+-- removeNotifySub :: ConnAlias -> IO ()
+-- removeNotifySub connAlias = atomically $ do
+--   modifyTVar (subscrConns c) $ M.delete connAlias
+--   writeTBQueue (sndQ c) ("", connAlias, END)
 
 closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
 closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient
