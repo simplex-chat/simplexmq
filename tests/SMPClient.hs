@@ -43,7 +43,7 @@ cfg =
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerThreadOn port =
   E.bracket
-    (forkIOWithUnmask ($ runSMPServer cfg {tcpPort = port}))
+    (forkIO $ runSMPServer cfg {tcpPort = port})
     (liftIO . killThread)
 
 withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
