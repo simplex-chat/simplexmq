@@ -21,12 +21,18 @@ import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import qualified UnliftIO.IO as IO
 
+runTCPServer :: MonadUnliftIO m => ServiceName -> (Handle -> m ()) -> m ()
+runTCPServer port server =
+  E.bracket (liftIO $ startTCPServer port) (liftIO . close) $ \sock -> forever $ do
+    h <- liftIO $ acceptTCPConn sock
+    forkFinally (server h) (const $ IO.hClose h)
+
 startTCPServer :: ServiceName -> IO Socket
 startTCPServer port = withSocketsDo $ resolve >>= open
   where
-    resolve = do
+    resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-      head <$> getAddrInfo (Just hints) Nothing (Just port)
+       in head <$> getAddrInfo (Just hints) Nothing (Just port)
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
@@ -35,44 +41,36 @@ startTCPServer port = withSocketsDo $ resolve >>= open
       listen sock 1024
       return sock
 
-runTCPServer :: MonadUnliftIO m => ServiceName -> (Handle -> m ()) -> m ()
-runTCPServer port server =
-  E.bracket (liftIO $ startTCPServer port) (liftIO . close) $ \sock -> forever $ do
-    h <- liftIO $ acceptTCPConn sock
-    forkFinally (server h) (const $ IO.hClose h)
-
 acceptTCPConn :: Socket -> IO Handle
-acceptTCPConn sock = do
-  (conn, _) <- accept sock
-  getSocketHandle conn
+acceptTCPConn sock = accept sock >>= getSocketHandle . fst
+
+runTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
+runTCPClient host port client = do
+  h <- liftIO $ startTCPClient host port
+  client h `E.finally` IO.hClose h
 
 startTCPClient :: HostName -> ServiceName -> IO Handle
 startTCPClient host port =
   withSocketsDo $
-    resolve >>= foldM tryOpen (Left err) >>= either E.throwIO return
+    resolve >>= foldM tryOpen (Left err) >>= either E.throwIO return -- replace fold with recursion
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
 
     resolve :: IO [AddrInfo]
-    resolve = do
+    resolve =
       let hints = defaultHints {addrSocketType = Stream}
-      getAddrInfo (Just hints) (Just host) (Just port)
+       in getAddrInfo (Just hints) (Just host) (Just port)
 
     tryOpen :: Exception e => Either e Handle -> AddrInfo -> IO (Either e Handle)
-    tryOpen h@(Right _) _ = return h
     tryOpen (Left _) addr = E.try $ open addr
+    tryOpen h _ = return h
 
     open :: AddrInfo -> IO Handle
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
       getSocketHandle sock
-
-runTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
-runTCPClient host port client = do
-  h <- liftIO $ startTCPClient host port
-  client h `E.finally` IO.hClose h
 
 getSocketHandle :: Socket -> IO Handle
 getSocketHandle conn = do
