@@ -123,7 +123,7 @@ cfg =
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn (port', db') =
   E.bracket
-    (forkIO $ runSMPAgent cfg {tcpPort = port', dbFile = db'})
+    (forkIOWithUnmask ($ runSMPAgent cfg {tcpPort = port', dbFile = db'}))
     (liftIO . killThread >=> const (removeFile db'))
 
 withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> m a -> m a
