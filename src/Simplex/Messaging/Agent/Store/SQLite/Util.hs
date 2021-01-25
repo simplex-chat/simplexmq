@@ -31,7 +31,6 @@ import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField
 import Network.Socket
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol as SMP
@@ -39,6 +38,20 @@ import Simplex.Messaging.Util
 import Text.Read
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+
+data SQLiteStore = SQLiteStore
+  { dbFilename :: String,
+    conn :: DB.Connection,
+    serversLock :: TMVar (),
+    rcvQueuesLock :: TMVar (),
+    sndQueuesLock :: TMVar (),
+    connectionsLock :: TMVar (),
+    messagesLock :: TMVar ()
+  }
+
+type QueueRowId = Int64
+
+type ConnectionRowId = Int64
 
 addRcvQueueQuery :: Query
 addRcvQueueQuery =

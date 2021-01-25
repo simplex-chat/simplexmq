@@ -21,7 +21,6 @@ import Data.Maybe
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema
-import Simplex.Messaging.Agent.Store.SQLite.Types
 import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
