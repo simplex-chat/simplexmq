@@ -30,21 +30,28 @@ agentTests = do
     it "should connect via one server and one agent" $
       smpAgentTest3_1 testSubscription
 
+-- | simple test for one command with the expected response
 (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
 command >#> response = smpAgentTest command `shouldReturn` response
 
+-- | simple test for one command with a predicate for the expected response
 (>#>=) :: ARawTransmission -> ((ByteString, ByteString, [ByteString]) -> Bool) -> Expectation
 command >#>= p = smpAgentTest command >>= (`shouldSatisfy` p . \(cId, cAlias, cmd) -> (cId, cAlias, B.words cmd))
 
+-- | send transmission `t` to handle `h` and get response
 (#:) :: Handle -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
 h #: t = tPutRaw h t >> tGet SAgent h
 
+-- | action and expected response
+-- `h #:t #> r` is the test that sends `t` to `h` and validates that the response is `r`
 (#>) :: IO (ATransmissionOrError 'Agent) -> ATransmission 'Agent -> Expectation
 action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right cmd)
 
+-- | receive message to handle `h` and validate that it is the expected one
 (<#) :: Handle -> ATransmission 'Agent -> Expectation
 h <# (corrId, cAlias, cmd) = tGet SAgent h `shouldReturn` (corrId, cAlias, Right cmd)
 
+-- | receive message to handle `h` and validate it using predicate `p`
 (<#=) :: Handle -> (ATransmissionOrError 'Agent -> Bool) -> Expectation
 h <#= p = tGet SAgent h >>= (`shouldSatisfy` p)
 
