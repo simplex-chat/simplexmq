@@ -52,7 +52,7 @@ runTCPClient host port client = do
 startTCPClient :: HostName -> ServiceName -> IO Handle
 startTCPClient host port =
   withSocketsDo $
-    resolve >>= foldM tryOpen (Left err) >>= either E.throwIO return
+    resolve >>= foldM tryOpen (Left err) >>= either E.throwIO return -- replace fold with recursion
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
