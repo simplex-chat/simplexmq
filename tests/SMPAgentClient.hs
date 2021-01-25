@@ -9,7 +9,7 @@ import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Network.Socket
-import SMPClient (testPort, withSmpServer)
+import SMPClient (testPort, withSmpServer, withSmpServerThreadOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
@@ -47,6 +47,15 @@ smpAgentTest cmd = runSmpAgentTest $ \h -> tPutRaw h cmd >> tGetRaw h
 
 runSmpAgentTest :: (MonadUnliftIO m, MonadRandom m) => (Handle -> m a) -> m a
 runSmpAgentTest test = withSmpServer . withSmpAgent $ testSMPAgentClient test
+
+runSmpAgentServerTest :: (MonadUnliftIO m, MonadRandom m) => ((ThreadId, ThreadId) -> Handle -> m a) -> m a
+runSmpAgentServerTest test =
+  withSmpServerThreadOn testPort $
+    \server -> withSmpAgentThreadOn (agentTestPort, testDB) $
+      \agent -> testSMPAgentClient $ test (server, agent)
+
+smpAgentServerTest :: ((ThreadId, ThreadId) -> Handle -> IO ()) -> Expectation
+smpAgentServerTest test' = runSmpAgentServerTest test' `shouldReturn` ()
 
 runSmpAgentTestN :: forall m a. (MonadUnliftIO m, MonadRandom m) => [(ServiceName, String)] -> ([Handle] -> m a) -> m a
 runSmpAgentTestN agents test = withSmpServer $ run agents []
@@ -111,12 +120,14 @@ cfg =
           }
     }
 
-withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> m a -> m a
-withSmpAgentOn (port', db') =
+withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn (port', db') =
   E.bracket
-    (forkIO $ runSMPAgent cfg {tcpPort = port', dbFile = db'})
+    (forkIOWithUnmask ($ runSMPAgent cfg {tcpPort = port', dbFile = db'}))
     (liftIO . killThread >=> const (removeFile db'))
-    . const
+
+withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> m a -> m a
+withSmpAgentOn (port', db') = withSmpAgentThreadOn (port', db') . const
 
 withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => m a -> m a
 withSmpAgent = withSmpAgentOn (agentTestPort, testDB)
