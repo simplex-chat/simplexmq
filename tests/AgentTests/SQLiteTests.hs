@@ -2,14 +2,14 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module AgentTests.SQLite where
+module AgentTests.SQLiteTests where
 
 import Control.Monad.Except
 import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Types
+import Simplex.Messaging.Agent.Store.SQLite.Util (SQLiteStore, conn, dbFilename)
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import System.Random
