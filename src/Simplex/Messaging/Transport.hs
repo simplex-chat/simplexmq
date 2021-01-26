@@ -12,6 +12,8 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Set (Set)
+import qualified Data.Set as S
 import GHC.IO.Exception (IOErrorType (..))
 import Network.Socket
 import System.IO
@@ -20,12 +22,18 @@ import UnliftIO.Concurrent
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import qualified UnliftIO.IO as IO
+import UnliftIO.STM
 
 runTCPServer :: MonadUnliftIO m => ServiceName -> (Handle -> m ()) -> m ()
-runTCPServer port server =
-  E.bracket (liftIO $ startTCPServer port) (liftIO . close) $ \sock -> forever $ do
+runTCPServer port server = do
+  clients <- newTVarIO S.empty
+  E.bracket (liftIO $ startTCPServer port) (liftIO . closeServer clients) $ \sock -> forever $ do
     h <- liftIO $ acceptTCPConn sock
-    forkFinally (server h) (const $ IO.hClose h)
+    tid <- forkFinally (server h) (const $ IO.hClose h)
+    atomically . modifyTVar clients $ S.insert tid
+  where
+    closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
+    closeServer clients sock = readTVarIO clients >>= mapM_ killThread >> close sock
 
 startTCPServer :: ServiceName -> IO Socket
 startTCPServer port = withSocketsDo $ resolve >>= open
