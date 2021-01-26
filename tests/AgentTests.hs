@@ -8,6 +8,7 @@
 module AgentTests where
 
 import AgentTests.SQLiteTests (storeTests)
+import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
@@ -29,6 +30,8 @@ agentTests = do
   describe "Connection subscriptions" do
     it "should connect via one server and one agent" $
       smpAgentTest3_1 testSubscription
+    it "should send notifications to client when server disconnects" $
+      smpAgentServerTest testSubscrNotification
 
 -- | simple test for one command with the expected response
 (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
@@ -47,6 +50,11 @@ h #: t = tPutRaw h t >> tGet SAgent h
 (#>) :: IO (ATransmissionOrError 'Agent) -> ATransmission 'Agent -> Expectation
 action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right cmd)
 
+-- | action and predicate for the response
+-- `h #:t =#> p` is the test that sends `t` to `h` and validates the response using `p`
+(=#>) :: IO (ATransmissionOrError 'Agent) -> (ATransmissionOrError 'Agent -> Bool) -> Expectation
+action =#> p = action >>= (`shouldSatisfy` p)
+
 -- | receive message to handle `h` and validate that it is the expected one
 (<#) :: Handle -> ATransmission 'Agent -> Expectation
 h <# (corrId, cAlias, cmd) = tGet SAgent h `shouldReturn` (corrId, cAlias, Right cmd)
@@ -54,6 +62,15 @@ h <# (corrId, cAlias, cmd) = tGet SAgent h `shouldReturn` (corrId, cAlias, Right
 -- | receive message to handle `h` and validate it using predicate `p`
 (<#=) :: Handle -> (ATransmissionOrError 'Agent -> Bool) -> Expectation
 h <#= p = tGet SAgent h >>= (`shouldSatisfy` p)
+
+-- | test that nothing is delivered to handle `h` during 10ms
+(#:#) :: Handle -> String -> Expectation
+h #:# err = tryGet `shouldReturn` ()
+  where
+    tryGet =
+      10000 `timeout` tGet SAgent h >>= \case
+        Just _ -> error err
+        _ -> return ()
 
 pattern Msg :: MsgBody -> Either AgentErrorType (ACommand 'Agent)
 pattern Msg msg <- Right (MSG _ _ _ _ msg)
@@ -79,9 +96,7 @@ testDuplexConnection alice bob = do
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", ERR (SMP AUTH))
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
-  10000 `timeout` tGet SAgent alice >>= \case
-    Nothing -> return ()
-    Just _ -> error "nothing else should be delivered to alice"
+  alice #:# "nothing else should be delivered to alice"
 
 testSubscription :: Handle -> Handle -> Handle -> IO ()
 testSubscription alice1 alice2 bob = do
@@ -100,9 +115,14 @@ testSubscription alice1 alice2 bob = do
   alice2 #: ("22", "bob", "ACK 0") #> ("22", "bob", OK)
   bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", OK)
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
-  10000 `timeout` tGet SAgent alice1 >>= \case
-    Nothing -> return ()
-    Just _ -> error "nothing else should be delivered to alice"
+  alice1 #:# "nothing else should be delivered to alice1"
+
+testSubscrNotification :: (ThreadId, ThreadId) -> Handle -> IO ()
+testSubscrNotification (server, _) client = do
+  client #: ("1", "conn1", "NEW localhost:5000") =#> \case ("1", "conn1", Right (INV _)) -> True; _ -> False
+  client #:# "nothing should be delivered to client before the server is killed"
+  killThread server
+  client <# ("", "conn1", END)
 
 syntaxTests :: Spec
 syntaxTests = do
