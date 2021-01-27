@@ -26,7 +26,7 @@ rcvQueues =
       host TEXT NOT NULL,
       service_name TEXT NOT NULL,
       rcv_id BLOB NOT NULL,
-      conn_alias TEXT UNIQUE NOT NULL,
+      conn_alias TEXT NOT NULL,
       rcv_private_key BLOB NOT NULL,
       snd_id BLOB,
       snd_key BLOB,
@@ -36,6 +36,9 @@ rcvQueues =
       ack_mode INTEGER NOT NULL,
       PRIMARY KEY(host, service_name, rcv_id),
       FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name),
+      FOREIGN KEY(conn_alias)
+        REFERENCES connections(conn_alias)
+        DEFERRABLE INITIALLY DEFERRED,
       UNIQUE (host, service_name, snd_id)
     ) WITHOUT ROWID;
   |]
@@ -47,14 +50,17 @@ sndQueues =
       host TEXT NOT NULL,
       service_name TEXT NOT NULL,
       snd_id BLOB NOT NULL,
-      conn_alias TEXT UNIQUE NOT NULL,
+      conn_alias TEXT NOT NULL,
       snd_private_key BLOB NOT NULL,
       encrypt_key BLOB NOT NULL,
       sign_key BLOB NOT NULL,
       status TEXT NOT NULL,
       ack_mode INTEGER NOT NULL,
       PRIMARY KEY(host, service_name, snd_id),
-      FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name)
+      FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name),
+      FOREIGN KEY(conn_alias)
+        REFERENCES connections(conn_alias)
+        DEFERRABLE INITIALLY DEFERRED
     ) WITHOUT ROWID;
   |]
 
@@ -70,10 +76,12 @@ connections =
       snd_service_name TEXT,
       snd_id BLOB,
       PRIMARY KEY(conn_alias),
-      FOREIGN KEY(rcv_host, rcv_service_name, rcv_id) REFERENCES rcv_queues(host, service_name, rcv_id),
-      UNIQUE (rcv_host, rcv_service_name, rcv_id),
-      FOREIGN KEY(snd_host, snd_service_name, snd_id) REFERENCES snd_queues(host, service_name, snd_id),
-      UNIQUE (snd_host, snd_service_name, snd_id)
+      FOREIGN KEY(rcv_host, rcv_service_name, rcv_id)
+        REFERENCES rcv_queues(host, service_name, rcv_id)
+        ON DELETE CASCADE,
+      FOREIGN KEY(snd_host, snd_service_name, snd_id)
+        REFERENCES snd_queues(host, service_name, snd_id)
+        ON DELETE CASCADE
     ) WITHOUT ROWID;
   |]
 
