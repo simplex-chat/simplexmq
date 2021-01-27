@@ -12,8 +12,8 @@ servers :: Query
 servers =
   [sql|
     CREATE TABLE IF NOT EXISTS servers(
-      host TEXT,
-      service_name TEXT,
+      host TEXT NOT NULL,
+      service_name TEXT NOT NULL,
       key_hash BLOB,
       PRIMARY KEY (host, service_name)
     ) WITHOUT ROWID;
@@ -23,9 +23,9 @@ rcvQueues :: Query
 rcvQueues =
   [sql|
     CREATE TABLE IF NOT EXISTS rcv_queues(
-      host TEXT,
-      service_name TEXT,
-      rcv_id BLOB,
+      host TEXT NOT NULL,
+      service_name TEXT NOT NULL,
+      rcv_id BLOB NOT NULL,
       conn_alias TEXT UNIQUE NOT NULL,
       rcv_private_key BLOB NOT NULL,
       snd_id BLOB,
@@ -44,9 +44,9 @@ sndQueues :: Query
 sndQueues =
   [sql|
     CREATE TABLE IF NOT EXISTS snd_queues(
-      host TEXT,
-      service_name TEXT,
-      snd_id BLOB,
+      host TEXT NOT NULL,
+      service_name TEXT NOT NULL,
+      snd_id BLOB NOT NULL,
       conn_alias TEXT UNIQUE NOT NULL,
       snd_private_key BLOB NOT NULL,
       encrypt_key BLOB NOT NULL,
@@ -62,7 +62,7 @@ connections :: Query
 connections =
   [sql|
     CREATE TABLE IF NOT EXISTS connections(
-      conn_alias TEXT,
+      conn_alias TEXT NOT NULL,
       rcv_host TEXT,
       rcv_service_name TEXT,
       rcv_id BLOB,
@@ -81,8 +81,8 @@ messages :: Query
 messages =
   [sql|
     CREATE TABLE IF NOT EXISTS messages(
-      agent_msg_id INTEGER,
-      conn_alias TEXT,
+      agent_msg_id INTEGER NOT NULL,
+      conn_alias TEXT NOT NULL,
       timestamp TEXT NOT NULL,
       message BLOB NOT NULL,
       direction TEXT NOT NULL,
