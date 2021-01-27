@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
@@ -73,7 +74,7 @@ h #:# err = tryGet `shouldReturn` ()
         _ -> return ()
 
 pattern Msg :: MsgBody -> Either AgentErrorType (ACommand 'Agent)
-pattern Msg msg <- Right (MSG _ _ _ _ msg)
+pattern Msg m_body <- Right MSG {m_body}
 
 testDuplexConnection :: Handle -> Handle -> IO ()
 testDuplexConnection alice bob = do

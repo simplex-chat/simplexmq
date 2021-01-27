@@ -9,6 +9,8 @@ import Control.Monad.IO.Unlift
 import UnliftIO.Async
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 
 newtype InternalException e = InternalException {unInternalException :: e}
   deriving (Eq, Show)
@@ -32,3 +34,6 @@ infixl 4 <$$>
 
 (<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
 (<$$>) = fmap . fmap
+
+bshow :: Show a => a -> ByteString
+bshow = B.pack . show
