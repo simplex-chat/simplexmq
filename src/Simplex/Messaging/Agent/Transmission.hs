@@ -87,7 +87,7 @@ data ACommand (p :: AParty) where
       m_body :: MsgBody
     } ->
     ACommand Agent
-  ACK :: AgentMsgId -> ACommand Client
+  -- ACK :: AgentMsgId -> ACommand Client
   -- RCVD :: AgentMsgId -> ACommand Agent
   OFF :: ACommand Client
   DEL :: ACommand Client
@@ -293,7 +293,6 @@ parseCommandP =
     <|> "END" $> ACmd SAgent END
     <|> "SEND " *> sendCmd
     <|> "MSG " *> message
-    <|> "ACK " *> acknowledge
     <|> "OFF" $> ACmd SClient OFF
     <|> "DEL" $> ACmd SClient DEL
     <|> "ERR " *> agentError
@@ -311,7 +310,6 @@ parseCommandP =
       m_sender <- "S=" *> partyMeta A.decimal
       m_body <- A.takeByteString
       return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
-    acknowledge = ACmd SClient <$> (ACK <$> A.decimal)
     -- TODO other error types
     agentError = ACmd SAgent . ERR <$> ("SMP " *> smpErrorType)
     smpErrorType = "AUTH" $> SMP ST.AUTH
@@ -346,7 +344,6 @@ serializeCommand = \case
         "S=" <> bshow smId <> "," <> showTs sTs,
         serializeMsg m_body
       ]
-  ACK aMsgId -> "ACK " <> B.pack (show aMsgId)
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"

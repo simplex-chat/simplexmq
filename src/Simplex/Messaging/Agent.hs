@@ -112,7 +112,6 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
     SUB -> subscribeConnection
     SEND msgBody -> sendMessage msgBody
-    ACK aMsgId -> ackMessage aMsgId
     OFF -> suspendConnection
     DEL -> deleteConnection
   where
@@ -159,17 +158,6 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
           sendAgentMessage c sq $ A_MSG msgBody
           -- TODO respond $ SENT aMsgId
           respond OK
-
-    ackMessage :: AgentMsgId -> m ()
-    ackMessage _aMsgId =
-      withStore (`getConn` connAlias) >>= \case
-        SomeConn _ (DuplexConnection _ rq _) -> ackMsg rq
-        SomeConn _ (ReceiveConnection _ rq) -> ackMsg rq
-        -- TODO possibly there should be a separate error type trying to send the message to the connection without ReceiveQueue
-        -- NOT_READY ?
-        _ -> throwError PROHIBITED
-      where
-        ackMsg rq = sendAck c rq >> respond OK
 
     suspendConnection :: m ()
     suspendConnection =
@@ -261,6 +249,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
                     m_broker = (srvMsgId, srvTs),
                     m_body = body
                   }
+              sendAck c rq
       return ()
     SMP.END -> do
       removeSubscription c connAlias
