@@ -7,78 +7,91 @@ module Simplex.Messaging.Agent.Store.SQLite.Schema where
 import Database.SQLite.Simple
 import Database.SQLite.Simple.QQ (sql)
 
+-- service_name is either a service name or a port number, see Network.Socket.Info.ServiceName
 servers :: Query
 servers =
   [sql|
-    CREATE TABLE IF NOT EXISTS servers
-      ( server_id INTEGER PRIMARY KEY,
-        host TEXT NOT NULL,
-        port TEXT,
-        key_hash BLOB,
-        UNIQUE (host, port)
-      )
+    CREATE TABLE IF NOT EXISTS servers(
+      host TEXT,
+      service_name TEXT,
+      key_hash BLOB,
+      PRIMARY KEY (host, service_name)
+    ) WITHOUT ROWID;
   |]
 
-receiveQueues :: Query
-receiveQueues =
+rcvQueues :: Query
+rcvQueues =
   [sql|
-    CREATE TABLE IF NOT EXISTS receive_queues
-      ( receive_queue_id INTEGER PRIMARY KEY,
-        server_id INTEGER REFERENCES servers(server_id) NOT NULL,
-        rcv_id BLOB NOT NULL,
-        rcv_private_key BLOB NOT NULL,
-        snd_id BLOB,
-        snd_key BLOB,
-        decrypt_key BLOB NOT NULL,
-        verify_key BLOB,
-        status TEXT NOT NULL,
-        ack_mode INTEGER NOT NULL,
-        UNIQUE (server_id, rcv_id),
-        UNIQUE (server_id, snd_id)
-      )
+    CREATE TABLE IF NOT EXISTS rcv_queues(
+      host TEXT,
+      service_name TEXT,
+      rcv_id BLOB,
+      conn_alias TEXT UNIQUE NOT NULL,
+      rcv_private_key BLOB NOT NULL,
+      snd_id BLOB,
+      snd_key BLOB,
+      decrypt_key BLOB NOT NULL,
+      verify_key BLOB,
+      status TEXT NOT NULL,
+      ack_mode INTEGER NOT NULL,
+      PRIMARY KEY(host, service_name, rcv_id),
+      FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name),
+      UNIQUE (host, service_name, snd_id)
+    ) WITHOUT ROWID;
   |]
 
-sendQueues :: Query
-sendQueues =
+sndQueues :: Query
+sndQueues =
   [sql|
-    CREATE TABLE IF NOT EXISTS send_queues
-      ( send_queue_id INTEGER PRIMARY KEY,
-        server_id INTEGER REFERENCES servers(server_id) NOT NULL,
-        snd_id BLOB NOT NULL,
-        snd_private_key BLOB NOT NULL,
-        encrypt_key BLOB NOT NULL,
-        sign_key BLOB NOT NULL,
-        status TEXT NOT NULL,
-        ack_mode INTEGER NOT NULL,
-        UNIQUE (server_id, snd_id)
-      )
+    CREATE TABLE IF NOT EXISTS snd_queues(
+      host TEXT,
+      service_name TEXT,
+      snd_id BLOB,
+      conn_alias TEXT UNIQUE NOT NULL,
+      snd_private_key BLOB NOT NULL,
+      encrypt_key BLOB NOT NULL,
+      sign_key BLOB NOT NULL,
+      status TEXT NOT NULL,
+      ack_mode INTEGER NOT NULL,
+      PRIMARY KEY(host, service_name, snd_id),
+      FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name)
+    ) WITHOUT ROWID;
   |]
 
 connections :: Query
 connections =
   [sql|
-    CREATE TABLE IF NOT EXISTS connections
-      ( connection_id INTEGER PRIMARY KEY,
-        conn_alias TEXT UNIQUE,
-        receive_queue_id INTEGER REFERENCES recipient_queues(receive_queue_id) UNIQUE,
-        send_queue_id INTEGER REFERENCES sender_queues(send_queue_id) UNIQUE
-      )
+    CREATE TABLE IF NOT EXISTS connections(
+      conn_alias TEXT,
+      rcv_host TEXT,
+      rcv_service_name TEXT,
+      rcv_id BLOB,
+      snd_host TEXT,
+      snd_service_name TEXT,
+      snd_id BLOB,
+      PRIMARY KEY(conn_alias),
+      FOREIGN KEY(rcv_host, rcv_service_name, rcv_id) REFERENCES rcv_queues(host, service_name, rcv_id),
+      UNIQUE (rcv_host, rcv_service_name, rcv_id),
+      FOREIGN KEY(snd_host, snd_service_name, snd_id) REFERENCES snd_queues(host, service_name, snd_id),
+      UNIQUE (snd_host, snd_service_name, snd_id)
+    ) WITHOUT ROWID;
   |]
 
 messages :: Query
 messages =
   [sql|
-    CREATE TABLE IF NOT EXISTS messages
-      ( message_id INTEGER PRIMARY KEY,
-        conn_alias TEXT REFERENCES connections(conn_alias),
-        agent_msg_id INTEGER NOT NULL,
-        timestamp TEXT NOT NULL,
-        message BLOB NOT NULL,
-        direction TEXT NOT NULL,
-        msg_status TEXT NOT NULL
-      )
+    CREATE TABLE IF NOT EXISTS messages(
+      agent_msg_id INTEGER,
+      conn_alias TEXT,
+      timestamp TEXT NOT NULL,
+      message BLOB NOT NULL,
+      direction TEXT NOT NULL,
+      msg_status TEXT NOT NULL,
+      PRIMARY KEY(agent_msg_id, conn_alias),
+      FOREIGN KEY(conn_alias) REFERENCES connections(conn_alias)
+    ) WITHOUT ROWID;
   |]
 
 createSchema :: Connection -> IO ()
 createSchema conn =
-  mapM_ (execute_ conn) [servers, receiveQueues, sendQueues, connections, messages]
+  mapM_ (execute_ conn) [servers, rcvQueues, sndQueues, connections, messages]
