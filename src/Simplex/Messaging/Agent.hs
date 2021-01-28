@@ -19,6 +19,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Text as T
 import Data.Text.Encoding
+import Data.Time.Clock
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
@@ -111,7 +112,6 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
     SUB -> subscribeConnection
     SEND msgBody -> sendMessage msgBody
-    ACK aMsgId -> ackMessage aMsgId
     OFF -> suspendConnection
     DEL -> deleteConnection
   where
@@ -159,17 +159,6 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
           -- TODO respond $ SENT aMsgId
           respond OK
 
-    ackMessage :: AgentMsgId -> m ()
-    ackMessage _aMsgId =
-      withStore (`getConn` connAlias) >>= \case
-        SomeConn _ (DuplexConnection _ rq _) -> ackMsg rq
-        SomeConn _ (ReceiveConnection _ rq) -> ackMsg rq
-        -- TODO possibly there should be a separate error type trying to send the message to the connection without ReceiveQueue
-        -- NOT_READY ?
-        _ -> throwError PROHIBITED
-      where
-        ackMsg rq = sendAck c rq >> respond OK
-
     suspendConnection :: m ()
     suspendConnection =
       withStore (`getConn` connAlias) >>= \case
@@ -213,7 +202,7 @@ processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTran
 processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
   (connAlias, rq@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
   case cmd of
-    SMP.MSG _ srvTs msgBody -> do
+    SMP.MSG srvMsgId srvTs msgBody -> do
       -- TODO deduplicate with previously received
       agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
       case agentMsg of
@@ -233,7 +222,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
             s ->
               -- TODO maybe send notification to the user
               liftIO . putStrLn $ "unexpected SMP confirmation, queue status " <> show s
-        SMPMessage {agentMessage, agentMsgId, agentTimestamp} ->
+        SMPMessage {agentMessage, senderMsgId, senderTimestamp} ->
           case agentMessage of
             HELLO _verifyKey _ -> do
               logServer "<--" c srv rId "MSG <HELLO>"
@@ -251,7 +240,16 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
             A_MSG body -> do
               logServer "<--" c srv rId "MSG <MSG>"
               -- TODO check message status
-              notify connAlias $ MSG agentMsgId agentTimestamp srvTs MsgOk body
+              recipientTs <- liftIO getCurrentTime
+              notify connAlias $
+                MSG
+                  { m_status = MsgOk,
+                    m_recipient = (0, recipientTs),
+                    m_sender = (senderMsgId, senderTimestamp),
+                    m_broker = (srvMsgId, srvTs),
+                    m_body = body
+                  }
+              sendAck c rq
       return ()
     SMP.END -> do
       removeSubscription c connAlias

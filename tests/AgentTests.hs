@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
@@ -73,7 +74,7 @@ h #:# err = tryGet `shouldReturn` ()
         _ -> return ()
 
 pattern Msg :: MsgBody -> Either AgentErrorType (ACommand 'Agent)
-pattern Msg msg <- Right (MSG _ _ _ _ msg)
+pattern Msg m_body <- Right MSG {m_body}
 
 testDuplexConnection :: Handle -> Handle -> IO ()
 testDuplexConnection alice bob = do
@@ -84,14 +85,10 @@ testDuplexConnection alice bob = do
   alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", OK)
   alice #: ("3", "bob", "SEND :how are you?") #> ("3", "bob", OK)
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
-  bob #: ("12", "alice", "ACK 0") #> ("12", "alice", OK)
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
-  bob #: ("13", "alice", "ACK 0") #> ("13", "alice", OK)
   bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", OK)
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
-  alice #: ("4", "bob", "ACK 0") #> ("4", "bob", OK)
   bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", OK)
-  bob #: ("16", "alice", "SEND 9\nmessage 2") #> ("16", "alice", OK)
   alice <#= \case ("", "bob", Msg "message 1") -> True; _ -> False
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", ERR (SMP AUTH))
@@ -107,12 +104,9 @@ testSubscription alice1 alice2 bob = do
   bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", OK)
   alice1 <# ("", "bob", CON)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
-  alice1 #: ("2", "bob", "ACK 0") #> ("2", "bob", OK)
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
-  alice2 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice1 <# ("", "bob", END)
-  alice2 #: ("22", "bob", "ACK 0") #> ("22", "bob", OK)
   bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", OK)
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
