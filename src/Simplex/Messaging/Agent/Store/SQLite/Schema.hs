@@ -33,7 +33,6 @@ rcvQueues =
       decrypt_key BLOB NOT NULL,
       verify_key BLOB,
       status TEXT NOT NULL,
-      ack_mode INTEGER NOT NULL,
       PRIMARY KEY(host, service_name, rcv_id),
       FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name),
       FOREIGN KEY(conn_alias)
@@ -55,7 +54,6 @@ sndQueues =
       encrypt_key BLOB NOT NULL,
       sign_key BLOB NOT NULL,
       status TEXT NOT NULL,
-      ack_mode INTEGER NOT NULL,
       PRIMARY KEY(host, service_name, snd_id),
       FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name),
       FOREIGN KEY(conn_alias)
