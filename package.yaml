@@ -52,13 +52,13 @@ executables:
     ghc-options:
       - -threaded
 
-  # dog-food:
-  #   source-dirs: apps/dog-food
-  #   main: Main.hs
-  #   dependencies:
-  #     - simplex-messaging
-  #   ghc-options:
-  #     - -threaded
+  dog-food:
+    source-dirs: apps/dog-food
+    main: Main.hs
+    dependencies:
+      - simplex-messaging
+    ghc-options:
+      - -threaded
 
 tests:
   smp-server-test:
