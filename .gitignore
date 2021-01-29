@@ -1,3 +1,4 @@
 *.lock
 *.cabal
 smp-agent.db
+dog-food.db
