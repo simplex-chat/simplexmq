@@ -27,34 +27,30 @@ import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
 import UnliftIO.STM
 
+data SQLiteStore = SQLiteStore
+  { dbFilename :: String,
+    conn :: DB.Connection
+  }
+
 newSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 newSQLiteStore dbFilename = do
   conn <- liftIO $ DB.open dbFilename
   liftIO $ createSchema conn
-  serversLock <- newTMVarIO ()
-  rcvQueuesLock <- newTMVarIO ()
-  sndQueuesLock <- newTMVarIO ()
-  connectionsLock <- newTMVarIO ()
-  messagesLock <- newTMVarIO ()
   return
     SQLiteStore
       { dbFilename,
-        conn,
-        serversLock,
-        rcvQueuesLock,
-        sndQueuesLock,
-        connectionsLock,
-        messagesLock
+        conn
       }
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
-  addServer store smpServer = upsertServer store smpServer
+  addServer :: SQLiteStore -> SMPServer -> m ()
+  addServer SQLiteStore {conn} smpServer = upsertServer conn smpServer
 
   createRcvConn :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
-  createRcvConn st connAlias rcvQueue = do
+  createRcvConn SQLiteStore {conn} connAlias rcvQueue@ReceiveQueue {server} = do
     -- TODO test for duplicate connAlias
-    srvId <- upsertServer st (server (rcvQueue :: ReceiveQueue))
-    rcvQId <- insertRcvQueue st srvId rcvQueue
+    upsertServer conn server
+    insertRcvQueue conn rcvQueue
     insertRcvConnection st connAlias rcvQId
 
   createSndConn :: SQLiteStore -> ConnAlias -> SendQueue -> m ()

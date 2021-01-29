@@ -9,7 +9,6 @@
 
 module Simplex.Messaging.Agent.Store where
 
-import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
@@ -21,25 +20,25 @@ import Simplex.Messaging.Types
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
     rcvId :: SMP.RecipientId,
+    connAlias :: ConnAlias,
     rcvPrivateKey :: PrivateKey,
     sndId :: Maybe SMP.SenderId,
     sndKey :: Maybe PublicKey,
     decryptKey :: PrivateKey,
     verifyKey :: Maybe PublicKey,
-    status :: QueueStatus,
-    ackMode :: AckMode -- whether acknowledgement will be sent (via SendQueue if present)
+    status :: QueueStatus
   }
   deriving (Eq, Show)
 
 data SendQueue = SendQueue
   { server :: SMPServer,
     sndId :: SMP.SenderId,
+    connAlias :: ConnAlias,
     sndPrivateKey :: PrivateKey,
     encryptKey :: PublicKey,
     signKey :: PrivateKey,
     -- verifyKey :: Maybe PublicKey,
-    status :: QueueStatus,
-    ackMode :: AckMode -- whether acknowledgement is expected (via ReceiveQueue if present)
+    status :: QueueStatus
   }
   deriving (Eq, Show)
 
@@ -91,11 +90,8 @@ data DeliveryStatus
   | MDConfirmed -- SMP: OK received / ACK sent
   | MDAcknowledged AckStatus -- SAMP: RCVD sent to agent client / ACK received from agent client and sent to the server
 
-type SMPServerId = Int64
-
--- TODO rework types - decouple Transmission types from Store? Convert on the agent instead?
 class Monad m => MonadAgentStore s m where
-  addServer :: s -> SMPServer -> m SMPServerId
+  addServer :: s -> SMPServer -> m ()
   createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m ()
   createSndConn :: s -> ConnAlias -> SendQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn

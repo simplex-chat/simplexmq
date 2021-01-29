@@ -7,15 +7,15 @@ module Simplex.Messaging.Agent.Store.SQLite.Schema where
 import Database.SQLite.Simple
 import Database.SQLite.Simple.QQ (sql)
 
--- service_name is either a service name or a port number, see Network.Socket.Info.ServiceName
+-- port is either a port number or a service name, see Network.Socket.Info.ServiceName
 servers :: Query
 servers =
   [sql|
     CREATE TABLE IF NOT EXISTS servers(
       host TEXT NOT NULL,
-      service_name TEXT NOT NULL,
+      port TEXT NOT NULL,
       key_hash BLOB,
-      PRIMARY KEY (host, service_name)
+      PRIMARY KEY (host, port)
     ) WITHOUT ROWID;
   |]
 
@@ -24,7 +24,7 @@ rcvQueues =
   [sql|
     CREATE TABLE IF NOT EXISTS rcv_queues(
       host TEXT NOT NULL,
-      service_name TEXT NOT NULL,
+      port TEXT NOT NULL,
       rcv_id BLOB NOT NULL,
       conn_alias TEXT NOT NULL,
       rcv_private_key BLOB NOT NULL,
@@ -33,12 +33,12 @@ rcvQueues =
       decrypt_key BLOB NOT NULL,
       verify_key BLOB,
       status TEXT NOT NULL,
-      PRIMARY KEY(host, service_name, rcv_id),
-      FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name),
+      PRIMARY KEY(host, port, rcv_id),
+      FOREIGN KEY(host, port) REFERENCES servers(host, port),
       FOREIGN KEY(conn_alias)
         REFERENCES connections(conn_alias)
         DEFERRABLE INITIALLY DEFERRED,
-      UNIQUE (host, service_name, snd_id)
+      UNIQUE (host, port, snd_id)
     ) WITHOUT ROWID;
   |]
 
@@ -47,15 +47,15 @@ sndQueues =
   [sql|
     CREATE TABLE IF NOT EXISTS snd_queues(
       host TEXT NOT NULL,
-      service_name TEXT NOT NULL,
+      port TEXT NOT NULL,
       snd_id BLOB NOT NULL,
       conn_alias TEXT NOT NULL,
       snd_private_key BLOB NOT NULL,
       encrypt_key BLOB NOT NULL,
       sign_key BLOB NOT NULL,
       status TEXT NOT NULL,
-      PRIMARY KEY(host, service_name, snd_id),
-      FOREIGN KEY(host, service_name) REFERENCES servers(host, service_name),
+      PRIMARY KEY(host, port, snd_id),
+      FOREIGN KEY(host, port) REFERENCES servers(host, port),
       FOREIGN KEY(conn_alias)
         REFERENCES connections(conn_alias)
         DEFERRABLE INITIALLY DEFERRED
@@ -68,17 +68,17 @@ connections =
     CREATE TABLE IF NOT EXISTS connections(
       conn_alias TEXT NOT NULL,
       rcv_host TEXT,
-      rcv_service_name TEXT,
+      rcv_port TEXT,
       rcv_id BLOB,
       snd_host TEXT,
-      snd_service_name TEXT,
+      snd_port TEXT,
       snd_id BLOB,
       PRIMARY KEY(conn_alias),
-      FOREIGN KEY(rcv_host, rcv_service_name, rcv_id)
-        REFERENCES rcv_queues(host, service_name, rcv_id)
+      FOREIGN KEY(rcv_host, rcv_port, rcv_id)
+        REFERENCES rcv_queues(host, port, rcv_id)
         ON DELETE CASCADE,
-      FOREIGN KEY(snd_host, snd_service_name, snd_id)
-        REFERENCES snd_queues(host, service_name, snd_id)
+      FOREIGN KEY(snd_host, snd_port, snd_id)
+        REFERENCES snd_queues(host, port, snd_id)
         ON DELETE CASCADE
     ) WITHOUT ROWID;
   |]
