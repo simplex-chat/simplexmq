@@ -163,7 +163,43 @@ _insertRcvConnectionQuery =
     INSERT INTO connections
       ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
     VALUES
-      (:conn_alias,:rcv_host,:rcv_port,:rcv_id,NULL,NULL,NULL);
+      (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL);
+  |]
+
+insertSndQueue :: MonadUnliftIO m => DB.Connection -> SendQueue -> m ()
+insertSndQueue conn SendQueue {..} =
+  liftIO $ do
+    let _port = _convertPortOnWrite $ port server
+    DB.executeNamed
+      conn
+      _insertSndQueueQuery
+      [":host" := host server, ":port" := _port, ":snd_id" := sndId, ":conn_alias" := connAlias, ":snd_private_key" := sndPrivateKey, ":encrypt_key" := encryptKey, ":sign_key" := signKey, ":status" := status]
+
+_insertSndQueueQuery :: Query
+_insertSndQueueQuery =
+  [sql|
+    INSERT INTO snd_queues
+      ( host, port, snd_id, conn_alias, snd_private_key, encrypt_key, sign_key, status)
+    VALUES
+      (:host,:port,:snd_id,:conn_alias,:snd_private_key,:encrypt_key,:sign_key,:status);
+  |]
+
+insertSndConnection :: MonadUnliftIO m => DB.Connection -> SendQueue -> m ()
+insertSndConnection conn SendQueue {server, sndId, connAlias} =
+  liftIO $ do
+    let _port = _convertPortOnWrite $ port server
+    DB.executeNamed
+      conn
+      _insertSndConnectionQuery
+      [":conn_alias" := connAlias, ":snd_host" := host server, ":snd_port" := _port, ":snd_id" := sndId]
+
+_insertSndConnectionQuery :: Query
+_insertSndConnectionQuery =
+  [sql|
+    INSERT INTO connections
+      ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
+    VALUES
+      (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id);
   |]
 
 -- getServer :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> SMPServerId -> m SMPServer
