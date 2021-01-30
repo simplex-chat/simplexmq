@@ -1,3 +1,4 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -9,6 +10,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -20,6 +22,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Data.Int (Int64)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Time
 import Database.SQLite.Simple hiding (Connection)
@@ -39,38 +42,51 @@ import Text.Read
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-instance ToRow SMPServer where
-  toRow SMPServer {host, port, keyHash} = toRow (host, port, keyHash)
-
-instance FromRow SMPServer where
-  fromRow = SMPServer <$> field <*> field <*> field
-
-instance ToField AckMode where toField (AckMode mode) = toField $ show mode
-
-instance FromField AckMode where fromField = AckMode <$$> fromFieldToReadable
-
 instance ToField QueueStatus where toField = toField . show
 
-instance FromField QueueStatus where fromField = fromFieldToReadable
+-- instance ToRow SMPServer where
+--   toRow SMPServer {host, port, keyHash} = toRow (host, port, keyHash)
 
-instance ToRow ReceiveQueue where
-  toRow ReceiveQueue {rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status} =
-    toRow (rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)
+-- instance FromRow SMPServer where
+--   fromRow = SMPServer <$> field <*> field <*> field
 
-instance FromRow ReceiveQueue where
-  fromRow = ReceiveQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
+-- instance ToField AckMode where toField (AckMode mode) = toField $ show mode
 
-instance ToRow SendQueue where
-  toRow SendQueue {sndId, sndPrivateKey, encryptKey, signKey, status} =
-    toRow (sndId, sndPrivateKey, encryptKey, signKey, status)
+-- instance FromField AckMode where fromField = AckMode <$$> fromFieldToReadable
 
-instance FromRow SendQueue where
-  fromRow = SendQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field
+-- instance ToField QueueStatus where toField = toField . show
 
-instance FromRow ConnAlias where
-  fromRow = field
+-- instance FromField QueueStatus where fromField = fromFieldToReadable
 
-instance ToField QueueDirection where toField = toField . show
+-- instance ToRow ReceiveQueue where
+--   toRow ReceiveQueue {rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status} =
+--     toRow (rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)
+
+-- instance FromRow ReceiveQueue where
+--   fromRow = ReceiveQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
+
+-- instance ToRow SendQueue where
+--   toRow SendQueue {sndId, sndPrivateKey, encryptKey, signKey, status} =
+--     toRow (sndId, sndPrivateKey, encryptKey, signKey, status)
+
+-- instance FromRow SendQueue where
+--   fromRow = SendQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field
+
+-- instance FromRow ConnAlias where
+--   fromRow = field
+
+-- instance ToField QueueDirection where toField = toField . show
+
+-- fromFieldToReadable :: forall a. (Read a, E.Typeable a) => Field -> Ok a
+-- fromFieldToReadable = \case
+--   f@(Field (SQLText t) _) ->
+--     let str = T.unpack t
+--      in case readMaybe str of
+--           Just x -> Ok x
+--           _ -> returnError ConversionFailed f ("invalid string: " <> str)
+--   f -> returnError ConversionFailed f "expecting SQLText column type"
+
+-- TODO delete locks
 
 -- withLock :: MonadUnliftIO m => SQLiteStore -> (SQLiteStore -> TMVar ()) -> (DB.Connection -> m a) -> m a
 -- withLock st tableLock f = do
@@ -91,26 +107,62 @@ instance ToField QueueDirection where toField = toField . show
 --   withLock st tableLock $ \c -> liftIO $ do
 --     DB.execute c queryStr q
 
-fromFieldToReadable :: forall a. (Read a, E.Typeable a) => Field -> Ok a
-fromFieldToReadable = \case
-  f@(Field (SQLText t) _) ->
-    let str = T.unpack t
-     in case readMaybe str of
-          Just x -> Ok x
-          _ -> returnError ConversionFailed f ("invalid string: " <> str)
-  f -> returnError ConversionFailed f "expecting SQLText column type"
-
 upsertServer :: MonadUnliftIO m => DB.Connection -> SMPServer -> m ()
-upsertServer conn srv = liftIO $ DB.execute conn upsertServerQuery srv
+upsertServer conn SMPServer {host, port, keyHash} =
+  liftIO $ do
+    let _port = _convertPortOnWrite port
+    DB.executeNamed
+      conn
+      _upsertServerQuery
+      [":host" := host, ":port" := _port, ":key_hash" := keyHash]
 
-upsertServerQuery :: Query
-upsertServerQuery =
+_convertPortOnWrite :: Maybe ServiceName -> ServiceName
+_convertPortOnWrite = fromMaybe "_"
+
+_upsertServerQuery :: Query
+_upsertServerQuery =
   [sql|
-    INSERT INTO servers (host, port, key_hash) VALUES (?, ?, ?)
+    INSERT INTO servers (host, port, key_hash) VALUES (:host,:port,:key_hash)
     ON CONFLICT (host, port) DO UPDATE SET
       host=excluded.host,
       port=excluded.port,
       key_hash=excluded.key_hash;
+  |]
+
+insertRcvQueue :: MonadUnliftIO m => DB.Connection -> ReceiveQueue -> m ()
+insertRcvQueue conn ReceiveQueue {..} =
+  liftIO $ do
+    let _port = _convertPortOnWrite $ port server
+    DB.executeNamed
+      conn
+      _insertRcvQueueQuery
+      [":host" := host server, ":port" := _port, ":rcv_id" := rcvId, ":conn_alias" := connAlias, ":rcv_private_key" := rcvPrivateKey, ":snd_id" := sndId, ":snd_key" := sndKey, ":decrypt_key" := decryptKey, ":verify_key" := verifyKey, ":status" := status]
+
+_insertRcvQueueQuery :: Query
+_insertRcvQueueQuery =
+  [sql|
+    INSERT INTO rcv_queues
+      ( host, port, rcv_id, conn_alias, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status)
+    VALUES
+      (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status);
+  |]
+
+insertRcvConnection :: MonadUnliftIO m => DB.Connection -> ConnAlias -> ReceiveQueue -> m ()
+insertRcvConnection conn connAlias ReceiveQueue {server, rcvId} =
+  liftIO $ do
+    let _port = _convertPortOnWrite $ port server
+    DB.executeNamed
+      conn
+      _insertRcvConnectionQuery
+      [":conn_alias" := connAlias, ":rcv_host" := host server, ":rcv_port" := _port, ":rcv_id" := rcvId]
+
+_insertRcvConnectionQuery :: Query
+_insertRcvConnectionQuery =
+  [sql|
+    INSERT INTO connections
+      ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
+    VALUES
+      (:conn_alias,:rcv_host,:rcv_port,:rcv_id,NULL,NULL,NULL);
   |]
 
 -- getServer :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> SMPServerId -> m SMPServer
@@ -182,24 +234,6 @@ upsertServerQuery =
 --       (\srv -> (sndQueue {server = srv} :: SendQueue)) <$> getServer st serverId
 --     _ -> throwError SENotFound
 
-insertRcvQueue :: MonadUnliftIO m => DB.Connection -> ReceiveQueue -> m ()
-insertRcvQueue conn ReceiveQueue {server, rcvId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status} =
-  liftIO $ do
-    _host <- host server
-    DB.execute
-      conn
-      insertRcvQueueQuery
-      [":host" := (host server), ":port" := (port server), ":rcv_id" := rcvId, ":conn_alias" := connAlias, ":rcv_private_key" := rcvPrivateKey, ":snd_id" := sndId, ":snd_key" := sndKey, ":decrypt_key" := decryptKey, ":verify_key" := verifyKey, ":status" := status]
-
-insertRcvQueueQuery :: Query
-insertRcvQueueQuery =
-  [sql|
-    INSERT INTO rcv_queues
-      ( host, port, rcv_id, conn_alias, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status)
-    VALUES
-      (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status);
-  |]
-
 -- addRcvQueueQuery :: Query
 -- addRcvQueueQuery =
 --   [sql|
@@ -208,15 +242,6 @@ insertRcvQueueQuery =
 --     VALUES
 --       (:server_id,:rcv_id,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status,:ack_mode);
 --   |]
-
--- insertRcvConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
--- insertRcvConnection store connAlias rcvQueueId =
---   void $
---     insertWithLock
---       store
---       connectionsLock
---       "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,?,NULL);"
---       (Only connAlias :. Only rcvQueueId)
 
 -- updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
 -- updateRcvConnectionWithSndQueue store connAlias sndQueueId =
