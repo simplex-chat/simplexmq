@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
@@ -18,6 +19,8 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import qualified Data.Text as T
+import Data.Text.Encoding
 import Numeric.Natural
 import Simplex.Messaging.Agent (getSMPAgentClient, runSMPAgentClient)
 import Simplex.Messaging.Agent.Client (AgentClient (..))
@@ -26,6 +29,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Transport (getLn, putLn)
 import Simplex.Messaging.Util (bshow, raceAny_)
+import System.Console.ANSI
 import System.IO
 import UnliftIO.STM
 
@@ -56,7 +60,7 @@ newtype Contact = Contact {toBs :: ByteString}
 data ChatCommand
   = ChatHelp
   | AddContact Contact
-  | AcceptInvitation Contact SMPQueueInfo
+  | AcceptContact Contact SMPQueueInfo
   | ChatWith Contact
   | SendMessage Contact ByteString
 
@@ -64,13 +68,13 @@ chatCommandP :: Parser ChatCommand
 chatCommandP =
   "/help" $> ChatHelp
     <|> "/add " *> addContact
-    <|> "/accept " *> acceptInvitation
+    <|> "/accept " *> acceptContact
     <|> "/chat " *> chatWith
     <|> "@" *> sendMessage
   where
-    addContact = AddContact . Contact <$> A.takeByteString
-    acceptInvitation = AcceptInvitation <$> contact <* A.space <*> smpQueueInfoP
-    chatWith = ChatWith . Contact <$> A.takeByteString
+    addContact = AddContact <$> contact
+    acceptContact = AcceptContact <$> contact <* A.space <*> smpQueueInfoP
+    chatWith = ChatWith <$> contact
     sendMessage = SendMessage <$> contact <* A.space <*> A.takeByteString
     contact = Contact <$> A.takeTill (== ' ')
 
@@ -91,7 +95,7 @@ serializeChatResponse = \case
   Invitation qInfo -> "ask your contact to enter: /accept <your name> " <> serializeSmpQueueInfo qInfo
   Connected (Contact c) -> "@" <> c <> " connected"
   ReceivedMessage (Contact c) t -> "@" <> c <> ": " <> t
-  Disconnected (Contact c) -> "disconnected from @" <> c <> " - try \"/talk " <> c <> "\""
+  Disconnected (Contact c) -> "disconnected from @" <> c <> " - try \"/chat " <> c <> "\""
   YesYes -> "you got it!"
   ErrorInput t -> "invalid input: " <> t
   ChatError e -> "chat error: " <> bshow e
@@ -99,11 +103,16 @@ serializeChatResponse = \case
 
 chatHelpInfo :: ByteString
 chatHelpInfo =
-  "Commands:\n\
-  \/add <name> - create invitation to be sent to your contact <name> (any unique string without spaces)\n\
-  \/accept <name> <invitation> - accept <invitation> from your contact <name> (a string that starts from smp::)\n\
-  \/chat <name> - resume chat with <name>\n\
-  \@<name> <message> - send <message> (any string) to contact <name>"
+  "Using chat:\n\
+  \/add <name>       - create invitation to send out-of-band\n\
+  \                    to your contact <name>\n\
+  \                    (any unique string without spaces)\n\
+  \/accept <name> <invitation> - accept <invitation>\n\
+  \                    (a string that starts from \"smp::\")\n\
+  \                    from your contact <name>\n\
+  \/chat <name>      - resume chat with <name>\n\
+  \@<name> <message> - send <message> (any string) to contact <name>\n\
+  \                    @<name> can be omitted to send to previous"
 
 main :: IO ()
 main = do
@@ -121,9 +130,9 @@ dogFoodChat srv env = do
   raceAny_
     [ runReaderT (runSMPAgentClient c) env,
       sendToAgent t c,
-      sendToTTY stdout t,
+      sendToTTY t,
       receiveFromAgent t c,
-      receiveFromTTY stdin t
+      receiveFromTTY t
     ]
 
 getChatClient :: MonadUnliftIO m => SMPServer -> m ChatClient
@@ -136,40 +145,49 @@ newChatClient qSize smpServer = do
   activeContact <- newTVar Nothing
   return ChatClient {inQ, outQ, smpServer, activeContact}
 
-receiveFromTTY :: MonadUnliftIO m => Handle -> ChatClient -> m ()
-receiveFromTTY h ChatClient {inQ, outQ} =
-  forever $ liftIO (getLn h) >>= processOrError . A.parseOnly chatCommandP
+receiveFromTTY :: MonadUnliftIO m => ChatClient -> m ()
+receiveFromTTY t =
+  forever $ liftIO (getChatLn t) >>= processOrError . A.parseOnly (chatCommandP <* A.endOfInput)
   where
     processOrError = \case
-      Left err -> atomically . writeTBQueue outQ . ErrorInput $ B.pack err
-      Right ChatHelp -> atomically . writeTBQueue outQ $ ChatHelpInfo
-      Right cmd -> atomically $ writeTBQueue inQ cmd
+      Left err -> atomically . writeTBQueue (outQ t) . ErrorInput $ B.pack err
+      Right ChatHelp -> atomically . writeTBQueue (outQ t) $ ChatHelpInfo
+      Right cmd -> atomically $ writeTBQueue (inQ t) cmd
 
-sendToTTY :: MonadUnliftIO m => Handle -> ChatClient -> m ()
-sendToTTY h ChatClient {outQ} = forever $ do
+sendToTTY :: MonadUnliftIO m => ChatClient -> m ()
+sendToTTY ChatClient {outQ} = forever $ do
   atomically (readTBQueue outQ) >>= \case
     NoChatResponse -> return ()
-    resp -> liftIO . putLn h $ serializeChatResponse resp
+    resp -> liftIO . putLn stdout $ serializeChatResponse resp
 
-sendToAgent :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
-sendToAgent ChatClient {inQ, smpServer} AgentClient {rcvQ} =
-  forever . atomically $
-    (agentTransmission <$> readTBQueue inQ) >>= \case
-      cmd -> mapM_ (writeTBQueue rcvQ) cmd
+sendToAgent :: forall m. MonadUnliftIO m => ChatClient -> AgentClient -> m ()
+sendToAgent ChatClient {inQ, smpServer, activeContact} AgentClient {rcvQ} =
+  forever . atomically $ do
+    cmd <- readTBQueue inQ
+    writeTBQueue rcvQ `mapM_` agentTransmission cmd
+    setActiveContact cmd
   where
+    setActiveContact :: ChatCommand -> STM ()
+    setActiveContact cmd =
+      writeTVar activeContact $ case cmd of
+        ChatWith a -> Just a
+        SendMessage a _ -> Just a
+        _ -> Nothing
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
       ChatHelp -> Nothing
-      AddContact (Contact a) -> transmission a $ NEW smpServer
-      AcceptInvitation (Contact a) qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
-      ChatWith (Contact a) -> transmission a SUB
-      SendMessage (Contact a) msg -> transmission a $ SEND msg
-    transmission :: ConnAlias -> ACommand 'Client -> Maybe (ATransmission 'Client)
-    transmission a cmd = Just ("1", a, cmd)
+      AddContact a -> transmission a $ NEW smpServer
+      AcceptContact a qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
+      ChatWith a -> transmission a SUB
+      SendMessage a msg -> transmission a $ SEND msg
+    transmission :: Contact -> ACommand 'Client -> Maybe (ATransmission 'Client)
+    transmission (Contact a) cmd = Just ("1", a, cmd)
 
 receiveFromAgent :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
-receiveFromAgent t c =
-  forever . atomically $ readTBQueue (sndQ c) >>= writeTBQueue (outQ t) . chatResponse
+receiveFromAgent t c = forever . atomically $ do
+  resp <- chatResponse <$> readTBQueue (sndQ c)
+  writeTBQueue (outQ t) resp
+  setActiveContact resp
   where
     chatResponse :: ATransmission 'Agent -> ChatResponse
     chatResponse (_, a, resp) = case resp of
@@ -180,3 +198,38 @@ receiveFromAgent t c =
       SENT _ -> NoChatResponse
       OK -> YesYes
       ERR e -> ChatError e
+    setActiveContact :: ChatResponse -> STM ()
+    setActiveContact = \case
+      Connected a -> set $ Just a
+      ReceivedMessage a _ -> set $ Just a
+      Disconnected _ -> set Nothing
+      _ -> return ()
+      where
+        set a = writeTVar (activeContact t) a
+
+getChatLn :: ChatClient -> IO ByteString
+getChatLn t = do
+  setTTY NoBuffering
+  getChar >>= \case
+    '/' -> getRest "/"
+    '@' -> getRest "@"
+    ch -> do
+      let s = encodeUtf8 $ T.singleton ch
+      readTVarIO (activeContact t) >>= \case
+        Nothing -> getRest s
+        Just a -> getWithContact a s
+  where
+    getWithContact :: Contact -> ByteString -> IO ByteString
+    getWithContact (Contact a) s = do
+      let cPrefix = "@" <> a <> " " <> s
+      cursorBackward 1
+      B.hPut stdout $ "    " <> cPrefix
+      getRest cPrefix
+    getRest :: ByteString -> IO ByteString
+    getRest s = do
+      setTTY LineBuffering
+      (s <>) <$> getLn stdin
+    setTTY :: BufferMode -> IO ()
+    setTTY mode = do
+      hSetBuffering stdin mode
+      hSetBuffering stdout mode

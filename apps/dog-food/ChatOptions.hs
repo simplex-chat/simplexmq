@@ -30,7 +30,7 @@ chatOpts =
       )
 
 parseSMPServer :: ReadM SMPServer
-parseSMPServer = eitherReader $ A.parseOnly smpServerP . B.pack
+parseSMPServer = eitherReader $ A.parseOnly (smpServerP <* A.endOfInput) . B.pack
 
 getChatOpts :: IO ChatOpts
 getChatOpts = execParser opts
