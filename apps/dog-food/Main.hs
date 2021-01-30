@@ -11,8 +11,8 @@ module Main where
 
 import ChatOptions
 import Control.Applicative ((<|>))
+import Control.Concurrent.STM
 import Control.Logger.Simple
-import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -31,7 +31,6 @@ import Simplex.Messaging.Transport (getLn, putLn)
 import Simplex.Messaging.Util (bshow, raceAny_)
 import qualified System.Console.ANSI as C
 import System.IO
-import UnliftIO.STM
 
 cfg :: AgentConfig
 cfg =
@@ -50,7 +49,8 @@ data ChatClient = ChatClient
   { inQ :: TBQueue ChatCommand,
     outQ :: TBQueue ChatResponse,
     smpServer :: SMPServer,
-    activeContact :: TVar (Maybe Contact)
+    activeContact :: TVar (Maybe Contact),
+    username :: TVar (Maybe Contact)
   }
 
 newtype Contact = Contact {toBs :: ByteString}
@@ -62,19 +62,21 @@ data ChatCommand
   | AddContact Contact
   | AcceptContact Contact SMPQueueInfo
   | ChatWith Contact
+  | SetName Contact
   | SendMessage Contact ByteString
 
 chatCommandP :: Parser ChatCommand
 chatCommandP =
   "/help" $> ChatHelp
-    <|> "/add " *> addContact
+    <|> "/add " *> (AddContact <$> contact)
     <|> "/accept " *> acceptContact
     <|> "/chat " *> chatWith
+    <|> "/name " *> setName
     <|> "@" *> sendMessage
   where
-    addContact = AddContact <$> contact
     acceptContact = AcceptContact <$> contact <* A.space <*> smpQueueInfoP
     chatWith = ChatWith <$> contact
+    setName = SetName <$> contact
     sendMessage = SendMessage <$> contact <* A.space <*> A.takeByteString
     contact = Contact <$> A.takeTill (== ' ')
 
@@ -89,10 +91,10 @@ data ChatResponse
   | ChatError AgentErrorType
   | NoChatResponse
 
-serializeChatResponse :: ChatResponse -> ByteString
-serializeChatResponse = \case
+serializeChatResponse :: Maybe Contact -> ChatResponse -> ByteString
+serializeChatResponse name = \case
   ChatHelpInfo -> chatHelpInfo
-  Invitation qInfo -> "ask your contact to enter: /accept <your name> " <> serializeSmpQueueInfo qInfo
+  Invitation qInfo -> "ask your contact to enter: /accept " <> showName name <> " " <> serializeSmpQueueInfo qInfo
   Connected c -> ttyContact c <> " connected"
   ReceivedMessage c t -> ttyContact c <> ": " <> t
   Disconnected c -> "disconnected from " <> ttyContact c <> " - try \"/chat " <> toBs c <> "\""
@@ -100,6 +102,9 @@ serializeChatResponse = \case
   ErrorInput t -> "invalid input: " <> t
   ChatError e -> "chat error: " <> bshow e
   NoChatResponse -> ""
+  where
+    showName Nothing = "<your name>"
+    showName (Just (Contact a)) = a
 
 chatHelpInfo :: ByteString
 chatHelpInfo =
@@ -116,17 +121,29 @@ chatHelpInfo =
 
 main :: IO ()
 main = do
-  ChatOpts {dbFileName, smpServer} <- getChatOpts
+  ChatOpts {dbFileName, smpServer, name} <- getChatOpts
   putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
+  username <- maybe getName (return . Just . Contact) name
+  t <- getChatClient smpServer username
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
-  dogFoodChat smpServer env
+  dogFoodChat t env
 
-dogFoodChat :: MonadUnliftIO m => SMPServer -> Env -> m ()
-dogFoodChat srv env = do
+getName :: IO (Maybe Contact)
+getName = do
+  setTTY NoBuffering
+  putStr "Optional /name "
+  setTTY LineBuffering
+  contact <$> getLn stdin
+  where
+    contact = \case
+      "" -> Nothing
+      name -> Just (Contact name)
+
+dogFoodChat :: ChatClient -> Env -> IO ()
+dogFoodChat t env = do
   c <- runReaderT getSMPAgentClient env
-  t <- getChatClient srv
   raceAny_
     [ runReaderT (runSMPAgentClient c) env,
       sendToAgent t c,
@@ -135,32 +152,38 @@ dogFoodChat srv env = do
       receiveFromTTY t
     ]
 
-getChatClient :: MonadUnliftIO m => SMPServer -> m ChatClient
-getChatClient srv = atomically $ newChatClient (tbqSize cfg) srv
+getChatClient :: SMPServer -> Maybe Contact -> IO ChatClient
+getChatClient srv name = atomically $ newChatClient (tbqSize cfg) srv name
 
-newChatClient :: Natural -> SMPServer -> STM ChatClient
-newChatClient qSize smpServer = do
+newChatClient :: Natural -> SMPServer -> Maybe Contact -> STM ChatClient
+newChatClient qSize smpServer name = do
   inQ <- newTBQueue qSize
   outQ <- newTBQueue qSize
   activeContact <- newTVar Nothing
-  return ChatClient {inQ, outQ, smpServer, activeContact}
+  username <- newTVar name
+  return ChatClient {inQ, outQ, smpServer, activeContact, username}
 
-receiveFromTTY :: MonadUnliftIO m => ChatClient -> m ()
+receiveFromTTY :: ChatClient -> IO ()
 receiveFromTTY t =
-  forever $ liftIO (getChatLn t) >>= processOrError . A.parseOnly (chatCommandP <* A.endOfInput)
+  forever $ getChatLn t >>= processOrError . A.parseOnly (chatCommandP <* A.endOfInput)
   where
     processOrError = \case
       Left err -> atomically . writeTBQueue (outQ t) . ErrorInput $ B.pack err
       Right ChatHelp -> atomically . writeTBQueue (outQ t) $ ChatHelpInfo
+      Right (SetName a) -> atomically $ do
+        writeTVar (username t) $ Just a
+        writeTBQueue (outQ t) YesYes
       Right cmd -> atomically $ writeTBQueue (inQ t) cmd
 
-sendToTTY :: MonadUnliftIO m => ChatClient -> m ()
-sendToTTY ChatClient {outQ} = forever $ do
+sendToTTY :: ChatClient -> IO ()
+sendToTTY ChatClient {outQ, username} = forever $ do
   atomically (readTBQueue outQ) >>= \case
     NoChatResponse -> return ()
-    resp -> liftIO . putLn stdout $ serializeChatResponse resp
+    resp -> do
+      name <- readTVarIO username
+      putLn stdout $ serializeChatResponse name resp
 
-sendToAgent :: forall m. MonadUnliftIO m => ChatClient -> AgentClient -> m ()
+sendToAgent :: ChatClient -> AgentClient -> IO ()
 sendToAgent ChatClient {inQ, smpServer, activeContact} AgentClient {rcvQ} =
   forever . atomically $ do
     cmd <- readTBQueue inQ
@@ -175,15 +198,16 @@ sendToAgent ChatClient {inQ, smpServer, activeContact} AgentClient {rcvQ} =
         _ -> Nothing
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
-      ChatHelp -> Nothing
       AddContact a -> transmission a $ NEW smpServer
       AcceptContact a qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
       ChatWith a -> transmission a SUB
       SendMessage a msg -> transmission a $ SEND msg
+      ChatHelp -> Nothing
+      SetName _ -> Nothing
     transmission :: Contact -> ACommand 'Client -> Maybe (ATransmission 'Client)
     transmission (Contact a) cmd = Just ("1", a, cmd)
 
-receiveFromAgent :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
+receiveFromAgent :: ChatClient -> AgentClient -> IO ()
 receiveFromAgent t c = forever . atomically $ do
   resp <- chatResponse <$> readTBQueue (sndQ c)
   writeTBQueue (outQ t) resp
@@ -228,10 +252,11 @@ getChatLn t = do
     getRest s = do
       setTTY LineBuffering
       (s <>) <$> getLn stdin
-    setTTY :: BufferMode -> IO ()
-    setTTY mode = do
-      hSetBuffering stdin mode
-      hSetBuffering stdout mode
+
+setTTY :: BufferMode -> IO ()
+setTTY mode = do
+  hSetBuffering stdin mode
+  hSetBuffering stdout mode
 
 ttyContact :: Contact -> ByteString
 ttyContact (Contact a) = withSGR contactSGR $ "@" <> a

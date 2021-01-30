@@ -6,14 +6,23 @@ import Options.Applicative
 import Simplex.Messaging.Agent.Transmission (SMPServer (..), smpServerP)
 
 data ChatOpts = ChatOpts
-  { dbFileName :: String,
+  { name :: Maybe B.ByteString,
+    dbFileName :: String,
     smpServer :: SMPServer
   }
 
 chatOpts :: Parser ChatOpts
 chatOpts =
   ChatOpts
-    <$> strOption
+    <$> option
+      parseName
+      ( long "name"
+          <> short 'n'
+          <> metavar "NAME"
+          <> help "optional name to use for invitations"
+          <> value Nothing
+      )
+    <*> strOption
       ( long "database"
           <> short 'd'
           <> metavar "DB_FILE"
@@ -28,6 +37,9 @@ chatOpts =
           <> help "SMP server to use (localhost:5223)"
           <> value (SMPServer "localhost" (Just "5223") Nothing)
       )
+
+parseName :: ReadM (Maybe B.ByteString)
+parseName = maybeReader $ Just . Just . B.pack
 
 parseSMPServer :: ReadM SMPServer
 parseSMPServer = eitherReader $ A.parseOnly (smpServerP <* A.endOfInput) . B.pack
