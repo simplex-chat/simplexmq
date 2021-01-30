@@ -116,6 +116,7 @@ chatHelpInfo =
   \                    (a string that starts from \"smp::\")\n\
   \                    from your contact <name>\n\
   \/chat <name>      - resume chat with <name>\n\
+  \/name <name>      - set <name> to use in invitations\n\
   \@<name> <message> - send <message> (any string) to contact <name>\n\
   \                    @<name> can be omitted to send to previous"
 
@@ -123,23 +124,11 @@ main :: IO ()
 main = do
   ChatOpts {dbFileName, smpServer, name} <- getChatOpts
   putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
-  username <- maybe getName (return . Just . Contact) name
-  t <- getChatClient smpServer username
+  t <- getChatClient smpServer (Contact <$> name)
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
   dogFoodChat t env
-
-getName :: IO (Maybe Contact)
-getName = do
-  setTTY NoBuffering
-  putStr "Optional /name "
-  setTTY LineBuffering
-  contact <$> getLn stdin
-  where
-    contact = \case
-      "" -> Nothing
-      name -> Just (Contact name)
 
 dogFoodChat :: ChatClient -> Env -> IO ()
 dogFoodChat t env = do
