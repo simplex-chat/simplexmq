@@ -160,10 +160,12 @@ sendToAgent ChatClient {inQ, smpServer} AgentClient {rcvQ} =
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
       ChatHelp -> Nothing
-      InviteContact (Contact a) -> Just ("1", a, NEW smpServer)
-      AcceptInvitation (Contact a) qInfo -> Just ("1", a, JOIN qInfo $ ReplyVia smpServer)
-      ChatWith (Contact a) -> Just ("1", a, SUB)
-      SendMessage (Contact a) msg -> Just ("1", a, SEND msg)
+      InviteContact (Contact a) -> transmission a $ NEW smpServer
+      AcceptInvitation (Contact a) qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
+      ChatWith (Contact a) -> transmission a SUB
+      SendMessage (Contact a) msg -> transmission a $ SEND msg
+    transmission :: ConnAlias -> ACommand 'Client -> Maybe (ATransmission 'Client)
+    transmission a cmd = Just ("1", a, cmd)
 
 receiveFromAgent :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
 receiveFromAgent t c =
