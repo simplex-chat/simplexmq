@@ -164,7 +164,8 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         sendMsg sq = do
           sendAgentMessage c sq $ A_MSG msgBody
           -- TODO respond $ SENT aMsgId
-          respond OK
+          -- TODO send message to DB
+          respond $ SENT 0
 
     suspendConnection :: m ()
     suspendConnection =

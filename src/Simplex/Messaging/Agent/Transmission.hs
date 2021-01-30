@@ -79,6 +79,7 @@ data ACommand (p :: AParty) where
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
   SEND :: MsgBody -> ACommand Client
+  SENT :: AgentMsgId -> ACommand Agent
   MSG ::
     { m_recipient :: (AgentMsgId, UTCTime),
       m_broker :: (ST.MsgId, UTCTime),
@@ -292,6 +293,7 @@ parseCommandP =
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
     <|> "SEND " *> sendCmd
+    <|> "SENT " *> sentResp
     <|> "MSG " *> message
     <|> "OFF" $> ACmd SClient OFF
     <|> "DEL" $> ACmd SClient DEL
@@ -303,6 +305,7 @@ parseCommandP =
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
     sendCmd = ACmd SClient <$> (SEND <$> A.takeByteString)
+    sentResp = ACmd SAgent <$> (SENT <$> A.decimal)
     message = do
       m_status <- status <* A.space
       m_recipient <- "R=" *> partyMeta A.decimal
@@ -335,6 +338,7 @@ serializeCommand = \case
   SUB -> "SUB"
   END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
+  SENT mId -> "SENT " <> bshow mId
   MSG {m_recipient = (rmId, rTs), m_broker = (bmId, bTs), m_sender = (smId, sTs), m_status, m_body} ->
     B.unwords
       [ "MSG",

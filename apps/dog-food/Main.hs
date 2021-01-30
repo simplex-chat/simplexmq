@@ -33,7 +33,7 @@ cfg =
     { tcpPort = undefined, -- TODO maybe take it out of config
       tbqSize = 16,
       connIdBytes = 12,
-      dbFile = "dog-food.db",
+      dbFile = "smp-chat.db",
       smpCfg = smpDefaultConfig
     }
 
@@ -76,24 +76,25 @@ data ChatResponse
   | YesYes
   | ErrorInput ByteString
   | ChatError AgentErrorType
+  | NoChatResponse
 
 serializeChatResponse :: ChatResponse -> ByteString
 serializeChatResponse = \case
-  Invitation qInfo -> "ask your contact to enter: /join <name> " <> serializeSmpQueueInfo qInfo
+  Invitation qInfo -> "ask your contact to enter: /join <your name> " <> serializeSmpQueueInfo qInfo
   Joined (Contact c) -> "@" <> c <> " connected"
   ReceivedMessage (Contact c) t -> "@" <> c <> ": " <> t
-  Disconnected (Contact c) -> "disconnected from @" <> c <> " - try sending \"/talk " <> c <> "\""
-  YesYes -> "on it!"
+  Disconnected (Contact c) -> "disconnected from @" <> c <> " - try \"/talk " <> c <> "\""
+  YesYes -> "you got it!"
   ErrorInput t -> "invalid input: " <> t
   ChatError e -> "chat error: " <> bshow e
+  NoChatResponse -> ""
 
 main :: IO ()
 main = do
   putStrLn "simplex chat"
-  setLogLevel LogInfo -- LogError
-  withGlobalLogging logCfg $ do
-    env <- newSMPAgentEnv cfg
-    runReaderT dogFoodChat env
+  -- setLogLevel LogInfo -- LogError
+  -- withGlobalLogging logCfg $
+  runReaderT dogFoodChat =<< newSMPAgentEnv cfg
 
 dogFoodChat :: (MonadUnliftIO m, MonadReader Env m) => m ()
 dogFoodChat = do
@@ -127,8 +128,10 @@ dfReceive h ChatClient {inQ, outQ} =
       Left err -> atomically . writeTBQueue outQ . ErrorInput $ B.pack err
 
 dfSend :: MonadUnliftIO m => Handle -> ChatClient -> m ()
-dfSend h ChatClient {outQ} =
-  forever $ atomically (readTBQueue outQ) >>= liftIO . putLn h . serializeChatResponse
+dfSend h ChatClient {outQ} = forever $ do
+  atomically (readTBQueue outQ) >>= \case
+    NoChatResponse -> return ()
+    resp -> liftIO . putLn h $ serializeChatResponse resp
 
 dfClient :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
 dfClient t c =
@@ -148,8 +151,9 @@ dfSubscriber t c =
     chatResponse :: ATransmission 'Agent -> ChatResponse
     chatResponse (_, a, resp) = case resp of
       INV qInfo -> Invitation qInfo
-      CON -> Joined (Contact a)
-      END -> Disconnected (Contact a)
+      CON -> Joined $ Contact a
+      END -> Disconnected $ Contact a
       MSG {m_body} -> ReceivedMessage (Contact a) m_body
+      SENT _ -> NoChatResponse
       OK -> YesYes
       ERR e -> ChatError e
