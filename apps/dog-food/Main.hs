@@ -55,7 +55,7 @@ newtype Contact = Contact {toBs :: ByteString}
 -- | AddToGroup Contact
 data ChatCommand
   = ChatHelp
-  | InviteContact Contact
+  | AddContact Contact
   | AcceptInvitation Contact SMPQueueInfo
   | ChatWith Contact
   | SendMessage Contact ByteString
@@ -63,12 +63,12 @@ data ChatCommand
 chatCommandP :: Parser ChatCommand
 chatCommandP =
   "/help" $> ChatHelp
-    <|> "/invite " *> inviteContact
+    <|> "/add " *> addContact
     <|> "/accept " *> acceptInvitation
     <|> "/chat " *> chatWith
     <|> "@" *> sendMessage
   where
-    inviteContact = InviteContact . Contact <$> A.takeByteString
+    addContact = AddContact . Contact <$> A.takeByteString
     acceptInvitation = AcceptInvitation <$> contact <* A.space <*> smpQueueInfoP
     chatWith = ChatWith . Contact <$> A.takeByteString
     sendMessage = SendMessage <$> contact <* A.space <*> A.takeByteString
@@ -88,7 +88,7 @@ data ChatResponse
 serializeChatResponse :: ChatResponse -> ByteString
 serializeChatResponse = \case
   ChatHelpInfo -> chatHelpInfo
-  Invitation qInfo -> "ask your contact to enter: /join <your name> " <> serializeSmpQueueInfo qInfo
+  Invitation qInfo -> "ask your contact to enter: /accept <your name> " <> serializeSmpQueueInfo qInfo
   Connected (Contact c) -> "@" <> c <> " connected"
   ReceivedMessage (Contact c) t -> "@" <> c <> ": " <> t
   Disconnected (Contact c) -> "disconnected from @" <> c <> " - try \"/talk " <> c <> "\""
@@ -100,7 +100,7 @@ serializeChatResponse = \case
 chatHelpInfo :: ByteString
 chatHelpInfo =
   "Commands:\n\
-  \/invite <name> - create invitation to be sent to your contact <name> (any unique string without spaces)\n\
+  \/add <name> - create invitation to be sent to your contact <name> (any unique string without spaces)\n\
   \/accept <name> <invitation> - accept <invitation> from your contact <name> (a string that starts from smp::)\n\
   \/chat <name> - resume chat with <name>\n\
   \@<name> <message> - send <message> (any string) to contact <name>"
@@ -160,7 +160,7 @@ sendToAgent ChatClient {inQ, smpServer} AgentClient {rcvQ} =
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
       ChatHelp -> Nothing
-      InviteContact (Contact a) -> transmission a $ NEW smpServer
+      AddContact (Contact a) -> transmission a $ NEW smpServer
       AcceptInvitation (Contact a) qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
       ChatWith (Contact a) -> transmission a SUB
       SendMessage (Contact a) msg -> transmission a $ SEND msg
