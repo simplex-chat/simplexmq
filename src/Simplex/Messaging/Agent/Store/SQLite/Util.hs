@@ -148,8 +148,8 @@ _insertRcvQueueQuery =
       (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status);
   |]
 
-insertRcvConnection :: MonadUnliftIO m => DB.Connection -> ConnAlias -> ReceiveQueue -> m ()
-insertRcvConnection conn connAlias ReceiveQueue {server, rcvId} =
+insertRcvConnection :: MonadUnliftIO m => DB.Connection -> ReceiveQueue -> m ()
+insertRcvConnection conn ReceiveQueue {server, rcvId, connAlias} =
   liftIO $ do
     let _port = _convertPortOnWrite $ port server
     DB.executeNamed

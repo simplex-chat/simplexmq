@@ -92,7 +92,7 @@ data DeliveryStatus
 
 class Monad m => MonadAgentStore s m where
   addServer :: s -> SMPServer -> m ()
-  createRcvConn :: s -> ConnAlias -> ReceiveQueue -> m ()
+  createRcvConn :: s -> ReceiveQueue -> m ()
   createSndConn :: s -> ConnAlias -> SendQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
   getReceiveQueue :: s -> SMPServer -> SMP.RecipientId -> m (ConnAlias, ReceiveQueue)
