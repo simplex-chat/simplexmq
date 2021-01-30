@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -43,7 +44,9 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 data ChatClient = ChatClient
   { inQ :: TBQueue ChatCommand,
-    outQ :: TBQueue ChatResponse
+    outQ :: TBQueue ChatResponse,
+    smpServer :: SMPServer,
+    activeContact :: TVar (Maybe Contact)
   }
 
 newtype Contact = Contact {toBs :: ByteString}
@@ -108,30 +111,30 @@ main = do
   putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
-  runReaderT (dogFoodChat smpServer) =<< newSMPAgentEnv cfg {dbFile = dbFileName}
+  env <- newSMPAgentEnv cfg {dbFile = dbFileName}
+  dogFoodChat smpServer env
 
-dogFoodChat :: (MonadUnliftIO m, MonadReader Env m) => SMPServer -> m ()
-dogFoodChat srv = do
-  c <- getSMPAgentClient
-  t <- getChatClient
+dogFoodChat :: MonadUnliftIO m => SMPServer -> Env -> m ()
+dogFoodChat srv env = do
+  c <- runReaderT getSMPAgentClient env
+  t <- getChatClient srv
   raceAny_
-    [ runSMPAgentClient c,
-      sendToAgent srv t c,
+    [ runReaderT (runSMPAgentClient c) env,
+      sendToAgent t c,
       sendToTTY stdout t,
       receiveFromAgent t c,
       receiveFromTTY stdin t
     ]
 
-getChatClient :: (MonadUnliftIO m, MonadReader Env m) => m ChatClient
-getChatClient = do
-  q <- asks $ tbqSize . config
-  atomically $ newChatClient q
+getChatClient :: MonadUnliftIO m => SMPServer -> m ChatClient
+getChatClient srv = atomically $ newChatClient (tbqSize cfg) srv
 
-newChatClient :: Natural -> STM ChatClient
-newChatClient qSize = do
+newChatClient :: Natural -> SMPServer -> STM ChatClient
+newChatClient qSize smpServer = do
   inQ <- newTBQueue qSize
   outQ <- newTBQueue qSize
-  return ChatClient {inQ, outQ}
+  activeContact <- newTVar Nothing
+  return ChatClient {inQ, outQ, smpServer, activeContact}
 
 receiveFromTTY :: MonadUnliftIO m => Handle -> ChatClient -> m ()
 receiveFromTTY h ChatClient {inQ, outQ} =
@@ -148,16 +151,17 @@ sendToTTY h ChatClient {outQ} = forever $ do
     NoChatResponse -> return ()
     resp -> liftIO . putLn h $ serializeChatResponse resp
 
-sendToAgent :: MonadUnliftIO m => SMPServer -> ChatClient -> AgentClient -> m ()
-sendToAgent srv t c =
+sendToAgent :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
+sendToAgent ChatClient {inQ, smpServer} AgentClient {rcvQ} =
   forever . atomically $
-    readTBQueue (inQ t) >>= mapM_ (writeTBQueue $ rcvQ c) . agentTransmission
+    (agentTransmission <$> readTBQueue inQ) >>= \case
+      cmd -> mapM_ (writeTBQueue rcvQ) cmd
   where
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
       ChatHelp -> Nothing
-      InviteContact (Contact a) -> Just ("1", a, NEW srv)
-      AcceptInvitation (Contact a) qInfo -> Just ("1", a, JOIN qInfo (ReplyVia srv))
+      InviteContact (Contact a) -> Just ("1", a, NEW smpServer)
+      AcceptInvitation (Contact a) qInfo -> Just ("1", a, JOIN qInfo $ ReplyVia smpServer)
       ChatWith (Contact a) -> Just ("1", a, SUB)
       SendMessage (Contact a) msg -> Just ("1", a, SEND msg)
 
