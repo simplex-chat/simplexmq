@@ -116,6 +116,7 @@ upsertServer conn SMPServer {host, port, keyHash} =
       _upsertServerQuery
       [":host" := host, ":port" := _port, ":key_hash" := keyHash]
 
+-- TODO replace with ToField - it's easy to forget to use this
 _convertPortOnWrite :: Maybe ServiceName -> ServiceName
 _convertPortOnWrite = fromMaybe "_"
 
