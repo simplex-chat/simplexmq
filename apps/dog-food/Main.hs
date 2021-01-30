@@ -29,7 +29,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Transport (getLn, putLn)
 import Simplex.Messaging.Util (bshow, raceAny_)
-import System.Console.ANSI
+import qualified System.Console.ANSI as C
 import System.IO
 import UnliftIO.STM
 
@@ -93,9 +93,9 @@ serializeChatResponse :: ChatResponse -> ByteString
 serializeChatResponse = \case
   ChatHelpInfo -> chatHelpInfo
   Invitation qInfo -> "ask your contact to enter: /accept <your name> " <> serializeSmpQueueInfo qInfo
-  Connected (Contact c) -> "@" <> c <> " connected"
-  ReceivedMessage (Contact c) t -> "@" <> c <> ": " <> t
-  Disconnected (Contact c) -> "disconnected from @" <> c <> " - try \"/chat " <> c <> "\""
+  Connected c -> ttyContact c <> " connected"
+  ReceivedMessage c t -> ttyContact c <> ": " <> t
+  Disconnected c -> "disconnected from " <> ttyContact c <> " - try \"/chat " <> toBs c <> "\""
   YesYes -> "you got it!"
   ErrorInput t -> "invalid input: " <> t
   ChatError e -> "chat error: " <> bshow e
@@ -220,11 +220,10 @@ getChatLn t = do
         Just a -> getWithContact a s
   where
     getWithContact :: Contact -> ByteString -> IO ByteString
-    getWithContact (Contact a) s = do
-      let cPrefix = "@" <> a <> " " <> s
-      cursorBackward 1
-      B.hPut stdout $ "    " <> cPrefix
-      getRest cPrefix
+    getWithContact a s = do
+      C.cursorBackward 1
+      B.hPut stdout $ "    " <> ttyContact a <> " " <> s
+      getRest $ "@" <> toBs a <> " " <> s
     getRest :: ByteString -> IO ByteString
     getRest s = do
       setTTY LineBuffering
@@ -233,3 +232,12 @@ getChatLn t = do
     setTTY mode = do
       hSetBuffering stdin mode
       hSetBuffering stdout mode
+
+ttyContact :: Contact -> ByteString
+ttyContact (Contact a) = withSGR contactSGR $ "@" <> a
+
+contactSGR :: [C.SGR]
+contactSGR = [C.SetColor C.Foreground C.Vivid C.Cyan]
+
+withSGR :: [C.SGR] -> ByteString -> ByteString
+withSGR sgr s = B.pack (C.setSGRCode sgr) <> s <> B.pack (C.setSGRCode [C.Reset])
