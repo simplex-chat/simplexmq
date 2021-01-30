@@ -35,7 +35,7 @@ chatOpts =
           <> short 's'
           <> metavar "SERVER"
           <> help "SMP server to use (localhost:5223)"
-          <> value (SMPServer "localhost" (Just "5223") Nothing)
+          <> value (SMPServer "smp.simplex.im" (Just "5223") Nothing)
       )
 
 parseName :: ReadM (Maybe B.ByteString)
