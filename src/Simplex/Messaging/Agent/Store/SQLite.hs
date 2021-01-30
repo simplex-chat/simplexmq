@@ -44,7 +44,9 @@ newSQLiteStore dbFilename = do
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   addServer :: SQLiteStore -> SMPServer -> m ()
-  addServer SQLiteStore {conn} smpServer = upsertServer conn smpServer
+  addServer SQLiteStore {conn} smpServer =
+    liftIO $
+      upsertServer conn smpServer
 
   createRcvConn :: SQLiteStore -> ReceiveQueue -> m ()
   createRcvConn SQLiteStore {conn} rcvQueue =
@@ -57,7 +59,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             insertRcvQueue conn rcvQueue
             insertRcvConnection conn rcvQueue
         )
-  
+
   createSndConn :: SQLiteStore -> SendQueue -> m ()
   createSndConn SQLiteStore {conn} sndQueue =
     liftIO $

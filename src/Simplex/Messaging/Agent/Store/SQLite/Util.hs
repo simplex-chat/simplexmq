@@ -107,14 +107,13 @@ instance ToField QueueStatus where toField = toField . show
 --   withLock st tableLock $ \c -> liftIO $ do
 --     DB.execute c queryStr q
 
-upsertServer :: MonadUnliftIO m => DB.Connection -> SMPServer -> m ()
-upsertServer conn SMPServer {host, port, keyHash} =
-  liftIO $ do
-    let _port = _convertPortOnWrite port
-    DB.executeNamed
-      conn
-      _upsertServerQuery
-      [":host" := host, ":port" := _port, ":key_hash" := keyHash]
+upsertServer :: DB.Connection -> SMPServer -> IO ()
+upsertServer conn SMPServer {host, port, keyHash} = do
+  let _port = _convertPortOnWrite port
+  DB.executeNamed
+    conn
+    _upsertServerQuery
+    [":host" := host, ":port" := _port, ":key_hash" := keyHash]
 
 -- TODO replace with ToField - it's easy to forget to use this
 _convertPortOnWrite :: Maybe ServiceName -> ServiceName
@@ -130,14 +129,13 @@ _upsertServerQuery =
       key_hash=excluded.key_hash;
   |]
 
-insertRcvQueue :: MonadUnliftIO m => DB.Connection -> ReceiveQueue -> m ()
-insertRcvQueue conn ReceiveQueue {..} =
-  liftIO $ do
-    let _port = _convertPortOnWrite $ port server
-    DB.executeNamed
-      conn
-      _insertRcvQueueQuery
-      [":host" := host server, ":port" := _port, ":rcv_id" := rcvId, ":conn_alias" := connAlias, ":rcv_private_key" := rcvPrivateKey, ":snd_id" := sndId, ":snd_key" := sndKey, ":decrypt_key" := decryptKey, ":verify_key" := verifyKey, ":status" := status]
+insertRcvQueue :: DB.Connection -> ReceiveQueue -> IO ()
+insertRcvQueue conn ReceiveQueue {..} = do
+  let _port = _convertPortOnWrite $ port server
+  DB.executeNamed
+    conn
+    _insertRcvQueueQuery
+    [":host" := host server, ":port" := _port, ":rcv_id" := rcvId, ":conn_alias" := connAlias, ":rcv_private_key" := rcvPrivateKey, ":snd_id" := sndId, ":snd_key" := sndKey, ":decrypt_key" := decryptKey, ":verify_key" := verifyKey, ":status" := status]
 
 _insertRcvQueueQuery :: Query
 _insertRcvQueueQuery =
@@ -148,14 +146,13 @@ _insertRcvQueueQuery =
       (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status);
   |]
 
-insertRcvConnection :: MonadUnliftIO m => DB.Connection -> ReceiveQueue -> m ()
-insertRcvConnection conn ReceiveQueue {server, rcvId, connAlias} =
-  liftIO $ do
-    let _port = _convertPortOnWrite $ port server
-    DB.executeNamed
-      conn
-      _insertRcvConnectionQuery
-      [":conn_alias" := connAlias, ":rcv_host" := host server, ":rcv_port" := _port, ":rcv_id" := rcvId]
+insertRcvConnection :: DB.Connection -> ReceiveQueue -> IO ()
+insertRcvConnection conn ReceiveQueue {server, rcvId, connAlias} = do
+  let _port = _convertPortOnWrite $ port server
+  DB.executeNamed
+    conn
+    _insertRcvConnectionQuery
+    [":conn_alias" := connAlias, ":rcv_host" := host server, ":rcv_port" := _port, ":rcv_id" := rcvId]
 
 _insertRcvConnectionQuery :: Query
 _insertRcvConnectionQuery =
@@ -166,14 +163,13 @@ _insertRcvConnectionQuery =
       (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL);
   |]
 
-insertSndQueue :: MonadUnliftIO m => DB.Connection -> SendQueue -> m ()
-insertSndQueue conn SendQueue {..} =
-  liftIO $ do
-    let _port = _convertPortOnWrite $ port server
-    DB.executeNamed
-      conn
-      _insertSndQueueQuery
-      [":host" := host server, ":port" := _port, ":snd_id" := sndId, ":conn_alias" := connAlias, ":snd_private_key" := sndPrivateKey, ":encrypt_key" := encryptKey, ":sign_key" := signKey, ":status" := status]
+insertSndQueue :: DB.Connection -> SendQueue -> IO ()
+insertSndQueue conn SendQueue {..} = do
+  let _port = _convertPortOnWrite $ port server
+  DB.executeNamed
+    conn
+    _insertSndQueueQuery
+    [":host" := host server, ":port" := _port, ":snd_id" := sndId, ":conn_alias" := connAlias, ":snd_private_key" := sndPrivateKey, ":encrypt_key" := encryptKey, ":sign_key" := signKey, ":status" := status]
 
 _insertSndQueueQuery :: Query
 _insertSndQueueQuery =
@@ -184,14 +180,13 @@ _insertSndQueueQuery =
       (:host,:port,:snd_id,:conn_alias,:snd_private_key,:encrypt_key,:sign_key,:status);
   |]
 
-insertSndConnection :: MonadUnliftIO m => DB.Connection -> SendQueue -> m ()
-insertSndConnection conn SendQueue {server, sndId, connAlias} =
-  liftIO $ do
-    let _port = _convertPortOnWrite $ port server
-    DB.executeNamed
-      conn
-      _insertSndConnectionQuery
-      [":conn_alias" := connAlias, ":snd_host" := host server, ":snd_port" := _port, ":snd_id" := sndId]
+insertSndConnection :: DB.Connection -> SendQueue -> IO ()
+insertSndConnection conn SendQueue {server, sndId, connAlias} = do
+  let _port = _convertPortOnWrite $ port server
+  DB.executeNamed
+    conn
+    _insertSndConnectionQuery
+    [":conn_alias" := connAlias, ":snd_host" := host server, ":snd_port" := _port, ":snd_id" := sndId]
 
 _insertSndConnectionQuery :: Query
 _insertSndConnectionQuery =
