@@ -15,6 +15,7 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Numeric.Natural
 import Simplex.Messaging.Agent (getSMPAgentClient, runSMPAgentClient)
 import Simplex.Messaging.Agent.Client (AgentClient (..))
@@ -24,7 +25,6 @@ import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Transport (getLn, putLn)
 import Simplex.Messaging.Util (bshow, raceAny_)
 import System.IO
-import UnliftIO.Async
 import UnliftIO.STM
 
 cfg :: AgentConfig
@@ -33,7 +33,7 @@ cfg =
     { tcpPort = undefined, -- TODO maybe take it out of config
       tbqSize = 16,
       connIdBytes = 12,
-      dbFile = "smp-chat.db",
+      dbFile = "smp-chat1.db",
       smpCfg = smpDefaultConfig
     }
 
@@ -50,27 +50,30 @@ newtype Contact = Contact {toBs :: ByteString}
 -- | GroupMessage ChatGroup ByteString
 -- | AddToGroup Contact
 data ChatCommand
-  = InviteContact Contact
-  | JoinInvitation Contact SMPQueueInfo
-  | TalkTo Contact
+  = ChatHelp
+  | InviteContact Contact
+  | AcceptInvitation Contact SMPQueueInfo
+  | ChatWith Contact
   | SendMessage Contact ByteString
 
 chatCommandP :: Parser ChatCommand
 chatCommandP =
-  "/invite " *> inviteContact
-    <|> "/join " *> joinInvitation
-    <|> "/talk " *> talkTo
+  "/help" $> ChatHelp
+    <|> "/invite " *> inviteContact
+    <|> "/accept " *> acceptInvitation
+    <|> "/chat " *> chatWith
     <|> "@" *> sendMessage
   where
     inviteContact = InviteContact . Contact <$> A.takeByteString
-    joinInvitation = JoinInvitation <$> contact <* A.space <*> smpQueueInfoP
-    talkTo = TalkTo . Contact <$> A.takeByteString
+    acceptInvitation = AcceptInvitation <$> contact <* A.space <*> smpQueueInfoP
+    chatWith = ChatWith . Contact <$> A.takeByteString
     sendMessage = SendMessage <$> contact <* A.space <*> A.takeByteString
     contact = Contact <$> A.takeTill (== ' ')
 
 data ChatResponse
-  = Invitation SMPQueueInfo
-  | Joined Contact
+  = ChatHelpInfo
+  | Invitation SMPQueueInfo
+  | Connected Contact
   | ReceivedMessage Contact ByteString
   | Disconnected Contact
   | YesYes
@@ -80,8 +83,9 @@ data ChatResponse
 
 serializeChatResponse :: ChatResponse -> ByteString
 serializeChatResponse = \case
+  ChatHelpInfo -> chatHelpInfo
   Invitation qInfo -> "ask your contact to enter: /join <your name> " <> serializeSmpQueueInfo qInfo
-  Joined (Contact c) -> "@" <> c <> " connected"
+  Connected (Contact c) -> "@" <> c <> " connected"
   ReceivedMessage (Contact c) t -> "@" <> c <> ": " <> t
   Disconnected (Contact c) -> "disconnected from @" <> c <> " - try \"/talk " <> c <> "\""
   YesYes -> "you got it!"
@@ -89,9 +93,17 @@ serializeChatResponse = \case
   ChatError e -> "chat error: " <> bshow e
   NoChatResponse -> ""
 
+chatHelpInfo :: ByteString
+chatHelpInfo =
+  "Commands:\n\
+  \/invite <name> - create invitation to be sent to your contact <name> (any unique string without spaces)\n\
+  \/accept <name> <invitation> - accept <invitation> from your contact <name> (a string that starts from smp::)\n\
+  \/chat <name> - resume chat with <name>\n\
+  \@<name> <message> - send <message> (any string) to contact <name>"
+
 main :: IO ()
 main = do
-  putStrLn "simplex chat"
+  putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
   runReaderT dogFoodChat =<< newSMPAgentEnv cfg
@@ -100,13 +112,13 @@ dogFoodChat :: (MonadUnliftIO m, MonadReader Env m) => m ()
 dogFoodChat = do
   c <- getSMPAgentClient
   t <- getChatClient
-  raceAny_ [connectClient t, runDogFoodChat t c, runSMPAgentClient c]
-
-connectClient :: MonadUnliftIO m => ChatClient -> m ()
-connectClient t = race_ (dfSend stdout t) (dfReceive stdin t)
-
-runDogFoodChat :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
-runDogFoodChat t c = race_ (dfClient t c) (dfSubscriber t c)
+  raceAny_
+    [ runSMPAgentClient c,
+      sendToAgent t c,
+      sendToTTY stdout t,
+      receiveFromAgent t c,
+      receiveFromTTY stdin t
+    ]
 
 getChatClient :: (MonadUnliftIO m, MonadReader Env m) => m ChatClient
 getChatClient = do
@@ -119,39 +131,42 @@ newChatClient qSize = do
   outQ <- newTBQueue qSize
   return ChatClient {inQ, outQ}
 
-dfReceive :: MonadUnliftIO m => Handle -> ChatClient -> m ()
-dfReceive h ChatClient {inQ, outQ} =
+receiveFromTTY :: MonadUnliftIO m => Handle -> ChatClient -> m ()
+receiveFromTTY h ChatClient {inQ, outQ} =
   forever $ liftIO (getLn h) >>= processOrError . A.parseOnly chatCommandP
   where
     processOrError = \case
-      Right cmd -> atomically $ writeTBQueue inQ cmd
       Left err -> atomically . writeTBQueue outQ . ErrorInput $ B.pack err
+      Right ChatHelp -> atomically . writeTBQueue outQ $ ChatHelpInfo
+      Right cmd -> atomically $ writeTBQueue inQ cmd
 
-dfSend :: MonadUnliftIO m => Handle -> ChatClient -> m ()
-dfSend h ChatClient {outQ} = forever $ do
+sendToTTY :: MonadUnliftIO m => Handle -> ChatClient -> m ()
+sendToTTY h ChatClient {outQ} = forever $ do
   atomically (readTBQueue outQ) >>= \case
     NoChatResponse -> return ()
     resp -> liftIO . putLn h $ serializeChatResponse resp
 
-dfClient :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
-dfClient t c =
-  forever . atomically $ readTBQueue (inQ t) >>= writeTBQueue (rcvQ c) . agentTransmission
+sendToAgent :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
+sendToAgent t c =
+  forever . atomically $
+    readTBQueue (inQ t) >>= mapM_ (writeTBQueue $ rcvQ c) . agentTransmission
   where
-    agentTransmission :: ChatCommand -> ATransmission 'Client
+    agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
-      InviteContact (Contact a) -> ("1", a, NEW (SMPServer "localhost" (Just "5223") Nothing))
-      JoinInvitation (Contact a) qInfo -> ("1", a, JOIN qInfo ReplyOn)
-      TalkTo (Contact a) -> ("1", a, SUB)
-      SendMessage (Contact a) msg -> ("1", a, SEND msg)
+      ChatHelp -> Nothing
+      InviteContact (Contact a) -> Just ("1", a, NEW (SMPServer "localhost" (Just "5223") Nothing))
+      AcceptInvitation (Contact a) qInfo -> Just ("1", a, JOIN qInfo ReplyOn)
+      ChatWith (Contact a) -> Just ("1", a, SUB)
+      SendMessage (Contact a) msg -> Just ("1", a, SEND msg)
 
-dfSubscriber :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
-dfSubscriber t c =
+receiveFromAgent :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
+receiveFromAgent t c =
   forever . atomically $ readTBQueue (sndQ c) >>= writeTBQueue (outQ t) . chatResponse
   where
     chatResponse :: ATransmission 'Agent -> ChatResponse
     chatResponse (_, a, resp) = case resp of
       INV qInfo -> Invitation qInfo
-      CON -> Joined $ Contact a
+      CON -> Connected $ Contact a
       END -> Disconnected $ Contact a
       MSG {m_body} -> ReceivedMessage (Contact a) m_body
       SENT _ -> NoChatResponse
