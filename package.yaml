@@ -56,6 +56,7 @@ executables:
     source-dirs: apps/dog-food
     main: Main.hs
     dependencies:
+      - optparse-applicative == 0.15.*
       - simplex-messaging
     ghc-options:
       - -threaded

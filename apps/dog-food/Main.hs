@@ -7,6 +7,7 @@
 
 module Main where
 
+import ChatOptions
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad.IO.Unlift
@@ -33,7 +34,7 @@ cfg =
     { tcpPort = undefined, -- TODO maybe take it out of config
       tbqSize = 16,
       connIdBytes = 12,
-      dbFile = "smp-chat1.db",
+      dbFile = "smp-chat.db",
       smpCfg = smpDefaultConfig
     }
 
@@ -103,18 +104,19 @@ chatHelpInfo =
 
 main :: IO ()
 main = do
+  ChatOpts {dbFileName, smpServer} <- getChatOpts
   putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
-  runReaderT dogFoodChat =<< newSMPAgentEnv cfg
+  runReaderT (dogFoodChat smpServer) =<< newSMPAgentEnv cfg {dbFile = dbFileName}
 
-dogFoodChat :: (MonadUnliftIO m, MonadReader Env m) => m ()
-dogFoodChat = do
+dogFoodChat :: (MonadUnliftIO m, MonadReader Env m) => SMPServer -> m ()
+dogFoodChat srv = do
   c <- getSMPAgentClient
   t <- getChatClient
   raceAny_
     [ runSMPAgentClient c,
-      sendToAgent t c,
+      sendToAgent srv t c,
       sendToTTY stdout t,
       receiveFromAgent t c,
       receiveFromTTY stdin t
@@ -146,16 +148,16 @@ sendToTTY h ChatClient {outQ} = forever $ do
     NoChatResponse -> return ()
     resp -> liftIO . putLn h $ serializeChatResponse resp
 
-sendToAgent :: MonadUnliftIO m => ChatClient -> AgentClient -> m ()
-sendToAgent t c =
+sendToAgent :: MonadUnliftIO m => SMPServer -> ChatClient -> AgentClient -> m ()
+sendToAgent srv t c =
   forever . atomically $
     readTBQueue (inQ t) >>= mapM_ (writeTBQueue $ rcvQ c) . agentTransmission
   where
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
       ChatHelp -> Nothing
-      InviteContact (Contact a) -> Just ("1", a, NEW (SMPServer "localhost" (Just "5223") Nothing))
-      AcceptInvitation (Contact a) qInfo -> Just ("1", a, JOIN qInfo ReplyOn)
+      InviteContact (Contact a) -> Just ("1", a, NEW srv)
+      AcceptInvitation (Contact a) qInfo -> Just ("1", a, JOIN qInfo (ReplyVia srv))
       ChatWith (Contact a) -> Just ("1", a, SUB)
       SendMessage (Contact a) msg -> Just ("1", a, SEND msg)
 
