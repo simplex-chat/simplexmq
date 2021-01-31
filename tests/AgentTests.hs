@@ -53,16 +53,21 @@ action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right c
 
 -- | action and predicate for the response
 -- `h #:t =#> p` is the test that sends `t` to `h` and validates the response using `p`
-(=#>) :: IO (ATransmissionOrError 'Agent) -> (ATransmissionOrError 'Agent -> Bool) -> Expectation
-action =#> p = action >>= (`shouldSatisfy` p)
+(=#>) :: IO (ATransmissionOrError 'Agent) -> (ATransmission 'Agent -> Bool) -> Expectation
+action =#> p = action >>= (`shouldSatisfy` p . correctTransmission)
+
+correctTransmission :: ATransmissionOrError a -> ATransmission a
+correctTransmission (corrId, cAlias, cmdOrErr) = case cmdOrErr of
+  Right cmd -> (corrId, cAlias, cmd)
+  Left e -> error $ show e
 
 -- | receive message to handle `h` and validate that it is the expected one
 (<#) :: Handle -> ATransmission 'Agent -> Expectation
 h <# (corrId, cAlias, cmd) = tGet SAgent h `shouldReturn` (corrId, cAlias, Right cmd)
 
 -- | receive message to handle `h` and validate it using predicate `p`
-(<#=) :: Handle -> (ATransmissionOrError 'Agent -> Bool) -> Expectation
-h <#= p = tGet SAgent h >>= (`shouldSatisfy` p)
+(<#=) :: Handle -> (ATransmission 'Agent -> Bool) -> Expectation
+h <#= p = tGet SAgent h >>= (`shouldSatisfy` p . correctTransmission)
 
 -- | test that nothing is delivered to handle `h` during 10ms
 (#:#) :: Handle -> String -> Expectation
@@ -73,8 +78,8 @@ h #:# err = tryGet `shouldReturn` ()
         Just _ -> error err
         _ -> return ()
 
-pattern Msg :: MsgBody -> Either AgentErrorType (ACommand 'Agent)
-pattern Msg m_body <- Right MSG {m_body}
+pattern Msg :: MsgBody -> ACommand 'Agent
+pattern Msg m_body <- MSG {m_body}
 
 testDuplexConnection :: Handle -> Handle -> IO ()
 testDuplexConnection alice bob = do
@@ -82,13 +87,13 @@ testDuplexConnection alice bob = do
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
   alice <# ("", "bob", CON)
-  alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", OK)
-  alice #: ("3", "bob", "SEND :how are you?") #> ("3", "bob", OK)
+  alice #: ("2", "bob", "SEND :hello") =#> \case ("2", "bob", SENT _) -> True; _ -> False
+  alice #: ("3", "bob", "SEND :how are you?") =#> \case ("3", "bob", SENT _) -> True; _ -> False
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
-  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", OK)
+  bob #: ("14", "alice", "SEND 9\nhello too") =#> \case ("14", "alice", SENT _) -> True; _ -> False
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
-  bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", OK)
+  bob #: ("15", "alice", "SEND 9\nmessage 1") =#> \case ("15", "alice", SENT _) -> True; _ -> False
   alice <#= \case ("", "bob", Msg "message 1") -> True; _ -> False
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", ERR (SMP AUTH))
@@ -100,20 +105,20 @@ testSubscription alice1 alice2 bob = do
   ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW localhost:5000")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
-  bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", OK)
-  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", OK)
+  bob #: ("12", "alice", "SEND 5\nhello") =#> \case ("12", "alice", SENT _) -> True; _ -> False
+  bob #: ("13", "alice", "SEND 11\nhello again") =#> \case ("13", "alice", SENT _) -> True; _ -> False
   alice1 <# ("", "bob", CON)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
-  bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", OK)
+  bob #: ("14", "alice", "SEND 2\nhi") =#> \case ("14", "alice", SENT _) -> True; _ -> False
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
 
 testSubscrNotification :: (ThreadId, ThreadId) -> Handle -> IO ()
 testSubscrNotification (server, _) client = do
-  client #: ("1", "conn1", "NEW localhost:5000") =#> \case ("1", "conn1", Right (INV _)) -> True; _ -> False
+  client #: ("1", "conn1", "NEW localhost:5000") =#> \case ("1", "conn1", INV _) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
   client <# ("", "conn1", END)

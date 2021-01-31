@@ -1,3 +1,5 @@
 *.lock
 *.cabal
 smp-agent.db
+smp-chat.db
+smp-chat1.db

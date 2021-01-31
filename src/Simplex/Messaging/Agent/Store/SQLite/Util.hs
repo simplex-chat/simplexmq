@@ -80,15 +80,15 @@ withLock st tableLock f = do
     (f $ conn st)
 
 insertWithLock :: (MonadUnliftIO m, ToRow q) => SQLiteStore -> (SQLiteStore -> TMVar ()) -> DB.Query -> q -> m Int64
-insertWithLock st tableLock queryStr q = do
+insertWithLock st tableLock queryStr q =
   withLock st tableLock $ \c -> liftIO $ do
     DB.execute c queryStr q
     DB.lastInsertRowId c
 
 executeWithLock :: (MonadUnliftIO m, ToRow q) => SQLiteStore -> (SQLiteStore -> TMVar ()) -> DB.Query -> q -> m ()
-executeWithLock st tableLock queryStr q = do
-  withLock st tableLock $ \c -> liftIO $ do
-    DB.execute c queryStr q
+executeWithLock st tableLock queryStr q =
+  withLock st tableLock $ \c ->
+    liftIO $ DB.execute c queryStr q
 
 instance ToRow SMPServer where
   toRow SMPServer {host, port, keyHash} = toRow (host, port, keyHash)
