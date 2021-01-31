@@ -8,7 +8,12 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.Messaging.Agent (runSMPAgent) where
+module Simplex.Messaging.Agent
+  ( runSMPAgent,
+    getSMPAgentClient,
+    runSMPAgentClient,
+  )
+where
 
 import Control.Logger.Simple
 import Control.Monad.Except
@@ -38,19 +43,21 @@ import UnliftIO.IO
 import UnliftIO.STM
 
 runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m ()
-runSMPAgent cfg@AgentConfig {tcpPort} = do
-  env <- newEnv cfg
-  runReaderT smpAgent env
+runSMPAgent cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< newSMPAgentEnv cfg
   where
     smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpAgent = runTCPServer tcpPort $ \h -> do
       liftIO $ putLn h "Welcome to SMP v0.2.0 agent"
-      q <- asks $ tbqSize . config
-      n <- asks clientCounter
-      c <- atomically $ newAgentClient n q
+      c <- getSMPAgentClient
       logConnection c True
-      race_ (connectClient h c) (runClient c)
+      race_ (connectClient h c) (runSMPAgentClient c)
         `E.finally` (closeSMPServerClients c >> logConnection c False)
+
+getSMPAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
+getSMPAgentClient = do
+  q <- asks $ tbqSize . config
+  n <- asks clientCounter
+  atomically $ newAgentClient n q
 
 connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
@@ -60,8 +67,8 @@ logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
    in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
 
-runClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-runClient c = race_ (subscriber c) (client c)
+runSMPAgentClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+runSMPAgentClient c = race_ (subscriber c) (client c)
 
 receive :: forall m. MonadUnliftIO m => Handle -> AgentClient -> m ()
 receive h c@AgentClient {rcvQ, sndQ} = forever $ do
@@ -157,7 +164,8 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         sendMsg sq = do
           sendAgentMessage c sq $ A_MSG msgBody
           -- TODO respond $ SENT aMsgId
-          respond OK
+          -- TODO send message to DB
+          respond $ SENT 0
 
     suspendConnection :: m ()
     suspendConnection =
