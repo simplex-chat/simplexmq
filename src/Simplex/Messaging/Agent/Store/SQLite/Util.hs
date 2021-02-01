@@ -197,8 +197,8 @@ _insertSndConnectionQuery =
 
 retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Maybe SendQueue)
 retrieveConnQueues dbConn connAlias =
+  -- to avoid inconsistent state between queue reads
   DB.withTransaction dbConn $ do
-    -- to avoid inconsistent state between queue reads
     rcvQ <- _retrieveRcvQueue dbConn connAlias
     sndQ <- _retrieveSndQueue dbConn connAlias
     return (rcvQ, sndQ)
