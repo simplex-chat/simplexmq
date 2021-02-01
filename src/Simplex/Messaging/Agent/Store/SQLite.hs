@@ -29,52 +29,52 @@ import UnliftIO.STM
 
 data SQLiteStore = SQLiteStore
   { dbFilename :: String,
-    conn :: DB.Connection
+    dbConn :: DB.Connection
   }
 
 newSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 newSQLiteStore dbFilename = do
-  conn <- liftIO $ DB.open dbFilename
-  liftIO $ createSchema conn
+  dbConn <- liftIO $ DB.open dbFilename
+  liftIO $ createSchema dbConn
   return
     SQLiteStore
       { dbFilename,
-        conn
+        dbConn
       }
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   addServer :: SQLiteStore -> SMPServer -> m ()
-  addServer SQLiteStore {conn} smpServer =
+  addServer SQLiteStore {dbConn} smpServer =
     liftIO $
-      upsertServer conn smpServer
+      upsertServer dbConn smpServer
 
   createRcvConn :: SQLiteStore -> ReceiveQueue -> m ()
-  createRcvConn SQLiteStore {conn} rcvQueue =
+  createRcvConn SQLiteStore {dbConn} rcvQueue =
     liftIO $
       DB.withTransaction
-        conn
+        dbConn
         ( do
             -- TODO check for duplicate connAlias
-            upsertServer conn (server (rcvQueue :: ReceiveQueue))
-            insertRcvQueue conn rcvQueue
-            insertRcvConnection conn rcvQueue
+            upsertServer dbConn (server (rcvQueue :: ReceiveQueue))
+            insertRcvQueue dbConn rcvQueue
+            insertRcvConnection dbConn rcvQueue
         )
 
   createSndConn :: SQLiteStore -> SendQueue -> m ()
-  createSndConn SQLiteStore {conn} sndQueue =
+  createSndConn SQLiteStore {dbConn} sndQueue =
     liftIO $
       DB.withTransaction
-        conn
+        dbConn
         ( do
             -- TODO check for duplicate connAlias
-            upsertServer conn (server (sndQueue :: SendQueue))
-            insertSndQueue conn sndQueue
-            insertSndConnection conn sndQueue
+            upsertServer dbConn (server (sndQueue :: SendQueue))
+            insertSndQueue dbConn sndQueue
+            insertSndConnection dbConn sndQueue
         )
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
-  getConn SQLiteStore {conn} connAlias = do
-    queues <- liftIO (retrieveConnQueues conn connAlias)
+  getConn SQLiteStore {dbConn} connAlias = do
+    queues <- liftIO (retrieveConnQueues dbConn connAlias)
     case queues of
       (Just rq, Just sq) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rq sq)
       (Just rq, _) -> return $ SomeConn SCReceive (ReceiveConnection connAlias rq)
