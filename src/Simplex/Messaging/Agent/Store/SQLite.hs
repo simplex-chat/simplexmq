@@ -51,26 +51,12 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   createRcvConn :: SQLiteStore -> ReceiveQueue -> m ()
   createRcvConn SQLiteStore {dbConn} rcvQueue =
     liftIO $
-      DB.withTransaction
-        dbConn
-        ( do
-            -- TODO check for duplicate connAlias
-            upsertServer dbConn (server (rcvQueue :: ReceiveQueue))
-            insertRcvQueue dbConn rcvQueue
-            insertRcvConnection dbConn rcvQueue
-        )
+      createRcvQueueAndConn dbConn rcvQueue
 
   createSndConn :: SQLiteStore -> SendQueue -> m ()
   createSndConn SQLiteStore {dbConn} sndQueue =
     liftIO $
-      DB.withTransaction
-        dbConn
-        ( do
-            -- TODO check for duplicate connAlias
-            upsertServer dbConn (server (sndQueue :: SendQueue))
-            insertSndQueue dbConn sndQueue
-            insertSndConnection dbConn sndQueue
-        )
+      createSndQueueAndConn dbConn sndQueue
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
   getConn SQLiteStore {dbConn} connAlias = do

@@ -86,6 +86,20 @@ fromFieldToReadable = \case
 
 -- instance ToField QueueDirection where toField = toField . show
 
+createRcvQueueAndConn :: DB.Connection -> ReceiveQueue -> IO ()
+createRcvQueueAndConn dbConn rcvQueue =
+  DB.withTransaction dbConn $ do
+    upsertServer dbConn (server (rcvQueue :: ReceiveQueue))
+    _insertRcvQueue dbConn rcvQueue
+    _insertRcvConnection dbConn rcvQueue
+
+createSndQueueAndConn :: DB.Connection -> SendQueue -> IO ()
+createSndQueueAndConn dbConn sndQueue =
+  DB.withTransaction dbConn $ do
+    upsertServer dbConn (server (sndQueue :: SendQueue))
+    _insertSndQueue dbConn sndQueue
+    _insertSndConnection dbConn sndQueue
+
 upsertServer :: DB.Connection -> SMPServer -> IO ()
 upsertServer dbConn SMPServer {host, port, keyHash} = do
   let _port = _convertPortOnWrite port
@@ -113,8 +127,8 @@ _upsertServerQuery =
       key_hash=excluded.key_hash;
   |]
 
-insertRcvQueue :: DB.Connection -> ReceiveQueue -> IO ()
-insertRcvQueue dbConn ReceiveQueue {..} = do
+_insertRcvQueue :: DB.Connection -> ReceiveQueue -> IO ()
+_insertRcvQueue dbConn ReceiveQueue {..} = do
   let _port = _convertPortOnWrite $ port server
   DB.executeNamed
     dbConn
@@ -130,8 +144,8 @@ _insertRcvQueueQuery =
       (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status);
   |]
 
-insertRcvConnection :: DB.Connection -> ReceiveQueue -> IO ()
-insertRcvConnection dbConn ReceiveQueue {server, rcvId, connAlias} = do
+_insertRcvConnection :: DB.Connection -> ReceiveQueue -> IO ()
+_insertRcvConnection dbConn ReceiveQueue {server, rcvId, connAlias} = do
   let _port = _convertPortOnWrite $ port server
   DB.executeNamed
     dbConn
@@ -147,8 +161,8 @@ _insertRcvConnectionQuery =
       (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL);
   |]
 
-insertSndQueue :: DB.Connection -> SendQueue -> IO ()
-insertSndQueue dbConn SendQueue {..} = do
+_insertSndQueue :: DB.Connection -> SendQueue -> IO ()
+_insertSndQueue dbConn SendQueue {..} = do
   let _port = _convertPortOnWrite $ port server
   DB.executeNamed
     dbConn
@@ -164,8 +178,8 @@ _insertSndQueueQuery =
       (:host,:port,:snd_id,:conn_alias,:snd_private_key,:encrypt_key,:sign_key,:status);
   |]
 
-insertSndConnection :: DB.Connection -> SendQueue -> IO ()
-insertSndConnection dbConn SendQueue {server, sndId, connAlias} = do
+_insertSndConnection :: DB.Connection -> SendQueue -> IO ()
+_insertSndConnection dbConn SendQueue {server, sndId, connAlias} = do
   let _port = _convertPortOnWrite $ port server
   DB.executeNamed
     dbConn
@@ -183,13 +197,14 @@ _insertSndConnectionQuery =
 
 retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Maybe SendQueue)
 retrieveConnQueues dbConn connAlias =
-  DB.withTransaction dbConn $ do -- to avoid inconsistent state between queue reads
-    rcvQ <- retrieveRcvQueue dbConn connAlias
-    sndQ <- retrieveSndQueue dbConn connAlias
+  DB.withTransaction dbConn $ do
+    -- to avoid inconsistent state between queue reads
+    rcvQ <- _retrieveRcvQueue dbConn connAlias
+    sndQ <- _retrieveSndQueue dbConn connAlias
     return (rcvQ, sndQ)
 
-retrieveRcvQueue :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue)
-retrieveRcvQueue dbConn connAlias = do
+_retrieveRcvQueue :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue)
+_retrieveRcvQueue dbConn connAlias = do
   r <-
     DB.queryNamed
       dbConn
@@ -212,8 +227,8 @@ _retrieveRcvQueueQuery =
     WHERE q.conn_alias = :conn_alias;
   |]
 
-retrieveSndQueue :: DB.Connection -> ConnAlias -> IO (Maybe SendQueue)
-retrieveSndQueue dbConn connAlias = do
+_retrieveSndQueue :: DB.Connection -> ConnAlias -> IO (Maybe SendQueue)
+_retrieveSndQueue dbConn connAlias = do
   r <-
     DB.queryNamed
       dbConn
