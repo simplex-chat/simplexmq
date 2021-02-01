@@ -89,19 +89,19 @@ fromFieldToReadable = \case
 createRcvQueueAndConn :: DB.Connection -> ReceiveQueue -> IO ()
 createRcvQueueAndConn dbConn rcvQueue =
   DB.withTransaction dbConn $ do
-    upsertServer dbConn (server (rcvQueue :: ReceiveQueue))
+    _upsertServer dbConn (server (rcvQueue :: ReceiveQueue))
     _insertRcvQueue dbConn rcvQueue
     _insertRcvConnection dbConn rcvQueue
 
 createSndQueueAndConn :: DB.Connection -> SendQueue -> IO ()
 createSndQueueAndConn dbConn sndQueue =
   DB.withTransaction dbConn $ do
-    upsertServer dbConn (server (sndQueue :: SendQueue))
+    _upsertServer dbConn (server (sndQueue :: SendQueue))
     _insertSndQueue dbConn sndQueue
     _insertSndConnection dbConn sndQueue
 
-upsertServer :: DB.Connection -> SMPServer -> IO ()
-upsertServer dbConn SMPServer {host, port, keyHash} = do
+_upsertServer :: DB.Connection -> SMPServer -> IO ()
+_upsertServer dbConn SMPServer {host, port, keyHash} = do
   let _port = _convertPortOnWrite port
   DB.executeNamed
     dbConn

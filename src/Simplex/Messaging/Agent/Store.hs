@@ -91,7 +91,6 @@ data DeliveryStatus
   | MDAcknowledged AckStatus -- SAMP: RCVD sent to agent client / ACK received from agent client and sent to the server
 
 class Monad m => MonadAgentStore s m where
-  addServer :: s -> SMPServer -> m ()
   createRcvConn :: s -> ReceiveQueue -> m ()
   createSndConn :: s -> SendQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
