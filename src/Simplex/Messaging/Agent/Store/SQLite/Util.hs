@@ -44,6 +44,17 @@ import UnliftIO.STM
 
 instance ToField QueueStatus where toField = toField . show
 
+instance FromField QueueStatus where fromField = fromFieldToReadable
+
+fromFieldToReadable :: forall a. (Read a, E.Typeable a) => Field -> Ok a
+fromFieldToReadable = \case
+  f@(Field (SQLText t) _) ->
+    let str = T.unpack t
+     in case readMaybe str of
+          Just x -> Ok x
+          _ -> returnError ConversionFailed f ("invalid string: " <> str)
+  f -> returnError ConversionFailed f "expecting SQLText column type"
+
 -- instance ToRow SMPServer where
 --   toRow SMPServer {host, port, keyHash} = toRow (host, port, keyHash)
 
@@ -55,8 +66,6 @@ instance ToField QueueStatus where toField = toField . show
 -- instance FromField AckMode where fromField = AckMode <$$> fromFieldToReadable
 
 -- instance ToField QueueStatus where toField = toField . show
-
--- instance FromField QueueStatus where fromField = fromFieldToReadable
 
 -- instance ToRow ReceiveQueue where
 --   toRow ReceiveQueue {rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status} =
@@ -77,47 +86,22 @@ instance ToField QueueStatus where toField = toField . show
 
 -- instance ToField QueueDirection where toField = toField . show
 
--- fromFieldToReadable :: forall a. (Read a, E.Typeable a) => Field -> Ok a
--- fromFieldToReadable = \case
---   f@(Field (SQLText t) _) ->
---     let str = T.unpack t
---      in case readMaybe str of
---           Just x -> Ok x
---           _ -> returnError ConversionFailed f ("invalid string: " <> str)
---   f -> returnError ConversionFailed f "expecting SQLText column type"
-
--- TODO delete locks
-
--- withLock :: MonadUnliftIO m => SQLiteStore -> (SQLiteStore -> TMVar ()) -> (DB.Connection -> m a) -> m a
--- withLock st tableLock f = do
---   let lock = tableLock st
---   E.bracket_
---     (atomically $ takeTMVar lock)
---     (atomically $ putTMVar lock ())
---     (f $ conn st)
-
--- insertWithLock :: (MonadUnliftIO m, ToRow q) => SQLiteStore -> (SQLiteStore -> TMVar ()) -> DB.Query -> q -> m Int64
--- insertWithLock st tableLock queryStr q = do
---   withLock st tableLock $ \c -> liftIO $ do
---     DB.execute c queryStr q
---     DB.lastInsertRowId c
-
--- executeWithLock :: (MonadUnliftIO m, ToRow q) => SQLiteStore -> (SQLiteStore -> TMVar ()) -> DB.Query -> q -> m ()
--- executeWithLock st tableLock queryStr q = do
---   withLock st tableLock $ \c -> liftIO $ do
---     DB.execute c queryStr q
-
 upsertServer :: DB.Connection -> SMPServer -> IO ()
-upsertServer conn SMPServer {host, port, keyHash} = do
+upsertServer dbConn SMPServer {host, port, keyHash} = do
   let _port = _convertPortOnWrite port
   DB.executeNamed
-    conn
+    dbConn
     _upsertServerQuery
     [":host" := host, ":port" := _port, ":key_hash" := keyHash]
 
 -- TODO replace with ToField - it's easy to forget to use this
 _convertPortOnWrite :: Maybe ServiceName -> ServiceName
 _convertPortOnWrite = fromMaybe "_"
+
+_convertPortOnRead :: ServiceName -> Maybe ServiceName
+_convertPortOnRead port
+  | port == "_" = Nothing
+  | otherwise = Just port
 
 _upsertServerQuery :: Query
 _upsertServerQuery =
@@ -130,10 +114,10 @@ _upsertServerQuery =
   |]
 
 insertRcvQueue :: DB.Connection -> ReceiveQueue -> IO ()
-insertRcvQueue conn ReceiveQueue {..} = do
+insertRcvQueue dbConn ReceiveQueue {..} = do
   let _port = _convertPortOnWrite $ port server
   DB.executeNamed
-    conn
+    dbConn
     _insertRcvQueueQuery
     [":host" := host server, ":port" := _port, ":rcv_id" := rcvId, ":conn_alias" := connAlias, ":rcv_private_key" := rcvPrivateKey, ":snd_id" := sndId, ":snd_key" := sndKey, ":decrypt_key" := decryptKey, ":verify_key" := verifyKey, ":status" := status]
 
@@ -147,10 +131,10 @@ _insertRcvQueueQuery =
   |]
 
 insertRcvConnection :: DB.Connection -> ReceiveQueue -> IO ()
-insertRcvConnection conn ReceiveQueue {server, rcvId, connAlias} = do
+insertRcvConnection dbConn ReceiveQueue {server, rcvId, connAlias} = do
   let _port = _convertPortOnWrite $ port server
   DB.executeNamed
-    conn
+    dbConn
     _insertRcvConnectionQuery
     [":conn_alias" := connAlias, ":rcv_host" := host server, ":rcv_port" := _port, ":rcv_id" := rcvId]
 
@@ -164,10 +148,10 @@ _insertRcvConnectionQuery =
   |]
 
 insertSndQueue :: DB.Connection -> SendQueue -> IO ()
-insertSndQueue conn SendQueue {..} = do
+insertSndQueue dbConn SendQueue {..} = do
   let _port = _convertPortOnWrite $ port server
   DB.executeNamed
-    conn
+    dbConn
     _insertSndQueueQuery
     [":host" := host server, ":port" := _port, ":snd_id" := sndId, ":conn_alias" := connAlias, ":snd_private_key" := sndPrivateKey, ":encrypt_key" := encryptKey, ":sign_key" := signKey, ":status" := status]
 
@@ -181,10 +165,10 @@ _insertSndQueueQuery =
   |]
 
 insertSndConnection :: DB.Connection -> SendQueue -> IO ()
-insertSndConnection conn SendQueue {server, sndId, connAlias} = do
+insertSndConnection dbConn SendQueue {server, sndId, connAlias} = do
   let _port = _convertPortOnWrite $ port server
   DB.executeNamed
-    conn
+    dbConn
     _insertSndConnectionQuery
     [":conn_alias" := connAlias, ":snd_host" := host server, ":snd_port" := _port, ":snd_id" := sndId]
 
@@ -197,35 +181,84 @@ _insertSndConnectionQuery =
       (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id);
   |]
 
--- getServer :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> SMPServerId -> m SMPServer
--- getServer SQLiteStore {conn} serverId = do
---   r <-
---     liftIO $
---       DB.queryNamed
---         conn
---         "SELECT host, port, key_hash FROM servers WHERE server_id = :server_id"
---         [":server_id" := serverId]
---   case r of
---     [smpServer] -> return smpServer
---     _ -> throwError SENotFound
+retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Maybe SendQueue)
+retrieveConnQueues dbConn connAlias =
+  DB.withTransaction dbConn $ do -- to avoid inconsistent state between queue reads
+    rcvQ <- retrieveRcvQueue dbConn connAlias
+    sndQ <- retrieveSndQueue dbConn connAlias
+    return (rcvQ, sndQ)
 
--- -- TODO refactor into a single query with join
--- getRcvQueue :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> QueueRowId -> m ReceiveQueue
--- getRcvQueue st@SQLiteStore {conn} queueRowId = do
---   r <-
---     liftIO $
---       DB.queryNamed
---         conn
---         [sql|
---         SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
---           FROM receive_queues
---           WHERE receive_queue_id = :rowId;
---         |]
---         [":rowId" := queueRowId]
---   case r of
---     [Only serverId :. rcvQueue] ->
---       (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$> getServer st serverId
---     _ -> throwError SENotFound
+retrieveRcvQueue :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue)
+retrieveRcvQueue dbConn connAlias = do
+  r <-
+    DB.queryNamed
+      dbConn
+      _retrieveRcvQueueQuery
+      [":conn_alias" := connAlias]
+  case r of
+    [(keyHash, host, port, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
+      let srv = SMPServer host (_convertPortOnRead port) keyHash
+      return . Just $ ReceiveQueue srv rcvId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
+    _ -> return Nothing
+
+_retrieveRcvQueueQuery :: Query
+_retrieveRcvQueueQuery =
+  [sql|
+    SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status)
+    FROM rcv_queues q
+    INNER JOIN servers s
+      ON q.host = s.host
+      AND q.port = s.port
+    WHERE q.conn_alias = :conn_alias;
+  |]
+
+retrieveSndQueue :: DB.Connection -> ConnAlias -> IO (Maybe SendQueue)
+retrieveSndQueue dbConn connAlias = do
+  r <-
+    DB.queryNamed
+      dbConn
+      _retrieveSndQueueQuery
+      [":conn_alias" := connAlias]
+  case r of
+    [(keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] -> do
+      let srv = SMPServer host (_convertPortOnRead port) keyHash
+      return . Just $ SendQueue srv sndId connAlias sndPrivateKey encryptKey signKey status
+    _ -> return Nothing
+
+_retrieveSndQueueQuery :: Query
+_retrieveSndQueueQuery =
+  [sql|
+    SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.encrypt_key, q.sign_key, q.status)
+    FROM snd_queues q
+    INNER JOIN servers s
+      ON q.host = s.host
+      AND q.port = s.port
+    WHERE q.conn_alias = :conn_alias;
+  |]
+
+-- updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
+-- updateRcvConnectionWithSndQueue store connAlias sndQueueId =
+--   executeWithLock
+--     store
+--     connectionsLock
+--     [sql|
+--       UPDATE connections
+--       SET send_queue_id = ?
+--       WHERE conn_alias = ?;
+--     |]
+--     (Only sndQueueId :. Only connAlias)
+
+-- updateSndConnectionWithRcvQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
+-- updateSndConnectionWithRcvQueue store connAlias rcvQueueId =
+--   executeWithLock
+--     store
+--     connectionsLock
+--     [sql|
+--       UPDATE connections
+--       SET receive_queue_id = ?
+--       WHERE conn_alias = ?;
+--     |]
+--     (Only rcvQueueId :. Only connAlias)
 
 -- getRcvQueueByRecipientId :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> m ReceiveQueue
 -- getRcvQueueByRecipientId st@SQLiteStore {conn} rcvId host port = do
@@ -247,90 +280,6 @@ _insertSndConnectionQuery =
 --     [Only serverId :. rcvQueue] ->
 --       (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$> getServer st serverId
 --     _ -> throwError SENotFound
-
--- -- TODO refactor into a single query with join
--- getSndQueue :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> QueueRowId -> m SendQueue
--- getSndQueue st@SQLiteStore {conn} queueRowId = do
---   r <-
---     liftIO $
---       DB.queryNamed
---         conn
---         [sql|
---         SELECT server_id, snd_id, snd_private_key, encrypt_key, sign_key, status, ack_mode
---         FROM send_queues
---         WHERE send_queue_id = :rowId;
---       |]
---         [":rowId" := queueRowId]
---   case r of
---     [Only serverId :. sndQueue] ->
---       (\srv -> (sndQueue {server = srv} :: SendQueue)) <$> getServer st serverId
---     _ -> throwError SENotFound
-
--- addRcvQueueQuery :: Query
--- addRcvQueueQuery =
---   [sql|
---     INSERT INTO receive_queues
---       ( server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode)
---     VALUES
---       (:server_id,:rcv_id,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status,:ack_mode);
---   |]
-
--- updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
--- updateRcvConnectionWithSndQueue store connAlias sndQueueId =
---   executeWithLock
---     store
---     connectionsLock
---     [sql|
---       UPDATE connections
---       SET send_queue_id = ?
---       WHERE conn_alias = ?;
---     |]
---     (Only sndQueueId :. Only connAlias)
-
--- insertSndQueue :: MonadUnliftIO m => SQLiteStore -> SMPServerId -> SendQueue -> m QueueRowId
--- insertSndQueue store serverId sndQueue =
---   insertWithLock
---     store
---     sndQueuesLock
---     [sql|
---       INSERT INTO send_queues
---         ( server_id, snd_id, snd_private_key, encrypt_key, sign_key, status, ack_mode)
---       VALUES (?,?,?,?,?,?,?);
---     |]
---     (Only serverId :. sndQueue)
-
--- insertSndConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
--- insertSndConnection store connAlias sndQueueId =
---   void $
---     insertWithLock
---       store
---       connectionsLock
---       "INSERT INTO connections (conn_alias, receive_queue_id, send_queue_id) VALUES (?,NULL,?);"
---       (Only connAlias :. Only sndQueueId)
-
--- updateSndConnectionWithRcvQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
--- updateSndConnectionWithRcvQueue store connAlias rcvQueueId =
---   executeWithLock
---     store
---     connectionsLock
---     [sql|
---       UPDATE connections
---       SET receive_queue_id = ?
---       WHERE conn_alias = ?;
---     |]
---     (Only rcvQueueId :. Only connAlias)
-
--- getConnection :: (MonadError StoreError m, MonadUnliftIO m) => SQLiteStore -> ConnAlias -> m (Maybe QueueRowId, Maybe QueueRowId)
--- getConnection SQLiteStore {conn} connAlias = do
---   r <-
---     liftIO $
---       DB.queryNamed
---         conn
---         "SELECT receive_queue_id, send_queue_id FROM connections WHERE conn_alias = :conn_alias"
---         [":conn_alias" := connAlias]
---   case r of
---     [queueIds] -> return queueIds
---     _ -> throwError SEInternal
 
 -- getConnAliasByRcvQueue :: (MonadError StoreError m, MonadUnliftIO m) => SQLiteStore -> RecipientId -> m ConnAlias
 -- getConnAliasByRcvQueue SQLiteStore {conn} rcvId = do

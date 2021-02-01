@@ -72,21 +72,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             insertSndConnection conn sndQueue
         )
 
--- -- TODO refactor ito a single query with join, and parse as `Only connAlias :. rcvQueue :. sndQueue`
--- getConn :: SQLiteStore -> ConnAlias -> m SomeConn
--- getConn st connAlias =
---   getConnection st connAlias >>= \case
---     (Just rcvQId, Just sndQId) -> do
---       rcvQ <- getRcvQueue st rcvQId
---       sndQ <- getSndQueue st sndQId
---       return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
---     (Just rcvQId, _) -> do
---       rcvQ <- getRcvQueue st rcvQId
---       return $ SomeConn SCReceive (ReceiveConnection connAlias rcvQ)
---     (_, Just sndQId) -> do
---       sndQ <- getSndQueue st sndQId
---       return $ SomeConn SCSend (SendConnection connAlias sndQ)
---     _ -> throwError SEBadConn
+  getConn :: SQLiteStore -> ConnAlias -> m SomeConn
+  getConn SQLiteStore {conn} connAlias = do
+    queues <- liftIO (retrieveConnQueues conn connAlias)
+    case queues of
+      (Just rq, Just sq) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rq sq)
+      (Just rq, _) -> return $ SomeConn SCReceive (ReceiveConnection connAlias rq)
+      (_, Just sq) -> return $ SomeConn SCSend (SendConnection connAlias sq)
+      _ -> throwError SEBadConn
 
 -- getReceiveQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m (ConnAlias, ReceiveQueue)
 -- getReceiveQueue st SMPServer {host, port} recipientId = do
