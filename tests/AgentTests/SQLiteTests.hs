@@ -45,8 +45,8 @@ storeTests = withStore do
   describe "store methods" do
     describe "createRcvConn" testCreateRcvConn
     describe "createSndConn" testCreateSndConn
-    describe "addSndQueue" testAddSndQueue
-    describe "addRcvQueue" testAddRcvQueue
+    describe "upgradeConnWithSndQueue" testUpgradeConnWithSndQueue
+    describe "upgradeConnWithRcvQueue" testUpgradeConnWithRcvQueue
     describe "deleteConn" do
       describe "Receive connection" testDeleteConnReceive
       describe "Send connection" testDeleteConnSend
@@ -95,7 +95,7 @@ testCreateRcvConn = do
               status = New,
               ackMode = AckMode On
             }
-    addSndQueue store "conn1" sndQueue
+    upgradeConnWithSndQueue store "conn1" sndQueue
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
@@ -129,13 +129,13 @@ testCreateSndConn = do
               status = New,
               ackMode = AckMode On
             }
-    addRcvQueue store "conn1" rcvQueue
+    upgradeConnWithRcvQueue store "conn1" rcvQueue
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
 
-testAddSndQueue :: SpecWith SQLiteStore
-testAddSndQueue = do
+testUpgradeConnWithSndQueue :: SpecWith SQLiteStore
+testUpgradeConnWithSndQueue = do
   it "should throw error on attempts to add send queue to SendConnection or DuplexConnection" $ \store -> do
     let sndQueue =
           SendQueue
@@ -159,7 +159,7 @@ testAddSndQueue = do
               status = New,
               ackMode = AckMode On
             }
-    addSndQueue store "conn1" anotherSndQueue
+    upgradeConnWithSndQueue store "conn1" anotherSndQueue
       `throwsError` SEBadConnType CSend
     let rcvQueue =
           ReceiveQueue
@@ -173,13 +173,13 @@ testAddSndQueue = do
               status = New,
               ackMode = AckMode On
             }
-    addRcvQueue store "conn1" rcvQueue
+    upgradeConnWithRcvQueue store "conn1" rcvQueue
       `returnsResult` ()
-    addSndQueue store "conn1" anotherSndQueue
+    upgradeConnWithSndQueue store "conn1" anotherSndQueue
       `throwsError` SEBadConnType CDuplex
 
-testAddRcvQueue :: SpecWith SQLiteStore
-testAddRcvQueue = do
+testUpgradeConnWithRcvQueue :: SpecWith SQLiteStore
+testUpgradeConnWithRcvQueue = do
   it "should throw error on attempts to add receive queue to ReceiveConnection or DuplexConnection" $ \store -> do
     let rcvQueue =
           ReceiveQueue
@@ -207,7 +207,7 @@ testAddRcvQueue = do
               status = New,
               ackMode = AckMode On
             }
-    addRcvQueue store "conn1" anotherRcvQueue
+    upgradeConnWithRcvQueue store "conn1" anotherRcvQueue
       `throwsError` SEBadConnType CReceive
     let sndQueue =
           SendQueue
@@ -219,9 +219,9 @@ testAddRcvQueue = do
               status = New,
               ackMode = AckMode On
             }
-    addSndQueue store "conn1" sndQueue
+    upgradeConnWithSndQueue store "conn1" sndQueue
       `returnsResult` ()
-    addRcvQueue store "conn1" anotherRcvQueue
+    upgradeConnWithRcvQueue store "conn1" anotherRcvQueue
       `throwsError` SEBadConnType CDuplex
 
 testDeleteConnReceive :: SpecWith SQLiteStore
@@ -297,7 +297,7 @@ testDeleteConnDuplex = do
               status = New,
               ackMode = AckMode On
             }
-    addSndQueue store "conn1" sndQueue
+    upgradeConnWithSndQueue store "conn1" sndQueue
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
@@ -379,7 +379,7 @@ testUpdateQueueStatusConnDuplex = do
               status = New,
               ackMode = AckMode On
             }
-    addSndQueue store "conn1" sndQueue
+    upgradeConnWithSndQueue store "conn1" sndQueue
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
@@ -563,8 +563,8 @@ testCreateMsgBadDirectionRcv = do
     createMsg store "conn1" RCV msgId msg
       `throwsError` SEBadQueueDirection
 
-testGetRcvQueue :: SpecWith SQLiteStore
-testGetRcvQueue = do
+testGetRcvQueueByRcvId :: SpecWith SQLiteStore
+testGetRcvQueueByRcvId = do
   it "should get receive queue and conn alias" $ \store -> do
     let smpServer = SMPServer "smp.simplex.im" (Just "5223") (Just "1234")
     let cAlias = "conn1"
@@ -583,5 +583,5 @@ testGetRcvQueue = do
             }
     createRcvConn store cAlias rcvQueue
       `returnsResult` ()
-    getRcvQueue store smpServer recipientId
+    getRcvQueueByRcvId store smpServer recipientId
       `returnsResult` (cAlias, rcvQueue)

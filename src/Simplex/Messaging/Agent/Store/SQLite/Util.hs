@@ -290,29 +290,67 @@ deleteConnCascade dbConn connAlias =
     "DELETE FROM connections WHERE conn_alias = :conn_alias;"
     [":conn_alias" := connAlias]
 
--- updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
--- updateRcvConnectionWithSndQueue store connAlias sndQueueId =
---   executeWithLock
---     store
---     connectionsLock
---     [sql|
---       UPDATE connections
---       SET send_queue_id = ?
---       WHERE conn_alias = ?;
---     |]
---     (Only sndQueueId :. Only connAlias)
+-- ? rewrite with ExceptT?
+updateRcvConnWithSndQueue :: DB.Connection -> ConnAlias -> SendQueue -> IO (Either StoreError ())
+updateRcvConnWithSndQueue dbConn connAlias sndQueue =
+  DB.withTransaction dbConn $ do
+    queues <- retrieveConnQueues dbConn connAlias
+    case queues of
+      (Just _rcvQ, Nothing) -> do
+        _upsertServer dbConn (server (sndQueue :: SendQueue))
+        _insertSndQueue dbConn sndQueue
+        _updateConnWithSndQueue dbConn connAlias sndQueue
+        return $ Right ()
+      (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSend)
+      (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
+      _ -> return $ Left SEBadConn
 
--- updateSndConnectionWithRcvQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
--- updateSndConnectionWithRcvQueue store connAlias rcvQueueId =
---   executeWithLock
---     store
---     connectionsLock
---     [sql|
---       UPDATE connections
---       SET receive_queue_id = ?
---       WHERE conn_alias = ?;
---     |]
---     (Only rcvQueueId :. Only connAlias)
+_updateConnWithSndQueue :: DB.Connection -> ConnAlias -> SendQueue -> IO ()
+_updateConnWithSndQueue dbConn connAlias SendQueue {server, sndId} = do
+  let _port = _serializePort $ port server
+  DB.executeNamed
+    dbConn
+    _updateConnWithSndQueueQuery
+    [":snd_host" := host server, ":snd_port" := _port, ":snd_id" := sndId, ":conn_alias" := connAlias]
+
+_updateConnWithSndQueueQuery :: Query
+_updateConnWithSndQueueQuery =
+  [sql|
+    UPDATE connections
+    SET snd_host = :snd_host, snd_port = :snd_port, snd_id = :snd_id
+    WHERE conn_alias = :conn_alias;
+  |]
+
+-- ? rewrite with ExceptT?
+updateSndConnWithRcvQueue :: DB.Connection -> ConnAlias -> ReceiveQueue -> IO (Either StoreError ())
+updateSndConnWithRcvQueue dbConn connAlias rcvQueue =
+  DB.withTransaction dbConn $ do
+    queues <- retrieveConnQueues dbConn connAlias
+    case queues of
+      (Nothing, Just _sndQ) -> do
+        _upsertServer dbConn (server (rcvQueue :: ReceiveQueue))
+        _insertRcvQueue dbConn rcvQueue
+        _updateConnWithRcvQueue dbConn connAlias rcvQueue
+        return $ Right ()
+      (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CReceive)
+      (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
+      _ -> return $ Left SEBadConn
+
+_updateConnWithRcvQueue :: DB.Connection -> ConnAlias -> ReceiveQueue -> IO ()
+_updateConnWithRcvQueue dbConn connAlias ReceiveQueue {server, rcvId} = do
+  let _port = _serializePort $ port server
+  DB.executeNamed
+    dbConn
+    _updateConnWithRcvQueueQuery
+    [":rcv_host" := host server, ":rcv_port" := _port, ":rcv_id" := rcvId, ":conn_alias" := connAlias]
+
+_updateConnWithRcvQueueQuery :: Query
+_updateConnWithRcvQueueQuery =
+  [sql|
+    UPDATE connections
+    SET rcv_host = :rcv_host, rcv_port = :rcv_port, rcv_id = :rcv_id
+    WHERE conn_alias = :conn_alias;
+  |]
 
 -- updateReceiveQueueStatus :: MonadUnliftIO m => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
 -- updateReceiveQueueStatus store rcvQueueId host port status =

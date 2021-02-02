@@ -244,7 +244,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
               logServer "<--" c srv rId "MSG <REPLY>"
               -- TODO move senderKey inside SendQueue
               (sq, senderKey) <- newSendQueue qInfo
-              withStore $ \st -> addSndQueue st connAlias sq
+              withStore $ \st -> upgradeConnWithSndQueue st connAlias sq
               connectToSendQueue c sq senderKey
               notify connAlias CON
               sendAck c rq

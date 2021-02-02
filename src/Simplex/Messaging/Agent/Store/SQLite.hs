@@ -60,8 +60,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         retrieveConnQueues dbConn connAlias
     case queues of
       (Just rcvQ, Just sndQ) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
-      (Just rcvQ, _) -> return $ SomeConn SCReceive (ReceiveConnection connAlias rcvQ)
-      (_, Just sndQ) -> return $ SomeConn SCSend (SendConnection connAlias sndQ)
+      (Just rcvQ, Nothing) -> return $ SomeConn SCReceive (ReceiveConnection connAlias rcvQ)
+      (Nothing, Just sndQ) -> return $ SomeConn SCSend (SendConnection connAlias sndQ)
       _ -> throwError SEBadConn
 
   getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
@@ -78,29 +78,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       deleteConnCascade dbConn connAlias
 
--- -- TODO make transactional
--- addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
--- addSndQueue st connAlias sndQueue =
---   getConn st connAlias
---     >>= \case
---       SomeConn SCDuplex _ -> throwError (SEBadConnType CDuplex)
---       SomeConn SCSend _ -> throwError (SEBadConnType CSend)
---       SomeConn SCReceive _ -> do
---         srvId <- upsertServer st (server (sndQueue :: SendQueue))
---         sndQ <- insertSndQueue st srvId sndQueue
---         updateRcvConnectionWithSndQueue st connAlias sndQ
+  upgradeConnWithSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
+  upgradeConnWithSndQueue SQLiteStore {dbConn} connAlias sndQueue =
+    liftIO (updateRcvConnWithSndQueue dbConn connAlias sndQueue) >>= \case
+      Right () -> return ()
+      Left e -> throwError e
 
--- -- TODO make transactional
--- addRcvQueue :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
--- addRcvQueue st connAlias rcvQueue =
---   getConn st connAlias
---     >>= \case
---       SomeConn SCDuplex _ -> throwError (SEBadConnType CDuplex)
---       SomeConn SCReceive _ -> throwError (SEBadConnType CReceive)
---       SomeConn SCSend _ -> do
---         srvId <- upsertServer st (server (rcvQueue :: ReceiveQueue))
---         rcvQ <- insertRcvQueue st srvId rcvQueue
---         updateSndConnectionWithRcvQueue st connAlias rcvQ
+  upgradeConnWithRcvQueue :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
+  upgradeConnWithRcvQueue SQLiteStore {dbConn} connAlias rcvQueue =
+    liftIO (updateSndConnWithRcvQueue dbConn connAlias rcvQueue) >>= \case
+      Right () -> return ()
+      Left e -> throwError e
 
 -- removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
 -- removeSndAuth _st _connAlias = throwError SENotImplemented
