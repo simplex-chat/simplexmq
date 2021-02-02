@@ -290,30 +290,6 @@ deleteConnCascade dbConn connAlias =
     "DELETE FROM connections WHERE conn_alias = :conn_alias;"
     [":conn_alias" := connAlias]
 
--- deleteRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m ()
--- deleteRcvQueue store rcvQueueId = do
---   executeWithLock
---     store
---     rcvQueuesLock
---     "DELETE FROM receive_queues WHERE receive_queue_id = ?"
---     (Only rcvQueueId)
-
--- deleteSndQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m ()
--- deleteSndQueue store sndQueueId = do
---   executeWithLock
---     store
---     sndQueuesLock
---     "DELETE FROM send_queues WHERE send_queue_id = ?"
---     (Only sndQueueId)
-
--- deleteConnection :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> m ()
--- deleteConnection store connAlias = do
---   executeWithLock
---     store
---     connectionsLock
---     "DELETE FROM connections WHERE conn_alias = ?"
---     (Only connAlias)
-
 -- updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
 -- updateRcvConnectionWithSndQueue store connAlias sndQueueId =
 --   executeWithLock
