@@ -42,6 +42,15 @@ import Text.Read
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
+-- TODO replace with ToField - it's easy to forget to use this
+_serializePort :: Maybe ServiceName -> ServiceName
+_serializePort = fromMaybe "_"
+
+_deserializePort :: ServiceName -> Maybe ServiceName
+_deserializePort port
+  | port == "_" = Nothing
+  | otherwise = Just port
+
 instance ToField QueueStatus where toField = toField . show
 
 instance FromField QueueStatus where fromField = fromFieldToReadable
@@ -54,6 +63,17 @@ fromFieldToReadable = \case
           Just x -> Ok x
           _ -> returnError ConversionFailed f ("invalid string: " <> str)
   f -> returnError ConversionFailed f "expecting SQLText column type"
+
+{- ORMOLU_DISABLE -}
+-- SQLite.Simple only has these up to 10 fields, which is insufficient for some of our queries
+instance (FromField a, FromField b, FromField c, FromField d, FromField e,
+          FromField f, FromField g, FromField h, FromField i, FromField j,
+          FromField k) =>
+  FromRow (a,b,c,d,e,f,g,h,i,j,k) where
+  fromRow = (,,,,,,,,,,) <$> field <*> field <*> field <*> field <*> field
+                         <*> field <*> field <*> field <*> field <*> field
+                         <*> field
+{- ORMOLU_ENABLE -}
 
 -- instance ToRow SMPServer where
 --   toRow SMPServer {host, port, keyHash} = toRow (host, port, keyHash)
@@ -102,20 +122,11 @@ createSndQueueAndConn dbConn sndQueue =
 
 _upsertServer :: DB.Connection -> SMPServer -> IO ()
 _upsertServer dbConn SMPServer {host, port, keyHash} = do
-  let _port = _convertPortOnWrite port
+  let _port = _serializePort port
   DB.executeNamed
     dbConn
     _upsertServerQuery
     [":host" := host, ":port" := _port, ":key_hash" := keyHash]
-
--- TODO replace with ToField - it's easy to forget to use this
-_convertPortOnWrite :: Maybe ServiceName -> ServiceName
-_convertPortOnWrite = fromMaybe "_"
-
-_convertPortOnRead :: ServiceName -> Maybe ServiceName
-_convertPortOnRead port
-  | port == "_" = Nothing
-  | otherwise = Just port
 
 _upsertServerQuery :: Query
 _upsertServerQuery =
@@ -129,7 +140,7 @@ _upsertServerQuery =
 
 _insertRcvQueue :: DB.Connection -> ReceiveQueue -> IO ()
 _insertRcvQueue dbConn ReceiveQueue {..} = do
-  let _port = _convertPortOnWrite $ port server
+  let _port = _serializePort $ port server
   DB.executeNamed
     dbConn
     _insertRcvQueueQuery
@@ -146,7 +157,7 @@ _insertRcvQueueQuery =
 
 _insertRcvConnection :: DB.Connection -> ReceiveQueue -> IO ()
 _insertRcvConnection dbConn ReceiveQueue {server, rcvId, connAlias} = do
-  let _port = _convertPortOnWrite $ port server
+  let _port = _serializePort $ port server
   DB.executeNamed
     dbConn
     _insertRcvConnectionQuery
@@ -163,7 +174,7 @@ _insertRcvConnectionQuery =
 
 _insertSndQueue :: DB.Connection -> SendQueue -> IO ()
 _insertSndQueue dbConn SendQueue {..} = do
-  let _port = _convertPortOnWrite $ port server
+  let _port = _serializePort $ port server
   DB.executeNamed
     dbConn
     _insertSndQueueQuery
@@ -180,7 +191,7 @@ _insertSndQueueQuery =
 
 _insertSndConnection :: DB.Connection -> SendQueue -> IO ()
 _insertSndConnection dbConn SendQueue {server, sndId, connAlias} = do
-  let _port = _convertPortOnWrite $ port server
+  let _port = _serializePort $ port server
   DB.executeNamed
     dbConn
     _insertSndConnectionQuery
@@ -199,56 +210,77 @@ retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Mayb
 retrieveConnQueues dbConn connAlias =
   -- to avoid inconsistent state between queue reads
   DB.withTransaction dbConn $ do
-    rcvQ <- _retrieveRcvQueue dbConn connAlias
-    sndQ <- _retrieveSndQueue dbConn connAlias
+    rcvQ <- _retrieveRcvQueueByConnAlias dbConn connAlias
+    sndQ <- _retrieveSndQueueByConnAlias dbConn connAlias
     return (rcvQ, sndQ)
 
-_retrieveRcvQueue :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue)
-_retrieveRcvQueue dbConn connAlias = do
+_retrieveRcvQueueByConnAlias :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue)
+_retrieveRcvQueueByConnAlias dbConn connAlias = do
+  r <-
+    DB.queryNamed
+      dbConn
+      _retrieveRcvQueueByConnAliasQuery
+      [":conn_alias" := connAlias]
+  case r of
+    [(keyHash, host, port, rcvId, cAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
+      let srv = SMPServer host (_deserializePort port) keyHash
+      return . Just $ ReceiveQueue srv rcvId cAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
+    _ -> return Nothing
+
+_retrieveRcvQueueByConnAliasQuery :: Query
+_retrieveRcvQueueByConnAliasQuery =
+  [sql|
+    SELECT s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key, q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status)
+    FROM rcv_queues q
+    INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+    WHERE q.conn_alias = :conn_alias;
+  |]
+
+_retrieveSndQueueByConnAlias :: DB.Connection -> ConnAlias -> IO (Maybe SendQueue)
+_retrieveSndQueueByConnAlias dbConn connAlias = do
+  r <-
+    DB.queryNamed
+      dbConn
+      _retrieveSndQueueByConnAliasQuery
+      [":conn_alias" := connAlias]
+  case r of
+    [(keyHash, host, port, sndId, cAlias, sndPrivateKey, encryptKey, signKey, status)] -> do
+      let srv = SMPServer host (_deserializePort port) keyHash
+      return . Just $ SendQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
+    _ -> return Nothing
+
+_retrieveSndQueueByConnAliasQuery :: Query
+_retrieveSndQueueByConnAliasQuery =
+  [sql|
+    SELECT s.key_hash, q.host, q.port, q.snd_id, q.conn_alias, q.snd_private_key, q.encrypt_key, q.sign_key, q.status)
+    FROM snd_queues q
+    INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+    WHERE q.conn_alias = :conn_alias;
+  |]
+
+-- ? make server an argument and pass it for the queue instead of joining with 'servers'?
+-- ? the downside would be the queue having an outdated 'key_hash' if it has changed,
+-- ? but maybe it's unwanted behavior?
+retrieveRcvQueue :: DB.Connection -> HostName -> Maybe ServiceName -> SMP.RecipientId -> IO (Maybe ReceiveQueue)
+retrieveRcvQueue dbConn host port rcvId = do
   r <-
     DB.queryNamed
       dbConn
       _retrieveRcvQueueQuery
-      [":conn_alias" := connAlias]
+      [":host" := host, ":port" := _serializePort port, ":rcv_id" := rcvId]
   case r of
-    [(keyHash, host, port, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
-      let srv = SMPServer host (_convertPortOnRead port) keyHash
-      return . Just $ ReceiveQueue srv rcvId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
+    [(keyHash, hst, prt, rId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
+      let srv = SMPServer hst (_deserializePort prt) keyHash
+      return . Just $ ReceiveQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
     _ -> return Nothing
 
 _retrieveRcvQueueQuery :: Query
 _retrieveRcvQueueQuery =
   [sql|
-    SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status)
+    SELECT s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key, q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status)
     FROM rcv_queues q
-    INNER JOIN servers s
-      ON q.host = s.host
-      AND q.port = s.port
-    WHERE q.conn_alias = :conn_alias;
-  |]
-
-_retrieveSndQueue :: DB.Connection -> ConnAlias -> IO (Maybe SendQueue)
-_retrieveSndQueue dbConn connAlias = do
-  r <-
-    DB.queryNamed
-      dbConn
-      _retrieveSndQueueQuery
-      [":conn_alias" := connAlias]
-  case r of
-    [(keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] -> do
-      let srv = SMPServer host (_convertPortOnRead port) keyHash
-      return . Just $ SendQueue srv sndId connAlias sndPrivateKey encryptKey signKey status
-    _ -> return Nothing
-
-_retrieveSndQueueQuery :: Query
-_retrieveSndQueueQuery =
-  [sql|
-    SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.encrypt_key, q.sign_key, q.status)
-    FROM snd_queues q
-    INNER JOIN servers s
-      ON q.host = s.host
-      AND q.port = s.port
-    WHERE q.conn_alias = :conn_alias;
+    INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+    WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
   |]
 
 -- updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
@@ -274,45 +306,6 @@ _retrieveSndQueueQuery =
 --       WHERE conn_alias = ?;
 --     |]
 --     (Only rcvQueueId :. Only connAlias)
-
--- getRcvQueueByRecipientId :: (MonadUnliftIO m, MonadError StoreError m) => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> m ReceiveQueue
--- getRcvQueueByRecipientId st@SQLiteStore {conn} rcvId host port = do
---   r <-
---     liftIO $
---       DB.queryNamed
---         conn
---         [sql|
---           SELECT server_id, rcv_id, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status, ack_mode
---           FROM receive_queues
---           WHERE rcv_id = :rcvId AND server_id IN (
---             SELECT server_id
---             FROM servers
---             WHERE host = :host AND port = :port
---           );
---         |]
---         [":rcvId" := rcvId, ":host" := host, ":port" := port]
---   case r of
---     [Only serverId :. rcvQueue] ->
---       (\srv -> (rcvQueue {server = srv} :: ReceiveQueue)) <$> getServer st serverId
---     _ -> throwError SENotFound
-
--- getConnAliasByRcvQueue :: (MonadError StoreError m, MonadUnliftIO m) => SQLiteStore -> RecipientId -> m ConnAlias
--- getConnAliasByRcvQueue SQLiteStore {conn} rcvId = do
---   r <-
---     liftIO $
---       DB.queryNamed
---         conn
---         [sql|
---           SELECT c.conn_alias
---           FROM connections c
---           JOIN receive_queues rq
---           ON c.receive_queue_id = rq.receive_queue_id
---           WHERE rq.rcv_id = :rcvId;
---         |]
---         [":rcvId" := rcvId]
---   case r of
---     [connAlias] -> return connAlias
---     _ -> throwError SEInternal
 
 -- deleteRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m ()
 -- deleteRcvQueue store rcvQueueId = do

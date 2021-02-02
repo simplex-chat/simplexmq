@@ -211,7 +211,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTransmission -> m ()
 processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
-  (connAlias, rq@ReceiveQueue {decryptKey, status}) <- withStore $ \st -> getReceiveQueue st srv rId
+  rq@ReceiveQueue {connAlias, decryptKey, status} <- withStore $ \st -> getRcvQueue st srv rId
   case cmd of
     SMP.MSG _ srvTs msgBody -> do
       -- TODO deduplicate with previously received

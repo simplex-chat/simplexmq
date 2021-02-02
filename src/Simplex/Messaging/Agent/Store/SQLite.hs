@@ -55,18 +55,19 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
   getConn SQLiteStore {dbConn} connAlias = do
-    queues <- liftIO (retrieveConnQueues dbConn connAlias)
+    queues <- liftIO $ retrieveConnQueues dbConn connAlias
     case queues of
-      (Just rq, Just sq) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rq sq)
-      (Just rq, _) -> return $ SomeConn SCReceive (ReceiveConnection connAlias rq)
-      (_, Just sq) -> return $ SomeConn SCSend (SendConnection connAlias sq)
+      (Just rcvQ, Just sndQ) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
+      (Just rcvQ, _) -> return $ SomeConn SCReceive (ReceiveConnection connAlias rcvQ)
+      (_, Just sndQ) -> return $ SomeConn SCSend (SendConnection connAlias sndQ)
       _ -> throwError SEBadConn
 
--- getReceiveQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m (ConnAlias, ReceiveQueue)
--- getReceiveQueue st SMPServer {host, port} recipientId = do
---   rcvQueue <- getRcvQueueByRecipientId st recipientId host port
---   connAlias <- getConnAliasByRcvQueue st recipientId
---   return (connAlias, rcvQueue)
+  getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
+  getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId = do
+    rcvQueue <- liftIO $ retrieveRcvQueue dbConn host port rcvId
+    case rcvQueue of
+      Just rcvQ -> return rcvQ
+      _ -> throwError SENotFound
 
 -- -- TODO make transactional
 -- addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()

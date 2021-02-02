@@ -94,7 +94,7 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> ReceiveQueue -> m ()
   createSndConn :: s -> SendQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
-  getReceiveQueue :: s -> SMPServer -> SMP.RecipientId -> m (ConnAlias, ReceiveQueue)
+  getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
   deleteConn :: s -> ConnAlias -> m ()
   addSndQueue :: s -> ConnAlias -> SendQueue -> m ()
   addRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m ()
