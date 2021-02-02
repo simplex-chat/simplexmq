@@ -283,29 +283,12 @@ _retrieveRcvQueueQuery =
     WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
   |]
 
--- updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
--- updateRcvConnectionWithSndQueue store connAlias sndQueueId =
---   executeWithLock
---     store
---     connectionsLock
---     [sql|
---       UPDATE connections
---       SET send_queue_id = ?
---       WHERE conn_alias = ?;
---     |]
---     (Only sndQueueId :. Only connAlias)
-
--- updateSndConnectionWithRcvQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
--- updateSndConnectionWithRcvQueue store connAlias rcvQueueId =
---   executeWithLock
---     store
---     connectionsLock
---     [sql|
---       UPDATE connections
---       SET receive_queue_id = ?
---       WHERE conn_alias = ?;
---     |]
---     (Only rcvQueueId :. Only connAlias)
+deleteConnCascade :: DB.Connection -> ConnAlias -> IO ()
+deleteConnCascade dbConn connAlias =
+  DB.executeNamed
+    dbConn
+    "DELETE FROM connections WHERE conn_alias = :conn_alias;"
+    [":conn_alias" := connAlias]
 
 -- deleteRcvQueue :: MonadUnliftIO m => SQLiteStore -> QueueRowId -> m ()
 -- deleteRcvQueue store rcvQueueId = do
@@ -330,6 +313,30 @@ _retrieveRcvQueueQuery =
 --     connectionsLock
 --     "DELETE FROM connections WHERE conn_alias = ?"
 --     (Only connAlias)
+
+-- updateRcvConnectionWithSndQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
+-- updateRcvConnectionWithSndQueue store connAlias sndQueueId =
+--   executeWithLock
+--     store
+--     connectionsLock
+--     [sql|
+--       UPDATE connections
+--       SET send_queue_id = ?
+--       WHERE conn_alias = ?;
+--     |]
+--     (Only sndQueueId :. Only connAlias)
+
+-- updateSndConnectionWithRcvQueue :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueRowId -> m ()
+-- updateSndConnectionWithRcvQueue store connAlias rcvQueueId =
+--   executeWithLock
+--     store
+--     connectionsLock
+--     [sql|
+--       UPDATE connections
+--       SET receive_queue_id = ?
+--       WHERE conn_alias = ?;
+--     |]
+--     (Only rcvQueueId :. Only connAlias)
 
 -- updateReceiveQueueStatus :: MonadUnliftIO m => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
 -- updateReceiveQueueStatus store rcvQueueId host port status =

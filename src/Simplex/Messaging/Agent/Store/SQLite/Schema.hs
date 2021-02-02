@@ -37,6 +37,7 @@ rcvQueues =
       FOREIGN KEY(host, port) REFERENCES servers(host, port),
       FOREIGN KEY(conn_alias)
         REFERENCES connections(conn_alias)
+        ON DELETE CASCADE
         DEFERRABLE INITIALLY DEFERRED,
       UNIQUE (host, port, snd_id)
     ) WITHOUT ROWID;
@@ -58,6 +59,7 @@ sndQueues =
       FOREIGN KEY(host, port) REFERENCES servers(host, port),
       FOREIGN KEY(conn_alias)
         REFERENCES connections(conn_alias)
+        ON DELETE CASCADE
         DEFERRABLE INITIALLY DEFERRED
     ) WITHOUT ROWID;
   |]
@@ -74,12 +76,8 @@ connections =
       snd_port TEXT,
       snd_id BLOB,
       PRIMARY KEY(conn_alias),
-      FOREIGN KEY(rcv_host, rcv_port, rcv_id)
-        REFERENCES rcv_queues(host, port, rcv_id)
-        ON DELETE CASCADE,
-      FOREIGN KEY(snd_host, snd_port, snd_id)
-        REFERENCES snd_queues(host, port, snd_id)
-        ON DELETE CASCADE
+      FOREIGN KEY(rcv_host, rcv_port, rcv_id) REFERENCES rcv_queues(host, port, rcv_id),
+      FOREIGN KEY(snd_host, snd_port, snd_id) REFERENCES snd_queues(host, port, snd_id)
     ) WITHOUT ROWID;
   |]
 

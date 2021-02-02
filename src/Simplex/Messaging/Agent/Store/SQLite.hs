@@ -55,7 +55,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
   getConn SQLiteStore {dbConn} connAlias = do
-    queues <- liftIO $ retrieveConnQueues dbConn connAlias
+    queues <-
+      liftIO $
+        retrieveConnQueues dbConn connAlias
     case queues of
       (Just rcvQ, Just sndQ) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
       (Just rcvQ, _) -> return $ SomeConn SCReceive (ReceiveConnection connAlias rcvQ)
@@ -64,10 +66,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
   getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId = do
-    rcvQueue <- liftIO $ retrieveRcvQueue dbConn host port rcvId
+    rcvQueue <-
+      liftIO $
+        retrieveRcvQueue dbConn host port rcvId
     case rcvQueue of
       Just rcvQ -> return rcvQ
       _ -> throwError SENotFound
+
+  deleteConn :: SQLiteStore -> ConnAlias -> m ()
+  deleteConn SQLiteStore {dbConn} connAlias =
+    liftIO $
+      deleteConnCascade dbConn connAlias
 
 -- -- TODO make transactional
 -- addSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
@@ -92,21 +101,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 --         srvId <- upsertServer st (server (rcvQueue :: ReceiveQueue))
 --         rcvQ <- insertRcvQueue st srvId rcvQueue
 --         updateSndConnectionWithRcvQueue st connAlias rcvQ
-
--- -- TODO think about design of one-to-one relationships between connections ans send/receive queues
--- -- - Make wide `connections` table? -> Leads to inability to constrain queue fields on SQL level
--- -- - Make bi-directional foreign keys deferred on queue side?
--- --   * Involves populating foreign keys on queues' tables and reworking store
--- --   * Enables cascade deletes
--- --   ? See https://sqlite.org/foreignkeys.html#fk_deferred
--- -- - Keep as is and just wrap in transaction?
--- deleteConn :: SQLiteStore -> ConnAlias -> m ()
--- deleteConn st connAlias = do
---   (rcvQId, sndQId) <- getConnection st connAlias
---   forM_ rcvQId $ deleteRcvQueue st
---   forM_ sndQId $ deleteSndQueue st
---   deleteConnection st connAlias
---   when (isNothing rcvQId && isNothing sndQId) $ throwError SEBadConn
 
 -- removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
 -- removeSndAuth _st _connAlias = throwError SENotImplemented
