@@ -7,6 +7,9 @@ module Simplex.Messaging.Agent.Store.SQLite.Schema where
 import Database.SQLite.Simple
 import Database.SQLite.Simple.QQ (sql)
 
+enableFKs :: Query
+enableFKs = "PRAGMA foreign_keys = ON;"
+
 -- port is either a port number or a service name, see Network.Socket.Info.ServiceName
 servers :: Query
 servers =
@@ -98,4 +101,4 @@ messages =
 
 createSchema :: Connection -> IO ()
 createSchema conn =
-  mapM_ (execute_ conn) [servers, rcvQueues, sndQueues, connections, messages]
+  mapM_ (execute_ conn) [enableFKs, servers, rcvQueues, sndQueues, connections, messages]
