@@ -1,8 +1,12 @@
 {-# LANGUAGE DeriveAnyClass #-}
 
-module Simplex.Messaging.Agent.Store.Types where
+module Simplex.Messaging.Agent.Store.Types
+  ( ConnType (..),
+    StoreError (..),
+  )
+where
 
-import Control.Exception
+import Control.Exception (Exception)
 
 data ConnType = CSend | CReceive | CDuplex deriving (Eq, Show)
 

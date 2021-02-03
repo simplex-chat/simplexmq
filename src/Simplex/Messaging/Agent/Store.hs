@@ -1,21 +1,30 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.Messaging.Agent.Store where
+module Simplex.Messaging.Agent.Store
+  ( ReceiveQueue (..),
+    SendQueue (..),
+    Connection (..),
+    SConnType (..),
+    SomeConn (..),
+    MessageDelivery (..),
+    DeliveryStatus (..),
+    MonadAgentStore (..),
+  )
+where
 
-import Data.Kind
+import Data.Kind (Type)
 import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
-import Simplex.Messaging.Agent.Store.Types
+import Simplex.Messaging.Agent.Store.Types (ConnType (..))
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Types
+import Simplex.Messaging.Types (PrivateKey, PublicKey)
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
@@ -37,7 +46,6 @@ data SendQueue = SendQueue
     sndPrivateKey :: PrivateKey,
     encryptKey :: PublicKey,
     signKey :: PrivateKey,
-    -- verifyKey :: Maybe PublicKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)

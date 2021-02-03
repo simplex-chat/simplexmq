@@ -1,31 +1,24 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
-module Simplex.Messaging.Agent.Store.SQLite where
+module Simplex.Messaging.Agent.Store.SQLite
+  ( SQLiteStore,
+    newSQLiteStore,
+  )
+where
 
-import Control.Monad
 import Control.Monad.Except
-import Control.Monad.IO.Unlift
-import Data.Maybe
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Schema
+import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
-import UnliftIO.STM
 
 data SQLiteStore = SQLiteStore
   { dbFilename :: String,
@@ -36,11 +29,7 @@ newSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 newSQLiteStore dbFilename = do
   dbConn <- liftIO $ DB.open dbFilename
   liftIO $ createSchema dbConn
-  return
-    SQLiteStore
-      { dbFilename,
-        dbConn
-      }
+  return SQLiteStore {dbFilename, dbConn}
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> ReceiveQueue -> m ()

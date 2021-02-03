@@ -1,10 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Schema where
+module Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema) where
 
-import Database.SQLite.Simple
+import Database.SQLite.Simple (Connection, Query, execute_)
 import Database.SQLite.Simple.QQ (sql)
 
 enableFKs :: Query

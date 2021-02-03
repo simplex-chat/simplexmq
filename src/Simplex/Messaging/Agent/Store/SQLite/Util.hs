@@ -1,48 +1,46 @@
-{-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Util where
+module Simplex.Messaging.Agent.Store.SQLite.Util
+  ( createRcvQueueAndConn,
+    createSndQueueAndConn,
+    retrieveConnQueues,
+    retrieveRcvQueue,
+    deleteConnCascade,
+    updateRcvConnWithSndQueue,
+    updateSndConnWithRcvQueue,
+    updateRcvQueueStatus,
+    updateSndQueueStatus,
+    insertRcvMsg,
+    insertSndMsg,
+  )
+where
 
-import Control.Monad
-import Control.Monad.Except
-import Control.Monad.IO.Unlift
-import Data.Int (Int64)
+import Control.Monad.Except (MonadIO (liftIO))
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
-import Data.Time
-import Database.SQLite.Simple hiding (Connection)
-import qualified Database.SQLite.Simple as DB
+import Data.Time (getCurrentTime)
+import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
-import Database.SQLite.Simple.Ok
+import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.QQ (sql)
-import Database.SQLite.Simple.ToField
-import Network.Socket
+import Database.SQLite.Simple.ToField (ToField (..))
+import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util
-import Text.Read
+import Simplex.Messaging.Protocol as SMP (RecipientId)
+import Text.Read (readMaybe)
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM
 
--- TODO replace with ToField - it's easy to forget to use this
+-- ? replace with ToField? - it's easy to forget to use this
 _serializePort :: Maybe ServiceName -> ServiceName
 _serializePort = fromMaybe "_"
 
@@ -53,12 +51,12 @@ _deserializePort port
 
 instance ToField QueueStatus where toField = toField . show
 
-instance FromField QueueStatus where fromField = fromFieldToReadable
+instance FromField QueueStatus where fromField = _fromFieldToReadable
 
 instance ToField QueueDirection where toField = toField . show
 
-fromFieldToReadable :: forall a. (Read a, E.Typeable a) => Field -> Ok a
-fromFieldToReadable = \case
+_fromFieldToReadable :: forall a. (Read a, E.Typeable a) => Field -> Ok a
+_fromFieldToReadable = \case
   f@(Field (SQLText t) _) ->
     let str = T.unpack t
      in case readMaybe str of
