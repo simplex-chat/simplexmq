@@ -225,10 +225,10 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
               -- Commands CONF and LET are not implemented yet
               -- They are probably not needed in v0.2?
               -- TODO notification that connection confirmed?
-              withStore $ \st -> updateRcvQueueStatus st rq Confirmed
+              withStore $ \st -> setRcvQueueStatus st rq Confirmed
               -- TODO update sender key in the store
               secureQueue c rq senderKey
-              withStore $ \st -> updateRcvQueueStatus st rq Secured
+              withStore $ \st -> setRcvQueueStatus st rq Secured
               sendAck c rq
             s ->
               -- TODO maybe send notification to the user
@@ -238,7 +238,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
             HELLO _verifyKey _ -> do
               logServer "<--" c srv rId "MSG <HELLO>"
               -- TODO send status update to the user?
-              withStore $ \st -> updateRcvQueueStatus st rq Active
+              withStore $ \st -> setRcvQueueStatus st rq Active
               sendAck c rq
             REPLY qInfo -> do
               logServer "<--" c srv rId "MSG <REPLY>"
@@ -265,9 +265,9 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
 connectToSendQueue :: AgentMonad m => AgentClient -> SendQueue -> SenderKey -> m ()
 connectToSendQueue c sq senderKey = do
   sendConfirmation c sq senderKey
-  withStore $ \st -> updateSndQueueStatus st sq Confirmed
+  withStore $ \st -> setSndQueueStatus st sq Confirmed
   sendHello c sq
-  withStore $ \st -> updateSndQueueStatus st sq Active
+  withStore $ \st -> setSndQueueStatus st sq Active
 
 decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return

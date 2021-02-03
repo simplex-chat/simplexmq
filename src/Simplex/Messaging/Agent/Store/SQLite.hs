@@ -89,30 +89,28 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
   removeSndAuth _st _connAlias = throwError SENotImplemented
 
--- -- TODO throw error if queue doesn't exist
--- updateRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
--- updateRcvQueueStatus st ReceiveQueue {rcvId, server = SMPServer {host, port}} status =
---   updateReceiveQueueStatus st rcvId host port status
+  setRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
+  setRcvQueueStatus SQLiteStore {dbConn} rcvQueue status =
+    liftIO $ updateRcvQueueStatus dbConn rcvQueue status
 
--- -- TODO throw error if queue doesn't exist
--- updateSndQueueStatus :: SQLiteStore -> SendQueue -> QueueStatus -> m ()
--- updateSndQueueStatus st SendQueue {sndId, server = SMPServer {host, port}} status =
---   updateSendQueueStatus st sndId host port status
+  setSndQueueStatus :: SQLiteStore -> SendQueue -> QueueStatus -> m ()
+  setSndQueueStatus SQLiteStore {dbConn} sndQueue status =
+    liftIO $ updateSndQueueStatus dbConn sndQueue status
 
--- -- TODO decrease duplication of queue direction checks?
--- createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
--- createMsg st connAlias qDirection agentMsgId msg = do
---   case qDirection of
---     RCV -> do
---       (rcvQId, _) <- getConnection st connAlias
---       case rcvQId of
---         Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
---         Nothing -> throwError SEBadQueueDirection
---     SND -> do
---       (_, sndQId) <- getConnection st connAlias
---       case sndQId of
---         Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
---         Nothing -> throwError SEBadQueueDirection
+  -- -- TODO decrease duplication of queue direction checks?
+  -- createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+  -- createMsg st connAlias qDirection agentMsgId msg = do
+  --   case qDirection of
+  --     RCV -> do
+  --       (rcvQId, _) <- getConnection st connAlias
+  --       case rcvQId of
+  --         Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
+  --         Nothing -> throwError SEBadQueueDirection
+  --     SND -> do
+  --       (_, sndQId) <- getConnection st connAlias
+  --       case sndQId of
+  --         Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
+  --         Nothing -> throwError SEBadQueueDirection
 
   getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
   getLastMsg _st _connAlias _dir = throwError SENotImplemented

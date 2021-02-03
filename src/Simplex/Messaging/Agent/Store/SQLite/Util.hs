@@ -352,39 +352,37 @@ _updateConnWithRcvQueueQuery =
     WHERE conn_alias = :conn_alias;
   |]
 
--- updateReceiveQueueStatus :: MonadUnliftIO m => SQLiteStore -> RecipientId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
--- updateReceiveQueueStatus store rcvQueueId host port status =
---   executeWithLock
---     store
---     rcvQueuesLock
---     [sql|
---       UPDATE receive_queues
---       SET status = ?
---       WHERE rcv_id = ?
---       AND server_id IN (
---         SELECT server_id
---         FROM servers
---         WHERE host = ? AND port = ?
---       );
---     |]
---     (Only status :. Only rcvQueueId :. Only host :. Only port)
+-- ? throw error if queue doesn't exist?
+updateRcvQueueStatus :: DB.Connection -> ReceiveQueue -> QueueStatus -> IO ()
+updateRcvQueueStatus dbConn ReceiveQueue {rcvId, server = SMPServer {host, port}} status =
+  DB.executeNamed
+    dbConn
+    _updateRcvQueueStatusQuery
+    [":status" := status, ":host" := host, ":port" := _serializePort port, ":rcv_id" := rcvId]
 
--- updateSendQueueStatus :: MonadUnliftIO m => SQLiteStore -> SMP.SenderId -> HostName -> Maybe ServiceName -> QueueStatus -> m ()
--- updateSendQueueStatus store sndQueueId host port status =
---   executeWithLock
---     store
---     sndQueuesLock
---     [sql|
---       UPDATE send_queues
---       SET status = ?
---       WHERE snd_id = ?
---       AND server_id IN (
---         SELECT server_id
---         FROM servers
---         WHERE host = ? AND port = ?
---       );
---     |]
---     (Only status :. Only sndQueueId :. Only host :. Only port)
+_updateRcvQueueStatusQuery :: Query
+_updateRcvQueueStatusQuery =
+  [sql|
+    UPDATE rcv_queues
+    SET status = :status
+    WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
+  |]
+
+-- ? throw error if queue doesn't exist?
+updateSndQueueStatus :: DB.Connection -> SendQueue -> QueueStatus -> IO ()
+updateSndQueueStatus dbConn SendQueue {sndId, server = SMPServer {host, port}} status =
+  DB.executeNamed
+    dbConn
+    _updateSndQueueStatusQuery
+    [":status" := status, ":host" := host, ":port" := _serializePort port, ":snd_id" := sndId]
+
+_updateSndQueueStatusQuery :: Query
+_updateSndQueueStatusQuery =
+  [sql|
+    UPDATE snd_queues
+    SET status = :status
+    WHERE host = :host AND port = :port AND snd_id = :snd_id;
+  |]
 
 -- -- TODO add parser and serializer for DeliveryStatus? Pass DeliveryStatus?
 -- insertMsg :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> Message -> m ()
