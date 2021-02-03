@@ -270,12 +270,12 @@ sendAgentMessage c SendQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg
 
 mkAgentMessage :: MonadUnliftIO m => PrivateKey -> AMessage -> m ByteString
 mkAgentMessage _encKey agentMessage = do
-  agentTimestamp <- liftIO getCurrentTime
+  senderTimestamp <- liftIO getCurrentTime
   let msg =
         serializeSMPMessage
           SMPMessage
-            { agentMsgId = 0,
-              agentTimestamp,
+            { senderMsgId = 0,
+              senderTimestamp,
               previousMsgHash = "1234", -- TODO hash of the previous message
               agentMessage
             }

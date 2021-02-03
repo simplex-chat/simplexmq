@@ -79,8 +79,16 @@ data ACommand (p :: AParty) where
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
   SEND :: MsgBody -> ACommand Client
-  MSG :: AgentMsgId -> UTCTime -> UTCTime -> MsgStatus -> MsgBody -> ACommand Agent
-  ACK :: AgentMsgId -> ACommand Client
+  SENT :: AgentMsgId -> ACommand Agent
+  MSG ::
+    { m_recipient :: (AgentMsgId, UTCTime),
+      m_broker :: (ST.MsgId, UTCTime),
+      m_sender :: (AgentMsgId, UTCTime),
+      m_status :: MsgStatus,
+      m_body :: MsgBody
+    } ->
+    ACommand Agent
+  -- ACK :: AgentMsgId -> ACommand Client
   -- RCVD :: AgentMsgId -> ACommand Agent
   OFF :: ACommand Client
   DEL :: ACommand Client
@@ -96,8 +104,8 @@ type Message = ByteString
 data SMPMessage
   = SMPConfirmation PublicKey
   | SMPMessage
-      { agentMsgId :: Integer,
-        agentTimestamp :: UTCTime,
+      { senderMsgId :: Integer,
+        senderTimestamp :: UTCTime,
         previousMsgHash :: ByteString,
         agentMessage :: AMessage
       }
@@ -134,8 +142,8 @@ tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeT
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
   SMPConfirmation sKey -> smpMessage ("KEY " <> encode sKey) "" ""
-  SMPMessage {agentMsgId, agentTimestamp, previousMsgHash, agentMessage} ->
-    let header = messageHeader agentMsgId agentTimestamp previousMsgHash
+  SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
+    let header = messageHeader senderMsgId senderTimestamp previousMsgHash
         body = serializeAgentMessage agentMessage
      in smpMessage "" header body
   where
@@ -285,8 +293,8 @@ parseCommandP =
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
     <|> "SEND " *> sendCmd
+    <|> "SENT " *> sentResp
     <|> "MSG " *> message
-    <|> "ACK " *> acknowledge
     <|> "OFF" $> ACmd SClient OFF
     <|> "DEL" $> ACmd SClient DEL
     <|> "ERR " *> agentError
@@ -297,10 +305,14 @@ parseCommandP =
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
     sendCmd = ACmd SClient <$> (SEND <$> A.takeByteString)
-    message =
-      let sp = A.space; msgId = A.decimal <* sp; ts = tsISO8601P <* sp; body = A.takeByteString
-       in ACmd SAgent <$> (MSG <$> msgId <*> ts <*> ts <*> status <* sp <*> body)
-    acknowledge = ACmd SClient <$> (ACK <$> A.decimal)
+    sentResp = ACmd SAgent <$> (SENT <$> A.decimal)
+    message = do
+      m_status <- status <* A.space
+      m_recipient <- "R=" *> partyMeta A.decimal
+      m_broker <- "B=" *> partyMeta base64P
+      m_sender <- "S=" *> partyMeta A.decimal
+      m_body <- A.takeByteString
+      return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
     -- TODO other error types
     agentError = ACmd SAgent . ERR <$> ("SMP " *> smpErrorType)
     smpErrorType = "AUTH" $> SMP ST.AUTH
@@ -308,6 +320,7 @@ parseCommandP =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)
         <|> pure ReplyOn
+    partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
     status = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
     msgErrorType =
       "ID " *> (MsgBadId <$> A.decimal)
@@ -325,9 +338,16 @@ serializeCommand = \case
   SUB -> "SUB"
   END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
-  MSG aMsgId aTs ts st body ->
-    B.unwords ["MSG", B.pack $ show aMsgId, B.pack $ formatISO8601Millis aTs, B.pack $ formatISO8601Millis ts, msgStatus st, serializeMsg body]
-  ACK aMsgId -> "ACK " <> B.pack (show aMsgId)
+  SENT mId -> "SENT " <> bshow mId
+  MSG {m_recipient = (rmId, rTs), m_broker = (bmId, bTs), m_sender = (smId, sTs), m_status, m_body} ->
+    B.unwords
+      [ "MSG",
+        msgStatus m_status,
+        "R=" <> bshow rmId <> "," <> showTs rTs,
+        "B=" <> encode bmId <> "," <> showTs bTs,
+        "S=" <> bshow smId <> "," <> showTs sTs,
+        serializeMsg m_body
+      ]
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
@@ -339,6 +359,8 @@ serializeCommand = \case
       ReplyOff -> " NO_REPLY"
       ReplyVia srv -> " " <> serializeServer srv
       ReplyOn -> ""
+    showTs :: UTCTime -> ByteString
+    showTs = B.pack . formatISO8601Millis
     msgStatus :: MsgStatus -> ByteString
     msgStatus = \case
       MsgOk -> "OK"
