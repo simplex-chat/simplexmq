@@ -2,18 +2,18 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module AgentTests.SQLiteTests where
+module AgentTests.SQLiteTests (storeTests) where
 
-import Control.Monad.Except
+import Control.Monad.Except (ExceptT, runExceptT)
 import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
-import System.Random
+import System.Random (Random (randomIO))
 import Test.Hspec
-import UnliftIO.Directory
+import UnliftIO.Directory (removeFile)
 
 testDB :: String
 testDB = "smp-agent.test.db"
