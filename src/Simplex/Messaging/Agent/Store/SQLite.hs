@@ -90,8 +90,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       Right () -> return ()
       Left e -> throwError e
 
--- removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
--- removeSndAuth _st _connAlias = throwError SENotImplemented
+  removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
+  removeSndAuth _st _connAlias = throwError SENotImplemented
 
 -- -- TODO throw error if queue doesn't exist
 -- updateRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
@@ -118,15 +118,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 --         Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
 --         Nothing -> throwError SEBadQueueDirection
 
--- getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
--- getLastMsg _st _connAlias _dir = throwError SENotImplemented
+  getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
+  getLastMsg _st _connAlias _dir = throwError SENotImplemented
 
--- getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
--- getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+  getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
+  getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
 
--- -- TODO missing status parameter?
--- updateMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
--- updateMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
+  -- TODO missing status parameter?
+  updateMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  updateMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
 
--- deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
--- deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+  deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented
