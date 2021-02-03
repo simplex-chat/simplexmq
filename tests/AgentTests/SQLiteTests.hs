@@ -1,12 +1,14 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Monad.Except (ExceptT, runExceptT)
 import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
+import Database.SQLite.Simple.QQ (sql)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.Types
@@ -41,6 +43,7 @@ action `throwsError` e = runExceptT action `shouldReturn` Left e
 
 storeTests :: Spec
 storeTests = withStore do
+  describe "foreign keys enabled" testForeignKeysEnabled
   describe "store methods" do
     describe "createRcvConn" testCreateRcvConn
     describe "createSndConn" testCreateSndConn
@@ -64,6 +67,19 @@ storeTests = withStore do
       describe "REPLY message" testCreateMsgReply
       describe "Bad queue direction - SND" testCreateMsgBadDirectionSnd
       describe "Bad queue direction - RCV" testCreateMsgBadDirectionRcv
+
+testForeignKeysEnabled :: SpecWith SQLiteStore
+testForeignKeysEnabled = do
+  it "should throw error if foreign keys are enabled" $ \store -> do
+    let inconsistent_query =
+          [sql|
+            INSERT INTO connections
+              (conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
+            VALUES
+              ("conn1", "smp.simplex.im", "5223", "1234", "smp.simplex.im", "5223", "2345");
+          |]
+    DB.execute_ (dbConn store) inconsistent_query
+      `shouldThrow` (const True :: Selector DB.SQLError)
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
