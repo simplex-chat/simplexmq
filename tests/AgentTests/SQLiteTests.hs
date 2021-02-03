@@ -45,8 +45,8 @@ storeTests = withStore do
   describe "store methods" do
     describe "createRcvConn" testCreateRcvConn
     describe "createSndConn" testCreateSndConn
-    describe "upgradeConnWithSndQueue" testUpgradeConnWithSndQueue
-    describe "upgradeConnWithRcvQueue" testUpgradeConnWithRcvQueue
+    describe "upgradeRcvConnToDuplex" testUpgradeRcvConnToDuplex
+    describe "upgradeSndConnToDuplex" testUpgradeSndConnToDuplex
     describe "deleteConn" do
       describe "Receive connection" testDeleteConnReceive
       describe "Send connection" testDeleteConnSend
@@ -95,7 +95,7 @@ testCreateRcvConn = do
               status = New,
               ackMode = AckMode On
             }
-    upgradeConnWithSndQueue store "conn1" sndQueue
+    upgradeRcvConnToDuplex store "conn1" sndQueue
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
@@ -129,13 +129,13 @@ testCreateSndConn = do
               status = New,
               ackMode = AckMode On
             }
-    upgradeConnWithRcvQueue store "conn1" rcvQueue
+    upgradeSndConnToDuplex store "conn1" rcvQueue
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
 
-testUpgradeConnWithSndQueue :: SpecWith SQLiteStore
-testUpgradeConnWithSndQueue = do
+testUpgradeRcvConnToDuplex :: SpecWith SQLiteStore
+testUpgradeRcvConnToDuplex = do
   it "should throw error on attempts to add send queue to SendConnection or DuplexConnection" $ \store -> do
     let sndQueue =
           SendQueue
@@ -159,7 +159,7 @@ testUpgradeConnWithSndQueue = do
               status = New,
               ackMode = AckMode On
             }
-    upgradeConnWithSndQueue store "conn1" anotherSndQueue
+    upgradeRcvConnToDuplex store "conn1" anotherSndQueue
       `throwsError` SEBadConnType CSend
     let rcvQueue =
           ReceiveQueue
@@ -173,13 +173,13 @@ testUpgradeConnWithSndQueue = do
               status = New,
               ackMode = AckMode On
             }
-    upgradeConnWithRcvQueue store "conn1" rcvQueue
+    upgradeSndConnToDuplex store "conn1" rcvQueue
       `returnsResult` ()
-    upgradeConnWithSndQueue store "conn1" anotherSndQueue
+    upgradeRcvConnToDuplex store "conn1" anotherSndQueue
       `throwsError` SEBadConnType CDuplex
 
-testUpgradeConnWithRcvQueue :: SpecWith SQLiteStore
-testUpgradeConnWithRcvQueue = do
+testUpgradeSndConnToDuplex :: SpecWith SQLiteStore
+testUpgradeSndConnToDuplex = do
   it "should throw error on attempts to add receive queue to ReceiveConnection or DuplexConnection" $ \store -> do
     let rcvQueue =
           ReceiveQueue
@@ -207,7 +207,7 @@ testUpgradeConnWithRcvQueue = do
               status = New,
               ackMode = AckMode On
             }
-    upgradeConnWithRcvQueue store "conn1" anotherRcvQueue
+    upgradeSndConnToDuplex store "conn1" anotherRcvQueue
       `throwsError` SEBadConnType CReceive
     let sndQueue =
           SendQueue
@@ -219,9 +219,9 @@ testUpgradeConnWithRcvQueue = do
               status = New,
               ackMode = AckMode On
             }
-    upgradeConnWithSndQueue store "conn1" sndQueue
+    upgradeRcvConnToDuplex store "conn1" sndQueue
       `returnsResult` ()
-    upgradeConnWithRcvQueue store "conn1" anotherRcvQueue
+    upgradeSndConnToDuplex store "conn1" anotherRcvQueue
       `throwsError` SEBadConnType CDuplex
 
 testDeleteConnReceive :: SpecWith SQLiteStore
@@ -297,7 +297,7 @@ testDeleteConnDuplex = do
               status = New,
               ackMode = AckMode On
             }
-    upgradeConnWithSndQueue store "conn1" sndQueue
+    upgradeRcvConnToDuplex store "conn1" sndQueue
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
@@ -379,7 +379,7 @@ testUpdateQueueStatusConnDuplex = do
               status = New,
               ackMode = AckMode On
             }
-    upgradeConnWithSndQueue store "conn1" sndQueue
+    upgradeRcvConnToDuplex store "conn1" sndQueue
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)

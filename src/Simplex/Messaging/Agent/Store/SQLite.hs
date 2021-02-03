@@ -78,14 +78,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       deleteConnCascade dbConn connAlias
 
-  upgradeConnWithSndQueue :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
-  upgradeConnWithSndQueue SQLiteStore {dbConn} connAlias sndQueue =
+  upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
+  upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sndQueue =
     liftIO (updateRcvConnWithSndQueue dbConn connAlias sndQueue) >>= \case
       Right () -> return ()
       Left e -> throwError e
 
-  upgradeConnWithRcvQueue :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
-  upgradeConnWithRcvQueue SQLiteStore {dbConn} connAlias rcvQueue =
+  upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
+  upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rcvQueue =
     liftIO (updateSndConnWithRcvQueue dbConn connAlias rcvQueue) >>= \case
       Right () -> return ()
       Left e -> throwError e

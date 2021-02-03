@@ -96,8 +96,8 @@ class Monad m => MonadAgentStore s m where
   getConn :: s -> ConnAlias -> m SomeConn
   getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
   deleteConn :: s -> ConnAlias -> m ()
-  upgradeConnWithSndQueue :: s -> ConnAlias -> SendQueue -> m ()
-  upgradeConnWithRcvQueue :: s -> ConnAlias -> ReceiveQueue -> m ()
+  upgradeRcvConnToDuplex :: s -> ConnAlias -> SendQueue -> m ()
+  upgradeSndConnToDuplex :: s -> ConnAlias -> ReceiveQueue -> m ()
   removeSndAuth :: s -> ConnAlias -> m ()
   updateRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
   updateSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
