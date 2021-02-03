@@ -97,20 +97,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   setSndQueueStatus SQLiteStore {dbConn} sndQueue status =
     liftIO $ updateSndQueueStatus dbConn sndQueue status
 
-  -- -- TODO decrease duplication of queue direction checks?
-  -- createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
-  -- createMsg st connAlias qDirection agentMsgId msg = do
-  --   case qDirection of
-  --     RCV -> do
-  --       (rcvQId, _) <- getConnection st connAlias
-  --       case rcvQId of
-  --         Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
-  --         Nothing -> throwError SEBadQueueDirection
-  --     SND -> do
-  --       (_, sndQId) <- getConnection st connAlias
-  --       case sndQId of
-  --         Just _ -> insertMsg st connAlias qDirection agentMsgId $ serializeAgentMessage msg
-  --         Nothing -> throwError SEBadQueueDirection
+  createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+  createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg = do
+    case qDirection of
+      RCV -> liftIO (insertRcvMsg dbConn connAlias agentMsgId aMsg) >>= liftEither
+      SND -> liftIO (insertSndMsg dbConn connAlias agentMsgId aMsg) >>= liftEither
 
   getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
   getLastMsg _st _connAlias _dir = throwError SENotImplemented
@@ -118,7 +109,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
   getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
 
-  -- TODO missing status parameter?
+  -- ? missing status parameter?
   updateMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
   updateMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
 

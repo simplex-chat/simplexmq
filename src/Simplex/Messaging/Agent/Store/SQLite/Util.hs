@@ -55,6 +55,8 @@ instance ToField QueueStatus where toField = toField . show
 
 instance FromField QueueStatus where fromField = fromFieldToReadable
 
+instance ToField QueueDirection where toField = toField . show
+
 fromFieldToReadable :: forall a. (Read a, E.Typeable a) => Field -> Ok a
 fromFieldToReadable = \case
   f@(Field (SQLText t) _) ->
@@ -74,37 +76,6 @@ instance (FromField a, FromField b, FromField c, FromField d, FromField e,
                          <*> field <*> field <*> field <*> field <*> field
                          <*> field
 {- ORMOLU_ENABLE -}
-
--- instance ToRow SMPServer where
---   toRow SMPServer {host, port, keyHash} = toRow (host, port, keyHash)
-
--- instance FromRow SMPServer where
---   fromRow = SMPServer <$> field <*> field <*> field
-
--- instance ToField AckMode where toField (AckMode mode) = toField $ show mode
-
--- instance FromField AckMode where fromField = AckMode <$$> fromFieldToReadable
-
--- instance ToField QueueStatus where toField = toField . show
-
--- instance ToRow ReceiveQueue where
---   toRow ReceiveQueue {rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status} =
---     toRow (rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)
-
--- instance FromRow ReceiveQueue where
---   fromRow = ReceiveQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
-
--- instance ToRow SendQueue where
---   toRow SendQueue {sndId, sndPrivateKey, encryptKey, signKey, status} =
---     toRow (sndId, sndPrivateKey, encryptKey, signKey, status)
-
--- instance FromRow SendQueue where
---   fromRow = SendQueue undefined <$> field <*> field <*> field <*> field <*> field <*> field
-
--- instance FromRow ConnAlias where
---   fromRow = field
-
--- instance ToField QueueDirection where toField = toField . show
 
 createRcvQueueAndConn :: DB.Connection -> ReceiveQueue -> IO ()
 createRcvQueueAndConn dbConn rcvQueue =
@@ -384,16 +355,45 @@ _updateSndQueueStatusQuery =
     WHERE host = :host AND port = :port AND snd_id = :snd_id;
   |]
 
--- -- TODO add parser and serializer for DeliveryStatus? Pass DeliveryStatus?
--- insertMsg :: MonadUnliftIO m => SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> Message -> m ()
--- insertMsg store connAlias qDirection agentMsgId msg = do
---   ts <- liftIO getCurrentTime
---   void $
---     insertWithLock
---       store
---       messagesLock
---       [sql|
---         INSERT INTO messages (conn_alias, agent_msg_id, timestamp, message, direction, msg_status)
---         VALUES (?,?,?,?,?,"MDTransmitted");
---       |]
---       (Only connAlias :. Only agentMsgId :. Only ts :. Only qDirection :. Only msg)
+-- ? rewrite with ExceptT?
+insertRcvMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
+insertRcvMsg dbConn connAlias agentMsgId aMsg =
+  DB.withTransaction dbConn $ do
+    queues <- retrieveConnQueues dbConn connAlias
+    case queues of
+      (Just _rcvQ, _) -> do
+        _insertMsg dbConn connAlias RCV agentMsgId aMsg
+        return $ Right ()
+      (Nothing, Just _sndQ) -> return $ Left SEBadQueueDirection
+      _ -> return $ Left SEBadConn
+
+-- ? rewrite with ExceptT?
+insertSndMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
+insertSndMsg dbConn connAlias agentMsgId aMsg =
+  DB.withTransaction dbConn $ do
+    queues <- retrieveConnQueues dbConn connAlias
+    case queues of
+      (_, Just _sndQ) -> do
+        _insertMsg dbConn connAlias SND agentMsgId aMsg
+        return $ Right ()
+      (Just _rcvQ, Nothing) -> return $ Left SEBadQueueDirection
+      _ -> return $ Left SEBadConn
+
+-- TODO add parser and serializer for DeliveryStatus? Pass DeliveryStatus?
+_insertMsg :: DB.Connection -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> IO ()
+_insertMsg dbConn connAlias qDirection agentMsgId aMsg = do
+  let msg = serializeAgentMessage aMsg
+  ts <- liftIO getCurrentTime
+  DB.executeNamed
+    dbConn
+    _insertMsgQuery
+    [":agent_msg_id" := agentMsgId, ":conn_alias" := connAlias, ":timestamp" := ts, ":message" := msg, ":message" := qDirection]
+
+_insertMsgQuery :: Query
+_insertMsgQuery =
+  [sql|
+    INSERT INTO messages
+      ( agent_msg_id, conn_alias, timestamp, message, direction, msg_status)
+    VALUES
+      (:agent_msg_id,:conn_alias,:timestamp,:message,:direction,"MDTransmitted");
+  |]
