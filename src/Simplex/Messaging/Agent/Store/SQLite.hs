@@ -80,15 +80,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
   upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sndQueue =
-    liftIO (updateRcvConnWithSndQueue dbConn connAlias sndQueue) >>= \case
-      Right () -> return ()
-      Left e -> throwError e
+    liftIO (updateRcvConnWithSndQueue dbConn connAlias sndQueue) >>= liftEither
 
   upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
   upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rcvQueue =
-    liftIO (updateSndConnWithRcvQueue dbConn connAlias rcvQueue) >>= \case
-      Right () -> return ()
-      Left e -> throwError e
+    liftIO (updateSndConnWithRcvQueue dbConn connAlias rcvQueue) >>= liftEither
 
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
   removeSndAuth _st _connAlias = throwError SENotImplemented
