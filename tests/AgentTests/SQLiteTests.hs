@@ -41,6 +41,7 @@ action `returnsResult` r = runExceptT action `shouldReturn` Right r
 throwsError :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> e -> Expectation
 action `throwsError` e = runExceptT action `shouldReturn` Left e
 
+-- TODO add null port tests
 storeTests :: Spec
 storeTests = withStore do
   describe "foreign keys enabled" testForeignKeysEnabled
@@ -192,6 +193,7 @@ testDeleteConnReceive = do
       `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
     deleteConn store "conn1"
       `returnsResult` ()
+    -- TODO check queues are deleted as well
     getConn store "conn1"
       `throwsError` SEBadConn
 
@@ -214,6 +216,7 @@ testDeleteConnSend = do
       `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
     deleteConn store "conn1"
       `returnsResult` ()
+    -- TODO check queues are deleted as well
     getConn store "conn1"
       `throwsError` SEBadConn
 
@@ -250,6 +253,7 @@ testDeleteConnDuplex = do
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
     deleteConn store "conn1"
       `returnsResult` ()
+    -- TODO check queues are deleted as well
     getConn store "conn1"
       `throwsError` SEBadConn
 
