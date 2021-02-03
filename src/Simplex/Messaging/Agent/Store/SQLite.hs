@@ -5,7 +5,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Simplex.Messaging.Agent.Store.SQLite
-  ( SQLiteStore,
+  ( SQLiteStore (..),
     newSQLiteStore,
   )
 where

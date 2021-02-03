@@ -161,13 +161,13 @@ newReceiveQueue c srv connAlias = do
         ReceiveQueue
           { server = srv,
             rcvId,
+            connAlias,
             rcvPrivateKey,
             sndId = Just sId,
             sndKey = Nothing,
             decryptKey,
             verifyKey = Nothing,
-            status = New,
-            ackMode = AckMode On
+            status = New
           }
   addSubscription c rq connAlias
   return (rq, SMPQueueInfo srv sId encryptKey)
