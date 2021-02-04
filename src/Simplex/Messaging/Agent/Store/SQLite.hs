@@ -69,28 +69,38 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
   upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sndQueue =
-    liftIO (updateRcvConnWithSndQueue dbConn connAlias sndQueue) >>= liftEither
+    liftIO
+      (updateRcvConnWithSndQueue dbConn connAlias sndQueue)
+      >>= liftEither
 
   upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
   upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rcvQueue =
-    liftIO (updateSndConnWithRcvQueue dbConn connAlias rcvQueue) >>= liftEither
+    liftIO
+      (updateSndConnWithRcvQueue dbConn connAlias rcvQueue)
+      >>= liftEither
 
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
   removeSndAuth _st _connAlias = throwError SENotImplemented
 
   setRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
   setRcvQueueStatus SQLiteStore {dbConn} rcvQueue status =
-    liftIO $ updateRcvQueueStatus dbConn rcvQueue status
+    liftIO $
+      updateRcvQueueStatus dbConn rcvQueue status
 
   setSndQueueStatus :: SQLiteStore -> SendQueue -> QueueStatus -> m ()
   setSndQueueStatus SQLiteStore {dbConn} sndQueue status =
-    liftIO $ updateSndQueueStatus dbConn sndQueue status
+    liftIO $
+      updateSndQueueStatus dbConn sndQueue status
 
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
-  createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg = do
-    case qDirection of
-      RCV -> liftIO (insertRcvMsg dbConn connAlias agentMsgId aMsg) >>= liftEither
-      SND -> liftIO (insertSndMsg dbConn connAlias agentMsgId aMsg) >>= liftEither
+  createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
+    liftIO
+      (insertMsg dbConn connAlias agentMsgId aMsg)
+      >>= liftEither
+    where
+      insertMsg = case qDirection of
+        RCV -> insertRcvMsg
+        SND -> insertSndMsg
 
   getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
   getLastMsg _st _connAlias _dir = throwError SENotImplemented
