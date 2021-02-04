@@ -431,7 +431,10 @@ testSetQueueStatusConnDuplex = do
     setSndQueueStatus store sndQueue Confirmed
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue {status = Secured} sndQueue {status = Confirmed})
+      `returnsResult` SomeConn
+        SCDuplex
+        ( DuplexConnection "conn1" rcvQueue {status = Secured} sndQueue {status = Confirmed}
+        )
 
 testSetNonexistentSendQueueStatus :: SpecWith SQLiteStore
 testSetNonexistentSendQueueStatus = do

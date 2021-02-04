@@ -45,9 +45,8 @@ serializePort_ :: Maybe ServiceName -> ServiceName
 serializePort_ = fromMaybe "_"
 
 deserializePort_ :: ServiceName -> Maybe ServiceName
-deserializePort_ port
-  | port == "_" = Nothing
-  | otherwise = Just port
+deserializePort_ "_" = Nothing
+deserializePort_ port = Just port
 
 instance ToField QueueStatus where toField = toField . show
 
@@ -113,7 +112,17 @@ insertRcvQueue_ dbConn ReceiveQueue {..} = do
   DB.executeNamed
     dbConn
     insertRcvQueueQuery_
-    [":host" := host server, ":port" := port_, ":rcv_id" := rcvId, ":conn_alias" := connAlias, ":rcv_private_key" := rcvPrivateKey, ":snd_id" := sndId, ":snd_key" := sndKey, ":decrypt_key" := decryptKey, ":verify_key" := verifyKey, ":status" := status]
+    [ ":host" := host server,
+      ":port" := port_,
+      ":rcv_id" := rcvId,
+      ":conn_alias" := connAlias,
+      ":rcv_private_key" := rcvPrivateKey,
+      ":snd_id" := sndId,
+      ":snd_key" := sndKey,
+      ":decrypt_key" := decryptKey,
+      ":verify_key" := verifyKey,
+      ":status" := status
+    ]
 
 insertRcvQueueQuery_ :: Query
 insertRcvQueueQuery_ =
@@ -147,7 +156,15 @@ insertSndQueue_ dbConn SendQueue {..} = do
   DB.executeNamed
     dbConn
     insertSndQueueQuery_
-    [":host" := host server, ":port" := port_, ":snd_id" := sndId, ":conn_alias" := connAlias, ":snd_private_key" := sndPrivateKey, ":encrypt_key" := encryptKey, ":sign_key" := signKey, ":status" := status]
+    [ ":host" := host server,
+      ":port" := port_,
+      ":snd_id" := sndId,
+      ":conn_alias" := connAlias,
+      ":snd_private_key" := sndPrivateKey,
+      ":encrypt_key" := encryptKey,
+      ":sign_key" := signKey,
+      ":status" := status
+    ]
 
 insertSndQueueQuery_ :: Query
 insertSndQueueQuery_ =
@@ -179,12 +196,12 @@ retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Mayb
 retrieveConnQueues dbConn connAlias =
   DB.withTransaction -- Avoid inconsistent state between queue reads
     dbConn
-    $ retrieveConnQueuesTransactionless_ dbConn connAlias
+    $ retrieveConnQueues_ dbConn connAlias
 
 -- Separate transactionless version of retrieveConnQueues to be reused in other functions that already wrap
 -- multiple statements in transaction - otherwise they'd be attempting to start a transaction within a transaction
-retrieveConnQueuesTransactionless_ :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Maybe SendQueue)
-retrieveConnQueuesTransactionless_ dbConn connAlias = do
+retrieveConnQueues_ :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Maybe SendQueue)
+retrieveConnQueues_ dbConn connAlias = do
   rcvQ <- retrieveRcvQueueByConnAlias_ dbConn connAlias
   sndQ <- retrieveSndQueueByConnAlias_ dbConn connAlias
   return (rcvQ, sndQ)
@@ -205,7 +222,9 @@ retrieveRcvQueueByConnAlias_ dbConn connAlias = do
 retrieveRcvQueueByConnAliasQuery_ :: Query
 retrieveRcvQueueByConnAliasQuery_ =
   [sql|
-    SELECT s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key, q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
+    SELECT
+      s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
+      q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
     FROM rcv_queues q
     INNER JOIN servers s ON q.host = s.host AND q.port = s.port
     WHERE q.conn_alias = :conn_alias;
@@ -227,7 +246,9 @@ retrieveSndQueueByConnAlias_ dbConn connAlias = do
 retrieveSndQueueByConnAliasQuery_ :: Query
 retrieveSndQueueByConnAliasQuery_ =
   [sql|
-    SELECT s.key_hash, q.host, q.port, q.snd_id, q.conn_alias, q.snd_private_key, q.encrypt_key, q.sign_key, q.status
+    SELECT
+      s.key_hash, q.host, q.port, q.snd_id, q.conn_alias,
+      q.snd_private_key, q.encrypt_key, q.sign_key, q.status
     FROM snd_queues q
     INNER JOIN servers s ON q.host = s.host AND q.port = s.port
     WHERE q.conn_alias = :conn_alias;
@@ -252,7 +273,9 @@ retrieveRcvQueue dbConn host port rcvId = do
 retrieveRcvQueueQuery_ :: Query
 retrieveRcvQueueQuery_ =
   [sql|
-    SELECT s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key, q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
+    SELECT
+      s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
+      q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
     FROM rcv_queues q
     INNER JOIN servers s ON q.host = s.host AND q.port = s.port
     WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
@@ -269,7 +292,7 @@ deleteConnCascade dbConn connAlias =
 updateRcvConnWithSndQueue :: DB.Connection -> ConnAlias -> SendQueue -> IO (Either StoreError ())
 updateRcvConnWithSndQueue dbConn connAlias sndQueue =
   DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueuesTransactionless_ dbConn connAlias
+    queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (Just _rcvQ, Nothing) -> do
         upsertServer_ dbConn (server (sndQueue :: SendQueue))
@@ -300,7 +323,7 @@ updateConnWithSndQueueQuery_ =
 updateSndConnWithRcvQueue :: DB.Connection -> ConnAlias -> ReceiveQueue -> IO (Either StoreError ())
 updateSndConnWithRcvQueue dbConn connAlias rcvQueue =
   DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueuesTransactionless_ dbConn connAlias
+    queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (Nothing, Just _sndQ) -> do
         upsertServer_ dbConn (server (rcvQueue :: ReceiveQueue))
@@ -363,7 +386,7 @@ updateSndQueueStatusQuery_ =
 insertRcvMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
 insertRcvMsg dbConn connAlias agentMsgId aMsg =
   DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueuesTransactionless_ dbConn connAlias
+    queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (Just _rcvQ, _) -> do
         insertMsg_ dbConn connAlias RCV agentMsgId aMsg
@@ -375,7 +398,7 @@ insertRcvMsg dbConn connAlias agentMsgId aMsg =
 insertSndMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
 insertSndMsg dbConn connAlias agentMsgId aMsg =
   DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueuesTransactionless_ dbConn connAlias
+    queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (_, Just _sndQ) -> do
         insertMsg_ dbConn connAlias SND agentMsgId aMsg
@@ -391,7 +414,12 @@ insertMsg_ dbConn connAlias qDirection agentMsgId aMsg = do
   DB.executeNamed
     dbConn
     insertMsgQuery_
-    [":agent_msg_id" := agentMsgId, ":conn_alias" := connAlias, ":timestamp" := ts, ":message" := msg, ":direction" := qDirection]
+    [ ":agent_msg_id" := agentMsgId,
+      ":conn_alias" := connAlias,
+      ":timestamp" := ts,
+      ":message" := msg,
+      ":direction" := qDirection
+    ]
 
 insertMsgQuery_ :: Query
 insertMsgQuery_ =

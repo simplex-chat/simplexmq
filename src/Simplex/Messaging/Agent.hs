@@ -36,10 +36,10 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server (randomBytes)
 import Simplex.Messaging.Transport (putLn, runTCPServer)
 import Simplex.Messaging.Types (CorrId (..), MsgBody, PrivateKey, SenderKey)
+import System.IO (Handle)
 import UnliftIO.Async (race_)
 import UnliftIO.Exception (SomeException)
 import qualified UnliftIO.Exception as E
-import UnliftIO.IO (Handle)
 import UnliftIO.STM
 
 runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m ()
