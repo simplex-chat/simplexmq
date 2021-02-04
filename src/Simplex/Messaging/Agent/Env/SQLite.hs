@@ -10,7 +10,6 @@ import Crypto.Random
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Util (SQLiteStore)
 import Simplex.Messaging.Client
 import UnliftIO.STM
 
