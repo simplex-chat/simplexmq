@@ -80,7 +80,7 @@ testForeignKeysEnabled = do
               ("conn1", "smp.simplex.im", "5223", "1234", "smp.simplex.im", "5223", "2345");
           |]
     DB.execute_ (dbConn store) inconsistent_query
-      `shouldThrow` (const True :: Selector DB.SQLError)
+      `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
