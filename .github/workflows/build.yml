@@ -9,7 +9,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  build:
+    name: build
     runs-on: ubuntu-latest # TODO matrix testing
     steps:
       - name: Clone project
