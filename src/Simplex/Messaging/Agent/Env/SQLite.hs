@@ -10,7 +10,6 @@ import Crypto.Random
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Util (SQLiteStore)
 import Simplex.Messaging.Client
 import UnliftIO.STM
 
@@ -29,8 +28,8 @@ data Env = Env
     clientCounter :: TVar Int
   }
 
-newEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newEnv config = do
+newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
+newSMPAgentEnv config = do
   idsDrg <- drgNew >>= newTVarIO
   db <- newSQLiteStore $ dbFile config
   clientCounter <- newTVarIO 0

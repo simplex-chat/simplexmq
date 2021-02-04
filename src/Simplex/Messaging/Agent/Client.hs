@@ -161,13 +161,13 @@ newReceiveQueue c srv connAlias = do
         ReceiveQueue
           { server = srv,
             rcvId,
+            connAlias,
             rcvPrivateKey,
             sndId = Just sId,
             sndKey = Nothing,
             decryptKey,
             verifyKey = Nothing,
-            status = New,
-            ackMode = AckMode On
+            status = New
           }
   addSubscription c rq connAlias
   return (rq, SMPQueueInfo srv sId encryptKey)
@@ -270,12 +270,12 @@ sendAgentMessage c SendQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg
 
 mkAgentMessage :: MonadUnliftIO m => PrivateKey -> AMessage -> m ByteString
 mkAgentMessage _encKey agentMessage = do
-  agentTimestamp <- liftIO getCurrentTime
+  senderTimestamp <- liftIO getCurrentTime
   let msg =
         serializeSMPMessage
           SMPMessage
-            { agentMsgId = 0,
-              agentTimestamp,
+            { senderMsgId = 0,
+              senderTimestamp,
               previousMsgHash = "1234", -- TODO hash of the previous message
               agentMessage
             }
