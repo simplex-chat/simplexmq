@@ -46,13 +46,13 @@ data Cmd where
 
 deriving instance Show Cmd
 
-type Signed = (CorrId, QueueId, Cmd)
+type Transmission = (CorrId, QueueId, Cmd)
 
-type Transmission = (C.Signature, Signed)
+type SignedTransmission = (C.Signature, Transmission)
 
-type SignedOrError = (CorrId, QueueId, Either ErrorType Cmd)
+type TransmissionOrError = (CorrId, QueueId, Either ErrorType Cmd)
 
-type TransmissionOrError = (C.Signature, SignedOrError)
+type SignedTransmissionOrError = (C.Signature, TransmissionOrError)
 
 type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
 
@@ -143,7 +143,7 @@ tGetRaw h = do
   command <- getLn h
   return (signature, corrId, queueId, command)
 
-tPut :: MonadIO m => Handle -> Transmission -> m ()
+tPut :: MonadIO m => Handle -> SignedTransmission -> m ()
 tPut h (C.Signature sig, (corrId, queueId, command)) =
   liftIO $ tPutRaw h (encode sig, bs corrId, encode queueId, serializeCommand command)
 
@@ -159,16 +159,16 @@ fromServer = \case
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
-tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m TransmissionOrError
+tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m SignedTransmissionOrError
 tGet fromParty h = do
   (signature, corrId, queueId, command) <- liftIO $ tGetRaw h
   let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
   either (const $ tError corrId) tParseLoadBody decodedTransmission
   where
-    tError :: ByteString -> m TransmissionOrError
+    tError :: ByteString -> m SignedTransmissionOrError
     tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left $ SYNTAX errBadTransmission))
 
-    tParseLoadBody :: RawTransmission -> m TransmissionOrError
+    tParseLoadBody :: RawTransmission -> m SignedTransmissionOrError
     tParseLoadBody t@(sig, corrId, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd

@@ -58,8 +58,8 @@ data SMPClient = SMPClient
     smpServer :: SMPServer,
     clientCorrId :: TVar Natural,
     sentCommands :: TVar (Map CorrId Request),
-    sndQ :: TBQueue Transmission,
-    rcvQ :: TBQueue TransmissionOrError,
+    sndQ :: TBQueue SignedTransmission,
+    rcvQ :: TBQueue SignedTransmissionOrError,
     msgQ :: TBQueue SMPServerTransmission
   }
 
@@ -228,12 +228,12 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = Excep
       return . CorrId . B.pack $ show i
 
     -- TODO this is a stub - to replace with cryptographic signature
-    signTransmission :: Signed -> Maybe C.PrivateKey -> IO (Either SMPClientError Transmission)
+    signTransmission :: Transmission -> Maybe C.PrivateKey -> IO (Either SMPClientError SignedTransmission)
     signTransmission signed = \case
       Nothing -> return $ Right (C.Signature "", signed)
       Just pk -> bimap SMPCryptoError (,signed) <$> C.signStub pk ""
 
-    send :: CorrId -> Transmission -> STM (TMVar (Either SMPClientError Cmd))
+    send :: CorrId -> SignedTransmission -> STM (TMVar (Either SMPClientError Cmd))
     send corrId t = do
       r <- newEmptyTMVar
       modifyTVar sentCommands . M.insert corrId $ Request qId r

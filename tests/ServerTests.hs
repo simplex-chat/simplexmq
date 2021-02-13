@@ -29,10 +29,10 @@ serverTests = do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
 
-pattern Resp :: CorrId -> QueueId -> Command 'Broker -> TransmissionOrError
+pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- (C.Signature "", (corrId, queueId, Right (Cmd SBroker command)))
 
-sendRecv :: Handle -> (ByteString, ByteString, ByteString, ByteString) -> IO TransmissionOrError
+sendRecv :: Handle -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
 
 (>#>) :: RawTransmission -> RawTransmission -> Expectation
