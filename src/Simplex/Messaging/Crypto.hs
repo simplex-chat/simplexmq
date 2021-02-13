@@ -1,16 +1,22 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Crypto where
 
 import Crypto.Hash.Algorithms (SHA256 (..))
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
+import Crypto.Number.Serialize (i2osp, os2ip)
 import Crypto.PubKey.RSA (PublicKey (..))
 import qualified Crypto.PubKey.RSA as C
 import qualified Crypto.PubKey.RSA.PSS as PSS
 import Crypto.Random (MonadRandom)
-import Data.ByteString (ByteString)
-import Simplex.Messaging.Util ((<$$>))
+import Data.Attoparsec.ByteString.Char8 (Parser)
+import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Base64
+import Data.ByteString.Char8 (ByteString)
+import Simplex.Messaging.Agent.Transmission (base64P)
+import Simplex.Messaging.Util (bshow, (<$$>))
 
 data PrivateKey = PrivateKey
   { private_size :: Int,
@@ -55,6 +61,38 @@ verify k (Signature sig) msg =
   if PSS.verify pssParams k msg sig
     then Just $ Verified msg
     else Nothing
+
+serializePubKey :: PublicKey -> ByteString
+serializePubKey k = serializeKey_ (public_size k, public_n k, public_e k)
+
+serializePrivKey :: PrivateKey -> ByteString
+serializePrivKey pk = serializeKey_ (private_size pk, private_n pk, private_d pk)
+
+serializeKey_ :: (Int, Integer, Integer) -> ByteString
+serializeKey_ (size, n, ex) = bshow size <> "," <> encInt n <> "," <> encInt ex
+  where
+    encInt = encode . i2osp
+
+pubKeyP :: Parser PublicKey
+pubKeyP = do
+  (public_size, public_n, public_e) <- keyParser_
+  return PublicKey {public_size, public_n, public_e}
+
+privKeyP :: Parser PrivateKey
+privKeyP = do
+  (private_size, private_n, private_d) <- keyParser_
+  return PrivateKey {private_size, private_n, private_d}
+
+parsePubKey :: ByteString -> Either String PublicKey
+parsePubKey = A.parseOnly (pubKeyP <* A.endOfInput)
+
+parsePrivKey :: ByteString -> Either String PrivateKey
+parsePrivKey = A.parseOnly (privKeyP <* A.endOfInput)
+
+keyParser_ :: Parser (Int, Integer, Integer)
+keyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
+  where
+    intP = os2ip <$> base64P
 
 rsaPrivateKey :: PrivateKey -> C.PrivateKey
 rsaPrivateKey pk =
