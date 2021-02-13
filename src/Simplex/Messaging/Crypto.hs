@@ -1,48 +1,75 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Crypto where
 
+import Crypto.Hash.Algorithms (SHA256 (..))
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
-import Crypto.PubKey.RSA hiding (PrivateKey, PublicKey)
-import qualified Crypto.PubKey.RSA as RSA
-import Crypto.PubKey.RSA.Types (private_n)
+import Crypto.PubKey.RSA (PublicKey (..))
+import qualified Crypto.PubKey.RSA as C
+import qualified Crypto.PubKey.RSA.PSS as PSS
 import Crypto.Random (MonadRandom)
-
-data PublicKey = PublicKey
-  { pub_size :: Int,
-    pub_n :: Integer,
-    pub_e :: Integer
-  }
-  deriving (Show)
+import Data.ByteString (ByteString)
+import Simplex.Messaging.Util ((<$$>))
 
 data PrivateKey = PrivateKey
-  { priv_size :: Int,
-    priv_n :: Integer,
-    priv_d :: Integer
+  { private_size :: Int,
+    private_n :: Integer,
+    private_d :: Integer
   }
   deriving (Show)
 
 type KeyPair = (PublicKey, PrivateKey)
 
+newtype Signature = Signature ByteString
+
+newtype Verified = Verified ByteString
+
 pubExpRange :: Integer
 pubExpRange = 2 ^ (1024 :: Int)
 
-generateKeyPair :: MonadRandom m => Int -> m (KeyPair, Int)
-generateKeyPair size = loop 1
+generateKeyPair :: MonadRandom m => Int -> m KeyPair
+generateKeyPair size = loop
   where
-    loop i = do
-      (pub, priv) <- RSA.generate size =<< publicExponent
-      if smallPrivateExponent priv
-        then loop (i + 1)
-        else
-          let s = public_size pub
-              n = public_n pub
-           in return
-                ( ( PublicKey {pub_size = s, pub_n = n, pub_e = public_e pub},
-                    PrivateKey {priv_size = s, priv_n = n, priv_d = private_d priv}
-                  ),
-                  i
+    loop = do
+      (pub, priv) <- C.generate size =<< publicExponent
+      let n = public_n pub
+          d = C.private_d priv
+       in if d * d < n
+            then loop
+            else
+              return
+                ( pub,
+                  PrivateKey {private_size = public_size pub, private_n = n, private_d = d}
                 )
     publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange
-    smallPrivateExponent pk = let d = private_d pk in d * d < private_n pk
+
+pssParams :: PSS.PSSParams SHA256 ByteString ByteString
+pssParams = PSS.defaultPSSParams SHA256
+
+sign :: MonadRandom m => PrivateKey -> ByteString -> m (Either C.Error Signature)
+sign k msg = Signature <$$> PSS.signSafer pssParams (rsaPrivateKey k) msg
+
+verify :: PublicKey -> Signature -> ByteString -> Maybe Verified
+verify k (Signature sig) msg =
+  if PSS.verify pssParams k msg sig
+    then Just $ Verified msg
+    else Nothing
+
+rsaPrivateKey :: PrivateKey -> C.PrivateKey
+rsaPrivateKey PrivateKey {private_size, private_n, private_d} =
+  C.PrivateKey
+    { C.private_pub =
+        PublicKey
+          { public_size = private_size,
+            public_n = private_n,
+            public_e = undefined
+          },
+      C.private_d = private_d,
+      C.private_p = undefined,
+      C.private_q = undefined,
+      C.private_dP = undefined,
+      C.private_dQ = undefined,
+      C.private_qinv = undefined
+    }
