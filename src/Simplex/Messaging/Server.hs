@@ -141,7 +141,8 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           DEL -> delQueueAndMsgs st
       where
         createQueue :: QueueStore -> RecipientKey -> m Signed
-        createQueue st rKey = mkResp corrId B.empty <$> addSubscribe
+        createQueue st rKey =
+          mkResp corrId B.empty <$> addSubscribe
           where
             addSubscribe =
               addQueueRetry 3 >>= \case

@@ -11,16 +11,20 @@
 
 module Simplex.Messaging.Protocol where
 
+import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.IO.Class
+import Data.Attoparsec.ByteString.Char8 (Parser)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (ord)
+import Data.Functor (($>))
 import Data.Kind
 import Data.Time.Clock
 import Data.Time.ISO8601
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Types
 import Simplex.Messaging.Util
@@ -76,65 +80,39 @@ deriving instance Show (Command a)
 
 deriving instance Eq (Command a)
 
-parseCommand :: ByteString -> Either ErrorType Cmd
-parseCommand command = case B.words command of
-  ["NEW", rKeyStr] -> case C.parsePubKey rKeyStr of
-    Right rKey -> rCmd $ NEW rKey
-    _ -> errParams
-  ["SUB"] -> rCmd SUB
-  ["KEY", sKeyStr] -> case C.parsePubKey sKeyStr of
-    Right sKey -> rCmd $ KEY sKey
-    _ -> errParams
-  ["ACK"] -> rCmd ACK
-  ["OFF"] -> rCmd OFF
-  ["DEL"] -> rCmd DEL
-  ["SEND"] -> errParams
-  "SEND" : msgBody -> Right . Cmd SSender . SEND $ B.unwords msgBody
-  ["IDS", rIdStr, sIdStr] -> case decode rIdStr of
-    Right rId -> case decode sIdStr of
-      Right sId -> bCmd $ IDS rId sId
-      _ -> errParams
-    _ -> errParams
-  ["MSG", msgIdStr, ts, msgBody] -> case decode msgIdStr of
-    Right msgId -> case parseISO8601 $ B.unpack ts of
-      Just utc -> bCmd $ MSG msgId utc msgBody
-      _ -> errParams
-    _ -> errParams
-  ["END"] -> bCmd END
-  ["OK"] -> bCmd OK
-  "ERR" : err -> case err of
-    ["UNKNOWN"] -> bErr UNKNOWN
-    ["PROHIBITED"] -> bErr PROHIBITED
-    ["SYNTAX", errCode] -> maybe errParams (bErr . SYNTAX) $ digitToInt $ B.unpack errCode
-    ["SIZE"] -> bErr SIZE
-    ["AUTH"] -> bErr AUTH
-    ["INTERNAL"] -> bErr INTERNAL
-    _ -> errParams
-  "NEW" : _ -> errParams
-  "SUB" : _ -> errParams
-  "KEY" : _ -> errParams
-  "ACK" : _ -> errParams
-  "OFF" : _ -> errParams
-  "DEL" : _ -> errParams
-  "MSG" : _ -> errParams
-  "IDS" : _ -> errParams
-  "END" : _ -> errParams
-  "OK" : _ -> errParams
-  _ -> Left UNKNOWN
+commandP :: Parser Cmd
+commandP =
+  "NEW " *> newCmd
+    <|> "IDS " *> idsResp
+    <|> "SUB" $> Cmd SRecipient SUB
+    <|> "KEY " *> keyCmd
+    <|> "ACK" $> Cmd SRecipient ACK
+    <|> "OFF" $> Cmd SRecipient OFF
+    <|> "DEL" $> Cmd SRecipient DEL
+    <|> "SEND " *> sendCmd
+    <|> "MSG " *> message
+    <|> "END" $> Cmd SBroker END
+    <|> "OK" $> Cmd SBroker OK
+    <|> "ERR " *> serverError
   where
-    errParams = Left $ SYNTAX errBadParameters
-    rCmd = Right . Cmd SRecipient
-    bCmd = Right . Cmd SBroker
-    bErr = bCmd . ERR
+    newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
+    idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
+    keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
+    sendCmd = Cmd SSender . SEND <$> A.takeByteString
+    message = do
+      msgId <- base64P <* A.space
+      ts <- tsISO8601P <* A.space
+      Cmd SBroker . MSG msgId ts <$> A.takeByteString
+    serverError = Cmd SBroker . ERR <$> errorType
+    errorType =
+      "PROHIBITED" $> PROHIBITED
+        <|> "SYNTAX " *> (SYNTAX <$> A.decimal)
+        <|> "SIZE" $> SIZE
+        <|> "AUTH" $> AUTH
+        <|> "INTERNAL" $> INTERNAL
 
-digitToInt :: String -> Maybe Int
-digitToInt [c] =
-  let i = ord c - zero
-   in if i >= 0 && i <= 9 then Just i else Nothing
-digitToInt _ = Nothing
-
-zero :: Int
-zero = ord '0'
+parseCommand :: ByteString -> Either ErrorType Cmd
+parseCommand = parse commandP $ SYNTAX errBadSMPCommand
 
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case

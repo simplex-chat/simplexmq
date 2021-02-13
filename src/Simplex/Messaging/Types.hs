@@ -32,13 +32,13 @@ type MsgId = Encoded
 
 type MsgBody = ByteString
 
-data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
+data ErrorType = PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
 
 errBadTransmission :: Int
 errBadTransmission = 1
 
-errBadParameters :: Int
-errBadParameters = 2
+errBadSMPCommand :: Int
+errBadSMPCommand = 2
 
 errNoCredentials :: Int
 errNoCredentials = 3

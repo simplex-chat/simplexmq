@@ -16,11 +16,10 @@ import Control.Applicative ((<|>))
 import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Functor
+import Data.Functor (($>))
 import Data.Kind
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
@@ -30,6 +29,7 @@ import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.Types
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Parsers
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Types
@@ -39,7 +39,6 @@ import Simplex.Messaging.Types
     MsgBody,
     PublicKey,
     SenderKey,
-    errBadParameters,
     errMessageBody,
   )
 import qualified Simplex.Messaging.Types as ST
@@ -142,11 +141,8 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
       SMPMessage
         <$> A.decimal <* A.space
         <*> tsISO8601P <* A.space
-        <*> C.base64P <* A.endOfLine
+        <*> base64P <* A.endOfLine
         <*> agentMessageP
-
-tsISO8601P :: Parser UTCTime
-tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
 
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
@@ -166,7 +162,7 @@ agentMessageP =
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
   where
-    hello = HELLO <$> C.base64P <*> ackMode
+    hello = HELLO <$> base64P <*> ackMode
     reply = REPLY <$> smpQueueInfoP
     a_msg = do
       size :: Int <- A.decimal
@@ -175,23 +171,17 @@ agentMessageP =
 
 smpQueueInfoP :: Parser SMPQueueInfo
 smpQueueInfoP =
-  "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> C.base64P <* "::" <*> C.base64P)
+  "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> base64P)
 
 smpServerP :: Parser SMPServer
 smpServerP = SMPServer <$> server <*> port <*> msgHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
     port = A.char ':' *> (Just . show <$> (A.decimal :: Parser Int)) <|> pure Nothing
-    msgHash = A.char '#' *> (Just <$> C.base64P) <|> pure Nothing
+    msgHash = A.char '#' *> (Just <$> base64P) <|> pure Nothing
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
-
-parse :: Parser a -> e -> (ByteString -> Either e a)
-parse parser err = first (const err) . A.parseOnly (parser <* A.endOfInput)
-
-errParams :: Either AgentErrorType a
-errParams = Left $ SYNTAX errBadParameters
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
@@ -288,8 +278,8 @@ smpErrCorrelationId = 2
 smpUnexpectedResponse :: Natural
 smpUnexpectedResponse = 3
 
-parseCommandP :: Parser ACmd
-parseCommandP =
+commandP :: Parser ACmd
+commandP =
   "NEW " *> newCmd
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
@@ -307,12 +297,12 @@ parseCommandP =
     newCmd = ACmd SClient . NEW <$> smpServerP
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
-    sendCmd = ACmd SClient <$> (SEND <$> A.takeByteString)
-    sentResp = ACmd SAgent <$> (SENT <$> A.decimal)
+    sendCmd = ACmd SClient . SEND <$> A.takeByteString
+    sentResp = ACmd SAgent . SENT <$> A.decimal
     message = do
       m_status <- status <* A.space
       m_recipient <- "R=" *> partyMeta A.decimal
-      m_broker <- "B=" *> partyMeta C.base64P
+      m_broker <- "B=" *> partyMeta base64P
       m_sender <- "S=" *> partyMeta A.decimal
       m_body <- A.takeByteString
       return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
@@ -331,7 +321,7 @@ parseCommandP =
         <|> "HASH" $> MsgBadHash
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse parseCommandP $ SYNTAX errBadCommand
+parseCommand = parse commandP $ SYNTAX errBadCommand
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case

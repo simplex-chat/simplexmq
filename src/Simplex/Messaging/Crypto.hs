@@ -16,7 +16,6 @@ module Simplex.Messaging.Crypto
     parsePubKey,
     privKeyP,
     pubKeyP,
-    base64P,
   )
 where
 
@@ -30,12 +29,12 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
-import Data.Char (isAlphaNum)
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Simplex.Messaging.Parsers (base64P)
 import Simplex.Messaging.Util (bshow, (<$$>))
 
 newtype PublicKey = PublicKey C.PublicKey deriving (Eq, Show)
@@ -62,14 +61,14 @@ instance FromField PublicKey where
   fromField f@(Field (SQLBlob b) _) =
     case parsePubKey b of
       Right k -> Ok k
-      Left e -> returnError ConversionFailed f ("couldn't parse PrivateKey field: " ++ e)
+      Left e -> returnError ConversionFailed f ("couldn't parse PublicKey field: " ++ e)
   fromField f = returnError ConversionFailed f "expecting SQLBlob column type"
 
 type KeyPair = (PublicKey, PrivateKey)
 
-newtype Signature = Signature ByteString
+newtype Signature = Signature ByteString deriving (Show)
 
-newtype Verified = Verified ByteString
+newtype Verified = Verified ByteString deriving (Show)
 
 pubExpRange :: Integer
 pubExpRange = 2 ^ (1024 :: Int)
@@ -142,12 +141,6 @@ keyParser_ :: Parser (Int, Integer, Integer)
 keyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
   where
     intP = os2ip <$> base64P
-
-base64P :: Parser ByteString
-base64P = do
-  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
-  pad <- A.takeWhile (== '=')
-  either fail pure $ decode (str <> pad)
 
 rsaPrivateKey :: PrivateKey -> C.PrivateKey
 rsaPrivateKey pk =
