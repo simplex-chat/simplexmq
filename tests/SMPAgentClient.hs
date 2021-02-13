@@ -109,8 +109,9 @@ cfg :: AgentConfig
 cfg =
   AgentConfig
     { tcpPort = agentTestPort,
-      tbqSize = 1,
+      rsaKeySize = 128,
       connIdBytes = 12,
+      tbqSize = 1,
       dbFile = testDB,
       smpCfg =
         SMPClientConfig

@@ -15,8 +15,9 @@ import UnliftIO.STM
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
-    tbqSize :: Natural,
+    rsaKeySize :: Int,
     connIdBytes :: Int,
+    tbqSize :: Natural,
     dbFile :: String,
     smpCfg :: SMPClientConfig
   }

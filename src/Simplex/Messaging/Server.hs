@@ -23,6 +23,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time.Clock
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore
@@ -86,31 +87,33 @@ receive h Client {rcvQ} = forever $ do
 send :: MonadUnliftIO m => Handle -> Client -> m ()
 send h Client {sndQ} = forever $ do
   signed <- atomically $ readTBQueue sndQ
-  tPut h (B.empty, signed)
+  tPut h (C.Signature B.empty, signed)
 
 mkResp :: CorrId -> QueueId -> Command 'Broker -> Signed
 mkResp corrId queueId command = (corrId, queueId, Cmd SBroker command)
 
 verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => Transmission -> m Signed
-verifyTransmission (signature, (corrId, queueId, cmd)) = do
+verifyTransmission (signature@(C.Signature sig), (corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
     Cmd SRecipient (NEW _) -> return cmd
-    Cmd SRecipient _ -> withQueueRec SRecipient $ verifySignature . recipientKey
-    Cmd SSender (SEND _) -> withQueueRec SSender $ verifySend . senderKey
+    Cmd SRecipient _ -> withQueueRec SRecipient $ return . verifySignature . recipientKey
+    Cmd SSender (SEND _) -> withQueueRec SSender $ return . verifySend . senderKey
   where
     withQueueRec :: SParty (p :: Party) -> (QueueRec -> m Cmd) -> m Cmd
     withQueueRec party f = do
       st <- asks queueStore
       qr <- atomically $ getQueue st party queueId
       either (return . smpErr) f qr
-    verifySend :: Maybe PublicKey -> m Cmd
+    verifySend :: Maybe C.PublicKey -> Cmd
     verifySend
-      | B.null signature = return . maybe cmd (const authErr)
-      | otherwise = maybe (return authErr) verifySignature
+      | B.null sig = maybe cmd (const authErr)
+      | otherwise = maybe authErr verifySignature
     -- TODO stub
-    verifySignature :: PublicKey -> m Cmd
-    verifySignature key = return $ if signature == key then cmd else authErr
+    verifySignature :: C.PublicKey -> Cmd
+    verifySignature key = case C.verifyStub key signature "" of
+      Nothing -> authErr
+      _ -> cmd
 
     smpErr e = Cmd SBroker $ ERR e
     authErr = smpErr AUTH

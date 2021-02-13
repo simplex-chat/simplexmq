@@ -20,6 +20,7 @@ import Data.Char (ord)
 import Data.Kind
 import Data.Time.Clock
 import Data.Time.ISO8601
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Types
 import Simplex.Messaging.Util
@@ -43,11 +44,11 @@ deriving instance Show Cmd
 
 type Signed = (CorrId, QueueId, Cmd)
 
-type Transmission = (Signature, Signed)
+type Transmission = (C.Signature, Signed)
 
 type SignedOrError = (CorrId, QueueId, Either ErrorType Cmd)
 
-type TransmissionOrError = (Signature, SignedOrError)
+type TransmissionOrError = (C.Signature, SignedOrError)
 
 type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
 
@@ -77,11 +78,11 @@ deriving instance Eq (Command a)
 
 parseCommand :: ByteString -> Either ErrorType Cmd
 parseCommand command = case B.words command of
-  ["NEW", rKeyStr] -> case decode rKeyStr of
+  ["NEW", rKeyStr] -> case C.parsePubKey rKeyStr of
     Right rKey -> rCmd $ NEW rKey
     _ -> errParams
   ["SUB"] -> rCmd SUB
-  ["KEY", sKeyStr] -> case decode sKeyStr of
+  ["KEY", sKeyStr] -> case C.parsePubKey sKeyStr of
     Right sKey -> rCmd $ KEY sKey
     _ -> errParams
   ["ACK"] -> rCmd ACK
@@ -137,8 +138,8 @@ zero = ord '0'
 
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
-  Cmd SRecipient (NEW rKey) -> "NEW " <> encode rKey
-  Cmd SRecipient (KEY sKey) -> "KEY " <> encode sKey
+  Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
+  Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
   Cmd SRecipient cmd -> B.pack $ show cmd
   Cmd SSender (SEND msgBody) -> "SEND" <> serializeMsg msgBody
   Cmd SBroker (MSG msgId ts msgBody) ->
@@ -165,8 +166,8 @@ tGetRaw h = do
   return (signature, corrId, queueId, command)
 
 tPut :: MonadIO m => Handle -> Transmission -> m ()
-tPut h (signature, (corrId, queueId, command)) =
-  liftIO $ tPutRaw h (encode signature, bs corrId, encode queueId, serializeCommand command)
+tPut h (C.Signature sig, (corrId, queueId, command)) =
+  liftIO $ tPutRaw h (encode sig, bs corrId, encode queueId, serializeCommand command)
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
@@ -187,13 +188,13 @@ tGet fromParty h = do
   either (const $ tError corrId) tParseLoadBody decodedTransmission
   where
     tError :: ByteString -> m TransmissionOrError
-    tError corrId = return (B.empty, (CorrId corrId, B.empty, Left $ SYNTAX errBadTransmission))
+    tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left $ SYNTAX errBadTransmission))
 
     tParseLoadBody :: RawTransmission -> m TransmissionOrError
-    tParseLoadBody t@(signature, corrId, queueId, command) = do
+    tParseLoadBody t@(sig, corrId, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (signature, (CorrId corrId, queueId, fullCmd))
+      return (C.Signature sig, (CorrId corrId, queueId, fullCmd))
 
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, _, queueId, _) cmd = case cmd of
@@ -207,8 +208,9 @@ tGet fromParty h = do
         | otherwise -> Right cmd
       -- NEW must NOT have signature or queue ID
       Cmd SRecipient (NEW _)
-        | B.null signature && B.null queueId -> Right cmd
-        | otherwise -> Left $ SYNTAX errHasCredentials
+        | B.null signature -> Left $ SYNTAX errNoCredentials
+        | not (B.null queueId) -> Left $ SYNTAX errHasCredentials
+        | otherwise -> Right cmd
       -- SEND must have queue ID, signature is not always required
       Cmd SSender (SEND _)
         | B.null queueId -> Left $ SYNTAX errNoQueueId

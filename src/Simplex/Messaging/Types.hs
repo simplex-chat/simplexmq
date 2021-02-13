@@ -10,6 +10,7 @@ module Simplex.Messaging.Types where
 
 import Data.ByteString.Char8 (ByteString)
 import Data.String
+import qualified Simplex.Messaging.Crypto as C
 
 type Encoded = ByteString
 
@@ -23,11 +24,9 @@ type PublicKey = Encoded
 
 type PrivateKey = Encoded
 
-type Signature = Encoded
+type RecipientKey = C.PublicKey
 
-type RecipientKey = PublicKey
-
-type SenderKey = PublicKey
+type SenderKey = C.PublicKey
 
 type MsgId = Encoded
 

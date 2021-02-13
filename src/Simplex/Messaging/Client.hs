@@ -6,6 +6,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Client
   ( SMPClient,
@@ -32,6 +33,8 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
+import qualified Crypto.PubKey.RSA.Types as RSA
+import Data.Bifunctor (bimap)
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -40,6 +43,7 @@ import GHC.IO.Exception (IOErrorType (..))
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Transmission (SMPServer (..))
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Types
@@ -162,55 +166,60 @@ data SMPClientError
   | SMPQueueIdError
   | SMPUnexpectedResponse
   | SMPResponseTimeout
+  | SMPCryptoError RSA.Error
   | SMPClientError
   deriving (Eq, Show, Exception)
 
-createSMPQueue :: SMPClient -> PrivateKey -> RecipientKey -> ExceptT SMPClientError IO (RecipientId, SenderId)
-createSMPQueue c _rpKey rKey =
+createSMPQueue :: SMPClient -> C.PrivateKey -> RecipientKey -> ExceptT SMPClientError IO (RecipientId, SenderId)
+createSMPQueue c rpKey rKey =
   -- TODO add signing this request too - requires changes in the server
-  sendSMPCommand c "" "" (Cmd SRecipient $ NEW rKey) >>= \case
+  sendSMPCommand c (Just rpKey) "" (Cmd SRecipient $ NEW rKey) >>= \case
     Cmd _ (IDS rId sId) -> return (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
-subscribeSMPQueue :: SMPClient -> PrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
+subscribeSMPQueue :: SMPClient -> C.PrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
-  sendSMPCommand c rpKey rId (Cmd SRecipient SUB) >>= \case
+  sendSMPCommand c (Just rpKey) rId (Cmd SRecipient SUB) >>= \case
     Cmd _ OK -> return ()
     Cmd _ cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
-secureSMPQueue :: SMPClient -> PrivateKey -> RecipientId -> SenderKey -> ExceptT SMPClientError IO ()
+secureSMPQueue :: SMPClient -> C.PrivateKey -> RecipientId -> SenderKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
 
-sendSMPMessage :: SMPClient -> PrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
-sendSMPMessage c spKey sId msg = okSMPCommand (Cmd SSender $ SEND msg) c spKey sId
+sendSMPMessage :: SMPClient -> Maybe C.PrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
+sendSMPMessage c spKey sId msg =
+  sendSMPCommand c spKey sId (Cmd SSender $ SEND msg) >>= \case
+    Cmd _ OK -> return ()
+    _ -> throwE SMPUnexpectedResponse
 
-ackSMPMessage :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
+ackSMPMessage :: SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
-  sendSMPCommand c rpKey rId (Cmd SRecipient ACK) >>= \case
+  sendSMPCommand c (Just rpKey) rId (Cmd SRecipient ACK) >>= \case
     Cmd _ OK -> return ()
     Cmd _ cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
-suspendSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
+suspendSMPQueue :: SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 suspendSMPQueue = okSMPCommand $ Cmd SRecipient OFF
 
-deleteSMPQueue :: SMPClient -> RecipientKey -> QueueId -> ExceptT SMPClientError IO ()
+deleteSMPQueue :: SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
 
-okSMPCommand :: Cmd -> SMPClient -> PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+okSMPCommand :: Cmd -> SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
-  sendSMPCommand c pKey qId cmd >>= \case
+  sendSMPCommand c (Just pKey) qId cmd >>= \case
     Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
-sendSMPCommand :: SMPClient -> PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
+sendSMPCommand :: SMPClient -> Maybe C.PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = ExceptT $ do
   corrId <- atomically getNextCorrId
-  t <- signTransmission (corrId, qId, cmd)
-  atomically (send corrId t) >>= atomically . takeTMVar
+  signTransmission (corrId, qId, cmd) pKey >>= \case
+    Right t -> atomically (send corrId t) >>= atomically . takeTMVar
+    Left e -> return $ Left e
   where
     getNextCorrId :: STM CorrId
     getNextCorrId = do
@@ -219,8 +228,10 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = Excep
       return . CorrId . B.pack $ show i
 
     -- TODO this is a stub - to replace with cryptographic signature
-    signTransmission :: Signed -> IO Transmission
-    signTransmission signed = return (pKey, signed)
+    signTransmission :: Signed -> Maybe C.PrivateKey -> IO (Either SMPClientError Transmission)
+    signTransmission signed = \case
+      Nothing -> return $ Right (C.Signature "", signed)
+      Just pk -> bimap SMPCryptoError (,signed) <$> C.signStub pk ""
 
     send :: CorrId -> Transmission -> STM (TMVar (Either SMPClientError Cmd))
     send corrId t = do

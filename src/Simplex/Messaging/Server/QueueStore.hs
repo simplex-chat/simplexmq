@@ -11,8 +11,8 @@ import Simplex.Messaging.Types
 data QueueRec = QueueRec
   { recipientId :: QueueId,
     senderId :: QueueId,
-    recipientKey :: PublicKey,
-    senderKey :: Maybe PublicKey,
+    recipientKey :: RecipientKey,
+    senderKey :: Maybe SenderKey,
     status :: QueueStatus
   }
 

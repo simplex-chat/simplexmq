@@ -11,8 +11,9 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPClient
-import Simplex.Messaging.Types
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Types
 import System.IO (Handle)
 import System.Timeout
 import Test.HUnit
@@ -29,7 +30,7 @@ serverTests = do
     describe "switch subscription to another SMP queue" testSwitchSub
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> TransmissionOrError
-pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
+pattern Resp corrId queueId command <- (C.Signature "", (corrId, queueId, Right (Cmd SBroker command)))
 
 sendRecv :: Handle -> (ByteString, ByteString, ByteString, ByteString) -> IO TransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
@@ -44,7 +45,7 @@ testCreateSecure :: Spec
 testCreateSecure =
   it "should create (NEW) and secure (KEY) queue" $
     smpTest \h -> do
-      Resp "abcd" rId1 (IDS rId sId) <- sendRecv h ("", "abcd", "", "NEW 1234")
+      Resp "abcd" rId1 (IDS rId sId) <- sendRecv h ("1234", "abcd", "", "NEW 3,1234,1234")
       (rId1, "") #== "creates queue"
 
       Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND :hello")
@@ -64,17 +65,17 @@ testCreateSecure =
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
 
-      Resp "bcda" _ err2 <- sendRecv h ("12345678", "bcda", rId, "KEY 4567")
+      Resp "bcda" _ err2 <- sendRecv h ("12345678", "bcda", rId, "KEY 3,4567,4567")
       (err2, ERR AUTH) #== "rejects KEY with wrong signature (password atm)"
 
-      Resp "cdab" _ err3 <- sendRecv h ("1234", "cdab", sId, "KEY 4567")
+      Resp "cdab" _ err3 <- sendRecv h ("1234", "cdab", sId, "KEY 3,4567,4567")
       (err3, ERR AUTH) #== "rejects KEY with sender's ID"
 
-      Resp "dabc" rId2 ok2 <- sendRecv h ("1234", "dabc", rId, "KEY 4567")
+      Resp "dabc" rId2 ok2 <- sendRecv h ("1234", "dabc", rId, "KEY 3,4567,4567")
       (ok2, OK) #== "secures queue"
       (rId2, rId) #== "same queue ID in response 3"
 
-      Resp "abcd" _ err4 <- sendRecv h ("1234", "abcd", rId, "KEY 4567")
+      Resp "abcd" _ err4 <- sendRecv h ("1234", "abcd", rId, "KEY 3,4567,4567")
       (err4, ERR AUTH) #== "rejects KEY if already secured"
 
       Resp "bcda" _ ok3 <- sendRecv h ("4567", "bcda", sId, "SEND 11\nhello again")
@@ -93,10 +94,10 @@ testCreateDelete :: Spec
 testCreateDelete =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 \rh sh -> do
-      Resp "abcd" rId1 (IDS rId sId) <- sendRecv rh ("", "abcd", "", "NEW 1234")
+      Resp "abcd" rId1 (IDS rId sId) <- sendRecv rh ("1234", "abcd", "", "NEW 3,1234,1234")
       (rId1, "") #== "creates queue"
 
-      Resp "bcda" _ ok1 <- sendRecv rh ("1234", "bcda", rId, "KEY 4567")
+      Resp "bcda" _ ok1 <- sendRecv rh ("1234", "bcda", rId, "KEY 3,4567,4567")
       (ok1, OK) #== "secures queue"
 
       Resp "cdab" _ ok2 <- sendRecv sh ("4567", "cdab", sId, "SEND :hello")
@@ -159,19 +160,19 @@ testDuplex :: Spec
 testDuplex =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 \alice bob -> do
-      Resp "abcd" _ (IDS aRcv aSnd) <- sendRecv alice ("", "abcd", "", "NEW 1234")
+      Resp "abcd" _ (IDS aRcv aSnd) <- sendRecv alice ("1234", "abcd", "", "NEW 3,1234,1234")
       -- aSnd ID is passed to Bob out-of-band
 
-      Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, "SEND :key efgh")
+      Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, "SEND :key 3,efgh,efgh")
       -- "key efgh" is ad-hoc, different from SMP protocol
 
       Resp "" _ (MSG _ _ msg1) <- tGet fromServer alice
       Resp "cdab" _ OK <- sendRecv alice ("1234", "cdab", aRcv, "ACK")
       ["key", key1] <- return $ B.words msg1
-      (key1, "efgh") #== "key received from Bob"
+      (key1, "3,efgh,efgh") #== "key received from Bob"
       Resp "dabc" _ OK <- sendRecv alice ("1234", "dabc", aRcv, "KEY " <> key1)
 
-      Resp "abcd" _ (IDS bRcv bSnd) <- sendRecv bob ("", "abcd", "", "NEW abcd")
+      Resp "abcd" _ (IDS bRcv bSnd) <- sendRecv bob ("abcd", "abcd", "", "NEW 3,abcd,abcd")
       Resp "bcda" _ OK <- sendRecv bob ("efgh", "bcda", aSnd, "SEND :reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, it is not a part of SMP protocol
 
@@ -179,13 +180,13 @@ testDuplex =
       Resp "cdab" _ OK <- sendRecv alice ("1234", "cdab", aRcv, "ACK")
       ["reply_id", bId] <- return $ B.words msg2
       (bId, encode bSnd) #== "reply queue ID received from Bob"
-      Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, "SEND :key 5678")
+      Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, "SEND :key 3,5678,5678")
       -- "key 5678" is ad-hoc, different from SMP protocol
 
       Resp "" _ (MSG _ _ msg3) <- tGet fromServer bob
       Resp "abcd" _ OK <- sendRecv bob ("abcd", "abcd", bRcv, "ACK")
       ["key", key2] <- return $ B.words msg3
-      (key2, "5678") #== "key received from Alice"
+      (key2, "3,5678,5678") #== "key received from Alice"
       Resp "bcda" _ OK <- sendRecv bob ("abcd", "bcda", bRcv, "KEY " <> key2)
 
       Resp "cdab" _ OK <- sendRecv bob ("efgh", "cdab", aSnd, "SEND :hi alice")
@@ -204,7 +205,7 @@ testSwitchSub :: Spec
 testSwitchSub =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 \rh1 rh2 sh -> do
-      Resp "abcd" _ (IDS rId sId) <- sendRecv rh1 ("", "abcd", "", "NEW 1234")
+      Resp "abcd" _ (IDS rId sId) <- sendRecv rh1 ("1234", "abcd", "", "NEW 3,1234,1234")
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND :test1")
       (ok1, OK) #== "sent test message 1"
       Resp "cdab" _ ok2 <- sendRecv sh ("", "cdab", sId, "SEND :test2, no ACK")
@@ -241,16 +242,16 @@ syntaxTests :: Spec
 syntaxTests = do
   it "unknown command" $ ("", "abcd", "1234", "HELLO") >#> ("", "abcd", "1234", "ERR UNKNOWN")
   describe "NEW" do
-    it "no parameters" $ ("", "bcda", "", "NEW") >#> ("", "bcda", "", "ERR SYNTAX 2")
-    it "many parameters" $ ("", "cdab", "", "NEW 1 2") >#> ("", "cdab", "", "ERR SYNTAX 2")
-    it "has signature" $ ("1234", "dabc", "", "NEW 1234") >#> ("", "dabc", "", "ERR SYNTAX 4")
-    it "queue ID" $ ("", "abcd", "12345678", "NEW 1234") >#> ("", "abcd", "12345678", "ERR SYNTAX 4")
+    it "no parameters" $ ("1234", "bcda", "", "NEW") >#> ("", "bcda", "", "ERR SYNTAX 2")
+    it "many parameters" $ ("1234", "cdab", "", "NEW 1 2") >#> ("", "cdab", "", "ERR SYNTAX 2")
+    it "no signature" $ ("", "dabc", "", "NEW 3,1234,1234") >#> ("", "dabc", "", "ERR SYNTAX 3")
+    it "queue ID" $ ("1234", "abcd", "12345678", "NEW 3,1234,1234") >#> ("", "abcd", "12345678", "ERR SYNTAX 4")
   describe "KEY" do
-    it "valid syntax" $ ("1234", "bcda", "12345678", "KEY 4567") >#> ("", "bcda", "12345678", "ERR AUTH")
+    it "valid syntax" $ ("1234", "bcda", "12345678", "KEY 3,4567,4567") >#> ("", "bcda", "12345678", "ERR AUTH")
     it "no parameters" $ ("1234", "cdab", "12345678", "KEY") >#> ("", "cdab", "12345678", "ERR SYNTAX 2")
     it "many parameters" $ ("1234", "dabc", "12345678", "KEY 1 2") >#> ("", "dabc", "12345678", "ERR SYNTAX 2")
-    it "no signature" $ ("", "abcd", "12345678", "KEY 4567") >#> ("", "abcd", "12345678", "ERR SYNTAX 3")
-    it "no queue ID" $ ("1234", "bcda", "", "KEY 4567") >#> ("", "bcda", "", "ERR SYNTAX 3")
+    it "no signature" $ ("", "abcd", "12345678", "KEY 3,4567,4567") >#> ("", "abcd", "12345678", "ERR SYNTAX 3")
+    it "no queue ID" $ ("1234", "bcda", "", "KEY 3,4567,4567") >#> ("", "bcda", "", "ERR SYNTAX 3")
   noParamsSyntaxTest "SUB"
   noParamsSyntaxTest "ACK"
   noParamsSyntaxTest "OFF"

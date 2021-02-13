@@ -20,7 +20,6 @@ import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlphaNum)
 import Data.Functor
 import Data.Kind
 import Data.Time.Clock (UTCTime)
@@ -30,9 +29,19 @@ import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.Types
+import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Types (CorrId (..), Encoded, ErrorType, MsgBody, PublicKey, errBadParameters, errMessageBody)
+import Simplex.Messaging.Types
+  ( CorrId (..),
+    Encoded,
+    ErrorType,
+    MsgBody,
+    PublicKey,
+    SenderKey,
+    errBadParameters,
+    errMessageBody,
+  )
 import qualified Simplex.Messaging.Types as ST
 import Simplex.Messaging.Util
 import System.IO
@@ -102,7 +111,7 @@ deriving instance Show (ACommand p)
 type Message = ByteString
 
 data SMPMessage
-  = SMPConfirmation PublicKey
+  = SMPConfirmation SenderKey
   | SMPMessage
       { senderMsgId :: Integer,
         senderTimestamp :: UTCTime,
@@ -126,14 +135,14 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
         <|> A.endOfLine *> smpClientMessageP
 
     smpConfirmationP :: Parser SMPMessage
-    smpConfirmationP = SMPConfirmation <$> ("KEY " *> base64P <* A.endOfLine)
+    smpConfirmationP = SMPConfirmation <$> ("KEY " *> C.pubKeyP <* A.endOfLine)
 
     smpClientMessageP :: Parser SMPMessage
     smpClientMessageP =
       SMPMessage
         <$> A.decimal <* A.space
         <*> tsISO8601P <* A.space
-        <*> base64P <* A.endOfLine
+        <*> C.base64P <* A.endOfLine
         <*> agentMessageP
 
 tsISO8601P :: Parser UTCTime
@@ -141,7 +150,7 @@ tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeT
 
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
-  SMPConfirmation sKey -> smpMessage ("KEY " <> encode sKey) "" ""
+  SMPConfirmation sKey -> smpMessage ("KEY " <> C.serializePubKey sKey) "" ""
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
     let header = messageHeader senderMsgId senderTimestamp previousMsgHash
         body = serializeAgentMessage agentMessage
@@ -157,7 +166,7 @@ agentMessageP =
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
   where
-    hello = HELLO <$> base64P <*> ackMode
+    hello = HELLO <$> C.base64P <*> ackMode
     reply = REPLY <$> smpQueueInfoP
     a_msg = do
       size :: Int <- A.decimal
@@ -166,20 +175,14 @@ agentMessageP =
 
 smpQueueInfoP :: Parser SMPQueueInfo
 smpQueueInfoP =
-  "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> base64P)
+  "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> C.base64P <* "::" <*> C.base64P)
 
 smpServerP :: Parser SMPServer
 smpServerP = SMPServer <$> server <*> port <*> msgHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
     port = A.char ':' *> (Just . show <$> (A.decimal :: Parser Int)) <|> pure Nothing
-    msgHash = A.char '#' *> (Just <$> base64P) <|> pure Nothing
-
-base64P :: Parser ByteString
-base64P = do
-  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
-  pad <- A.takeWhile (== '=')
-  either fail pure $ decode (str <> pad)
+    msgHash = A.char '#' *> (Just <$> C.base64P) <|> pure Nothing
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
@@ -309,7 +312,7 @@ parseCommandP =
     message = do
       m_status <- status <* A.space
       m_recipient <- "R=" *> partyMeta A.decimal
-      m_broker <- "B=" *> partyMeta base64P
+      m_broker <- "B=" *> partyMeta C.base64P
       m_sender <- "S=" *> partyMeta A.decimal
       m_body <- A.takeByteString
       return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
