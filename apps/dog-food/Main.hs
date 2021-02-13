@@ -27,7 +27,6 @@ import Simplex.Messaging.Agent.Client (AgentClient (..))
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
-import Simplex.Messaging.Crypto
 import Simplex.Messaging.Transport (getLn, putLn)
 import Simplex.Messaging.Util (bshow, raceAny_)
 import qualified System.Console.ANSI as C
@@ -124,15 +123,13 @@ chatHelpInfo =
 
 main :: IO ()
 main = do
-  generateKeyPair 256 >>= print
-
--- ChatOpts {dbFileName, smpServer, name} <- getChatOpts
--- putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
--- t <- getChatClient smpServer (Contact <$> name)
--- -- setLogLevel LogInfo -- LogError
--- -- withGlobalLogging logCfg $
--- env <- newSMPAgentEnv cfg {dbFile = dbFileName}
--- dogFoodChat t env
+  ChatOpts {dbFileName, smpServer, name} <- getChatOpts
+  putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
+  t <- getChatClient smpServer (Contact <$> name)
+  -- setLogLevel LogInfo -- LogError
+  -- withGlobalLogging logCfg $
+  env <- newSMPAgentEnv cfg {dbFile = dbFileName}
+  dogFoodChat t env
 
 dogFoodChat :: ChatClient -> Env -> IO ()
 dogFoodChat t env = do

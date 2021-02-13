@@ -24,10 +24,8 @@ import Crypto.Hash.Algorithms (SHA256 (..))
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
 import Crypto.Number.Serialize (i2osp, os2ip)
-import Crypto.PubKey.RSA (PublicKey (..))
 import qualified Crypto.PubKey.RSA as C
 import qualified Crypto.PubKey.RSA.PSS as PSS
-import Crypto.Random (MonadRandom)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
@@ -39,6 +37,8 @@ import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Util (bshow, (<$$>))
+
+newtype PublicKey = PublicKey C.PublicKey deriving (Eq, Show)
 
 data PrivateKey = PrivateKey
   { private_size :: Int,
@@ -79,14 +79,14 @@ generateKeyPair size = loop
   where
     loop = do
       (pub, priv) <- C.generate size =<< publicExponent
-      let n = public_n pub
+      let n = C.public_n pub
           d = C.private_d priv
        in if d * d < n
             then loop
             else
               return
-                ( pub,
-                  PrivateKey {private_size = public_size pub, private_n = n, private_d = d}
+                ( PublicKey pub,
+                  PrivateKey {private_size = C.public_size pub, private_n = n, private_d = d}
                 )
     publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange
 
@@ -100,19 +100,19 @@ signStub :: PrivateKey -> ByteString -> IO (Either C.Error Signature)
 signStub (PrivateKey _ n _) _ = return . Right . Signature $ i2osp n
 
 verify :: PublicKey -> Signature -> ByteString -> Maybe Verified
-verify k (Signature sig) msg =
+verify (PublicKey k) (Signature sig) msg =
   if PSS.verify pssParams k msg sig
     then Just $ Verified msg
     else Nothing
 
 verifyStub :: PublicKey -> Signature -> ByteString -> Maybe Verified
-verifyStub (PublicKey _ n _) (Signature sig) msg =
+verifyStub (PublicKey (C.PublicKey _ n _)) (Signature sig) msg =
   if i2osp n == sig
     then Just $ Verified msg
     else Nothing
 
 serializePubKey :: PublicKey -> ByteString
-serializePubKey k = serializeKey_ (public_size k, public_n k, public_e k)
+serializePubKey (PublicKey k) = serializeKey_ (C.public_size k, C.public_n k, C.public_e k)
 
 serializePrivKey :: PrivateKey -> ByteString
 serializePrivKey pk = serializeKey_ (private_size pk, private_n pk, private_d pk)
@@ -125,7 +125,7 @@ serializeKey_ (size, n, ex) = bshow size <> "," <> encInt n <> "," <> encInt ex
 pubKeyP :: Parser PublicKey
 pubKeyP = do
   (public_size, public_n, public_e) <- keyParser_
-  return PublicKey {public_size, public_n, public_e}
+  return . PublicKey $ C.PublicKey {C.public_size, C.public_n, C.public_e}
 
 privKeyP :: Parser PrivateKey
 privKeyP = do
@@ -153,14 +153,14 @@ rsaPrivateKey :: PrivateKey -> C.PrivateKey
 rsaPrivateKey pk =
   C.PrivateKey
     { C.private_pub =
-        PublicKey
-          { public_size = private_size pk,
-            public_n = private_n pk,
-            public_e = undefined
+        C.PublicKey
+          { C.public_size = private_size pk,
+            C.public_n = private_n pk,
+            C.public_e = undefined
           },
       C.private_d = private_d pk,
-      C.private_p = undefined,
-      C.private_q = undefined,
+      C.private_p = 0,
+      C.private_q = 0,
       C.private_dP = undefined,
       C.private_dQ = undefined,
       C.private_qinv = undefined
