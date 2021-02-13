@@ -93,27 +93,26 @@ mkResp :: CorrId -> QueueId -> Command 'Broker -> Transmission
 mkResp corrId queueId command = (corrId, queueId, Cmd SBroker command)
 
 verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => SignedTransmission -> m Transmission
-verifyTransmission (signature@(C.Signature sig), (corrId, queueId, cmd)) = do
+verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
     Cmd SRecipient (NEW _) -> return cmd
-    Cmd SRecipient _ -> withQueueRec SRecipient $ return . verifySignature . recipientKey
-    Cmd SSender (SEND _) -> withQueueRec SSender $ return . verifySend . senderKey
+    Cmd SRecipient _ -> withQueueRec SRecipient $ verifySignature . recipientKey
+    Cmd SSender (SEND _) -> withQueueRec SSender $ verifySend sig . senderKey
   where
-    withQueueRec :: SParty (p :: Party) -> (QueueRec -> m Cmd) -> m Cmd
+    withQueueRec :: SParty (p :: Party) -> (QueueRec -> Cmd) -> m Cmd
     withQueueRec party f = do
       st <- asks queueStore
       qr <- atomically $ getQueue st party queueId
-      either (return . smpErr) f qr
-    verifySend :: Maybe C.PublicKey -> Cmd
-    verifySend
-      | B.null sig = maybe cmd (const authErr)
-      | otherwise = maybe authErr verifySignature
-    -- TODO stub
+      return $ either smpErr f qr
+    verifySend :: C.Signature -> Maybe C.PublicKey -> Cmd
+    verifySend (C.Signature "") = maybe cmd (const authErr)
+    verifySend _ = maybe authErr verifySignature
     verifySignature :: C.PublicKey -> Cmd
-    verifySignature key = case C.verifyStub key signature "" of
-      Nothing -> authErr
-      _ -> cmd
+    verifySignature key =
+      if C.verify key sig (serializeTransmission t)
+        then cmd
+        else authErr
 
     smpErr e = Cmd SBroker $ ERR e
     authErr = smpErr AUTH

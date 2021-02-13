@@ -227,11 +227,10 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = Excep
       writeTVar clientCorrId i
       return . CorrId . B.pack $ show i
 
-    -- TODO this is a stub - to replace with cryptographic signature
     signTransmission :: Transmission -> Maybe C.PrivateKey -> IO (Either SMPClientError SignedTransmission)
-    signTransmission signed = \case
-      Nothing -> return $ Right (C.Signature "", signed)
-      Just pk -> bimap SMPCryptoError (,signed) <$> C.signStub pk ""
+    signTransmission t = \case
+      Nothing -> return $ Right (C.Signature "", t)
+      Just pk -> bimap SMPCryptoError (,t) <$> C.sign pk (serializeTransmission t)
 
     send :: CorrId -> SignedTransmission -> STM (TMVar (Either SMPClientError Cmd))
     send corrId t = do

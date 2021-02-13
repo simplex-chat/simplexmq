@@ -7,9 +7,7 @@ module Simplex.Messaging.Crypto
     Signature (..),
     generateKeyPair,
     sign,
-    signStub,
     verify,
-    verifyStub,
     serializePrivKey,
     serializePubKey,
     parsePrivKey,
@@ -95,20 +93,8 @@ pssParams = PSS.defaultPSSParams SHA256
 sign :: PrivateKey -> ByteString -> IO (Either C.Error Signature)
 sign pk msg = Signature <$$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
 
-signStub :: PrivateKey -> ByteString -> IO (Either C.Error Signature)
-signStub (PrivateKey _ n _) _ = return . Right . Signature $ i2osp n
-
-verify :: PublicKey -> Signature -> ByteString -> Maybe Verified
-verify (PublicKey k) (Signature sig) msg =
-  if PSS.verify pssParams k msg sig
-    then Just $ Verified msg
-    else Nothing
-
-verifyStub :: PublicKey -> Signature -> ByteString -> Maybe Verified
-verifyStub (PublicKey (C.PublicKey _ n _)) (Signature sig) msg =
-  if i2osp n == sig
-    then Just $ Verified msg
-    else Nothing
+verify :: PublicKey -> Signature -> ByteString -> Bool
+verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig
 
 serializePubKey :: PublicKey -> ByteString
 serializePubKey (PublicKey k) = serializeKey_ (C.public_size k, C.public_n k, C.public_e k)

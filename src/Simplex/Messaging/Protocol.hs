@@ -144,8 +144,12 @@ tGetRaw h = do
   return (signature, corrId, queueId, command)
 
 tPut :: MonadIO m => Handle -> SignedTransmission -> m ()
-tPut h (C.Signature sig, (corrId, queueId, command)) =
-  liftIO $ tPutRaw h (encode sig, bs corrId, encode queueId, serializeCommand command)
+tPut h (C.Signature sig, (CorrId corrId, queueId, command)) =
+  liftIO $ tPutRaw h (encode sig, corrId, encode queueId, serializeCommand command)
+
+serializeTransmission :: Transmission -> ByteString
+serializeTransmission (CorrId corrId, queueId, command) =
+  corrId <> "\r\n" <> encode queueId <> "\r\n" <> serializeCommand command
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case

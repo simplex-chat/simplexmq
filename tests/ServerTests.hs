@@ -22,10 +22,10 @@ import Test.Hspec
 serverTests :: Spec
 serverTests = do
   describe "SMP syntax" syntaxTests
-  describe "SMP queues" do
+  xdescribe "SMP queues" do
     describe "NEW and KEY commands, SEND messages" testCreateSecure
     describe "NEW, OFF and DEL commands, SEND messages" testCreateDelete
-  describe "SMP messages" do
+  xdescribe "SMP messages" do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
 
