@@ -32,6 +32,7 @@ import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPServerTransmission)
+import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server (randomBytes)
 import Simplex.Messaging.Transport (putLn, runTCPServer)
@@ -282,10 +283,10 @@ newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SendQueue, SenderKey)
 newSendQueue (SMPQueueInfo smpServer senderId encryptKey) connAlias = do
   g <- asks idsDrg
-  senderKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
+  size <- asks $ rsaKeySize . config
+  (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size
   verifyKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
-  let sndPrivateKey = senderKey
-      signKey = verifyKey
+  let signKey = verifyKey
       sndQueue =
         SendQueue
           { server = smpServer,

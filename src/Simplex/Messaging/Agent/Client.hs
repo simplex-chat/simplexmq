@@ -47,6 +47,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (QueueId)
 import Simplex.Messaging.Server (randomBytes)
 import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, PrivateKey, PublicKey, SenderKey)
@@ -150,8 +151,8 @@ withLogSMP c srv qId cmdStr action = do
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (ReceiveQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
   g <- asks idsDrg
-  recipientKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
-  let rcvPrivateKey = recipientKey
+  size <- asks $ rsaKeySize . config
+  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
   logServer "-->" c srv "" "NEW"
   (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
@@ -212,10 +213,9 @@ logSecret bs = encode $ B.take 3 bs
 
 sendConfirmation :: forall m. AgentMonad m => AgentClient -> SendQueue -> SenderKey -> m ()
 sendConfirmation c SendQueue {server, sndId} senderKey = do
-  -- TODO send initial confirmation with signature - change in SMP server
   msg <- mkConfirmation
   withLogSMP c server sndId "SEND <KEY>" $ \smp ->
-    sendSMPMessage smp "" sndId msg
+    sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: m MsgBody
     mkConfirmation = do
@@ -236,7 +236,7 @@ sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
     send :: Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
     send 0 _ _ = throwE SMPResponseTimeout -- TODO different error
     send retry msg smp =
-      sendSMPMessage smp sndPrivateKey sndId msg `catchE` \case
+      sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
         SMPServerError AUTH -> do
           threadDelay 100000
           send (retry - 1) msg smp
@@ -266,7 +266,7 @@ sendAgentMessage :: AgentMonad m => AgentClient -> SendQueue -> AMessage -> m ()
 sendAgentMessage c SendQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg = do
   msg <- mkAgentMessage encryptKey agentMsg
   withLogSMP c server sndId "SEND <message>" $ \smp ->
-    sendSMPMessage smp sndPrivateKey sndId msg
+    sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
 mkAgentMessage :: MonadUnliftIO m => PrivateKey -> AMessage -> m ByteString
 mkAgentMessage _encKey agentMessage = do

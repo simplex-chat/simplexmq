@@ -13,6 +13,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
+import qualified Simplex.Messaging.Crypto as C
 import System.Random (Random (randomIO))
 import Test.Hspec
 import UnliftIO.Directory (removeFile)
@@ -82,115 +83,85 @@ testForeignKeysEnabled = do
     DB.execute_ (dbConn store) inconsistent_query
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
+rcvQueue1 :: ReceiveQueue
+rcvQueue1 =
+  ReceiveQueue
+    { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+      rcvId = "1234",
+      connAlias = "conn1",
+      rcvPrivateKey = C.PrivateKey 1 2 3,
+      sndId = Just "2345",
+      sndKey = Nothing,
+      decryptKey = "dcba",
+      verifyKey = Nothing,
+      status = New
+    }
+
+sndQueue1 :: SendQueue
+sndQueue1 =
+  SendQueue
+    { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+      sndId = "3456",
+      connAlias = "conn1",
+      sndPrivateKey = C.PrivateKey 1 2 3,
+      encryptKey = "dcba",
+      signKey = "edcb",
+      status = New
+    }
+
+-- sndQueue2 :: SendQueue
+-- sndQueue2 =
+--           SendQueue
+--             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
+--               sndId = "1234",
+--               connAlias = "conn1",
+--               sndPrivateKey = "abcd",
+--               encryptKey = "dcba",
+--               signKey = "edcb",
+--               status = New
+--             }
+
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
   it "should create receive connection and add send queue" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "3456",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    upgradeRcvConnToDuplex store "conn1" sndQueue
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue1)
+    upgradeRcvConnToDuplex store "conn1" sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
   it "should create send connection and add receive queue" $ \store -> do
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "1234",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    createSndConn store sndQueue
+    createSndConn store sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "2345",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "3456",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    upgradeSndConnToDuplex store "conn1" rcvQueue
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1)
+    upgradeSndConnToDuplex store "conn1" rcvQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
 
 testGetRcvQueue :: SpecWith SQLiteStore
 testGetRcvQueue = do
   it "should get receive queue and conn alias" $ \store -> do
     let smpServer = SMPServer "smp.simplex.im" (Just "5223") (Just "1234")
     let recipientId = "1234"
-    let rcvQueue =
-          ReceiveQueue
-            { server = smpServer,
-              rcvId = recipientId,
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     getRcvQueue store smpServer recipientId
-      `returnsResult` rcvQueue
+      `returnsResult` rcvQueue1
 
 testDeleteConnReceive :: SpecWith SQLiteStore
 testDeleteConnReceive = do
   it "should create receive connection and delete it" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "2345",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "3456",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue1)
     deleteConn store "conn1"
       `returnsResult` ()
     -- TODO check queues are deleted as well
@@ -200,20 +171,10 @@ testDeleteConnReceive = do
 testDeleteConnSend :: SpecWith SQLiteStore
 testDeleteConnSend = do
   it "should create send connection and delete it" $ \store -> do
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "2345",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    createSndConn store sndQueue
+    createSndConn store sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1)
     deleteConn store "conn1"
       `returnsResult` ()
     -- TODO check queues are deleted as well
@@ -223,34 +184,12 @@ testDeleteConnSend = do
 testDeleteConnDuplex :: SpecWith SQLiteStore
 testDeleteConnDuplex = do
   it "should create duplex connection and delete it" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "4567",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    upgradeRcvConnToDuplex store "conn1" sndQueue
+    upgradeRcvConnToDuplex store "conn1" sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
     deleteConn store "conn1"
       `returnsResult` ()
     -- TODO check queues are deleted as well
@@ -260,43 +199,21 @@ testDeleteConnDuplex = do
 testUpgradeRcvConnToDuplex :: SpecWith SQLiteStore
 testUpgradeRcvConnToDuplex = do
   it "should throw error on attempts to add send queue to SendConnection or DuplexConnection" $ \store -> do
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "1234",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    createSndConn store sndQueue
+    createSndConn store sndQueue1
       `returnsResult` ()
     let anotherSndQueue =
           SendQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
               sndId = "2345",
               connAlias = "conn1",
-              sndPrivateKey = "abcd",
+              sndPrivateKey = C.PrivateKey 1 2 3,
               encryptKey = "dcba",
               signKey = "edcb",
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
       `throwsError` SEBadConnType CSend
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "3456",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "4567",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    upgradeSndConnToDuplex store "conn1" rcvQueue
+    upgradeSndConnToDuplex store "conn1" rcvQueue1
       `returnsResult` ()
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
       `throwsError` SEBadConnType CDuplex
@@ -304,26 +221,14 @@ testUpgradeRcvConnToDuplex = do
 testUpgradeSndConnToDuplex :: SpecWith SQLiteStore
 testUpgradeSndConnToDuplex = do
   it "should throw error on attempts to add receive queue to ReceiveConnection or DuplexConnection" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     let anotherRcvQueue =
           ReceiveQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
               rcvId = "3456",
               connAlias = "conn1",
-              rcvPrivateKey = "abcd",
+              rcvPrivateKey = C.PrivateKey 1 2 3,
               sndId = Just "4567",
               sndKey = Nothing,
               decryptKey = "dcba",
@@ -332,17 +237,7 @@ testUpgradeSndConnToDuplex = do
             }
     upgradeSndConnToDuplex store "conn1" anotherRcvQueue
       `throwsError` SEBadConnType CReceive
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "5678",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    upgradeRcvConnToDuplex store "conn1" sndQueue
+    upgradeRcvConnToDuplex store "conn1" sndQueue1
       `returnsResult` ()
     upgradeSndConnToDuplex store "conn1" anotherRcvQueue
       `throwsError` SEBadConnType CDuplex
@@ -350,142 +245,64 @@ testUpgradeSndConnToDuplex = do
 testSetRcvQueueStatus :: SpecWith SQLiteStore
 testSetRcvQueueStatus = do
   it "should update status of receive queue" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue)
-    setRcvQueueStatus store rcvQueue Confirmed
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue1)
+    setRcvQueueStatus store rcvQueue1 Confirmed
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue {status = Confirmed})
+      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue1 {status = Confirmed})
 
 testSetSndQueueStatus :: SpecWith SQLiteStore
 testSetSndQueueStatus = do
   it "should update status of send queue" $ \store -> do
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "1234",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    createSndConn store sndQueue
+    createSndConn store sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue)
-    setSndQueueStatus store sndQueue Confirmed
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1)
+    setSndQueueStatus store sndQueue1 Confirmed
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue {status = Confirmed})
+      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1 {status = Confirmed})
 
 testSetQueueStatusConnDuplex :: SpecWith SQLiteStore
 testSetQueueStatusConnDuplex = do
   it "should update statuses of receive and send queues in duplex connection" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "3456",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    upgradeRcvConnToDuplex store "conn1" sndQueue
+    upgradeRcvConnToDuplex store "conn1" sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue sndQueue)
-    setRcvQueueStatus store rcvQueue Secured
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
+    setRcvQueueStatus store rcvQueue1 Secured
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue {status = Secured} sndQueue)
-    setSndQueueStatus store sndQueue Confirmed
+      `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 {status = Secured} sndQueue1)
+    setSndQueueStatus store sndQueue1 Confirmed
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn
         SCDuplex
-        ( DuplexConnection "conn1" rcvQueue {status = Secured} sndQueue {status = Confirmed}
+        ( DuplexConnection "conn1" rcvQueue1 {status = Secured} sndQueue1 {status = Confirmed}
         )
 
 testSetNonexistentSendQueueStatus :: SpecWith SQLiteStore
 testSetNonexistentSendQueueStatus = do
   it "should throw error on attempt to update status of nonexistent send queue" $ \store -> do
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "1234",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    setSndQueueStatus store sndQueue Confirmed
+    setSndQueueStatus store sndQueue1 Confirmed
       `throwsError` SEInternal
 
 testSetNonexistentReceiveQueueStatus :: SpecWith SQLiteStore
 testSetNonexistentReceiveQueueStatus = do
   it "should throw error on attempt to update status of nonexistent receive queue" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    setRcvQueueStatus store rcvQueue Confirmed
+    setRcvQueueStatus store rcvQueue1 Confirmed
       `throwsError` SEInternal
 
 testCreateMsgRcv :: SpecWith SQLiteStore
 testCreateMsgRcv = do
   it "should create a message in RCV direction" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     let msg = A_MSG "hello"
     let msgId = 1
@@ -496,17 +313,7 @@ testCreateMsgRcv = do
 testCreateMsgSnd :: SpecWith SQLiteStore
 testCreateMsgSnd = do
   it "should create a message in SND direction" $ \store -> do
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "1234",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    createSndConn store sndQueue
+    createSndConn store sndQueue1
       `returnsResult` ()
     let msg = A_MSG "hi"
     let msgId = 1
@@ -517,19 +324,7 @@ testCreateMsgSnd = do
 testCreateMsgHello :: SpecWith SQLiteStore
 testCreateMsgHello = do
   it "should create a HELLO message" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     let verificationKey = "abcd"
     let am = AckMode On
@@ -542,19 +337,7 @@ testCreateMsgHello = do
 testCreateMsgReply :: SpecWith SQLiteStore
 testCreateMsgReply = do
   it "should create a REPLY message" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     let smpServer = SMPServer "smp.simplex.im" (Just "5223") (Just "1234")
     let senderId = "sender1"
@@ -568,19 +351,7 @@ testCreateMsgReply = do
 testCreateMsgBadDirectionSnd :: SpecWith SQLiteStore
 testCreateMsgBadDirectionSnd = do
   it "should throw error on attempt to create a message in ineligible SND direction" $ \store -> do
-    let rcvQueue =
-          ReceiveQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              rcvId = "1234",
-              connAlias = "conn1",
-              rcvPrivateKey = "abcd",
-              sndId = Just "2345",
-              sndKey = Nothing,
-              decryptKey = "dcba",
-              verifyKey = Nothing,
-              status = New
-            }
-    createRcvConn store rcvQueue
+    createRcvConn store rcvQueue1
       `returnsResult` ()
     let msg = A_MSG "hello"
     let msgId = 1
@@ -590,17 +361,7 @@ testCreateMsgBadDirectionSnd = do
 testCreateMsgBadDirectionRcv :: SpecWith SQLiteStore
 testCreateMsgBadDirectionRcv = do
   it "should throw error on attempt to create a message in ineligible RCV direction" $ \store -> do
-    let sndQueue =
-          SendQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
-              sndId = "1234",
-              connAlias = "conn1",
-              sndPrivateKey = "abcd",
-              encryptKey = "dcba",
-              signKey = "edcb",
-              status = New
-            }
-    createSndConn store sndQueue
+    createSndConn store sndQueue1
       `returnsResult` ()
     let msg = A_MSG "hello"
     let msgId = 1

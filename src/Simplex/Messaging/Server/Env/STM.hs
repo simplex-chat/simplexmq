@@ -37,8 +37,8 @@ data Server = Server
 
 data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
-    rcvQ :: TBQueue Signed,
-    sndQ :: TBQueue Signed
+    rcvQ :: TBQueue Transmission,
+    sndQ :: TBQueue Transmission
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId

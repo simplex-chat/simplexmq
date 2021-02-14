@@ -10,6 +10,7 @@ module Simplex.Messaging.Types where
 
 import Data.ByteString.Char8 (ByteString)
 import Data.String
+import qualified Simplex.Messaging.Crypto as C
 
 type Encoded = ByteString
 
@@ -23,23 +24,21 @@ type PublicKey = Encoded
 
 type PrivateKey = Encoded
 
-type Signature = Encoded
+type RecipientKey = C.PublicKey
 
-type RecipientKey = PublicKey
-
-type SenderKey = PublicKey
+type SenderKey = C.PublicKey
 
 type MsgId = Encoded
 
 type MsgBody = ByteString
 
-data ErrorType = UNKNOWN | PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
+data ErrorType = PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
 
 errBadTransmission :: Int
 errBadTransmission = 1
 
-errBadParameters :: Int
-errBadParameters = 2
+errBadSMPCommand :: Int
+errBadSMPCommand = 2
 
 errNoCredentials :: Int
 errNoCredentials = 3
