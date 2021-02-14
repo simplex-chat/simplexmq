@@ -100,11 +100,11 @@ commandP =
     newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
     idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
     keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
-    sendCmd = Cmd SSender . SEND <$> A.takeByteString
+    sendCmd = Cmd SSender . SEND <$> A.takeWhile A.isDigit
     message = do
       msgId <- base64P <* A.space
       ts <- tsISO8601P <* A.space
-      Cmd SBroker . MSG msgId ts <$> A.takeByteString
+      Cmd SBroker . MSG msgId ts <$> A.takeWhile A.isDigit
     serverError = Cmd SBroker . ERR <$> errorType
     errorType =
       "PROHIBITED" $> PROHIBITED
@@ -214,12 +214,9 @@ tGet fromParty h = do
       cmd -> return $ Right cmd
 
     getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
-    getMsgBody msgBody =
-      case B.unpack msgBody of
-        ':' : body -> return . Right $ B.pack body
-        str -> case readMaybe str :: Maybe Int of
-          Just size -> liftIO $ do
-            body <- B.hGet h size
-            s <- getLn h
-            return $ if B.null s then Right body else Left SIZE
-          Nothing -> return . Left $ SYNTAX errMessageBody
+    getMsgBody sizeStr = case readMaybe (B.unpack sizeStr) :: Maybe Int of
+      Just size -> liftIO $ do
+        body <- B.hGet h size
+        s <- getLn h
+        return $ if B.null s then Right body else Left SIZE
+      Nothing -> return $ Left INTERNAL

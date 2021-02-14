@@ -59,7 +59,7 @@ testCreateSecure =
       Resp "abcd" rId1 (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
 
-      Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND :hello")
+      Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND 5\r\nhello")
       (ok1, OK) #== "accepts unsigned SEND"
       (sId1, sId) #== "same queue ID in response 1"
 
@@ -73,7 +73,7 @@ testCreateSecure =
       (err6, ERR PROHIBITED) #== "replies ERR when message acknowledged without messages"
 
       (sPub, sKey) <- C.generateKeyPair 128
-      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND :hello")
+      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND 5\r\nhello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
 
@@ -278,13 +278,13 @@ syntaxTests = do
   noParamsSyntaxTest "OFF"
   noParamsSyntaxTest "DEL"
   describe "SEND" do
-    it "valid syntax 1" $ ("1234", "cdab", "12345678", "SEND :hello") >#> ("", "cdab", "12345678", "ERR AUTH")
-    it "valid syntax 2" $ ("1234", "dabc", "12345678", "SEND 11\nhello there\n") >#> ("", "dabc", "12345678", "ERR AUTH")
+    it "valid syntax 1" $ ("1234", "cdab", "12345678", "SEND 5\r\nhello") >#> ("", "cdab", "12345678", "ERR AUTH")
+    it "valid syntax 2" $ ("1234", "dabc", "12345678", "SEND 11\r\nhello there") >#> ("", "dabc", "12345678", "ERR AUTH")
     it "no parameters" $ ("1234", "abcd", "12345678", "SEND") >#> ("", "abcd", "12345678", "ERR SYNTAX 2")
-    it "no queue ID" $ ("1234", "bcda", "", "SEND :hello") >#> ("", "bcda", "", "ERR SYNTAX 5")
-    it "bad message body 1" $ ("1234", "cdab", "12345678", "SEND 11 hello") >#> ("", "cdab", "12345678", "ERR SYNTAX 6")
-    it "bad message body 2" $ ("1234", "dabc", "12345678", "SEND hello") >#> ("", "dabc", "12345678", "ERR SYNTAX 6")
-    it "bigger body" $ ("1234", "abcd", "12345678", "SEND 4\nhello\n") >#> ("", "abcd", "12345678", "ERR SIZE")
+    it "no queue ID" $ ("1234", "bcda", "", "SEND 5\r\nhello") >#> ("", "bcda", "", "ERR SYNTAX 5")
+    it "bad message body 1" $ ("1234", "cdab", "12345678", "SEND 11 hello") >#> ("", "cdab", "12345678", "ERR SYNTAX 2")
+    it "bad message body 2" $ ("1234", "dabc", "12345678", "SEND hello") >#> ("", "dabc", "12345678", "ERR SYNTAX 2")
+    it "bigger body" $ ("1234", "abcd", "12345678", "SEND 4\r\nhello") >#> ("", "abcd", "12345678", "ERR SIZE")
   describe "broker response not allowed" do
     it "OK" $ ("1234", "bcda", "12345678", "OK") >#> ("", "bcda", "12345678", "ERR PROHIBITED")
   where
