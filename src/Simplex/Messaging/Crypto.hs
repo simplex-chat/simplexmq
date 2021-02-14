@@ -1,5 +1,8 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Crypto
   ( PrivateKey (..),
@@ -8,6 +11,8 @@ module Simplex.Messaging.Crypto
     generateKeyPair,
     sign,
     verify,
+    encrypt,
+    decrypt,
     serializePrivKey,
     serializePubKey,
     parsePrivKey,
@@ -17,6 +22,11 @@ module Simplex.Messaging.Crypto
   )
 where
 
+import Control.Monad.Except
+import Control.Monad.Trans.Except
+import Crypto.Cipher.AES (AES256)
+import qualified Crypto.Cipher.Types as AES
+import qualified Crypto.Error as CE
 import Crypto.Hash.Algorithms (SHA256 (..))
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
@@ -24,10 +34,14 @@ import Crypto.Number.Serialize (i2osp, os2ip)
 import qualified Crypto.PubKey.RSA as R
 import qualified Crypto.PubKey.RSA.OAEP as OAEP
 import qualified Crypto.PubKey.RSA.PSS as PSS
+import Crypto.Random (getRandomBytes)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteArray as BA
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.ByteString.Internal (c2w, w2c)
 import Data.String
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
@@ -73,33 +87,81 @@ instance IsString Signature where
 
 newtype Verified = Verified ByteString deriving (Show)
 
+data CryptoError
+  = CryptoRSAError R.Error
+  | CryptoCipherError CE.CryptoError
+  | CryptoIVError
+  | CryptoDecryptError
+  deriving (Show)
+
 pubExpRange :: Integer
 pubExpRange = 2 ^ (1024 :: Int)
 
 generateKeyPair :: Int -> IO KeyPair
 generateKeyPair size = loop
   where
+    publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange
+    privateKey s n d = PrivateKey {private_size = s, private_n = n, private_d = d}
     loop = do
       (pub, priv) <- R.generate size =<< publicExponent
-      let n = R.public_n pub
+      let s = R.public_size pub
+          n = R.public_n pub
           d = R.private_d priv
        in if d * d < n
             then loop
-            else
-              return
-                ( PublicKey pub,
-                  PrivateKey {private_size = R.public_size pub, private_n = n, private_d = d}
-                )
-    publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange
+            else return (PublicKey pub, privateKey s n d)
+
+encrypt :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
+encrypt k msg = do
+  aesKey <- randomBytes 32
+  iv <- randomAESiv @AES256
+  cipher <- liftCrypto $ AES.cipherInit @AES256 aesKey
+  aead <- liftCrypto $ AES.aeadInit AES.AEAD_GCM cipher iv
+  let (authTag, msg') = AES.aeadSimpleEncrypt aead B.empty msg 16
+  encKey <- encryptAESKey k aesKey
+  return $ encKey <> authTagToBS authTag <> msg'
+
+decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
+decrypt pk msg'' = do
+  let (encKey, msg') = B.splitAt (private_size pk) msg''
+      (authTag, msg) = B.splitAt 16 msg'
+      iv = AES.nullIV @AES256
+  aesKey <- decryptAESKey pk encKey
+  cipher <- liftCrypto $ AES.cipherInit @AES256 aesKey
+  aead <- liftCrypto $ AES.aeadInit AES.AEAD_GCM cipher iv
+  let decrypted = AES.aeadSimpleDecrypt aead B.empty msg (bsToAuthTag authTag)
+  maybe (throwE CryptoDecryptError) return decrypted
+
+randomAESiv :: forall c. AES.BlockCipher c => ExceptT CryptoError IO (AES.IV c)
+randomAESiv = do
+  bs <- randomBytes (AES.blockSize (undefined :: c))
+  maybe (throwE CryptoIVError) return $ AES.makeIV bs
+
+randomBytes :: Int -> ExceptT CryptoError IO ByteString
+randomBytes n = ExceptT $ Right <$> getRandomBytes n
+
+authTagToBS :: AES.AuthTag -> ByteString
+authTagToBS = B.pack . map w2c . BA.unpack . AES.unAuthTag
+
+bsToAuthTag :: ByteString -> AES.AuthTag
+bsToAuthTag = AES.AuthTag . BA.pack . map c2w . B.unpack
+
+liftCrypto :: CE.CryptoFailable a -> ExceptT CryptoError IO a
+liftCrypto = \case
+  CE.CryptoFailed e -> throwE $ CryptoCipherError e
+  CE.CryptoPassed r -> return r
 
 oaepParams :: OAEP.OAEPParams SHA256 ByteString ByteString
 oaepParams = OAEP.defaultOAEPParams SHA256
 
-encryptAESKey :: PublicKey -> ByteString -> IO (Either R.Error ByteString)
-encryptAESKey = OAEP.encrypt oaepParams . rsaPublicKey
+encryptAESKey :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
+encryptAESKey (PublicKey k) aesKey = liftRSA $ OAEP.encrypt oaepParams k aesKey
 
-decryptAESKey :: PrivateKey -> ByteString -> IO (Either R.Error ByteString)
-decryptAESKey = OAEP.decryptSafer oaepParams . rsaPrivateKey
+decryptAESKey :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
+decryptAESKey pk encKey = liftRSA $ OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
+
+liftRSA :: IO (Either R.Error ByteString) -> ExceptT CryptoError IO ByteString
+liftRSA a = ExceptT a `catchE` (throwE . CryptoRSAError)
 
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
