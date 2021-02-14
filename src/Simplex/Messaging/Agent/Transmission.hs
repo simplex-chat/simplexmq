@@ -16,12 +16,10 @@ import Control.Applicative ((<|>))
 import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlphaNum)
-import Data.Functor
+import Data.Functor (($>))
 import Data.Kind
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
@@ -30,9 +28,19 @@ import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Store.Types
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Parsers
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Types (CorrId (..), Encoded, ErrorType, MsgBody, PublicKey, errBadParameters, errMessageBody)
+import Simplex.Messaging.Types
+  ( CorrId (..),
+    Encoded,
+    ErrorType,
+    MsgBody,
+    PublicKey,
+    SenderKey,
+    errMessageBody,
+  )
 import qualified Simplex.Messaging.Types as ST
 import Simplex.Messaging.Util
 import System.IO
@@ -102,7 +110,7 @@ deriving instance Show (ACommand p)
 type Message = ByteString
 
 data SMPMessage
-  = SMPConfirmation PublicKey
+  = SMPConfirmation SenderKey
   | SMPMessage
       { senderMsgId :: Integer,
         senderTimestamp :: UTCTime,
@@ -126,7 +134,7 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
         <|> A.endOfLine *> smpClientMessageP
 
     smpConfirmationP :: Parser SMPMessage
-    smpConfirmationP = SMPConfirmation <$> ("KEY " *> base64P <* A.endOfLine)
+    smpConfirmationP = SMPConfirmation <$> ("KEY " *> C.pubKeyP <* A.endOfLine)
 
     smpClientMessageP :: Parser SMPMessage
     smpClientMessageP =
@@ -136,12 +144,9 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
         <*> base64P <* A.endOfLine
         <*> agentMessageP
 
-tsISO8601P :: Parser UTCTime
-tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
-
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
-  SMPConfirmation sKey -> smpMessage ("KEY " <> encode sKey) "" ""
+  SMPConfirmation sKey -> smpMessage ("KEY " <> C.serializePubKey sKey) "" ""
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
     let header = messageHeader senderMsgId senderTimestamp previousMsgHash
         body = serializeAgentMessage agentMessage
@@ -175,20 +180,8 @@ smpServerP = SMPServer <$> server <*> port <*> msgHash
     port = A.char ':' *> (Just . show <$> (A.decimal :: Parser Int)) <|> pure Nothing
     msgHash = A.char '#' *> (Just <$> base64P) <|> pure Nothing
 
-base64P :: Parser ByteString
-base64P = do
-  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
-  pad <- A.takeWhile (== '=')
-  either fail pure $ decode (str <> pad)
-
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
-
-parse :: Parser a -> e -> (ByteString -> Either e a)
-parse parser err = first (const err) . A.parseOnly (parser <* A.endOfInput)
-
-errParams :: Either AgentErrorType a
-errParams = Left $ SYNTAX errBadParameters
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
@@ -285,8 +278,8 @@ smpErrCorrelationId = 2
 smpUnexpectedResponse :: Natural
 smpUnexpectedResponse = 3
 
-parseCommandP :: Parser ACmd
-parseCommandP =
+commandP :: Parser ACmd
+commandP =
   "NEW " *> newCmd
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
@@ -304,8 +297,8 @@ parseCommandP =
     newCmd = ACmd SClient . NEW <$> smpServerP
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
-    sendCmd = ACmd SClient <$> (SEND <$> A.takeByteString)
-    sentResp = ACmd SAgent <$> (SENT <$> A.decimal)
+    sendCmd = ACmd SClient . SEND <$> A.takeByteString
+    sentResp = ACmd SAgent . SENT <$> A.decimal
     message = do
       m_status <- status <* A.space
       m_recipient <- "R=" *> partyMeta A.decimal
@@ -328,7 +321,7 @@ parseCommandP =
         <|> "HASH" $> MsgBadHash
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse parseCommandP $ SYNTAX errBadCommand
+parseCommand = parse commandP $ SYNTAX errBadCommand
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
