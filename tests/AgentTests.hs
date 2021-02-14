@@ -141,11 +141,11 @@ syntaxTests = do
       it "invalid server keyHash" $ ("223", "", "NEW localhost:5000#1") >#> ("223", "", "ERR SYNTAX 11")
 
   describe "JOIN" do
-    xdescribe "valid" do
+    describe "valid" do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
-        ("311", "", "JOIN smp::localhost:5000::1234::5678") >#> ("311", "", "ERR SMP AUTH")
+        ("311", "", "JOIN smp::localhost:5000::1234::3,5678,5678") >#> ("311", "", "ERR SMP AUTH")
     describe "invalid" do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR SYNTAX 11")
