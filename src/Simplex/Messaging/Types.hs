@@ -20,9 +20,15 @@ newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
 instance IsString CorrId where
   fromString = CorrId . fromString
 
-type RecipientKey = C.PublicKey
+-- only used by Agent, kept here so its definition is close to respective public key
+type RecipientPrivateKey = C.PrivateKey
 
-type SenderKey = C.PublicKey
+type RecipientPublicKey = C.PublicKey
+
+-- only used by Agent, kept here so its definition is close to respective public key
+type SenderPrivateKey = C.PrivateKey
+
+type SenderPublicKey = C.PublicKey
 
 type MsgId = Encoded
 

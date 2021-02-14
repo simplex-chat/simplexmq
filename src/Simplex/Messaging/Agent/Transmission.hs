@@ -37,7 +37,7 @@ import Simplex.Messaging.Types
     Encoded,
     ErrorType,
     MsgBody,
-    SenderKey,
+    SenderPublicKey,
     errMessageBody,
   )
 import qualified Simplex.Messaging.Types as ST
@@ -109,7 +109,7 @@ deriving instance Show (ACommand p)
 type Message = ByteString
 
 data SMPMessage
-  = SMPConfirmation SenderKey
+  = SMPConfirmation SenderPublicKey
   | SMPMessage
       { senderMsgId :: Integer,
         senderTimestamp :: UTCTime,
@@ -219,6 +219,10 @@ data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
 data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Eq, Show)
 
 type EncryptionKey = C.PublicKey
+
+type DecryptionKey = C.PrivateKey
+
+type SignatureKey = C.PrivateKey
 
 type VerificationKey = C.PublicKey
 

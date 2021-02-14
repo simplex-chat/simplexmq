@@ -35,7 +35,7 @@ import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (putLn, runTCPServer)
-import Simplex.Messaging.Types (CorrId (..), MsgBody, SenderKey)
+import Simplex.Messaging.Types (CorrId (..), MsgBody, SenderPublicKey)
 import System.IO (Handle)
 import UnliftIO.Async (race_)
 import UnliftIO.Exception (SomeException)
@@ -268,18 +268,18 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
 
-connectToSendQueue :: AgentMonad m => AgentClient -> SendQueue -> SenderKey -> VerificationKey -> m ()
+connectToSendQueue :: AgentMonad m => AgentClient -> SendQueue -> SenderPublicKey -> VerificationKey -> m ()
 connectToSendQueue c sq senderKey verifyKey = do
   sendConfirmation c sq senderKey
   withStore $ \st -> setSndQueueStatus st sq Confirmed
   sendHello c sq verifyKey
   withStore $ \st -> setSndQueueStatus st sq Active
 
-decryptMessage :: MonadUnliftIO m => C.PrivateKey -> ByteString -> m ByteString
+decryptMessage :: MonadUnliftIO m => DecryptionKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return
 
 newSendQueue ::
-  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SendQueue, SenderKey, VerificationKey)
+  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SendQueue, SenderPublicKey, VerificationKey)
 newSendQueue (SMPQueueInfo smpServer senderId encryptKey) connAlias = do
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size

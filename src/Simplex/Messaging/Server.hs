@@ -23,6 +23,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time.Clock
+import Simplex.Messaging.Agent.Transmission (VerificationKey)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
@@ -105,10 +106,10 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
       st <- asks queueStore
       qr <- atomically $ getQueue st party queueId
       return $ either smpErr f qr
-    verifySend :: C.Signature -> Maybe C.PublicKey -> Cmd
+    verifySend :: C.Signature -> Maybe VerificationKey -> Cmd
     verifySend "" = maybe cmd (const authErr)
     verifySend _ = maybe authErr verifySignature
-    verifySignature :: C.PublicKey -> Cmd
+    verifySignature :: VerificationKey -> Cmd
     verifySignature key =
       if C.verify key sig (serializeTransmission t)
         then cmd
@@ -139,7 +140,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           OFF -> okResp <$> atomically (suspendQueue st queueId)
           DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RecipientKey -> m Transmission
+        createQueue :: QueueStore -> RecipientPublicKey -> m Transmission
         createQueue st rKey =
           mkResp corrId B.empty <$> addSubscribe
           where
