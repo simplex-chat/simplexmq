@@ -65,9 +65,9 @@ type SenderId = QueueId
 type QueueId = Encoded
 
 data Command (a :: Party) where
-  NEW :: RecipientKey -> Command Recipient
+  NEW :: RecipientPublicKey -> Command Recipient
   SUB :: Command Recipient
-  KEY :: SenderKey -> Command Recipient
+  KEY :: SenderPublicKey -> Command Recipient
   ACK :: Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
