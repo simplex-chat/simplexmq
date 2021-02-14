@@ -222,13 +222,13 @@ sendConfirmation c SendQueue {server, sndId} senderKey = do
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SendQueue -> VerificationKey -> m ()
 sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
-  msg <- mkHello verifyKey $ AckMode On
+  msg <- mkHello $ AckMode On
   withLogSMP c server sndId "SEND <HELLO> (retrying)" $
     send 20 msg
   where
-    mkHello :: VerificationKey -> AckMode -> m ByteString
-    mkHello verifyKey_ ackMode =
-      mkAgentMessage encryptKey $ HELLO verifyKey_ ackMode
+    mkHello :: AckMode -> m ByteString
+    mkHello ackMode =
+      mkAgentMessage encryptKey $ HELLO verifyKey ackMode
 
     send :: Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
     send 0 _ _ = throwE SMPResponseTimeout -- TODO different error
