@@ -105,7 +105,7 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
       st <- asks queueStore
       qr <- atomically $ getQueue st party queueId
       return $ either smpErr f qr
-    verifySend :: C.Signature -> Maybe C.PublicKey -> Cmd
+    verifySend :: C.Signature -> Maybe SenderPublicKey -> Cmd
     verifySend "" = maybe cmd (const authErr)
     verifySend _ = maybe authErr verifySignature
     verifySignature :: C.PublicKey -> Cmd
@@ -139,7 +139,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           OFF -> okResp <$> atomically (suspendQueue st queueId)
           DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RecipientKey -> m Transmission
+        createQueue :: QueueStore -> RecipientPublicKey -> m Transmission
         createQueue st rKey =
           mkResp corrId B.empty <$> addSubscribe
           where

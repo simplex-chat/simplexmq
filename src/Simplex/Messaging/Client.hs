@@ -170,14 +170,18 @@ data SMPClientError
   | SMPClientError
   deriving (Eq, Show, Exception)
 
-createSMPQueue :: SMPClient -> C.PrivateKey -> RecipientKey -> ExceptT SMPClientError IO (RecipientId, SenderId)
+createSMPQueue ::
+  SMPClient ->
+  RecipientPrivateKey ->
+  RecipientPublicKey ->
+  ExceptT SMPClientError IO (RecipientId, SenderId)
 createSMPQueue c rpKey rKey =
   -- TODO add signing this request too - requires changes in the server
   sendSMPCommand c (Just rpKey) "" (Cmd SRecipient $ NEW rKey) >>= \case
     Cmd _ (IDS rId sId) -> return (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
-subscribeSMPQueue :: SMPClient -> C.PrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
+subscribeSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId (Cmd SRecipient SUB) >>= \case
     Cmd _ OK -> return ()
@@ -185,16 +189,16 @@ subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
-secureSMPQueue :: SMPClient -> C.PrivateKey -> RecipientId -> SenderKey -> ExceptT SMPClientError IO ()
+secureSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> SenderPublicKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
 
-sendSMPMessage :: SMPClient -> Maybe C.PrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
+sendSMPMessage :: SMPClient -> Maybe SenderPrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
 sendSMPMessage c spKey sId msg =
   sendSMPCommand c spKey sId (Cmd SSender $ SEND msg) >>= \case
     Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
-ackSMPMessage :: SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+ackSMPMessage :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId (Cmd SRecipient ACK) >>= \case
     Cmd _ OK -> return ()
@@ -202,10 +206,10 @@ ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
-suspendSMPQueue :: SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+suspendSMPQueue :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 suspendSMPQueue = okSMPCommand $ Cmd SRecipient OFF
 
-deleteSMPQueue :: SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+deleteSMPQueue :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
 
 okSMPCommand :: Cmd -> SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()

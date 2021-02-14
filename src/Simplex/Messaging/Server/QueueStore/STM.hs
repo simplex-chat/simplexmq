@@ -29,7 +29,7 @@ newQueueStore :: STM QueueStore
 newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty}
 
 instance MonadQueueStore QueueStore STM where
-  addQueue :: QueueStore -> RecipientKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
+  addQueue :: QueueStore -> RecipientPublicKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
   addQueue store rKey ids@(rId, sId) = do
     cs@QueueStoreData {queues, senders} <- readTVar store
     if M.member rId queues || M.member sId senders
