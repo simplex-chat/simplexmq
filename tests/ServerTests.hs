@@ -22,10 +22,10 @@ import Test.Hspec
 serverTests :: Spec
 serverTests = do
   describe "SMP syntax" syntaxTests
-  xdescribe "SMP queues" do
+  describe "SMP queues" do
     describe "NEW and KEY commands, SEND messages" testCreateSecure
     describe "NEW, OFF and DEL commands, SEND messages" testCreateDelete
-  xdescribe "SMP messages" do
+  describe "SMP messages" do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
 
@@ -34,6 +34,16 @@ pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker
 
 sendRecv :: Handle -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
+
+signSendRecv :: Handle -> C.PrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+signSendRecv h pk (corrId, qId, cmd) = do
+  let t = B.intercalate "\r\n" [corrId, encode qId, cmd]
+  Right sig <- C.sign pk t
+  tPut h (sig, t)
+  tGet fromServer h
+
+cmdSEND :: ByteString -> ByteString
+cmdSEND msg = serializeCommand (Cmd SSender . SEND $ msg)
 
 (>#>) :: RawTransmission -> RawTransmission -> Expectation
 command >#> response = smpServerTest command `shouldReturn` response
@@ -45,7 +55,8 @@ testCreateSecure :: Spec
 testCreateSecure =
   it "should create (NEW) and secure (KEY) queue" $
     smpTest \h -> do
-      Resp "abcd" rId1 (IDS rId sId) <- sendRecv h ("1234", "abcd", "", "NEW 3,1234,1234")
+      (rPub, rKey) <- C.generateKeyPair 128
+      Resp "abcd" rId1 (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
 
       Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND :hello")
@@ -55,183 +66,193 @@ testCreateSecure =
       Resp "" _ (MSG _ _ msg1) <- tGet fromServer h
       (msg1, "hello") #== "delivers message"
 
-      Resp "cdab" _ ok4 <- sendRecv h ("1234", "cdab", rId, "ACK")
+      Resp "cdab" _ ok4 <- signSendRecv h rKey ("cdab", rId, "ACK")
       (ok4, OK) #== "replies OK when message acknowledged if no more messages"
 
-      Resp "dabc" _ err6 <- sendRecv h ("1234", "dabc", rId, "ACK")
+      Resp "dabc" _ err6 <- signSendRecv h rKey ("dabc", rId, "ACK")
       (err6, ERR PROHIBITED) #== "replies ERR when message acknowledged without messages"
 
-      Resp "abcd" sId2 err1 <- sendRecv h ("4567", "abcd", sId, "SEND :hello")
+      (sPub, sKey) <- C.generateKeyPair 128
+      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND :hello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
 
-      Resp "bcda" _ err2 <- sendRecv h ("12345678", "bcda", rId, "KEY 3,4567,4567")
-      (err2, ERR AUTH) #== "rejects KEY with wrong signature (password atm)"
+      let keyCmd = "KEY " <> C.serializePubKey sPub
+      Resp "bcda" _ err2 <- sendRecv h ("12345678", "bcda", rId, keyCmd)
+      (err2, ERR AUTH) #== "rejects KEY with wrong signature"
 
-      Resp "cdab" _ err3 <- sendRecv h ("1234", "cdab", sId, "KEY 3,4567,4567")
+      Resp "cdab" _ err3 <- signSendRecv h rKey ("cdab", sId, keyCmd)
       (err3, ERR AUTH) #== "rejects KEY with sender's ID"
 
-      Resp "dabc" rId2 ok2 <- sendRecv h ("1234", "dabc", rId, "KEY 3,4567,4567")
+      Resp "dabc" rId2 ok2 <- signSendRecv h rKey ("dabc", rId, keyCmd)
       (ok2, OK) #== "secures queue"
       (rId2, rId) #== "same queue ID in response 3"
 
-      Resp "abcd" _ err4 <- sendRecv h ("1234", "abcd", rId, "KEY 3,4567,4567")
+      Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, keyCmd)
       (err4, ERR AUTH) #== "rejects KEY if already secured"
 
-      Resp "bcda" _ ok3 <- sendRecv h ("4567", "bcda", sId, "SEND 11\nhello again")
+      Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, "SEND 11\r\nhello again")
       (ok3, OK) #== "accepts signed SEND"
 
       Resp "" _ (MSG _ _ msg) <- tGet fromServer h
       (msg, "hello again") #== "delivers message 2"
 
-      Resp "cdab" _ ok5 <- sendRecv h ("1234", "cdab", rId, "ACK")
+      Resp "cdab" _ ok5 <- signSendRecv h rKey ("cdab", rId, "ACK")
       (ok5, OK) #== "replies OK when message acknowledged 2"
 
-      Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, "SEND :hello")
+      Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, "SEND 5\r\nhello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
 testCreateDelete :: Spec
 testCreateDelete =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 \rh sh -> do
-      Resp "abcd" rId1 (IDS rId sId) <- sendRecv rh ("1234", "abcd", "", "NEW 3,1234,1234")
+      (rPub, rKey) <- C.generateKeyPair 128
+      Resp "abcd" rId1 (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
 
-      Resp "bcda" _ ok1 <- sendRecv rh ("1234", "bcda", rId, "KEY 3,4567,4567")
+      (sPub, sKey) <- C.generateKeyPair 128
+      Resp "bcda" _ ok1 <- signSendRecv rh rKey ("bcda", rId, "KEY " <> C.serializePubKey sPub)
       (ok1, OK) #== "secures queue"
 
-      Resp "cdab" _ ok2 <- sendRecv sh ("4567", "cdab", sId, "SEND :hello")
+      Resp "cdab" _ ok2 <- signSendRecv sh sKey ("cdab", sId, "SEND 5\r\nhello")
       (ok2, OK) #== "accepts signed SEND"
 
-      Resp "dabc" _ ok7 <- sendRecv sh ("4567", "dabc", sId, "SEND :hello 2")
+      Resp "dabc" _ ok7 <- signSendRecv sh sKey ("dabc", sId, "SEND 7\r\nhello 2")
       (ok7, OK) #== "accepts signed SEND 2 - this message is not delivered because the first is not ACKed"
 
       Resp "" _ (MSG _ _ msg1) <- tGet fromServer rh
       (msg1, "hello") #== "delivers message"
 
       Resp "abcd" _ err1 <- sendRecv rh ("12345678", "abcd", rId, "OFF")
-      (err1, ERR AUTH) #== "rejects OFF with wrong signature (password atm)"
+      (err1, ERR AUTH) #== "rejects OFF with wrong signature"
 
-      Resp "bcda" _ err2 <- sendRecv rh ("1234", "bcda", sId, "OFF")
+      Resp "bcda" _ err2 <- signSendRecv rh rKey ("bcda", sId, "OFF")
       (err2, ERR AUTH) #== "rejects OFF with sender's ID"
 
-      Resp "cdab" rId2 ok3 <- sendRecv rh ("1234", "cdab", rId, "OFF")
+      Resp "cdab" rId2 ok3 <- signSendRecv rh rKey ("cdab", rId, "OFF")
       (ok3, OK) #== "suspends queue"
       (rId2, rId) #== "same queue ID in response 2"
 
-      Resp "dabc" _ err3 <- sendRecv sh ("4567", "dabc", sId, "SEND :hello")
+      Resp "dabc" _ err3 <- signSendRecv sh sKey ("dabc", sId, "SEND 5\r\nhello")
       (err3, ERR AUTH) #== "rejects signed SEND"
 
-      Resp "abcd" _ err4 <- sendRecv sh ("", "abcd", sId, "SEND :hello")
+      Resp "abcd" _ err4 <- sendRecv sh ("", "abcd", sId, "SEND 5\r\nhello")
       (err4, ERR AUTH) #== "reject unsigned SEND too"
 
-      Resp "bcda" _ ok4 <- sendRecv rh ("1234", "bcda", rId, "OFF")
+      Resp "bcda" _ ok4 <- signSendRecv rh rKey ("bcda", rId, "OFF")
       (ok4, OK) #== "accepts OFF when suspended"
 
-      Resp "cdab" _ (MSG _ _ msg) <- sendRecv rh ("1234", "cdab", rId, "SUB")
+      Resp "cdab" _ (MSG _ _ msg) <- signSendRecv rh rKey ("cdab", rId, "SUB")
       (msg, "hello") #== "accepts SUB when suspended and delivers the message again (because was not ACKed)"
 
       Resp "dabc" _ err5 <- sendRecv rh ("12345678", "dabc", rId, "DEL")
-      (err5, ERR AUTH) #== "rejects DEL with wrong signature (password atm)"
+      (err5, ERR AUTH) #== "rejects DEL with wrong signature"
 
-      Resp "abcd" _ err6 <- sendRecv rh ("1234", "abcd", sId, "DEL")
+      Resp "abcd" _ err6 <- signSendRecv rh rKey ("abcd", sId, "DEL")
       (err6, ERR AUTH) #== "rejects DEL with sender's ID"
 
-      Resp "bcda" rId3 ok6 <- sendRecv rh ("1234", "bcda", rId, "DEL")
+      Resp "bcda" rId3 ok6 <- signSendRecv rh rKey ("bcda", rId, "DEL")
       (ok6, OK) #== "deletes queue"
       (rId3, rId) #== "same queue ID in response 3"
 
-      Resp "cdab" _ err7 <- sendRecv sh ("4567", "cdab", sId, "SEND :hello")
+      Resp "cdab" _ err7 <- signSendRecv sh sKey ("cdab", sId, "SEND 5\r\nhello")
       (err7, ERR AUTH) #== "rejects signed SEND when deleted"
 
-      Resp "dabc" _ err8 <- sendRecv sh ("", "dabc", sId, "SEND :hello")
+      Resp "dabc" _ err8 <- sendRecv sh ("", "dabc", sId, "SEND 5\r\nhello")
       (err8, ERR AUTH) #== "rejects unsigned SEND too when deleted"
 
-      Resp "abcd" _ err11 <- sendRecv rh ("1234", "abcd", rId, "ACK")
+      Resp "abcd" _ err11 <- signSendRecv rh rKey ("abcd", rId, "ACK")
       (err11, ERR AUTH) #== "rejects ACK when conn deleted - the second message is deleted"
 
-      Resp "bcda" _ err9 <- sendRecv rh ("1234", "bcda", rId, "OFF")
+      Resp "bcda" _ err9 <- signSendRecv rh rKey ("bcda", rId, "OFF")
       (err9, ERR AUTH) #== "rejects OFF when deleted"
 
-      Resp "cdab" _ err10 <- sendRecv rh ("1234", "cdab", rId, "SUB")
+      Resp "cdab" _ err10 <- signSendRecv rh rKey ("cdab", rId, "SUB")
       (err10, ERR AUTH) #== "rejects SUB when deleted"
 
 testDuplex :: Spec
 testDuplex =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 \alice bob -> do
-      Resp "abcd" _ (IDS aRcv aSnd) <- sendRecv alice ("1234", "abcd", "", "NEW 3,1234,1234")
+      (arPub, arKey) <- C.generateKeyPair 128
+      Resp "abcd" _ (IDS aRcv aSnd) <- signSendRecv alice arKey ("abcd", "", "NEW " <> C.serializePubKey arPub)
       -- aSnd ID is passed to Bob out-of-band
 
-      Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, "SEND :key 3,efgh,efgh")
-      -- "key efgh" is ad-hoc, different from SMP protocol
+      (bsPub, bsKey) <- C.generateKeyPair 128
+      Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, cmdSEND $ "key " <> C.serializePubKey bsPub)
+      -- "key ..." is ad-hoc, different from SMP protocol
 
       Resp "" _ (MSG _ _ msg1) <- tGet fromServer alice
-      Resp "cdab" _ OK <- sendRecv alice ("1234", "cdab", aRcv, "ACK")
-      ["key", key1] <- return $ B.words msg1
-      (key1, "3,efgh,efgh") #== "key received from Bob"
-      Resp "dabc" _ OK <- sendRecv alice ("1234", "dabc", aRcv, "KEY " <> key1)
+      Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, "ACK")
+      ["key", bobKey] <- return $ B.words msg1
+      (bobKey, C.serializePubKey bsPub) #== "key received from Bob"
+      Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, "KEY " <> bobKey)
 
-      Resp "abcd" _ (IDS bRcv bSnd) <- sendRecv bob ("abcd", "abcd", "", "NEW 3,abcd,abcd")
-      Resp "bcda" _ OK <- sendRecv bob ("efgh", "bcda", aSnd, "SEND :reply_id " <> encode bSnd)
+      (brPub, brKey) <- C.generateKeyPair 128
+      Resp "abcd" _ (IDS bRcv bSnd) <- signSendRecv bob brKey ("abcd", "", "NEW " <> C.serializePubKey brPub)
+      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, cmdSEND $ "reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, it is not a part of SMP protocol
 
       Resp "" _ (MSG _ _ msg2) <- tGet fromServer alice
-      Resp "cdab" _ OK <- sendRecv alice ("1234", "cdab", aRcv, "ACK")
+      Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, "ACK")
       ["reply_id", bId] <- return $ B.words msg2
       (bId, encode bSnd) #== "reply queue ID received from Bob"
-      Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, "SEND :key 3,5678,5678")
-      -- "key 5678" is ad-hoc, different from SMP protocol
+
+      (asPub, asKey) <- C.generateKeyPair 128
+      Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, cmdSEND $ "key " <> C.serializePubKey asPub)
+      -- "key ..." is ad-hoc, different from SMP protocol
 
       Resp "" _ (MSG _ _ msg3) <- tGet fromServer bob
-      Resp "abcd" _ OK <- sendRecv bob ("abcd", "abcd", bRcv, "ACK")
-      ["key", key2] <- return $ B.words msg3
-      (key2, "3,5678,5678") #== "key received from Alice"
-      Resp "bcda" _ OK <- sendRecv bob ("abcd", "bcda", bRcv, "KEY " <> key2)
+      Resp "abcd" _ OK <- signSendRecv bob brKey ("abcd", bRcv, "ACK")
+      ["key", aliceKey] <- return $ B.words msg3
+      (aliceKey, C.serializePubKey asPub) #== "key received from Alice"
+      Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, "KEY " <> aliceKey)
 
-      Resp "cdab" _ OK <- sendRecv bob ("efgh", "cdab", aSnd, "SEND :hi alice")
+      Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, "SEND 8\r\nhi alice")
 
       Resp "" _ (MSG _ _ msg4) <- tGet fromServer alice
-      Resp "dabc" _ OK <- sendRecv alice ("1234", "dabc", aRcv, "ACK")
+      Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, "ACK")
       (msg4, "hi alice") #== "message received from Bob"
 
-      Resp "abcd" _ OK <- sendRecv alice ("5678", "abcd", bSnd, "SEND :how are you bob")
+      Resp "abcd" _ OK <- signSendRecv alice asKey ("abcd", bSnd, cmdSEND "how are you bob")
 
       Resp "" _ (MSG _ _ msg5) <- tGet fromServer bob
-      Resp "bcda" _ OK <- sendRecv bob ("abcd", "bcda", bRcv, "ACK")
+      Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, "ACK")
       (msg5, "how are you bob") #== "message received from alice"
 
 testSwitchSub :: Spec
 testSwitchSub =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 \rh1 rh2 sh -> do
-      Resp "abcd" _ (IDS rId sId) <- sendRecv rh1 ("1234", "abcd", "", "NEW 3,1234,1234")
-      Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND :test1")
+      (rPub, rKey) <- C.generateKeyPair 128
+      Resp "abcd" _ (IDS rId sId) <- signSendRecv rh1 rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND 5\r\ntest1")
       (ok1, OK) #== "sent test message 1"
-      Resp "cdab" _ ok2 <- sendRecv sh ("", "cdab", sId, "SEND :test2, no ACK")
+      Resp "cdab" _ ok2 <- sendRecv sh ("", "cdab", sId, cmdSEND "test2, no ACK")
       (ok2, OK) #== "sent test message 2"
 
       Resp "" _ (MSG _ _ msg1) <- tGet fromServer rh1
       (msg1, "test1") #== "test message 1 delivered to the 1st TCP connection"
-      Resp "abcd" _ (MSG _ _ msg2) <- sendRecv rh1 ("1234", "abcd", rId, "ACK")
+      Resp "abcd" _ (MSG _ _ msg2) <- signSendRecv rh1 rKey ("abcd", rId, "ACK")
       (msg2, "test2, no ACK") #== "test message 2 delivered, no ACK"
 
-      Resp "bcda" _ (MSG _ _ msg2') <- sendRecv rh2 ("1234", "bcda", rId, "SUB")
+      Resp "bcda" _ (MSG _ _ msg2') <- signSendRecv rh2 rKey ("bcda", rId, "SUB")
       (msg2', "test2, no ACK") #== "same simplex queue via another TCP connection, tes2 delivered again (no ACK in 1st queue)"
-      Resp "cdab" _ OK <- sendRecv rh2 ("1234", "cdab", rId, "ACK")
+      Resp "cdab" _ OK <- signSendRecv rh2 rKey ("cdab", rId, "ACK")
 
       Resp "" _ end <- tGet fromServer rh1
       (end, END) #== "unsubscribed the 1st TCP connection"
 
-      Resp "dabc" _ OK <- sendRecv sh ("", "dabc", sId, "SEND :test3")
+      Resp "dabc" _ OK <- sendRecv sh ("", "dabc", sId, "SEND 5\r\ntest3")
 
       Resp "" _ (MSG _ _ msg3) <- tGet fromServer rh2
       (msg3, "test3") #== "delivered to the 2nd TCP connection"
 
-      Resp "abcd" _ err <- sendRecv rh1 ("1234", "abcd", rId, "ACK")
+      Resp "abcd" _ err <- signSendRecv rh1 rKey ("abcd", rId, "ACK")
       (err, ERR PROHIBITED) #== "rejects ACK from the 1st TCP connection"
 
-      Resp "bcda" _ ok3 <- sendRecv rh2 ("1234", "bcda", rId, "ACK")
+      Resp "bcda" _ ok3 <- signSendRecv rh2 rKey ("bcda", rId, "ACK")
       (ok3, OK) #== "accepts ACK from the 2nd TCP connection"
 
       1000 `timeout` tGet fromServer rh1 >>= \case

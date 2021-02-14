@@ -17,8 +17,6 @@ module Simplex.Messaging.Crypto
   )
 where
 
--- import Control.Monad.Trans.Except
-import Control.Monad.Except
 import Crypto.Hash.Algorithms (SHA256 (..))
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
@@ -96,8 +94,8 @@ generateKeyPair size = loop
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
 
-sign :: PrivateKey -> ByteString -> ExceptT C.Error IO Signature
-sign pk msg = ExceptT $ Signature <$$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
+sign :: PrivateKey -> ByteString -> IO (Either C.Error Signature)
+sign pk msg = Signature <$$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
 
 verify :: PublicKey -> Signature -> ByteString -> Bool
 verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig

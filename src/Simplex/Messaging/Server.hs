@@ -96,7 +96,7 @@ verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => SignedTr
 verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
-    Cmd SRecipient (NEW _) -> return cmd
+    Cmd SRecipient (NEW k) -> return $ verifySignature k
     Cmd SRecipient _ -> withQueueRec SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> withQueueRec SSender $ verifySend sig . senderKey
   where

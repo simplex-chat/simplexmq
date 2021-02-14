@@ -34,6 +34,7 @@ import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import qualified Crypto.PubKey.RSA.Types as RSA
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -228,11 +229,14 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
       writeTVar clientCorrId i
       return . CorrId . B.pack $ show i
 
-    signTransmission :: B.ByteString -> ExceptT SMPClientError IO SignedRawTransmission
+    signTransmission :: ByteString -> ExceptT SMPClientError IO SignedRawTransmission
     signTransmission t = case pKey of
       Nothing -> return ("", t)
-      Just pk -> (,t) <$> C.sign pk t `catchE` (throwE . SMPCryptoError)
+      Just pk -> do
+        sig <- ExceptT (C.sign pk t) `catchE` (throwE . SMPCryptoError)
+        return (sig, t)
 
+    -- two separate "atomically" needed to avoid blocking
     sendRecv :: CorrId -> SignedRawTransmission -> IO (Either SMPClientError Cmd)
     sendRecv corrId t = atomically (send corrId t) >>= atomically . takeTMVar
 

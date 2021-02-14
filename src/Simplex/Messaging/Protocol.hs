@@ -128,7 +128,7 @@ serializeCommand = \case
   Cmd SBroker (ERR err) -> "ERR " <> B.pack (show err)
   Cmd SBroker resp -> B.pack $ show resp
   where
-    serializeMsg msgBody = " " <> B.pack (show $ B.length msgBody) <> "\n" <> msgBody
+    serializeMsg msgBody = " " <> B.pack (show $ B.length msgBody) <> "\r\n" <> msgBody
 
 tPutRaw :: Handle -> RawTransmission -> IO ()
 tPutRaw h (signature, corrId, queueId, command) = do
