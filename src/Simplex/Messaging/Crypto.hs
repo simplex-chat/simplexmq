@@ -1,7 +1,9 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Crypto
@@ -114,31 +116,44 @@ generateKeyPair size = loop
 encrypt :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
 encrypt k msg = do
   aesKey <- randomBytes 32
-  iv <- randomAESiv @AES256
-  cipher <- liftCrypto $ AES.cipherInit @AES256 aesKey
-  aead <- liftCrypto $ AES.aeadInit AES.AEAD_GCM cipher iv
-  let (authTag, msg') = AES.aeadSimpleEncrypt aead B.empty msg 16
-  encKey <- encryptAESKey k aesKey
-  return $ encKey <> authTagToBS authTag <> msg'
+  ivBytes <- randomIVBytes @AES256
+  aead <- initAEAD @AES256 (aesKey, ivBytes)
+  let (authTag, msg') = encryptAES aead msg
+  encKeyIv <- encryptOAEP k (aesKey <> ivBytes)
+  return $ encKeyIv <> authTagToBS authTag <> msg'
 
 decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
-  let (encKey, msg') = B.splitAt (private_size pk) msg''
+  let (encKeyIv, msg') = B.splitAt (private_size pk) msg''
       (authTag, msg) = B.splitAt 16 msg'
-      iv = AES.nullIV @AES256
-  aesKey <- decryptAESKey pk encKey
-  cipher <- liftCrypto $ AES.cipherInit @AES256 aesKey
-  aead <- liftCrypto $ AES.aeadInit AES.AEAD_GCM cipher iv
-  let decrypted = AES.aeadSimpleDecrypt aead B.empty msg (bsToAuthTag authTag)
-  maybe (throwE CryptoDecryptError) return decrypted
+  keyIv <- B.splitAt 32 <$> decryptOAEP pk encKeyIv
+  aead <- initAEAD @AES256 keyIv
+  decryptAES aead msg (bsToAuthTag authTag)
 
-randomAESiv :: forall c. AES.BlockCipher c => ExceptT CryptoError IO (AES.IV c)
-randomAESiv = do
-  bs <- randomBytes (AES.blockSize (undefined :: c))
-  maybe (throwE CryptoIVError) return $ AES.makeIV bs
+encryptAES :: AES.AEAD AES256 -> ByteString -> (AES.AuthTag, ByteString)
+encryptAES aead plaintext = AES.aeadSimpleEncrypt aead B.empty plaintext 16
+
+decryptAES :: AES.AEAD AES256 -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
+decryptAES aead ciphertext authTag =
+  maybeError CryptoDecryptError $ AES.aeadSimpleDecrypt aead B.empty ciphertext authTag
+
+initAEAD :: forall c. AES.BlockCipher c => (ByteString, ByteString) -> ExceptT CryptoError IO (AES.AEAD c)
+initAEAD (aesKey, ivBytes) = do
+  iv <- makeIV @c ivBytes
+  cipher <- liftCrypto $ AES.cipherInit aesKey
+  liftCrypto $ AES.aeadInit AES.AEAD_GCM cipher iv
+
+randomIVBytes :: forall c. AES.BlockCipher c => ExceptT CryptoError IO ByteString
+randomIVBytes = randomBytes (AES.blockSize (undefined :: c))
+
+makeIV :: AES.BlockCipher c => ByteString -> ExceptT CryptoError IO (AES.IV c)
+makeIV bs = maybeError CryptoIVError $ AES.makeIV bs
 
 randomBytes :: Int -> ExceptT CryptoError IO ByteString
 randomBytes n = ExceptT $ Right <$> getRandomBytes n
+
+maybeError :: CryptoError -> Maybe a -> ExceptT CryptoError IO a
+maybeError e = maybe (throwE e) return
 
 authTagToBS :: AES.AuthTag -> ByteString
 authTagToBS = B.pack . map w2c . BA.unpack . AES.unAuthTag
@@ -154,11 +169,11 @@ liftCrypto = \case
 oaepParams :: OAEP.OAEPParams SHA256 ByteString ByteString
 oaepParams = OAEP.defaultOAEPParams SHA256
 
-encryptAESKey :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
-encryptAESKey (PublicKey k) aesKey = liftRSA $ OAEP.encrypt oaepParams k aesKey
+encryptOAEP :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
+encryptOAEP (PublicKey k) aesKey = liftRSA $ OAEP.encrypt oaepParams k aesKey
 
-decryptAESKey :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
-decryptAESKey pk encKey = liftRSA $ OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
+decryptOAEP :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
+decryptOAEP pk encKey = liftRSA $ OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
 
 liftRSA :: IO (Either R.Error ByteString) -> ExceptT CryptoError IO ByteString
 liftRSA a = ExceptT a `catchE` (throwE . CryptoRSAError)
