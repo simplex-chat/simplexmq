@@ -87,6 +87,7 @@ generateKeyPair size = loop
             else
               return
                 ( PublicKey pub,
+                  -- TODO add comments explaining why we throw away public key from private
                   PrivateKey {private_size = R.public_size pub, private_n = n, private_d = d}
                 )
     publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange

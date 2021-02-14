@@ -11,21 +11,21 @@ import Simplex.Messaging.Types
 data QueueRec = QueueRec
   { recipientId :: QueueId,
     senderId :: QueueId,
-    recipientKey :: RecipientKey,
-    senderKey :: Maybe SenderKey,
+    recipientKey :: RecipientPublicKey,
+    senderKey :: Maybe SenderPublicKey,
     status :: QueueStatus
   }
 
 data QueueStatus = QueueActive | QueueOff
 
 class MonadQueueStore s m where
-  addQueue :: s -> RecipientKey -> (RecipientId, SenderId) -> m (Either ErrorType ())
+  addQueue :: s -> RecipientPublicKey -> (RecipientId, SenderId) -> m (Either ErrorType ())
   getQueue :: s -> SParty (a :: Party) -> QueueId -> m (Either ErrorType QueueRec)
-  secureQueue :: s -> RecipientId -> SenderKey -> m (Either ErrorType ())
+  secureQueue :: s -> RecipientId -> SenderPublicKey -> m (Either ErrorType ())
   suspendQueue :: s -> RecipientId -> m (Either ErrorType ())
   deleteQueue :: s -> RecipientId -> m (Either ErrorType ())
 
-mkQueueRec :: RecipientKey -> (RecipientId, SenderId) -> QueueRec
+mkQueueRec :: RecipientPublicKey -> (RecipientId, SenderId) -> QueueRec
 mkQueueRec recipientKey (recipientId, senderId) =
   QueueRec
     { recipientId,

@@ -23,19 +23,18 @@ import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Store.Types (ConnType (..))
 import Simplex.Messaging.Agent.Transmission
-import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Types (PrivateKey, PublicKey)
+import Simplex.Messaging.Types (RecipientPrivateKey, SenderPrivateKey, SenderPublicKey)
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
     rcvId :: SMP.RecipientId,
     connAlias :: ConnAlias,
-    rcvPrivateKey :: C.PrivateKey,
+    rcvPrivateKey :: RecipientPrivateKey,
     sndId :: Maybe SMP.SenderId,
-    sndKey :: Maybe C.PublicKey,
-    decryptKey :: PrivateKey,
-    verifyKey :: Maybe PublicKey,
+    sndKey :: Maybe SenderPublicKey,
+    decryptKey :: DecryptionKey,
+    verifyKey :: Maybe VerificationKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -44,9 +43,9 @@ data SendQueue = SendQueue
   { server :: SMPServer,
     sndId :: SMP.SenderId,
     connAlias :: ConnAlias,
-    sndPrivateKey :: C.PrivateKey,
-    encryptKey :: PublicKey,
-    signKey :: PrivateKey,
+    sndPrivateKey :: SenderPrivateKey,
+    encryptKey :: EncryptionKey,
+    signKey :: SignatureKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)

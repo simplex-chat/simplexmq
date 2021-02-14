@@ -37,8 +37,7 @@ import Simplex.Messaging.Types
     Encoded,
     ErrorType,
     MsgBody,
-    PublicKey,
-    SenderKey,
+    SenderPublicKey,
     errMessageBody,
   )
 import qualified Simplex.Messaging.Types as ST
@@ -110,7 +109,7 @@ deriving instance Show (ACommand p)
 type Message = ByteString
 
 data SMPMessage
-  = SMPConfirmation SenderKey
+  = SMPConfirmation SenderPublicKey
   | SMPMessage
       { senderMsgId :: Integer,
         senderTimestamp :: UTCTime,
@@ -162,7 +161,7 @@ agentMessageP =
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
   where
-    hello = HELLO <$> base64P <*> ackMode
+    hello = HELLO <$> C.pubKeyP <*> ackMode
     reply = REPLY <$> smpQueueInfoP
     a_msg = do
       size :: Int <- A.decimal
@@ -171,7 +170,7 @@ agentMessageP =
 
 smpQueueInfoP :: Parser SMPQueueInfo
 smpQueueInfoP =
-  "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> base64P)
+  "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> C.pubKeyP)
 
 smpServerP :: Parser SMPServer
 smpServerP = SMPServer <$> server <*> port <*> msgHash
@@ -185,15 +184,17 @@ parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
-  HELLO verifyKey ackMode -> "HELLO " <> encode verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
+  HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
   A_MSG body -> "MSG " <> serializeMsg body <> "\n"
 
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
-serializeSmpQueueInfo (SMPQueueInfo srv qId ek) = B.intercalate "::" ["smp", serializeServer srv, encode qId, encode ek]
+serializeSmpQueueInfo (SMPQueueInfo srv qId ek) =
+  B.intercalate "::" ["smp", serializeServer srv, encode qId, C.serializePubKey ek]
 
 serializeServer :: SMPServer -> ByteString
-serializeServer SMPServer {host, port, keyHash} = B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
+serializeServer SMPServer {host, port, keyHash} =
+  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
 
 data SMPServer = SMPServer
   { host :: HostName,
@@ -217,9 +218,13 @@ data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
 
 data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Eq, Show)
 
-type EncryptionKey = PublicKey
+type EncryptionKey = C.PublicKey
 
-type VerificationKey = PublicKey
+type DecryptionKey = C.PrivateKey
+
+type SignatureKey = C.PrivateKey
+
+type VerificationKey = C.PublicKey
 
 data QueueDirection = SND | RCV deriving (Show)
 

@@ -6,6 +6,7 @@
 module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Monad.Except (ExceptT, runExceptT)
+import qualified Crypto.PubKey.RSA as R
 import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
@@ -92,7 +93,7 @@ rcvQueue1 =
       rcvPrivateKey = C.PrivateKey 1 2 3,
       sndId = Just "2345",
       sndKey = Nothing,
-      decryptKey = "dcba",
+      decryptKey = C.PrivateKey 1 2 3,
       verifyKey = Nothing,
       status = New
     }
@@ -104,8 +105,8 @@ sndQueue1 =
       sndId = "3456",
       connAlias = "conn1",
       sndPrivateKey = C.PrivateKey 1 2 3,
-      encryptKey = "dcba",
-      signKey = "edcb",
+      encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
+      signKey = C.PrivateKey 1 2 3,
       status = New
     }
 
@@ -207,8 +208,8 @@ testUpgradeRcvConnToDuplex = do
               sndId = "2345",
               connAlias = "conn1",
               sndPrivateKey = C.PrivateKey 1 2 3,
-              encryptKey = "dcba",
-              signKey = "edcb",
+              encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
+              signKey = C.PrivateKey 1 2 3,
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
@@ -231,7 +232,7 @@ testUpgradeSndConnToDuplex = do
               rcvPrivateKey = C.PrivateKey 1 2 3,
               sndId = Just "4567",
               sndKey = Nothing,
-              decryptKey = "dcba",
+              decryptKey = C.PrivateKey 1 2 3,
               verifyKey = Nothing,
               status = New
             }
@@ -326,7 +327,7 @@ testCreateMsgHello = do
   it "should create a HELLO message" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
-    let verificationKey = "abcd"
+    let verificationKey = C.PublicKey $ R.PublicKey 1 2 3
     let am = AckMode On
     let msg = HELLO verificationKey am
     let msgId = 1
@@ -341,7 +342,7 @@ testCreateMsgReply = do
       `returnsResult` ()
     let smpServer = SMPServer "smp.simplex.im" (Just "5223") (Just "1234")
     let senderId = "sender1"
-    let encryptionKey = "abcd"
+    let encryptionKey = C.PublicKey $ R.PublicKey 1 2 3
     let msg = REPLY $ SMPQueueInfo smpServer senderId encryptionKey
     let msgId = 1
     -- TODO getMsg to check message
