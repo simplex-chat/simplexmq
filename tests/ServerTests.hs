@@ -19,6 +19,9 @@ import System.Timeout
 import Test.HUnit
 import Test.Hspec
 
+rsaKeySize :: Int
+rsaKeySize = 1024 `div` 8
+
 serverTests :: Spec
 serverTests = do
   describe "SMP syntax" syntaxTests
@@ -55,7 +58,7 @@ testCreateSecure :: Spec
 testCreateSecure =
   it "should create (NEW) and secure (KEY) queue" $
     smpTest \h -> do
-      (rPub, rKey) <- C.generateKeyPair 128
+      (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" rId1 (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
 
@@ -72,7 +75,7 @@ testCreateSecure =
       Resp "dabc" _ err6 <- signSendRecv h rKey ("dabc", rId, "ACK")
       (err6, ERR PROHIBITED) #== "replies ERR when message acknowledged without messages"
 
-      (sPub, sKey) <- C.generateKeyPair 128
+      (sPub, sKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND 5\r\nhello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
@@ -107,11 +110,11 @@ testCreateDelete :: Spec
 testCreateDelete =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 \rh sh -> do
-      (rPub, rKey) <- C.generateKeyPair 128
+      (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" rId1 (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
 
-      (sPub, sKey) <- C.generateKeyPair 128
+      (sPub, sKey) <- C.generateKeyPair rsaKeySize
       Resp "bcda" _ ok1 <- signSendRecv rh rKey ("bcda", rId, "KEY " <> C.serializePubKey sPub)
       (ok1, OK) #== "secures queue"
 
@@ -175,11 +178,11 @@ testDuplex :: Spec
 testDuplex =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 \alice bob -> do
-      (arPub, arKey) <- C.generateKeyPair 128
+      (arPub, arKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" _ (IDS aRcv aSnd) <- signSendRecv alice arKey ("abcd", "", "NEW " <> C.serializePubKey arPub)
       -- aSnd ID is passed to Bob out-of-band
 
-      (bsPub, bsKey) <- C.generateKeyPair 128
+      (bsPub, bsKey) <- C.generateKeyPair rsaKeySize
       Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, cmdSEND $ "key " <> C.serializePubKey bsPub)
       -- "key ..." is ad-hoc, different from SMP protocol
 
@@ -189,7 +192,7 @@ testDuplex =
       (bobKey, C.serializePubKey bsPub) #== "key received from Bob"
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, "KEY " <> bobKey)
 
-      (brPub, brKey) <- C.generateKeyPair 128
+      (brPub, brKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" _ (IDS bRcv bSnd) <- signSendRecv bob brKey ("abcd", "", "NEW " <> C.serializePubKey brPub)
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, cmdSEND $ "reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, it is not a part of SMP protocol
@@ -199,7 +202,7 @@ testDuplex =
       ["reply_id", bId] <- return $ B.words msg2
       (bId, encode bSnd) #== "reply queue ID received from Bob"
 
-      (asPub, asKey) <- C.generateKeyPair 128
+      (asPub, asKey) <- C.generateKeyPair rsaKeySize
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, cmdSEND $ "key " <> C.serializePubKey asPub)
       -- "key ..." is ad-hoc, different from SMP protocol
 
@@ -225,7 +228,7 @@ testSwitchSub :: Spec
 testSwitchSub =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 \rh1 rh2 sh -> do
-      (rPub, rKey) <- C.generateKeyPair 128
+      (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" _ (IDS rId sId) <- signSendRecv rh1 rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND 5\r\ntest1")
       (ok1, OK) #== "sent test message 1"

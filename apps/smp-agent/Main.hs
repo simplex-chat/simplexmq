@@ -11,7 +11,7 @@ cfg :: AgentConfig
 cfg =
   AgentConfig
     { tcpPort = "5224",
-      rsaKeySize = 256,
+      rsaKeySize = 2048 `div` 8,
       connIdBytes = 12,
       tbqSize = 16,
       dbFile = "smp-agent.db",

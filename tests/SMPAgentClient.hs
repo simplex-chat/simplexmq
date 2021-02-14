@@ -109,7 +109,7 @@ cfg :: AgentConfig
 cfg =
   AgentConfig
     { tcpPort = agentTestPort,
-      rsaKeySize = 128,
+      rsaKeySize = 1024 `div` 8,
       connIdBytes = 12,
       tbqSize = 1,
       dbFile = testDB,

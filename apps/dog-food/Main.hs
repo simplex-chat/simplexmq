@@ -36,7 +36,7 @@ cfg :: AgentConfig
 cfg =
   AgentConfig
     { tcpPort = undefined, -- TODO maybe take it out of config
-      rsaKeySize = 256,
+      rsaKeySize = 2048 `div` 8,
       connIdBytes = 12,
       tbqSize = 16,
       dbFile = "smp-chat.db",
