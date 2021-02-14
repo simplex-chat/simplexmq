@@ -207,10 +207,10 @@ tGet fromParty h = do
 
     cmdWithMsgBody :: Cmd -> m (Either ErrorType Cmd)
     cmdWithMsgBody = \case
-      Cmd SSender (SEND body) ->
-        Cmd SSender . SEND <$$> getMsgBody body
-      Cmd SBroker (MSG msgId ts body) ->
-        Cmd SBroker . MSG msgId ts <$$> getMsgBody body
+      Cmd SSender (SEND sizeStr) ->
+        Cmd SSender . SEND <$$> getMsgBody sizeStr
+      Cmd SBroker (MSG msgId ts sizeStr) ->
+        Cmd SBroker . MSG msgId ts <$$> getMsgBody sizeStr
       cmd -> return $ Right cmd
 
     getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)

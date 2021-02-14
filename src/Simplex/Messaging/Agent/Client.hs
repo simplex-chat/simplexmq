@@ -152,7 +152,7 @@ newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (R
 newReceiveQueue c srv connAlias = do
   g <- asks idsDrg
   size <- asks $ rsaKeySize . config
-  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size -- TODO make parameter
+  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
   logServer "-->" c srv "" "NEW"
   (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
