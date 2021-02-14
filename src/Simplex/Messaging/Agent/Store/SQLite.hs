@@ -19,6 +19,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Util (liftIOEither)
 
 data SQLiteStore = SQLiteStore
   { dbFilename :: String,
@@ -69,15 +70,13 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
   upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sndQueue =
-    liftIO
-      (updateRcvConnWithSndQueue dbConn connAlias sndQueue)
-      >>= liftEither
+    liftIOEither $
+      updateRcvConnWithSndQueue dbConn connAlias sndQueue
 
   upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
   upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rcvQueue =
-    liftIO
-      (updateSndConnWithRcvQueue dbConn connAlias rcvQueue)
-      >>= liftEither
+    liftIOEither $
+      updateSndConnWithRcvQueue dbConn connAlias rcvQueue
 
   removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
   removeSndAuth _st _connAlias = throwError SENotImplemented
@@ -94,9 +93,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
   createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
-    liftIO
-      (insertMsg dbConn connAlias agentMsgId aMsg)
-      >>= liftEither
+    liftIOEither $
+      insertMsg dbConn connAlias agentMsgId aMsg
     where
       insertMsg = case qDirection of
         RCV -> insertRcvMsg

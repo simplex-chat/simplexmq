@@ -24,7 +24,6 @@ module Simplex.Messaging.Agent.Client
     deleteQueue,
     logServer,
     removeSubscription,
-    liftCrypto,
   )
 where
 
@@ -33,7 +32,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
-import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -51,6 +49,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (QueueId)
 import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, SenderPublicKey)
+import Simplex.Messaging.Util (liftError)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -126,9 +125,7 @@ withSMP c srv action =
   (getSMPServerClient c srv >>= runAction) `catchError` logServerError
   where
     runAction :: SMPClient -> m a
-    runAction smp =
-      liftIO (first smpClientError <$> runExceptT (action smp))
-        >>= liftEither
+    runAction smp = liftError smpClientError $ action smp
 
     smpClientError :: SMPClientError -> AgentErrorType
     smpClientError = \case
@@ -147,9 +144,6 @@ withLogSMP c srv qId cmdStr action = do
   res <- withSMP c srv action
   logServer "<--" c srv qId "OK"
   return res
-
-liftCrypto :: (MonadUnliftIO m, MonadError AgentErrorType m) => ExceptT C.CryptoError IO a -> m a
-liftCrypto action = liftIO (first CRYPTO <$> runExceptT action) >>= liftEither
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (ReceiveQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
@@ -221,7 +215,7 @@ sendConfirmation c SendQueue {server, sndId, encryptKey} senderKey = do
     mkConfirmation :: m MsgBody
     mkConfirmation = do
       let msg = serializeSMPMessage $ SMPConfirmation senderKey
-      liftCrypto $ C.encrypt encryptKey msg
+      liftError CRYPTO $ C.encrypt encryptKey msg
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SendQueue -> VerificationKey -> m ()
 sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
@@ -269,13 +263,14 @@ sendAgentMessage c SendQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg
 
 mkAgentMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => EncryptionKey -> AMessage -> m ByteString
 mkAgentMessage encKey agentMessage = do
-  senderTimestamp <- liftIO getCurrentTime
-  let msg =
-        serializeSMPMessage
-          SMPMessage
-            { senderMsgId = 0,
-              senderTimestamp,
-              previousMsgHash = "1234", -- TODO hash of the previous message
-              agentMessage
-            }
-  liftCrypto $ C.encrypt encKey msg
+  ts <- liftIO getCurrentTime
+  liftError CRYPTO $ C.encrypt encKey $ msg ts
+  where
+    msg ts =
+      serializeSMPMessage
+        SMPMessage
+          { senderMsgId = 0,
+            senderTimestamp = ts,
+            previousMsgHash = "1234", -- TODO hash of the previous message
+            agentMessage
+          }

@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -24,6 +25,7 @@ module Simplex.Messaging.Crypto
   )
 where
 
+import Control.Exception (Exception)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
@@ -51,7 +53,7 @@ import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Parsers (base64P)
-import Simplex.Messaging.Util (bshow, (<$$>))
+import Simplex.Messaging.Util (bshow, liftError', (<$$>))
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
@@ -94,7 +96,7 @@ data CryptoError
   | CryptoCipherError CE.CryptoError
   | CryptoIVError
   | CryptoDecryptError
-  deriving (Eq, Show)
+  deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
 pubExpRange = 2 ^ (1024 :: Int)
@@ -170,13 +172,14 @@ oaepParams :: OAEP.OAEPParams SHA256 ByteString ByteString
 oaepParams = OAEP.defaultOAEPParams SHA256
 
 encryptOAEP :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
-encryptOAEP (PublicKey k) aesKey = liftRSA $ OAEP.encrypt oaepParams k aesKey
+encryptOAEP (PublicKey k) aesKey =
+  liftError' CryptoRSAError $
+    OAEP.encrypt oaepParams k aesKey
 
 decryptOAEP :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
-decryptOAEP pk encKey = liftRSA $ OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
-
-liftRSA :: IO (Either R.Error ByteString) -> ExceptT CryptoError IO ByteString
-liftRSA a = ExceptT a `catchE` (throwE . CryptoRSAError)
+decryptOAEP pk encKey =
+  liftError' CryptoRSAError $
+    OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
 
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256

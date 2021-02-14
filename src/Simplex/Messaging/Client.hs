@@ -237,7 +237,7 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
     signTransmission t = case pKey of
       Nothing -> return ("", t)
       Just pk -> do
-        sig <- ExceptT (C.sign pk t) `catchE` (throwE . SMPCryptoError)
+        sig <- liftError' SMPCryptoError $ C.sign pk t
         return (sig, t)
 
     -- two separate "atomically" needed to avoid blocking
