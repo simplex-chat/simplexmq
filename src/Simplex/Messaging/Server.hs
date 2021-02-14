@@ -87,7 +87,7 @@ receive h Client {rcvQ} = forever $ do
 send :: MonadUnliftIO m => Handle -> Client -> m ()
 send h Client {sndQ} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  tPut h (C.Signature B.empty, t)
+  liftIO $ tPut h ("", serializeTransmission t)
 
 mkResp :: CorrId -> QueueId -> Command 'Broker -> Transmission
 mkResp corrId queueId command = (corrId, queueId, Cmd SBroker command)
@@ -106,7 +106,7 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
       qr <- atomically $ getQueue st party queueId
       return $ either smpErr f qr
     verifySend :: C.Signature -> Maybe C.PublicKey -> Cmd
-    verifySend (C.Signature "") = maybe cmd (const authErr)
+    verifySend "" = maybe cmd (const authErr)
     verifySend _ = maybe authErr verifySignature
     verifySignature :: C.PublicKey -> Cmd
     verifySignature key =

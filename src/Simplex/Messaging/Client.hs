@@ -34,7 +34,6 @@ import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import qualified Crypto.PubKey.RSA.Types as RSA
-import Data.Bifunctor (bimap)
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -58,7 +57,7 @@ data SMPClient = SMPClient
     smpServer :: SMPServer,
     clientCorrId :: TVar Natural,
     sentCommands :: TVar (Map CorrId Request),
-    sndQ :: TBQueue SignedTransmission,
+    sndQ :: TBQueue SignedRawTransmission,
     rcvQ :: TBQueue SignedTransmissionOrError,
     msgQ :: TBQueue SMPServerTransmission
   }
@@ -215,24 +214,29 @@ okSMPCommand cmd c pKey qId =
     _ -> throwE SMPUnexpectedResponse
 
 sendSMPCommand :: SMPClient -> Maybe C.PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
-sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = ExceptT $ do
-  corrId <- atomically getNextCorrId
-  signTransmission (corrId, qId, cmd) pKey >>= \case
-    Right t -> atomically (send corrId t) >>= atomically . takeTMVar
-    Left e -> return $ Left e
+sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
+  corrId <- lift_ getNextCorrId
+  t <- signTransmission $ serializeTransmission (corrId, qId, cmd)
+  ExceptT $ sendRecv corrId t
   where
+    lift_ :: STM a -> ExceptT SMPClientError IO a
+    lift_ action = ExceptT $ Right <$> atomically action
+
     getNextCorrId :: STM CorrId
     getNextCorrId = do
       i <- (+ 1) <$> readTVar clientCorrId
       writeTVar clientCorrId i
       return . CorrId . B.pack $ show i
 
-    signTransmission :: Transmission -> Maybe C.PrivateKey -> IO (Either SMPClientError SignedTransmission)
-    signTransmission t = \case
-      Nothing -> return $ Right (C.Signature "", t)
-      Just pk -> bimap SMPCryptoError (,t) <$> C.sign pk (serializeTransmission t)
+    signTransmission :: B.ByteString -> ExceptT SMPClientError IO SignedRawTransmission
+    signTransmission t = case pKey of
+      Nothing -> return ("", t)
+      Just pk -> (,t) <$> C.sign pk t `catchE` (throwE . SMPCryptoError)
 
-    send :: CorrId -> SignedTransmission -> STM (TMVar (Either SMPClientError Cmd))
+    sendRecv :: CorrId -> SignedRawTransmission -> IO (Either SMPClientError Cmd)
+    sendRecv corrId t = atomically (send corrId t) >>= atomically . takeTMVar
+
+    send :: CorrId -> SignedRawTransmission -> STM (TMVar (Either SMPClientError Cmd))
     send corrId t = do
       r <- newEmptyTMVar
       modifyTVar sentCommands . M.insert corrId $ Request qId r

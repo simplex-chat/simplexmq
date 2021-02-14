@@ -17,6 +17,8 @@ module Simplex.Messaging.Crypto
   )
 where
 
+-- import Control.Monad.Trans.Except
+import Control.Monad.Except
 import Crypto.Hash.Algorithms (SHA256 (..))
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
@@ -27,6 +29,7 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
+import Data.String
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
@@ -64,7 +67,10 @@ instance FromField PublicKey where
 
 type KeyPair = (PublicKey, PrivateKey)
 
-newtype Signature = Signature ByteString deriving (Show)
+newtype Signature = Signature {unSignature :: ByteString} deriving (Eq, Show)
+
+instance IsString Signature where
+  fromString = Signature . fromString
 
 newtype Verified = Verified ByteString deriving (Show)
 
@@ -90,8 +96,8 @@ generateKeyPair size = loop
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
 
-sign :: PrivateKey -> ByteString -> IO (Either C.Error Signature)
-sign pk msg = Signature <$$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
+sign :: PrivateKey -> ByteString -> ExceptT C.Error IO Signature
+sign pk msg = ExceptT $ Signature <$$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
 
 verify :: PublicKey -> Signature -> ByteString -> Bool
 verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig

@@ -30,7 +30,7 @@ serverTests = do
     describe "switch subscription to another SMP queue" testSwitchSub
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
-pattern Resp corrId queueId command <- (C.Signature "", (corrId, queueId, Right (Cmd SBroker command)))
+pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
 
 sendRecv :: Handle -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h

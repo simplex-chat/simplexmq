@@ -56,6 +56,8 @@ type SignedTransmissionOrError = (C.Signature, TransmissionOrError)
 
 type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
 
+type SignedRawTransmission = (C.Signature, ByteString)
+
 type RecipientId = QueueId
 
 type SenderId = QueueId
@@ -143,13 +145,14 @@ tGetRaw h = do
   command <- getLn h
   return (signature, corrId, queueId, command)
 
-tPut :: MonadIO m => Handle -> SignedTransmission -> m ()
-tPut h (C.Signature sig, (CorrId corrId, queueId, command)) =
-  liftIO $ tPutRaw h (encode sig, corrId, encode queueId, serializeCommand command)
+tPut :: Handle -> SignedRawTransmission -> IO ()
+tPut h (C.Signature sig, t) = do
+  putLn h $ encode sig
+  putLn h t
 
 serializeTransmission :: Transmission -> ByteString
 serializeTransmission (CorrId corrId, queueId, command) =
-  corrId <> "\r\n" <> encode queueId <> "\r\n" <> serializeCommand command
+  B.intercalate "\r\n" [corrId, encode queueId, serializeCommand command]
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
