@@ -22,6 +22,7 @@ import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
 import Crypto.Number.Serialize (i2osp, os2ip)
 import qualified Crypto.PubKey.RSA as R
+import qualified Crypto.PubKey.RSA.OAEP as OAEP
 import qualified Crypto.PubKey.RSA.PSS as PSS
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -36,7 +37,7 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Parsers (base64P)
 import Simplex.Messaging.Util (bshow, (<$$>))
 
-newtype PublicKey = PublicKey R.PublicKey deriving (Eq, Show)
+newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
 data PrivateKey = PrivateKey
   { private_size :: Int,
@@ -90,6 +91,15 @@ generateKeyPair size = loop
                   PrivateKey {private_size = R.public_size pub, private_n = n, private_d = d}
                 )
     publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange
+
+oaepParams :: OAEP.OAEPParams SHA256 ByteString ByteString
+oaepParams = OAEP.defaultOAEPParams SHA256
+
+encryptAESKey :: PublicKey -> ByteString -> IO (Either R.Error ByteString)
+encryptAESKey = OAEP.encrypt oaepParams . rsaPublicKey
+
+decryptAESKey :: PrivateKey -> ByteString -> IO (Either R.Error ByteString)
+decryptAESKey = OAEP.decryptSafer oaepParams . rsaPrivateKey
 
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
