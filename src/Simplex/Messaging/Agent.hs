@@ -34,9 +34,8 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Server (randomBytes)
 import Simplex.Messaging.Transport (putLn, runTCPServer)
-import Simplex.Messaging.Types (CorrId (..), MsgBody, PrivateKey, SenderKey)
+import Simplex.Messaging.Types (CorrId (..), MsgBody, SenderKey)
 import System.IO (Handle)
 import UnliftIO.Async (race_)
 import UnliftIO.Exception (SomeException)
@@ -135,9 +134,9 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     joinConnection qInfo@(SMPQueueInfo srv _ _) replyMode = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
-      (sq, senderKey) <- newSendQueue qInfo connAlias
+      (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
       withStore $ \st -> createSndConn st sq
-      connectToSendQueue c sq senderKey
+      connectToSendQueue c sq senderKey verifyKey
       case replyMode of
         ReplyOn -> sendReplyQInfo srv sq
         ReplyVia srv' -> sendReplyQInfo srv' sq
@@ -241,9 +240,9 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
             REPLY qInfo -> do
               logServer "<--" c srv rId "MSG <REPLY>"
               -- TODO move senderKey inside SendQueue
-              (sq, senderKey) <- newSendQueue qInfo connAlias
+              (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
               withStore $ \st -> upgradeRcvConnToDuplex st connAlias sq
-              connectToSendQueue c sq senderKey
+              connectToSendQueue c sq senderKey verifyKey
               notify connAlias CON
               sendAck c rq
             A_MSG body -> do
@@ -269,25 +268,23 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
 
-connectToSendQueue :: AgentMonad m => AgentClient -> SendQueue -> SenderKey -> m ()
-connectToSendQueue c sq senderKey = do
+connectToSendQueue :: AgentMonad m => AgentClient -> SendQueue -> SenderKey -> VerificationKey -> m ()
+connectToSendQueue c sq senderKey verifyKey = do
   sendConfirmation c sq senderKey
   withStore $ \st -> setSndQueueStatus st sq Confirmed
-  sendHello c sq
+  sendHello c sq verifyKey
   withStore $ \st -> setSndQueueStatus st sq Active
 
-decryptMessage :: MonadUnliftIO m => PrivateKey -> ByteString -> m ByteString
+decryptMessage :: MonadUnliftIO m => C.PrivateKey -> ByteString -> m ByteString
 decryptMessage _decryptKey = return
 
 newSendQueue ::
-  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SendQueue, SenderKey)
+  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SendQueue, SenderKey, VerificationKey)
 newSendQueue (SMPQueueInfo smpServer senderId encryptKey) connAlias = do
-  g <- asks idsDrg
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size
-  verifyKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
-  let signKey = verifyKey
-      sndQueue =
+  (verifyKey, signKey) <- liftIO $ C.generateKeyPair size
+  let sndQueue =
         SendQueue
           { server = smpServer,
             sndId = senderId,
@@ -297,4 +294,4 @@ newSendQueue (SMPQueueInfo smpServer senderId encryptKey) connAlias = do
             signKey,
             status = New
           }
-  return (sndQueue, senderKey)
+  return (sndQueue, senderKey, verifyKey)

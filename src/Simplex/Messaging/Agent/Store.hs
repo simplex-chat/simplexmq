@@ -25,7 +25,6 @@ import Simplex.Messaging.Agent.Store.Types (ConnType (..))
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Types (PrivateKey, PublicKey)
 
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
@@ -34,8 +33,8 @@ data ReceiveQueue = ReceiveQueue
     rcvPrivateKey :: C.PrivateKey,
     sndId :: Maybe SMP.SenderId,
     sndKey :: Maybe C.PublicKey,
-    decryptKey :: PrivateKey,
-    verifyKey :: Maybe PublicKey,
+    decryptKey :: C.PrivateKey,
+    verifyKey :: Maybe C.PublicKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -45,8 +44,8 @@ data SendQueue = SendQueue
     sndId :: SMP.SenderId,
     connAlias :: ConnAlias,
     sndPrivateKey :: C.PrivateKey,
-    encryptKey :: PublicKey,
-    signKey :: PrivateKey,
+    encryptKey :: C.PublicKey,
+    signKey :: C.PrivateKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)

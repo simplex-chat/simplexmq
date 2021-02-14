@@ -49,8 +49,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (QueueId)
-import Simplex.Messaging.Server (randomBytes)
-import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, PrivateKey, PublicKey, SenderKey)
+import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, SenderKey)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -150,15 +149,13 @@ withLogSMP c srv qId cmdStr action = do
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (ReceiveQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
-  g <- asks idsDrg
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
   logServer "-->" c srv "" "NEW"
   (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
-  encryptKey <- atomically $ randomBytes 16 g -- TODO replace with cryptographic key pair
-  let decryptKey = encryptKey
-      rq =
+  (encryptKey, decryptKey) <- liftIO $ C.generateKeyPair size
+  let rq =
         ReceiveQueue
           { server = srv,
             rcvId,
@@ -223,15 +220,15 @@ sendConfirmation c SendQueue {server, sndId} senderKey = do
       -- TODO encryption
       return msg
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SendQueue -> m ()
-sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} = do
-  msg <- mkHello "5678" $ AckMode On -- TODO verifyKey
+sendHello :: forall m. AgentMonad m => AgentClient -> SendQueue -> VerificationKey -> m ()
+sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
+  msg <- mkHello verifyKey $ AckMode On
   withLogSMP c server sndId "SEND <HELLO> (retrying)" $
     send 20 msg
   where
-    mkHello :: PublicKey -> AckMode -> m ByteString
-    mkHello verifyKey ackMode =
-      mkAgentMessage encryptKey $ HELLO verifyKey ackMode
+    mkHello :: VerificationKey -> AckMode -> m ByteString
+    mkHello verifyKey_ ackMode =
+      mkAgentMessage encryptKey $ HELLO verifyKey_ ackMode
 
     send :: Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
     send 0 _ _ = throwE SMPResponseTimeout -- TODO different error
@@ -268,7 +265,7 @@ sendAgentMessage c SendQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg
   withLogSMP c server sndId "SEND <message>" $ \smp ->
     sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
-mkAgentMessage :: MonadUnliftIO m => PrivateKey -> AMessage -> m ByteString
+mkAgentMessage :: MonadUnliftIO m => C.PublicKey -> AMessage -> m ByteString
 mkAgentMessage _encKey agentMessage = do
   senderTimestamp <- liftIO getCurrentTime
   let msg =
