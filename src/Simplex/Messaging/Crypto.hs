@@ -3,13 +3,13 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Crypto
   ( PrivateKey (..),
     PublicKey (..),
     Signature (..),
+    CryptoError (..),
     generateKeyPair,
     sign,
     verify,
@@ -94,7 +94,7 @@ data CryptoError
   | CryptoCipherError CE.CryptoError
   | CryptoIVError
   | CryptoDecryptError
-  deriving (Show)
+  deriving (Eq, Show)
 
 pubExpRange :: Integer
 pubExpRange = 2 ^ (1024 :: Int)

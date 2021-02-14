@@ -275,8 +275,8 @@ connectToSendQueue c sq senderKey verifyKey = do
   sendHello c sq verifyKey
   withStore $ \st -> setSndQueueStatus st sq Active
 
-decryptMessage :: MonadUnliftIO m => DecryptionKey -> ByteString -> m ByteString
-decryptMessage _decryptKey = return
+decryptMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => DecryptionKey -> ByteString -> m ByteString
+decryptMessage decryptKey msg = liftCrypto $ C.decrypt decryptKey msg
 
 newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SendQueue, SenderPublicKey, VerificationKey)

@@ -123,6 +123,9 @@ testSubscrNotification (server, _) client = do
   killThread server
   client <# ("", "conn1", END)
 
+samplePublicKey :: ByteString
+samplePublicKey = "128,2Qq2UNh5JuScgW0twxeYIDm8Uqf+b7t7OsUQcAgmDBpD+S4ZVoika1SxN2KsCSd7VneWMHm89oXIcGYM7jC7uJE8zXJFIr/1PimF96ols7n6UUFOSTH3VSqe47CzQfamxTFHl463fNPLbvOLxRfkzrZ5Qkpk2LyMkje8R1/39n0=,/uSFqPtYQeK/CX8qK4XR1BOt8eL+axBWgX7tGosI8VFBoBWR4Cbtx+F3hInQVCpxoQsz6n76ppWD4PSnzqcvQudD/3eo8VQNdQpBtX0vOjtsOxycselo99k2mdixIjjUz/RDR1Z+OthCG3rGeIK5/wyERcLR7EsBGOaBr+Xidbs="
+
 syntaxTests :: Spec
 syntaxTests = do
   it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR SYNTAX 11")
@@ -145,7 +148,7 @@ syntaxTests = do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
-        ("311", "", "JOIN smp::localhost:5000::1234::3,5678,5678") >#> ("311", "", "ERR SMP AUTH")
+        ("311", "", "JOIN smp::localhost:5000::1234::" <> samplePublicKey) >#> ("311", "", "ERR SMP AUTH")
     describe "invalid" do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR SYNTAX 11")
