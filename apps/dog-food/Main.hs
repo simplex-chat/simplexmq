@@ -236,7 +236,7 @@ getChatLn t = do
     getWithContact :: Contact -> ByteString -> IO ByteString
     getWithContact a s = do
       C.cursorBackward 1
-      B.hPut stdout $ ttyToContact a <> " " <> s
+      B.hPut stdout $ "    " <> ttyToContact a <> " " <> s
       getRest $ "@" <> toBs a <> " " <> s
     getRest :: ByteString -> IO ByteString
     getRest s = do
