@@ -14,9 +14,9 @@ $ stack install
 $ dog-food
 ```
 
-`dog-food` starts chat client with default parameters. By default database file is created in the working directory, and default server is smp.simplex.im.
+`dog-food` starts chat client with default parameters. By default database file is created in the working directory, and default SMP server is smp.simplex.im.
 
-To specify non default chat database location or SMP server run:
+To specify non default chat database location or server run:
 
 ```shell
 $ mkdir ~/simplex
