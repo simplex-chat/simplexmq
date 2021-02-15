@@ -1,6 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -102,6 +101,12 @@ data CryptoError
 pubExpRange :: Integer
 pubExpRange = 2 ^ (1024 :: Int)
 
+aeKeySize :: Int
+aeKeySize = 256 `div` 8
+
+aeTagSize :: Int
+aeTagSize = 128 `div` 8
+
 generateKeyPair :: Int -> IO KeyPair
 generateKeyPair size = loop
   where
@@ -118,7 +123,7 @@ generateKeyPair size = loop
 
 encrypt :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
 encrypt k msg = do
-  aesKey <- randomBytes 32
+  aesKey <- randomBytes aeKeySize
   ivBytes <- randomIVBytes @AES256
   aead <- initAEAD @AES256 (aesKey, ivBytes)
   let (authTag, msg') = encryptAES aead msg
@@ -128,13 +133,13 @@ encrypt k msg = do
 decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
   let (encKeyIv, msg') = B.splitAt (private_size pk) msg''
-      (authTag, msg) = B.splitAt 16 msg'
-  keyIv <- B.splitAt 32 <$> decryptOAEP pk encKeyIv
+      (authTag, msg) = B.splitAt aeTagSize msg'
+  keyIv <- B.splitAt aeKeySize <$> decryptOAEP pk encKeyIv
   aead <- initAEAD @AES256 keyIv
   decryptAES aead msg (bsToAuthTag authTag)
 
 encryptAES :: AES.AEAD AES256 -> ByteString -> (AES.AuthTag, ByteString)
-encryptAES aead plaintext = AES.aeadSimpleEncrypt aead B.empty plaintext 16
+encryptAES aead plaintext = AES.aeadSimpleEncrypt aead B.empty plaintext aeTagSize
 
 decryptAES :: AES.AEAD AES256 -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
 decryptAES aead ciphertext authTag =
