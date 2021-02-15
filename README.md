@@ -3,6 +3,26 @@
 [![GitHub build](https://github.com/simplex-chat/simplex-messaging/workflows/build/badge.svg)](https://github.com/simplex-chat/simplex-messaging/actions?query=workflow%3Abuild)
 [![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplex-messaging)](https://github.com/simplex-chat/simplex-messaging/releases)
 
+## Federated chat - private, secure, decentralised
+
+See [simplex.chat](https://simplex.chat) website for chat demo and the explanations of the system and how SMP protocol works.
+
+SMP protocol is semi-formally defined [here](https://github.com/simplex-chat/protocol).
+
+Currently only these features are available:
+- simple 1-2-1 chat with multiple people in the same terminal window.
+- auto-populated recipient name - just type your messages.
+- default server is available to play with - `smp.simplex.im:5223` - and you can deploy your own (`smp-server` executable in this repo).
+- no global identity or names visible to the server(s) - for the privacy of contacts and conversations.
+- E2E encryption, with public key that has to be passed out-of-band (see below)
+- authentication of each command/message with automatically generated RSA key pairs, separate for each conversation, the keys are not used as identity (2048 bit keys are used, it can be changed in [code via rsaKeySize setting](https://github.com/simplex-chat/simplex-messaging/blob/master/apps/dog-food/Main.hs))
+
+Limitations/disclaimers:
+- no support for chat groups. It is coming in the next major version (i.e., not very soon:)
+- no delivery notifications - coming soon
+- no TCP transport encryption - coming soon (messages are encrypted e2e though, only random connection IDs and server commands are visible, but not the contents of the message)
+- system and protocol security was not audited yet, so you probably should NOT use it yet for high security communications - unless you know what you are doing.
+
 ## How to run chat client locally
 
 Install [Haskell platform](https://www.haskell.org/platform/) (ghc, cabal, stack) and build the project:
@@ -14,44 +34,58 @@ $ stack install
 $ dog-food
 ```
 
-`dog-food` starts chat client with default parameters. By default database file is created in the working directory, and default SMP server is smp.simplex.im.
+`dog-food` (as in "eating your own dog food" - it is an early prototype) starts chat client with default parameters. By default, SQLite database file is created in the working directory (`smp-chat.db`), and the default SMP server is `smp.simplex.im:5223`.
 
-To specify non default chat database location or server run:
+To specify a different chat database location run:
 
-```shell
-$ mkdir ~/simplex
-$ dog-food -d ~/simplex/smp-chat.db -s localhost:5223
+```bash
+mkdir ~/simplex
+dog-food -d ~/simplex/my-chat.db
 ```
 
-Run `dog-food -h` to check available options and their default values.
+You can deploy your own server and set client to use it via command line option:
+
+```bash
+dog-food -s smp.example.com:5223
+```
+
+You can still talk to people using default or any other server, it only affects the location of the message queue when you initiate the connection (and the reply queue can be on another server, as set by the other party's client).
+
+Run `dog-food --help` to see all available options.
 
 ### Using chat client
 
-Once chat client is started, in chat REPL use `/add <name>` command to create a new connection and an invitation for your contact, and `/accept <name> <invitation>` command to join the connection via provided invitation.
+Once chat client is started, use `/add <name1>` to create a new connection and generate an invitation to send to your contact via any other communication channel (`<name1>` - is any name you want to use for that contact).
 
-For example, if Alice and Bob were to converse over SMP, with Alice initiating, Alice would run [in her chat client]:
+Invitation has format `smp::<server>::<queue_id>::<public_key_for_this_queue_only>` - this needs to be shared with another party, via any other chat. It can only be used once - even if this is intercepted, the attacker would not be able to use it to send you the messages via this queue once your contact confirms that the connection is established.
+
+The party that received the invitation should use `/accept <name2> <invitation>` to accept the connection (`<name2>` is any name that the accepting party wants to use for you).
+
+For example, if Alice and Bob want to chat, with Alice initiating, Alice would use [in her chat client]:
 
 ```
 /add bob
 ```
 
-And send the generated invitation to Bob out-of-band, after receiving which Bob would run [in his chat client]:
+And then send the generated invitation to Bob out-of-band. Bob then would use [in his chat client]:
 
 ```
 /accept alice <alice's invitation>
 ```
 
-They would then use `/chat <name>` commands to activate conversation with respective contact and `@<name> <message>` commands to send a message. One may also press Space or just start typing a message to send a message to the contact that was latest in the context.
+They would then use `@<name> <message>` commands to send messages. One may also press Space or just start typing a message to send a message to the contact that was the last.
 
-Since SMP doesn't use global identity (so account information is managed by clients), you might want to preconfigure your name to use in invitations for your contacts:
+If you exit from chat client (or if internet connection is interrupted) you need to use `/chat <name>` to activate conversation with respective contact - it is not resumed automatically (it will improve soon).
+
+Since SMP doesn't use global identity (all account information is managed by clients), you should configure your name to use in invitations for your contacts:
 
 ```
 /name alice
 ```
 
-Now Alice's invitations would be generated with her name for Bob's and others' convenience.
+Now Alice's invitations would be generated with her name in it for others' convenience.
 
-Run `/help` in chat REPL to see the list of available commands and their explanation.
+Use `/help` in chat to see the list of available commands and their explanation.
 
 ## 🚧 [further README not up to date] SMP server demo 🏗
 
