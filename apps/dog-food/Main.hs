@@ -97,7 +97,7 @@ serializeChatResponse name = \case
   ChatHelpInfo -> chatHelpInfo
   Invitation qInfo -> "ask your contact to enter: /accept " <> showName name <> " " <> serializeSmpQueueInfo qInfo
   Connected c -> ttyContact c <> " connected"
-  ReceivedMessage c t -> fromTtyContact c <> t
+  ReceivedMessage c t -> fromTtyContact c <> " " <> t
   Disconnected c -> "disconnected from " <> ttyContact c <> " - try \"/chat " <> toBs c <> "\""
   YesYes -> "you got it!"
   ErrorInput t -> "invalid input: " <> t
