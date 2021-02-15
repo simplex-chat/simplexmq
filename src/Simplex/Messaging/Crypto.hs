@@ -41,6 +41,7 @@ import qualified Crypto.PubKey.RSA.PSS as PSS
 import Crypto.Random (getRandomBytes)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -142,8 +143,9 @@ decryptAES aead ciphertext authTag =
 initAEAD :: forall c. AES.BlockCipher c => (ByteString, ByteString) -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (aesKey, ivBytes) = do
   iv <- makeIV @c ivBytes
-  cipher <- liftCrypto $ AES.cipherInit aesKey
-  liftCrypto $ AES.aeadInit AES.AEAD_GCM cipher iv
+  cryptoFailable $ do
+    cipher <- AES.cipherInit aesKey
+    AES.aeadInit AES.AEAD_GCM cipher iv
 
 randomIVBytes :: forall c. AES.BlockCipher c => ExceptT CryptoError IO ByteString
 randomIVBytes = randomBytes (AES.blockSize (undefined :: c))
@@ -163,10 +165,8 @@ authTagToBS = B.pack . map w2c . BA.unpack . AES.unAuthTag
 bsToAuthTag :: ByteString -> AES.AuthTag
 bsToAuthTag = AES.AuthTag . BA.pack . map c2w . B.unpack
 
-liftCrypto :: CE.CryptoFailable a -> ExceptT CryptoError IO a
-liftCrypto = \case
-  CE.CryptoFailed e -> throwE $ CryptoCipherError e
-  CE.CryptoPassed r -> return r
+cryptoFailable :: CE.CryptoFailable a -> ExceptT CryptoError IO a
+cryptoFailable = liftEither . first CryptoCipherError . CE.eitherCryptoError
 
 oaepParams :: OAEP.OAEPParams SHA256 ByteString ByteString
 oaepParams = OAEP.defaultOAEPParams SHA256
