@@ -53,7 +53,7 @@ import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Parsers (base64P)
-import Simplex.Messaging.Util (bshow, liftError', (<$$>))
+import Simplex.Messaging.Util (bshow, liftEitherError, (<$$>))
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
@@ -173,12 +173,12 @@ oaepParams = OAEP.defaultOAEPParams SHA256
 
 encryptOAEP :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
 encryptOAEP (PublicKey k) aesKey =
-  liftError' CryptoRSAError $
+  liftEitherError CryptoRSAError $
     OAEP.encrypt oaepParams k aesKey
 
 decryptOAEP :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
 decryptOAEP pk encKey =
-  liftError' CryptoRSAError $
+  liftEitherError CryptoRSAError $
     OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
 
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString

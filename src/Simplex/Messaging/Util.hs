@@ -43,7 +43,7 @@ liftIOEither :: (MonadUnliftIO m, MonadError e m) => IO (Either e a) -> m a
 liftIOEither a = liftIO a >>= liftEither
 
 liftError :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> ExceptT e IO a -> m a
-liftError f = liftError' f . runExceptT
+liftError f = liftEitherError f . runExceptT
 
-liftError' :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
-liftError' f a = liftIOEither (first f <$> a)
+liftEitherError :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
+liftEitherError f a = liftIOEither (first f <$> a)
