@@ -245,6 +245,7 @@ data AgentErrorType
   | SYNTAX Int
   | BROKER Natural
   | SMP ErrorType
+  | CRYPTO C.CryptoError
   | SIZE
   | STORE StoreError
   | INTERNAL -- etc. TODO SYNTAX Natural

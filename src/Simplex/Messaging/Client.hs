@@ -47,7 +47,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Types
-import Simplex.Messaging.Util
+import Simplex.Messaging.Util (liftEitherError, raceAny_)
 import System.IO
 import System.IO.Error
 import System.Timeout
@@ -237,7 +237,7 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
     signTransmission t = case pKey of
       Nothing -> return ("", t)
       Just pk -> do
-        sig <- ExceptT (C.sign pk t) `catchE` (throwE . SMPCryptoError)
+        sig <- liftEitherError SMPCryptoError $ C.sign pk t
         return (sig, t)
 
     -- two separate "atomically" needed to avoid blocking

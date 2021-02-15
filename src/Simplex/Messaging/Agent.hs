@@ -36,6 +36,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (putLn, runTCPServer)
 import Simplex.Messaging.Types (CorrId (..), MsgBody, SenderPublicKey)
+import Simplex.Messaging.Util (liftError)
 import System.IO (Handle)
 import UnliftIO.Async (race_)
 import UnliftIO.Exception (SomeException)
@@ -275,8 +276,8 @@ connectToSendQueue c sq senderKey verifyKey = do
   sendHello c sq verifyKey
   withStore $ \st -> setSndQueueStatus st sq Active
 
-decryptMessage :: MonadUnliftIO m => DecryptionKey -> ByteString -> m ByteString
-decryptMessage _decryptKey = return
+decryptMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => DecryptionKey -> ByteString -> m ByteString
+decryptMessage decryptKey msg = liftError CRYPTO $ C.decrypt decryptKey msg
 
 newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SendQueue, SenderPublicKey, VerificationKey)

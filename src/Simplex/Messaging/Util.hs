@@ -6,11 +6,12 @@ module Simplex.Messaging.Util where
 
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
+import Data.Bifunctor (first)
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import UnliftIO.Async
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
-import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 
 newtype InternalException e = InternalException {unInternalException :: e}
   deriving (Eq, Show)
@@ -37,3 +38,12 @@ infixl 4 <$$>
 
 bshow :: Show a => a -> ByteString
 bshow = B.pack . show
+
+liftIOEither :: (MonadUnliftIO m, MonadError e m) => IO (Either e a) -> m a
+liftIOEither a = liftIO a >>= liftEither
+
+liftError :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> ExceptT e IO a -> m a
+liftError f = liftEitherError f . runExceptT
+
+liftEitherError :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
+liftEitherError f a = liftIOEither (first f <$> a)
