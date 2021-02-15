@@ -3,7 +3,57 @@
 [![GitHub build](https://github.com/simplex-chat/simplex-messaging/workflows/build/badge.svg)](https://github.com/simplex-chat/simplex-messaging/actions?query=workflow%3Abuild)
 [![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplex-messaging)](https://github.com/simplex-chat/simplex-messaging/releases)
 
-## SMP server demo
+## How to run chat client locally
+
+Install [Haskell platform](https://www.haskell.org/platform/) (ghc, cabal, stack) and build the project:
+
+```shell
+$ git clone git@github.com:simplex-chat/simplex-messaging.git
+$ cd simplex-messaging
+$ stack install
+$ dog-food
+```
+
+`dog-food` starts chat client with default parameters. By default database file is created in the working directory, and default server is smp.simplex.im.
+
+To specify non default chat database location or SMP server run:
+
+```shell
+$ mkdir ~/simplex
+$ dog-food -d ~/simplex/smp-chat.db -s localhost:5223
+```
+
+Run `dog-food -h` to check available options and their default values.
+
+### Using chat client
+
+Once chat client is started, in chat REPL use `/add <name>` command to create a new connection and an invitation for your contact, and `/accept <name> <invitation>` command to join the connection via provided invitation.
+
+For example, if Alice and Bob were to converse over SMP, with Alice initiating, Alice would run [in her chat client]:
+
+```
+/add bob
+```
+
+And send the generated invitation to Bob out-of-band, after receiving which Bob would run [in his chat client]:
+
+```
+/accept alice <alice's invitation>
+```
+
+They would then use `/chat <name>` commands to activate conversation with respective contact and `@<name> <message>` commands to send a message. One may also press Space or just start typing a message to send a message to the contact that was latest in the context.
+
+To see the list of available commands and their explanation run `/help` in chat REPL.
+
+Since SMP doesn't use global identity (so account information is managed by clients), you might want to preconfigure your name to use in invitations for your contacts:
+
+```
+/name alice
+```
+
+Now Alice's invitations would be generated with her name for Bob's and others' convenience.
+
+## 🚧 [further README not up to date] SMP server demo 🏗
 
 This is a demo implementation of SMP ([simplex messaging protocol](https://github.com/simplex-chat/protocol/blob/master/simplex-messaging.md)) server.
 
