@@ -43,8 +43,6 @@ And send the generated invitation to Bob out-of-band, after receiving which Bob 
 
 They would then use `/chat <name>` commands to activate conversation with respective contact and `@<name> <message>` commands to send a message. One may also press Space or just start typing a message to send a message to the contact that was latest in the context.
 
-To see the list of available commands and their explanation run `/help` in chat REPL.
-
 Since SMP doesn't use global identity (so account information is managed by clients), you might want to preconfigure your name to use in invitations for your contacts:
 
 ```
@@ -52,6 +50,8 @@ Since SMP doesn't use global identity (so account information is managed by clie
 ```
 
 Now Alice's invitations would be generated with her name for Bob's and others' convenience.
+
+Run `/help` in chat REPL to see the list of available commands and their explanation.
 
 ## 🚧 [further README not up to date] SMP server demo 🏗
 
