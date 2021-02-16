@@ -35,10 +35,10 @@ rcvQueues =
       decrypt_key BLOB NOT NULL,
       verify_key BLOB,
       status TEXT NOT NULL,
-      PRIMARY KEY(host, port, rcv_id),
-      FOREIGN KEY(host, port) REFERENCES servers(host, port),
-      FOREIGN KEY(conn_alias)
-        REFERENCES connections(conn_alias)
+      PRIMARY KEY (host, port, rcv_id),
+      FOREIGN KEY (host, port) REFERENCES servers (host, port),
+      FOREIGN KEY (conn_alias)
+        REFERENCES connections (conn_alias)
         ON DELETE CASCADE
         DEFERRABLE INITIALLY DEFERRED,
       UNIQUE (host, port, snd_id)
@@ -57,10 +57,10 @@ sndQueues =
       encrypt_key BLOB NOT NULL,
       sign_key BLOB NOT NULL,
       status TEXT NOT NULL,
-      PRIMARY KEY(host, port, snd_id),
-      FOREIGN KEY(host, port) REFERENCES servers(host, port),
-      FOREIGN KEY(conn_alias)
-        REFERENCES connections(conn_alias)
+      PRIMARY KEY (host, port, snd_id),
+      FOREIGN KEY (host, port) REFERENCES servers (host, port),
+      FOREIGN KEY (conn_alias)
+        REFERENCES connections (conn_alias)
         ON DELETE CASCADE
         DEFERRABLE INITIALLY DEFERRED
     ) WITHOUT ROWID;
@@ -77,9 +77,9 @@ connections =
       snd_host TEXT,
       snd_port TEXT,
       snd_id BLOB,
-      PRIMARY KEY(conn_alias),
-      FOREIGN KEY(rcv_host, rcv_port, rcv_id) REFERENCES rcv_queues(host, port, rcv_id),
-      FOREIGN KEY(snd_host, snd_port, snd_id) REFERENCES snd_queues(host, port, snd_id)
+      PRIMARY KEY (conn_alias),
+      FOREIGN KEY (rcv_host, rcv_port, rcv_id) REFERENCES rcv_queues (host, port, rcv_id),
+      FOREIGN KEY (snd_host, snd_port, snd_id) REFERENCES snd_queues (host, port, snd_id)
     ) WITHOUT ROWID;
   |]
 
@@ -87,17 +87,49 @@ messages :: Query
 messages =
   [sql|
     CREATE TABLE IF NOT EXISTS messages(
-      agent_msg_id INTEGER NOT NULL,
+      agent_msg_id INTEGER PRIMARY KEY,
+      agent_timestamp TEXT NOT NULL,
       conn_alias TEXT NOT NULL,
-      timestamp TEXT NOT NULL,
+      rcv_msg_id INTEGER,
+      snd_msg_id INTEGER,
       message BLOB NOT NULL,
-      direction TEXT NOT NULL,
       msg_status TEXT NOT NULL,
-      PRIMARY KEY(agent_msg_id, conn_alias),
-      FOREIGN KEY(conn_alias) REFERENCES connections(conn_alias)
-    ) WITHOUT ROWID;
+      FOREIGN KEY (conn_alias) REFERENCES connections (conn_alias),
+      FOREIGN KEY (rcv_msg_id) REFERENCES rcv_messages (rcv_msg_id),
+      FOREIGN KEY (snd_msg_id) REFERENCES snd_messages (snd_msg_id),
+      UNIQUE (rcv_msg_id),
+      UNIQUE (snd_msg_id)
+    );
+  |]
+
+-- rcv_messages and snd_messages are helper tables allowing
+-- to enforce separate autoincremented ids in both directions
+rcvMessages :: Query
+rcvMessages =
+  [sql|
+    CREATE TABLE IF NOT EXISTS rcv_messages(
+      rcv_msg_id INTEGER PRIMARY KEY
+    );
+  |]
+
+sndMessages :: Query
+sndMessages =
+  [sql|
+    CREATE TABLE IF NOT EXISTS snd_messages(
+      snd_msg_id INTEGER PRIMARY KEY
+    );
   |]
 
 createSchema :: Connection -> IO ()
 createSchema conn =
-  mapM_ (execute_ conn) [enableFKs, servers, rcvQueues, sndQueues, connections, messages]
+  mapM_
+    (execute_ conn)
+    [ enableFKs,
+      servers,
+      rcvQueues,
+      sndQueues,
+      connections,
+      messages,
+      rcvMessages,
+      sndMessages
+    ]
