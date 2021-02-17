@@ -91,6 +91,13 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
+  createRcvMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
+  createRcvMsg _st _connAlias _msg = throwError SENotImplemented
+
+  createSndMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
+  createSndMsg _st _connAlias _msg = throwError SENotImplemented
+
+  -- TODO this will be removed
   createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
   createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
     liftIOEither $
@@ -100,15 +107,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         RCV -> insertRcvMsg
         SND -> insertSndMsg
 
-  getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
-  getLastMsg _st _connAlias _dir = throwError SENotImplemented
+  -- getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
+  -- getLastMsg _st _connAlias _dir = throwError SENotImplemented
 
-  getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
-  getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+  -- getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
+  -- getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
 
-  -- ? missing status parameter?
-  updateMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  updateMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
+  -- -- ? missing status parameter?
+  -- setMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  -- setMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
 
-  deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+  -- deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  -- deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented

@@ -165,7 +165,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         sendMsg sq = do
           sendAgentMessage c sq $ A_MSG msgBody
           -- TODO respond $ SENT aMsgId
-          -- TODO send message to DB
+          -- TODO createSndMsg
           respond $ SENT 0
 
     suspendConnection :: m ()
@@ -250,6 +250,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
               logServer "<--" c srv rId "MSG <MSG>"
               -- TODO check message status
               recipientTs <- liftIO getCurrentTime
+              -- TODO createRcvMsg
               notify connAlias $
                 MSG
                   { m_status = MsgOk,

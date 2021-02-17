@@ -12,14 +12,12 @@ module Simplex.Messaging.Agent.Store
     Connection (..),
     SConnType (..),
     SomeConn (..),
-    MessageDelivery (..),
     DeliveryStatus (..),
     MonadAgentStore (..),
   )
 where
 
 import Data.Kind (Type)
-import Data.Time.Clock (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Store.Types (ConnType (..))
 import Simplex.Messaging.Agent.Transmission
@@ -84,14 +82,14 @@ instance Eq SomeConn where
 
 deriving instance Show SomeConn
 
-data MessageDelivery = MessageDelivery
-  { connAlias :: ConnAlias,
-    agentMsgId :: Int,
-    timestamp :: UTCTime,
-    message :: AMessage,
-    direction :: QueueDirection,
-    msgStatus :: DeliveryStatus
-  }
+-- data MessageDelivery = MessageDelivery
+--   { connAlias :: ConnAlias,
+--     agentMsgId :: Int,
+--     timestamp :: UTCTime,
+--     message :: AMessage,
+--     direction :: QueueDirection,
+--     msgStatus :: DeliveryStatus
+--   }
 
 data DeliveryStatus
   = MDTransmitted -- SMP: SEND sent / MSG received
@@ -109,8 +107,13 @@ class Monad m => MonadAgentStore s m where
   removeSndAuth :: s -> ConnAlias -> m ()
   setRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
   setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
+  -- ? make data kind out of AMessage so that we can limit parameter to AMessage A_MSG?
+  -- ? or just throw error / silently ignore other AMessage types?
+  createRcvMsg :: s -> ConnAlias -> AMessage -> m ()
+  createSndMsg :: s -> ConnAlias -> AMessage -> m ()
+  -- TODO this will be removed
   createMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
-  getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
-  getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
-  updateMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  -- getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
+  -- getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
+  -- setMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  -- deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
