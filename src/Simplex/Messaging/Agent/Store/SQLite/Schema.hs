@@ -77,6 +77,8 @@ connections =
       snd_host TEXT,
       snd_port TEXT,
       snd_id BLOB,
+      last_rcv_msg_id INTEGER,
+      last_snd_msg_id INTEGER,
       PRIMARY KEY (conn_alias),
       FOREIGN KEY (rcv_host, rcv_port, rcv_id) REFERENCES rcv_queues (host, port, rcv_id),
       FOREIGN KEY (snd_host, snd_port, snd_id) REFERENCES snd_queues (host, port, snd_id)
@@ -95,28 +97,8 @@ messages =
       message BLOB NOT NULL,
       msg_status TEXT NOT NULL,
       FOREIGN KEY (conn_alias) REFERENCES connections (conn_alias),
-      FOREIGN KEY (rcv_msg_id) REFERENCES rcv_messages (rcv_msg_id),
-      FOREIGN KEY (snd_msg_id) REFERENCES snd_messages (snd_msg_id),
-      UNIQUE (rcv_msg_id),
-      UNIQUE (snd_msg_id)
-    );
-  |]
-
--- rcv_messages and snd_messages are helper tables allowing
--- to enforce separate autoincremented ids in both directions
-rcvMessages :: Query
-rcvMessages =
-  [sql|
-    CREATE TABLE IF NOT EXISTS rcv_messages(
-      rcv_msg_id INTEGER PRIMARY KEY
-    );
-  |]
-
-sndMessages :: Query
-sndMessages =
-  [sql|
-    CREATE TABLE IF NOT EXISTS snd_messages(
-      snd_msg_id INTEGER PRIMARY KEY
+      UNIQUE (conn_alias, rcv_msg_id),
+      UNIQUE (conn_alias, snd_msg_id)
     );
   |]
 
@@ -129,7 +111,5 @@ createSchema conn =
       rcvQueues,
       sndQueues,
       connections,
-      messages,
-      rcvMessages,
-      sndMessages
+      messages
     ]
