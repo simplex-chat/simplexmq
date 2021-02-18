@@ -41,7 +41,7 @@ data TerminalState = TerminalState
   }
 
 inputHeight :: TerminalState -> ChatTerminal -> Int
-inputHeight ts ct = (length (inputString ts) - 1) `div` fst (termSize ct) + 1
+inputHeight ts ct = length (inputString ts) `div` snd (termSize ct) + 1
 
 data Key
   = KeyLeft
@@ -49,10 +49,11 @@ data Key
   | KeyUp
   | KeyDown
   | KeyEnter
-  | KeyDel
+  | KeyBack
   | KeyTab
   | KeyEsc
   | KeyChars String
+  deriving (Eq)
 
 newChatTerminal :: Natural -> IO ChatTerminal
 newChatTerminal qSize = do
@@ -71,46 +72,51 @@ chatTerminal ct = do
   hSetBuffering stdin NoBuffering
   hSetBuffering stdout NoBuffering
   hSetEcho stdin False
-  race_ (receiveFromTTY' ct) (sendToTTY ct)
+  let receive = if termSize ct == (0, 0) then receiveFromTTY else receiveFromTTY'
+  race_ (receive ct) (sendToTTY ct)
 
 receiveFromTTY :: ChatTerminal -> IO ()
 receiveFromTTY ct@ChatTerminal {inputQ} =
   forever $ getChatLn ct >>= atomically . writeTBQueue inputQ
 
 receiveFromTTY' :: ChatTerminal -> IO ()
-receiveFromTTY' ct@ChatTerminal {inputQ, termState, nextMessageRow} = forever $ do
-  key <- getKey
-  -- InputState {inputString, inputHeight, inputPosition} <- readTVarIO inputState
-  case key of
-    KeyChars cs -> do
-      -- when emptyInput insertActiveContact
-      insertChars cs
-      updateInput
-    -- KeyDel -> deleteChar
-    -- KeyEnter -> when (not emptyInput) submitInput
-    -- KeyLeft -> moveCaret -1
-    -- KeyRight -> moveCaret 1
-    -- KeyUp -> return () -- moveCaret (0, -1)
-    -- KeyDown -> return () -- moveCaret (0, 1)
-    -- KeyEsc -> clearInput
-    KeyTab -> do
-      insertChars "    "
-      updateInput
-    _ -> return ()
+receiveFromTTY' ct@ChatTerminal {inputQ, termState, nextMessageRow} =
+  forever $
+    getKey >>= atomically . processKey >> updateInput
   where
-    insertChars :: String -> IO ()
-    insertChars cs = do
-      ts <- readTVarIO termState
-      let s = inputString ts
-          p = inputPosition ts
-          (s', p') = if p >= length s then appendTo s else s `insertAt` p
-      atomically $ writeTVar termState ts {inputString = s', inputPosition = p'}
-      where
-        appendTo :: String -> (String, Int)
-        appendTo s = let s' = s <> cs in (s', length s')
-        insertAt :: String -> Int -> (String, Int)
-        insertAt s pos = let (b, a) = splitAt pos s in (b <> cs <> a, pos + length cs)
+    processKey :: Key -> STM ()
+    processKey = \case
+      KeyEnter -> submitInput
+      key -> modifyTVar termState $ updateTermState key
 
+    submitInput :: STM ()
+    submitInput = do
+      ts <- readTVar termState
+      writeTVar termState $ ts {inputString = "", inputPosition = 0}
+      writeTBQueue inputQ . B.pack $ inputString ts
+
+    updateTermState :: Key -> TerminalState -> TerminalState
+    updateTermState key ts@TerminalState {inputString = s, inputPosition = p} = case key of
+      KeyChars cs -> insertChars cs
+      KeyTab -> insertChars "    "
+      KeyBack -> backDeleteChar
+      KeyLeft -> setPosition $ max 0 (p - 1)
+      KeyRight -> setPosition $ min (length s) (p + 1)
+      _ -> ts
+      where
+        insertChars = ts' . if p >= length s then append else insert
+        append cs = let s' = s <> cs in (s', length s')
+        insert cs = let (b, a) = splitAt p s in (b <> cs <> a, p + length cs)
+        backDeleteChar
+          | p == 0 || null s = ts
+          | p >= length s = ts' backDeleteLast
+          | otherwise = ts' backDelete
+        backDeleteLast = if null s then (s, 0) else let s' = init s in (s', length s')
+        backDelete = let (b, a) = splitAt p s in (init b <> a, p - 1)
+        setPosition p' = ts' (s, p')
+        ts' (s', p') = ts {inputString = s', inputPosition = p'}
+
+    updateInput :: IO ()
     updateInput = do
       C.hideCursor
       ts <- readTVarIO termState
@@ -119,28 +125,26 @@ receiveFromTTY' ct@ChatTerminal {inputQ, termState, nextMessageRow} = forever $ 
           ih = inputHeight ts ct
           iStart = th - ih
       if nmr >= iStart
-        then do
-          C.setCursorPosition nmr 0
-          atomically $ writeTVar nextMessageRow iStart
-        else do
-          -- clearLines nmr iStart -- from to
-          C.setCursorPosition iStart 0
-      putStr (inputString ts)
+        then atomically $ writeTVar nextMessageRow iStart
+        else clearLines nmr iStart
+      C.setCursorPosition (max nmr iStart) 0
+      putStr $ inputString ts <> " "
       C.clearFromCursorToLineEnd
       let (row, col) = relativeCursorPosition tw (inputPosition ts)
-      -- setCursor iStart tw (inputPosition ts)
       C.setCursorPosition (iStart + row) col
       C.showCursor
       where
-        -- setCursor :: Int -> Int -> Int -> IO ()
-        -- setCursor iStart tw pos = do
-        --   let row = (pos - 1) `div` tw
-        --       col = pos - row * tw
-        --   C.setCursorPosition (iStart + row) col
+        clearLines :: Int -> Int -> IO ()
+        clearLines from till
+          | from >= till = return ()
+          | otherwise = do
+            C.setCursorPosition from 0
+            C.clearFromCursorToLineEnd
+            clearLines (from + 1) till
 
         relativeCursorPosition :: Int -> Int -> (Int, Int)
         relativeCursorPosition width pos =
-          let row = (pos - 1) `div` width
+          let row = pos `div` width
               col = pos - row * width
            in (row, col)
 
@@ -158,7 +162,8 @@ getKey = charsToKey . reverse <$> keyChars ""
       "\ESC[C" -> KeyRight
       "\ESC[D" -> KeyLeft
       "\n" -> KeyEnter
-      "\DEL" -> KeyDel
+      "\DEL" -> KeyBack
+      "\t" -> KeyTab
       cs -> KeyChars cs
 
     keyChars cs = do
