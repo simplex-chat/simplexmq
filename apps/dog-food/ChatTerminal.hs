@@ -68,32 +68,41 @@ newChatTerminal qSize = do
   return ChatTerminal {inputQ, outputQ, activeContact, termState, termSize, nextMessageRow}
 
 chatTerminal :: ChatTerminal -> IO ()
-chatTerminal ct = do
-  hSetBuffering stdin NoBuffering
-  hSetBuffering stdout NoBuffering
-  hSetEcho stdin False
-  let receive = if termSize ct == (0, 0) then receiveFromTTY else receiveFromTTY'
-  race_ (receive ct) (sendToTTY ct)
+chatTerminal ct =
+  if termSize ct /= (0, 0)
+    then do
+      hSetBuffering stdin NoBuffering
+      hSetBuffering stdout NoBuffering
+      hSetEcho stdin False
+      updateInput ct
+      run receiveFromTTY' sendToTTY'
+    else run receiveFromTTY sendToTTY
+  where
+    run receive send = race_ (receive ct) (send ct)
 
 receiveFromTTY :: ChatTerminal -> IO ()
 receiveFromTTY ct@ChatTerminal {inputQ} =
   forever $ getChatLn ct >>= atomically . writeTBQueue inputQ
 
 receiveFromTTY' :: ChatTerminal -> IO ()
-receiveFromTTY' ct@ChatTerminal {inputQ, termState, nextMessageRow} =
+receiveFromTTY' ct@ChatTerminal {inputQ, termState} =
   forever $
-    getKey >>= atomically . processKey >> updateInput
+    getKey >>= processKey >> updateInput ct
   where
-    processKey :: Key -> STM ()
+    processKey :: Key -> IO ()
     processKey = \case
       KeyEnter -> submitInput
-      key -> modifyTVar termState $ updateTermState key
+      key -> atomically . modifyTVar termState $ updateTermState key
 
-    submitInput :: STM ()
+    submitInput :: IO ()
     submitInput = do
-      ts <- readTVar termState
-      writeTVar termState $ ts {inputString = "", inputPosition = 0}
-      writeTBQueue inputQ . B.pack $ inputString ts
+      msg <- atomically $ do
+        ts <- readTVar termState
+        writeTVar termState $ ts {inputString = "", inputPosition = 0}
+        let msg = encodeUtf8 . T.pack $ inputString ts
+        writeTBQueue inputQ msg
+        return msg
+      printMessage ct msg
 
     updateTermState :: Key -> TerminalState -> TerminalState
     updateTermState key ts@TerminalState {inputString = s, inputPosition = p} = case key of
@@ -116,41 +125,69 @@ receiveFromTTY' ct@ChatTerminal {inputQ, termState, nextMessageRow} =
         setPosition p' = ts' (s, p')
         ts' (s', p') = ts {inputString = s', inputPosition = p'}
 
-    updateInput :: IO ()
-    updateInput = do
-      C.hideCursor
-      ts <- readTVarIO termState
-      nmr <- readTVarIO nextMessageRow
-      let (th, tw) = termSize ct
-          ih = inputHeight ts ct
-          iStart = th - ih
-      if nmr >= iStart
-        then atomically $ writeTVar nextMessageRow iStart
-        else clearLines nmr iStart
-      C.setCursorPosition (max nmr iStart) 0
-      putStr $ inputString ts <> " "
-      C.clearFromCursorToLineEnd
-      let (row, col) = relativeCursorPosition tw (inputPosition ts)
-      C.setCursorPosition (iStart + row) col
-      C.showCursor
-      where
-        clearLines :: Int -> Int -> IO ()
-        clearLines from till
-          | from >= till = return ()
-          | otherwise = do
-            C.setCursorPosition from 0
-            C.clearFromCursorToLineEnd
-            clearLines (from + 1) till
+updateInput :: ChatTerminal -> IO ()
+updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
+  C.hideCursor
+  ts <- readTVarIO termState
+  nmr <- readTVarIO nextMessageRow
+  let (th, tw) = termSize
+      ih = inputHeight ts ct
+      iStart = th - ih
+  if nmr >= iStart
+    then atomically $ writeTVar nextMessageRow iStart
+    else clearLines nmr iStart
+  C.setCursorPosition (max nmr iStart) 0
+  putStr $ inputString ts <> " "
+  C.clearFromCursorToLineEnd
+  let (row, col) = relativeCursorPosition tw (inputPosition ts)
+  C.setCursorPosition (iStart + row) col
+  C.showCursor
+  where
+    clearLines :: Int -> Int -> IO ()
+    clearLines from till
+      | from >= till = return ()
+      | otherwise = do
+        C.setCursorPosition from 0
+        C.clearFromCursorToLineEnd
+        clearLines (from + 1) till
 
-        relativeCursorPosition :: Int -> Int -> (Int, Int)
-        relativeCursorPosition width pos =
-          let row = pos `div` width
-              col = pos - row * width
-           in (row, col)
+    relativeCursorPosition :: Int -> Int -> (Int, Int)
+    relativeCursorPosition width pos =
+      let row = pos `div` width
+          col = pos - row * width
+       in (row, col)
 
 sendToTTY :: ChatTerminal -> IO ()
 sendToTTY ChatTerminal {outputQ} =
   forever $ atomically (readTBQueue outputQ) >>= putLn stdout
+
+sendToTTY' :: ChatTerminal -> IO ()
+sendToTTY' ct@ChatTerminal {outputQ} =
+  forever $ atomically (readTBQueue outputQ) >>= printMessage ct >> updateInput ct
+
+printMessage :: ChatTerminal -> ByteString -> IO ()
+printMessage ChatTerminal {termSize, nextMessageRow} msg = do
+  nmr <- readTVarIO nextMessageRow
+  C.setCursorPosition nmr 0
+  let (th, tw) = termSize
+  lc <- printLines tw msg
+  atomically . writeTVar nextMessageRow $ min (th - 1) (nmr + lc)
+  where
+    printLines :: Int -> ByteString -> IO Int
+    printLines tw s = do
+      let ls
+            | B.null s = [""]
+            | otherwise = B.lines s <> ["" | B.last s == '\n']
+      print_ ls
+      return $ foldl (\lc l -> lc + (B.length l `div` tw) + 1) 0 ls
+
+    print_ :: [ByteString] -> IO ()
+    print_ [] = return ()
+    print_ (l : ls) = do
+      B.hPut stdout l
+      C.clearFromCursorToLineEnd
+      B.hPut stdout "\n"
+      print_ ls
 
 getKey :: IO Key
 getKey = charsToKey . reverse <$> keyChars ""
