@@ -17,6 +17,7 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding
@@ -48,11 +49,18 @@ data Key
   | KeyRight
   | KeyUp
   | KeyDown
+  | KeyAltLeft
+  | KeyAltRight
+  | KeyMetaLeft
+  | KeyMetaRight
+  | KeyShiftLeft
+  | KeyShiftRight
   | KeyEnter
   | KeyBack
   | KeyTab
   | KeyEsc
   | KeyChars String
+  | KeyUnsupported
   deriving (Eq)
 
 newChatTerminal :: Natural -> IO ChatTerminal
@@ -113,6 +121,10 @@ receiveFromTTY' ct@ChatTerminal {inputQ, termSize, termState} =
       KeyRight -> setPosition $ min (length s) (p + 1)
       KeyUp -> setPosition $ let p' = p - tw in if p' > 0 then p' else p
       KeyDown -> setPosition $ let p' = p + tw in if p' < length s then p' else p
+      KeyMetaLeft -> setPosition 0
+      KeyMetaRight -> setPosition $ length s
+      KeyAltLeft -> setPosition prevWordPos
+      KeyAltRight -> setPosition nextWordPos
       _ -> ts
       where
         insertChars = ts' . if p >= length s then append else insert
@@ -125,6 +137,18 @@ receiveFromTTY' ct@ChatTerminal {inputQ, termSize, termState} =
         backDeleteLast = if null s then (s, 0) else let s' = init s in (s', length s')
         backDelete = let (b, a) = splitAt p s in (init b <> a, p - 1)
         setPosition p' = ts' (s, p')
+        prevWordPos
+          | p == 0 || null s = p
+          | otherwise =
+            let before = take p s
+                beforeWord = dropWhileEnd (/= ' ') $ dropWhileEnd (== ' ') before
+             in max 0 $ p - length before + length beforeWord
+        nextWordPos
+          | p >= length s || null s = p
+          | otherwise =
+            let after = drop p s
+                afterWord = dropWhile (/= ' ') $ dropWhile (== ' ') after
+             in min (length s) $ p + length after - length afterWord
         ts' (s', p') = ts {inputString = s', inputPosition = p'}
 
 updateInput :: ChatTerminal -> IO ()
@@ -200,9 +224,18 @@ getKey = charsToKey . reverse <$> keyChars ""
       "\ESC[B" -> KeyDown
       "\ESC[C" -> KeyRight
       "\ESC[D" -> KeyLeft
+      "\ESCf" -> KeyAltRight
+      "\ESCb" -> KeyAltLeft
+      "\ENQ" -> KeyMetaRight
+      "\SOH" -> KeyMetaLeft
+      "\ESC[1;2C" -> KeyShiftRight
+      "\ESC[1;4C" -> KeyShiftRight -- Shift + Alt
+      "\ESC[1;2D" -> KeyShiftLeft
+      "\ESC[1;4D" -> KeyShiftLeft -- Shift + Alt
       "\n" -> KeyEnter
       "\DEL" -> KeyBack
       "\t" -> KeyTab
+      '\ESC' : _ -> KeyUnsupported
       cs -> KeyChars cs
 
     keyChars cs = do

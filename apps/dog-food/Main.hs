@@ -14,13 +14,7 @@ import ChatTerminal
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Logger.Simple
--- import qualified Data.Text as T
--- import Data.Text.Encoding
-
--- import qualified System.Console.ANSI as C
--- import System.IO
-
-import Control.Monad (when)
+-- import Control.Monad (when)
 import Control.Monad.Reader
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -34,7 +28,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Util (bshow, raceAny_)
-import System.IO (BufferMode (..), hReady, hSetBuffering, hSetEcho, stdin, stdout)
+-- import System.IO (BufferMode (..), hReady, hSetBuffering, hSetEcho, stdin, stdout)
 import Types
 
 cfg :: AgentConfig
@@ -133,13 +127,13 @@ chatHelpInfo =
 --   key <- getKey
 --   when (key /= "\ESC") $ do
 --     case key of
---       "\ESC[A" -> putStr "↑"
---       "\ESC[B" -> putStr "↓"
---       "\ESC[C" -> putStr "→"
---       "\ESC[D" -> putStr "←"
---       "\n" -> putStr "⎆"
---       "\DEL" -> putStr "⎋"
---       ch -> putStr ch
+--       -- "\ESC[A" -> print "↑"
+--       -- "\ESC[B" -> print "↓"
+--       -- "\ESC[C" -> print "→"
+--       -- "\ESC[D" -> print "←"
+--       "\n" -> print "⎆"
+--       "\DEL" -> print "⎋"
+--       ch -> print ch >> print (length ch)
 --     main
 
 -- getKey :: IO [Char]
