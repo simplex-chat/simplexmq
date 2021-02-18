@@ -97,8 +97,55 @@ messages =
       message BLOB NOT NULL,
       msg_status TEXT NOT NULL,
       FOREIGN KEY (conn_alias) REFERENCES connections (conn_alias),
-      UNIQUE (conn_alias, rcv_msg_id),
-      UNIQUE (conn_alias, snd_msg_id)
+      FOREIGN KEY (conn_alias, rcv_msg_id) REFERENCES rcv_messages (conn_alias, rcv_msg_id),
+      FOREIGN KEY (conn_alias, snd_msg_id) REFERENCES snd_messages (conn_alias, snd_msg_id),
+    );
+  |]
+
+-- messages agent receives - sender_msg_id is id of the message at sender;
+-- sender_msg_id corresponds to snd_msg_id from the sending side
+-- TODO remove this comment
+-- the order of insert into rcv_ and snd_messages tables (all in transaction):
+-- 1. look up 'last_<rcv/snd>_msg_id' from 'connections' table;
+-- 2. insert into 'messages' table - we get 'agent_msg_id' via autoincrement;
+-- 3. insert into '<rcv/snd>_messages' table - it has deffered fk;
+-- 4. update 'last_<rcv/snd>_msg_id' in 'connections' table - application is responsible for consistency.
+-- * investigate if it's possible to select and update in one query in sqlite
+-- ? deferred fks are in assumption it's more convenient to delete from 'messages' side using agent_msg_id,
+-- ? otherwise we could've just have unique constraints on 'messages' table and no foreign keys here
+rcvMessages :: Query
+rcvMessages =
+  [sql|
+    CREATE TABLE IF NOT EXISTS rcv_messages(
+      agent_msg_id INTEGER NOT NULL,
+      conn_alias TEXT NOT NULL,
+      rcv_msg_id INTEGER NOT NULL,
+      broker_msg_id INTEGER NOT NULL,
+      broker_timestamp TEXT NOT NULL,
+      sender_msg_id INTEGER NOT NULL,
+      sender_timestamp TEXT NOT NULL,
+      PRIMARY KEY (conn_alias, rcv_msg_id),
+      FOREIGN KEY (agent_msg_id)
+        REFERENCES messages (agent_msg_id)
+        ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED
+    );
+  |]
+
+-- messages agent sends - snd_msg_id is id of the message sent / to be sent,
+-- as in its number in order of sending
+sndMessages :: Query
+sndMessages =
+  [sql|
+    CREATE TABLE IF NOT EXISTS snd_messages(
+      agent_msg_id INTEGER NOT NULL,
+      conn_alias TEXT NOT NULL,
+      snd_msg_id INTEGER NOT NULL,
+      PRIMARY KEY (conn_alias, snd_msg_id),
+      FOREIGN KEY (agent_msg_id)
+        REFERENCES messages (agent_msg_id)
+        ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED
     );
   |]
 
@@ -111,5 +158,7 @@ createSchema conn =
       rcvQueues,
       sndQueues,
       connections,
-      messages
+      messages,
+      rcvMessages,
+      sndMessages
     ]
