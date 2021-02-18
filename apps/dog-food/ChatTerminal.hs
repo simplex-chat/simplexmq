@@ -85,14 +85,14 @@ receiveFromTTY ct@ChatTerminal {inputQ} =
   forever $ getChatLn ct >>= atomically . writeTBQueue inputQ
 
 receiveFromTTY' :: ChatTerminal -> IO ()
-receiveFromTTY' ct@ChatTerminal {inputQ, termState} =
+receiveFromTTY' ct@ChatTerminal {inputQ, termSize, termState} =
   forever $
     getKey >>= processKey >> updateInput ct
   where
     processKey :: Key -> IO ()
     processKey = \case
       KeyEnter -> submitInput
-      key -> atomically . modifyTVar termState $ updateTermState key
+      key -> atomically . modifyTVar termState $ updateTermState (snd termSize) key
 
     submitInput :: IO ()
     submitInput = do
@@ -104,13 +104,15 @@ receiveFromTTY' ct@ChatTerminal {inputQ, termState} =
         return msg
       printMessage ct msg
 
-    updateTermState :: Key -> TerminalState -> TerminalState
-    updateTermState key ts@TerminalState {inputString = s, inputPosition = p} = case key of
+    updateTermState :: Int -> Key -> TerminalState -> TerminalState
+    updateTermState tw key ts@TerminalState {inputString = s, inputPosition = p} = case key of
       KeyChars cs -> insertChars cs
       KeyTab -> insertChars "    "
       KeyBack -> backDeleteChar
       KeyLeft -> setPosition $ max 0 (p - 1)
       KeyRight -> setPosition $ min (length s) (p + 1)
+      KeyUp -> setPosition $ let p' = p - tw in if p' > 0 then p' else p
+      KeyDown -> setPosition $ let p' = p + tw in if p' < length s then p' else p
       _ -> ts
       where
         insertChars = ts' . if p >= length s then append else insert
