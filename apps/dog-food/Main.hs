@@ -14,14 +14,19 @@ import ChatTerminal
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Logger.Simple
+-- import qualified Data.Text as T
+-- import Data.Text.Encoding
+
+-- import qualified System.Console.ANSI as C
+-- import System.IO
+
+import Control.Monad (when)
 import Control.Monad.Reader
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
--- import qualified Data.Text as T
--- import Data.Text.Encoding
 import Numeric.Natural
 import Simplex.Messaging.Agent (getSMPAgentClient, runSMPAgentClient)
 import Simplex.Messaging.Agent.Client (AgentClient (..))
@@ -29,8 +34,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Util (bshow, raceAny_)
--- import qualified System.Console.ANSI as C
--- import System.IO
+import System.IO (BufferMode (..), hReady, hSetBuffering, hSetEcho, stdin, stdout)
 import Types
 
 cfg :: AgentConfig
@@ -119,12 +123,50 @@ chatHelpInfo =
   \@<name> <message> - send <message> (any string) to contact <name>\n\
   \                    @<name> can be omitted to send to previous"
 
+-- Simple menu controller
+
+-- main :: IO ()
+-- main = do
+--   hSetBuffering stdin NoBuffering
+--   hSetBuffering stdout NoBuffering
+--   hSetEcho stdin False
+--   key <- getKey
+--   when (key /= "\ESC") $ do
+--     case key of
+--       "\ESC[A" -> putStr "↑"
+--       "\ESC[B" -> putStr "↓"
+--       "\ESC[C" -> putStr "→"
+--       "\ESC[D" -> putStr "←"
+--       "\n" -> putStr "⎆"
+--       "\DEL" -> putStr "⎋"
+--       ch -> putStr ch
+--     main
+
+-- getKey :: IO [Char]
+-- getKey = reverse <$> keyChars ""
+--   where
+--     -- charsToKey = \case
+--     --   "\ESC" -> KeyEsc
+--     --   "\ESC[A" -> KeyUp
+--     --   "\ESC[B" -> KeyDown
+--     --   "\ESC[C" -> KeyRight
+--     --   "\ESC[D" -> KeyLeft
+--     --   "\n" -> KeyEnter
+--     --   "\DEL" -> KeyDel
+--     --   [c] -> KeyChar c
+--     --   cs -> KeyUnknown cs
+
+--     keyChars cs = do
+--       c <- getChar
+--       more <- hReady stdin
+--       (if more then keyChars else return) (c : cs)
+
 main :: IO ()
 main = do
   ChatOpts {dbFileName, smpServer, name} <- getChatOpts
   putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
   t <- getChatClient smpServer (Contact <$> name)
-  ct <- atomically $ newChatTerminal (tbqSize cfg)
+  ct <- newChatTerminal (tbqSize cfg)
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
