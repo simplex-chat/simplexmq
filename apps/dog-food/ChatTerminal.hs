@@ -54,8 +54,6 @@ data Key
   | KeyDown
   | KeyAltLeft
   | KeyAltRight
-  | KeyMetaLeft
-  | KeyMetaRight
   | KeyShiftLeft
   | KeyShiftRight
   | KeyEnter
@@ -135,8 +133,8 @@ receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
       KeyRight -> setPosition $ min (length s) (p + 1)
       KeyUp -> setPosition $ let p' = p - tw in if p' > 0 then p' else p
       KeyDown -> setPosition $ let p' = p + tw in if p' < length s then p' else p
-      KeyMetaLeft -> setPosition 0
-      KeyMetaRight -> setPosition $ length s
+      KeyShiftLeft -> setPosition 0
+      KeyShiftRight -> setPosition $ length s
       KeyAltLeft -> setPosition prevWordPos
       KeyAltRight -> setPosition nextWordPos
       _ -> ts
@@ -264,12 +262,8 @@ getKey = charsToKey . reverse <$> keyChars ""
       "\ESC[D" -> KeyLeft
       "\ESCf" -> KeyAltRight
       "\ESCb" -> KeyAltLeft
-      "\ENQ" -> KeyMetaRight
-      "\SOH" -> KeyMetaLeft
       "\ESC[1;2C" -> KeyShiftRight
-      "\ESC[1;4C" -> KeyShiftRight -- Shift + Alt
       "\ESC[1;2D" -> KeyShiftLeft
-      "\ESC[1;4D" -> KeyShiftLeft -- Shift + Alt
       "\n" -> KeyEnter
       "\DEL" -> KeyBack
       "\t" -> KeyTab
