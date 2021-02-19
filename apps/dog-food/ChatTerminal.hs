@@ -93,14 +93,16 @@ receiveFromTTY ct@ChatTerminal {inputQ} =
   forever $ getChatLn ct >>= atomically . writeTBQueue inputQ
 
 receiveFromTTY' :: ChatTerminal -> IO ()
-receiveFromTTY' ct@ChatTerminal {inputQ, termSize, termState} =
+receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
   forever $
     getKey >>= processKey >> updateInput ct
   where
     processKey :: Key -> IO ()
-    processKey = \case
-      KeyEnter -> submitInput
-      key -> atomically . modifyTVar termState $ updateTermState (snd termSize) key
+    processKey key = do
+      ac <- readTVarIO activeContact
+      case key of
+        KeyEnter -> submitInput
+        _ -> atomically . modifyTVar termState $ updateTermState ac (snd termSize) key
 
     submitInput :: IO ()
     submitInput = do
@@ -112,9 +114,14 @@ receiveFromTTY' ct@ChatTerminal {inputQ, termSize, termState} =
         return msg
       printMessage ct msg
 
-    updateTermState :: Int -> Key -> TerminalState -> TerminalState
-    updateTermState tw key ts@TerminalState {inputString = s, inputPosition = p} = case key of
-      KeyChars cs -> insertChars cs
+    updateTermState :: Maybe Contact -> Int -> Key -> TerminalState -> TerminalState
+    updateTermState ac tw key ts@TerminalState {inputString = s, inputPosition = p} = case key of
+      KeyChars cs
+        | null s && cs /= "@" && cs /= "/" ->
+          insertChars $ case ac of
+            Just (Contact c) -> "@" <> B.unpack c <> " " <> cs
+            Nothing -> cs
+        | otherwise -> insertChars cs
       KeyTab -> insertChars "    "
       KeyBack -> backDeleteChar
       KeyLeft -> setPosition $ max 0 (p - 1)
