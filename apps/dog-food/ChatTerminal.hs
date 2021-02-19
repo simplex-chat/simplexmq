@@ -6,6 +6,7 @@ module ChatTerminal
   ( ChatTerminal (..),
     newChatTerminal,
     chatTerminal,
+    updateUsername,
     ttyContact,
     ttyFromContact,
   )
@@ -31,18 +32,20 @@ data ChatTerminal = ChatTerminal
   { inputQ :: TBQueue ByteString,
     outputQ :: TBQueue ByteString,
     activeContact :: TVar (Maybe Contact),
+    username :: TVar (Maybe Contact),
     termState :: TVar TerminalState,
     termSize :: (Int, Int),
     nextMessageRow :: TVar Int
   }
 
 data TerminalState = TerminalState
-  { inputString :: String,
+  { inputPrompt :: String,
+    inputString :: String,
     inputPosition :: Int
   }
 
 inputHeight :: TerminalState -> ChatTerminal -> Int
-inputHeight ts ct = length (inputString ts) `div` snd (termSize ct) + 1
+inputHeight ts ct = length (inputPrompt ts <> inputString ts) `div` snd (termSize ct) + 1
 
 data Key
   = KeyLeft
@@ -63,17 +66,26 @@ data Key
   | KeyUnsupported
   deriving (Eq)
 
-newChatTerminal :: Natural -> IO ChatTerminal
-newChatTerminal qSize = do
+newChatTerminal :: Natural -> Maybe Contact -> IO ChatTerminal
+newChatTerminal qSize user = do
   inputQ <- newTBQueueIO qSize
   outputQ <- newTBQueueIO qSize
   activeContact <- newTVarIO Nothing
+  username <- newTVarIO user
   termSize <- fromMaybe (0, 0) <$> C.getTerminalSize
   let lastRow = fst termSize - 1
-  termState <- newTVarIO $ TerminalState {inputString = "", inputPosition = 0}
+  termState <- newTVarIO $ newTermState user
   nextMessageRow <- newTVarIO lastRow
   threadDelay 500000 -- this delay is the same as timeout in getTerminalSize
-  return ChatTerminal {inputQ, outputQ, activeContact, termState, termSize, nextMessageRow}
+  return ChatTerminal {inputQ, outputQ, activeContact, username, termState, termSize, nextMessageRow}
+
+newTermState :: Maybe Contact -> TerminalState
+newTermState user =
+  TerminalState
+    { inputString = "",
+      inputPosition = 0,
+      inputPrompt = promptString user
+    }
 
 chatTerminal :: ChatTerminal -> IO ()
 chatTerminal ct =
@@ -176,14 +188,15 @@ updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
   let (th, tw) = termSize
       ih = inputHeight ts ct
       iStart = th - ih
+      prompt = inputPrompt ts
+      (cRow, cCol) = relativeCursorPosition tw $ length prompt + inputPosition ts
   if nmr >= iStart
     then atomically $ writeTVar nextMessageRow iStart
     else clearLines nmr iStart
   C.setCursorPosition (max nmr iStart) 0
-  putStr $ inputString ts <> " "
+  putStr $ prompt <> inputString ts <> " "
   C.clearFromCursorToLineEnd
-  let (row, col) = relativeCursorPosition tw (inputPosition ts)
-  C.setCursorPosition (iStart + row) col
+  C.setCursorPosition (iStart + cRow) cCol
   C.showCursor
   where
     clearLines :: Int -> Int -> IO ()
@@ -199,6 +212,14 @@ updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
       let row = pos `div` width
           col = pos - row * width
        in (row, col)
+
+updateUsername :: ChatTerminal -> Maybe Contact -> STM ()
+updateUsername ct a = do
+  writeTVar (username ct) a
+  modifyTVar (termState ct) $ \ts -> ts {inputPrompt = promptString a}
+
+promptString :: Maybe Contact -> String
+promptString a = maybe "" (B.unpack . toBs) a <> "> "
 
 sendToTTY :: ChatTerminal -> IO ()
 sendToTTY ChatTerminal {outputQ} =

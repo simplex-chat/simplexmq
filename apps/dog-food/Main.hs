@@ -159,8 +159,9 @@ main :: IO ()
 main = do
   ChatOpts {dbFileName, smpServer, name} <- getChatOpts
   putStrLn "simpleX chat prototype (no encryption), \"/help\" for usage information"
-  t <- getChatClient smpServer (Contact <$> name)
-  ct <- newChatTerminal (tbqSize cfg)
+  let user = Contact <$> name
+  t <- getChatClient smpServer user
+  ct <- newChatTerminal (tbqSize cfg) user
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
@@ -189,15 +190,17 @@ newChatClient qSize smpServer name = do
   return ChatClient {inQ, outQ, smpServer, username}
 
 receiveFromChatTerm :: ChatClient -> ChatTerminal -> IO ()
-receiveFromChatTerm t ChatTerminal {inputQ} = forever $ do
-  atomically (readTBQueue inputQ)
+receiveFromChatTerm t ct = forever $ do
+  atomically (readTBQueue $ inputQ ct)
     >>= processOrError . A.parseOnly (chatCommandP <* A.endOfInput)
   where
     processOrError = \case
       Left err -> atomically . writeTBQueue (outQ t) . ErrorInput $ B.pack err
       Right ChatHelp -> atomically . writeTBQueue (outQ t) $ ChatHelpInfo
       Right (SetName a) -> atomically $ do
-        writeTVar (username t) $ Just a
+        let user = Just a
+        writeTVar (username (t :: ChatClient)) user
+        updateUsername ct user
         writeTBQueue (outQ t) YesYes
       Right cmd -> atomically $ writeTBQueue (inQ t) cmd
 
