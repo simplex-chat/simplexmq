@@ -112,7 +112,7 @@ receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
         let msg = encodeUtf8 . T.pack $ inputString ts
         writeTBQueue inputQ msg
         return msg
-      printMessage ct msg
+      printMessage ct $ highlightContact msg
 
     updateTermState :: Maybe Contact -> Int -> Key -> TerminalState -> TerminalState
     updateTermState ac tw key ts@TerminalState {inputString = s, inputPosition = p} = case key of
@@ -159,6 +159,14 @@ receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
                 afterWord = dropWhile (/= ' ') $ dropWhile (== ' ') after
              in min (length s) $ p + length after - length afterWord
         ts' (s', p') = ts {inputString = s', inputPosition = p'}
+
+highlightContact :: ByteString -> ByteString
+highlightContact = \case
+  "" -> ""
+  s ->
+    if B.head s == '@'
+      then let (c, rest) = B.span (/= ' ') $ B.drop 1 s in ttyToContact (Contact c) <> rest
+      else s
 
 updateInput :: ChatTerminal -> IO ()
 updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
