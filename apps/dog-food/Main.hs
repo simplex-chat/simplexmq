@@ -14,7 +14,6 @@ import ChatTerminal
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Logger.Simple
--- import Control.Monad (when)
 import Control.Monad.Reader
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -28,7 +27,6 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Util (bshow, raceAny_)
--- import System.IO (BufferMode (..), hReady, hSetBuffering, hSetEcho, stdin, stdout)
 import Types
 
 cfg :: AgentConfig
@@ -116,44 +114,6 @@ chatHelpInfo =
   \/name <name>      - set <name> to use in invitations\n\
   \@<name> <message> - send <message> (any string) to contact <name>\n\
   \                    @<name> can be omitted to send to previous"
-
--- Simple menu controller
-
--- main :: IO ()
--- main = do
---   hSetBuffering stdin NoBuffering
---   hSetBuffering stdout NoBuffering
---   hSetEcho stdin False
---   key <- getKey
---   when (key /= "\ESC") $ do
---     case key of
---       -- "\ESC[A" -> print "↑"
---       -- "\ESC[B" -> print "↓"
---       -- "\ESC[C" -> print "→"
---       -- "\ESC[D" -> print "←"
---       "\n" -> print "⎆"
---       "\DEL" -> print "⎋"
---       ch -> print ch >> print (length ch)
---     main
-
--- getKey :: IO [Char]
--- getKey = reverse <$> keyChars ""
---   where
---     -- charsToKey = \case
---     --   "\ESC" -> KeyEsc
---     --   "\ESC[A" -> KeyUp
---     --   "\ESC[B" -> KeyDown
---     --   "\ESC[C" -> KeyRight
---     --   "\ESC[D" -> KeyLeft
---     --   "\n" -> KeyEnter
---     --   "\DEL" -> KeyDel
---     --   [c] -> KeyChar c
---     --   cs -> KeyUnknown cs
-
---     keyChars cs = do
---       c <- getChar
---       more <- hReady stdin
---       (if more then keyChars else return) (c : cs)
 
 main :: IO ()
 main = do
