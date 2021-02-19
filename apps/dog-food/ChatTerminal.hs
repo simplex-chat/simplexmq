@@ -98,11 +98,11 @@ receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
     getKey >>= processKey >> updateInput ct
   where
     processKey :: Key -> IO ()
-    processKey key = do
-      ac <- readTVarIO activeContact
-      case key of
-        KeyEnter -> submitInput
-        _ -> atomically . modifyTVar termState $ updateTermState ac (snd termSize) key
+    processKey = \case
+      KeyEnter -> submitInput
+      key -> atomically $ do
+        ac <- readTVar activeContact
+        modifyTVar termState $ updateTermState ac (snd termSize) key
 
     submitInput :: IO ()
     submitInput = do
@@ -116,12 +116,7 @@ receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
 
     updateTermState :: Maybe Contact -> Int -> Key -> TerminalState -> TerminalState
     updateTermState ac tw key ts@TerminalState {inputString = s, inputPosition = p} = case key of
-      KeyChars cs
-        | null s && cs /= "@" && cs /= "/" ->
-          insertChars $ case ac of
-            Just (Contact c) -> "@" <> B.unpack c <> " " <> cs
-            Nothing -> cs
-        | otherwise -> insertChars cs
+      KeyChars cs -> insertCharsWithContact cs
       KeyTab -> insertChars "    "
       KeyBack -> backDeleteChar
       KeyLeft -> setPosition $ max 0 (p - 1)
@@ -134,9 +129,16 @@ receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
       KeyAltRight -> setPosition nextWordPos
       _ -> ts
       where
+        insertCharsWithContact cs
+          | null s && cs /= "@" && cs /= "/" =
+            insertChars $ contactPrefix <> cs
+          | otherwise = insertChars cs
         insertChars = ts' . if p >= length s then append else insert
         append cs = let s' = s <> cs in (s', length s')
         insert cs = let (b, a) = splitAt p s in (b <> cs <> a, p + length cs)
+        contactPrefix = case ac of
+          Just (Contact c) -> "@" <> B.unpack c <> " "
+          Nothing -> ""
         backDeleteChar
           | p == 0 || null s = ts
           | p >= length s = ts' backDeleteLast
