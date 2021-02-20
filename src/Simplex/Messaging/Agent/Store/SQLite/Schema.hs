@@ -13,7 +13,7 @@ enableFKs = "PRAGMA foreign_keys = ON;"
 servers :: Query
 servers =
   [sql|
-    CREATE TABLE IF NOT EXISTS servers(
+    CREATE TABLE servers(
       host TEXT NOT NULL,
       port TEXT NOT NULL,
       key_hash BLOB,
@@ -24,7 +24,7 @@ servers =
 rcvQueues :: Query
 rcvQueues =
   [sql|
-    CREATE TABLE IF NOT EXISTS rcv_queues(
+    CREATE TABLE rcv_queues(
       host TEXT NOT NULL,
       port TEXT NOT NULL,
       rcv_id BLOB NOT NULL,
@@ -48,7 +48,7 @@ rcvQueues =
 sndQueues :: Query
 sndQueues =
   [sql|
-    CREATE TABLE IF NOT EXISTS snd_queues(
+    CREATE TABLE snd_queues(
       host TEXT NOT NULL,
       port TEXT NOT NULL,
       snd_id BLOB NOT NULL,
@@ -69,7 +69,7 @@ sndQueues =
 connections :: Query
 connections =
   [sql|
-    CREATE TABLE IF NOT EXISTS connections(
+    CREATE TABLE connections(
       conn_alias TEXT NOT NULL,
       rcv_host TEXT,
       rcv_port TEXT,
@@ -89,7 +89,7 @@ connections =
 messages :: Query
 messages =
   [sql|
-    CREATE TABLE IF NOT EXISTS messages(
+    CREATE TABLE messages(
       conn_alias TEXT NOT NULL,
       internal_id INTEGER NOT NULL,
       internal_ts TEXT NOT NULL,
@@ -131,7 +131,7 @@ messages =
 rcvMessages :: Query
 rcvMessages =
   [sql|
-    CREATE TABLE IF NOT EXISTS rcv_messages(
+    CREATE TABLE rcv_messages(
       conn_alias TEXT NOT NULL,
       internal_rcv_id INTEGER NOT NULL,
       internal_id INTEGER NOT NULL,
@@ -167,7 +167,7 @@ rcvMessages =
 sndMessages :: Query
 sndMessages =
   [sql|
-    CREATE TABLE IF NOT EXISTS snd_messages(
+    CREATE TABLE snd_messages(
       conn_alias TEXT NOT NULL,
       internal_snd_id INTEGER NOT NULL,
       internal_id INTEGER NOT NULL,
