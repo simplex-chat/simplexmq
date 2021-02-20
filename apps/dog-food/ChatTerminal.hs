@@ -279,6 +279,8 @@ getKey = charsToKey . reverse <$> keyChars ""
     keyChars cs = do
       c <- getChar
       more <- hReady stdin
+      -- for debugging - uncomment this, comment line after: 
+      -- (if more then keyChars else \c' -> print (reverse c') >> return c') (c : cs)
       (if more then keyChars else return) (c : cs)
 
 getChatLn :: ChatTerminal -> IO ByteString
