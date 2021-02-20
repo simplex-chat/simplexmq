@@ -34,19 +34,28 @@ $ stack install
 $ dog-food
 ```
 
+If you'd prefer to not set up Haskell locally, you may instead build the project inside a docker container:
+
+```shell
+$ git clone git@github.com:simplex-chat/simplex-messaging.git
+$ cd simplex-messaging
+$ docker run -v $(pwd):/project -w='/project' haskell:8.8.4 stack install --allow-different-user
+$ dog-food
+```
+
 `dog-food` (as in "eating your own dog food" - it is an early prototype) starts chat client with default parameters. By default, SQLite database file is created in the working directory (`smp-chat.db`), and the default SMP server is `smp.simplex.im:5223`.
 
 To specify a different chat database location run:
 
-```bash
-mkdir ~/simplex
-dog-food -d ~/simplex/my-chat.db
+```shell
+$ mkdir ~/simplex
+$ dog-food -d ~/simplex/my-chat.db
 ```
 
 You can deploy your own server and set client to use it via command line option:
 
-```bash
-dog-food -s smp.example.com:5223
+```shell
+$ dog-food -s smp.example.com:5223
 ```
 
 You can still talk to people using default or any other server, it only affects the location of the message queue when you initiate the connection (and the reply queue can be on another server, as set by the other party's client).
