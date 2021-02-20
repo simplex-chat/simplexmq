@@ -77,8 +77,9 @@ connections =
       snd_host TEXT,
       snd_port TEXT,
       snd_id BLOB,
-      last_internal_msg_id INTEGER,
-      last_sending_msg_id INTEGER,
+      last_internal_msg_id INTEGER NOT NULL,
+      last_internal_rcv_msg_id INTEGER NOT NULL,
+      last_internal_snd_msg_id INTEGER NOT NULL,
       PRIMARY KEY (conn_alias),
       FOREIGN KEY (rcv_host, rcv_port, rcv_id) REFERENCES rcv_queues (host, port, rcv_id),
       FOREIGN KEY (snd_host, snd_port, snd_id) REFERENCES snd_queues (host, port, snd_id)
@@ -92,70 +93,91 @@ messages =
       conn_alias TEXT NOT NULL,
       internal_id INTEGER NOT NULL,
       internal_ts TEXT NOT NULL,
-      external_senders_id INTEGER,
-      external_sending_id INTEGER,
+      internal_rcv_id INTEGER,
+      internal_snd_id INTEGER,
       body BLOB NOT NULL,
-      status TEXT NOT NULL,
       PRIMARY KEY (conn_alias, internal_id),
-      FOREIGN KEY (conn_alias) REFERENCES connections (conn_alias),
-      FOREIGN KEY (conn_alias, internal_id, external_senders_id)
-        REFERENCES rcv_messages (conn_alias, internal_id, senders_id)
+      FOREIGN KEY (conn_alias)
+        REFERENCES connections (conn_alias)
+        ON DELETE CASCADE,
+      FOREIGN KEY (conn_alias, internal_rcv_id)
+        REFERENCES rcv_messages (conn_alias, internal_rcv_id)
+        ON DELETE CASCADE
         DEFERRABLE INITIALLY DEFERRED,
-      FOREIGN KEY (conn_alias, internal_id, external_sending_id)
-        REFERENCES snd_messages (conn_alias, internal_id, sending_id)
+      FOREIGN KEY (conn_alias, internal_snd_id)
+        REFERENCES snd_messages (conn_alias, internal_snd_id)
+        ON DELETE CASCADE
         DEFERRABLE INITIALLY DEFERRED
     ) WITHOUT ROWID;
   |]
 
--- messages agent receives - senders_id is id of the message at sender,
--- i.e. senders_id corresponds to sending_id from the sender's side
--- TODO remove this comment
--- the order of insert into rcv_messages tables (all in transaction):
--- 1. look up 'last_internal_msg_id' from 'connections' table;
--- 2. insert into 'messages' table;
+-- table containing metadata of messages agent receives
+-- * external_snd_id
+--   id of the message at sender, i.e. 'external_snd_id' corresponds to 'internal_snd_id' from the sender's side.
+-- * rcv_status
+--   one of [semantically]: "received", "acknowledged to broker", "acknowledged to sender", changed in this order.
+-- * broker_ack_ts
+--   ts of acknowledgement to broker, corresponds to "acknowledged to broker" status, should be null until that;
+--   do not mix up with 'broker_ts' - ts created at broker after broker receives the message from sender.
+-- * sender_ack_ts
+--   ts of acknowledgement to sender, corresponds to "acknowledged to sender" status, should be null until that;
+--   do not mix up with 'external_snd_ts' - ts created at sender before sending (which corresponds to 'internal_ts').
+--
+-- the order of inserting rcv messages - in transaction do:
+-- 1. look up 'last_internal_msg_id' and 'last_internal_rcv_msg_id' from 'connections' table;
+-- 2. increment internal ids and insert into 'messages' table;
 -- 3. insert into 'rcv_messages' table;
--- 4. update 'last_internal_msg_id' in 'connections' table - application is responsible for consistency.
--- * investigate if it's possible to select and update in one query in sqlite
+-- 4. update internal ids in 'connections' table - application is responsible for consistency.
 rcvMessages :: Query
 rcvMessages =
   [sql|
     CREATE TABLE IF NOT EXISTS rcv_messages(
       conn_alias TEXT NOT NULL,
+      internal_rcv_id INTEGER NOT NULL,
       internal_id INTEGER NOT NULL,
-      senders_id INTEGER NOT NULL,
-      senders_ts TEXT NOT NULL,
+      external_snd_id INTEGER NOT NULL,
+      external_snd_ts TEXT NOT NULL,
       broker_id INTEGER NOT NULL,
       broker_ts TEXT NOT NULL,
-      PRIMARY KEY (conn_alias, internal_id, senders_id),
+      rcv_status TEXT NOT NULL,
+      broker_ack_ts TEXT,
+      sender_ack_ts TEXT,
+      PRIMARY KEY (conn_alias, internal_rcv_id),
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)
         ON DELETE CASCADE
     ) WITHOUT ROWID;
   |]
--- ? UNIQUE (conn_alias, senders_id)
--- ? UNIQUE (conn_alias, broker_id)
 
--- messages agent sends - sending_id is id of the message sent / to be sent,
--- as in its number in order of sending
--- TODO remove this comment
--- the order of insert into snd_messages tables (all in transaction):
--- 1. look up 'last_internal_msg_id' and 'last_sending_msg_id' from 'connections' table;
--- 2. insert into 'messages' table;
+-- table containing metadata of messages agent sends
+-- * internal_snd_id
+--   id of the message sent / to be sent, as in its number in order of sending.
+-- * snd_status
+--   one of [semantically]: "created", "sent", "delivered", changed in this order.
+-- * sent_ts
+--   ts of msg received by broker, corresponds to "sent" status, should be null until that.
+-- * delivered_ts
+--   ts of msg received by recipient, corresponds to "delivered" status, should be null until that.
+--
+-- the order of inserting snd messages - in transaction do:
+-- 1. look up 'last_internal_msg_id' and 'last_internal_snd_msg_id' from 'connections' table;
+-- 2. increment internal ids and insert into 'messages' table;
 -- 3. insert into 'snd_messages' table;
--- 4. update both 'last_..._msg_id' fields in 'connections' table - application is responsible for consistency.
+-- 4. update internal ids in 'connections' table - application is responsible for consistency.
 sndMessages :: Query
 sndMessages =
   [sql|
     CREATE TABLE IF NOT EXISTS snd_messages(
       conn_alias TEXT NOT NULL,
+      internal_snd_id INTEGER NOT NULL,
       internal_id INTEGER NOT NULL,
-      sending_id INTEGER NOT NULL,
-      sending_ts TEXT NOT NULL,
-      PRIMARY KEY (conn_alias, internal_id, sending_id),
+      snd_status TEXT NOT NULL,
+      sent_ts TEXT,
+      delivered_ts TEXT,
+      PRIMARY KEY (conn_alias, internal_snd_id),
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)
-        ON DELETE CASCADE,
-      UNIQUE (conn_alias, sending_id)
+        ON DELETE CASCADE
     ) WITHOUT ROWID;
   |]
 
