@@ -116,10 +116,10 @@ messages =
 --   id of the message at sender, i.e. 'external_snd_id' corresponds to 'internal_snd_id' from the sender's side.
 -- * rcv_status
 --   one of [semantically]: "received", "acknowledged to broker", "acknowledged to sender", changed in this order.
--- * broker_ack_ts
+-- * ack_brocker_ts
 --   ts of acknowledgement to broker, corresponds to "acknowledged to broker" status, should be null until that;
 --   do not mix up with 'broker_ts' - ts created at broker after broker receives the message from sender.
--- * sender_ack_ts
+-- * ack_sender_ts
 --   ts of acknowledgement to sender, corresponds to "acknowledged to sender" status, should be null until that;
 --   do not mix up with 'external_snd_ts' - ts created at sender before sending (which corresponds to 'internal_ts').
 --
@@ -140,8 +140,8 @@ rcvMessages =
       broker_id INTEGER NOT NULL,
       broker_ts TEXT NOT NULL,
       rcv_status TEXT NOT NULL,
-      broker_ack_ts TEXT,
-      sender_ack_ts TEXT,
+      ack_brocker_ts TEXT,
+      ack_sender_ts TEXT,
       PRIMARY KEY (conn_alias, internal_rcv_id),
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)
