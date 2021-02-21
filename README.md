@@ -39,7 +39,7 @@ If you'd prefer to not set up Haskell locally, you may instead build the project
 ```shell
 $ git clone git@github.com:simplex-chat/simplex-messaging.git
 $ cd simplex-messaging
-$ docker run -v $(pwd):/project -w='/project' haskell:8.8.4 stack install --allow-different-user
+$ docker create -v $(pwd):/project -w='/project' haskell:8.8.4 stack install --allow-different-user
 $ dog-food
 ```
 
