@@ -34,14 +34,16 @@ $ stack install
 $ dog-food
 ```
 
-If you'd prefer to not set up Haskell locally, you may instead build the project inside a docker container:
+If you'd prefer to not set up Haskell locally, you may instead build the chat client executable using [docker build with custom output](https://docs.docker.com/engine/reference/commandline/build/#custom-build-outputs):
 
 ```shell
 $ git clone git@github.com:simplex-chat/simplex-messaging.git
 $ cd simplex-messaging
-$ docker create -v $(pwd):/project -w='/project' haskell:8.8.4 stack install --allow-different-user
+$ DOCKER_BUILDKIT=1 docker build --output ~/.local/bin .
 $ dog-food
 ```
+
+> **NOTE:** when running chat client executable built with the latter approach, if you encounter ``version `GLIBC_2.28' not found`` error, rebuild it with `haskell:8.8.4-stretch` base image instead (you'd have to change it in your local [Dockerfile](Dockerfile)).
 
 `dog-food` (as in "eating your own dog food" - it is an early prototype) starts chat client with default parameters. By default, SQLite database file is created in the working directory (`smp-chat.db`), and the default SMP server is `smp.simplex.im:5223`.
 
