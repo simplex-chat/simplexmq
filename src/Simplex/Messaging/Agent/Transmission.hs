@@ -68,8 +68,7 @@ instance TestEquality SAParty where
   testEquality SClient SClient = Just Refl
   testEquality _ _ = Nothing
 
-data ACmd where
-  ACmd :: SAParty p -> ACommand p -> ACmd
+data ACmd = forall p. ACmd (SAParty p) (ACommand p)
 
 deriving instance Show ACmd
 
