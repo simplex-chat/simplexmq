@@ -12,8 +12,10 @@ import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Agent.Types.ConnTypes
+import Simplex.Messaging.Agent.Types.ErrorTypes
+import Simplex.Messaging.Agent.Types.TransmissionTypes
 import qualified Simplex.Messaging.Crypto as C
 import System.Random (Random (randomIO))
 import Test.Hspec
@@ -63,13 +65,14 @@ storeTests = withStore do
       describe "Duplex connection" testSetQueueStatusConnDuplex
       xdescribe "Nonexistent send queue" testSetNonexistentSendQueueStatus
       xdescribe "Nonexistent receive queue" testSetNonexistentReceiveQueueStatus
-    describe "createMsg" do
-      describe "A_MSG in RCV direction" testCreateMsgRcv
-      describe "A_MSG in SND direction" testCreateMsgSnd
-      describe "HELLO message" testCreateMsgHello
-      describe "REPLY message" testCreateMsgReply
-      describe "Bad queue direction - SND" testCreateMsgBadDirectionSnd
-      describe "Bad queue direction - RCV" testCreateMsgBadDirectionRcv
+
+-- describe "createMsg" do
+--   describe "A_MSG in RCV direction" testCreateMsgRcv
+--   describe "A_MSG in SND direction" testCreateMsgSnd
+--   describe "HELLO message" testCreateMsgHello
+--   describe "REPLY message" testCreateMsgReply
+--   describe "Bad queue direction - SND" testCreateMsgBadDirectionSnd
+--   describe "Bad queue direction - RCV" testCreateMsgBadDirectionRcv
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
 testForeignKeysEnabled = do
@@ -300,71 +303,71 @@ testSetNonexistentReceiveQueueStatus = do
     setRcvQueueStatus store rcvQueue1 Confirmed
       `throwsError` SEInternal
 
-testCreateMsgRcv :: SpecWith SQLiteStore
-testCreateMsgRcv = do
-  it "should create a message in RCV direction" $ \store -> do
-    createRcvConn store rcvQueue1
-      `returnsResult` ()
-    let msg = A_MSG "hello"
-    let msgId = 1
-    -- TODO getMsg to check message
-    createMsg store "conn1" RCV msgId msg
-      `returnsResult` ()
+-- testCreateMsgRcv :: SpecWith SQLiteStore
+-- testCreateMsgRcv = do
+--   it "should create a message in RCV direction" $ \store -> do
+--     createRcvConn store rcvQueue1
+--       `returnsResult` ()
+--     let msg = A_MSG "hello"
+--     let msgId = 1
+--     -- TODO getMsg to check message
+--     createMsg store "conn1" RCV msgId msg
+--       `returnsResult` ()
 
-testCreateMsgSnd :: SpecWith SQLiteStore
-testCreateMsgSnd = do
-  it "should create a message in SND direction" $ \store -> do
-    createSndConn store sndQueue1
-      `returnsResult` ()
-    let msg = A_MSG "hi"
-    let msgId = 1
-    -- TODO getMsg to check message
-    createMsg store "conn1" SND msgId msg
-      `returnsResult` ()
+-- testCreateMsgSnd :: SpecWith SQLiteStore
+-- testCreateMsgSnd = do
+--   it "should create a message in SND direction" $ \store -> do
+--     createSndConn store sndQueue1
+--       `returnsResult` ()
+--     let msg = A_MSG "hi"
+--     let msgId = 1
+--     -- TODO getMsg to check message
+--     createMsg store "conn1" SND msgId msg
+--       `returnsResult` ()
 
-testCreateMsgHello :: SpecWith SQLiteStore
-testCreateMsgHello = do
-  it "should create a HELLO message" $ \store -> do
-    createRcvConn store rcvQueue1
-      `returnsResult` ()
-    let verificationKey = C.PublicKey $ R.PublicKey 1 2 3
-    let am = AckMode On
-    let msg = HELLO verificationKey am
-    let msgId = 1
-    -- TODO getMsg to check message
-    createMsg store "conn1" RCV msgId msg
-      `returnsResult` ()
+-- testCreateMsgHello :: SpecWith SQLiteStore
+-- testCreateMsgHello = do
+--   it "should create a HELLO message" $ \store -> do
+--     createRcvConn store rcvQueue1
+--       `returnsResult` ()
+--     let verificationKey = C.PublicKey $ R.PublicKey 1 2 3
+--     let am = AckMode On
+--     let msg = HELLO verificationKey am
+--     let msgId = 1
+--     -- TODO getMsg to check message
+--     createMsg store "conn1" RCV msgId msg
+--       `returnsResult` ()
 
-testCreateMsgReply :: SpecWith SQLiteStore
-testCreateMsgReply = do
-  it "should create a REPLY message" $ \store -> do
-    createRcvConn store rcvQueue1
-      `returnsResult` ()
-    let smpServer = SMPServer "smp.simplex.im" (Just "5223") (Just "1234")
-    let senderId = "sender1"
-    let encryptionKey = C.PublicKey $ R.PublicKey 1 2 3
-    let msg = REPLY $ SMPQueueInfo smpServer senderId encryptionKey
-    let msgId = 1
-    -- TODO getMsg to check message
-    createMsg store "conn1" RCV msgId msg
-      `returnsResult` ()
+-- testCreateMsgReply :: SpecWith SQLiteStore
+-- testCreateMsgReply = do
+--   it "should create a REPLY message" $ \store -> do
+--     createRcvConn store rcvQueue1
+--       `returnsResult` ()
+--     let smpServer = SMPServer "smp.simplex.im" (Just "5223") (Just "1234")
+--     let senderId = "sender1"
+--     let encryptionKey = C.PublicKey $ R.PublicKey 1 2 3
+--     let msg = REPLY $ SMPQueueInfo smpServer senderId encryptionKey
+--     let msgId = 1
+--     -- TODO getMsg to check message
+--     createMsg store "conn1" RCV msgId msg
+--       `returnsResult` ()
 
-testCreateMsgBadDirectionSnd :: SpecWith SQLiteStore
-testCreateMsgBadDirectionSnd = do
-  it "should throw error on attempt to create a message in ineligible SND direction" $ \store -> do
-    createRcvConn store rcvQueue1
-      `returnsResult` ()
-    let msg = A_MSG "hello"
-    let msgId = 1
-    createMsg store "conn1" SND msgId msg
-      `throwsError` SEBadQueueDirection
+-- testCreateMsgBadDirectionSnd :: SpecWith SQLiteStore
+-- testCreateMsgBadDirectionSnd = do
+--   it "should throw error on attempt to create a message in ineligible SND direction" $ \store -> do
+--     createRcvConn store rcvQueue1
+--       `returnsResult` ()
+--     let msg = A_MSG "hello"
+--     let msgId = 1
+--     createMsg store "conn1" SND msgId msg
+--       `throwsError` SEBadQueueDirection
 
-testCreateMsgBadDirectionRcv :: SpecWith SQLiteStore
-testCreateMsgBadDirectionRcv = do
-  it "should throw error on attempt to create a message in ineligible RCV direction" $ \store -> do
-    createSndConn store sndQueue1
-      `returnsResult` ()
-    let msg = A_MSG "hello"
-    let msgId = 1
-    createMsg store "conn1" RCV msgId msg
-      `throwsError` SEBadQueueDirection
+-- testCreateMsgBadDirectionRcv :: SpecWith SQLiteStore
+-- testCreateMsgBadDirectionRcv = do
+--   it "should throw error on attempt to create a message in ineligible RCV direction" $ \store -> do
+--     createSndConn store sndQueue1
+--       `returnsResult` ()
+--     let msg = A_MSG "hello"
+--     let msgId = 1
+--     createMsg store "conn1" RCV msgId msg
+--       `throwsError` SEBadQueueDirection

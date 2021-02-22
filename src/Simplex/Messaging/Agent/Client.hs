@@ -43,8 +43,10 @@ import Data.Text.Encoding
 import Data.Time.Clock
 import Numeric.Natural
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Agent.Types.ConnTypes
+import Simplex.Messaging.Agent.Types.ErrorTypes
+import Simplex.Messaging.Agent.Types.TransmissionTypes
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (QueueId)

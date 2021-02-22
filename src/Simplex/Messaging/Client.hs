@@ -42,7 +42,7 @@ import Data.Maybe
 import GHC.IO.Exception (IOErrorType (..))
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Agent.Transmission (SMPServer (..))
+import Simplex.Messaging.Agent.Types.TransmissionTypes (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
