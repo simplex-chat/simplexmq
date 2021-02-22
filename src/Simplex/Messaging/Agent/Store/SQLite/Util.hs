@@ -20,10 +20,10 @@ module Simplex.Messaging.Agent.Store.SQLite.Util
   )
 where
 
-import Control.Monad.Except (MonadIO (liftIO))
+-- import Control.Monad.Except (MonadIO (liftIO))
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
-import Data.Time (getCurrentTime)
+-- import Data.Time (getCurrentTime)
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
