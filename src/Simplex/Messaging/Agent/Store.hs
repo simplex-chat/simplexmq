@@ -1,13 +1,6 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.Messaging.Agent.Store
-  ( MonadAgentStore (..),
-  )
-where
+module Simplex.Messaging.Agent.Store (MonadAgentStore (..)) where
 
 import Simplex.Messaging.Agent.Types.ConnTypes
 import Simplex.Messaging.Agent.Types.TransmissionTypes
