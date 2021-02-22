@@ -26,8 +26,6 @@ import Simplex.Messaging.Agent (getSMPAgentClient, runSMPAgentClient)
 import Simplex.Messaging.Agent.Client (AgentClient (..))
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Agent.Types.ErrorTypes
-import Simplex.Messaging.Agent.Types.TransmissionTypes
 import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Transport (getLn, putLn)
 import Simplex.Messaging.Util (bshow, raceAny_)

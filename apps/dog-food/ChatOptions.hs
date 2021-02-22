@@ -3,8 +3,7 @@ module ChatOptions (getChatOpts, ChatOpts (..)) where
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Options.Applicative
-import Simplex.Messaging.Agent.Transmission (smpServerP)
-import Simplex.Messaging.Agent.Types.TransmissionTypes (SMPServer (..))
+import Simplex.Messaging.Agent.Transmission (SMPServer (..), smpServerP)
 
 data ChatOpts = ChatOpts
   { name :: Maybe B.ByteString,

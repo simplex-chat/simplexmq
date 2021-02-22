@@ -16,9 +16,8 @@ import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Store.SQLite.Util
-import Simplex.Messaging.Agent.Types.ConnTypes
-import Simplex.Messaging.Agent.Types.ErrorTypes
-import Simplex.Messaging.Agent.Types.TransmissionTypes
+import Simplex.Messaging.Agent.Store.Types
+import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (liftIOEither)
 
@@ -92,31 +91,31 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
--- createRcvMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
--- createRcvMsg _st _connAlias _msg = throwError SENotImplemented
+  createRcvMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
+  createRcvMsg _st _connAlias _msg = throwError SENotImplemented
 
--- createSndMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
--- createSndMsg _st _connAlias _msg = throwError SENotImplemented
+  createSndMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
+  createSndMsg _st _connAlias _msg = throwError SENotImplemented
 
--- -- TODO this will be removed
--- createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
--- createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
---   liftIOEither $
---     insertMsg dbConn connAlias agentMsgId aMsg
---   where
---     insertMsg = case qDirection of
---       RCV -> insertRcvMsg
---       SND -> insertSndMsg
+  -- TODO this will be removed
+  createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+  createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
+    liftIOEither $
+      insertMsg dbConn connAlias agentMsgId aMsg
+    where
+      insertMsg = case qDirection of
+        RCV -> insertRcvMsg
+        SND -> insertSndMsg
 
--- getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
--- getLastMsg _st _connAlias _dir = throwError SENotImplemented
+  -- getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
+  -- getLastMsg _st _connAlias _dir = throwError SENotImplemented
 
--- getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
--- getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+  -- getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
+  -- getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
 
--- -- ? missing status parameter?
--- setMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
--- setMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
+  -- -- ? missing status parameter?
+  -- setMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  -- setMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
 
--- deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
--- deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+  -- deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+  -- deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented

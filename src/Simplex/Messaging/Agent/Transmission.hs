@@ -1,8 +1,10 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -23,22 +25,32 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
+import Network.Socket
 import Numeric.Natural
-import Simplex.Messaging.Agent.Types.ErrorTypes
-import Simplex.Messaging.Agent.Types.TransmissionTypes
+import Simplex.Messaging.Agent.Store.Types
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Types
+  ( CorrId (..),
+    Encoded,
+    ErrorType,
+    MsgBody,
+    SenderPublicKey,
+    errMessageBody,
+  )
 import qualified Simplex.Messaging.Types as ST
 import Simplex.Messaging.Util
 import System.IO
 import Text.Read
+import UnliftIO.Exception
 
 type ARawTransmission = (ByteString, ByteString, ByteString)
 
-type ATransmission p = (ST.CorrId, ConnAlias, ACommand p)
+type ATransmission p = (CorrId, ConnAlias, ACommand p)
 
-type ATransmissionOrError p = (ST.CorrId, ConnAlias, Either AgentErrorType (ACommand p))
+type ATransmissionOrError p = (CorrId, ConnAlias, Either AgentErrorType (ACommand p))
 
 data AParty = Agent | Client
   deriving (Eq, Show)
@@ -73,14 +85,14 @@ data ACommand (p :: AParty) where
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
-  SEND :: ST.MsgBody -> ACommand Client
+  SEND :: MsgBody -> ACommand Client
   SENT :: AgentMsgId -> ACommand Agent
   MSG ::
     { m_recipient :: (AgentMsgId, UTCTime),
       m_broker :: (ST.MsgId, UTCTime),
       m_sender :: (AgentMsgId, UTCTime),
       m_status :: MsgStatus,
-      m_body :: ST.MsgBody
+      m_body :: MsgBody
     } ->
     ACommand Agent
   -- ACK :: AgentMsgId -> ACommand Client
@@ -94,8 +106,10 @@ deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
 
+type Message = ByteString
+
 data SMPMessage
-  = SMPConfirmation ST.SenderPublicKey
+  = SMPConfirmation SenderPublicKey
   | SMPMessage
       { senderMsgId :: Integer,
         senderTimestamp :: UTCTime,
@@ -107,7 +121,7 @@ data SMPMessage
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
-  A_MSG :: ST.MsgBody -> AMessage
+  A_MSG :: MsgBody -> AMessage
   deriving (Show)
 
 parseSMPMessage :: ByteString -> Either AgentErrorType SMPMessage
@@ -181,6 +195,67 @@ serializeSmpQueueInfo (SMPQueueInfo srv qId ek) =
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} =
   B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
+
+data SMPServer = SMPServer
+  { host :: HostName,
+    port :: Maybe ServiceName,
+    keyHash :: Maybe KeyHash
+  }
+  deriving (Eq, Ord, Show)
+
+type KeyHash = Encoded
+
+type ConnAlias = ByteString
+
+type OtherPartyId = Encoded
+
+data Mode = On | Off deriving (Eq, Show, Read)
+
+newtype AckMode = AckMode Mode deriving (Eq, Show)
+
+data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
+  deriving (Eq, Show)
+
+data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Eq, Show)
+
+type EncryptionKey = C.PublicKey
+
+type DecryptionKey = C.PrivateKey
+
+type SignatureKey = C.PrivateKey
+
+type VerificationKey = C.PublicKey
+
+data QueueDirection = SND | RCV deriving (Show)
+
+data QueueStatus = New | Confirmed | Secured | Active | Disabled
+  deriving (Eq, Show, Read)
+
+type AgentMsgId = Integer
+
+data MsgStatus = MsgOk | MsgError MsgErrorType
+  deriving (Eq, Show)
+
+data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
+  deriving (Eq, Show)
+
+data AgentErrorType
+  = UNKNOWN
+  | PROHIBITED
+  | SYNTAX Int
+  | BROKER Natural
+  | SMP ErrorType
+  | CRYPTO C.CryptoError
+  | SIZE
+  | STORE StoreError
+  | INTERNAL -- etc. TODO SYNTAX Natural
+  deriving (Eq, Show, Exception)
+
+data AckStatus = AckOk | AckError AckErrorType
+  deriving (Show)
+
+data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
+  deriving (Show)
 
 errBadEncoding :: Int
 errBadEncoding = 10
@@ -309,7 +384,7 @@ tGetRaw :: Handle -> IO ARawTransmission
 tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 tPut :: MonadIO m => Handle -> ATransmission p -> m ()
-tPut h (ST.CorrId corrId, connAlias, command) =
+tPut h (CorrId corrId, connAlias, command) =
   liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
 
 -- | get client and agent transmissions
@@ -320,7 +395,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     tParseLoadBody t@(corrId, connAlias, command) = do
       let cmd = parseCommand command >>= fromParty >>= tConnAlias t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (ST.CorrId corrId, connAlias, fullCmd)
+      return (CorrId corrId, connAlias, fullCmd)
 
     fromParty :: ACmd -> Either AgentErrorType (ACommand p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
@@ -346,7 +421,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       cmd -> return $ Right cmd
 
     -- TODO refactor with server
-    getMsgBody :: ST.MsgBody -> m (Either AgentErrorType ST.MsgBody)
+    getMsgBody :: MsgBody -> m (Either AgentErrorType MsgBody)
     getMsgBody msgBody =
       case B.unpack msgBody of
         ':' : body -> return . Right $ B.pack body
@@ -355,4 +430,4 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
             body <- B.hGet h size
             s <- getLn h
             return $ if B.null s then Right body else Left SIZE
-          Nothing -> return . Left $ SYNTAX ST.errMessageBody
+          Nothing -> return . Left $ SYNTAX errMessageBody
