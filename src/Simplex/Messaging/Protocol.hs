@@ -41,8 +41,7 @@ data SParty :: Party -> Type where
 
 deriving instance Show (SParty a)
 
-data Cmd where
-  Cmd :: SParty a -> Command a -> Cmd
+data Cmd = forall a. Cmd (SParty a) (Command a)
 
 deriving instance Show Cmd
 
