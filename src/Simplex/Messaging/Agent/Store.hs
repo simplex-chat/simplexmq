@@ -46,7 +46,7 @@ class Monad m => MonadAgentStore s m where
   createSndMsg :: s -> ConnAlias -> SndMsg -> m ()
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
--- * Queues types
+-- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
 data ReceiveQueue = ReceiveQueue
