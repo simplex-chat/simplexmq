@@ -34,7 +34,6 @@ import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol as SMP (RecipientId)
 import Text.Read (readMaybe)

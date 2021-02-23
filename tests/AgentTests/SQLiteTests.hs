@@ -12,7 +12,6 @@ import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Crypto as C
 import System.Random (Random (randomIO))

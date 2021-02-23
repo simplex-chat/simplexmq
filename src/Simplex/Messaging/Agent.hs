@@ -29,7 +29,6 @@ import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
-import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
@@ -108,7 +107,7 @@ withStore action = do
   store <- asks db
   runExceptT (action store `E.catch` handleInternal) >>= \case
     Right c -> return c
-    Left e -> throwError $ STORE e
+    Left _ -> throwError STORE
   where
     handleInternal :: (MonadError StoreError m') => SomeException -> m' a
     handleInternal _ = throwError SEInternal

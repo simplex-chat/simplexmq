@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -9,17 +10,19 @@
 module Simplex.Messaging.Agent.Store
   ( ReceiveQueue (..),
     SendQueue (..),
+    ConnType (..),
     Connection (..),
     SConnType (..),
     SomeConn (..),
     DeliveryStatus (..),
+    StoreError (..),
     MonadAgentStore (..),
   )
 where
 
+import Control.Exception (Exception)
 import Data.Kind (Type)
 import Data.Type.Equality
-import Simplex.Messaging.Agent.Store.Types (ConnType (..))
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Types (RecipientPrivateKey, SenderPrivateKey, SenderPublicKey)
@@ -47,6 +50,8 @@ data SendQueue = SendQueue
     status :: QueueStatus
   }
   deriving (Eq, Show)
+
+data ConnType = CSend | CReceive | CDuplex deriving (Eq, Show)
 
 data Connection (d :: ConnType) where
   ReceiveConnection :: ConnAlias -> ReceiveQueue -> Connection CReceive
@@ -96,6 +101,16 @@ data DeliveryStatus
   | MDConfirmed -- SMP: OK received / ACK sent
   | MDAcknowledged AckStatus -- SAMP: RCVD sent to agent client / ACK received from agent client and sent to the server
 
+data StoreError
+  = SEInternal
+  | SENotFound
+  | SEBadConn
+  | SEBadConnType ConnType
+  | SEBadQueueStatus
+  | SEBadQueueDirection
+  | SENotImplemented -- TODO remove
+  deriving (Eq, Show, Exception)
+
 class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> ReceiveQueue -> m ()
   createSndConn :: s -> SendQueue -> m ()
@@ -107,13 +122,16 @@ class Monad m => MonadAgentStore s m where
   removeSndAuth :: s -> ConnAlias -> m ()
   setRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
   setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
+
   -- ? make data kind out of AMessage so that we can limit parameter to AMessage A_MSG?
   -- ? or just throw error / silently ignore other AMessage types?
   createRcvMsg :: s -> ConnAlias -> AMessage -> m ()
   createSndMsg :: s -> ConnAlias -> AMessage -> m ()
+
   -- TODO this will be removed
   createMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
-  -- getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
-  -- getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
-  -- setMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  -- deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+
+-- getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
+-- getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
+-- setMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+-- deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()

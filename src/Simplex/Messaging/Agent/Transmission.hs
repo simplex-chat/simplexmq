@@ -27,7 +27,6 @@ import Data.Type.Equality
 import Data.Typeable ()
 import Network.Socket
 import Numeric.Natural
-import Simplex.Messaging.Agent.Store.Types
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import qualified Simplex.Messaging.Protocol as SMP
@@ -247,7 +246,7 @@ data AgentErrorType
   | SMP ErrorType
   | CRYPTO C.CryptoError
   | SIZE
-  | STORE StoreError
+  | STORE
   | INTERNAL -- etc. TODO SYNTAX Natural
   deriving (Eq, Show, Exception)
 

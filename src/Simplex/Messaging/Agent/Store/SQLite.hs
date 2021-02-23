@@ -16,7 +16,6 @@ import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Store.SQLite.Util
-import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (liftIOEither)
@@ -107,15 +106,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         RCV -> insertRcvMsg
         SND -> insertSndMsg
 
-  -- getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
-  -- getLastMsg _st _connAlias _dir = throwError SENotImplemented
+-- getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
+-- getLastMsg _st _connAlias _dir = throwError SENotImplemented
 
-  -- getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
-  -- getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+-- getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
+-- getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
 
-  -- -- ? missing status parameter?
-  -- setMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  -- setMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
+-- -- ? missing status parameter?
+-- setMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+-- setMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
 
-  -- deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  -- deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+-- deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
+-- deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented
