@@ -24,6 +24,28 @@ import Simplex.Messaging.Types
     SenderPublicKey,
   )
 
+-- * Store management
+
+-- | Store class type.
+-- Defines store access methods for implementations.
+class Monad m => MonadAgentStore s m where
+  -- Queue and Connection management
+  createRcvConn :: s -> ReceiveQueue -> m ()
+  createSndConn :: s -> SendQueue -> m ()
+  getConn :: s -> ConnAlias -> m SomeConn
+  getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
+  deleteConn :: s -> ConnAlias -> m ()
+  upgradeRcvConnToDuplex :: s -> ConnAlias -> SendQueue -> m ()
+  upgradeSndConnToDuplex :: s -> ConnAlias -> ReceiveQueue -> m ()
+  removeSndAuth :: s -> ConnAlias -> m ()
+  setRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
+  setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
+
+  -- Msg management
+  createRcvMsg :: s -> ConnAlias -> RcvMsg -> m ()
+  createSndMsg :: s -> ConnAlias -> SndMsg -> m ()
+  getMsg :: s -> ConnAlias -> InternalId -> m Msg
+
 -- * Queues types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
@@ -183,9 +205,8 @@ type InternalId = Int64
 
 type InternalTs = UTCTime
 
--- * Errors
+-- * Store errors
 
--- | Store errors.
 data StoreError
   = SEInternal
   | SENotFound
@@ -195,25 +216,3 @@ data StoreError
   | SEBadQueueDirection
   | SENotImplemented -- TODO remove
   deriving (Eq, Show, Exception)
-
--- * Store
-
--- | Store class type.
--- Defines store access methods for implementations.
-class Monad m => MonadAgentStore s m where
-  -- Queue and Connection management
-  createRcvConn :: s -> ReceiveQueue -> m ()
-  createSndConn :: s -> SendQueue -> m ()
-  getConn :: s -> ConnAlias -> m SomeConn
-  getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
-  deleteConn :: s -> ConnAlias -> m ()
-  upgradeRcvConnToDuplex :: s -> ConnAlias -> SendQueue -> m ()
-  upgradeSndConnToDuplex :: s -> ConnAlias -> ReceiveQueue -> m ()
-  removeSndAuth :: s -> ConnAlias -> m ()
-  setRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
-  setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
-
-  -- Msg management
-  createRcvMsg :: s -> ConnAlias -> RcvMsg -> m ()
-  createSndMsg :: s -> ConnAlias -> SndMsg -> m ()
-  getMsg :: s -> ConnAlias -> InternalId -> m Msg
