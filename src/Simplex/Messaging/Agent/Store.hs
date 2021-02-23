@@ -26,8 +26,7 @@ import Simplex.Messaging.Types
 
 -- * Store management
 
--- | Store class type.
--- Defines store access methods for implementations.
+-- | Store class type. Defines store access methods for implementations.
 class Monad m => MonadAgentStore s m where
   -- Queue and Connection management
   createRcvConn :: s -> ReceiveQueue -> m ()
