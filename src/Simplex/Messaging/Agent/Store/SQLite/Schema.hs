@@ -137,7 +137,7 @@ rcvMessages =
       internal_id INTEGER NOT NULL,
       external_snd_id INTEGER NOT NULL,
       external_snd_ts TEXT NOT NULL,
-      broker_id INTEGER NOT NULL,
+      broker_id BLOB NOT NULL,
       broker_ts TEXT NOT NULL,
       rcv_status TEXT NOT NULL,
       ack_brocker_ts TEXT,

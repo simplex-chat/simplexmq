@@ -7,25 +7,26 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.Messaging.Agent.Store
-  ( ReceiveQueue (..),
-    SendQueue (..),
-    ConnType (..),
-    Connection (..),
-    SConnType (..),
-    SomeConn (..),
-    StoreError (..),
-    MonadAgentStore (..),
-  )
-where
+module Simplex.Messaging.Agent.Store where
 
 import Control.Exception (Exception)
+import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Types (RecipientPrivateKey, SenderPrivateKey, SenderPublicKey)
+import Simplex.Messaging.Types
+  ( MsgBody,
+    MsgId,
+    RecipientPrivateKey,
+    SenderPrivateKey,
+    SenderPublicKey,
+  )
 
+-- * Queues types
+
+-- | A receive queue. SMP queue through which the agent receives messages from a sender.
 data ReceiveQueue = ReceiveQueue
   { server :: SMPServer,
     rcvId :: SMP.RecipientId,
@@ -39,6 +40,7 @@ data ReceiveQueue = ReceiveQueue
   }
   deriving (Eq, Show)
 
+-- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SendQueue = SendQueue
   { server :: SMPServer,
     sndId :: SMP.SenderId,
@@ -50,16 +52,29 @@ data SendQueue = SendQueue
   }
   deriving (Eq, Show)
 
-data ConnType = CSend | CReceive | CDuplex deriving (Eq, Show)
+-- * Connection types
 
+-- | Type of a connection.
+data ConnType = CReceive | CSend | CDuplex deriving (Eq, Show)
+
+-- | Connection of a specific type.
+--
+-- - ReceiveConnection is a connection that only has a receive queue set up,
+--   typically created by a recipient initiating a duplex connection.
+--
+-- - SendConnection is a connection that only has a send queue set up, typically
+--   created by a sender joining a duplex connection through a recipient's invitation.
+--
+-- - DuplexConnection is a connection that has both receive and send queues set up,
+--   typically created by upgrading a receive or a send connection with a missing queue.
 data Connection (d :: ConnType) where
   ReceiveConnection :: ConnAlias -> ReceiveQueue -> Connection CReceive
   SendConnection :: ConnAlias -> SendQueue -> Connection CSend
   DuplexConnection :: ConnAlias -> ReceiveQueue -> SendQueue -> Connection CDuplex
 
-deriving instance Show (Connection d)
-
 deriving instance Eq (Connection d)
+
+deriving instance Show (Connection d)
 
 data SConnType :: ConnType -> Type where
   SCReceive :: SConnType CReceive
@@ -76,8 +91,9 @@ instance TestEquality SConnType where
   testEquality SCDuplex SCDuplex = Just Refl
   testEquality _ _ = Nothing
 
-data SomeConn where
-  SomeConn :: SConnType d -> Connection d -> SomeConn
+-- | Connection of an unknown type.
+-- Used to refer to an arbitrary connection when retrieving from store.
+data SomeConn = forall d. SomeConn (SConnType d) (Connection d)
 
 instance Eq SomeConn where
   SomeConn d c == SomeConn d' c' = case testEquality d d' of
@@ -86,6 +102,90 @@ instance Eq SomeConn where
 
 deriving instance Show SomeConn
 
+-- * Message types
+
+-- | A message in either direction that is stored by the agent.
+data Msg = MRcv RcvMsg | MSnd SndMsg
+  deriving (Eq, Show)
+
+-- | A message received by the agent from a sender.
+-- See Simplex.Messaging.Agent.Store.SQLite.Schema for fields explanation.
+-- TODO move fields documentation here
+data RcvMsg = RcvMsg
+  { baseData :: MsgBase,
+    internalRcvId :: InternalRcvId,
+    externalSndId :: ExternalSndId,
+    externalSndTs :: ExternalSndTs,
+    brokerId :: BrokerId,
+    brokerTs :: BrokerTs,
+    rcvStatus :: RcvStatus,
+    ackBrokerTs :: AckBrokerTs,
+    ackSenderTs :: AckSenderTs
+  }
+  deriving (Eq, Show)
+
+type InternalRcvId = Int64
+
+type ExternalSndId = Int64
+
+type ExternalSndTs = UTCTime
+
+type BrokerId = MsgId
+
+type BrokerTs = UTCTime
+
+data RcvStatus
+  = Received
+  | AcknowledgedToBroker
+  | AcknowledgedToSender
+  deriving (Eq, Show)
+
+type AckBrokerTs = UTCTime
+
+type AckSenderTs = UTCTime
+
+-- | A message sent by the agent to a recipient.
+-- See Simplex.Messaging.Agent.Store.SQLite.Schema for fields explanation.
+-- TODO move fields documentation here
+data SndMsg = SndMsg
+  { baseData :: MsgBase,
+    internalSndId :: InternalSndId,
+    sndStatus :: SndStatus,
+    sentTs :: SentTs,
+    deliveredTs :: DeliveredTs
+  }
+  deriving (Eq, Show)
+
+type InternalSndId = Int64
+
+data SndStatus
+  = Created
+  | Sent
+  | Delivered
+  deriving (Eq, Show)
+
+type SentTs = UTCTime
+
+type DeliveredTs = UTCTime
+
+-- | Base message data independent of direction.
+data MsgBase = MsgBase
+  { connAlias :: ConnAlias,
+    internalId :: InternalId,
+    internalTs :: InternalTs,
+    msgBody :: MsgBody
+  }
+  deriving (Eq, Show)
+
+-- | Monotonically increasing id of a message per connection, internal to the agent.
+-- Preserves ordering between both received and sent messages.
+type InternalId = Int64
+
+type InternalTs = UTCTime
+
+-- * Errors
+
+-- | Store errors.
 data StoreError
   = SEInternal
   | SENotFound
@@ -96,7 +196,12 @@ data StoreError
   | SENotImplemented -- TODO remove
   deriving (Eq, Show, Exception)
 
+-- * Store
+
+-- | Store class type.
+-- Defines store access methods for implementations.
 class Monad m => MonadAgentStore s m where
+  -- Queue and Connection management
   createRcvConn :: s -> ReceiveQueue -> m ()
   createSndConn :: s -> SendQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
@@ -108,15 +213,11 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
   setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
 
-  -- -- ? make data kind out of AMessage so that we can limit parameter to AMessage A_MSG?
-  -- -- ? or just throw error / silently ignore other AMessage types?
-  -- createRcvMsg :: s -> ConnAlias -> AMessage -> m ()
-  -- createSndMsg :: s -> ConnAlias -> AMessage -> m ()
-
-  -- -- TODO this will be removed
-  -- createMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+  -- Msg management
+  createRcvMsg :: s -> ConnAlias -> RcvMsg -> m ()
+  createSndMsg :: s -> ConnAlias -> SndMsg -> m ()
+  getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
 -- getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
--- getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
 -- setMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
 -- deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()

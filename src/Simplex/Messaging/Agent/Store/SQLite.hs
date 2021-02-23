@@ -90,13 +90,16 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  -- createRcvMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
-  -- createRcvMsg _st _connAlias _msg = throwError SENotImplemented
+  createRcvMsg :: SQLiteStore -> ConnAlias -> RcvMsg -> m ()
+  createRcvMsg _st _connAlias _rcvMsg = throwError SENotImplemented
 
-  -- createSndMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
-  -- createSndMsg _st _connAlias _msg = throwError SENotImplemented
+  createSndMsg :: SQLiteStore -> ConnAlias -> SndMsg -> m ()
+  createSndMsg _st _connAlias _sndMsg = throwError SENotImplemented
 
-  -- -- TODO this will be removed
+  getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
+  getMsg _st _connAlias _id = throwError SENotImplemented
+
+  -- -- TODO remove
   -- createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
   -- createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
   --   liftIOEither $

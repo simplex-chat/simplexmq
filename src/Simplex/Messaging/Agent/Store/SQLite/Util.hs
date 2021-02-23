@@ -379,6 +379,7 @@ updateSndQueueStatusQuery_ =
     WHERE host = :host AND port = :port AND snd_id = :snd_id;
   |]
 
+-- TODO remove
 -- -- ? rewrite with ExceptT?
 -- insertRcvMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
 -- insertRcvMsg dbConn connAlias agentMsgId aMsg =
