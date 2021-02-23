@@ -217,7 +217,3 @@ class Monad m => MonadAgentStore s m where
   createRcvMsg :: s -> ConnAlias -> RcvMsg -> m ()
   createSndMsg :: s -> ConnAlias -> SndMsg -> m ()
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
-
--- getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
--- setMsgStatus :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
--- deleteMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
