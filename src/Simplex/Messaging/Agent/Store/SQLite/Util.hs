@@ -17,15 +17,13 @@ module Simplex.Messaging.Agent.Store.SQLite.Util
     updateSndConnWithRcvQueue,
     updateRcvQueueStatus,
     updateSndQueueStatus,
-    insertRcvMsg,
-    insertSndMsg,
   )
 where
 
-import Control.Monad.Except (MonadIO (liftIO))
+-- import Control.Monad.Except (MonadIO (liftIO))
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
-import Data.Time (getCurrentTime)
+-- import Data.Time (getCurrentTime)
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
@@ -381,50 +379,50 @@ updateSndQueueStatusQuery_ =
     WHERE host = :host AND port = :port AND snd_id = :snd_id;
   |]
 
--- ? rewrite with ExceptT?
-insertRcvMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
-insertRcvMsg dbConn connAlias agentMsgId aMsg =
-  DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (Just _rcvQ, _) -> do
-        insertMsg_ dbConn connAlias RCV agentMsgId aMsg
-        return $ Right ()
-      (Nothing, Just _sndQ) -> return $ Left SEBadQueueDirection
-      _ -> return $ Left SEBadConn
+-- -- ? rewrite with ExceptT?
+-- insertRcvMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
+-- insertRcvMsg dbConn connAlias agentMsgId aMsg =
+--   DB.withTransaction dbConn $ do
+--     queues <- retrieveConnQueues_ dbConn connAlias
+--     case queues of
+--       (Just _rcvQ, _) -> do
+--         insertMsg_ dbConn connAlias RCV agentMsgId aMsg
+--         return $ Right ()
+--       (Nothing, Just _sndQ) -> return $ Left SEBadQueueDirection
+--       _ -> return $ Left SEBadConn
 
--- ? rewrite with ExceptT?
-insertSndMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
-insertSndMsg dbConn connAlias agentMsgId aMsg =
-  DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (_, Just _sndQ) -> do
-        insertMsg_ dbConn connAlias SND agentMsgId aMsg
-        return $ Right ()
-      (Just _rcvQ, Nothing) -> return $ Left SEBadQueueDirection
-      _ -> return $ Left SEBadConn
+-- -- ? rewrite with ExceptT?
+-- insertSndMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
+-- insertSndMsg dbConn connAlias agentMsgId aMsg =
+--   DB.withTransaction dbConn $ do
+--     queues <- retrieveConnQueues_ dbConn connAlias
+--     case queues of
+--       (_, Just _sndQ) -> do
+--         insertMsg_ dbConn connAlias SND agentMsgId aMsg
+--         return $ Right ()
+--       (Just _rcvQ, Nothing) -> return $ Left SEBadQueueDirection
+--       _ -> return $ Left SEBadConn
 
--- TODO add parser and serializer for DeliveryStatus? Pass DeliveryStatus?
-insertMsg_ :: DB.Connection -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> IO ()
-insertMsg_ dbConn connAlias qDirection agentMsgId aMsg = do
-  let msg = serializeAgentMessage aMsg
-  ts <- liftIO getCurrentTime
-  DB.executeNamed
-    dbConn
-    insertMsgQuery_
-    [ ":agent_msg_id" := agentMsgId,
-      ":conn_alias" := connAlias,
-      ":timestamp" := ts,
-      ":message" := msg,
-      ":direction" := qDirection
-    ]
+-- -- TODO add parser and serializer for DeliveryStatus? Pass DeliveryStatus?
+-- insertMsg_ :: DB.Connection -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> IO ()
+-- insertMsg_ dbConn connAlias qDirection agentMsgId aMsg = do
+--   let msg = serializeAgentMessage aMsg
+--   ts <- liftIO getCurrentTime
+--   DB.executeNamed
+--     dbConn
+--     insertMsgQuery_
+--     [ ":agent_msg_id" := agentMsgId,
+--       ":conn_alias" := connAlias,
+--       ":timestamp" := ts,
+--       ":message" := msg,
+--       ":direction" := qDirection
+--     ]
 
-insertMsgQuery_ :: Query
-insertMsgQuery_ =
-  [sql|
-    INSERT INTO messages
-      ( agent_msg_id, conn_alias, timestamp, message, direction, msg_status)
-    VALUES
-      (:agent_msg_id,:conn_alias,:timestamp,:message,:direction,"MDTransmitted");
-  |]
+-- insertMsgQuery_ :: Query
+-- insertMsgQuery_ =
+--   [sql|
+--     INSERT INTO messages
+--       ( agent_msg_id, conn_alias, timestamp, message, direction, msg_status)
+--     VALUES
+--       (:agent_msg_id,:conn_alias,:timestamp,:message,:direction,"MDTransmitted");
+--   |]

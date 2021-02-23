@@ -14,7 +14,6 @@ module Simplex.Messaging.Agent.Store
     Connection (..),
     SConnType (..),
     SomeConn (..),
-    DeliveryStatus (..),
     StoreError (..),
     MonadAgentStore (..),
   )
@@ -87,20 +86,6 @@ instance Eq SomeConn where
 
 deriving instance Show SomeConn
 
--- data MessageDelivery = MessageDelivery
---   { connAlias :: ConnAlias,
---     agentMsgId :: Int,
---     timestamp :: UTCTime,
---     message :: AMessage,
---     direction :: QueueDirection,
---     msgStatus :: DeliveryStatus
---   }
-
-data DeliveryStatus
-  = MDTransmitted -- SMP: SEND sent / MSG received
-  | MDConfirmed -- SMP: OK received / ACK sent
-  | MDAcknowledged AckStatus -- SAMP: RCVD sent to agent client / ACK received from agent client and sent to the server
-
 data StoreError
   = SEInternal
   | SENotFound
@@ -123,13 +108,13 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
   setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
 
-  -- ? make data kind out of AMessage so that we can limit parameter to AMessage A_MSG?
-  -- ? or just throw error / silently ignore other AMessage types?
-  createRcvMsg :: s -> ConnAlias -> AMessage -> m ()
-  createSndMsg :: s -> ConnAlias -> AMessage -> m ()
+  -- -- ? make data kind out of AMessage so that we can limit parameter to AMessage A_MSG?
+  -- -- ? or just throw error / silently ignore other AMessage types?
+  -- createRcvMsg :: s -> ConnAlias -> AMessage -> m ()
+  -- createSndMsg :: s -> ConnAlias -> AMessage -> m ()
 
-  -- TODO this will be removed
-  createMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+  -- -- TODO this will be removed
+  -- createMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
 
 -- getLastMsg :: s -> ConnAlias -> QueueDirection -> m MessageDelivery
 -- getMsg :: s -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery

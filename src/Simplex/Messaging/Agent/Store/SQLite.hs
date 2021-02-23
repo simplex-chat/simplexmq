@@ -90,21 +90,21 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createRcvMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
-  createRcvMsg _st _connAlias _msg = throwError SENotImplemented
+  -- createRcvMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
+  -- createRcvMsg _st _connAlias _msg = throwError SENotImplemented
 
-  createSndMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
-  createSndMsg _st _connAlias _msg = throwError SENotImplemented
+  -- createSndMsg :: SQLiteStore -> ConnAlias -> AMessage -> m ()
+  -- createSndMsg _st _connAlias _msg = throwError SENotImplemented
 
-  -- TODO this will be removed
-  createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
-  createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
-    liftIOEither $
-      insertMsg dbConn connAlias agentMsgId aMsg
-    where
-      insertMsg = case qDirection of
-        RCV -> insertRcvMsg
-        SND -> insertSndMsg
+  -- -- TODO this will be removed
+  -- createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
+  -- createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
+  --   liftIOEither $
+  --     insertMsg dbConn connAlias agentMsgId aMsg
+  --   where
+  --     insertMsg = case qDirection of
+  --       RCV -> insertRcvMsg
+  --       SND -> insertSndMsg
 
 -- getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
 -- getLastMsg _st _connAlias _dir = throwError SENotImplemented
