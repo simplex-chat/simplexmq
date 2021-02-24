@@ -266,9 +266,6 @@ retrieveSndQueueByConnAliasQuery_ =
 
 -- * getRcvQueue helpers
 
--- ? make server an argument and pass it for the queue instead of joining with 'servers'?
--- ? the downside would be the queue having an outdated 'key_hash' if it has changed,
--- ? but maybe it's unwanted behavior?
 retrieveRcvQueue :: DB.Connection -> HostName -> Maybe ServiceName -> SMP.RecipientId -> IO (Maybe ReceiveQueue)
 retrieveRcvQueue dbConn host port rcvId = do
   r <-
@@ -304,7 +301,6 @@ deleteConnCascade dbConn connAlias =
 
 -- * upgradeRcvConnToDuplex helpers
 
--- ? rewrite with ExceptT?
 updateRcvConnWithSndQueue :: DB.Connection -> ConnAlias -> SendQueue -> IO (Either StoreError ())
 updateRcvConnWithSndQueue dbConn connAlias sndQueue =
   DB.withTransaction dbConn $ do
@@ -337,7 +333,6 @@ updateConnWithSndQueueQuery_ =
 
 -- * upgradeSndConnToDuplex helpers
 
--- ? rewrite with ExceptT?
 updateSndConnWithRcvQueue :: DB.Connection -> ConnAlias -> ReceiveQueue -> IO (Either StoreError ())
 updateSndConnWithRcvQueue dbConn connAlias rcvQueue =
   DB.withTransaction dbConn $ do
