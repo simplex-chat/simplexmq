@@ -17,13 +17,14 @@ module Simplex.Messaging.Agent.Store.SQLite.Util
     updateSndConnWithRcvQueue,
     updateRcvQueueStatus,
     updateSndQueueStatus,
+    insertRcvMsg,
   )
 where
 
--- import Control.Monad.Except (MonadIO (liftIO))
+import Control.Monad.Except (MonadIO (liftIO))
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
--- import Data.Time (getCurrentTime)
+import Data.Time (getCurrentTime)
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
@@ -34,6 +35,7 @@ import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol as SMP (RecipientId)
+import Simplex.Messaging.Types (MsgBody)
 import Text.Read (readMaybe)
 import qualified UnliftIO.Exception as E
 
@@ -49,7 +51,7 @@ instance ToField QueueStatus where toField = toField . show
 
 instance FromField QueueStatus where fromField = fromFieldToReadable_
 
-instance ToField QueueDirection where toField = toField . show
+instance ToField RcvStatus where toField = toField . show
 
 fromFieldToReadable_ :: forall a. (Read a, E.Typeable a) => Field -> Ok a
 fromFieldToReadable_ = \case
@@ -379,51 +381,83 @@ updateSndQueueStatusQuery_ =
     WHERE host = :host AND port = :port AND snd_id = :snd_id;
   |]
 
--- TODO remove
--- -- ? rewrite with ExceptT?
--- insertRcvMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
--- insertRcvMsg dbConn connAlias agentMsgId aMsg =
---   DB.withTransaction dbConn $ do
---     queues <- retrieveConnQueues_ dbConn connAlias
---     case queues of
---       (Just _rcvQ, _) -> do
---         insertMsg_ dbConn connAlias RCV agentMsgId aMsg
---         return $ Right ()
---       (Nothing, Just _sndQ) -> return $ Left SEBadQueueDirection
---       _ -> return $ Left SEBadConn
+insertRcvMsg ::
+  DB.Connection ->
+  ConnAlias ->
+  MsgBody ->
+  ExternalSndId ->
+  ExternalSndTs ->
+  BrokerId ->
+  BrokerTs ->
+  IO (Either StoreError ())
+insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId brokerTs =
+  DB.withTransaction dbConn $ do
+    queues <- retrieveConnQueues_ dbConn connAlias
+    case queues of
+      (Just _rcvQ, _) -> do
+        (lastInternalId, lastInternalRcvId) <- retrieveLastInternalIdsRcv_ dbConn connAlias
+        let internalId = lastInternalId + 1
+        let internalRcvId = lastInternalRcvId + 1
+        insertRcvMsgBase_ dbConn connAlias internalId internalRcvId msgBody
+        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs
+        return $ Right ()
+      (Nothing, Just _sndQ) -> return $ Left SEBadQueueDirection
+      _ -> return $ Left SEBadConn
 
--- -- ? rewrite with ExceptT?
--- insertSndMsg :: DB.Connection -> ConnAlias -> AgentMsgId -> AMessage -> IO (Either StoreError ())
--- insertSndMsg dbConn connAlias agentMsgId aMsg =
---   DB.withTransaction dbConn $ do
---     queues <- retrieveConnQueues_ dbConn connAlias
---     case queues of
---       (_, Just _sndQ) -> do
---         insertMsg_ dbConn connAlias SND agentMsgId aMsg
---         return $ Right ()
---       (Just _rcvQ, Nothing) -> return $ Left SEBadQueueDirection
---       _ -> return $ Left SEBadConn
+retrieveLastInternalIdsRcv_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalRcvId)
+retrieveLastInternalIdsRcv_ dbConn connAlias = do
+  [(lastInternalId, lastInternalRcvId)] <-
+    DB.queryNamed
+      dbConn
+      "SELECT last_internal_msg_id, last_internal_rcv_msg_id FROM connections WHERE conn_alias = :conn_alias;"
+      [":conn_alias" := connAlias]
+  return (lastInternalId, lastInternalRcvId)
 
--- -- TODO add parser and serializer for DeliveryStatus? Pass DeliveryStatus?
--- insertMsg_ :: DB.Connection -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> IO ()
--- insertMsg_ dbConn connAlias qDirection agentMsgId aMsg = do
---   let msg = serializeAgentMessage aMsg
---   ts <- liftIO getCurrentTime
---   DB.executeNamed
---     dbConn
---     insertMsgQuery_
---     [ ":agent_msg_id" := agentMsgId,
---       ":conn_alias" := connAlias,
---       ":timestamp" := ts,
---       ":message" := msg,
---       ":direction" := qDirection
---     ]
+insertRcvMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalRcvId -> MsgBody -> IO ()
+insertRcvMsgBase_ dbConn connAlias internalId internalRcvId msgBody = do
+  internalTs <- liftIO getCurrentTime
+  DB.executeNamed
+    dbConn
+    [sql|
+      INSERT INTO messages
+        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, body)
+      VALUES
+        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:body);
+    |]
+    [ ":conn_alias" := connAlias,
+      ":internal_id" := internalId,
+      ":internal_ts" := internalTs,
+      ":internal_rcv_id" := internalRcvId,
+      ":body" := msgBody
+    ]
 
--- insertMsgQuery_ :: Query
--- insertMsgQuery_ =
---   [sql|
---     INSERT INTO messages
---       ( agent_msg_id, conn_alias, timestamp, message, direction, msg_status)
---     VALUES
---       (:agent_msg_id,:conn_alias,:timestamp,:message,:direction,"MDTransmitted");
---   |]
+insertRcvMsgDetails_ ::
+  DB.Connection ->
+  ConnAlias ->
+  InternalRcvId ->
+  InternalId ->
+  ExternalSndId ->
+  ExternalSndTs ->
+  BrokerId ->
+  BrokerTs ->
+  IO ()
+insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs =
+  DB.executeNamed
+    dbConn
+    [sql|
+      INSERT INTO rcv_messages
+        ( conn_alias, internal_rcv_id, internal_id, external_snd_id, external_snd_ts,
+          broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts)
+      VALUES
+        (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,:external_snd_ts,
+         :broker_id,:broker_ts,:rcv_status,           NULL,          NULL);
+    |]
+    [ ":conn_alias" := connAlias,
+      ":internal_rcv_id" := internalRcvId,
+      ":internal_id" := internalId,
+      ":external_snd_id" := externalSndId,
+      ":external_snd_ts" := externalSndTs,
+      ":broker_id" := brokerId,
+      ":broker_ts" := brokerTs,
+      ":rcv_status" := Received
+    ]

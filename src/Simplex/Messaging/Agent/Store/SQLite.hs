@@ -18,6 +18,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Types (MsgBody)
 import Simplex.Messaging.Util (liftIOEither)
 
 data SQLiteStore = SQLiteStore
@@ -90,21 +91,13 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createRcvMsg :: SQLiteStore -> ConnAlias -> RcvMsg -> m ()
-  createRcvMsg _st _connAlias _rcvMsg = throwError SENotImplemented
+  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m ()
+  createRcvMsg SQLiteStore {dbConn} connAlias msgBody externalSndId externalSndTs brokerId brokerTs =
+    liftIOEither $
+      insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId brokerTs
 
-  createSndMsg :: SQLiteStore -> ConnAlias -> SndMsg -> m ()
-  createSndMsg _st _connAlias _sndMsg = throwError SENotImplemented
+  createSndMsg :: s -> ConnAlias -> MsgBody -> m ()
+  createSndMsg _st _connAlias _msgBody = throwError SENotImplemented
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
-
-  -- -- TODO remove
-  -- createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
-  -- createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
-  --   liftIOEither $
-  --     insertMsg dbConn connAlias agentMsgId aMsg
-  --   where
-  --     insertMsg = case qDirection of
-  --       RCV -> insertRcvMsg
-  --       SND -> insertSndMsg

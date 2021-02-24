@@ -41,8 +41,8 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
 
   -- Msg management
-  createRcvMsg :: s -> ConnAlias -> RcvMsg -> m ()
-  createSndMsg :: s -> ConnAlias -> SndMsg -> m ()
+  createRcvMsg :: s -> ConnAlias -> MsgBody -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m ()
+  createSndMsg :: s -> ConnAlias -> MsgBody -> m ()
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
 -- * Queue types
