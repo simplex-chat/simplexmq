@@ -36,7 +36,6 @@ class Monad m => MonadAgentStore s m where
   deleteConn :: s -> ConnAlias -> m ()
   upgradeRcvConnToDuplex :: s -> ConnAlias -> SendQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnAlias -> ReceiveQueue -> m ()
-  removeSndAuth :: s -> ConnAlias -> m ()
   setRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
   setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
 

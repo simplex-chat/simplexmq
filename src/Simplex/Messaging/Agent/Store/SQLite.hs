@@ -78,9 +78,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIOEither $
       updateSndConnWithRcvQueue dbConn connAlias rcvQueue
 
-  removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
-  removeSndAuth _st _connAlias = throwError SENotImplemented
-
   setRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
   setRcvQueueStatus SQLiteStore {dbConn} rcvQueue status =
     liftIO $
