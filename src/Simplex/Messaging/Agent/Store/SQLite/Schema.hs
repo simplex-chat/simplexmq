@@ -6,6 +6,20 @@ module Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema) where
 import Database.SQLite.Simple (Connection, Query, execute_)
 import Database.SQLite.Simple.QQ (sql)
 
+createSchema :: Connection -> IO ()
+createSchema conn =
+  mapM_
+    (execute_ conn)
+    [ enableFKs,
+      servers,
+      rcvQueues,
+      sndQueues,
+      connections,
+      messages,
+      rcvMessages,
+      sndMessages
+    ]
+
 enableFKs :: Query
 enableFKs = "PRAGMA foreign_keys = ON;"
 
@@ -148,17 +162,3 @@ sndMessages =
         ON DELETE CASCADE
     ) WITHOUT ROWID;
   |]
-
-createSchema :: Connection -> IO ()
-createSchema conn =
-  mapM_
-    (execute_ conn)
-    [ enableFKs,
-      servers,
-      rcvQueues,
-      sndQueues,
-      connections,
-      messages,
-      rcvMessages,
-      sndMessages
-    ]
