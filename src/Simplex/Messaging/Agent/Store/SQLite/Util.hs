@@ -431,7 +431,11 @@ retrieveLastInternalIdsRcv_ dbConn connAlias = do
   [(lastInternalId, lastInternalRcvId)] <-
     DB.queryNamed
       dbConn
-      "SELECT last_internal_msg_id, last_internal_rcv_msg_id FROM connections WHERE conn_alias = :conn_alias;"
+      [sql|
+        SELECT last_internal_msg_id, last_internal_rcv_msg_id
+        FROM connections
+        WHERE conn_alias = :conn_alias;
+      |]
       [":conn_alias" := connAlias]
   return (lastInternalId, lastInternalRcvId)
 
