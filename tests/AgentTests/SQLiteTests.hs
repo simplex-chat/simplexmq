@@ -29,7 +29,7 @@ withStore = before createStore . after removeStore
     createStore :: IO SQLiteStore
     createStore = do
       -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
-      -- IO operations on multiple similarly named files; error specific to some environments
+      -- IO operations on multiple similarly named files; error seems to be environment specific
       r <- randomIO :: IO Word32
       newSQLiteStore $ testDB <> show r
 
@@ -67,6 +67,9 @@ storeTests = withStore do
     describe "createRcvMsg" do
       describe "rcv queue exists" testCreateRcvMsg
       describe "rcv queue doesn't exist" testCreateRcvMsgNoQueue
+    describe "createSndMsg" do
+      describe "snd queue exists" testCreateSndMsg
+      describe "snd queue doesn't exist" testCreateSndMsgNoQueue
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
 testForeignKeysEnabled = do
@@ -291,19 +294,36 @@ testCreateRcvMsg = do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     -- TODO getMsg to check message
-    let body = encodeUtf8 "Hello world!"
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" body 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") 1 ts "1" ts
       `returnsResult` ()
 
 testCreateRcvMsgNoQueue :: SpecWith SQLiteStore
 testCreateRcvMsgNoQueue = do
   it "should throw error on attempt to create a rcv message w/t a rcv queue" $ \store -> do
-    let body = encodeUtf8 "abc"
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" body 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") 1 ts "1" ts
       `throwsError` SEBadConn
     createSndConn store sndQueue1
       `returnsResult` ()
-    createRcvMsg store "conn1" body 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") 1 ts "1" ts
       `throwsError` SEBadConnType CSend
+
+testCreateSndMsg :: SpecWith SQLiteStore
+testCreateSndMsg = do
+  it "should create a snd message" $ \store -> do
+    createSndConn store sndQueue1
+      `returnsResult` ()
+    -- TODO getMsg to check message
+    createSndMsg store "conn1" (encodeUtf8 "Hello world!")
+      `returnsResult` ()
+
+testCreateSndMsgNoQueue :: SpecWith SQLiteStore
+testCreateSndMsgNoQueue = do
+  it "should throw error on attempt to create a snd message w/t a snd queue" $ \store -> do
+    createSndMsg store "conn1" (encodeUtf8 "Hello world!")
+      `throwsError` SEBadConn
+    createRcvConn store rcvQueue1
+      `returnsResult` ()
+    createSndMsg store "conn1" (encodeUtf8 "Hello world!")
+      `throwsError` SEBadConnType CReceive
