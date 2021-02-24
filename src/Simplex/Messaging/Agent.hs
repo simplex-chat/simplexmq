@@ -162,9 +162,9 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         _ -> throwError PROHIBITED -- NOT_READY ?
       where
         sendMsg sq = do
+          withStore $ \st -> createSndMsg st connAlias msgBody
           sendAgentMessage c sq $ A_MSG msgBody
           -- TODO respond $ SENT aMsgId
-          -- TODO createSndMsg
           respond $ SENT 0
 
     suspendConnection :: m ()
@@ -248,8 +248,13 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
             A_MSG body -> do
               logServer "<--" c srv rId "MSG <MSG>"
               -- TODO check message status
+              withStore $ \st -> createRcvMsg st connAlias body senderMsgId senderTimestamp srvMsgId srvTs
+              -- TODO either:
+              -- TODO   - pass MSG{.., msg = generatedRcvMsg} to notify,
+              -- TODO   - retrieve internalTs from generatedRcvMsg,
+              -- TODO   - pass recipientTs to createRcvMsg (second cleanest),
+              -- TODO   - remove m_recipient from MSG (might be the cleanest?).
               recipientTs <- liftIO getCurrentTime
-              -- TODO createRcvMsg
               notify connAlias $
                 MSG
                   { m_status = MsgOk,

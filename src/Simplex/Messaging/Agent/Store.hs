@@ -146,7 +146,7 @@ data RcvMsg = RcvMsg
 
 type InternalRcvId = Int64
 
-type ExternalSndId = Int64
+type ExternalSndId = Integer
 
 type ExternalSndTs = UTCTime
 
