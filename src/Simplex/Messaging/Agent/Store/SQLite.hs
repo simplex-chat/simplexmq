@@ -93,8 +93,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIOEither $
       insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId brokerTs
 
-  createSndMsg :: s -> ConnAlias -> MsgBody -> m ()
-  createSndMsg _st _connAlias _msgBody = throwError SENotImplemented
+  createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> m ()
+  createSndMsg SQLiteStore {dbConn} connAlias msgBody =
+    liftIOEither $
+      insertSndMsg dbConn connAlias msgBody
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented

@@ -318,4 +318,4 @@ testCreateRcvMsgNoQueue = do
     createSndConn store sndQueue1
       `returnsResult` ()
     createRcvMsg store "conn1" body 1 ts "1" ts
-      `throwsError` SEBadQueueDirection
+      `throwsError` SEBadConnType CSend
