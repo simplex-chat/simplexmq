@@ -129,17 +129,21 @@ data Msg = MRcv RcvMsg | MSnd SndMsg
   deriving (Eq, Show)
 
 -- | A message received by the agent from a sender.
--- See Simplex.Messaging.Agent.Store.SQLite.Schema for fields explanation.
--- TODO move fields documentation here
 data RcvMsg = RcvMsg
   { baseData :: MsgBase,
     internalRcvId :: InternalRcvId,
+    -- | Id of the message at sender, corresponds to `internalSndId` from the sender's side.
     externalSndId :: ExternalSndId,
     externalSndTs :: ExternalSndTs,
     brokerId :: BrokerId,
     brokerTs :: BrokerTs,
     rcvStatus :: RcvStatus,
+    -- | Timestamp of acknowledgement to broker, corresponds to `AcknowledgedToBroker` status.
+    -- Do not mix up with `brokerTs` - timestamp created at broker after it receives the message from sender.
     ackBrokerTs :: AckBrokerTs,
+    -- | Timestamp of acknowledgement to sender, corresponds to `AcknowledgedToSender` status.
+    -- Do not mix up with `externalSndTs` - timestamp created at sender before sending,
+    -- which in its turn corresponds to `internalTs`.
     ackSenderTs :: AckSenderTs
   }
   deriving (Eq, Show)
@@ -165,13 +169,14 @@ type AckBrokerTs = UTCTime
 type AckSenderTs = UTCTime
 
 -- | A message sent by the agent to a recipient.
--- See Simplex.Messaging.Agent.Store.SQLite.Schema for fields explanation.
--- TODO move fields documentation here
 data SndMsg = SndMsg
   { baseData :: MsgBase,
+    -- | Id of the message sent / to be sent, as in its number in order of sending.
     internalSndId :: InternalSndId,
     sndStatus :: SndStatus,
+    -- | Timestamp of the message received by broker, corresponds to `Sent` status.
     sentTs :: SentTs,
+    -- | Timestamp of the message received by recipient, corresponds to `Delivered` status.
     deliveredTs :: DeliveredTs
   }
   deriving (Eq, Show)
@@ -191,14 +196,14 @@ type DeliveredTs = UTCTime
 -- | Base message data independent of direction.
 data MsgBase = MsgBase
   { connAlias :: ConnAlias,
+    -- | Monotonically increasing id of a message per connection, internal to the agent.
+    -- Preserves ordering between both received and sent messages.
     internalId :: InternalId,
     internalTs :: InternalTs,
     msgBody :: MsgBody
   }
   deriving (Eq, Show)
 
--- | Monotonically increasing id of a message per connection, internal to the agent.
--- Preserves ordering between both received and sent messages.
 type InternalId = Int64
 
 type InternalTs = UTCTime
