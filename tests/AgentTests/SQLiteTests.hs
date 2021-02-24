@@ -53,17 +53,17 @@ storeTests = withStore do
     describe "createSndConn" testCreateSndConn
     describe "getRcvQueue" testGetRcvQueue
     describe "deleteConn" do
-      describe "rcv" testDeleteConnReceive
-      describe "snd" testDeleteConnSend
-      describe "duplex" testDeleteConnDuplex
+      describe "rcv" testDeleteRcvConn
+      describe "snd" testDeleteSndConn
+      describe "duplex" testDeleteDuplexConn
     describe "upgradeRcvConnToDuplex" testUpgradeRcvConnToDuplex
     describe "upgradeSndConnToDuplex" testUpgradeSndConnToDuplex
     describe "set queue status" do
       describe "setRcvQueueStatus" testSetRcvQueueStatus
       describe "setSndQueueStatus" testSetSndQueueStatus
-      describe "duplex connection" testSetQueueStatusConnDuplex
-      xdescribe "nonexistent snd queue" testSetNonexistentSendQueueStatus
-      xdescribe "nonexistent rcv queue" testSetNonexistentReceiveQueueStatus
+      describe "duplex connection" testSetQueueStatusDuplex
+      xdescribe "rcv queue doesn't exist" testSetRcvQueueStatusNoQueue
+      xdescribe "snd queue doesn't exist" testSetSndQueueStatusNoQueue
     describe "createRcvMsg" do
       describe "rcv queue exists" testCreateRcvMsg
       describe "rcv queue doesn't exist" testCreateRcvMsgNoQueue
@@ -71,14 +71,14 @@ storeTests = withStore do
 testForeignKeysEnabled :: SpecWith SQLiteStore
 testForeignKeysEnabled = do
   it "should throw error if foreign keys are enabled" $ \store -> do
-    let inconsistent_query =
+    let inconsistentQuery =
           [sql|
             INSERT INTO connections
               (conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
             VALUES
               ("conn1", "smp.simplex.im", "5223", "1234", "smp.simplex.im", "5223", "2345");
           |]
-    DB.execute_ (dbConn store) inconsistent_query
+    DB.execute_ (dbConn store) inconsistentQuery
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
 rcvQueue1 :: ReceiveQueue
@@ -106,18 +106,6 @@ sndQueue1 =
       signKey = C.PrivateKey 1 2 3,
       status = New
     }
-
--- sndQueue2 :: SendQueue
--- sndQueue2 =
---           SendQueue
---             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
---               sndId = "1234",
---               connAlias = "conn1",
---               sndPrivateKey = "abcd",
---               encryptKey = "dcba",
---               signKey = "edcb",
---               status = New
---             }
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
@@ -153,8 +141,8 @@ testGetRcvQueue = do
     getRcvQueue store smpServer recipientId
       `returnsResult` rcvQueue1
 
-testDeleteConnReceive :: SpecWith SQLiteStore
-testDeleteConnReceive = do
+testDeleteRcvConn :: SpecWith SQLiteStore
+testDeleteRcvConn = do
   it "should create receive connection and delete it" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
@@ -166,8 +154,8 @@ testDeleteConnReceive = do
     getConn store "conn1"
       `throwsError` SEBadConn
 
-testDeleteConnSend :: SpecWith SQLiteStore
-testDeleteConnSend = do
+testDeleteSndConn :: SpecWith SQLiteStore
+testDeleteSndConn = do
   it "should create send connection and delete it" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
@@ -179,8 +167,8 @@ testDeleteConnSend = do
     getConn store "conn1"
       `throwsError` SEBadConn
 
-testDeleteConnDuplex :: SpecWith SQLiteStore
-testDeleteConnDuplex = do
+testDeleteDuplexConn :: SpecWith SQLiteStore
+testDeleteDuplexConn = do
   it "should create duplex connection and delete it" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
@@ -264,8 +252,8 @@ testSetSndQueueStatus = do
     getConn store "conn1"
       `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1 {status = Confirmed})
 
-testSetQueueStatusConnDuplex :: SpecWith SQLiteStore
-testSetQueueStatusConnDuplex = do
+testSetQueueStatusDuplex :: SpecWith SQLiteStore
+testSetQueueStatusDuplex = do
   it "should update statuses of receive and send queues in duplex connection" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
@@ -285,16 +273,16 @@ testSetQueueStatusConnDuplex = do
         ( DuplexConnection "conn1" rcvQueue1 {status = Secured} sndQueue1 {status = Confirmed}
         )
 
-testSetNonexistentSendQueueStatus :: SpecWith SQLiteStore
-testSetNonexistentSendQueueStatus = do
-  it "should throw error on attempt to update status of nonexistent send queue" $ \store -> do
-    setSndQueueStatus store sndQueue1 Confirmed
-      `throwsError` SEInternal
-
-testSetNonexistentReceiveQueueStatus :: SpecWith SQLiteStore
-testSetNonexistentReceiveQueueStatus = do
+testSetRcvQueueStatusNoQueue :: SpecWith SQLiteStore
+testSetRcvQueueStatusNoQueue = do
   it "should throw error on attempt to update status of nonexistent receive queue" $ \store -> do
     setRcvQueueStatus store rcvQueue1 Confirmed
+      `throwsError` SEInternal
+
+testSetSndQueueStatusNoQueue :: SpecWith SQLiteStore
+testSetSndQueueStatusNoQueue = do
+  it "should throw error on attempt to update status of nonexistent send queue" $ \store -> do
+    setSndQueueStatus store sndQueue1 Confirmed
       `throwsError` SEInternal
 
 testCreateRcvMsg :: SpecWith SQLiteStore
