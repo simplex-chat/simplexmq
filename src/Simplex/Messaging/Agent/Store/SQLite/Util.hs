@@ -149,9 +149,11 @@ insertRcvConnectionQuery_ :: Query
 insertRcvConnectionQuery_ =
   [sql|
     INSERT INTO connections
-      ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
+      ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
+        last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
     VALUES
-      (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL);
+      (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL,
+                           0,                        0,                        0);
   |]
 
 insertSndQueue_ :: DB.Connection -> SendQueue -> IO ()
@@ -191,9 +193,11 @@ insertSndConnectionQuery_ :: Query
 insertSndConnectionQuery_ =
   [sql|
     INSERT INTO connections
-      ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
+      ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
+        last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
     VALUES
-      (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id);
+      (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id,
+                           0,                        0,                        0);
   |]
 
 -- * getConn helpers
