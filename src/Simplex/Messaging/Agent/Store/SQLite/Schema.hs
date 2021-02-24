@@ -28,7 +28,7 @@ rcvQueues =
       host TEXT NOT NULL,
       port TEXT NOT NULL,
       rcv_id BLOB NOT NULL,
-      conn_alias TEXT NOT NULL,
+      conn_alias BLOB NOT NULL,
       rcv_private_key BLOB NOT NULL,
       snd_id BLOB,
       snd_key BLOB,
@@ -52,7 +52,7 @@ sndQueues =
       host TEXT NOT NULL,
       port TEXT NOT NULL,
       snd_id BLOB NOT NULL,
-      conn_alias TEXT NOT NULL,
+      conn_alias BLOB NOT NULL,
       snd_private_key BLOB NOT NULL,
       encrypt_key BLOB NOT NULL,
       sign_key BLOB NOT NULL,
@@ -70,7 +70,7 @@ connections :: Query
 connections =
   [sql|
     CREATE TABLE connections(
-      conn_alias TEXT NOT NULL,
+      conn_alias BLOB NOT NULL,
       rcv_host TEXT,
       rcv_port TEXT,
       rcv_id BLOB,
@@ -90,7 +90,7 @@ messages :: Query
 messages =
   [sql|
     CREATE TABLE messages(
-      conn_alias TEXT NOT NULL,
+      conn_alias BLOB NOT NULL,
       internal_id INTEGER NOT NULL,
       internal_ts TEXT NOT NULL,
       internal_rcv_id INTEGER,
@@ -132,7 +132,7 @@ rcvMessages :: Query
 rcvMessages =
   [sql|
     CREATE TABLE rcv_messages(
-      conn_alias TEXT NOT NULL,
+      conn_alias BLOB NOT NULL,
       internal_rcv_id INTEGER NOT NULL,
       internal_id INTEGER NOT NULL,
       external_snd_id INTEGER NOT NULL,
@@ -168,7 +168,7 @@ sndMessages :: Query
 sndMessages =
   [sql|
     CREATE TABLE snd_messages(
-      conn_alias TEXT NOT NULL,
+      conn_alias BLOB NOT NULL,
       internal_snd_id INTEGER NOT NULL,
       internal_id INTEGER NOT NULL,
       snd_status TEXT NOT NULL,
