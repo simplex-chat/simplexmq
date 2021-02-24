@@ -24,6 +24,7 @@ where
 import Control.Monad.Except (MonadIO (liftIO))
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import Data.Text.Encoding (decodeUtf8)
 import Data.Time (getCurrentTime)
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
@@ -448,7 +449,7 @@ insertRcvMsgBase_ dbConn connAlias internalId internalRcvId msgBody = do
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_rcv_id" := internalRcvId,
-      ":body" := msgBody
+      ":body" := decodeUtf8 msgBody
     ]
 
 insertRcvMsgDetails_ ::
