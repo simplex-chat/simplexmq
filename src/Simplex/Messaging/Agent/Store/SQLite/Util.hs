@@ -39,6 +39,8 @@ import Simplex.Messaging.Types (MsgBody)
 import Text.Read (readMaybe)
 import qualified UnliftIO.Exception as E
 
+-- * Auxiliary helpers
+
 -- ? replace with ToField? - it's easy to forget to use this
 serializePort_ :: Maybe ServiceName -> ServiceName
 serializePort_ = fromMaybe "_"
@@ -72,6 +74,8 @@ instance (FromField a, FromField b, FromField c, FromField d, FromField e,
                          <*> field <*> field <*> field <*> field <*> field
                          <*> field
 {- ORMOLU_ENABLE -}
+
+-- * createRcvConn and createSndConn helpers
 
 createRcvQueueAndConn :: DB.Connection -> ReceiveQueue -> IO ()
 createRcvQueueAndConn dbConn rcvQueue =
@@ -191,6 +195,8 @@ insertSndConnectionQuery_ =
       (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id);
   |]
 
+-- * getConn helpers
+
 retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Maybe SendQueue)
 retrieveConnQueues dbConn connAlias =
   DB.withTransaction -- Avoid inconsistent state between queue reads
@@ -253,6 +259,8 @@ retrieveSndQueueByConnAliasQuery_ =
     WHERE q.conn_alias = :conn_alias;
   |]
 
+-- * getRcvQueue helpers
+
 -- ? make server an argument and pass it for the queue instead of joining with 'servers'?
 -- ? the downside would be the queue having an outdated 'key_hash' if it has changed,
 -- ? but maybe it's unwanted behavior?
@@ -280,12 +288,16 @@ retrieveRcvQueueQuery_ =
     WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
   |]
 
+-- * deleteConn helper
+
 deleteConnCascade :: DB.Connection -> ConnAlias -> IO ()
 deleteConnCascade dbConn connAlias =
   DB.executeNamed
     dbConn
     "DELETE FROM connections WHERE conn_alias = :conn_alias;"
     [":conn_alias" := connAlias]
+
+-- * upgradeRcvConnToDuplex helpers
 
 -- ? rewrite with ExceptT?
 updateRcvConnWithSndQueue :: DB.Connection -> ConnAlias -> SendQueue -> IO (Either StoreError ())
@@ -318,6 +330,8 @@ updateConnWithSndQueueQuery_ =
     WHERE conn_alias = :conn_alias;
   |]
 
+-- * upgradeSndConnToDuplex helpers
+
 -- ? rewrite with ExceptT?
 updateSndConnWithRcvQueue :: DB.Connection -> ConnAlias -> ReceiveQueue -> IO (Either StoreError ())
 updateSndConnWithRcvQueue dbConn connAlias rcvQueue =
@@ -349,6 +363,8 @@ updateConnWithRcvQueueQuery_ =
     WHERE conn_alias = :conn_alias;
   |]
 
+-- * setRcvQueueStatus helpers
+
 -- ? throw error if queue doesn't exist?
 updateRcvQueueStatus :: DB.Connection -> ReceiveQueue -> QueueStatus -> IO ()
 updateRcvQueueStatus dbConn ReceiveQueue {rcvId, server = SMPServer {host, port}} status =
@@ -365,6 +381,8 @@ updateRcvQueueStatusQuery_ =
     WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
   |]
 
+-- * setSndQueueStatus helpers
+
 -- ? throw error if queue doesn't exist?
 updateSndQueueStatus :: DB.Connection -> SendQueue -> QueueStatus -> IO ()
 updateSndQueueStatus dbConn SendQueue {sndId, server = SMPServer {host, port}} status =
@@ -380,6 +398,8 @@ updateSndQueueStatusQuery_ =
     SET status = :status
     WHERE host = :host AND port = :port AND snd_id = :snd_id;
   |]
+
+-- * createRcvMsg helpers
 
 insertRcvMsg ::
   DB.Connection ->
