@@ -421,6 +421,7 @@ insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId broke
         let internalRcvId = lastInternalRcvId + 1
         insertRcvMsgBase_ dbConn connAlias internalId internalRcvId msgBody
         insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs
+        updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
         return $ Right ()
       (Nothing, Just _sndQ) -> return $ Left SEBadQueueDirection
       _ -> return $ Left SEBadConn
@@ -481,4 +482,18 @@ insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId ext
       ":broker_id" := brokerId,
       ":broker_ts" := brokerTs,
       ":rcv_status" := Received
+    ]
+
+updateLastInternalIdsRcv_ :: DB.Connection -> ConnAlias -> InternalId -> InternalRcvId -> IO ()
+updateLastInternalIdsRcv_ dbConn connAlias newInternalId newInternalRcvId =
+  DB.executeNamed
+    dbConn
+    [sql|
+      UPDATE connections
+      SET last_internal_msg_id = :last_internal_msg_id, last_internal_rcv_msg_id = :last_internal_rcv_msg_id
+      WHERE conn_alias = :conn_alias;
+    |]
+    [ ":last_internal_msg_id" := newInternalId,
+      ":last_internal_rcv_msg_id" := newInternalRcvId,
+      ":conn_alias" := connAlias
     ]
