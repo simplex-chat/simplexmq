@@ -53,12 +53,12 @@ newSQLiteStore dbFilename = do
   return SQLiteStore {dbFilename, dbConn}
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
-  createRcvConn :: SQLiteStore -> ReceiveQueue -> m ()
+  createRcvConn :: SQLiteStore -> RcvQueue -> m ()
   createRcvConn SQLiteStore {dbConn} rcvQueue =
     liftIO $
       createRcvQueueAndConn dbConn rcvQueue
 
-  createSndConn :: SQLiteStore -> SendQueue -> m ()
+  createSndConn :: SQLiteStore -> SndQueue -> m ()
   createSndConn SQLiteStore {dbConn} sndQueue =
     liftIO $
       createSndQueueAndConn dbConn sndQueue
@@ -70,11 +70,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         retrieveConnQueues dbConn connAlias
     case queues of
       (Just rcvQ, Just sndQ) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
-      (Just rcvQ, Nothing) -> return $ SomeConn SCReceive (ReceiveConnection connAlias rcvQ)
-      (Nothing, Just sndQ) -> return $ SomeConn SCSend (SendConnection connAlias sndQ)
+      (Just rcvQ, Nothing) -> return $ SomeConn SCRcv (RcvConnection connAlias rcvQ)
+      (Nothing, Just sndQ) -> return $ SomeConn SCSnd (SndConnection connAlias sndQ)
       _ -> throwError SEBadConn
 
-  getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
+  getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m RcvQueue
   getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId = do
     rcvQueue <-
       liftIO $
@@ -88,22 +88,22 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       deleteConnCascade dbConn connAlias
 
-  upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SendQueue -> m ()
+  upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SndQueue -> m ()
   upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sndQueue =
     liftIOEither $
       updateRcvConnWithSndQueue dbConn connAlias sndQueue
 
-  upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> ReceiveQueue -> m ()
+  upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> RcvQueue -> m ()
   upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rcvQueue =
     liftIOEither $
       updateSndConnWithRcvQueue dbConn connAlias rcvQueue
 
-  setRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
+  setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueStatus SQLiteStore {dbConn} rcvQueue status =
     liftIO $
       updateRcvQueueStatus dbConn rcvQueue status
 
-  setSndQueueStatus :: SQLiteStore -> SendQueue -> QueueStatus -> m ()
+  setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
   setSndQueueStatus SQLiteStore {dbConn} sndQueue status =
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
@@ -135,9 +135,9 @@ instance ToField QueueStatus where toField = toField . show
 
 instance FromField QueueStatus where fromField = fromFieldToReadable_
 
-instance ToField RcvStatus where toField = toField . show
+instance ToField RcvMsgStatus where toField = toField . show
 
-instance ToField SndStatus where toField = toField . show
+instance ToField SndMsgStatus where toField = toField . show
 
 fromFieldToReadable_ :: forall a. (Read a, E.Typeable a) => Field -> Ok a
 fromFieldToReadable_ = \case
@@ -177,15 +177,15 @@ upsertServer_ dbConn SMPServer {host, port, keyHash} = do
 
 -- * createRcvConn helpers
 
-createRcvQueueAndConn :: DB.Connection -> ReceiveQueue -> IO ()
+createRcvQueueAndConn :: DB.Connection -> RcvQueue -> IO ()
 createRcvQueueAndConn dbConn rcvQueue =
   DB.withTransaction dbConn $ do
-    upsertServer_ dbConn (server (rcvQueue :: ReceiveQueue))
+    upsertServer_ dbConn (server (rcvQueue :: RcvQueue))
     insertRcvQueue_ dbConn rcvQueue
     insertRcvConnection_ dbConn rcvQueue
 
-insertRcvQueue_ :: DB.Connection -> ReceiveQueue -> IO ()
-insertRcvQueue_ dbConn ReceiveQueue {..} = do
+insertRcvQueue_ :: DB.Connection -> RcvQueue -> IO ()
+insertRcvQueue_ dbConn RcvQueue {..} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
@@ -207,8 +207,8 @@ insertRcvQueue_ dbConn ReceiveQueue {..} = do
       ":status" := status
     ]
 
-insertRcvConnection_ :: DB.Connection -> ReceiveQueue -> IO ()
-insertRcvConnection_ dbConn ReceiveQueue {server, rcvId, connAlias} = do
+insertRcvConnection_ :: DB.Connection -> RcvQueue -> IO ()
+insertRcvConnection_ dbConn RcvQueue {server, rcvId, connAlias} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
@@ -224,15 +224,15 @@ insertRcvConnection_ dbConn ReceiveQueue {server, rcvId, connAlias} = do
 
 -- * createSndConn helpers
 
-createSndQueueAndConn :: DB.Connection -> SendQueue -> IO ()
+createSndQueueAndConn :: DB.Connection -> SndQueue -> IO ()
 createSndQueueAndConn dbConn sndQueue =
   DB.withTransaction dbConn $ do
-    upsertServer_ dbConn (server (sndQueue :: SendQueue))
+    upsertServer_ dbConn (server (sndQueue :: SndQueue))
     insertSndQueue_ dbConn sndQueue
     insertSndConnection_ dbConn sndQueue
 
-insertSndQueue_ :: DB.Connection -> SendQueue -> IO ()
-insertSndQueue_ dbConn SendQueue {..} = do
+insertSndQueue_ :: DB.Connection -> SndQueue -> IO ()
+insertSndQueue_ dbConn SndQueue {..} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
@@ -252,8 +252,8 @@ insertSndQueue_ dbConn SendQueue {..} = do
       ":status" := status
     ]
 
-insertSndConnection_ :: DB.Connection -> SendQueue -> IO ()
-insertSndConnection_ dbConn SendQueue {server, sndId, connAlias} = do
+insertSndConnection_ :: DB.Connection -> SndQueue -> IO ()
+insertSndConnection_ dbConn SndQueue {server, sndId, connAlias} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
@@ -269,7 +269,7 @@ insertSndConnection_ dbConn SendQueue {server, sndId, connAlias} = do
 
 -- * getConn helpers
 
-retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Maybe SendQueue)
+retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe RcvQueue, Maybe SndQueue)
 retrieveConnQueues dbConn connAlias =
   DB.withTransaction -- Avoid inconsistent state between queue reads
     dbConn
@@ -277,13 +277,13 @@ retrieveConnQueues dbConn connAlias =
 
 -- Separate transactionless version of retrieveConnQueues to be reused in other functions that already wrap
 -- multiple statements in transaction - otherwise they'd be attempting to start a transaction within a transaction
-retrieveConnQueues_ :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue, Maybe SendQueue)
+retrieveConnQueues_ :: DB.Connection -> ConnAlias -> IO (Maybe RcvQueue, Maybe SndQueue)
 retrieveConnQueues_ dbConn connAlias = do
   rcvQ <- retrieveRcvQueueByConnAlias_ dbConn connAlias
   sndQ <- retrieveSndQueueByConnAlias_ dbConn connAlias
   return (rcvQ, sndQ)
 
-retrieveRcvQueueByConnAlias_ :: DB.Connection -> ConnAlias -> IO (Maybe ReceiveQueue)
+retrieveRcvQueueByConnAlias_ :: DB.Connection -> ConnAlias -> IO (Maybe RcvQueue)
 retrieveRcvQueueByConnAlias_ dbConn connAlias = do
   r <-
     DB.queryNamed
@@ -300,10 +300,10 @@ retrieveRcvQueueByConnAlias_ dbConn connAlias = do
   case r of
     [(keyHash, host, port, rcvId, cAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
       let srv = SMPServer host (deserializePort_ port) keyHash
-      return . Just $ ReceiveQueue srv rcvId cAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
+      return . Just $ RcvQueue srv rcvId cAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
     _ -> return Nothing
 
-retrieveSndQueueByConnAlias_ :: DB.Connection -> ConnAlias -> IO (Maybe SendQueue)
+retrieveSndQueueByConnAlias_ :: DB.Connection -> ConnAlias -> IO (Maybe SndQueue)
 retrieveSndQueueByConnAlias_ dbConn connAlias = do
   r <-
     DB.queryNamed
@@ -320,12 +320,12 @@ retrieveSndQueueByConnAlias_ dbConn connAlias = do
   case r of
     [(keyHash, host, port, sndId, cAlias, sndPrivateKey, encryptKey, signKey, status)] -> do
       let srv = SMPServer host (deserializePort_ port) keyHash
-      return . Just $ SendQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
+      return . Just $ SndQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
     _ -> return Nothing
 
 -- * getRcvQueue helper
 
-retrieveRcvQueue :: DB.Connection -> HostName -> Maybe ServiceName -> SMP.RecipientId -> IO (Maybe ReceiveQueue)
+retrieveRcvQueue :: DB.Connection -> HostName -> Maybe ServiceName -> SMP.RecipientId -> IO (Maybe RcvQueue)
 retrieveRcvQueue dbConn host port rcvId = do
   r <-
     DB.queryNamed
@@ -342,7 +342,7 @@ retrieveRcvQueue dbConn host port rcvId = do
   case r of
     [(keyHash, hst, prt, rId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
       let srv = SMPServer hst (deserializePort_ prt) keyHash
-      return . Just $ ReceiveQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
+      return . Just $ RcvQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
     _ -> return Nothing
 
 -- * deleteConn helper
@@ -356,22 +356,22 @@ deleteConnCascade dbConn connAlias =
 
 -- * upgradeRcvConnToDuplex helpers
 
-updateRcvConnWithSndQueue :: DB.Connection -> ConnAlias -> SendQueue -> IO (Either StoreError ())
+updateRcvConnWithSndQueue :: DB.Connection -> ConnAlias -> SndQueue -> IO (Either StoreError ())
 updateRcvConnWithSndQueue dbConn connAlias sndQueue =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (Just _rcvQ, Nothing) -> do
-        upsertServer_ dbConn (server (sndQueue :: SendQueue))
+        upsertServer_ dbConn (server (sndQueue :: SndQueue))
         insertSndQueue_ dbConn sndQueue
         updateConnWithSndQueue_ dbConn connAlias sndQueue
         return $ Right ()
-      (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSend)
+      (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
       (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
       _ -> return $ Left SEBadConn
 
-updateConnWithSndQueue_ :: DB.Connection -> ConnAlias -> SendQueue -> IO ()
-updateConnWithSndQueue_ dbConn connAlias SendQueue {server, sndId} = do
+updateConnWithSndQueue_ :: DB.Connection -> ConnAlias -> SndQueue -> IO ()
+updateConnWithSndQueue_ dbConn connAlias SndQueue {server, sndId} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
@@ -384,22 +384,22 @@ updateConnWithSndQueue_ dbConn connAlias SendQueue {server, sndId} = do
 
 -- * upgradeSndConnToDuplex helpers
 
-updateSndConnWithRcvQueue :: DB.Connection -> ConnAlias -> ReceiveQueue -> IO (Either StoreError ())
+updateSndConnWithRcvQueue :: DB.Connection -> ConnAlias -> RcvQueue -> IO (Either StoreError ())
 updateSndConnWithRcvQueue dbConn connAlias rcvQueue =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (Nothing, Just _sndQ) -> do
-        upsertServer_ dbConn (server (rcvQueue :: ReceiveQueue))
+        upsertServer_ dbConn (server (rcvQueue :: RcvQueue))
         insertRcvQueue_ dbConn rcvQueue
         updateConnWithRcvQueue_ dbConn connAlias rcvQueue
         return $ Right ()
-      (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CReceive)
+      (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
       (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
       _ -> return $ Left SEBadConn
 
-updateConnWithRcvQueue_ :: DB.Connection -> ConnAlias -> ReceiveQueue -> IO ()
-updateConnWithRcvQueue_ dbConn connAlias ReceiveQueue {server, rcvId} = do
+updateConnWithRcvQueue_ :: DB.Connection -> ConnAlias -> RcvQueue -> IO ()
+updateConnWithRcvQueue_ dbConn connAlias RcvQueue {server, rcvId} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
@@ -413,8 +413,8 @@ updateConnWithRcvQueue_ dbConn connAlias ReceiveQueue {server, rcvId} = do
 -- * setRcvQueueStatus helper
 
 -- ? throw error if queue doesn't exist?
-updateRcvQueueStatus :: DB.Connection -> ReceiveQueue -> QueueStatus -> IO ()
-updateRcvQueueStatus dbConn ReceiveQueue {rcvId, server = SMPServer {host, port}} status =
+updateRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
+updateRcvQueueStatus dbConn RcvQueue {rcvId, server = SMPServer {host, port}} status =
   DB.executeNamed
     dbConn
     [sql|
@@ -427,8 +427,8 @@ updateRcvQueueStatus dbConn ReceiveQueue {rcvId, server = SMPServer {host, port}
 -- * setSndQueueStatus helper
 
 -- ? throw error if queue doesn't exist?
-updateSndQueueStatus :: DB.Connection -> SendQueue -> QueueStatus -> IO ()
-updateSndQueueStatus dbConn SendQueue {sndId, server = SMPServer {host, port}} status =
+updateSndQueueStatus :: DB.Connection -> SndQueue -> QueueStatus -> IO ()
+updateSndQueueStatus dbConn SndQueue {sndId, server = SMPServer {host, port}} status =
   DB.executeNamed
     dbConn
     [sql|
@@ -461,7 +461,7 @@ insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId broke
         insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs
         updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
         return $ Right ()
-      (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSend)
+      (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
       _ -> return $ Left SEBadConn
 
 retrieveLastInternalIdsRcv_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalRcvId)
@@ -555,7 +555,7 @@ insertSndMsg dbConn connAlias msgBody =
         insertSndMsgDetails_ dbConn connAlias internalSndId internalId
         updateLastInternalIdsSnd_ dbConn connAlias internalId internalSndId
         return $ Right ()
-      (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CReceive)
+      (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
       _ -> return $ Left SEBadConn
 
 retrieveLastInternalIdsSnd_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalSndId)
