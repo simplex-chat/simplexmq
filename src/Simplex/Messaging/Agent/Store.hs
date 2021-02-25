@@ -143,7 +143,7 @@ data RcvMsg = RcvMsg
     ackBrokerTs :: AckBrokerTs,
     -- | Timestamp of acknowledgement to sender, corresponds to `AcknowledgedToSender` status.
     -- Do not mix up with `externalSndTs` - timestamp created at sender before sending,
-    -- which in its turn corresponds to `internalTs`.
+    -- which in its turn corresponds to `internalTs` in sending agent.
     ackSenderTs :: AckSenderTs
   }
   deriving (Eq, Show)
