@@ -16,9 +16,9 @@ import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Store.SQLite.Util
-import Simplex.Messaging.Agent.Store.Types
 import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Types (MsgBody)
 import Simplex.Messaging.Util (liftIOEither)
 
 data SQLiteStore = SQLiteStore
@@ -78,9 +78,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIOEither $
       updateSndConnWithRcvQueue dbConn connAlias rcvQueue
 
-  removeSndAuth :: SQLiteStore -> ConnAlias -> m ()
-  removeSndAuth _st _connAlias = throwError SENotImplemented
-
   setRcvQueueStatus :: SQLiteStore -> ReceiveQueue -> QueueStatus -> m ()
   setRcvQueueStatus SQLiteStore {dbConn} rcvQueue status =
     liftIO $
@@ -91,24 +88,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> AMessage -> m ()
-  createMsg SQLiteStore {dbConn} connAlias qDirection agentMsgId aMsg =
+  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m ()
+  createRcvMsg SQLiteStore {dbConn} connAlias msgBody externalSndId externalSndTs brokerId brokerTs =
     liftIOEither $
-      insertMsg dbConn connAlias agentMsgId aMsg
-    where
-      insertMsg = case qDirection of
-        RCV -> insertRcvMsg
-        SND -> insertSndMsg
+      insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId brokerTs
 
-  getLastMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> m MessageDelivery
-  getLastMsg _st _connAlias _dir = throwError SENotImplemented
+  createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> m ()
+  createSndMsg SQLiteStore {dbConn} connAlias msgBody =
+    liftIOEither $
+      insertSndMsg dbConn connAlias msgBody
 
-  getMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m MessageDelivery
-  getMsg _st _connAlias _dir _msgId = throwError SENotImplemented
-
-  -- ? missing status parameter?
-  updateMsgStatus :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  updateMsgStatus _st _connAlias _dir _msgId = throwError SENotImplemented
-
-  deleteMsg :: SQLiteStore -> ConnAlias -> QueueDirection -> AgentMsgId -> m ()
-  deleteMsg _st _connAlias _dir _msgId = throwError SENotImplemented
+  getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
+  getMsg _st _connAlias _id = throwError SENotImplemented
