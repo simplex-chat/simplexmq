@@ -79,7 +79,23 @@ instance (FromField a, FromField b, FromField c, FromField d, FromField e,
                          <*> field
 {- ORMOLU_ENABLE -}
 
--- * createRcvConn and createSndConn helpers
+-- * Server upsert helper
+
+upsertServer_ :: DB.Connection -> SMPServer -> IO ()
+upsertServer_ dbConn SMPServer {host, port, keyHash} = do
+  let port_ = serializePort_ port
+  DB.executeNamed
+    dbConn
+    [sql|
+      INSERT INTO servers (host, port, key_hash) VALUES (:host,:port,:key_hash)
+      ON CONFLICT (host, port) DO UPDATE SET
+        host=excluded.host,
+        port=excluded.port,
+        key_hash=excluded.key_hash;
+    |]
+    [":host" := host, ":port" := port_, ":key_hash" := keyHash]
+
+-- * createRcvConn helpers
 
 createRcvQueueAndConn :: DB.Connection -> ReceiveQueue -> IO ()
 createRcvQueueAndConn dbConn rcvQueue =
@@ -88,37 +104,17 @@ createRcvQueueAndConn dbConn rcvQueue =
     insertRcvQueue_ dbConn rcvQueue
     insertRcvConnection_ dbConn rcvQueue
 
-createSndQueueAndConn :: DB.Connection -> SendQueue -> IO ()
-createSndQueueAndConn dbConn sndQueue =
-  DB.withTransaction dbConn $ do
-    upsertServer_ dbConn (server (sndQueue :: SendQueue))
-    insertSndQueue_ dbConn sndQueue
-    insertSndConnection_ dbConn sndQueue
-
-upsertServer_ :: DB.Connection -> SMPServer -> IO ()
-upsertServer_ dbConn SMPServer {host, port, keyHash} = do
-  let port_ = serializePort_ port
-  DB.executeNamed
-    dbConn
-    upsertServerQuery_
-    [":host" := host, ":port" := port_, ":key_hash" := keyHash]
-
-upsertServerQuery_ :: Query
-upsertServerQuery_ =
-  [sql|
-    INSERT INTO servers (host, port, key_hash) VALUES (:host,:port,:key_hash)
-    ON CONFLICT (host, port) DO UPDATE SET
-      host=excluded.host,
-      port=excluded.port,
-      key_hash=excluded.key_hash;
-  |]
-
 insertRcvQueue_ :: DB.Connection -> ReceiveQueue -> IO ()
 insertRcvQueue_ dbConn ReceiveQueue {..} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
-    insertRcvQueueQuery_
+    [sql|
+      INSERT INTO rcv_queues
+        ( host, port, rcv_id, conn_alias, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status)
+      VALUES
+        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status);
+    |]
     [ ":host" := host server,
       ":port" := port_,
       ":rcv_id" := rcvId,
@@ -131,40 +127,41 @@ insertRcvQueue_ dbConn ReceiveQueue {..} = do
       ":status" := status
     ]
 
-insertRcvQueueQuery_ :: Query
-insertRcvQueueQuery_ =
-  [sql|
-    INSERT INTO rcv_queues
-      ( host, port, rcv_id, conn_alias, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status)
-    VALUES
-      (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status);
-  |]
-
 insertRcvConnection_ :: DB.Connection -> ReceiveQueue -> IO ()
 insertRcvConnection_ dbConn ReceiveQueue {server, rcvId, connAlias} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
-    insertRcvConnectionQuery_
+    [sql|
+      INSERT INTO connections
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
+          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
+      VALUES
+        (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL,
+                            0,                        0,                        0);
+    |]
     [":conn_alias" := connAlias, ":rcv_host" := host server, ":rcv_port" := port_, ":rcv_id" := rcvId]
 
-insertRcvConnectionQuery_ :: Query
-insertRcvConnectionQuery_ =
-  [sql|
-    INSERT INTO connections
-      ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
-        last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
-    VALUES
-      (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL,
-                           0,                        0,                        0);
-  |]
+-- * createSndConn helpers
+
+createSndQueueAndConn :: DB.Connection -> SendQueue -> IO ()
+createSndQueueAndConn dbConn sndQueue =
+  DB.withTransaction dbConn $ do
+    upsertServer_ dbConn (server (sndQueue :: SendQueue))
+    insertSndQueue_ dbConn sndQueue
+    insertSndConnection_ dbConn sndQueue
 
 insertSndQueue_ :: DB.Connection -> SendQueue -> IO ()
 insertSndQueue_ dbConn SendQueue {..} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
-    insertSndQueueQuery_
+    [sql|
+      INSERT INTO snd_queues
+        ( host, port, snd_id, conn_alias, snd_private_key, encrypt_key, sign_key, status)
+      VALUES
+        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:encrypt_key,:sign_key,:status);
+    |]
     [ ":host" := host server,
       ":port" := port_,
       ":snd_id" := sndId,
@@ -175,33 +172,20 @@ insertSndQueue_ dbConn SendQueue {..} = do
       ":status" := status
     ]
 
-insertSndQueueQuery_ :: Query
-insertSndQueueQuery_ =
-  [sql|
-    INSERT INTO snd_queues
-      ( host, port, snd_id, conn_alias, snd_private_key, encrypt_key, sign_key, status)
-    VALUES
-      (:host,:port,:snd_id,:conn_alias,:snd_private_key,:encrypt_key,:sign_key,:status);
-  |]
-
 insertSndConnection_ :: DB.Connection -> SendQueue -> IO ()
 insertSndConnection_ dbConn SendQueue {server, sndId, connAlias} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
-    insertSndConnectionQuery_
+    [sql|
+      INSERT INTO connections
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
+          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
+      VALUES
+        (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id,
+                            0,                        0,                        0);
+    |]
     [":conn_alias" := connAlias, ":snd_host" := host server, ":snd_port" := port_, ":snd_id" := sndId]
-
-insertSndConnectionQuery_ :: Query
-insertSndConnectionQuery_ =
-  [sql|
-    INSERT INTO connections
-      ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
-        last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
-    VALUES
-      (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id,
-                           0,                        0,                        0);
-  |]
 
 -- * getConn helpers
 
@@ -224,7 +208,14 @@ retrieveRcvQueueByConnAlias_ dbConn connAlias = do
   r <-
     DB.queryNamed
       dbConn
-      retrieveRcvQueueByConnAliasQuery_
+      [sql|
+        SELECT
+          s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
+          q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
+        FROM rcv_queues q
+        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+        WHERE q.conn_alias = :conn_alias;
+      |]
       [":conn_alias" := connAlias]
   case r of
     [(keyHash, host, port, rcvId, cAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
@@ -232,23 +223,19 @@ retrieveRcvQueueByConnAlias_ dbConn connAlias = do
       return . Just $ ReceiveQueue srv rcvId cAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
     _ -> return Nothing
 
-retrieveRcvQueueByConnAliasQuery_ :: Query
-retrieveRcvQueueByConnAliasQuery_ =
-  [sql|
-    SELECT
-      s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
-      q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
-    FROM rcv_queues q
-    INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-    WHERE q.conn_alias = :conn_alias;
-  |]
-
 retrieveSndQueueByConnAlias_ :: DB.Connection -> ConnAlias -> IO (Maybe SendQueue)
 retrieveSndQueueByConnAlias_ dbConn connAlias = do
   r <-
     DB.queryNamed
       dbConn
-      retrieveSndQueueByConnAliasQuery_
+      [sql|
+        SELECT
+          s.key_hash, q.host, q.port, q.snd_id, q.conn_alias,
+          q.snd_private_key, q.encrypt_key, q.sign_key, q.status
+        FROM snd_queues q
+        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+        WHERE q.conn_alias = :conn_alias;
+      |]
       [":conn_alias" := connAlias]
   case r of
     [(keyHash, host, port, sndId, cAlias, sndPrivateKey, encryptKey, signKey, status)] -> do
@@ -256,42 +243,27 @@ retrieveSndQueueByConnAlias_ dbConn connAlias = do
       return . Just $ SendQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
     _ -> return Nothing
 
-retrieveSndQueueByConnAliasQuery_ :: Query
-retrieveSndQueueByConnAliasQuery_ =
-  [sql|
-    SELECT
-      s.key_hash, q.host, q.port, q.snd_id, q.conn_alias,
-      q.snd_private_key, q.encrypt_key, q.sign_key, q.status
-    FROM snd_queues q
-    INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-    WHERE q.conn_alias = :conn_alias;
-  |]
-
--- * getRcvQueue helpers
+-- * getRcvQueue helper
 
 retrieveRcvQueue :: DB.Connection -> HostName -> Maybe ServiceName -> SMP.RecipientId -> IO (Maybe ReceiveQueue)
 retrieveRcvQueue dbConn host port rcvId = do
   r <-
     DB.queryNamed
       dbConn
-      retrieveRcvQueueQuery_
+      [sql|
+        SELECT
+          s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
+          q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
+        FROM rcv_queues q
+        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+        WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
+      |]
       [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
   case r of
     [(keyHash, hst, prt, rId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
       let srv = SMPServer hst (deserializePort_ prt) keyHash
       return . Just $ ReceiveQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
     _ -> return Nothing
-
-retrieveRcvQueueQuery_ :: Query
-retrieveRcvQueueQuery_ =
-  [sql|
-    SELECT
-      s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
-      q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
-    FROM rcv_queues q
-    INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-    WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
-  |]
 
 -- * deleteConn helper
 
@@ -323,16 +295,12 @@ updateConnWithSndQueue_ dbConn connAlias SendQueue {server, sndId} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
-    updateConnWithSndQueueQuery_
+    [sql|
+      UPDATE connections
+      SET snd_host = :snd_host, snd_port = :snd_port, snd_id = :snd_id
+      WHERE conn_alias = :conn_alias;
+    |]
     [":snd_host" := host server, ":snd_port" := port_, ":snd_id" := sndId, ":conn_alias" := connAlias]
-
-updateConnWithSndQueueQuery_ :: Query
-updateConnWithSndQueueQuery_ =
-  [sql|
-    UPDATE connections
-    SET snd_host = :snd_host, snd_port = :snd_port, snd_id = :snd_id
-    WHERE conn_alias = :conn_alias;
-  |]
 
 -- * upgradeSndConnToDuplex helpers
 
@@ -355,52 +323,40 @@ updateConnWithRcvQueue_ dbConn connAlias ReceiveQueue {server, rcvId} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
-    updateConnWithRcvQueueQuery_
+    [sql|
+      UPDATE connections
+      SET rcv_host = :rcv_host, rcv_port = :rcv_port, rcv_id = :rcv_id
+      WHERE conn_alias = :conn_alias;
+    |]
     [":rcv_host" := host server, ":rcv_port" := port_, ":rcv_id" := rcvId, ":conn_alias" := connAlias]
 
-updateConnWithRcvQueueQuery_ :: Query
-updateConnWithRcvQueueQuery_ =
-  [sql|
-    UPDATE connections
-    SET rcv_host = :rcv_host, rcv_port = :rcv_port, rcv_id = :rcv_id
-    WHERE conn_alias = :conn_alias;
-  |]
-
--- * setRcvQueueStatus helpers
+-- * setRcvQueueStatus helper
 
 -- ? throw error if queue doesn't exist?
 updateRcvQueueStatus :: DB.Connection -> ReceiveQueue -> QueueStatus -> IO ()
 updateRcvQueueStatus dbConn ReceiveQueue {rcvId, server = SMPServer {host, port}} status =
   DB.executeNamed
     dbConn
-    updateRcvQueueStatusQuery_
+    [sql|
+      UPDATE rcv_queues
+      SET status = :status
+      WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
+    |]
     [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
 
-updateRcvQueueStatusQuery_ :: Query
-updateRcvQueueStatusQuery_ =
-  [sql|
-    UPDATE rcv_queues
-    SET status = :status
-    WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
-  |]
-
--- * setSndQueueStatus helpers
+-- * setSndQueueStatus helper
 
 -- ? throw error if queue doesn't exist?
 updateSndQueueStatus :: DB.Connection -> SendQueue -> QueueStatus -> IO ()
 updateSndQueueStatus dbConn SendQueue {sndId, server = SMPServer {host, port}} status =
   DB.executeNamed
     dbConn
-    updateSndQueueStatusQuery_
+    [sql|
+      UPDATE snd_queues
+      SET status = :status
+      WHERE host = :host AND port = :port AND snd_id = :snd_id;
+    |]
     [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
-
-updateSndQueueStatusQuery_ :: Query
-updateSndQueueStatusQuery_ =
-  [sql|
-    UPDATE snd_queues
-    SET status = :status
-    WHERE host = :host AND port = :port AND snd_id = :snd_id;
-  |]
 
 -- * createRcvMsg helpers
 
