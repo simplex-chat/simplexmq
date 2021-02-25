@@ -145,7 +145,7 @@ withLogSMP c srv qId cmdStr action = do
   logServer "<--" c srv qId "OK"
   return res
 
-newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (ReceiveQueue, SMPQueueInfo)
+newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
@@ -154,7 +154,7 @@ newReceiveQueue c srv connAlias = do
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
   (encryptKey, decryptKey) <- liftIO $ C.generateKeyPair size
   let rq =
-        ReceiveQueue
+        RcvQueue
           { server = srv,
             rcvId,
             connAlias,
@@ -168,14 +168,14 @@ newReceiveQueue c srv connAlias = do
   addSubscription c rq connAlias
   return (rq, SMPQueueInfo srv sId encryptKey)
 
-subscribeQueue :: AgentMonad m => AgentClient -> ReceiveQueue -> ConnAlias -> m ()
-subscribeQueue c rq@ReceiveQueue {server, rcvPrivateKey, rcvId} connAlias = do
+subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnAlias -> m ()
+subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connAlias = do
   withLogSMP c server rcvId "SUB" $ \smp ->
     subscribeSMPQueue smp rcvPrivateKey rcvId
   addSubscription c rq connAlias
 
-addSubscription :: MonadUnliftIO m => AgentClient -> ReceiveQueue -> ConnAlias -> m ()
-addSubscription c ReceiveQueue {server} connAlias = atomically $ do
+addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnAlias -> m ()
+addSubscription c RcvQueue {server} connAlias = atomically $ do
   modifyTVar (subscrConns c) $ M.insert connAlias server
   modifyTVar (subscrSrvrs c) $ M.alter (Just . addSub) server
   where
@@ -206,8 +206,8 @@ showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SendQueue -> SenderPublicKey -> m ()
-sendConfirmation c SendQueue {server, sndId, encryptKey} senderKey = do
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> m ()
+sendConfirmation c SndQueue {server, sndId, encryptKey} senderKey = do
   msg <- mkConfirmation
   withLogSMP c server sndId "SEND <KEY>" $ \smp ->
     sendSMPMessage smp Nothing sndId msg
@@ -217,8 +217,8 @@ sendConfirmation c SendQueue {server, sndId, encryptKey} senderKey = do
       let msg = serializeSMPMessage $ SMPConfirmation senderKey
       liftError CRYPTO $ C.encrypt encryptKey msg
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SendQueue -> VerificationKey -> m ()
-sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
+sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
+sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
   msg <- mkHello $ AckMode On
   withLogSMP c server sndId "SEND <HELLO> (retrying)" $
     send 20 msg
@@ -235,28 +235,28 @@ sendHello c SendQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
           send (retry - 1) msg smp
         e -> throwE e
 
-secureQueue :: AgentMonad m => AgentClient -> ReceiveQueue -> SenderPublicKey -> m ()
-secureQueue c ReceiveQueue {server, rcvId, rcvPrivateKey} senderKey =
+secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
+secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
   withLogSMP c server rcvId "KEY <key>" $ \smp ->
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
 
-sendAck :: AgentMonad m => AgentClient -> ReceiveQueue -> m ()
-sendAck c ReceiveQueue {server, rcvId, rcvPrivateKey} =
+sendAck :: AgentMonad m => AgentClient -> RcvQueue -> m ()
+sendAck c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "ACK" $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId
 
-suspendQueue :: AgentMonad m => AgentClient -> ReceiveQueue -> m ()
-suspendQueue c ReceiveQueue {server, rcvId, rcvPrivateKey} =
+suspendQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
+suspendQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "OFF" $ \smp ->
     suspendSMPQueue smp rcvPrivateKey rcvId
 
-deleteQueue :: AgentMonad m => AgentClient -> ReceiveQueue -> m ()
-deleteQueue c ReceiveQueue {server, rcvId, rcvPrivateKey} =
+deleteQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
+deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
-sendAgentMessage :: AgentMonad m => AgentClient -> SendQueue -> AMessage -> m ()
-sendAgentMessage c SendQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg = do
+sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> AMessage -> m ()
+sendAgentMessage c SndQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg = do
   msg <- mkAgentMessage encryptKey agentMsg
   withLogSMP c server sndId "SEND <message>" $ \smp ->
     sendSMPMessage smp (Just sndPrivateKey) sndId msg

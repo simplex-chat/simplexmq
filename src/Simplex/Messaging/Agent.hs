@@ -147,8 +147,9 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     subscribeConnection =
       withStore (`getConn` connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
-        SomeConn _ (ReceiveConnection _ rq) -> subscribe rq
-        -- TODO possibly there should be a separate error type trying to send the message to the connection without ReceiveQueue
+        SomeConn _ (RcvConnection _ rq) -> subscribe rq
+        -- TODO possibly there should be a separate error type trying
+        -- TODO to send the message to the connection without RcvQueue
         _ -> throwError PROHIBITED
       where
         subscribe rq = subscribeQueue c rq connAlias >> respond OK
@@ -157,8 +158,9 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     sendMessage msgBody =
       withStore (`getConn` connAlias) >>= \case
         SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
-        SomeConn _ (SendConnection _ sq) -> sendMsg sq
-        -- TODO possibly there should be a separate error type trying to send the message to the connection without SendQueue
+        SomeConn _ (SndConnection _ sq) -> sendMsg sq
+        -- TODO possibly there should be a separate error type trying
+        -- TODO to send the message to the connection without SndQueue
         _ -> throwError PROHIBITED -- NOT_READY ?
       where
         sendMsg sq = do
@@ -171,7 +173,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     suspendConnection =
       withStore (`getConn` connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> suspend rq
-        SomeConn _ (ReceiveConnection _ rq) -> suspend rq
+        SomeConn _ (RcvConnection _ rq) -> suspend rq
         _ -> throwError PROHIBITED
       where
         suspend rq = suspendQueue c rq >> respond OK
@@ -180,7 +182,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     deleteConnection =
       withStore (`getConn` connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> delete rq
-        SomeConn _ (ReceiveConnection _ rq) -> delete rq
+        SomeConn _ (RcvConnection _ rq) -> delete rq
         _ -> throwError PROHIBITED
       where
         delete rq = do
@@ -189,7 +191,7 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
           withStore (`deleteConn` connAlias)
           respond OK
 
-    sendReplyQInfo :: SMPServer -> SendQueue -> m ()
+    sendReplyQInfo :: SMPServer -> SndQueue -> m ()
     sendReplyQInfo srv sq = do
       (rq, qInfo) <- newReceiveQueue c srv connAlias
       withStore $ \st -> upgradeSndConnToDuplex st connAlias rq
@@ -208,7 +210,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTransmission -> m ()
 processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
-  rq@ReceiveQueue {connAlias, decryptKey, status} <- withStore $ \st -> getRcvQueue st srv rId
+  rq@RcvQueue {connAlias, decryptKey, status} <- withStore $ \st -> getRcvQueue st srv rId
   case cmd of
     SMP.MSG srvMsgId srvTs msgBody -> do
       -- TODO deduplicate with previously received
@@ -239,7 +241,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
               sendAck c rq
             REPLY qInfo -> do
               logServer "<--" c srv rId "MSG <REPLY>"
-              -- TODO move senderKey inside SendQueue
+              -- TODO move senderKey inside SndQueue
               (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
               withStore $ \st -> upgradeRcvConnToDuplex st connAlias sq
               connectToSendQueue c sq senderKey verifyKey
@@ -274,7 +276,7 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
 
-connectToSendQueue :: AgentMonad m => AgentClient -> SendQueue -> SenderPublicKey -> VerificationKey -> m ()
+connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> m ()
 connectToSendQueue c sq senderKey verifyKey = do
   sendConfirmation c sq senderKey
   withStore $ \st -> setSndQueueStatus st sq Confirmed
@@ -285,13 +287,13 @@ decryptMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => DecryptionKe
 decryptMessage decryptKey msg = liftError CRYPTO $ C.decrypt decryptKey msg
 
 newSendQueue ::
-  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SendQueue, SenderPublicKey, VerificationKey)
+  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SndQueue, SenderPublicKey, VerificationKey)
 newSendQueue (SMPQueueInfo smpServer senderId encryptKey) connAlias = do
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size
   (verifyKey, signKey) <- liftIO $ C.generateKeyPair size
   let sndQueue =
-        SendQueue
+        SndQueue
           { server = smpServer,
             sndId = senderId,
             connAlias,

@@ -53,23 +53,23 @@ storeTests = withStore do
     describe "createSndConn" testCreateSndConn
     describe "getRcvQueue" testGetRcvQueue
     describe "deleteConn" do
-      describe "rcv" testDeleteRcvConn
-      describe "snd" testDeleteSndConn
-      describe "duplex" testDeleteDuplexConn
+      describe "RcvConnection" testDeleteRcvConn
+      describe "SndConnection" testDeleteSndConn
+      describe "DuplexConnection" testDeleteDuplexConn
     describe "upgradeRcvConnToDuplex" testUpgradeRcvConnToDuplex
     describe "upgradeSndConnToDuplex" testUpgradeSndConnToDuplex
     describe "set queue status" do
       describe "setRcvQueueStatus" testSetRcvQueueStatus
       describe "setSndQueueStatus" testSetSndQueueStatus
-      describe "duplex connection" testSetQueueStatusDuplex
-      xdescribe "rcv queue doesn't exist" testSetRcvQueueStatusNoQueue
-      xdescribe "snd queue doesn't exist" testSetSndQueueStatusNoQueue
+      describe "DuplexConnection" testSetQueueStatusDuplex
+      xdescribe "RcvQueue doesn't exist" testSetRcvQueueStatusNoQueue
+      xdescribe "SndQueue doesn't exist" testSetSndQueueStatusNoQueue
     describe "createRcvMsg" do
-      describe "rcv queue exists" testCreateRcvMsg
-      describe "rcv queue doesn't exist" testCreateRcvMsgNoQueue
+      describe "RcvQueue exists" testCreateRcvMsg
+      describe "RcvQueue doesn't exist" testCreateRcvMsgNoQueue
     describe "createSndMsg" do
-      describe "snd queue exists" testCreateSndMsg
-      describe "snd queue doesn't exist" testCreateSndMsgNoQueue
+      describe "SndQueue exists" testCreateSndMsg
+      describe "SndQueue doesn't exist" testCreateSndMsgNoQueue
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
 testForeignKeysEnabled = do
@@ -84,9 +84,9 @@ testForeignKeysEnabled = do
     DB.execute_ (dbConn store) inconsistentQuery
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
-rcvQueue1 :: ReceiveQueue
+rcvQueue1 :: RcvQueue
 rcvQueue1 =
-  ReceiveQueue
+  RcvQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
       rcvId = "1234",
       connAlias = "conn1",
@@ -98,9 +98,9 @@ rcvQueue1 =
       status = New
     }
 
-sndQueue1 :: SendQueue
+sndQueue1 :: SndQueue
 sndQueue1 =
-  SendQueue
+  SndQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
       sndId = "3456",
       connAlias = "conn1",
@@ -112,11 +112,11 @@ sndQueue1 =
 
 testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn = do
-  it "should create receive connection and add send queue" $ \store -> do
+  it "should create RcvConnection and add SndQueue" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue1)
+      `returnsResult` SomeConn SCRcv (RcvConnection "conn1" rcvQueue1)
     upgradeRcvConnToDuplex store "conn1" sndQueue1
       `returnsResult` ()
     getConn store "conn1"
@@ -124,11 +124,11 @@ testCreateRcvConn = do
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
-  it "should create send connection and add receive queue" $ \store -> do
+  it "should create SndConnection and add RcvQueue" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1)
+      `returnsResult` SomeConn SCSnd (SndConnection "conn1" sndQueue1)
     upgradeSndConnToDuplex store "conn1" rcvQueue1
       `returnsResult` ()
     getConn store "conn1"
@@ -136,7 +136,7 @@ testCreateSndConn = do
 
 testGetRcvQueue :: SpecWith SQLiteStore
 testGetRcvQueue = do
-  it "should get receive queue" $ \store -> do
+  it "should get RcvQueue" $ \store -> do
     let smpServer = SMPServer "smp.simplex.im" (Just "5223") (Just "1234")
     let recipientId = "1234"
     createRcvConn store rcvQueue1
@@ -146,11 +146,11 @@ testGetRcvQueue = do
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn = do
-  it "should create receive connection and delete it" $ \store -> do
+  it "should create RcvConnection and delete it" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue1)
+      `returnsResult` SomeConn SCRcv (RcvConnection "conn1" rcvQueue1)
     deleteConn store "conn1"
       `returnsResult` ()
     -- TODO check queues are deleted as well
@@ -159,11 +159,11 @@ testDeleteRcvConn = do
 
 testDeleteSndConn :: SpecWith SQLiteStore
 testDeleteSndConn = do
-  it "should create send connection and delete it" $ \store -> do
+  it "should create SndConnection and delete it" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1)
+      `returnsResult` SomeConn SCSnd (SndConnection "conn1" sndQueue1)
     deleteConn store "conn1"
       `returnsResult` ()
     -- TODO check queues are deleted as well
@@ -172,7 +172,7 @@ testDeleteSndConn = do
 
 testDeleteDuplexConn :: SpecWith SQLiteStore
 testDeleteDuplexConn = do
-  it "should create duplex connection and delete it" $ \store -> do
+  it "should create DuplexConnection and delete it" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     upgradeRcvConnToDuplex store "conn1" sndQueue1
@@ -187,11 +187,11 @@ testDeleteDuplexConn = do
 
 testUpgradeRcvConnToDuplex :: SpecWith SQLiteStore
 testUpgradeRcvConnToDuplex = do
-  it "should throw error on attempts to add send queue to SendConnection or DuplexConnection" $ \store -> do
+  it "should throw error on attempt to add SndQueue to SndConnection or DuplexConnection" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
     let anotherSndQueue =
-          SendQueue
+          SndQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
               sndId = "2345",
               connAlias = "conn1",
@@ -201,7 +201,7 @@ testUpgradeRcvConnToDuplex = do
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
-      `throwsError` SEBadConnType CSend
+      `throwsError` SEBadConnType CSnd
     upgradeSndConnToDuplex store "conn1" rcvQueue1
       `returnsResult` ()
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
@@ -209,11 +209,11 @@ testUpgradeRcvConnToDuplex = do
 
 testUpgradeSndConnToDuplex :: SpecWith SQLiteStore
 testUpgradeSndConnToDuplex = do
-  it "should throw error on attempts to add receive queue to ReceiveConnection or DuplexConnection" $ \store -> do
+  it "should throw error on attempt to add RcvQueue to RcvConnection or DuplexConnection" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     let anotherRcvQueue =
-          ReceiveQueue
+          RcvQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") (Just "1234"),
               rcvId = "3456",
               connAlias = "conn1",
@@ -225,7 +225,7 @@ testUpgradeSndConnToDuplex = do
               status = New
             }
     upgradeSndConnToDuplex store "conn1" anotherRcvQueue
-      `throwsError` SEBadConnType CReceive
+      `throwsError` SEBadConnType CRcv
     upgradeRcvConnToDuplex store "conn1" sndQueue1
       `returnsResult` ()
     upgradeSndConnToDuplex store "conn1" anotherRcvQueue
@@ -233,31 +233,31 @@ testUpgradeSndConnToDuplex = do
 
 testSetRcvQueueStatus :: SpecWith SQLiteStore
 testSetRcvQueueStatus = do
-  it "should update status of receive queue" $ \store -> do
+  it "should update status of RcvQueue" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue1)
+      `returnsResult` SomeConn SCRcv (RcvConnection "conn1" rcvQueue1)
     setRcvQueueStatus store rcvQueue1 Confirmed
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCReceive (ReceiveConnection "conn1" rcvQueue1 {status = Confirmed})
+      `returnsResult` SomeConn SCRcv (RcvConnection "conn1" rcvQueue1 {status = Confirmed})
 
 testSetSndQueueStatus :: SpecWith SQLiteStore
 testSetSndQueueStatus = do
-  it "should update status of send queue" $ \store -> do
+  it "should update status of SndQueue" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1)
+      `returnsResult` SomeConn SCSnd (SndConnection "conn1" sndQueue1)
     setSndQueueStatus store sndQueue1 Confirmed
       `returnsResult` ()
     getConn store "conn1"
-      `returnsResult` SomeConn SCSend (SendConnection "conn1" sndQueue1 {status = Confirmed})
+      `returnsResult` SomeConn SCSnd (SndConnection "conn1" sndQueue1 {status = Confirmed})
 
 testSetQueueStatusDuplex :: SpecWith SQLiteStore
 testSetQueueStatusDuplex = do
-  it "should update statuses of receive and send queues in duplex connection" $ \store -> do
+  it "should update statuses of RcvQueue and SndQueue in DuplexConnection" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     upgradeRcvConnToDuplex store "conn1" sndQueue1
@@ -278,19 +278,19 @@ testSetQueueStatusDuplex = do
 
 testSetRcvQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetRcvQueueStatusNoQueue = do
-  it "should throw error on attempt to update status of nonexistent receive queue" $ \store -> do
+  it "should throw error on attempt to update status of nonexistent RcvQueue" $ \store -> do
     setRcvQueueStatus store rcvQueue1 Confirmed
       `throwsError` SEInternal
 
 testSetSndQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetSndQueueStatusNoQueue = do
-  it "should throw error on attempt to update status of nonexistent send queue" $ \store -> do
+  it "should throw error on attempt to update status of nonexistent SndQueue" $ \store -> do
     setSndQueueStatus store sndQueue1 Confirmed
       `throwsError` SEInternal
 
 testCreateRcvMsg :: SpecWith SQLiteStore
 testCreateRcvMsg = do
-  it "should create a rcv message" $ \store -> do
+  it "should create a RcvMsg" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     -- TODO getMsg to check message
@@ -300,18 +300,18 @@ testCreateRcvMsg = do
 
 testCreateRcvMsgNoQueue :: SpecWith SQLiteStore
 testCreateRcvMsgNoQueue = do
-  it "should throw error on attempt to create a rcv message w/t a rcv queue" $ \store -> do
+  it "should throw error on attempt to create a RcvMsg w/t a RcvQueue" $ \store -> do
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
     createRcvMsg store "conn1" (encodeUtf8 "Hello world!") 1 ts "1" ts
       `throwsError` SEBadConn
     createSndConn store sndQueue1
       `returnsResult` ()
     createRcvMsg store "conn1" (encodeUtf8 "Hello world!") 1 ts "1" ts
-      `throwsError` SEBadConnType CSend
+      `throwsError` SEBadConnType CSnd
 
 testCreateSndMsg :: SpecWith SQLiteStore
 testCreateSndMsg = do
-  it "should create a snd message" $ \store -> do
+  it "should create a SndMsg" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
     -- TODO getMsg to check message
@@ -320,10 +320,10 @@ testCreateSndMsg = do
 
 testCreateSndMsgNoQueue :: SpecWith SQLiteStore
 testCreateSndMsgNoQueue = do
-  it "should throw error on attempt to create a snd message w/t a snd queue" $ \store -> do
+  it "should throw error on attempt to create a SndMsg w/t a SndQueue" $ \store -> do
     createSndMsg store "conn1" (encodeUtf8 "Hello world!")
       `throwsError` SEBadConn
     createRcvConn store rcvQueue1
       `returnsResult` ()
     createSndMsg store "conn1" (encodeUtf8 "Hello world!")
-      `throwsError` SEBadConnType CReceive
+      `throwsError` SEBadConnType CRcv
