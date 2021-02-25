@@ -29,15 +29,15 @@ import Simplex.Messaging.Types
 -- | Store class type. Defines store access methods for implementations.
 class Monad m => MonadAgentStore s m where
   -- Queue and Connection management
-  createRcvConn :: s -> ReceiveQueue -> m ()
-  createSndConn :: s -> SendQueue -> m ()
+  createRcvConn :: s -> RcvQueue -> m ()
+  createSndConn :: s -> SndQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
-  getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m ReceiveQueue
+  getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m RcvQueue
   deleteConn :: s -> ConnAlias -> m ()
-  upgradeRcvConnToDuplex :: s -> ConnAlias -> SendQueue -> m ()
-  upgradeSndConnToDuplex :: s -> ConnAlias -> ReceiveQueue -> m ()
-  setRcvQueueStatus :: s -> ReceiveQueue -> QueueStatus -> m ()
-  setSndQueueStatus :: s -> SendQueue -> QueueStatus -> m ()
+  upgradeRcvConnToDuplex :: s -> ConnAlias -> SndQueue -> m ()
+  upgradeSndConnToDuplex :: s -> ConnAlias -> RcvQueue -> m ()
+  setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
+  setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
   createRcvMsg :: s -> ConnAlias -> MsgBody -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m ()
@@ -47,7 +47,7 @@ class Monad m => MonadAgentStore s m where
 -- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
-data ReceiveQueue = ReceiveQueue
+data RcvQueue = RcvQueue
   { server :: SMPServer,
     rcvId :: SMP.RecipientId,
     connAlias :: ConnAlias,
@@ -61,7 +61,7 @@ data ReceiveQueue = ReceiveQueue
   deriving (Eq, Show)
 
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
-data SendQueue = SendQueue
+data SndQueue = SndQueue
   { server :: SMPServer,
     sndId :: SMP.SenderId,
     connAlias :: ConnAlias,
@@ -75,30 +75,30 @@ data SendQueue = SendQueue
 -- * Connection types
 
 -- | Type of a connection.
-data ConnType = CReceive | CSend | CDuplex deriving (Eq, Show)
+data ConnType = CRcv | CSnd | CDuplex deriving (Eq, Show)
 
 -- | Connection of a specific type.
 --
--- - ReceiveConnection is a connection that only has a receive queue set up,
+-- - RcvConnection is a connection that only has a receive queue set up,
 --   typically created by a recipient initiating a duplex connection.
 --
--- - SendConnection is a connection that only has a send queue set up, typically
+-- - SndConnection is a connection that only has a send queue set up, typically
 --   created by a sender joining a duplex connection through a recipient's invitation.
 --
 -- - DuplexConnection is a connection that has both receive and send queues set up,
 --   typically created by upgrading a receive or a send connection with a missing queue.
 data Connection (d :: ConnType) where
-  ReceiveConnection :: ConnAlias -> ReceiveQueue -> Connection CReceive
-  SendConnection :: ConnAlias -> SendQueue -> Connection CSend
-  DuplexConnection :: ConnAlias -> ReceiveQueue -> SendQueue -> Connection CDuplex
+  RcvConnection :: ConnAlias -> RcvQueue -> Connection CRcv
+  SndConnection :: ConnAlias -> SndQueue -> Connection CSnd
+  DuplexConnection :: ConnAlias -> RcvQueue -> SndQueue -> Connection CDuplex
 
 deriving instance Eq (Connection d)
 
 deriving instance Show (Connection d)
 
 data SConnType :: ConnType -> Type where
-  SCReceive :: SConnType CReceive
-  SCSend :: SConnType CSend
+  SCRcv :: SConnType CRcv
+  SCSnd :: SConnType CSnd
   SCDuplex :: SConnType CDuplex
 
 deriving instance Eq (SConnType d)
@@ -106,8 +106,8 @@ deriving instance Eq (SConnType d)
 deriving instance Show (SConnType d)
 
 instance TestEquality SConnType where
-  testEquality SCReceive SCReceive = Just Refl
-  testEquality SCSend SCSend = Just Refl
+  testEquality SCRcv SCRcv = Just Refl
+  testEquality SCSnd SCSnd = Just Refl
   testEquality SCDuplex SCDuplex = Just Refl
   testEquality _ _ = Nothing
 
@@ -137,7 +137,7 @@ data RcvMsg = RcvMsg
     externalSndTs :: ExternalSndTs,
     brokerId :: BrokerId,
     brokerTs :: BrokerTs,
-    rcvStatus :: RcvStatus,
+    rcvMsgStatus :: RcvMsgStatus,
     -- | Timestamp of acknowledgement to broker, corresponds to `AcknowledgedToBroker` status.
     -- Do not mix up with `brokerTs` - timestamp created at broker after it receives the message from sender.
     ackBrokerTs :: AckBrokerTs,
@@ -158,7 +158,7 @@ type BrokerId = MsgId
 
 type BrokerTs = UTCTime
 
-data RcvStatus
+data RcvMsgStatus
   = Received
   | AcknowledgedToBroker
   | AcknowledgedToSender
@@ -173,7 +173,7 @@ data SndMsg = SndMsg
   { msgBase :: MsgBase,
     -- | Id of the message sent / to be sent, as in its number in order of sending.
     internalSndId :: InternalSndId,
-    sndStatus :: SndStatus,
+    sndMsgStatus :: SndMsgStatus,
     -- | Timestamp of the message received by broker, corresponds to `Sent` status.
     sentTs :: SentTs,
     -- | Timestamp of the message received by recipient, corresponds to `Delivered` status.
@@ -183,7 +183,7 @@ data SndMsg = SndMsg
 
 type InternalSndId = Int64
 
-data SndStatus
+data SndMsgStatus
   = Created
   | Sent
   | Delivered
@@ -210,6 +210,7 @@ type InternalTs = UTCTime
 
 -- * Store errors
 
+-- TODO revise
 data StoreError
   = SEInternal
   | SENotFound
