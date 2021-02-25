@@ -130,7 +130,7 @@ data Msg = MRcv RcvMsg | MSnd SndMsg
 
 -- | A message received by the agent from a sender.
 data RcvMsg = RcvMsg
-  { baseData :: MsgBase,
+  { msgBase :: MsgBase,
     internalRcvId :: InternalRcvId,
     -- | Id of the message at sender, corresponds to `internalSndId` from the sender's side.
     externalSndId :: ExternalSndId,
@@ -170,7 +170,7 @@ type AckSenderTs = UTCTime
 
 -- | A message sent by the agent to a recipient.
 data SndMsg = SndMsg
-  { baseData :: MsgBase,
+  { msgBase :: MsgBase,
     -- | Id of the message sent / to be sent, as in its number in order of sending.
     internalSndId :: InternalSndId,
     sndStatus :: SndStatus,
