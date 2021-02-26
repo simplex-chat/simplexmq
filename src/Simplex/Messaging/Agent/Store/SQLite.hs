@@ -22,7 +22,6 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
-import Data.Time (getCurrentTime)
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
@@ -108,15 +107,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m ()
-  createRcvMsg SQLiteStore {dbConn} connAlias msgBody externalSndId externalSndTs brokerId brokerTs =
+  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m InternalId
+  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs =
     liftIOEither $
-      insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId brokerTs
+      insertRcvMsg dbConn connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs
 
-  createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> m ()
-  createSndMsg SQLiteStore {dbConn} connAlias msgBody =
+  createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
+  createSndMsg SQLiteStore {dbConn} connAlias msgBody internalTs =
     liftIOEither $
-      insertSndMsg dbConn connAlias msgBody
+      insertSndMsg dbConn connAlias msgBody internalTs
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
@@ -444,12 +443,13 @@ insertRcvMsg ::
   DB.Connection ->
   ConnAlias ->
   MsgBody ->
+  InternalTs ->
   ExternalSndId ->
   ExternalSndTs ->
   BrokerId ->
   BrokerTs ->
-  IO (Either StoreError ())
-insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId brokerTs =
+  IO (Either StoreError InternalId)
+insertRcvMsg dbConn connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
@@ -457,10 +457,10 @@ insertRcvMsg dbConn connAlias msgBody externalSndId externalSndTs brokerId broke
         (lastInternalId, lastInternalRcvId) <- retrieveLastInternalIdsRcv_ dbConn connAlias
         let internalId = lastInternalId + 1
         let internalRcvId = lastInternalRcvId + 1
-        insertRcvMsgBase_ dbConn connAlias internalId internalRcvId msgBody
+        insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
         insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs
         updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
-        return $ Right ()
+        return $ Right internalId
       (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
       _ -> return $ Left SEBadConn
 
@@ -477,9 +477,8 @@ retrieveLastInternalIdsRcv_ dbConn connAlias = do
       [":conn_alias" := connAlias]
   return (lastInternalId, lastInternalRcvId)
 
-insertRcvMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalRcvId -> MsgBody -> IO ()
-insertRcvMsgBase_ dbConn connAlias internalId internalRcvId msgBody = do
-  internalTs <- liftIO getCurrentTime
+insertRcvMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalTs -> InternalRcvId -> MsgBody -> IO ()
+insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody = do
   DB.executeNamed
     dbConn
     [sql|
@@ -542,8 +541,8 @@ updateLastInternalIdsRcv_ dbConn connAlias newInternalId newInternalRcvId =
 
 -- * createSndMsg helpers
 
-insertSndMsg :: DB.Connection -> ConnAlias -> MsgBody -> IO (Either StoreError ())
-insertSndMsg dbConn connAlias msgBody =
+insertSndMsg :: DB.Connection -> ConnAlias -> MsgBody -> InternalTs -> IO (Either StoreError InternalId)
+insertSndMsg dbConn connAlias msgBody internalTs =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
@@ -551,10 +550,10 @@ insertSndMsg dbConn connAlias msgBody =
         (lastInternalId, lastInternalSndId) <- retrieveLastInternalIdsSnd_ dbConn connAlias
         let internalId = lastInternalId + 1
         let internalSndId = lastInternalSndId + 1
-        insertSndMsgBase_ dbConn connAlias internalId internalSndId msgBody
+        insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
         insertSndMsgDetails_ dbConn connAlias internalSndId internalId
         updateLastInternalIdsSnd_ dbConn connAlias internalId internalSndId
-        return $ Right ()
+        return $ Right internalId
       (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
       _ -> return $ Left SEBadConn
 
@@ -571,9 +570,8 @@ retrieveLastInternalIdsSnd_ dbConn connAlias = do
       [":conn_alias" := connAlias]
   return (lastInternalId, lastInternalSndId)
 
-insertSndMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalSndId -> MsgBody -> IO ()
-insertSndMsgBase_ dbConn connAlias internalId internalSndId msgBody = do
-  internalTs <- liftIO getCurrentTime
+insertSndMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalTs -> InternalSndId -> MsgBody -> IO ()
+insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody = do
   DB.executeNamed
     dbConn
     [sql|

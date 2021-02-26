@@ -290,23 +290,23 @@ testSetSndQueueStatusNoQueue = do
 
 testCreateRcvMsg :: SpecWith SQLiteStore
 testCreateRcvMsg = do
-  it "should create a RcvMsg" $ \store -> do
+  it "should create a RcvMsg and return InternalId" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     -- TODO getMsg to check message
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") 1 ts "1" ts
-      `returnsResult` ()
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
+      `returnsResult` (1 :: InternalId)
 
 testCreateRcvMsgNoQueue :: SpecWith SQLiteStore
 testCreateRcvMsgNoQueue = do
   it "should throw error on attempt to create a RcvMsg w/t a RcvQueue" $ \store -> do
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
       `throwsError` SEBadConn
     createSndConn store sndQueue1
       `returnsResult` ()
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
       `throwsError` SEBadConnType CSnd
 
 testCreateSndMsg :: SpecWith SQLiteStore
@@ -315,15 +315,17 @@ testCreateSndMsg = do
     createSndConn store sndQueue1
       `returnsResult` ()
     -- TODO getMsg to check message
-    createSndMsg store "conn1" (encodeUtf8 "Hello world!")
-      `returnsResult` ()
+    let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
+    createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
+      `returnsResult` (1 :: InternalId)
 
 testCreateSndMsgNoQueue :: SpecWith SQLiteStore
 testCreateSndMsgNoQueue = do
   it "should throw error on attempt to create a SndMsg w/t a SndQueue" $ \store -> do
-    createSndMsg store "conn1" (encodeUtf8 "Hello world!")
+    let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
+    createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
       `throwsError` SEBadConn
     createRcvConn store rcvQueue1
       `returnsResult` ()
-    createSndMsg store "conn1" (encodeUtf8 "Hello world!")
+    createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
       `throwsError` SEBadConnType CRcv

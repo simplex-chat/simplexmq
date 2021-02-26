@@ -164,10 +164,11 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         _ -> throwError PROHIBITED -- NOT_READY ?
       where
         sendMsg sq = do
-          withStore $ \st -> createSndMsg st connAlias msgBody
+          senderTs <- liftIO getCurrentTime
+          senderId <- withStore $ \st -> createSndMsg st connAlias msgBody senderTs
           sendAgentMessage c sq $ A_MSG msgBody
-          -- TODO respond $ SENT aMsgId
-          respond $ SENT 0
+          -- ? change AgentMsgId to Int?
+          respond $ SENT (toInteger senderId)
 
     suspendConnection :: m ()
     suspendConnection =
@@ -250,17 +251,22 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
             A_MSG body -> do
               logServer "<--" c srv rId "MSG <MSG>"
               -- TODO check message status
-              withStore $ \st -> createRcvMsg st connAlias body senderMsgId senderTimestamp srvMsgId srvTs
-              -- TODO either:
-              -- TODO   - pass MSG{.., msg = generatedRcvMsg} to notify,
-              -- TODO   - retrieve internalTs from generatedRcvMsg,
-              -- TODO   - pass recipientTs to createRcvMsg (second cleanest),
-              -- TODO   - remove m_recipient from MSG (might be the cleanest?).
               recipientTs <- liftIO getCurrentTime
+              recipientId <- withStore $ \st ->
+                createRcvMsg
+                  st
+                  connAlias
+                  body
+                  recipientTs
+                  senderMsgId
+                  senderTimestamp
+                  srvMsgId
+                  srvTs
               notify connAlias $
                 MSG
                   { m_status = MsgOk,
-                    m_recipient = (0, recipientTs),
+                    -- ? change AgentMsgId to Int?
+                    m_recipient = (toInteger recipientId, recipientTs),
                     m_sender = (senderMsgId, senderTimestamp),
                     m_broker = (srvMsgId, srvTs),
                     m_body = body
