@@ -311,7 +311,7 @@ testCreateRcvMsgNoQueue = do
 
 testCreateSndMsg :: SpecWith SQLiteStore
 testCreateSndMsg = do
-  it "should create a SndMsg" $ \store -> do
+  it "should create a SndMsg and return InternalId" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
     -- TODO getMsg to check message
