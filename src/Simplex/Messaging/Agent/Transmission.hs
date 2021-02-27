@@ -89,7 +89,7 @@ data ACommand (p :: AParty) where
   MSG ::
     { m_recipient :: (AgentMsgId, UTCTime),
       m_broker :: (ST.MsgId, UTCTime),
-      m_sender :: (SenderAgentMsgId, UTCTime),
+      m_sender :: (AgentMsgId, UTCTime),
       m_status :: MsgStatus,
       m_body :: MsgBody
     } ->
@@ -110,8 +110,8 @@ type Message = ByteString
 data SMPMessage
   = SMPConfirmation SenderPublicKey
   | SMPMessage
-      { senderMsgId :: Integer,
-        senderTimestamp :: UTCTime,
+      { senderMsgId :: AgentMsgId,
+        senderTimestamp :: SenderTimestamp,
         previousMsgHash :: ByteString,
         agentMessage :: AMessage
       }
@@ -231,8 +231,6 @@ data QueueStatus = New | Confirmed | Secured | Active | Disabled
   deriving (Eq, Show, Read)
 
 type AgentMsgId = Int64
-
-type SenderAgentMsgId = Integer
 
 type SenderTimestamp = UTCTime
 
