@@ -64,14 +64,17 @@ type SenderId = QueueId
 type QueueId = Encoded
 
 data Command (a :: Party) where
+  -- Agent Recipient commands
   NEW :: RecipientPublicKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SenderPublicKey -> Command Recipient
   ACK :: Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
+  -- Agent Sender commands
   SEND :: MsgBody -> Command Sender
   PING :: Command Sender
+  -- Server commands
   IDS :: RecipientId -> SenderId -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
   END :: Command Broker
