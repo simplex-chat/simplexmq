@@ -97,8 +97,8 @@ data CryptoError
   | CryptoCipherError CE.CryptoError
   | CryptoIVError
   | CryptoDecryptError
-  | CryptoLargeMessage
-  | CryptoHeader String
+  | CryptoLargeMsgError
+  | CryptoHeaderError String
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
@@ -148,7 +148,7 @@ headerP = do
   return Header {aesKey, ivBytes, authTag, msgSize}
 
 parseHeader :: ByteString -> Either CryptoError Header
-parseHeader = first CryptoHeader . A.parseOnly (headerP <* A.endOfInput)
+parseHeader = first CryptoHeaderError . A.parseOnly (headerP <* A.endOfInput)
 
 encrypt :: PublicKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
 encrypt k paddedSize msg = do
@@ -164,7 +164,7 @@ encrypt k paddedSize msg = do
     paddedMsg =
       let len = B.length msg
        in if len >= paddedSize
-            then throwE CryptoLargeMessage
+            then throwE CryptoLargeMsgError
             else return (msg <> B.replicate (paddedSize - len) ' ')
 
 decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
