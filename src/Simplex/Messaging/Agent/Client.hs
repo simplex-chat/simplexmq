@@ -224,7 +224,9 @@ sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
     send 20 msg
   where
     mkHello :: AckMode -> m ByteString
-    mkHello ackMode = mkAgentMessage encryptKey $ HELLO verifyKey ackMode
+    mkHello ackMode = do
+      senderTs <- liftIO getCurrentTime
+      mkAgentMessage encryptKey senderTs $ HELLO verifyKey ackMode
 
     send :: Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
     send 0 _ _ = throwE SMPResponseTimeout -- TODO different error
@@ -255,22 +257,20 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
-sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> AMessage -> m ()
-sendAgentMessage c SndQueue {server, sndId, sndPrivateKey, encryptKey} agentMsg = do
-  msg <- mkAgentMessage encryptKey agentMsg
+sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> SenderTimestamp -> AMessage -> m ()
+sendAgentMessage c SndQueue {server, sndId, sndPrivateKey, encryptKey} senderTs agentMsg = do
+  msg <- mkAgentMessage encryptKey senderTs agentMsg
   withLogSMP c server sndId "SEND <message>" $ \smp ->
     sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
-mkAgentMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => EncryptionKey -> AMessage -> m ByteString
-mkAgentMessage encKey agentMessage = do
-  ts <- liftIO getCurrentTime
-  liftError CRYPTO $ C.encrypt encKey $ msg ts
-  where
-    msg ts =
-      serializeSMPMessage
-        SMPMessage
-          { senderMsgId = 0,
-            senderTimestamp = ts,
-            previousMsgHash = "1234", -- TODO hash of the previous message
-            agentMessage
-          }
+mkAgentMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => EncryptionKey -> SenderTimestamp -> AMessage -> m ByteString
+mkAgentMessage encKey senderTs agentMessage = do
+  let msg =
+        serializeSMPMessage
+          SMPMessage
+            { senderMsgId = 0,
+              senderTimestamp = senderTs,
+              previousMsgHash = "1234", -- TODO hash of the previous message
+              agentMessage
+            }
+  liftError CRYPTO $ C.encrypt encKey msg

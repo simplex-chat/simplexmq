@@ -20,6 +20,7 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
@@ -109,8 +110,8 @@ type Message = ByteString
 data SMPMessage
   = SMPConfirmation SenderPublicKey
   | SMPMessage
-      { senderMsgId :: Integer,
-        senderTimestamp :: UTCTime,
+      { senderMsgId :: AgentMsgId,
+        senderTimestamp :: SenderTimestamp,
         previousMsgHash :: ByteString,
         agentMessage :: AMessage
       }
@@ -229,7 +230,9 @@ data QueueDirection = SND | RCV deriving (Show)
 data QueueStatus = New | Confirmed | Secured | Active | Disabled
   deriving (Eq, Show, Read)
 
-type AgentMsgId = Integer
+type AgentMsgId = Int64
+
+type SenderTimestamp = UTCTime
 
 data MsgStatus = MsgOk | MsgError MsgErrorType
   deriving (Eq, Show)
