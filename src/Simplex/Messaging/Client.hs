@@ -6,7 +6,6 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Client
   ( SMPClient,
@@ -27,6 +26,7 @@ module Simplex.Messaging.Client
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
@@ -68,7 +68,8 @@ type SMPServerTransmission = (SMPServer, RecipientId, Command 'Broker)
 data SMPClientConfig = SMPClientConfig
   { qSize :: Natural,
     defaultPort :: ServiceName,
-    tcpTimeout :: Int
+    tcpTimeout :: Int,
+    smpPing :: Int
   }
 
 smpDefaultConfig :: SMPClientConfig
@@ -76,7 +77,8 @@ smpDefaultConfig =
   SMPClientConfig
     { qSize = 16,
       defaultPort = "5223",
-      tcpTimeout = 2_000_000
+      tcpTimeout = 2_000_000,
+      smpPing = 30_000_000
     }
 
 data Request = Request
@@ -87,7 +89,7 @@ data Request = Request
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO SMPClient
 getSMPClient
   smpServer@SMPServer {host, port}
-  SMPClientConfig {qSize, defaultPort, tcpTimeout}
+  SMPClientConfig {qSize, defaultPort, tcpTimeout, smpPing}
   msgQ
   disconnected = do
     c <- atomically mkSMPClient
@@ -128,7 +130,7 @@ getSMPClient
         atomically $ do
           modifyTVar (connected c) (const True)
           putTMVar started True
-        raceAny_ [send c h, process c, receive c h]
+        raceAny_ [send c h, process c, receive c h, ping c]
           `finally` disconnected
 
       send :: SMPClient -> Handle -> IO ()
@@ -136,6 +138,11 @@ getSMPClient
 
       receive :: SMPClient -> Handle -> IO ()
       receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
+
+      ping :: SMPClient -> IO ()
+      ping c = forever $ do
+        threadDelay smpPing
+        runExceptT $ sendSMPCommand c Nothing "" (Cmd SSender PING)
 
       process :: SMPClient -> IO ()
       process SMPClient {rcvQ, sentCommands} = forever $ do

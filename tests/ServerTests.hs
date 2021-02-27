@@ -288,6 +288,8 @@ syntaxTests = do
     it "bad message body 1" $ ("1234", "cdab", "12345678", "SEND 11 hello") >#> ("", "cdab", "12345678", "ERR SYNTAX 2")
     it "bad message body 2" $ ("1234", "dabc", "12345678", "SEND hello") >#> ("", "dabc", "12345678", "ERR SYNTAX 2")
     it "bigger body" $ ("1234", "abcd", "12345678", "SEND 4\r\nhello") >#> ("", "abcd", "12345678", "ERR SIZE")
+  describe "PING" do
+    it "valid syntax" $ ("", "abcd", "", "PING") >#> ("", "abcd", "", "PONG")
   describe "broker response not allowed" do
     it "OK" $ ("1234", "bcda", "12345678", "OK") >#> ("", "bcda", "12345678", "ERR PROHIBITED")
   where

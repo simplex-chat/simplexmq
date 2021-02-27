@@ -64,18 +64,23 @@ type SenderId = QueueId
 type QueueId = Encoded
 
 data Command (a :: Party) where
+  -- SMP recipient commands
   NEW :: RecipientPublicKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SenderPublicKey -> Command Recipient
   ACK :: Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
+  -- SMP sender commands
   SEND :: MsgBody -> Command Sender
+  PING :: Command Sender
+  -- SMP broker commands (responses, messages, notifications)
   IDS :: RecipientId -> SenderId -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
   END :: Command Broker
   OK :: Command Broker
   ERR :: ErrorType -> Command Broker
+  PONG :: Command Broker
 
 deriving instance Show (Command a)
 
@@ -91,10 +96,12 @@ commandP =
     <|> "OFF" $> Cmd SRecipient OFF
     <|> "DEL" $> Cmd SRecipient DEL
     <|> "SEND " *> sendCmd
+    <|> "PING" $> Cmd SSender PING
     <|> "MSG " *> message
     <|> "END" $> Cmd SBroker END
     <|> "OK" $> Cmd SBroker OK
     <|> "ERR " *> serverError
+    <|> "PONG" $> Cmd SBroker PONG
   where
     newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
     idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
@@ -121,6 +128,7 @@ serializeCommand = \case
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
   Cmd SRecipient cmd -> B.pack $ show cmd
   Cmd SSender (SEND msgBody) -> "SEND" <> serializeMsg msgBody
+  Cmd SSender PING -> "PING"
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts] <> serializeMsg msgBody
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
@@ -186,6 +194,10 @@ tGet fromParty h = do
       Cmd SBroker (IDS _ _) -> Right cmd
       -- ERR response does not always have queue ID
       Cmd SBroker (ERR _) -> Right cmd
+      -- PONG response should not have queue ID
+      Cmd SBroker PONG
+        | B.null queueId -> Right cmd
+        | otherwise -> Left $ SYNTAX errHasCredentials
       -- other responses must have queue ID
       Cmd SBroker _
         | B.null queueId -> Left $ SYNTAX errNoQueueId
@@ -199,6 +211,10 @@ tGet fromParty h = do
       Cmd SSender (SEND _)
         | B.null queueId -> Left $ SYNTAX errNoQueueId
         | otherwise -> Right cmd
+      -- PING must not have queue ID or signature
+      Cmd SSender PING
+        | B.null queueId && B.null signature -> Right cmd
+        | otherwise -> Left $ SYNTAX errHasCredentials
       -- other client commands must have both signature and queue ID
       Cmd SRecipient _
         | B.null signature || B.null queueId -> Left $ SYNTAX errNoCredentials
