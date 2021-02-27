@@ -118,7 +118,7 @@ cfg =
           { qSize = 1,
             defaultPort = testPort,
             tcpTimeout = 500_000,
-            smpPing = 2_000_000
+            smpPing = 30_000_000
           }
     }
 
