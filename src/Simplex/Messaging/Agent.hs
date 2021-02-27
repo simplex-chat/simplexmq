@@ -166,9 +166,8 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
         sendMsg sq = do
           senderTs <- liftIO getCurrentTime
           senderId <- withStore $ \st -> createSndMsg st connAlias msgBody senderTs
-          sendAgentMessage c sq $ A_MSG msgBody
-          -- ? change AgentMsgId to Int?
-          respond $ SENT (toInteger senderId)
+          sendAgentMessage c sq senderTs $ A_MSG msgBody
+          respond $ SENT senderId
 
     suspendConnection :: m ()
     suspendConnection =
@@ -196,7 +195,8 @@ processCommand c@AgentClient {sndQ} (corrId, connAlias, cmd) =
     sendReplyQInfo srv sq = do
       (rq, qInfo) <- newReceiveQueue c srv connAlias
       withStore $ \st -> upgradeSndConnToDuplex st connAlias rq
-      sendAgentMessage c sq $ REPLY qInfo
+      senderTs <- liftIO getCurrentTime
+      sendAgentMessage c sq senderTs $ REPLY qInfo
 
     respond :: ACommand 'Agent -> m ()
     respond resp = atomically $ writeTBQueue sndQ (corrId, connAlias, resp)
@@ -252,21 +252,11 @@ processSMPTransmission c@AgentClient {sndQ} (srv, rId, cmd) = do
               logServer "<--" c srv rId "MSG <MSG>"
               -- TODO check message status
               recipientTs <- liftIO getCurrentTime
-              recipientId <- withStore $ \st ->
-                createRcvMsg
-                  st
-                  connAlias
-                  body
-                  recipientTs
-                  senderMsgId
-                  senderTimestamp
-                  srvMsgId
-                  srvTs
+              recipientId <- withStore $ \st -> createRcvMsg st connAlias body recipientTs senderMsgId senderTimestamp srvMsgId srvTs
               notify connAlias $
                 MSG
                   { m_status = MsgOk,
-                    -- ? change AgentMsgId to Int?
-                    m_recipient = (toInteger recipientId, recipientTs),
+                    m_recipient = (recipientId, recipientTs),
                     m_sender = (senderMsgId, senderTimestamp),
                     m_broker = (srvMsgId, srvTs),
                     m_body = body

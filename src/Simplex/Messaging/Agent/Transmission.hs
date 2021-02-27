@@ -20,6 +20,7 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
@@ -88,7 +89,7 @@ data ACommand (p :: AParty) where
   MSG ::
     { m_recipient :: (AgentMsgId, UTCTime),
       m_broker :: (ST.MsgId, UTCTime),
-      m_sender :: (AgentMsgId, UTCTime),
+      m_sender :: (SenderAgentMsgId, UTCTime),
       m_status :: MsgStatus,
       m_body :: MsgBody
     } ->
@@ -229,7 +230,11 @@ data QueueDirection = SND | RCV deriving (Show)
 data QueueStatus = New | Confirmed | Secured | Active | Disabled
   deriving (Eq, Show, Read)
 
-type AgentMsgId = Integer
+type AgentMsgId = Int64
+
+type SenderAgentMsgId = Integer
+
+type SenderTimestamp = UTCTime
 
 data MsgStatus = MsgOk | MsgError MsgErrorType
   deriving (Eq, Show)
