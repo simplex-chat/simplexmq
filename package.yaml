@@ -20,6 +20,7 @@ dependencies:
   - containers
   - cryptonite == 0.26.*
   - iso8601-time == 0.1.*
+  - math-functions == 0.3.*
   - memory == 0.15.*
   - mtl
   - network == 3.1.*

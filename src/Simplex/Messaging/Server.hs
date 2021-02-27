@@ -99,6 +99,7 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
     Cmd SRecipient (NEW k) -> return $ verifySignature k
     Cmd SRecipient _ -> withQueueRec SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> withQueueRec SSender $ verifySend sig . senderKey
+    Cmd SSender PING -> return cmd
   where
     withQueueRec :: SParty (p :: Party) -> (QueueRec -> Cmd) -> m Cmd
     withQueueRec party f = do
@@ -130,7 +131,9 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
       case cmd of
         Cmd SBroker END -> unsubscribeQueue $> (corrId, queueId, cmd)
         Cmd SBroker _ -> return (corrId, queueId, cmd)
-        Cmd SSender (SEND msgBody) -> sendMessage st msgBody
+        Cmd SSender command -> case command of
+          SEND msgBody -> sendMessage st msgBody
+          PING -> return (corrId, queueId, Cmd SBroker PONG)
         Cmd SRecipient command -> case command of
           NEW rKey -> createQueue st rKey
           SUB -> subscribeQueue queueId

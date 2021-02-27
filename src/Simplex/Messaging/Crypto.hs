@@ -54,6 +54,8 @@ import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Parsers (base64P)
 import Simplex.Messaging.Util (bshow, liftEitherError, (<$$>))
+import Data.Bits (shift, complement, (.&.))
+import Numeric.SpecFunctions (log2)
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
@@ -243,3 +245,13 @@ rsaPrivateKey pk =
       R.private_dQ = undefined,
       R.private_qinv = undefined
     }
+
+-- | computes padded message length using Padmé padding scheme
+-- https://bford.info/pub/sec/purb.pdf
+-- currently not used
+paddedLength :: Int -> Int
+paddedLength len = (len + mask) .&. complement mask
+  where
+    mask = (1 `shift` zeroBytes len) - 1
+    zeroBytes 1 = 0
+    zeroBytes l = let e = log2 l in e - log2 e - 1
