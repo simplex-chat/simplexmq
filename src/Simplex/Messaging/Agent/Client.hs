@@ -41,9 +41,9 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Time.Clock
-import Numeric.Natural
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -56,7 +56,8 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 data AgentClient = AgentClient
-  { rcvQ :: TBQueue (ATransmission 'Client),
+  { store :: SQLiteStore,
+    rcvQ :: TBQueue (ATransmission 'Client),
     sndQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue SMPServerTransmission,
     smpClients :: TVar (Map SMPServer SMPClient),
@@ -65,17 +66,18 @@ data AgentClient = AgentClient
     clientId :: Int
   }
 
-newAgentClient :: TVar Int -> Natural -> STM AgentClient
-newAgentClient cc qSize = do
-  rcvQ <- newTBQueue qSize
-  sndQ <- newTBQueue qSize
-  msgQ <- newTBQueue qSize
-  smpClients <- newTVar M.empty
-  subscrSrvrs <- newTVar M.empty
-  subscrConns <- newTVar M.empty
-  clientId <- (+ 1) <$> readTVar cc
-  writeTVar cc clientId
-  return AgentClient {rcvQ, sndQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId}
+newAgentClient :: MonadUnliftIO m => TVar Int -> AgentConfig -> m AgentClient
+newAgentClient cc AgentConfig {tbqSize, dbFile} = do
+  store <- connectSQLiteStore dbFile
+  rcvQ <- newTBQueueIO tbqSize
+  sndQ <- newTBQueueIO tbqSize
+  msgQ <- newTBQueueIO tbqSize
+  smpClients <- newTVarIO M.empty
+  subscrSrvrs <- newTVarIO M.empty
+  subscrConns <- newTVarIO M.empty
+  clientId <- (+ 1) <$> readTVarIO cc
+  atomically $ writeTVar cc clientId
+  return AgentClient {store, rcvQ, sndQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId}
 
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 

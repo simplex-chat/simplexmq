@@ -13,7 +13,8 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
-    newSQLiteStore,
+    createSQLiteStore,
+    connectSQLiteStore,
   )
 where
 
@@ -45,10 +46,15 @@ data SQLiteStore = SQLiteStore
     dbConn :: DB.Connection
   }
 
-newSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
-newSQLiteStore dbFilename = do
+createSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
+createSQLiteStore dbFilename = do
+  store <- connectSQLiteStore dbFilename
+  liftIO . createSchema $ dbConn store
+  return store
+
+connectSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
+connectSQLiteStore dbFilename = do
   dbConn <- liftIO $ DB.open dbFilename
-  liftIO $ createSchema dbConn
   return SQLiteStore {dbFilename, dbConn}
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
