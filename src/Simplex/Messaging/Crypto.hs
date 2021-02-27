@@ -52,10 +52,9 @@ import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Network.Transport.Internal (decodeWord32, encodeWord32)
 import Simplex.Messaging.Parsers (base64P)
 import Simplex.Messaging.Util (bshow, liftEitherError, (<$$>))
-import Data.Bits (shift, complement, (.&.))
-import Numeric.SpecFunctions (log2)
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
@@ -98,16 +97,18 @@ data CryptoError
   | CryptoCipherError CE.CryptoError
   | CryptoIVError
   | CryptoDecryptError
+  | CryptoLargeMessage
+  | CryptoHeader String
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
 pubExpRange = 2 ^ (1024 :: Int)
 
-aeKeySize :: Int
-aeKeySize = 256 `div` 8
+aesKeySize :: Int
+aesKeySize = 256 `div` 8
 
-aeTagSize :: Int
-aeTagSize = 128 `div` 8
+aesTagSize :: Int
+aesTagSize = 128 `div` 8
 
 generateKeyPair :: Int -> IO KeyPair
 generateKeyPair size = loop
@@ -123,25 +124,56 @@ generateKeyPair size = loop
             then loop
             else return (PublicKey pub, privateKey s n d)
 
-encrypt :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
-encrypt k msg = do
-  aesKey <- randomBytes aeKeySize
+data Header = Header
+  { aesKey :: ByteString,
+    ivBytes :: ByteString,
+    authTag :: AES.AuthTag,
+    msgSize :: Int
+  }
+
+serializeHeader :: Header -> ByteString
+serializeHeader Header {aesKey, ivBytes, authTag, msgSize} =
+  aesKey <> ivBytes <> authTagToBS authTag <> (encodeWord32 . fromInteger . toInteger) msgSize
+
+headerP :: Parser Header
+headerP = do
+  aesKey <- A.take aesKeySize
+  ivBytes <- A.take $ AES.blockSize (undefined :: AES256)
+  authTag <- bsToAuthTag <$> A.take aesTagSize
+  msgSize <- fromInteger . toInteger . decodeWord32 <$> A.take 4
+  return Header {aesKey, ivBytes, authTag, msgSize}
+
+parseHeader :: ByteString -> Either CryptoError Header
+parseHeader = first CryptoHeader . A.parseOnly (headerP <* A.endOfInput)
+
+encrypt :: PublicKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
+encrypt k paddedSize msg = do
+  aesKey <- randomBytes aesKeySize
   ivBytes <- randomIVBytes @AES256
   aead <- initAEAD @AES256 (aesKey, ivBytes)
-  let (authTag, msg') = encryptAES aead msg
-  encKeyIv <- encryptOAEP k (aesKey <> ivBytes)
-  return $ encKeyIv <> authTagToBS authTag <> msg'
+  msg' <- paddedMsg
+  let (authTag, msg'') = encryptAES aead msg'
+      header = Header {aesKey, ivBytes, authTag, msgSize = B.length msg}
+  encHeader <- encryptOAEP k $ serializeHeader header
+  return $ encHeader <> msg''
+  where
+    paddedMsg =
+      let len = B.length msg
+       in if len >= paddedSize
+            then throwE CryptoLargeMessage
+            else return (msg <> B.replicate (paddedSize - len) ' ')
 
 decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
-  let (encKeyIv, msg') = B.splitAt (private_size pk) msg''
-      (authTag, msg) = B.splitAt aeTagSize msg'
-  keyIv <- B.splitAt aeKeySize <$> decryptOAEP pk encKeyIv
-  aead <- initAEAD @AES256 keyIv
-  decryptAES aead msg (bsToAuthTag authTag)
+  let (encHeader, msg') = B.splitAt (private_size pk) msg''
+  header <- decryptOAEP pk encHeader
+  Header {aesKey, ivBytes, authTag, msgSize} <- ExceptT . return $ parseHeader header
+  aead <- initAEAD @AES256 (aesKey, ivBytes)
+  msg <- decryptAES aead msg' authTag
+  return $ B.take msgSize msg
 
 encryptAES :: AES.AEAD AES256 -> ByteString -> (AES.AuthTag, ByteString)
-encryptAES aead plaintext = AES.aeadSimpleEncrypt aead B.empty plaintext aeTagSize
+encryptAES aead plaintext = AES.aeadSimpleEncrypt aead B.empty plaintext aesTagSize
 
 decryptAES :: AES.AEAD AES256 -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
 decryptAES aead ciphertext authTag =
@@ -245,13 +277,3 @@ rsaPrivateKey pk =
       R.private_dQ = undefined,
       R.private_qinv = undefined
     }
-
--- | computes padded message length using Padmé padding scheme
--- https://bford.info/pub/sec/purb.pdf
--- currently not used
-paddedLength :: Int -> Int
-paddedLength len = (len + mask) .&. complement mask
-  where
-    mask = (1 `shift` zeroBytes len) - 1
-    zeroBytes 1 = 0
-    zeroBytes l = let e = log2 l in e - log2 e - 1

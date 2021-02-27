@@ -215,7 +215,8 @@ sendConfirmation c SndQueue {server, sndId, encryptKey} senderKey = do
     mkConfirmation :: m MsgBody
     mkConfirmation = do
       let msg = serializeSMPMessage $ SMPConfirmation senderKey
-      liftError CRYPTO $ C.encrypt encryptKey msg
+      paddedSize <- asks paddedMsgSize
+      liftError CRYPTO $ C.encrypt encryptKey paddedSize msg
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
 sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
@@ -263,7 +264,7 @@ sendAgentMessage c SndQueue {server, sndId, sndPrivateKey, encryptKey} senderTs 
   withLogSMP c server sndId "SEND <message>" $ \smp ->
     sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
-mkAgentMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => EncryptionKey -> SenderTimestamp -> AMessage -> m ByteString
+mkAgentMessage :: AgentMonad m => EncryptionKey -> SenderTimestamp -> AMessage -> m ByteString
 mkAgentMessage encKey senderTs agentMessage = do
   let msg =
         serializeSMPMessage
@@ -273,4 +274,5 @@ mkAgentMessage encKey senderTs agentMessage = do
               previousMsgHash = "1234", -- TODO hash of the previous message
               agentMessage
             }
-  liftError CRYPTO $ C.encrypt encKey msg
+  paddedSize <- asks paddedMsgSize
+  liftError CRYPTO $ C.encrypt encKey paddedSize msg

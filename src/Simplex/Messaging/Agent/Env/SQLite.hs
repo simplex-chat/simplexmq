@@ -26,7 +26,8 @@ data Env = Env
   { config :: AgentConfig,
     idsDrg :: TVar ChaChaDRG,
     db :: SQLiteStore,
-    clientCounter :: TVar Int
+    clientCounter :: TVar Int,
+    paddedMsgSize :: Int
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -34,4 +35,7 @@ newSMPAgentEnv config = do
   idsDrg <- drgNew >>= newTVarIO
   db <- newSQLiteStore $ dbFile config
   clientCounter <- newTVarIO 0
-  return Env {config, idsDrg, db, clientCounter}
+  return Env {config, idsDrg, db, clientCounter, paddedMsgSize}
+  where
+    paddedMsgSize = blockSize smp - 2 * rsaKeySize config - smpCommandSize smp
+    smp = smpCfg config
