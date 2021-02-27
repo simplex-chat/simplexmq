@@ -74,7 +74,7 @@ data Command (a :: Party) where
   -- SMP sender commands
   SEND :: MsgBody -> Command Sender
   PING :: Command Sender
-  -- SMP broker responses
+  -- SMP broker commands (responses, messages, notifications)
   IDS :: RecipientId -> SenderId -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
   END :: Command Broker
