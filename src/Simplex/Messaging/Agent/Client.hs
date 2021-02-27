@@ -69,15 +69,16 @@ data AgentClient = AgentClient
 newAgentClient :: MonadUnliftIO m => TVar Int -> AgentConfig -> m AgentClient
 newAgentClient cc AgentConfig {tbqSize, dbFile} = do
   store <- connectSQLiteStore dbFile
-  rcvQ <- newTBQueueIO tbqSize
-  sndQ <- newTBQueueIO tbqSize
-  msgQ <- newTBQueueIO tbqSize
-  smpClients <- newTVarIO M.empty
-  subscrSrvrs <- newTVarIO M.empty
-  subscrConns <- newTVarIO M.empty
-  clientId <- (+ 1) <$> readTVarIO cc
-  atomically $ writeTVar cc clientId
-  return AgentClient {store, rcvQ, sndQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId}
+  atomically $ do
+    rcvQ <- newTBQueue tbqSize
+    sndQ <- newTBQueue tbqSize
+    msgQ <- newTBQueue tbqSize
+    smpClients <- newTVar M.empty
+    subscrSrvrs <- newTVar M.empty
+    subscrConns <- newTVar M.empty
+    clientId <- (+ 1) <$> readTVar cc
+    writeTVar cc clientId
+    return AgentClient {store, rcvQ, sndQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId}
 
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
