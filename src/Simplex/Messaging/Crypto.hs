@@ -125,20 +125,24 @@ generateKeyPair size = loop
             else return (PublicKey pub, privateKey s n d)
 
 data Header = Header
-  { aesKey :: ByteString,
-    ivBytes :: ByteString,
+  { aesKey :: Key,
+    ivBytes :: IV,
     authTag :: AES.AuthTag,
     msgSize :: Int
   }
 
+newtype Key = Key {unKey :: ByteString}
+
+newtype IV = IV {unIV :: ByteString}
+
 serializeHeader :: Header -> ByteString
 serializeHeader Header {aesKey, ivBytes, authTag, msgSize} =
-  aesKey <> ivBytes <> authTagToBS authTag <> (encodeWord32 . fromInteger . toInteger) msgSize
+  unKey aesKey <> unIV ivBytes <> authTagToBS authTag <> (encodeWord32 . fromInteger . toInteger) msgSize
 
 headerP :: Parser Header
 headerP = do
-  aesKey <- A.take aesKeySize
-  ivBytes <- A.take $ AES.blockSize (undefined :: AES256)
+  aesKey <- Key <$> A.take aesKeySize
+  ivBytes <- IV <$> A.take (ivSize @AES256)
   authTag <- bsToAuthTag <$> A.take aesTagSize
   msgSize <- fromInteger . toInteger . decodeWord32 <$> A.take 4
   return Header {aesKey, ivBytes, authTag, msgSize}
@@ -148,9 +152,9 @@ parseHeader = first CryptoHeader . A.parseOnly (headerP <* A.endOfInput)
 
 encrypt :: PublicKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
 encrypt k paddedSize msg = do
-  aesKey <- randomBytes aesKeySize
-  ivBytes <- randomIVBytes @AES256
-  aead <- initAEAD @AES256 (aesKey, ivBytes)
+  aesKey <- Key <$> randomBytes aesKeySize
+  ivBytes <- IV <$> randomBytes (ivSize @AES256)
+  aead <- initAEAD @AES256 aesKey ivBytes
   msg' <- paddedMsg
   let (authTag, msg'') = encryptAES aead msg'
       header = Header {aesKey, ivBytes, authTag, msgSize = B.length msg}
@@ -168,7 +172,7 @@ decrypt pk msg'' = do
   let (encHeader, msg') = B.splitAt (private_size pk) msg''
   header <- decryptOAEP pk encHeader
   Header {aesKey, ivBytes, authTag, msgSize} <- ExceptT . return $ parseHeader header
-  aead <- initAEAD @AES256 (aesKey, ivBytes)
+  aead <- initAEAD @AES256 aesKey ivBytes
   msg <- decryptAES aead msg' authTag
   return $ B.take msgSize msg
 
@@ -179,15 +183,15 @@ decryptAES :: AES.AEAD AES256 -> ByteString -> AES.AuthTag -> ExceptT CryptoErro
 decryptAES aead ciphertext authTag =
   maybeError CryptoDecryptError $ AES.aeadSimpleDecrypt aead B.empty ciphertext authTag
 
-initAEAD :: forall c. AES.BlockCipher c => (ByteString, ByteString) -> ExceptT CryptoError IO (AES.AEAD c)
-initAEAD (aesKey, ivBytes) = do
+initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
+initAEAD (Key aesKey) (IV ivBytes) = do
   iv <- makeIV @c ivBytes
   cryptoFailable $ do
     cipher <- AES.cipherInit aesKey
     AES.aeadInit AES.AEAD_GCM cipher iv
 
-randomIVBytes :: forall c. AES.BlockCipher c => ExceptT CryptoError IO ByteString
-randomIVBytes = randomBytes (AES.blockSize (undefined :: c))
+ivSize :: forall c. AES.BlockCipher c => Int
+ivSize = AES.blockSize (undefined :: c)
 
 makeIV :: AES.BlockCipher c => ByteString -> ExceptT CryptoError IO (AES.IV c)
 makeIV bs = maybeError CryptoIVError $ AES.makeIV bs
