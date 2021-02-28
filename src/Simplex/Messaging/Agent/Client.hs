@@ -43,7 +43,6 @@ import Data.Text.Encoding
 import Data.Time.Clock
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
