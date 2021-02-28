@@ -6,7 +6,6 @@
 module Simplex.Messaging.Server.QueueStore where
 
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Types
 
 data QueueRec = QueueRec
   { recipientId :: QueueId,

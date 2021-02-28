@@ -30,17 +30,17 @@ import Network.Socket
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
-import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport
-import Simplex.Messaging.Types
+import Simplex.Messaging.Protocol
   ( CorrId (..),
     Encoded,
     ErrorType,
     MsgBody,
+    MsgId,
     SenderPublicKey,
     errMessageBody,
   )
-import qualified Simplex.Messaging.Types as ST
+import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
 import System.IO
 import Text.Read
@@ -88,7 +88,7 @@ data ACommand (p :: AParty) where
   SENT :: AgentMsgId -> ACommand Agent
   MSG ::
     { m_recipient :: (AgentMsgId, UTCTime),
-      m_broker :: (ST.MsgId, UTCTime),
+      m_broker :: (MsgId, UTCTime),
       m_sender :: (AgentMsgId, UTCTime),
       m_status :: MsgStatus,
       m_body :: MsgBody
@@ -315,7 +315,7 @@ commandP =
       return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
     -- TODO other error types
     agentError = ACmd SAgent . ERR <$> ("SMP " *> smpErrorType)
-    smpErrorType = "AUTH" $> SMP ST.AUTH
+    smpErrorType = "AUTH" $> SMP SMP.AUTH
     replyMode =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)

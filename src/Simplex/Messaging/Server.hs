@@ -31,7 +31,6 @@ import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Types
 import Simplex.Messaging.Util
 import UnliftIO.Async
 import UnliftIO.Concurrent

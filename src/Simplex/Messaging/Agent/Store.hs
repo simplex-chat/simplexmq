@@ -15,14 +15,14 @@ import Data.Kind (Type)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Transmission
-import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Types
+import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
     RecipientPrivateKey,
     SenderPrivateKey,
     SenderPublicKey,
   )
+import qualified Simplex.Messaging.Protocol as SMP
 
 -- * Store management
 

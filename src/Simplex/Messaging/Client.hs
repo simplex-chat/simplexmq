@@ -46,7 +46,6 @@ import Simplex.Messaging.Agent.Transmission (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Types
 import Simplex.Messaging.Util (liftEitherError, raceAny_)
 import System.IO
 import System.IO.Error

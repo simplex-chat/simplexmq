@@ -46,8 +46,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (QueueId)
-import Simplex.Messaging.Types (ErrorType (AUTH), MsgBody, SenderPublicKey)
+import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
 import Simplex.Messaging.Util (liftError)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (IOException)

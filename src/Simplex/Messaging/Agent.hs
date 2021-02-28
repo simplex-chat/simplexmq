@@ -32,9 +32,9 @@ import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore, connectSQLiteStore)
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Protocol (CorrId (..), MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (putLn, runTCPServer)
-import Simplex.Messaging.Types (CorrId (..), MsgBody, SenderPublicKey)
 import Simplex.Messaging.Util (liftError)
 import System.IO (Handle)
 import UnliftIO.Async (race_)
