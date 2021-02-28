@@ -68,7 +68,9 @@ data SMPClientConfig = SMPClientConfig
   { qSize :: Natural,
     defaultPort :: ServiceName,
     tcpTimeout :: Int,
-    smpPing :: Int
+    smpPing :: Int,
+    blockSize :: Int,
+    smpCommandSize :: Int
   }
 
 smpDefaultConfig :: SMPClientConfig
@@ -77,7 +79,9 @@ smpDefaultConfig =
     { qSize = 16,
       defaultPort = "5223",
       tcpTimeout = 2_000_000,
-      smpPing = 30_000_000
+      smpPing = 30_000_000,
+      blockSize = 8_192, -- 16_384,
+      smpCommandSize = 256
     }
 
 data Request = Request

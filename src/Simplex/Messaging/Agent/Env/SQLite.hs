@@ -25,13 +25,19 @@ data AgentConfig = AgentConfig
 data Env = Env
   { config :: AgentConfig,
     idsDrg :: TVar ChaChaDRG,
-    db :: SQLiteStore,
-    clientCounter :: TVar Int
+    clientCounter :: TVar Int,
+    paddedMsgSize :: Int
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv config = do
   idsDrg <- drgNew >>= newTVarIO
-  db <- newSQLiteStore $ dbFile config
+  _ <- createSQLiteStore $ dbFile config
   clientCounter <- newTVarIO 0
-  return Env {config, idsDrg, db, clientCounter}
+  return Env {config, idsDrg, clientCounter, paddedMsgSize}
+  where
+    -- one rsaKeySize is used by the RSA signature in each command,
+    -- another - by encrypted message body header
+    -- smpCommandSize - is the estimated max size for SMP command, queueId, corrId
+    paddedMsgSize = blockSize smp - 2 * rsaKeySize config - smpCommandSize smp
+    smp = smpCfg config

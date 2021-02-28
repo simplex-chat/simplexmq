@@ -41,7 +41,6 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Time.Clock
-import Numeric.Natural
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
@@ -64,11 +63,11 @@ data AgentClient = AgentClient
     clientId :: Int
   }
 
-newAgentClient :: TVar Int -> Natural -> STM AgentClient
-newAgentClient cc qSize = do
-  rcvQ <- newTBQueue qSize
-  sndQ <- newTBQueue qSize
-  msgQ <- newTBQueue qSize
+newAgentClient :: TVar Int -> AgentConfig -> STM AgentClient
+newAgentClient cc AgentConfig {tbqSize} = do
+  rcvQ <- newTBQueue tbqSize
+  sndQ <- newTBQueue tbqSize
+  msgQ <- newTBQueue tbqSize
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
@@ -214,7 +213,8 @@ sendConfirmation c SndQueue {server, sndId, encryptKey} senderKey = do
     mkConfirmation :: m MsgBody
     mkConfirmation = do
       let msg = serializeSMPMessage $ SMPConfirmation senderKey
-      liftError CRYPTO $ C.encrypt encryptKey msg
+      paddedSize <- asks paddedMsgSize
+      liftError CRYPTO $ C.encrypt encryptKey paddedSize msg
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
 sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
@@ -262,7 +262,7 @@ sendAgentMessage c SndQueue {server, sndId, sndPrivateKey, encryptKey} senderTs 
   withLogSMP c server sndId "SEND <message>" $ \smp ->
     sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
-mkAgentMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => EncryptionKey -> SenderTimestamp -> AMessage -> m ByteString
+mkAgentMessage :: AgentMonad m => EncryptionKey -> SenderTimestamp -> AMessage -> m ByteString
 mkAgentMessage encKey senderTs agentMessage = do
   let msg =
         serializeSMPMessage
@@ -272,4 +272,5 @@ mkAgentMessage encKey senderTs agentMessage = do
               previousMsgHash = "1234", -- TODO hash of the previous message
               agentMessage
             }
-  liftError CRYPTO $ C.encrypt encKey msg
+  paddedSize <- asks paddedMsgSize
+  liftError CRYPTO $ C.encrypt encKey paddedSize msg

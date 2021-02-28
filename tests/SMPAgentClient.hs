@@ -8,12 +8,12 @@ module SMPAgentClient where
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Network.Socket
+import Network.Socket (HostName, ServiceName)
 import SMPClient (testPort, withSmpServer, withSmpServerThreadOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Client (SMPClientConfig (..))
+import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
 import Test.Hspec
 import UnliftIO.Concurrent
@@ -109,16 +109,15 @@ cfg :: AgentConfig
 cfg =
   AgentConfig
     { tcpPort = agentTestPort,
-      rsaKeySize = 1024 `div` 8,
+      rsaKeySize = 2048 `div` 8,
       connIdBytes = 12,
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
-        SMPClientConfig
+        smpDefaultConfig
           { qSize = 1,
             defaultPort = testPort,
-            tcpTimeout = 500_000,
-            smpPing = 2_000_000
+            tcpTimeout = 500_000
           }
     }
 
@@ -136,7 +135,7 @@ withSmpAgent = withSmpAgentOn (agentTestPort, testDB)
 
 testSMPAgentClientOn :: MonadUnliftIO m => ServiceName -> (Handle -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  threadDelay 200_000 -- TODO hack: thread delay for SMP agent to start
+  threadDelay 250_000 -- TODO hack: thread delay for SMP agent to start
   runTCPClient agentTestHost port' $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.2.0 agent"
