@@ -32,8 +32,8 @@ import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Types (MsgBody)
 import Simplex.Messaging.Util (liftIOEither)
 import Text.Read (readMaybe)
 import qualified UnliftIO.Exception as E

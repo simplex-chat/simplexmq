@@ -21,12 +21,12 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Kind
+import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Types
 import Simplex.Messaging.Util
 import System.IO
 import Text.Read
@@ -85,6 +85,48 @@ data Command (a :: Party) where
 deriving instance Show (Command a)
 
 deriving instance Eq (Command a)
+
+type Encoded = ByteString
+
+-- newtype to avoid accidentally changing order of transmission parts
+newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
+
+instance IsString CorrId where
+  fromString = CorrId . fromString
+
+-- only used by Agent, kept here so its definition is close to respective public key
+type RecipientPrivateKey = C.PrivateKey
+
+type RecipientPublicKey = C.PublicKey
+
+-- only used by Agent, kept here so its definition is close to respective public key
+type SenderPrivateKey = C.PrivateKey
+
+type SenderPublicKey = C.PublicKey
+
+type MsgId = Encoded
+
+type MsgBody = ByteString
+
+data ErrorType = PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
+
+errBadTransmission :: Int
+errBadTransmission = 1
+
+errBadSMPCommand :: Int
+errBadSMPCommand = 2
+
+errNoCredentials :: Int
+errNoCredentials = 3
+
+errHasCredentials :: Int
+errHasCredentials = 4
+
+errNoQueueId :: Int
+errNoQueueId = 5
+
+errMessageBody :: Int
+errMessageBody = 6
 
 commandP :: Parser Cmd
 commandP =

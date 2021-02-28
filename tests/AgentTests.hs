@@ -14,7 +14,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Types (ErrorType (..), MsgBody)
+import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import System.IO (Handle)
 import System.Timeout
 import Test.Hspec

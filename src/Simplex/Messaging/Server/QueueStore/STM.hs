@@ -15,7 +15,6 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Types
 import UnliftIO.STM
 
 data QueueStoreData = QueueStoreData
