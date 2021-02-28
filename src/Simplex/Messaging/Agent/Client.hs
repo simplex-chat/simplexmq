@@ -56,8 +56,7 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 data AgentClient = AgentClient
-  { store :: SQLiteStore,
-    rcvQ :: TBQueue (ATransmission 'Client),
+  { rcvQ :: TBQueue (ATransmission 'Client),
     sndQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue SMPServerTransmission,
     smpClients :: TVar (Map SMPServer SMPClient),
@@ -66,19 +65,17 @@ data AgentClient = AgentClient
     clientId :: Int
   }
 
-newAgentClient :: MonadUnliftIO m => TVar Int -> AgentConfig -> m AgentClient
-newAgentClient cc AgentConfig {tbqSize, dbFile} = do
-  store <- connectSQLiteStore dbFile
-  atomically $ do
-    rcvQ <- newTBQueue tbqSize
-    sndQ <- newTBQueue tbqSize
-    msgQ <- newTBQueue tbqSize
-    smpClients <- newTVar M.empty
-    subscrSrvrs <- newTVar M.empty
-    subscrConns <- newTVar M.empty
-    clientId <- (+ 1) <$> readTVar cc
-    writeTVar cc clientId
-    return AgentClient {store, rcvQ, sndQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId}
+newAgentClient :: TVar Int -> AgentConfig -> STM AgentClient
+newAgentClient cc AgentConfig {tbqSize} = do
+  rcvQ <- newTBQueue tbqSize
+  sndQ <- newTBQueue tbqSize
+  msgQ <- newTBQueue tbqSize
+  smpClients <- newTVar M.empty
+  subscrSrvrs <- newTVar M.empty
+  subscrConns <- newTVar M.empty
+  clientId <- (+ 1) <$> readTVar cc
+  writeTVar cc clientId
+  return AgentClient {rcvQ, sndQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId}
 
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
