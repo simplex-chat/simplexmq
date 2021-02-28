@@ -161,11 +161,10 @@ encrypt k paddedSize msg = do
   encHeader <- encryptOAEP k $ serializeHeader header
   return $ encHeader <> msg''
   where
-    paddedMsg =
-      let len = B.length msg
-       in if len >= paddedSize
-            then throwE CryptoLargeMsgError
-            else return (msg <> B.replicate (paddedSize - len) ' ')
+    len = B.length msg
+    paddedMsg
+      | len >= paddedSize = throwE CryptoLargeMsgError
+      | otherwise = return (msg <> B.replicate (paddedSize - len) '#')
 
 decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
