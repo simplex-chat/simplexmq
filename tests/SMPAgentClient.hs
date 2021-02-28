@@ -118,7 +118,7 @@ cfg =
           { qSize = 1,
             defaultPort = testPort,
             tcpTimeout = 500_000,
-            smpPing = 2_000_000
+            smpPing = 30_000_000
           }
     }
 
@@ -136,7 +136,7 @@ withSmpAgent = withSmpAgentOn (agentTestPort, testDB)
 
 testSMPAgentClientOn :: MonadUnliftIO m => ServiceName -> (Handle -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  threadDelay 200_000 -- TODO hack: thread delay for SMP agent to start
+  threadDelay 250_000 -- TODO hack: thread delay for SMP agent to start
   runTCPClient agentTestHost port' $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.2.0 agent"
