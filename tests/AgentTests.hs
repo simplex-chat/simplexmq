@@ -109,7 +109,10 @@ testSubscription alice1 alice2 bob = do
   bob #: ("13", "alice", "SEND 11\nhello again") =#> \case ("13", "alice", SENT _) -> True; _ -> False
   alice1 <# ("", "bob", CON)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
-  alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+  -- alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+  t <- tGet SAgent alice1
+  print t
+  t `shouldSatisfy` (\case ("", "bob", Msg "hello again") -> True; _ -> False) . correctTransmission
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
   bob #: ("14", "alice", "SEND 2\nhi") =#> \case ("14", "alice", SENT _) -> True; _ -> False
