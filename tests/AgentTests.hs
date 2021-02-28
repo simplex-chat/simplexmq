@@ -109,7 +109,10 @@ testSubscription alice1 alice2 bob = do
   bob #: ("13", "alice", "SEND 11\nhello again") =#> \case ("13", "alice", SENT _) -> True; _ -> False
   alice1 <# ("", "bob", CON)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
-  alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+  -- alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+  t <- tGet SAgent alice1
+  print t
+  t `shouldSatisfy` (\case ("", "bob", Msg "hello again") -> True; _ -> False) . correctTransmission
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
   bob #: ("14", "alice", "SEND 2\nhi") =#> \case ("14", "alice", SENT _) -> True; _ -> False
@@ -124,7 +127,7 @@ testSubscrNotification (server, _) client = do
   client <# ("", "conn1", END)
 
 samplePublicKey :: ByteString
-samplePublicKey = "128,2Qq2UNh5JuScgW0twxeYIDm8Uqf+b7t7OsUQcAgmDBpD+S4ZVoika1SxN2KsCSd7VneWMHm89oXIcGYM7jC7uJE8zXJFIr/1PimF96ols7n6UUFOSTH3VSqe47CzQfamxTFHl463fNPLbvOLxRfkzrZ5Qkpk2LyMkje8R1/39n0=,/uSFqPtYQeK/CX8qK4XR1BOt8eL+axBWgX7tGosI8VFBoBWR4Cbtx+F3hInQVCpxoQsz6n76ppWD4PSnzqcvQudD/3eo8VQNdQpBtX0vOjtsOxycselo99k2mdixIjjUz/RDR1Z+OthCG3rGeIK5/wyERcLR7EsBGOaBr+Xidbs="
+samplePublicKey = "256,ppr3DCweAD3RTVFhU2j0u+DnYdqJl1qCdKLHIKsPl1xBzfmnzK0o9GEDlaIClbK39KzPJMljcpnYb2KlSoZ51AhwF5PH2CS+FStc3QzajiqfdOQPet23Hd9YC6pqyTQ7idntqgPrE7yKJF44lUhKlq8QS9KQcbK7W6t7F9uQFw44ceWd2eVf81UV04kQdKWJvC5Sz6jtSZNEfs9mVI8H0wi1amUvS6+7EDJbxikhcCRnFShFO9dUKRYXj6L2JVqXqO5cZgY9BScyneWIg6mhhsTcdDbITM6COlL+pF1f3TjDN+slyV+IzE+ap/9NkpsrCcI8KwwDpqEDmUUV/JQfmQ==,gj2UAiWzSj7iun0iXvI5iz5WEjaqngmB3SzQ5+iarixbaG15LFDtYs3pijG3eGfB1wIFgoP4D2z97vIWn8olT4uCTUClf29zGDDve07h/B3QG/4i0IDnio7MX3AbE8O6PKouqy/GLTfT4WxFUn423g80rpsVYd5oj+SCL2eaxIc="
 
 syntaxTests :: Spec
 syntaxTests = do
