@@ -48,6 +48,9 @@ data SQLiteStore = SQLiteStore
 
 createSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 createSQLiteStore dbFilename = do
+  -- TODO check that embedded SQLite library is compiled with threadsafe code - if not, raise an exception;
+  -- TODO this can be achieved by running "pragma COMPILE_OPTIONS;" and checking "SQLITE_THREADSAFE=1"
+  -- TODO or "SQLITE_THREADSAFE=2" is in the list of compile options (and there shouldn't be "SQLITE_THREADSAFE=0")
   store <- connectSQLiteStore dbFilename
   liftIO . createSchema $ dbConn store
   return store
