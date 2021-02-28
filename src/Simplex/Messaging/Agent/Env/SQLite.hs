@@ -25,7 +25,6 @@ data AgentConfig = AgentConfig
 data Env = Env
   { config :: AgentConfig,
     idsDrg :: TVar ChaChaDRG,
-    -- db :: SQLiteStore,
     clientCounter :: TVar Int
   }
 
