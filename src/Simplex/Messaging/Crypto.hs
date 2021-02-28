@@ -107,8 +107,8 @@ pubExpRange = 2 ^ (1024 :: Int)
 aesKeySize :: Int
 aesKeySize = 256 `div` 8
 
-aesTagSize :: Int
-aesTagSize = 128 `div` 8
+authTagSize :: Int
+authTagSize = 128 `div` 8
 
 generateKeyPair :: Int -> IO KeyPair
 generateKeyPair size = loop
@@ -143,7 +143,7 @@ headerP :: Parser Header
 headerP = do
   aesKey <- Key <$> A.take aesKeySize
   ivBytes <- IV <$> A.take (ivSize @AES256)
-  authTag <- bsToAuthTag <$> A.take aesTagSize
+  authTag <- bsToAuthTag <$> A.take authTagSize
   msgSize <- fromIntegral . decodeWord32 <$> A.take 4
   return Header {aesKey, ivBytes, authTag, msgSize}
 
@@ -176,7 +176,7 @@ decrypt pk msg'' = do
   return $ B.take msgSize msg
 
 encryptAES :: AES.AEAD AES256 -> ByteString -> (AES.AuthTag, ByteString)
-encryptAES aead plaintext = AES.aeadSimpleEncrypt aead B.empty plaintext aesTagSize
+encryptAES aead plaintext = AES.aeadSimpleEncrypt aead B.empty plaintext authTagSize
 
 decryptAES :: AES.AEAD AES256 -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
 decryptAES aead ciphertext authTag =
