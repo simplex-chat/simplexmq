@@ -31,7 +31,7 @@ withStore = before createStore . after removeStore
       -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
       -- IO operations on multiple similarly named files; error seems to be environment specific
       r <- randomIO :: IO Word32
-      newSQLiteStore $ testDB <> show r
+      createSQLiteStore $ testDB <> show r
 
     removeStore :: SQLiteStore -> IO ()
     removeStore store = do

@@ -41,7 +41,6 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Time.Clock
-import Numeric.Natural
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Transmission
@@ -65,11 +64,11 @@ data AgentClient = AgentClient
     clientId :: Int
   }
 
-newAgentClient :: TVar Int -> Natural -> STM AgentClient
-newAgentClient cc qSize = do
-  rcvQ <- newTBQueue qSize
-  sndQ <- newTBQueue qSize
-  msgQ <- newTBQueue qSize
+newAgentClient :: TVar Int -> AgentConfig -> STM AgentClient
+newAgentClient cc AgentConfig {tbqSize} = do
+  rcvQ <- newTBQueue tbqSize
+  sndQ <- newTBQueue tbqSize
+  msgQ <- newTBQueue tbqSize
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
