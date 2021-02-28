@@ -36,5 +36,8 @@ newSMPAgentEnv config = do
   clientCounter <- newTVarIO 0
   return Env {config, idsDrg, clientCounter, paddedMsgSize}
   where
+    -- one rsaKeySize is used by the RSA signature in each command,
+    -- another - by encrypted message body header
+    -- smpCommandSize - is the estimated max size for SMP command, queueId, corrId
     paddedMsgSize = blockSize smp - 2 * rsaKeySize config - smpCommandSize smp
     smp = smpCfg config
