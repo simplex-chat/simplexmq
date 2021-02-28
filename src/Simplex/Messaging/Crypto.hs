@@ -137,14 +137,14 @@ newtype IV = IV {unIV :: ByteString}
 
 serializeHeader :: Header -> ByteString
 serializeHeader Header {aesKey, ivBytes, authTag, msgSize} =
-  unKey aesKey <> unIV ivBytes <> authTagToBS authTag <> (encodeWord32 . fromInteger . toInteger) msgSize
+  unKey aesKey <> unIV ivBytes <> authTagToBS authTag <> (encodeWord32 . fromIntegral) msgSize
 
 headerP :: Parser Header
 headerP = do
   aesKey <- Key <$> A.take aesKeySize
   ivBytes <- IV <$> A.take (ivSize @AES256)
   authTag <- bsToAuthTag <$> A.take aesTagSize
-  msgSize <- fromInteger . toInteger . decodeWord32 <$> A.take 4
+  msgSize <- fromIntegral . decodeWord32 <$> A.take 4
   return Header {aesKey, ivBytes, authTag, msgSize}
 
 parseHeader :: ByteString -> Either CryptoError Header
