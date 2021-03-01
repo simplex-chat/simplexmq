@@ -59,11 +59,18 @@ runSMPServer cfg@ServerConfig {tcpPort} = do
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
-  liftIO $ putLn h "Welcome to SMP v0.2.0"
+  -- liftIO $ putLn h "Welcome to SMP v0.2.0"
   q <- asks $ tbqSize . config
   c <- atomically $ newClient q
   s <- asks server
-  raceAny_ [send h c, client c s, receive h c]
+  let th =
+        THandle
+          { handle = h,
+            aesKey = C.Key "\131\137\ETX\SO\FS\169,\178\251\207\CAN\RS\227\202N*\201\245\216\227cq\DC3U\"\150\128\240r\166\246\&9",
+            ivBytes = C.IV "o\254\a\170i>\250\130\237\153\225\227v\243\DC1i",
+            blockSize = 8192
+          }
+  raceAny_ [send th c, client c s, receive th c]
     `finally` cancelSubscribers c
 
 cancelSubscribers :: MonadUnliftIO m => Client -> m ()
@@ -75,7 +82,7 @@ cancelSub = \case
   Sub {subThread = SubThread t} -> killThread t
   _ -> return ()
 
-receive :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
+receive :: (MonadUnliftIO m, MonadReader Env m) => THandle -> Client -> m ()
 receive h Client {rcvQ} = forever $ do
   (signature, (corrId, queueId, cmdOrError)) <- tGet fromClient h
   t <- case cmdOrError of
@@ -83,7 +90,7 @@ receive h Client {rcvQ} = forever $ do
     Right cmd -> verifyTransmission (signature, (corrId, queueId, cmd))
   atomically $ writeTBQueue rcvQ t
 
-send :: MonadUnliftIO m => Handle -> Client -> m ()
+send :: MonadUnliftIO m => THandle -> Client -> m ()
 send h Client {sndQ} = forever $ do
   t <- atomically $ readTBQueue sndQ
   liftIO $ tPut h ("", serializeTransmission t)

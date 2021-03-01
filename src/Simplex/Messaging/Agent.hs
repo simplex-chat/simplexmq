@@ -35,7 +35,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (CorrId (..), MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (putLn, runTCPServer)
-import Simplex.Messaging.Util (liftError)
+import Simplex.Messaging.Util (bshow, liftError)
 import System.IO (Handle)
 import UnliftIO.Async (race_)
 import UnliftIO.Exception (SomeException)
@@ -94,7 +94,7 @@ send h c@AgentClient {sndQ} = forever $ do
 
 logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> m ()
 logClient AgentClient {clientId} dir (CorrId corrId, cAlias, cmd) = do
-  logInfo . decodeUtf8 $ B.unwords [B.pack $ show clientId, dir, "A :", corrId, cAlias, B.takeWhile (/= ' ') $ serializeCommand cmd]
+  logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, cAlias, B.takeWhile (/= ' ') $ serializeCommand cmd]
 
 client :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
 client c@AgentClient {rcvQ, sndQ} st = forever $ do
@@ -268,7 +268,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
       removeSubscription c connAlias
       logServer "<--" c srv rId "END"
       notify connAlias END
-    _ -> logServer "<--" c srv rId $ "unexpected:" <> (B.pack . show) cmd
+    _ -> logServer "<--" c srv rId $ "unexpected:" <> bshow cmd
   where
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)

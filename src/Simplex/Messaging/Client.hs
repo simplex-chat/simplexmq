@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -35,7 +36,6 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import qualified Crypto.PubKey.RSA.Types as RSA
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe
@@ -46,7 +46,7 @@ import Simplex.Messaging.Agent.Transmission (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (liftEitherError, raceAny_)
+import Simplex.Messaging.Util (bshow, liftEitherError, raceAny_)
 import System.IO
 import System.IO.Error
 import System.Timeout
@@ -129,17 +129,24 @@ getSMPClient
 
       client :: SMPClient -> TMVar Bool -> Handle -> IO ()
       client c started h = do
-        _ <- getLn h -- "Welcome to SMP"
+        -- _ <- getLn h -- "Welcome to SMP"
         atomically $ do
           modifyTVar (connected c) (const True)
           putTMVar started True
-        raceAny_ [send c h, process c, receive c h, ping c]
+        let th =
+              THandle
+                { handle = h,
+                  aesKey = C.Key "\131\137\ETX\SO\FS\169,\178\251\207\CAN\RS\227\202N*\201\245\216\227cq\DC3U\"\150\128\240r\166\246\&9",
+                  ivBytes = C.IV "o\254\a\170i>\250\130\237\153\225\227v\243\DC1i",
+                  blockSize = 8192
+                }
+        raceAny_ [send c th, process c, receive c th, ping c]
           `finally` disconnected
 
-      send :: SMPClient -> Handle -> IO ()
+      send :: SMPClient -> THandle -> IO ()
       send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
-      receive :: SMPClient -> Handle -> IO ()
+      receive :: SMPClient -> THandle -> IO ()
       receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
 
       ping :: SMPClient -> IO ()
@@ -241,7 +248,7 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
     getNextCorrId = do
       i <- (+ 1) <$> readTVar clientCorrId
       writeTVar clientCorrId i
-      return . CorrId . B.pack $ show i
+      return . CorrId $ bshow i
 
     signTransmission :: ByteString -> ExceptT SMPClientError IO SignedRawTransmission
     signTransmission t = case pKey of

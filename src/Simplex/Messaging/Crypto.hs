@@ -10,17 +10,25 @@ module Simplex.Messaging.Crypto
     PublicKey (..),
     Signature (..),
     CryptoError (..),
+    KeyPair,
+    Key (..),
+    IV (..),
     generateKeyPair,
     sign,
     verify,
     encrypt,
     decrypt,
+    encryptAES,
+    decryptAES,
     serializePrivKey,
     serializePubKey,
     parsePrivKey,
     parsePubKey,
     privKeyP,
     pubKeyP,
+    authTagSize,
+    authTagToBS,
+    bsToAuthTag,
   )
 where
 
@@ -154,33 +162,34 @@ encrypt :: PublicKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
 encrypt k paddedSize msg = do
   aesKey <- Key <$> randomBytes aesKeySize
   ivBytes <- IV <$> randomBytes (ivSize @AES256)
+  (authTag, msg') <- encryptAES aesKey ivBytes paddedSize msg
+  let header = Header {aesKey, ivBytes, authTag, msgSize = B.length msg}
+  encHeader <- encryptOAEP k $ serializeHeader header
+  return $ encHeader <> msg'
+
+decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
+decrypt pk msg'' = do
+  let (encHeader, msg') = B.splitAt (private_size pk) msg''
+  header <- decryptOAEP pk encHeader
+  Header {aesKey, ivBytes, authTag, msgSize} <- except $ parseHeader header
+  msg <- decryptAES aesKey ivBytes msg' authTag
+  return $ B.take msgSize msg
+
+encryptAES :: Key -> IV -> Int -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
+encryptAES aesKey ivBytes paddedSize msg = do
   aead <- initAEAD @AES256 aesKey ivBytes
   msg' <- paddedMsg
-  let (authTag, msg'') = encryptAES aead msg'
-      header = Header {aesKey, ivBytes, authTag, msgSize = B.length msg}
-  encHeader <- encryptOAEP k $ serializeHeader header
-  return $ encHeader <> msg''
+  return $ AES.aeadSimpleEncrypt aead B.empty msg' authTagSize
   where
     len = B.length msg
     paddedMsg
       | len >= paddedSize = throwE CryptoLargeMsgError
       | otherwise = return (msg <> B.replicate (paddedSize - len) '#')
 
-decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
-decrypt pk msg'' = do
-  let (encHeader, msg') = B.splitAt (private_size pk) msg''
-  header <- decryptOAEP pk encHeader
-  Header {aesKey, ivBytes, authTag, msgSize} <- ExceptT . return $ parseHeader header
+decryptAES :: Key -> IV -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
+decryptAES aesKey ivBytes msg authTag = do
   aead <- initAEAD @AES256 aesKey ivBytes
-  msg <- decryptAES aead msg' authTag
-  return $ B.take msgSize msg
-
-encryptAES :: AES.AEAD AES256 -> ByteString -> (AES.AuthTag, ByteString)
-encryptAES aead plaintext = AES.aeadSimpleEncrypt aead B.empty plaintext authTagSize
-
-decryptAES :: AES.AEAD AES256 -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
-decryptAES aead ciphertext authTag =
-  maybeError CryptoDecryptError $ AES.aeadSimpleDecrypt aead B.empty ciphertext authTag
+  maybeError CryptoDecryptError $ AES.aeadSimpleDecrypt aead B.empty msg authTag
 
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (Key aesKey) (IV ivBytes) = do

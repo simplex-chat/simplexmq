@@ -151,7 +151,7 @@ serializeSMPMessage = \case
      in smpMessage "" header body
   where
     messageHeader msgId ts prevMsgHash =
-      B.unwords [B.pack $ show msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
+      B.unwords [bshow msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
     smpMessage smpHeader aHeader aBody = B.intercalate "\n" [smpHeader, aHeader, aBody, ""]
 
 agentMessageP :: Parser AMessage
@@ -351,7 +351,7 @@ serializeCommand = \case
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
-  ERR e -> "ERR " <> B.pack (show e)
+  ERR e -> "ERR " <> bshow e
   OK -> "OK"
   where
     replyMode :: ReplyMode -> ByteString
@@ -367,13 +367,13 @@ serializeCommand = \case
       MsgError e ->
         "ERR" <> case e of
           MsgSkipped fromMsgId toMsgId ->
-            B.unwords ["NO_ID", B.pack $ show fromMsgId, B.pack $ show toMsgId]
-          MsgBadId aMsgId -> "ID " <> B.pack (show aMsgId)
+            B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
+          MsgBadId aMsgId -> "ID " <> bshow aMsgId
           MsgBadHash -> "HASH"
 
 -- TODO - save function as in the server Transmission - re-use?
 serializeMsg :: ByteString -> ByteString
-serializeMsg body = B.pack (show $ B.length body) <> "\n" <> body
+serializeMsg body = bshow (B.length body) <> "\n" <> body
 
 tPutRaw :: Handle -> ARawTransmission -> IO ()
 tPutRaw h (corrId, connAlias, command) = do

@@ -6,10 +6,12 @@ module Simplex.Messaging.Server.Env.STM where
 import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
 import Numeric.Natural
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore.STM
@@ -27,7 +29,9 @@ data Env = Env
     server :: Server,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
-    idsDrg :: TVar ChaChaDRG
+    idsDrg :: TVar ChaChaDRG,
+    transportKey :: C.KeyPair,
+    serverId :: ByteString
   }
 
 data Server = Server
