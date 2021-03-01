@@ -20,7 +20,9 @@ where
 
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Data.List (find)
 import Data.Maybe (fromMaybe)
+import Data.Text (isPrefixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Database.SQLite.Simple as DB
@@ -48,9 +50,6 @@ data SQLiteStore = SQLiteStore
 
 createSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 createSQLiteStore dbFilename = do
-  -- TODO check that embedded SQLite library is compiled with threadsafe code - if not, raise an exception;
-  -- TODO this can be achieved by running "pragma COMPILE_OPTIONS;" and checking "SQLITE_THREADSAFE=1"
-  -- TODO or "SQLITE_THREADSAFE=2" is in the list of compile options (and there shouldn't be "SQLITE_THREADSAFE=0")
   store <- connectSQLiteStore dbFilename
   liftIO . createSchema $ dbConn store
   return store
@@ -58,7 +57,12 @@ createSQLiteStore dbFilename = do
 connectSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 connectSQLiteStore dbFilename = do
   dbConn <- liftIO $ DB.open dbFilename
-  return SQLiteStore {dbFilename, dbConn}
+  compileOptions <- liftIO (DB.query_ dbConn "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
+  let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
+  case threadsafeOption of
+    Just "THREADSAFE=0" -> error "SQLite compiled with not threadsafe code" -- TODO warn instead
+    Just _ -> return SQLiteStore {dbFilename, dbConn} -- TODO info threadsafe
+    Nothing -> error "SQLite THREADSAFE compile option not found" -- should not happen
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()

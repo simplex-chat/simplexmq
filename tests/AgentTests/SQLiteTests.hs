@@ -7,6 +7,7 @@ module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Monad.Except (ExceptT, runExceptT)
 import qualified Crypto.PubKey.RSA as R
+import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
 import Data.Word (Word32)
@@ -75,7 +76,7 @@ storeTests = withStore do
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe = do
   it "should throw error if compiled sqlite library is not threadsafe" $ \store -> do
-    compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[String]]
+    compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
     shouldNotContain compileOptions [["THREADSAFE=0"]]
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
