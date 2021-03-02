@@ -18,6 +18,7 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
+import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.List (find)
@@ -38,6 +39,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (liftIOEither)
+import System.Exit (ExitCode (ExitFailure), exitWith)
 import Text.Read (readMaybe)
 import qualified UnliftIO.Exception as E
 
@@ -51,18 +53,22 @@ data SQLiteStore = SQLiteStore
 createSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 createSQLiteStore dbFilename = do
   store <- connectSQLiteStore dbFilename
+  compileOptions <- liftIO (DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
+  let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
+  liftIO $ case threadsafeOption of
+    Just "THREADSAFE=0" -> do
+      putStrLn "SQLite compiled with not threadsafe code, continue (y/n):"
+      s <- getLine
+      when (s /= "y") (exitWith (ExitFailure 2))
+    Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
+    _ -> return ()
   liftIO . createSchema $ dbConn store
   return store
 
 connectSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 connectSQLiteStore dbFilename = do
   dbConn <- liftIO $ DB.open dbFilename
-  compileOptions <- liftIO (DB.query_ dbConn "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
-  let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
-  case threadsafeOption of
-    Just "THREADSAFE=0" -> error "SQLite compiled with not threadsafe code" -- TODO warn instead
-    Just _ -> return SQLiteStore {dbFilename, dbConn} -- TODO info threadsafe
-    Nothing -> error "SQLite THREADSAFE compile option not found" -- should not happen
+  return SQLiteStore {dbFilename, dbConn}
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()

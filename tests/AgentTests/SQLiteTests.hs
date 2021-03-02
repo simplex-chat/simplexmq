@@ -77,7 +77,7 @@ testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe = do
   it "should throw error if compiled sqlite library is not threadsafe" $ \store -> do
     compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
-    shouldNotContain compileOptions [["THREADSAFE=0"]]
+    compileOptions `shouldNotContain` [["THREADSAFE=0"]]
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
 testForeignKeysEnabled = do
