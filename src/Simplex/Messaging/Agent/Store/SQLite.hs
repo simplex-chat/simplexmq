@@ -59,7 +59,7 @@ createSQLiteStore dbFilename = do
     Just "THREADSAFE=0" -> do
       putStrLn "SQLite compiled with not threadsafe code, continue (y/n):"
       s <- getLine
-      when (s /= "y") (exitWith (ExitFailure 2))
+      when (s /= "y") (exitWith $ ExitFailure 2)
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
     _ -> return ()
   liftIO . createSchema $ dbConn store
