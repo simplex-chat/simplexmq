@@ -18,9 +18,12 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
+import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Data.List (find)
 import Data.Maybe (fromMaybe)
+import Data.Text (isPrefixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Database.SQLite.Simple as DB
@@ -36,6 +39,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (liftIOEither)
+import System.Exit (ExitCode (ExitFailure), exitWith)
 import Text.Read (readMaybe)
 import qualified UnliftIO.Exception as E
 
@@ -49,6 +53,15 @@ data SQLiteStore = SQLiteStore
 createSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
 createSQLiteStore dbFilename = do
   store <- connectSQLiteStore dbFilename
+  compileOptions <- liftIO (DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
+  let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
+  liftIO $ case threadsafeOption of
+    Just "THREADSAFE=0" -> do
+      putStrLn "SQLite compiled with not threadsafe code, continue (y/n):"
+      s <- getLine
+      when (s /= "y") (exitWith $ ExitFailure 2)
+    Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
+    _ -> return ()
   liftIO . createSchema $ dbConn store
   return store
 
