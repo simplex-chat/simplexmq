@@ -116,12 +116,10 @@ messages =
         ON DELETE CASCADE,
       FOREIGN KEY (conn_alias, internal_rcv_id)
         REFERENCES rcv_messages (conn_alias, internal_rcv_id)
-        ON DELETE CASCADE
-        DEFERRABLE INITIALLY DEFERRED,
+        ON DELETE CASCADE,
       FOREIGN KEY (conn_alias, internal_snd_id)
         REFERENCES snd_messages (conn_alias, internal_snd_id)
         ON DELETE CASCADE
-        DEFERRABLE INITIALLY DEFERRED
     ) WITHOUT ROWID;
   |]
 
@@ -129,8 +127,11 @@ rcvMessages :: Query
 rcvMessages =
   [sql|
     CREATE TABLE IF NOT EXISTS rcv_messages(
-      conn_alias BLOB NOT NULL,
+      rcv_q_host TEXT NOT NULL,
+      rcv_q_port TEXT NOT NULL,
+      rcv_q_id BLOB NOT NULL,
       internal_rcv_id INTEGER NOT NULL,
+      conn_alias BLOB NOT NULL,
       internal_id INTEGER NOT NULL,
       external_snd_id INTEGER NOT NULL,
       external_snd_ts TEXT NOT NULL,
@@ -139,10 +140,15 @@ rcvMessages =
       rcv_status TEXT NOT NULL,
       ack_brocker_ts TEXT,
       ack_sender_ts TEXT,
-      PRIMARY KEY (conn_alias, internal_rcv_id),
+      PRIMARY KEY (rcv_q_host, rcv_q_port, rcv_q_id, internal_rcv_id),
+      FOREIGN KEY (rcv_q_host, rcv_q_port, rcv_q_id)
+        REFERENCES rcv_queues (host, port, rcv_id)
+        ON DELETE CASCADE,
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)
         ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED,
+      UNIQUE (conn_alias, internal_rcv_id)
     ) WITHOUT ROWID;
   |]
 
@@ -150,15 +156,23 @@ sndMessages :: Query
 sndMessages =
   [sql|
     CREATE TABLE IF NOT EXISTS snd_messages(
-      conn_alias BLOB NOT NULL,
+      snd_q_host TEXT NOT NULL,
+      snd_q_port TEXT NOT NULL,
+      snd_q_id BLOB NOT NULL,
       internal_snd_id INTEGER NOT NULL,
+      conn_alias BLOB NOT NULL,
       internal_id INTEGER NOT NULL,
       snd_status TEXT NOT NULL,
       sent_ts TEXT,
       delivered_ts TEXT,
-      PRIMARY KEY (conn_alias, internal_snd_id),
+      PRIMARY KEY (snd_q_host, snd_q_port, snd_q_id, internal_rcv_id),
+      FOREIGN KEY (snd_q_host, snd_q_port, snd_q_id)
+        REFERENCES snd_queues (host, port, snd_id)
+        ON DELETE CASCADE,
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)
         ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED,
+      UNIQUE (conn_alias, internal_snd_id)
     ) WITHOUT ROWID;
   |]
