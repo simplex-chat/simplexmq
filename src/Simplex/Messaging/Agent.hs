@@ -170,7 +170,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
           senderTs <- liftIO getCurrentTime
           senderId <- withStore $ createSndMsg st connAlias msgBody senderTs
           sendAgentMessage c sq senderTs $ A_MSG msgBody
-          respond $ SENT senderId
+          respond $ SENT (unId senderId)
 
     suspendConnection :: m ()
     suspendConnection =
@@ -259,7 +259,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               notify connAlias $
                 MSG
                   { m_status = MsgOk,
-                    m_recipient = (recipientId, recipientTs),
+                    m_recipient = (unId recipientId, recipientTs),
                     m_sender = m_sender_,
                     m_broker = m_broker_,
                     m_body = body

@@ -153,6 +153,18 @@ instance ToField QueueStatus where toField = toField . show
 
 instance FromField QueueStatus where fromField = fromFieldToReadable_
 
+instance ToField InternalRcvId where toField (InternalRcvId x) = toField x
+
+instance FromField InternalRcvId where fromField x = InternalRcvId <$> fromField x
+
+instance ToField InternalSndId where toField (InternalSndId x) = toField x
+
+instance FromField InternalSndId where fromField x = InternalSndId <$> fromField x
+
+instance ToField InternalId where toField (InternalId x) = toField x
+
+instance FromField InternalId where fromField x = InternalId <$> fromField x
+
 instance ToField RcvMsgStatus where toField = toField . show
 
 instance ToField SndMsgStatus where toField = toField . show
@@ -472,8 +484,8 @@ insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) 
     case queues of
       (Just _rcvQ, _) -> do
         (lastInternalId, lastInternalRcvId) <- retrieveLastInternalIdsRcv_ dbConn connAlias
-        let internalId = lastInternalId + 1
-        let internalRcvId = lastInternalRcvId + 1
+        let internalId = InternalId $ unId lastInternalId + 1
+        let internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
         insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
         insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs)
         updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
@@ -563,8 +575,8 @@ insertSndMsg dbConn connAlias msgBody internalTs =
     case queues of
       (_, Just _sndQ) -> do
         (lastInternalId, lastInternalSndId) <- retrieveLastInternalIdsSnd_ dbConn connAlias
-        let internalId = lastInternalId + 1
-        let internalSndId = lastInternalSndId + 1
+        let internalId = InternalId $ unId lastInternalId + 1
+        let internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
         insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
         insertSndMsgDetails_ dbConn connAlias internalSndId internalId
         updateLastInternalIdsSnd_ dbConn connAlias internalId internalSndId
