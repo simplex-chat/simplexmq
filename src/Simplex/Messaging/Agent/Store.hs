@@ -133,8 +133,12 @@ data RcvMsg = RcvMsg
   { msgBase :: MsgBase,
     internalRcvId :: InternalRcvId,
     -- | Id of the message at sender, corresponds to `internalSndId` from the sender's side.
+    -- Sender Id is made sequential for detection of missing messages. For redundant / parallel queues,
+    -- it also allows to keep track of duplicates and restore the original order before delivery to the client.
     externalSndId :: ExternalSndId,
     externalSndTs :: ExternalSndTs,
+    -- | Id of the message at broker, although it is not sequential (to avoid metadata leakage for potential observer),
+    -- it is needed to track repeated deliveries in case of connection loss - this logic is not implemented yet.
     brokerId :: BrokerId,
     brokerTs :: BrokerTs,
     rcvMsgStatus :: RcvMsgStatus,
@@ -197,7 +201,9 @@ type DeliveredTs = UTCTime
 data MsgBase = MsgBase
   { connAlias :: ConnAlias,
     -- | Monotonically increasing id of a message per connection, internal to the agent.
-    -- Preserves ordering between both received and sent messages.
+    -- Internal Id is needed to track the order of the conversation (which can be different for the sender / receiver)
+    -- and address messages in commands. External [sender] Id cannot be used for this purpose
+    -- due to a possibility of implementation errors in different agents.
     internalId :: InternalId,
     internalTs :: InternalTs,
     msgBody :: MsgBody
