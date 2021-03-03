@@ -126,10 +126,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m InternalId
-  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs =
+  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> m InternalId
+  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) =
     liftIOEither $
-      insertRcvMsg dbConn connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs
+      insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs)
 
   createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
   createSndMsg SQLiteStore {dbConn} connAlias msgBody internalTs =
@@ -463,12 +463,10 @@ insertRcvMsg ::
   ConnAlias ->
   MsgBody ->
   InternalTs ->
-  ExternalSndId ->
-  ExternalSndTs ->
-  BrokerId ->
-  BrokerTs ->
+  (ExternalSndId, ExternalSndTs) ->
+  (BrokerId, BrokerTs) ->
   IO (Either StoreError InternalId)
-insertRcvMsg dbConn connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs =
+insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
@@ -477,7 +475,7 @@ insertRcvMsg dbConn connAlias msgBody internalTs externalSndId externalSndTs bro
         let internalId = lastInternalId + 1
         let internalRcvId = lastInternalRcvId + 1
         insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
-        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs
+        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs)
         updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
         return $ Right internalId
       (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
@@ -518,12 +516,10 @@ insertRcvMsgDetails_ ::
   ConnAlias ->
   InternalRcvId ->
   InternalId ->
-  ExternalSndId ->
-  ExternalSndTs ->
-  BrokerId ->
-  BrokerTs ->
+  (ExternalSndId, ExternalSndTs) ->
+  (BrokerId, BrokerTs) ->
   IO ()
-insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs =
+insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs) =
   DB.executeNamed
     dbConn
     [sql|

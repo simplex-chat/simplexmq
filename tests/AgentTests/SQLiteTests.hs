@@ -303,18 +303,18 @@ testCreateRcvMsg = do
       `returnsResult` ()
     -- TODO getMsg to check message
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
       `returnsResult` (1 :: InternalId)
 
 testCreateRcvMsgNoQueue :: SpecWith SQLiteStore
 testCreateRcvMsgNoQueue = do
   it "should throw error on attempt to create a RcvMsg w/t a RcvQueue" $ \store -> do
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
       `throwsError` SEBadConn
     createSndConn store sndQueue1
       `returnsResult` ()
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
       `throwsError` SEBadConnType CSnd
 
 testCreateSndMsg :: SpecWith SQLiteStore
