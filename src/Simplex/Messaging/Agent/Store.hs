@@ -201,7 +201,8 @@ type DeliveredTs = UTCTime
 data MsgBase = MsgBase
   { connAlias :: ConnAlias,
     -- | Monotonically increasing id of a message per connection, internal to the agent.
-    -- Internal Id is needed to track the order of the conversation (which can be different for the sender / receiver)
+    -- Internal Id preserves ordering between both received and sent messages, and is needed
+    -- to track the order of the conversation (which can be different for the sender / receiver)
     -- and address messages in commands. External [sender] Id cannot be used for this purpose
     -- due to a possibility of implementation errors in different agents.
     internalId :: InternalId,
