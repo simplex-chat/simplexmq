@@ -253,15 +253,15 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               logServer "<--" c srv rId "MSG <MSG>"
               -- TODO check message status
               recipientTs <- liftIO getCurrentTime
-              let m_sender_ = (senderMsgId, senderTimestamp)
-              let m_broker_ = (srvMsgId, srvTs)
-              recipientId <- withStore $ createRcvMsg st connAlias body recipientTs m_sender_ m_broker_
+              let m_sender = (senderMsgId, senderTimestamp)
+              let m_broker = (srvMsgId, srvTs)
+              recipientId <- withStore $ createRcvMsg st connAlias body recipientTs m_sender m_broker
               notify connAlias $
                 MSG
                   { m_status = MsgOk,
                     m_recipient = (recipientId, recipientTs),
-                    m_sender = m_sender_,
-                    m_broker = m_broker_,
+                    m_sender,
+                    m_broker,
                     m_body = body
                   }
               sendAck c rq
