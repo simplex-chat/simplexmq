@@ -304,7 +304,7 @@ testCreateRcvMsg = do
     -- TODO getMsg to check message
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
     createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
-      `returnsResult` (1 :: InternalId)
+      `returnsResult` InternalId 1
 
 testCreateRcvMsgNoQueue :: SpecWith SQLiteStore
 testCreateRcvMsgNoQueue = do
@@ -325,7 +325,7 @@ testCreateSndMsg = do
     -- TODO getMsg to check message
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
     createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
-      `returnsResult` (1 :: InternalId)
+      `returnsResult` InternalId 1
 
 testCreateSndMsgNoQueue :: SpecWith SQLiteStore
 testCreateSndMsgNoQueue = do

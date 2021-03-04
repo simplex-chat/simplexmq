@@ -152,7 +152,8 @@ data RcvMsg = RcvMsg
   }
   deriving (Eq, Show)
 
-type InternalRcvId = Int64
+-- internal Ids are newtypes to prevent mixing them up
+newtype InternalRcvId = InternalRcvId {unRcvId :: Int64} deriving (Eq, Show)
 
 type ExternalSndId = Int64
 
@@ -185,7 +186,7 @@ data SndMsg = SndMsg
   }
   deriving (Eq, Show)
 
-type InternalSndId = Int64
+newtype InternalSndId = InternalSndId {unSndId :: Int64} deriving (Eq, Show)
 
 data SndMsgStatus
   = Created
@@ -211,7 +212,7 @@ data MsgBase = MsgBase
   }
   deriving (Eq, Show)
 
-type InternalId = Int64
+newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
 
 type InternalTs = UTCTime
 
