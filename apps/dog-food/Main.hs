@@ -57,6 +57,7 @@ data ChatCommand
   | AddContact Contact
   | AcceptContact Contact SMPQueueInfo
   | ChatWith Contact
+  | ChatAll
   | SetName Contact
   | SendMessage Contact ByteString
 
@@ -66,6 +67,7 @@ chatCommandP =
     <|> "/add " *> (AddContact <$> contact)
     <|> "/accept " *> acceptContact
     <|> "/chat " *> chatWith
+    <|> "/chatall" $> ChatAll
     <|> "/name " *> setName
     <|> "@" *> sendMessage
   where
@@ -190,6 +192,7 @@ sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} =
       AddContact a -> transmission a $ NEW smpServer
       AcceptContact a qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
       ChatWith a -> transmission a SUB
+      ChatAll -> transmission (Contact "all") SUBALL
       SendMessage a msg -> transmission a $ SEND msg
       ChatHelp -> Nothing
       SetName _ -> Nothing

@@ -92,6 +92,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       (Nothing, Just sndQ) -> return $ SomeConn SCSnd (SndConnection connAlias sndQ)
       _ -> throwError SEBadConn
 
+  getAllConnAliases :: SQLiteStore -> m [ConnAlias]
+  getAllConnAliases SQLiteStore {dbConn} =
+    liftIO $
+      retrieveAllConnAliases dbConn
+
   getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m RcvQueue
   getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId = do
     rcvQueue <-
@@ -352,6 +357,13 @@ retrieveSndQueueByConnAlias_ dbConn connAlias = do
       let srv = SMPServer host (deserializePort_ port) keyHash
       return . Just $ SndQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
     _ -> return Nothing
+
+-- * getAllConnAliases helpers
+
+retrieveAllConnAliases :: DB.Connection -> IO [ConnAlias]
+retrieveAllConnAliases dbConn = do
+  r <- DB.query_ dbConn "SELECT conn_alias FROM connections;" :: IO [[ConnAlias]]
+  return (concat r)
 
 -- * getRcvQueue helper
 

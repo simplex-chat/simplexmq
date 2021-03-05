@@ -120,7 +120,8 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
   case cmd of
     NEW smpServer -> createNewConnection smpServer
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
-    SUB -> subscribeConnection
+    SUB -> subscribeConnection connAlias
+    SUBALL -> subscribeAll
     SEND msgBody -> sendMessage msgBody
     OFF -> suspendConnection
     DEL -> deleteConnection
@@ -146,9 +147,9 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
         ReplyOff -> return ()
       respond CON
 
-    subscribeConnection :: m ()
-    subscribeConnection =
-      withStore (getConn st connAlias) >>= \case
+    subscribeConnection :: ConnAlias -> m ()
+    subscribeConnection cAlias =
+      withStore (getConn st cAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
         SomeConn _ (RcvConnection _ rq) -> subscribe rq
         -- TODO possibly there should be a separate error type trying
@@ -156,6 +157,10 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
         _ -> throwError PROHIBITED
       where
         subscribe rq = subscribeQueue c rq connAlias >> respond OK
+
+    subscribeAll :: m ()
+    subscribeAll =
+      withStore (getAllConnAliases st) >>= \connAliases -> forM_ connAliases subscribeConnection
 
     sendMessage :: MsgBody -> m ()
     sendMessage msgBody =

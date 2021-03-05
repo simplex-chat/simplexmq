@@ -32,6 +32,7 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> RcvQueue -> m ()
   createSndConn :: s -> SndQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
+  getAllConnAliases :: s -> m [ConnAlias]
   getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m RcvQueue
   deleteConn :: s -> ConnAlias -> m ()
   upgradeRcvConnToDuplex :: s -> ConnAlias -> SndQueue -> m ()
