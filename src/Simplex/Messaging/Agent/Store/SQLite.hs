@@ -358,7 +358,7 @@ retrieveSndQueueByConnAlias_ dbConn connAlias = do
       return . Just $ SndQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
     _ -> return Nothing
 
--- * getAllConnAliases helpers
+-- * getAllConnAliases helper
 
 retrieveAllConnAliases :: DB.Connection -> IO [ConnAlias]
 retrieveAllConnAliases dbConn = do
