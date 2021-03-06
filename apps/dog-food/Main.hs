@@ -210,7 +210,7 @@ receiveFromAgent t ct c = forever . atomically $ do
       END -> Disconnected $ Contact a
       MSG {m_body} -> ReceivedMessage (Contact a) m_body
       SENT _ -> NoChatResponse
-      OK -> YesYes
+      OK -> Connected $ Contact a -- hack for subscribing to all
       ERR e -> ChatError e
     setActiveContact :: ChatResponse -> STM ()
     setActiveContact = \case

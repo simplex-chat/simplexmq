@@ -156,9 +156,9 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
         -- TODO to send the message to the connection without RcvQueue
         _ -> throwError PROHIBITED
       where
-        subscribe rq = subscribeQueue c rq cAlias >> respond OK
+        subscribe rq = subscribeQueue c rq cAlias >> respond' cAlias OK
 
-    -- TODO remove - hack for subscribing to all
+    -- TODO remove - hack for subscribing to all; respond' and parameterization of subscribeConnection are byproduct
     subscribeAll :: m ()
     subscribeAll =
       withStore (getAllConnAliases st) >>= \connAliases -> forM_ connAliases subscribeConnection
@@ -208,7 +208,10 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       sendAgentMessage c sq senderTs $ REPLY qInfo
 
     respond :: ACommand 'Agent -> m ()
-    respond resp = atomically $ writeTBQueue sndQ (corrId, connAlias, resp)
+    respond = respond' connAlias
+
+    respond' :: ConnAlias -> ACommand 'Agent -> m ()
+    respond' cAlias resp = atomically $ writeTBQueue sndQ (corrId, cAlias, resp)
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
 subscriber c@AgentClient {msgQ} st = forever $ do
