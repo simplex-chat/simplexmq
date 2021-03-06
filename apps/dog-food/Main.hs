@@ -110,7 +110,6 @@ chatHelpInfo =
   \/accept <name> <invitation> - accept <invitation>\n\
   \                    (a string that starts from \"smp::\")\n\
   \                    from your contact <name>\n\
-  \/chat <name>      - resume chat with <name>\n\
   \/name <name>      - set <name> to use in invitations\n\
   \@<name> <message> - send <message> (any string) to contact <name>\n\
   \                    @<name> can be omitted to send to previous"
