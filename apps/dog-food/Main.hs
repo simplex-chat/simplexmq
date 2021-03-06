@@ -57,7 +57,6 @@ data ChatCommand
   | AddContact Contact
   | AcceptContact Contact SMPQueueInfo
   | ChatWith Contact
-  | ChatAll
   | SetName Contact
   | SendMessage Contact ByteString
 
@@ -67,7 +66,6 @@ chatCommandP =
     <|> "/add " *> (AddContact <$> contact)
     <|> "/accept " *> acceptContact
     <|> "/chat " *> chatWith
-    <|> "/chatall" $> ChatAll
     <|> "/name " *> setName
     <|> "@" *> sendMessage
   where
@@ -175,7 +173,8 @@ sendToChatTerm ChatClient {outQ, username} ChatTerminal {outputQ} = forever $ do
       atomically . writeTBQueue outputQ $ serializeChatResponse name resp
 
 sendToAgent :: ChatClient -> ChatTerminal -> AgentClient -> IO ()
-sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} =
+sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} = do
+  atomically $ writeTBQueue rcvQ ("1", "", SUBALL) -- hack for subscribing to all
   forever . atomically $ do
     cmd <- readTBQueue inQ
     writeTBQueue rcvQ `mapM_` agentTransmission cmd
@@ -192,7 +191,6 @@ sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} =
       AddContact a -> transmission a $ NEW smpServer
       AcceptContact a qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
       ChatWith a -> transmission a SUB
-      ChatAll -> transmission (Contact "all") SUBALL
       SendMessage a msg -> transmission a $ SEND msg
       ChatHelp -> Nothing
       SetName _ -> Nothing

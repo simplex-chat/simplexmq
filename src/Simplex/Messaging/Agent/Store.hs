@@ -31,7 +31,7 @@ class Monad m => MonadAgentStore s m where
   -- Queue and Connection management
   createRcvConn :: s -> RcvQueue -> m ()
   createSndConn :: s -> SndQueue -> m ()
-  getConn :: s -> ConnAlias -> m SomeConn
+  getConn :: s -> ConnAlias -> m SomeConn -- TODO remove - hack for subscribing to all
   getAllConnAliases :: s -> m [ConnAlias]
   getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m RcvQueue
   deleteConn :: s -> ConnAlias -> m ()
