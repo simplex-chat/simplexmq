@@ -160,8 +160,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
 
     -- TODO remove - hack for subscribing to all; respond' and parameterization of subscribeConnection are byproduct
     subscribeAll :: m ()
-    subscribeAll =
-      withStore (getAllConnAliases st) >>= \connAliases -> forM_ connAliases subscribeConnection
+    subscribeAll = withStore (getAllConnAliases st) >>= mapM_ subscribeConnection
 
     sendMessage :: MsgBody -> m ()
     sendMessage msgBody =
