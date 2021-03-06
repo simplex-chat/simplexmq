@@ -120,7 +120,8 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
   case cmd of
     NEW smpServer -> createNewConnection smpServer
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
-    SUB -> subscribeConnection
+    SUB -> subscribeConnection connAlias
+    SUBALL -> subscribeAll
     SEND msgBody -> sendMessage msgBody
     OFF -> suspendConnection
     DEL -> deleteConnection
@@ -146,16 +147,20 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
         ReplyOff -> return ()
       respond CON
 
-    subscribeConnection :: m ()
-    subscribeConnection =
-      withStore (getConn st connAlias) >>= \case
+    subscribeConnection :: ConnAlias -> m ()
+    subscribeConnection cAlias =
+      withStore (getConn st cAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
         SomeConn _ (RcvConnection _ rq) -> subscribe rq
         -- TODO possibly there should be a separate error type trying
         -- TODO to send the message to the connection without RcvQueue
         _ -> throwError PROHIBITED
       where
-        subscribe rq = subscribeQueue c rq connAlias >> respond OK
+        subscribe rq = subscribeQueue c rq cAlias >> respond' cAlias OK
+
+    -- TODO remove - hack for subscribing to all; respond' and parameterization of subscribeConnection are byproduct
+    subscribeAll :: m ()
+    subscribeAll = withStore (getAllConnAliases st) >>= mapM_ subscribeConnection
 
     sendMessage :: MsgBody -> m ()
     sendMessage msgBody =
@@ -202,7 +207,10 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       sendAgentMessage c sq senderTs $ REPLY qInfo
 
     respond :: ACommand 'Agent -> m ()
-    respond resp = atomically $ writeTBQueue sndQ (corrId, connAlias, resp)
+    respond = respond' connAlias
+
+    respond' :: ConnAlias -> ACommand 'Agent -> m ()
+    respond' cAlias resp = atomically $ writeTBQueue sndQ (corrId, cAlias, resp)
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
 subscriber c@AgentClient {msgQ} st = forever $ do

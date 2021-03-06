@@ -81,6 +81,7 @@ data ACommand (p :: AParty) where
   -- CONF :: OtherPartyId -> ACommand Agent
   -- LET :: OtherPartyId -> ACommand Client
   SUB :: ACommand Client
+  SUBALL :: ACommand Client -- TODO should be moved to chat protocol - hack for subscribing to all
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
@@ -291,6 +292,7 @@ commandP =
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
     <|> "SUB" $> ACmd SClient SUB
+    <|> "SUBALL" $> ACmd SClient SUBALL -- TODO remove - hack for subscribing to all
     <|> "END" $> ACmd SAgent END
     <|> "SEND " *> sendCmd
     <|> "SENT " *> sentResp
@@ -336,6 +338,7 @@ serializeCommand = \case
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
   SUB -> "SUB"
+  SUBALL -> "SUBALL" -- TODO remove - hack for subscribing to all
   END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   SENT mId -> "SENT " <> bshow mId

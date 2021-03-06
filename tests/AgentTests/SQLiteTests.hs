@@ -53,6 +53,7 @@ storeTests = withStore do
   describe "store methods" do
     describe "createRcvConn" testCreateRcvConn
     describe "createSndConn" testCreateSndConn
+    describe "getAllConnAliases" testGetAllConnAliases
     describe "getRcvQueue" testGetRcvQueue
     describe "deleteConn" do
       describe "RcvConnection" testDeleteRcvConn
@@ -141,6 +142,16 @@ testCreateSndConn = do
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
+
+testGetAllConnAliases :: SpecWith SQLiteStore
+testGetAllConnAliases = do
+  it "should get all conn aliases" $ \store -> do
+    createRcvConn store rcvQueue1
+      `returnsResult` ()
+    createSndConn store sndQueue1 {connAlias = "conn2"}
+      `returnsResult` ()
+    getAllConnAliases store
+      `returnsResult` ["conn1" :: ConnAlias, "conn2" :: ConnAlias]
 
 testGetRcvQueue :: SpecWith SQLiteStore
 testGetRcvQueue = do
