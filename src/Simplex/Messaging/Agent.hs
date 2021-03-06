@@ -156,8 +156,9 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
         -- TODO to send the message to the connection without RcvQueue
         _ -> throwError PROHIBITED
       where
-        subscribe rq = subscribeQueue c rq connAlias >> respond OK
+        subscribe rq = subscribeQueue c rq cAlias >> respond OK
 
+    -- TODO remove - hack for /chatall
     subscribeAll :: m ()
     subscribeAll =
       withStore (getAllConnAliases st) >>= \connAliases -> forM_ connAliases subscribeConnection
