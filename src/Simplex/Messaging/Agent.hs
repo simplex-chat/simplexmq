@@ -158,7 +158,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       where
         subscribe rq = subscribeQueue c rq cAlias >> respond OK
 
-    -- TODO remove - hack for /chatall
+    -- TODO remove - hack for /chatall; (subscribeConnection above also was not parameterized with ConnAlias)
     subscribeAll :: m ()
     subscribeAll =
       withStore (getAllConnAliases st) >>= \connAliases -> forM_ connAliases subscribeConnection
