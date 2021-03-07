@@ -40,10 +40,18 @@ data SParty :: Party -> Type where
 
 data THandle = THandle
   { handle :: Handle,
+    -- sendKey :: TransportKey,
+    -- receiveKey :: TransportKey,
     aesKey :: C.Key,
     ivBytes :: C.IV,
     blockSize :: Int
   }
+
+-- data TransportKey = TransportKey
+--   { aesKey :: C.Key,
+--     baseIV :: C.IV,
+--     counter :: TVar Word32
+--   }
 
 deriving instance Show (SParty a)
 
