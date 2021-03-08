@@ -1,8 +1,11 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+
+#ifdef mingw32_HOST_OS
+{-# LANGUAGE ForeignFunctionInterface #-}
+#endif
 
 module ChatTerminal
   ( ChatTerminal (..),
