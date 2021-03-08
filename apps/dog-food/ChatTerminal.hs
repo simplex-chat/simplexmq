@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -18,10 +19,12 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding
+import Foreign.C.Types
 import Numeric.Natural
 import Simplex.Messaging.Transport (getLn, putLn)
 import qualified System.Console.ANSI as C
@@ -93,8 +96,7 @@ chatTerminal :: ChatTerminal -> IO ()
 chatTerminal ct =
   if termSize ct /= (0, 0)
     then do
-      hSetBuffering stdin NoBuffering
-      hSetBuffering stdout NoBuffering
+      setTTY NoBuffering
       hSetEcho stdin False
       updateInput ct
       run receiveFromTTY' sendToTTY'
@@ -288,7 +290,7 @@ getKey = charsToKey . reverse <$> keyChars ""
       cs -> KeyChars cs
 
     keyChars cs = do
-      c <- getChar
+      c <- getHiddenChar
       more <- hReady stdin
       -- for debugging - uncomment this, comment line after:
       -- (if more then keyChars else \c' -> print (reverse c') >> return c') (c : cs)
@@ -315,6 +317,11 @@ getChatLn ct = do
     getRest s = do
       setTTY LineBuffering
       (s <>) <$> getLn stdin
+
+getHiddenChar :: IO Char
+getHiddenChar = fmap (chr.fromEnum) c_getch
+foreign import ccall unsafe "conio.h getch"
+  c_getch :: IO CInt
 
 setTTY :: BufferMode -> IO ()
 setTTY mode = do
