@@ -6,6 +6,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Options.Applicative
 import Simplex.Messaging.Agent.Transmission (SMPServer (..), smpServerP)
+import Types
 
 data ChatOpts = ChatOpts
   { name :: Maybe B.ByteString,
@@ -13,8 +14,6 @@ data ChatOpts = ChatOpts
     smpServer :: SMPServer,
     termMode :: TermMode
   }
-
-data TermMode = TermModeSimple | TermModeEditor
 
 chatOpts :: Parser ChatOpts
 chatOpts =
