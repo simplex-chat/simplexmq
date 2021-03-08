@@ -55,6 +55,7 @@ parseSMPServer = eitherReader $ A.parseOnly (smpServerP <* A.endOfInput) . B.pac
 
 parseTermMode :: ReadM TermMode
 parseTermMode = maybeReader $ \case
+  "basic" -> Just TermModeBasic
   "simple" -> Just TermModeSimple
   "editor" -> Just TermModeEditor
   _ -> Nothing

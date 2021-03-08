@@ -102,8 +102,10 @@ newTermState user =
 
 chatTerminal :: ChatTerminal -> IO ()
 chatTerminal ct
+  | termMode ct == TermModeBasic =
+    run (receiveFromTTY $ getLn stdin) sendToTTY
   | termSize ct == (0, 0) || termMode ct == TermModeSimple =
-    run receiveFromTTY sendToTTY
+    run (receiveFromTTY $ getChatLn ct) sendToTTY
   | otherwise = do
     setTTY NoBuffering
     hSetEcho stdin False
@@ -112,9 +114,9 @@ chatTerminal ct
   where
     run receive send = race_ (receive ct) (send ct)
 
-receiveFromTTY :: ChatTerminal -> IO ()
-receiveFromTTY ct@ChatTerminal {inputQ} =
-  forever $ getChatLn ct >>= atomically . writeTBQueue inputQ
+receiveFromTTY :: IO ByteString -> ChatTerminal -> IO ()
+receiveFromTTY get ct =
+  forever $ get >>= atomically . writeTBQueue (inputQ ct)
 
 withTermLock :: ChatTerminal -> IO () -> IO ()
 withTermLock ChatTerminal {termLock} action = do
@@ -242,15 +244,17 @@ promptString :: Maybe Contact -> String
 promptString a = maybe "" (B.unpack . toBs) a <> "> "
 
 sendToTTY :: ChatTerminal -> IO ()
-sendToTTY ChatTerminal {outputQ} =
-  forever $ atomically (readTBQueue outputQ) >>= putLn stdout
+sendToTTY ct = forever $ readOutputQ ct >>= putLn stdout
 
 sendToTTY' :: ChatTerminal -> IO ()
-sendToTTY' ct@ChatTerminal {outputQ} = forever $ do
-  msg <- atomically (readTBQueue outputQ)
+sendToTTY' ct = forever $ do
+  msg <- readOutputQ ct
   withTermLock ct $ do
     printMessage ct msg
     updateInput ct
+
+readOutputQ :: ChatTerminal -> IO ByteString
+readOutputQ = atomically . readTBQueue . outputQ
 
 printMessage :: ChatTerminal -> ByteString -> IO ()
 printMessage ChatTerminal {termSize, nextMessageRow} msg = do
