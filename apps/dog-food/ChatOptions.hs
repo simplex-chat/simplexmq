@@ -46,7 +46,7 @@ chatOpts =
       ( long "term"
           <> short 't'
           <> metavar "TERM"
-          <> help "terminal mode, \"simple\" or \"editor\" (editor)"
+          <> help "terminal mode: \"editor\", \"simple\" or \"basic\" (editor)"
           <> value TermModeEditor
       )
 
