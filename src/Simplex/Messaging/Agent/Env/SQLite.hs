@@ -18,7 +18,7 @@ data AgentConfig = AgentConfig
     rsaKeySize :: Int,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    dbFile :: String,
+    dbFile :: FilePath,
     smpCfg :: SMPClientConfig
   }
 
