@@ -10,7 +10,7 @@ See [simplex.chat](https://simplex.chat) website for chat demo and the explanati
 SMP protocol is semi-formally defined [here](https://github.com/simplex-chat/protocol).
 
 Currently only these features are available:
-- simple 1-2-1 chat with multiple people in the same terminal window.
+- simple 1-to-1 chat with multiple people in the same terminal window.
 - auto-populated recipient name - just type your messages.
 - default server is available to play with - `smp.simplex.im:5223` - and you can deploy your own (`smp-server` executable in this repo).
 - no global identity or names visible to the server(s) - for the privacy of contacts and conversations.
