@@ -53,13 +53,13 @@ $ dog-food
 
 `dog-food` (as in "eating your own dog food" - it is an early prototype) starts chat client with default parameters. By default, app data directory is created in the home directory (`~/.simplex`, or `%APPDATA%/simplex` on Windows), and SQLite database file `smp-chat.db` is initialized in it. The default SMP server is `smp.simplex.im:5223`.
 
-To specify a different chat database location, e.g. to create a database file in the working directory, run:
+To specify a different file path for the chat database use `-d` command line option:
 
 ```shell
 $ dog-food -d my-chat.db
 ```
 
-You can deploy your own server and set client to use it via command line option:
+If you deployed your own SMP server you can set client to use it via `-s` option:
 
 ```shell
 $ dog-food -s smp.example.com:5223
