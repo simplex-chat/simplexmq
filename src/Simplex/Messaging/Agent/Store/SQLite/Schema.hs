@@ -10,8 +10,7 @@ createSchema :: Connection -> IO ()
 createSchema conn =
   mapM_
     (execute_ conn)
-    [ enableFKs,
-      servers,
+    [ servers,
       rcvQueues,
       sndQueues,
       connections,
@@ -19,9 +18,6 @@ createSchema conn =
       rcvMessages,
       sndMessages
     ]
-
-enableFKs :: Query
-enableFKs = "PRAGMA foreign_keys = ON;"
 
 -- port is either a port number or a service name, see Network.Socket.Info.ServiceName
 servers :: Query

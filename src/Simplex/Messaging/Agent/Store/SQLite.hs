@@ -72,6 +72,7 @@ createSQLiteStore dbFilePath = do
 connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
 connectSQLiteStore dbFilePath = do
   dbConn <- liftIO $ DB.open dbFilePath
+  liftIO $ DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
   return SQLiteStore {dbFilePath, dbConn}
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
