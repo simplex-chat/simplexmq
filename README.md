@@ -51,13 +51,12 @@ $ dog-food
 
 > **NOTE:** When running chat client executable built with the latter approach, if you encounter ``version `GLIBC_2.28' not found`` error, rebuild it with `haskell:8.8.4-stretch` base image instead (you'd have to change it in your local [Dockerfile](Dockerfile)).
 
-`dog-food` (as in "eating your own dog food" - it is an early prototype) starts chat client with default parameters. By default, SQLite database file is created in the working directory (`smp-chat.db`), and the default SMP server is `smp.simplex.im:5223`.
+`dog-food` (as in "eating your own dog food" - it is an early prototype) starts chat client with default parameters. By default, app data directory is created in the home directory (`~/.simplex`, or `%APPDATA%/simplex` on Windows), and SQLite database file `smp-chat.db` is initialized in it. The default SMP server is `smp.simplex.im:5223`.
 
-To specify a different chat database location run:
+To specify a different chat database location, e.g. to create a database file in the working directory, run:
 
 ```shell
-$ mkdir ~/simplex
-$ dog-food -d ~/simplex/my-chat.db
+$ dog-food -d my-chat.db
 ```
 
 You can deploy your own server and set client to use it via command line option:

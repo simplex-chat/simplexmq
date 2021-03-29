@@ -119,7 +119,9 @@ main :: IO ()
 main = do
   appDir <- getAppUserDataDirectory "simplex"
   ChatOpts {dbFileName, smpServer, name, termMode} <- getChatOpts appDir
-  putStrLn "simpleX chat prototype, \"/help\" for usage information"
+  putStrLn "simpleX chat prototype"
+  putStrLn $ "db: " ++ dbFileName
+  putStrLn "type \"/help\" for usage information"
   let user = Contact <$> name
   t <- getChatClient smpServer user
   ct <- newChatTerminal (tbqSize cfg) user termMode
