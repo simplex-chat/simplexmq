@@ -37,7 +37,7 @@ withStore = before createStore . after removeStore
     removeStore :: SQLiteStore -> IO ()
     removeStore store = do
       DB.close $ dbConn store
-      removeFile $ dbFilename store
+      removeFile $ dbFilePath store
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r

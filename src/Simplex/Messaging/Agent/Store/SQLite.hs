@@ -40,19 +40,23 @@ import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (liftIOEither)
 import System.Exit (ExitCode (ExitFailure), exitWith)
+import System.FilePath (takeDirectory)
 import Text.Read (readMaybe)
+import UnliftIO.Directory (createDirectoryIfMissing)
 import qualified UnliftIO.Exception as E
 
 -- * SQLite Store implementation
 
 data SQLiteStore = SQLiteStore
-  { dbFilename :: String,
+  { dbFilePath :: FilePath,
     dbConn :: DB.Connection
   }
 
-createSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
-createSQLiteStore dbFilename = do
-  store <- connectSQLiteStore dbFilename
+createSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
+createSQLiteStore dbFilePath = do
+  let dbDir = takeDirectory dbFilePath
+  createDirectoryIfMissing False dbDir
+  store <- connectSQLiteStore dbFilePath
   compileOptions <- liftIO (DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
   let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
   liftIO $ case threadsafeOption of
@@ -65,10 +69,10 @@ createSQLiteStore dbFilename = do
   liftIO . createSchema $ dbConn store
   return store
 
-connectSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
-connectSQLiteStore dbFilename = do
-  dbConn <- liftIO $ DB.open dbFilename
-  return SQLiteStore {dbFilename, dbConn}
+connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
+connectSQLiteStore dbFilePath = do
+  dbConn <- liftIO $ DB.open dbFilePath
+  return SQLiteStore {dbFilePath, dbConn}
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
