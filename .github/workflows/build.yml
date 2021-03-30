@@ -1,5 +1,3 @@
-# Base: https://github.com/haskell/actions/tree/main/setup#usage
-
 name: build
 
 on:
@@ -11,12 +9,16 @@ on:
 jobs:
   build:
     name: build
-    runs-on: ubuntu-latest # TODO matrix testing
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macOS-latest, windows-latest]
     steps:
       - name: Clone project
         uses: actions/checkout@v2
 
       - name: Setup Stack
+        # https://github.com/haskell/actions/tree/main/setup
         uses: haskell/actions/setup@v1
         with:
           ghc-version: '8.8.4'
@@ -35,5 +37,20 @@ jobs:
           sqlite3 test.db "pragma COMPILE_OPTIONS;" | grep THREADSAFE
           rm test.db
 
-      - name: Build and run tests
-        run: stack build --test
+      - name: Build & test
+        id: build_test
+        run: |
+          stack build --test
+          echo "::set-output name=local_install_root::$(stack path --local-install-root)"
+
+      - name: Create pre-release
+        if: ${{ github.ref == 'refs/heads/master' }}
+        uses: marvinpinto/action-automatic-releases@latest
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: 'latest'
+          prerelease: true
+          title: "dev build - ${{ runner.os }}"
+          files: |
+            LICENSE.txt
+            ${{ steps.build_test.outputs.local_install_root }}/bin/dog-food
