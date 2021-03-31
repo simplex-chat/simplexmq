@@ -41,7 +41,8 @@ jobs:
       - name: Build & test
         id: build_test
         run: |
-          stack build --test
+          # stack build --test
+          stack build
           echo "::set-output name=local_install_root::$(stack path --local-install-root)"
 
       - name: Echo $GITHUB_REF
