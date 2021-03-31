@@ -45,14 +45,6 @@ jobs:
           stack build
           echo "::set-output name=local_install_root::$(stack path --local-install-root)"
 
-      - name: Substitute backward slashes for Windows
-        id: substitute_slashes
-        if: ${{ matrix.os == 'windows-latest' }}
-        uses: bluwy/substitute-string-action@v1
-        with:
-          _input-text: ${{ steps.build_test.outputs.local_install_root }}
-          \: /
-
       - name: Prepare tag
         id: prepare_tag
         uses: ASzc/change-string-case-action@v1
@@ -68,4 +60,4 @@ jobs:
           prerelease: true
           files: |
             LICENSE
-            ${{ steps.substitute_slashes.outputs.result }}/bin/dog-food
+            ${{ steps.build_test.outputs.local_install_root }}?bin?dog-food
