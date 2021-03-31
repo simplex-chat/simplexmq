@@ -44,9 +44,13 @@ jobs:
           stack build --test
           echo "::set-output name=local_install_root::$(stack path --local-install-root)"
 
+      - name: Echo $GITHUB_REF
+        run: |
+          echo $GITHUB_REF
+
       - name: Create pre-release
         # if: ${{ github.ref == 'refs/heads/master' }}
-        # if: ${{ github.ref == 'refs/heads/auto-pre-releases' }}
+        if: ${{ github.ref == 'refs/heads/auto-pre-releases' }}
         uses: marvinpinto/action-automatic-releases@latest
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
