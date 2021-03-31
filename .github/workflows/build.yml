@@ -46,7 +46,7 @@ jobs:
 
       - name: Create pre-release
         # if: ${{ github.ref == 'refs/heads/master' }}
-        if: ${{ github.ref == 'refs/heads/auto-pre-releases' }}
+        # if: ${{ github.ref == 'refs/heads/auto-pre-releases' }}
         uses: marvinpinto/action-automatic-releases@latest
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
