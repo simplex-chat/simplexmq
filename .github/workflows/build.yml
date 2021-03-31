@@ -54,5 +54,5 @@ jobs:
           prerelease: true
           title: "dev build - ${{ runner.os }}"
           files: |
-            LICENSE.txt
+            LICENSE
             ${{ steps.build_test.outputs.local_install_root }}/bin/dog-food
