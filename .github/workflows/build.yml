@@ -23,8 +23,9 @@ jobs:
 
       - name: Set env variables - Windows
         if: ${{ matrix.os == 'windows-latest' }}
+        # TODO change cache path
         run: |
-          echo "stack_cache=~/.stack" >> $GITHUB_ENV  # TODO change to proper path
+          echo "stack_cache=~/.stack" >> $GITHUB_ENV
           echo "path_sep=\" >> $GITHUB_ENV
 
       - name: Clone project
