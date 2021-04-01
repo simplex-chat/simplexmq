@@ -28,7 +28,7 @@ jobs:
         run: |
           echo "stack_cache=~/.stack" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
           echo "path_sep=\" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
-          echo "exe_extension=.exe" >> $GITHUB_ENV
+          echo "exe_extension=.exe" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
 
       - name: Clone project
         uses: actions/checkout@v2
