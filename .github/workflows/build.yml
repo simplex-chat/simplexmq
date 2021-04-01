@@ -45,18 +45,18 @@ jobs:
           stack build
           echo "::set-output name=local_install_root::$(stack path --local-install-root)"
 
-      - name: Prepare tag
-        id: prepare_tag
-        uses: ASzc/change-string-case-action@v1
-        with:
-          string: "latest-${{ runner.os }}"
+      # - name: Prepare tag
+      #   id: prepare_tag
+      #   uses: ASzc/change-string-case-action@v1
+      #   with:
+      #     string: "latest-${{ runner.os }}"
 
       - name: Create pre-release
         # if: ${{ github.ref == 'refs/heads/master' }}
         uses: marvinpinto/action-automatic-releases@latest
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          automatic_release_tag: ${{ steps.prepare_tag.outputs.lowercase }}
+          automatic_release_tag: "latest-${{ runner.os }}"
           prerelease: true
           files: |
             LICENSE
