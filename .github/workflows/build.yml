@@ -25,8 +25,8 @@ jobs:
         if: ${{ matrix.os == 'windows-latest' }}
         # TODO change cache path
         run: |
-          echo "stack_cache=~/.stack" >> $GITHUB_ENV
-          echo "path_sep=\" >> $GITHUB_ENV
+          echo "stack_cache=~/.stack" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
+          echo "path_sep=\" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
 
       - name: Clone project
         uses: actions/checkout@v2
