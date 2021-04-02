@@ -42,8 +42,8 @@ jobs:
     if: ${{ needs.prepare-release.result == 'success' || github.event == 'pull_request' }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        fail-fast: false
         include:
           - os: ubuntu-latest
             stack_cache: ~/.stack
