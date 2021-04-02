@@ -45,7 +45,8 @@ jobs:
             artifact_rel_path: /bin/dog-food
             asset_name: dog-food-macos-amd64
           - os: windows-latest
-            stack_cache: ${env:LOCALAPPDATA}\Programs\stack
+            # stack_cache: ${env:LOCALAPPDATA}\Programs\stack
+            stack_cache: ~/AppData/Local/Programs/stack
             artifact_rel_path: \bin\dog-food.exe
             asset_name: dog-food-windows-amd64
     steps:
@@ -73,29 +74,29 @@ jobs:
         uses: actions/cache@v2
         with:
           path: ${{ matrix.stack_cache }}
-          key: ${{ runner.os }}-${{ hashFiles('stack.yaml') }}
+          key: ${{ runner.os }}-stack-test1-${{ hashFiles('stack.yaml') }}
 
-      # - name: Build & test
-      #   id: build_test
-      #   # TODO reenable tests (stack build --test)
-      #   run: |
-      #     stack build
-      #     echo "::set-output name=LOCAL_INSTALL_ROOT::$(stack path --local-install-root)"
+      - name: Build & test
+        id: build_test
+        # TODO reenable tests (stack build --test)
+        run: |
+          stack build
+          echo "::set-output name=LOCAL_INSTALL_ROOT::$(stack path --local-install-root)"
       
-      # - name: Upload binaries to release - latest
-      #   # if: ${{ github.ref == 'refs/heads/master' }}
-      #   uses: svenstaro/upload-release-action@v2
-      #   with:
-      #     repo_token: ${{ secrets.GITHUB_TOKEN }}
-      #     file: ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}${{ matrix.artifact_rel_path }}
-      #     asset_name: ${{ matrix.asset_name }}
-      #     tag: latest
+      - name: Upload binaries to release - latest
+        # if: ${{ github.ref == 'refs/heads/master' }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}${{ matrix.artifact_rel_path }}
+          asset_name: ${{ matrix.asset_name }}
+          tag: latest
 
-      # - name: Upload binaries to release - versioned
-      #   if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-      #   uses: svenstaro/upload-release-action@v2
-      #   with:
-      #     repo_token: ${{ secrets.GITHUB_TOKEN }}
-      #     file: ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}${{ matrix.artifact_rel_path }}
-      #     asset_name: ${{ matrix.asset_name }}
-      #     tag: ${{ github.ref }}
+      - name: Upload binaries to release - versioned
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}${{ matrix.artifact_rel_path }}
+          asset_name: ${{ matrix.asset_name }}
+          tag: ${{ github.ref }}
