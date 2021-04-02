@@ -53,12 +53,16 @@ jobs:
             stack_cache: ~/.stack
             artifact_rel_path: /bin/dog-food
             asset_name: dog-food-macos-amd64
-          # - os: windows-latest
-          #   # TODO fix cache path
-          #   stack_cache: ~/.stack
-          #   artifact_rel_path: \bin\dog-food.exe
-          #   asset_name: dog-food-windows-amd64
+          - os: windows-latest
+            stack_cache: $env:LOCALAPPDATA\Programs\stack
+            artifact_rel_path: \bin\dog-food.exe
+            asset_name: dog-food-windows-amd64
     steps:
+      - name: Dump matrix context
+        env:
+          MATRIX_CONTEXT: ${{ toJSON(matrix) }}
+        run: echo "$MATRIX_CONTEXT"
+
       - name: Clone project
         uses: actions/checkout@v2
 
