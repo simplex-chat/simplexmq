@@ -54,9 +54,10 @@ jobs:
           MATRIX_CONTEXT: ${{ toJSON(matrix) }}
         run: echo "$MATRIX_CONTEXT"
       
-      - name: Echo HOME
+      - name: Echo stuff
         run: |
           echo ${env:LOCALAPPDATA}
+          echo ${{ matrix.stack_cache }}
 
       - name: Clone project
         uses: actions/checkout@v2
