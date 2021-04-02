@@ -57,6 +57,10 @@ jobs:
         env:
           MATRIX_CONTEXT: ${{ toJSON(matrix) }}
         run: echo "$MATRIX_CONTEXT"
+      
+      - name: Echo HOME
+        run: |
+          echo "${{ env.HOME }}"
 
       - name: Clone project
         uses: actions/checkout@v2
