@@ -38,9 +38,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build:
-    needs: prepare-release
-    if: ${{ needs.prepare-release.result == 'success' || 'pull_request' == 'pull_request' }}
+    if: ${{ 'pull_request' == 'pull_request' }}
     # if: always()
+    needs: prepare-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
