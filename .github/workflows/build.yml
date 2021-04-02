@@ -4,75 +4,89 @@ on:
   push:
     branches:
       - master
+    tags:
+      - "v*"
   pull_request:
 
 jobs:
+  prepare-release:
+    if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    outputs:
+      RELEASE_TAG: ${{ env.RELEASE_TAG }}
+    steps:
+      - name: Prepare release meta - latest
+        if: ${{ github.ref == 'refs/heads/master' }}
+        run: |
+          echo "RELEASE_TAG=latest" >> $GITHUB_ENV
+          echo "PRERELEASE=true" >> $GITHUB_ENV
+
+      - name: Prepare release meta - versioned
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "RELEASE_TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          echo "PRERELEASE=false" >> $GITHUB_ENV
+      
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          prerelease: ${{ env.PRERELEASE }}
+          files: |
+            LICENSE
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
-    name: build
+    needs: prepare-release
+    if: ${{ needs.prepare-release.result == 'success' || github.event == 'pull_request' }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macOS-latest, windows-latest]
-      fail-fast: false
+        fail-fast: false
+        include:
+          - os: ubuntu-latest
+            stack_cache: ~/.stack
+            artifact_name: dog-food
+            asset_name: dog-food-linux-amd64
+          - os: windows-latest
+            # TODO fix cache path
+            stack_cache: ~/.stack
+            artifact_name: dog-food.exe
+            asset_name: dog-food-windows-amd64
+          - os: macos-latest
+            stack_cache: ~/.stack
+            artifact_name: dog-food
+            asset_name: dog-food-macos-amd64
     steps:
-      - name: Set env variables - Unix
-        if: ${{ matrix.os == 'ubuntu-latest' || matrix.os == 'macOS-latest' }}
-        run: |
-          echo "stack_cache=~/.stack" >> $GITHUB_ENV
-          echo "path_sep=/" >> $GITHUB_ENV
-          echo "exe_extension=" >> $GITHUB_ENV
-
-      - name: Set env variables - Windows
-        if: ${{ matrix.os == 'windows-latest' }}
-        # TODO change cache path
-        run: |
-          echo "stack_cache=~/.stack" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
-          echo "path_sep=\" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
-          echo "exe_extension=.exe" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf-8 -Append
-
       - name: Clone project
         uses: actions/checkout@v2
 
       - name: Setup Stack
-        # https://github.com/haskell/actions/tree/main/setup
         uses: haskell/actions/setup@v1
         with:
           ghc-version: '8.8.4'
-          # cabal-version: 'latest'. Omitted, but defaults to 'latest'
           enable-stack: true
           stack-version: 'latest'
 
       - name: Cache dependencies
         uses: actions/cache@v2
         with:
-          path: ${{ env.stack_cache }}
+          path: ${{ matrix.stack_cache }}
           key: ${{ runner.os }}-${{ hashFiles('stack.yaml') }}
-
-      # - name: Log SQLite default threading mode
-      #   run: |
-      #     sqlite3 test.db "pragma COMPILE_OPTIONS;" | grep THREADSAFE
-      #     rm test.db
 
       - name: Build & test
         id: build_test
+        # TODO reenable tests (stack build --test)
         run: |
-          # stack build --test
           stack build
-          echo "::set-output name=local_install_root::$(stack path --local-install-root)"
-
-      - name: Prepare tag
-        id: prepare_tag
-        uses: ASzc/change-string-case-action@v1
-        with:
-          string: "latest-${{ runner.os }}"
-
-      - name: Create pre-release
-        # if: ${{ github.ref == 'refs/heads/master' }}
-        uses: marvinpinto/action-automatic-releases@latest
+          echo "::set-output name=LOCAL_INSTALL_ROOT::$(stack path --local-install-root)"
+      
+      - name: Upload binaries to release
+        if: ${{ needs.prepare-release.result == 'success' }}
+        uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          automatic_release_tag: ${{ steps.prepare_tag.outputs.lowercase }}
-          prerelease: true
-          files: |
-            LICENSE
-            ${{ steps.build_test.outputs.local_install_root }}${{ env.path_sep }}bin${{ env.path_sep }}dog-food${{ env.exe_extension }}
+          file: ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}/bin/${{ matrix.artifact_name }}
+          asset_name: ${{ matrix.asset_name }}
+          tag: ${{needs.prepare-release.outputs.RELEASE_TAG}}
