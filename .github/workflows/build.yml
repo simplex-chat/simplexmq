@@ -47,17 +47,17 @@ jobs:
         include:
           - os: ubuntu-latest
             stack_cache: ~/.stack
-            artifact_name: dog-food
+            artifact_rel_path: /bin/dog-food
             asset_name: dog-food-linux-amd64
+          - os: macos-latest
+            stack_cache: ~/.stack
+            artifact_rel_path: /bin/dog-food
+            asset_name: dog-food-macos-amd64
           - os: windows-latest
             # TODO fix cache path
             stack_cache: ~/.stack
-            artifact_name: dog-food.exe
+            artifact_rel_path: \bin\dog-food.exe
             asset_name: dog-food-windows-amd64
-          - os: macos-latest
-            stack_cache: ~/.stack
-            artifact_name: dog-food
-            asset_name: dog-food-macos-amd64
     steps:
       - name: Clone project
         uses: actions/checkout@v2
@@ -87,6 +87,6 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}/bin/${{ matrix.artifact_name }}
+          file: ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}${{ matrix.artifact_rel_path }}
           asset_name: ${{ matrix.asset_name }}
-          tag: ${{needs.prepare-release.outputs.RELEASE_TAG}}
+          tag: ${{ needs.prepare-release.outputs.RELEASE_TAG }}
