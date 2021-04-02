@@ -46,16 +46,16 @@ jobs:
           - os: ubuntu-latest
             stack_cache: ~/.stack
             artifact_rel_path: /bin/dog-food
-            asset_name: dog-food-linux-amd64
+            asset_name: dog-food-linux-x86-64
           - os: macos-latest
             stack_cache: ~/.stack
             artifact_rel_path: /bin/dog-food
-            asset_name: dog-food-macos-amd64
+            asset_name: dog-food-macos-x86-64
           - os: windows-latest
             # stack_cache: ${env:LOCALAPPDATA}\Programs\stack
             stack_cache: ~/AppData/Local/Programs/stack
             artifact_rel_path: \bin\dog-food.exe
-            asset_name: dog-food-windows-amd64
+            asset_name: dog-food-windows-x86-64
     steps:
       - name: Clone project
         uses: actions/checkout@v2
