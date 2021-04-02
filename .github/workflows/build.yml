@@ -39,8 +39,8 @@ jobs:
 
   build:
     needs: prepare-release
-    # if: ${{ needs.prepare-release.result == 'success' || github.event_name == 'pull_request' }}
-    if: always()
+    if: ${{ needs.prepare-release.result == 'success' || 'pull_request' == 'pull_request' }}
+    # if: always()
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
