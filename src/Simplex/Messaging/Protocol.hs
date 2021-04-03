@@ -245,8 +245,10 @@ makeNextIV :: TransportKey -> IO C.IV
 makeNextIV TransportKey {baseIV, counter} = atomically $ do
   c <- readTVar counter
   writeTVar counter $ c + 1
-  let (start, rest) = B.splitAt 4 $ C.unIV baseIV
-  pure . C.IV $ (start `xor` encodeWord32 c) <> rest
+  pure $ iv c
+  where
+    (start, rest) = B.splitAt 4 $ C.unIV baseIV
+    iv c = C.IV $ (start `xor` encodeWord32 c) <> rest
 
 serializeTransmission :: Transmission -> ByteString
 serializeTransmission (CorrId corrId, queueId, command) =
