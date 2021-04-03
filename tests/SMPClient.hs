@@ -27,7 +27,7 @@ testPort = "5000"
 
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
 testSMPClient client = do
-  threadDelay 50_000 -- TODO hack: thread delay for SMP server to start
+  threadDelay 250_000 -- TODO hack: thread delay for SMP server to start
   runTCPClient testHost testPort $ \h -> do
     let th =
           THandle

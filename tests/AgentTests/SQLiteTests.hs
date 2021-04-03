@@ -7,6 +7,7 @@ module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Monad.Except (ExceptT, runExceptT)
 import qualified Crypto.PubKey.RSA as R
+import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
 import Data.Word (Word32)
@@ -36,7 +37,7 @@ withStore = before createStore . after removeStore
     removeStore :: SQLiteStore -> IO ()
     removeStore store = do
       DB.close $ dbConn store
-      removeFile $ dbFilename store
+      removeFile $ dbFilePath store
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r
@@ -47,10 +48,12 @@ action `throwsError` e = runExceptT action `shouldReturn` Left e
 -- TODO add null port tests
 storeTests :: Spec
 storeTests = withStore do
+  describe "compiled as threadsafe" testCompiledThreadsafe
   describe "foreign keys enabled" testForeignKeysEnabled
   describe "store methods" do
     describe "createRcvConn" testCreateRcvConn
     describe "createSndConn" testCreateSndConn
+    describe "getAllConnAliases" testGetAllConnAliases
     describe "getRcvQueue" testGetRcvQueue
     describe "deleteConn" do
       describe "RcvConnection" testDeleteRcvConn
@@ -70,6 +73,12 @@ storeTests = withStore do
     describe "createSndMsg" do
       describe "SndQueue exists" testCreateSndMsg
       describe "SndQueue doesn't exist" testCreateSndMsgNoQueue
+
+testCompiledThreadsafe :: SpecWith SQLiteStore
+testCompiledThreadsafe = do
+  it "should throw error if compiled sqlite library is not threadsafe" $ \store -> do
+    compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
+    compileOptions `shouldNotContain` [["THREADSAFE=0"]]
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
 testForeignKeysEnabled = do
@@ -133,6 +142,16 @@ testCreateSndConn = do
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
+
+testGetAllConnAliases :: SpecWith SQLiteStore
+testGetAllConnAliases = do
+  it "should get all conn aliases" $ \store -> do
+    createRcvConn store rcvQueue1
+      `returnsResult` ()
+    createSndConn store sndQueue1 {connAlias = "conn2"}
+      `returnsResult` ()
+    getAllConnAliases store
+      `returnsResult` ["conn1" :: ConnAlias, "conn2" :: ConnAlias]
 
 testGetRcvQueue :: SpecWith SQLiteStore
 testGetRcvQueue = do
@@ -295,18 +314,18 @@ testCreateRcvMsg = do
       `returnsResult` ()
     -- TODO getMsg to check message
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
-      `returnsResult` (1 :: InternalId)
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
+      `returnsResult` InternalId 1
 
 testCreateRcvMsgNoQueue :: SpecWith SQLiteStore
 testCreateRcvMsgNoQueue = do
   it "should throw error on attempt to create a RcvMsg w/t a RcvQueue" $ \store -> do
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
       `throwsError` SEBadConn
     createSndConn store sndQueue1
       `returnsResult` ()
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts 1 ts "1" ts
+    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
       `throwsError` SEBadConnType CSnd
 
 testCreateSndMsg :: SpecWith SQLiteStore
@@ -317,7 +336,7 @@ testCreateSndMsg = do
     -- TODO getMsg to check message
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
     createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
-      `returnsResult` (1 :: InternalId)
+      `returnsResult` InternalId 1
 
 testCreateSndMsgNoQueue :: SpecWith SQLiteStore
 testCreateSndMsgNoQueue = do

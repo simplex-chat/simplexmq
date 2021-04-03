@@ -32,6 +32,7 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> RcvQueue -> m ()
   createSndConn :: s -> SndQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
+  getAllConnAliases :: s -> m [ConnAlias] -- TODO remove - hack for subscribing to all
   getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m RcvQueue
   deleteConn :: s -> ConnAlias -> m ()
   upgradeRcvConnToDuplex :: s -> ConnAlias -> SndQueue -> m ()
@@ -40,7 +41,7 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
-  createRcvMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m InternalId
+  createRcvMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> m InternalId
   createSndMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
@@ -133,8 +134,12 @@ data RcvMsg = RcvMsg
   { msgBase :: MsgBase,
     internalRcvId :: InternalRcvId,
     -- | Id of the message at sender, corresponds to `internalSndId` from the sender's side.
+    -- Sender Id is made sequential for detection of missing messages. For redundant / parallel queues,
+    -- it also allows to keep track of duplicates and restore the original order before delivery to the client.
     externalSndId :: ExternalSndId,
     externalSndTs :: ExternalSndTs,
+    -- | Id of the message at broker, although it is not sequential (to avoid metadata leakage for potential observer),
+    -- it is needed to track repeated deliveries in case of connection loss - this logic is not implemented yet.
     brokerId :: BrokerId,
     brokerTs :: BrokerTs,
     rcvMsgStatus :: RcvMsgStatus,
@@ -148,7 +153,8 @@ data RcvMsg = RcvMsg
   }
   deriving (Eq, Show)
 
-type InternalRcvId = Int64
+-- internal Ids are newtypes to prevent mixing them up
+newtype InternalRcvId = InternalRcvId {unRcvId :: Int64} deriving (Eq, Show)
 
 type ExternalSndId = Int64
 
@@ -181,7 +187,7 @@ data SndMsg = SndMsg
   }
   deriving (Eq, Show)
 
-type InternalSndId = Int64
+newtype InternalSndId = InternalSndId {unSndId :: Int64} deriving (Eq, Show)
 
 data SndMsgStatus
   = Created
@@ -197,14 +203,17 @@ type DeliveredTs = UTCTime
 data MsgBase = MsgBase
   { connAlias :: ConnAlias,
     -- | Monotonically increasing id of a message per connection, internal to the agent.
-    -- Preserves ordering between both received and sent messages.
+    -- Internal Id preserves ordering between both received and sent messages, and is needed
+    -- to track the order of the conversation (which can be different for the sender / receiver)
+    -- and address messages in commands. External [sender] Id cannot be used for this purpose
+    -- due to a possibility of implementation errors in different agents.
     internalId :: InternalId,
     internalTs :: InternalTs,
     msgBody :: MsgBody
   }
   deriving (Eq, Show)
 
-type InternalId = Int64
+newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
 
 type InternalTs = UTCTime
 

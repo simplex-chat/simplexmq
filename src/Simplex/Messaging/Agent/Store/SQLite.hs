@@ -18,9 +18,12 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
+import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Data.List (find)
 import Data.Maybe (fromMaybe)
+import Data.Text (isPrefixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Database.SQLite.Simple as DB
@@ -36,26 +39,41 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (liftIOEither)
+import System.Exit (ExitCode (ExitFailure), exitWith)
+import System.FilePath (takeDirectory)
 import Text.Read (readMaybe)
+import UnliftIO.Directory (createDirectoryIfMissing)
 import qualified UnliftIO.Exception as E
 
 -- * SQLite Store implementation
 
 data SQLiteStore = SQLiteStore
-  { dbFilename :: String,
+  { dbFilePath :: FilePath,
     dbConn :: DB.Connection
   }
 
-createSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
-createSQLiteStore dbFilename = do
-  store <- connectSQLiteStore dbFilename
+createSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
+createSQLiteStore dbFilePath = do
+  let dbDir = takeDirectory dbFilePath
+  createDirectoryIfMissing False dbDir
+  store <- connectSQLiteStore dbFilePath
+  compileOptions <- liftIO (DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
+  let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
+  liftIO $ case threadsafeOption of
+    Just "THREADSAFE=0" -> do
+      putStrLn "SQLite compiled with not threadsafe code, continue (y/n):"
+      s <- getLine
+      when (s /= "y") (exitWith $ ExitFailure 2)
+    Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
+    _ -> return ()
   liftIO . createSchema $ dbConn store
   return store
 
-connectSQLiteStore :: MonadUnliftIO m => String -> m SQLiteStore
-connectSQLiteStore dbFilename = do
-  dbConn <- liftIO $ DB.open dbFilename
-  return SQLiteStore {dbFilename, dbConn}
+connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
+connectSQLiteStore dbFilePath = do
+  dbConn <- liftIO $ DB.open dbFilePath
+  liftIO $ DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
+  return SQLiteStore {dbFilePath, dbConn}
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
@@ -78,6 +96,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       (Just rcvQ, Nothing) -> return $ SomeConn SCRcv (RcvConnection connAlias rcvQ)
       (Nothing, Just sndQ) -> return $ SomeConn SCSnd (SndConnection connAlias sndQ)
       _ -> throwError SEBadConn
+
+  getAllConnAliases :: SQLiteStore -> m [ConnAlias]
+  getAllConnAliases SQLiteStore {dbConn} =
+    liftIO $
+      retrieveAllConnAliases dbConn
 
   getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m RcvQueue
   getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId = do
@@ -113,10 +136,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> ExternalSndId -> ExternalSndTs -> BrokerId -> BrokerTs -> m InternalId
-  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs =
+  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> m InternalId
+  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) =
     liftIOEither $
-      insertRcvMsg dbConn connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs
+      insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs)
 
   createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
   createSndMsg SQLiteStore {dbConn} connAlias msgBody internalTs =
@@ -139,6 +162,18 @@ deserializePort_ port = Just port
 instance ToField QueueStatus where toField = toField . show
 
 instance FromField QueueStatus where fromField = fromFieldToReadable_
+
+instance ToField InternalRcvId where toField (InternalRcvId x) = toField x
+
+instance FromField InternalRcvId where fromField x = InternalRcvId <$> fromField x
+
+instance ToField InternalSndId where toField (InternalSndId x) = toField x
+
+instance FromField InternalSndId where fromField x = InternalSndId <$> fromField x
+
+instance ToField InternalId where toField (InternalId x) = toField x
+
+instance FromField InternalId where fromField x = InternalId <$> fromField x
 
 instance ToField RcvMsgStatus where toField = toField . show
 
@@ -328,6 +363,13 @@ retrieveSndQueueByConnAlias_ dbConn connAlias = do
       return . Just $ SndQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
     _ -> return Nothing
 
+-- * getAllConnAliases helper
+
+retrieveAllConnAliases :: DB.Connection -> IO [ConnAlias]
+retrieveAllConnAliases dbConn = do
+  r <- DB.query_ dbConn "SELECT conn_alias FROM connections;" :: IO [[ConnAlias]]
+  return (concat r)
+
 -- * getRcvQueue helper
 
 retrieveRcvQueue :: DB.Connection -> HostName -> Maybe ServiceName -> SMP.RecipientId -> IO (Maybe RcvQueue)
@@ -450,21 +492,19 @@ insertRcvMsg ::
   ConnAlias ->
   MsgBody ->
   InternalTs ->
-  ExternalSndId ->
-  ExternalSndTs ->
-  BrokerId ->
-  BrokerTs ->
+  (ExternalSndId, ExternalSndTs) ->
+  (BrokerId, BrokerTs) ->
   IO (Either StoreError InternalId)
-insertRcvMsg dbConn connAlias msgBody internalTs externalSndId externalSndTs brokerId brokerTs =
+insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (Just _rcvQ, _) -> do
         (lastInternalId, lastInternalRcvId) <- retrieveLastInternalIdsRcv_ dbConn connAlias
-        let internalId = lastInternalId + 1
-        let internalRcvId = lastInternalRcvId + 1
+        let internalId = InternalId $ unId lastInternalId + 1
+        let internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
         insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
-        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs
+        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs)
         updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
         return $ Right internalId
       (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
@@ -505,12 +545,10 @@ insertRcvMsgDetails_ ::
   ConnAlias ->
   InternalRcvId ->
   InternalId ->
-  ExternalSndId ->
-  ExternalSndTs ->
-  BrokerId ->
-  BrokerTs ->
+  (ExternalSndId, ExternalSndTs) ->
+  (BrokerId, BrokerTs) ->
   IO ()
-insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId externalSndId externalSndTs brokerId brokerTs =
+insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs) =
   DB.executeNamed
     dbConn
     [sql|
@@ -554,8 +592,8 @@ insertSndMsg dbConn connAlias msgBody internalTs =
     case queues of
       (_, Just _sndQ) -> do
         (lastInternalId, lastInternalSndId) <- retrieveLastInternalIdsSnd_ dbConn connAlias
-        let internalId = lastInternalId + 1
-        let internalSndId = lastInternalSndId + 1
+        let internalId = InternalId $ unId lastInternalId + 1
+        let internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
         insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
         insertSndMsgDetails_ dbConn connAlias internalSndId internalId
         updateLastInternalIdsSnd_ dbConn connAlias internalId internalSndId

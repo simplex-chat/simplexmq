@@ -27,6 +27,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Util (bshow, raceAny_)
+import System.Directory (getAppUserDataDirectory)
 import Types
 
 cfg :: AgentConfig
@@ -110,18 +111,20 @@ chatHelpInfo =
   \/accept <name> <invitation> - accept <invitation>\n\
   \                    (a string that starts from \"smp::\")\n\
   \                    from your contact <name>\n\
-  \/chat <name>      - resume chat with <name>\n\
   \/name <name>      - set <name> to use in invitations\n\
   \@<name> <message> - send <message> (any string) to contact <name>\n\
   \                    @<name> can be omitted to send to previous"
 
 main :: IO ()
 main = do
-  ChatOpts {dbFileName, smpServer, name} <- getChatOpts
-  putStrLn "simpleX chat prototype, \"/help\" for usage information"
+  appDir <- getAppUserDataDirectory "simplex"
+  ChatOpts {dbFileName, smpServer, name, termMode} <- getChatOpts appDir
+  putStrLn "simpleX chat prototype"
+  putStrLn $ "db: " ++ dbFileName
+  putStrLn "type \"/help\" for usage information"
   let user = Contact <$> name
   t <- getChatClient smpServer user
-  ct <- newChatTerminal (tbqSize cfg) user
+  ct <- newChatTerminal (tbqSize cfg) user termMode
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
@@ -173,7 +176,8 @@ sendToChatTerm ChatClient {outQ, username} ChatTerminal {outputQ} = forever $ do
       atomically . writeTBQueue outputQ $ serializeChatResponse name resp
 
 sendToAgent :: ChatClient -> ChatTerminal -> AgentClient -> IO ()
-sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} =
+sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} = do
+  atomically $ writeTBQueue rcvQ ("1", "", SUBALL) -- hack for subscribing to all
   forever . atomically $ do
     cmd <- readTBQueue inQ
     writeTBQueue rcvQ `mapM_` agentTransmission cmd
@@ -209,7 +213,7 @@ receiveFromAgent t ct c = forever . atomically $ do
       END -> Disconnected $ Contact a
       MSG {m_body} -> ReceivedMessage (Contact a) m_body
       SENT _ -> NoChatResponse
-      OK -> YesYes
+      OK -> Connected $ Contact a -- hack for subscribing to all
       ERR e -> ChatError e
     setActiveContact :: ChatResponse -> STM ()
     setActiveContact = \case
