@@ -43,10 +43,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             cache_path: ~/.stack
             artifact_rel_path: /bin/dog-food
-            asset_name: dog-food-linux-x86-64
+            asset_name: dog-food-ubuntu-20_04-x86-64
+          - os: ubuntu-18.04
+            cache_path: ~/.stack
+            artifact_rel_path: /bin/dog-food
+            asset_name: dog-food-ubuntu-18_04-x86-64
           - os: macos-latest
             cache_path: ~/.stack
             artifact_rel_path: /bin/dog-food
