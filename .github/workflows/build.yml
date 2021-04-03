@@ -44,18 +44,20 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            stack_cache: ~/.stack
+            cache_path: ~/.stack
             artifact_rel_path: /bin/dog-food
             asset_name: dog-food-linux-x86-64
           - os: macos-latest
-            stack_cache: ~/.stack
+            cache_path: ~/.stack
             artifact_rel_path: /bin/dog-food
             asset_name: dog-food-macos-x86-64
           - os: windows-latest
-            # stack_cache: ${env:LOCALAPPDATA}\Programs\stack
-            # stack_cache: ~/AppData/Local/Programs/stack
-            stack_cache: C:\sr
-            artifact_rel_path: \bin\dog-food.exe
+            # cache_path: ${env:LOCALAPPDATA}\Programs\stack
+            # cache_path: ~/AppData/Local/Programs/stack
+            cache_path: |
+              C:/sr
+              ~/AppData/Local/Programs/stack
+            artifact_rel_path: /bin/dog-food.exe
             asset_name: dog-food-windows-x86-64
     steps:
       - name: Clone project
@@ -71,8 +73,8 @@ jobs:
       - name: Cache dependencies
         uses: actions/cache@v2
         with:
-          path: ${{ matrix.stack_cache }}
-          key: ${{ runner.os }}-stack-test-2-${{ hashFiles('stack.yaml') }}
+          path: ${{ matrix.cache_path }}
+          key: ${{ runner.os }}-stack-test-3-${{ hashFiles('stack.yaml') }}
 
       - name: Build & test
         id: build_test
