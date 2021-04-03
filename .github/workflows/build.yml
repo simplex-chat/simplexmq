@@ -53,7 +53,8 @@ jobs:
             asset_name: dog-food-macos-x86-64
           - os: windows-latest
             # stack_cache: ${env:LOCALAPPDATA}\Programs\stack
-            stack_cache: ~/AppData/Local/Programs/stack
+            # stack_cache: ~/AppData/Local/Programs/stack
+            stack_cache: C:\sr
             artifact_rel_path: \bin\dog-food.exe
             asset_name: dog-food-windows-x86-64
     steps:
@@ -71,7 +72,7 @@ jobs:
         uses: actions/cache@v2
         with:
           path: ${{ matrix.stack_cache }}
-          key: ${{ runner.os }}-stack-test1-${{ hashFiles('stack.yaml') }}
+          key: ${{ runner.os }}-stack-test-2-${{ hashFiles('stack.yaml') }}
 
       - name: Build & test
         id: build_test
