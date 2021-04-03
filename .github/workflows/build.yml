@@ -68,9 +68,8 @@ jobs:
 
       - name: Build & test
         id: build_test
-        # TODO reenable tests (stack build --test)
         run: |
-          stack build
+          stack build --test
           echo "::set-output name=LOCAL_INSTALL_ROOT::$(stack path --local-install-root)"
 
       - name: Upload binaries to release
