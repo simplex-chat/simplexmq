@@ -54,9 +54,7 @@ jobs:
           - os: windows-latest
             # cache_path: ${env:LOCALAPPDATA}\Programs\stack
             # cache_path: ~/AppData/Local/Programs/stack
-            cache_path: |
-              C:/sr
-              ~/AppData/Local/Programs/stack
+            cache_path: ${{ env.STACK_ROOT }}
             artifact_rel_path: /bin/dog-food.exe
             asset_name: dog-food-windows-x86-64
     steps:
@@ -69,12 +67,22 @@ jobs:
           ghc-version: '8.8.4'
           enable-stack: true
           stack-version: 'latest'
+      
+      - name: Dump matrix context
+        env:
+          MATRIX_CONTEXT: ${{ toJSON(matrix) }}
+        run: echo "$MATRIX_CONTEXT"
+      
+      - name: Echo stuff
+        run: |
+          echo ${{ env.STACK_ROOT }}
+          echo ${{ matrix.cache_path }}
 
       - name: Cache dependencies
         uses: actions/cache@v2
         with:
           path: ${{ matrix.cache_path }}
-          key: ${{ runner.os }}-stack-test-3-${{ hashFiles('stack.yaml') }}
+          key: ${{ runner.os }}-stack-test-4-${{ hashFiles('stack.yaml') }}
 
       - name: Build & test
         id: build_test
