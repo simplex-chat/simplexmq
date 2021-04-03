@@ -13,10 +13,13 @@
 module Simplex.Messaging.Protocol where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
+import qualified Crypto.Cipher.Types as AES
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteArray (xor)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -25,6 +28,9 @@ import Data.Kind
 import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
+import Data.Word (Word32)
+import GHC.IO.Handle.Internals (ioe_EOF)
+import Network.Transport.Internal (encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Util
@@ -40,18 +46,16 @@ data SParty :: Party -> Type where
 
 data THandle = THandle
   { handle :: Handle,
-    -- sendKey :: TransportKey,
-    -- receiveKey :: TransportKey,
-    aesKey :: C.Key,
-    ivBytes :: C.IV,
+    sendKey :: TransportKey,
+    receiveKey :: TransportKey,
     blockSize :: Int
   }
 
--- data TransportKey = TransportKey
---   { aesKey :: C.Key,
---     baseIV :: C.IV,
---     counter :: TVar Word32
---   }
+data TransportKey = TransportKey
+  { aesKey :: C.Key,
+    baseIV :: C.IV,
+    counter :: TVar Word32
+  }
 
 deriving instance Show (SParty a)
 
@@ -207,25 +211,42 @@ serializeCommand = \case
   where
     serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
 
-data TransportError = TransportCryptoError C.CryptoError | TransportParsingError | TransportEmptyError
+data TransportError = TransportCryptoError C.CryptoError | TransportParsingError
   deriving (Eq, Show)
 
 tGetEncrypted :: THandle -> IO (Either TransportError RawTransmission)
-tGetEncrypted THandle {handle = h, aesKey, ivBytes, blockSize} = do
-  block <- B.hGet h blockSize
+tGetEncrypted THandle {handle = h, receiveKey, blockSize} =
+  B.hGet h blockSize >>= decryptBlock receiveKey >>= \case
+    Left e -> pure . Left $ TransportCryptoError e
+    Right "" -> ioe_EOF
+    Right msg -> pure $ parse transmissionP TransportParsingError msg
+
+decryptBlock :: TransportKey -> ByteString -> IO (Either C.CryptoError ByteString)
+decryptBlock tKey block = do
   let (authTag, msg') = B.splitAt C.authTagSize block
-  decrypted <- runExceptT (C.decryptAES aesKey ivBytes msg' $ C.bsToAuthTag authTag)
-  return $ case decrypted of
-    Left e -> Left $ TransportCryptoError e
-    Right "" -> Left TransportEmptyError
-    Right msg -> parse transmissionP TransportParsingError msg
+  ivBytes <- makeNextIV tKey
+  runExceptT $ C.decryptAES (aesKey tKey) ivBytes msg' (C.bsToAuthTag authTag)
 
 tPut :: THandle -> SignedRawTransmission -> IO (Either TransportError ())
-tPut THandle {handle = h, aesKey, ivBytes, blockSize} (C.Signature sig, t) = do
-  encrypted <- runExceptT $ C.encryptAES aesKey ivBytes (blockSize - C.authTagSize) (encode sig <> " " <> t <> " ")
-  case encrypted of
+tPut THandle {handle = h, sendKey, blockSize} (C.Signature sig, t) =
+  encryptBlock sendKey size block >>= \case
     Left e -> return . Left $ TransportCryptoError e
     Right (authTag, msg) -> Right <$> B.hPut h (C.authTagToBS authTag <> msg)
+  where
+    size = blockSize - C.authTagSize
+    block = encode sig <> " " <> t <> " "
+
+encryptBlock :: TransportKey -> Int -> ByteString -> IO (Either C.CryptoError (AES.AuthTag, ByteString))
+encryptBlock tKey size block = do
+  ivBytes <- makeNextIV tKey
+  runExceptT $ C.encryptAES (aesKey tKey) ivBytes size block
+
+makeNextIV :: TransportKey -> IO C.IV
+makeNextIV TransportKey {baseIV, counter} = atomically $ do
+  c <- readTVar counter
+  writeTVar counter $ c + 1
+  let (start, rest) = B.splitAt 4 $ C.unIV baseIV
+  pure . C.IV $ (start `xor` encodeWord32 c) <> rest
 
 serializeTransmission :: Transmission -> ByteString
 serializeTransmission (CorrId corrId, queueId, command) =
