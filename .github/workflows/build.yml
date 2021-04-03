@@ -74,7 +74,7 @@ jobs:
         uses: actions/cache@v2
         with:
           path: ${{ matrix.cache_path }}
-          key: ${{ runner.os }}-${{ hashFiles('stack.yaml') }}
+          key: ${{ matrix.os }}-${{ hashFiles('stack.yaml') }}
 
       - name: Build & test
         id: build_test
