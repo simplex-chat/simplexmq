@@ -69,16 +69,6 @@ jobs:
           ghc-version: '8.8.4'
           enable-stack: true
           stack-version: 'latest'
-      
-      - name: Dump matrix context
-        env:
-          MATRIX_CONTEXT: ${{ toJSON(matrix) }}
-        run: echo "$MATRIX_CONTEXT"
-      
-      - name: Echo stuff
-        run: |
-          echo ${{ env.STACK_ROOT }}
-          echo ${{ matrix.cache_path }}
 
       - name: Cache dependencies
         uses: actions/cache@v2
