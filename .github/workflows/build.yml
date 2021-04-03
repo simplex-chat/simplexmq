@@ -26,6 +26,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build:
+    name: build-${{ matrix.os }}
     if: always()
     needs: prepare-release
     runs-on: ${{ matrix.os }}
