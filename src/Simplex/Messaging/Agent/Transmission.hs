@@ -173,11 +173,14 @@ smpQueueInfoP =
   "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> C.pubKeyP)
 
 smpServerP :: Parser SMPServer
-smpServerP = SMPServer <$> server <*> port <*> msgHash
+smpServerP = SMPServer <$> server <*> port <*> kHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
     port = A.char ':' *> (Just . show <$> (A.decimal :: Parser Int)) <|> pure Nothing
-    msgHash = A.char '#' *> (Just <$> base64P) <|> pure Nothing
+    kHash =
+      A.peekChar >>= \case
+        Just '#' -> A.char '#' *> (Just <$> keyHashP)
+        _ -> pure Nothing
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
@@ -194,7 +197,7 @@ serializeSmpQueueInfo (SMPQueueInfo srv qId ek) =
 
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} =
-  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
+  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . serializeKeyHash) keyHash
 
 data SMPServer = SMPServer
   { host :: HostName,
@@ -202,8 +205,6 @@ data SMPServer = SMPServer
     keyHash :: Maybe KeyHash
   }
   deriving (Eq, Ord, Show)
-
-type KeyHash = Encoded
 
 type ConnAlias = ByteString
 

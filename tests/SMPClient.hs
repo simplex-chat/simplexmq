@@ -27,11 +27,17 @@ testHost = "localhost"
 testPort :: ServiceName
 testPort = "5000"
 
+teshKeyHashStr :: B.ByteString
+teshKeyHashStr = "8Cvd+AYVxLpSsB/glEhVxkKuEzMNBFdAL5yr7p9DGGk="
+
+teshKeyHash :: Maybe KeyHash
+teshKeyHash = Just "8Cvd+AYVxLpSsB/glEhVxkKuEzMNBFdAL5yr7p9DGGk="
+
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
 testSMPClient client = do
   threadDelay 250_000 -- TODO hack: thread delay for SMP server to start
   runTCPClient testHost testPort $ \h ->
-    liftIO (runExceptT $ clientHandshake h) >>= \case
+    liftIO (runExceptT $ clientHandshake h teshKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e
 

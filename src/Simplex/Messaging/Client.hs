@@ -91,7 +91,7 @@ data Request = Request
 
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO SMPClient
 getSMPClient
-  smpServer@SMPServer {host, port}
+  smpServer@SMPServer {host, port, keyHash}
   SMPClientConfig {qSize, defaultPort, tcpTimeout, smpPing}
   msgQ
   disconnected = do
@@ -129,7 +129,7 @@ getSMPClient
 
       client :: SMPClient -> TMVar Bool -> Handle -> IO ()
       client c started h =
-        runExceptT (clientHandshake h) >>= \case
+        runExceptT (clientHandshake h keyHash) >>= \case
           Right th -> clientTransport c started th
           -- TODO report error instead of True/False
           Left _ -> atomically $ putTMVar started False
