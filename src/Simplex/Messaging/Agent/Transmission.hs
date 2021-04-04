@@ -176,11 +176,14 @@ smpServerP :: Parser SMPServer
 smpServerP = SMPServer <$> server <*> port <*> kHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
-    port = A.char ':' *> (Just . show <$> (A.decimal :: Parser Int)) <|> pure Nothing
-    kHash =
-      A.peekChar >>= \case
-        Just '#' -> A.char '#' *> (Just <$> C.keyHashP)
-        _ -> pure Nothing
+    port = fromChar ':' $ show <$> (A.decimal :: Parser Int)
+    kHash = fromChar '#' C.keyHashP
+    fromChar :: Char -> Parser a -> Parser (Maybe a)
+    fromChar ch parser = do
+      c <- A.peekChar
+      if c == Just ch
+        then A.char ch *> (Just <$> parser)
+        else pure Nothing
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
