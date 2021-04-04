@@ -23,11 +23,11 @@ rsaKeySize = 1024 `div` 8
 
 serverTests :: Spec
 serverTests = do
-  xdescribe "SMP syntax" syntaxTests
-  xdescribe "SMP queues" do
+  describe "SMP syntax" syntaxTests
+  describe "SMP queues" do
     describe "NEW and KEY commands, SEND messages" testCreateSecure
     describe "NEW, OFF and DEL commands, SEND messages" testCreateDelete
-  xdescribe "SMP messages" do
+  describe "SMP messages" do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
 
@@ -39,7 +39,7 @@ sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >>
 
 signSendRecv :: THandle -> C.PrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 signSendRecv h pk (corrId, qId, cmd) = do
-  let t = B.intercalate "\r\n" [corrId, encode qId, cmd]
+  let t = B.intercalate " " [corrId, encode qId, cmd]
   Right sig <- C.sign pk t
   _ <- tPut h (sig, t)
   tGet fromServer h
@@ -61,7 +61,7 @@ testCreateSecure =
       Resp "abcd" rId1 (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
 
-      Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND 5\r\nhello")
+      Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND 5 hello ")
       (ok1, OK) #== "accepts unsigned SEND"
       (sId1, sId) #== "same queue ID in response 1"
 
@@ -75,7 +75,7 @@ testCreateSecure =
       (err6, ERR PROHIBITED) #== "replies ERR when message acknowledged without messages"
 
       (sPub, sKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND 5\r\nhello")
+      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND 5 hello ")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
 
@@ -93,7 +93,7 @@ testCreateSecure =
       Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, keyCmd)
       (err4, ERR AUTH) #== "rejects KEY if already secured"
 
-      Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, "SEND 11\r\nhello again")
+      Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, "SEND 11 hello again ")
       (ok3, OK) #== "accepts signed SEND"
 
       Resp "" _ (MSG _ _ msg) <- tGet fromServer h
@@ -102,7 +102,7 @@ testCreateSecure =
       Resp "cdab" _ ok5 <- signSendRecv h rKey ("cdab", rId, "ACK")
       (ok5, OK) #== "replies OK when message acknowledged 2"
 
-      Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, "SEND 5\r\nhello")
+      Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, "SEND 5 hello ")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
 testCreateDelete :: Spec
@@ -117,10 +117,10 @@ testCreateDelete =
       Resp "bcda" _ ok1 <- signSendRecv rh rKey ("bcda", rId, "KEY " <> C.serializePubKey sPub)
       (ok1, OK) #== "secures queue"
 
-      Resp "cdab" _ ok2 <- signSendRecv sh sKey ("cdab", sId, "SEND 5\r\nhello")
+      Resp "cdab" _ ok2 <- signSendRecv sh sKey ("cdab", sId, "SEND 5 hello ")
       (ok2, OK) #== "accepts signed SEND"
 
-      Resp "dabc" _ ok7 <- signSendRecv sh sKey ("dabc", sId, "SEND 7\r\nhello 2")
+      Resp "dabc" _ ok7 <- signSendRecv sh sKey ("dabc", sId, "SEND 7 hello 2 ")
       (ok7, OK) #== "accepts signed SEND 2 - this message is not delivered because the first is not ACKed"
 
       Resp "" _ (MSG _ _ msg1) <- tGet fromServer rh
@@ -136,10 +136,10 @@ testCreateDelete =
       (ok3, OK) #== "suspends queue"
       (rId2, rId) #== "same queue ID in response 2"
 
-      Resp "dabc" _ err3 <- signSendRecv sh sKey ("dabc", sId, "SEND 5\r\nhello")
+      Resp "dabc" _ err3 <- signSendRecv sh sKey ("dabc", sId, "SEND 5 hello ")
       (err3, ERR AUTH) #== "rejects signed SEND"
 
-      Resp "abcd" _ err4 <- sendRecv sh ("", "abcd", sId, "SEND 5\r\nhello")
+      Resp "abcd" _ err4 <- sendRecv sh ("", "abcd", sId, "SEND 5 hello ")
       (err4, ERR AUTH) #== "reject unsigned SEND too"
 
       Resp "bcda" _ ok4 <- signSendRecv rh rKey ("bcda", rId, "OFF")
@@ -158,10 +158,10 @@ testCreateDelete =
       (ok6, OK) #== "deletes queue"
       (rId3, rId) #== "same queue ID in response 3"
 
-      Resp "cdab" _ err7 <- signSendRecv sh sKey ("cdab", sId, "SEND 5\r\nhello")
+      Resp "cdab" _ err7 <- signSendRecv sh sKey ("cdab", sId, "SEND 5 hello ")
       (err7, ERR AUTH) #== "rejects signed SEND when deleted"
 
-      Resp "dabc" _ err8 <- sendRecv sh ("", "dabc", sId, "SEND 5\r\nhello")
+      Resp "dabc" _ err8 <- sendRecv sh ("", "dabc", sId, "SEND 5 hello ")
       (err8, ERR AUTH) #== "rejects unsigned SEND too when deleted"
 
       Resp "abcd" _ err11 <- signSendRecv rh rKey ("abcd", rId, "ACK")
@@ -211,7 +211,7 @@ testDuplex =
       (aliceKey, C.serializePubKey asPub) #== "key received from Alice"
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, "KEY " <> aliceKey)
 
-      Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, "SEND 8\r\nhi alice")
+      Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, "SEND 8 hi alice ")
 
       Resp "" _ (MSG _ _ msg4) <- tGet fromServer alice
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, "ACK")
@@ -229,7 +229,7 @@ testSwitchSub =
     smpTest3 \rh1 rh2 sh -> do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" _ (IDS rId sId) <- signSendRecv rh1 rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
-      Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND 5\r\ntest1")
+      Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND 5 test1 ")
       (ok1, OK) #== "sent test message 1"
       Resp "cdab" _ ok2 <- sendRecv sh ("", "cdab", sId, cmdSEND "test2, no ACK")
       (ok2, OK) #== "sent test message 2"
@@ -246,7 +246,7 @@ testSwitchSub =
       Resp "" _ end <- tGet fromServer rh1
       (end, END) #== "unsubscribed the 1st TCP connection"
 
-      Resp "dabc" _ OK <- sendRecv sh ("", "dabc", sId, "SEND 5\r\ntest3")
+      Resp "dabc" _ OK <- sendRecv sh ("", "dabc", sId, "SEND 5 test3 ")
 
       Resp "" _ (MSG _ _ msg3) <- tGet fromServer rh2
       (msg3, "test3") #== "delivered to the 2nd TCP connection"
@@ -280,13 +280,13 @@ syntaxTests = do
   noParamsSyntaxTest "OFF"
   noParamsSyntaxTest "DEL"
   describe "SEND" do
-    it "valid syntax 1" $ ("1234", "cdab", "12345678", "SEND 5\r\nhello") >#> ("", "cdab", "12345678", "ERR AUTH")
-    it "valid syntax 2" $ ("1234", "dabc", "12345678", "SEND 11\r\nhello there") >#> ("", "dabc", "12345678", "ERR AUTH")
+    it "valid syntax 1" $ ("1234", "cdab", "12345678", "SEND 5 hello ") >#> ("", "cdab", "12345678", "ERR AUTH")
+    it "valid syntax 2" $ ("1234", "dabc", "12345678", "SEND 11 hello there ") >#> ("", "dabc", "12345678", "ERR AUTH")
     it "no parameters" $ ("1234", "abcd", "12345678", "SEND") >#> ("", "abcd", "12345678", "ERR SYNTAX 2")
-    it "no queue ID" $ ("1234", "bcda", "", "SEND 5\r\nhello") >#> ("", "bcda", "", "ERR SYNTAX 5")
-    it "bad message body 1" $ ("1234", "cdab", "12345678", "SEND 11 hello") >#> ("", "cdab", "12345678", "ERR SYNTAX 2")
-    it "bad message body 2" $ ("1234", "dabc", "12345678", "SEND hello") >#> ("", "dabc", "12345678", "ERR SYNTAX 2")
-    it "bigger body" $ ("1234", "abcd", "12345678", "SEND 4\r\nhello") >#> ("", "abcd", "12345678", "ERR SIZE")
+    it "no queue ID" $ ("1234", "bcda", "", "SEND 5 hello ") >#> ("", "bcda", "", "ERR SYNTAX 5")
+    it "bad message body 1" $ ("1234", "cdab", "12345678", "SEND 11 hello ") >#> ("", "cdab", "12345678", "ERR SYNTAX 2")
+    it "bad message body 2" $ ("1234", "dabc", "12345678", "SEND hello ") >#> ("", "dabc", "12345678", "ERR SYNTAX 2")
+    it "bigger body" $ ("1234", "abcd", "12345678", "SEND 4 hello ") >#> ("", "abcd", "12345678", "ERR SYNTAX 2")
   describe "PING" do
     it "valid syntax" $ ("", "abcd", "", "PING") >#> ("", "abcd", "", "PONG")
   describe "broker response not allowed" do
@@ -295,6 +295,6 @@ syntaxTests = do
     noParamsSyntaxTest :: ByteString -> Spec
     noParamsSyntaxTest cmd = describe (B.unpack cmd) do
       it "valid syntax" $ ("1234", "abcd", "12345678", cmd) >#> ("", "abcd", "12345678", "ERR AUTH")
-      it "parameters" $ ("1234", "bcda", "12345678", cmd <> " 1") >#> ("", "bcda", "12345678", "ERR SYNTAX 2")
+      it "wrong terminator" $ ("1234", "bcda", "12345678", cmd <> "=") >#> ("", "bcda", "12345678", "ERR SYNTAX 2")
       it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", "ERR SYNTAX 3")
       it "no queue ID" $ ("1234", "dabc", "", cmd) >#> ("", "dabc", "", "ERR SYNTAX 3")

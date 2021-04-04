@@ -106,7 +106,7 @@ type MsgId = Encoded
 
 type MsgBody = ByteString
 
-data ErrorType = PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
+data ErrorType = PROHIBITED | SYNTAX Int | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
 
 errBadTransmission :: Int
 errBadTransmission = 1
@@ -168,7 +168,6 @@ commandP =
     errorType =
       "PROHIBITED" $> PROHIBITED
         <|> "SYNTAX " *> (SYNTAX <$> A.decimal)
-        <|> "SIZE" $> SIZE
         <|> "AUTH" $> AUTH
         <|> "INTERNAL" $> INTERNAL
 

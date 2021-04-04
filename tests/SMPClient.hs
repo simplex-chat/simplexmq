@@ -10,6 +10,7 @@ import Control.Monad (void)
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
 import Network.Socket
 import qualified Simplex.Messaging.Crypto as C
@@ -100,5 +101,5 @@ tPutRaw h (sig, corrId, queueId, command) = do
 
 tGetRaw :: THandle -> IO RawTransmission
 tGetRaw h = do
-  Right t <- tGetParse h
-  return t
+  ("", (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
+  pure ("", corrId, encode qId, serializeCommand cmd)
