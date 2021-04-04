@@ -20,4 +20,7 @@ tsISO8601P :: Parser UTCTime
 tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
 
 parse :: Parser a -> e -> (ByteString -> Either e a)
-parse parser err = first (const err) . A.parseOnly (parser <* A.endOfInput)
+parse parser err = first (const err) . parseAll parser
+
+parseAll :: Parser a -> (ByteString -> Either String a)
+parseAll parser = A.parseOnly (parser <* A.endOfInput)

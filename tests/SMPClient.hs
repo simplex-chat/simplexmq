@@ -30,7 +30,7 @@ testPort = "5000"
 teshKeyHashStr :: B.ByteString
 teshKeyHashStr = "8Cvd+AYVxLpSsB/glEhVxkKuEzMNBFdAL5yr7p9DGGk="
 
-teshKeyHash :: Maybe KeyHash
+teshKeyHash :: Maybe C.KeyHash
 teshKeyHash = Just "8Cvd+AYVxLpSsB/glEhVxkKuEzMNBFdAL5yr7p9DGGk="
 
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a

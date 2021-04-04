@@ -179,7 +179,7 @@ smpServerP = SMPServer <$> server <*> port <*> kHash
     port = A.char ':' *> (Just . show <$> (A.decimal :: Parser Int)) <|> pure Nothing
     kHash =
       A.peekChar >>= \case
-        Just '#' -> A.char '#' *> (Just <$> keyHashP)
+        Just '#' -> A.char '#' *> (Just <$> C.keyHashP)
         _ -> pure Nothing
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
@@ -197,12 +197,12 @@ serializeSmpQueueInfo (SMPQueueInfo srv qId ek) =
 
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} =
-  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . serializeKeyHash) keyHash
+  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . C.serializeKeyHash) keyHash
 
 data SMPServer = SMPServer
   { host :: HostName,
     port :: Maybe ServiceName,
-    keyHash :: Maybe KeyHash
+    keyHash :: Maybe C.KeyHash
   }
   deriving (Eq, Ord, Show)
 

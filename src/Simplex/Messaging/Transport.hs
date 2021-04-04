@@ -15,33 +15,22 @@ module Simplex.Messaging.Transport where
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
-import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.Types (AuthTag)
-import Crypto.Hash (Digest, SHA256, digestFromByteString)
-import Crypto.Random (getRandomBytes)
+import Crypto.Hash (hash)
 import Data.Attoparsec.ByteString.Char8 (Parser)
-import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteArray (xor)
-import qualified Data.ByteArray as BA
-import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.String (IsString (..))
 import Data.Word (Word32)
-import Database.SQLite.Simple (SQLData (..))
-import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.Internal (Field (..))
-import Database.SQLite.Simple.Ok (Ok (Ok))
-import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
 import Network.Transport.Internal (encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (base64P, parse)
+import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Util (liftError)
 import System.IO
 import System.IO.Error
@@ -152,22 +141,6 @@ data TransportError
   | TransportHandshakeError String
   deriving (Eq, Show, Exception)
 
-newtype KeyHash = KeyHash {unKeyHash :: Digest SHA256} deriving (Eq, Ord, Show)
-
-instance IsString KeyHash where
-  fromString s = case parseKeyHash $ fromString s of
-    Right k -> k
-    Left e -> error e
-
-instance ToField KeyHash where toField = toField . serializeKeyHash
-
-instance FromField KeyHash where
-  fromField f@(Field (SQLBlob b) _) =
-    case parseKeyHash b of
-      Right k -> Ok k
-      Left e -> returnError ConversionFailed f ("couldn't parse KeyHash field: " ++ e)
-  fromField f = returnError ConversionFailed f "expecting SQLBlob column type"
-
 tPutEncrypted :: THandle -> ByteString -> IO (Either TransportError ())
 tPutEncrypted THandle {handle = h, sndKey, blockSize} block =
   encryptBlock sndKey (blockSize - C.authTagSize) block >>= \case
@@ -226,26 +199,31 @@ serverHandshake h (k, pk) = do
 
 -- | implements client transport handshake as per /rfcs/2021-01-26-crypto.md#transport-encryption
 -- The numbers in function names refer to the steps in the document
-clientHandshake :: Handle -> Maybe KeyHash -> ExceptT TransportError IO THandle
+clientHandshake :: Handle -> Maybe C.KeyHash -> ExceptT TransportError IO THandle
 clientHandshake h keyHash = do
-  k <- getPublicKey_1
-  -- TODO validate public key (step 2)
+  k <- getPublicKey_1_2
   keys@HandshakeKeys {sndKey, rcvKey} <- liftIO generateKeys_3
   sendEncryptedKeys_4 k keys
   getWelcome_6
   liftIO $ transportHandle h sndKey rcvKey
   where
-    getPublicKey_1 :: ExceptT TransportError IO C.PublicKey
-    getPublicKey_1 = ExceptT $ first TransportHandshakeError . C.parsePubKey <$> getLn h
+    getPublicKey_1_2 :: ExceptT TransportError IO C.PublicKey
+    getPublicKey_1_2 = do
+      s <- liftIO $ getLn h
+      maybe (pure ()) (validateKeyHash_2 s) keyHash
+      liftEither $ parseKey s
+    parseKey :: ByteString -> Either TransportError C.PublicKey
+    parseKey = first TransportHandshakeError . parseAll C.pubKeyP
+    validateKeyHash_2 :: ByteString -> C.KeyHash -> ExceptT TransportError IO ()
+    validateKeyHash_2 k (C.KeyHash kHash)
+      | hash k == kHash = pure ()
+      | otherwise = throwE $ TransportHandshakeError "wrong key hash"
     generateKeys_3 :: IO HandshakeKeys
-    generateKeys_3 = do
-      sndKey <- generateKey
-      rcvKey <- generateKey
-      pure HandshakeKeys {sndKey, rcvKey}
+    generateKeys_3 = HandshakeKeys <$> generateKey <*> generateKey
     generateKey :: IO SessionKey
     generateKey = do
-      aesKey <- C.Key <$> getRandomBytes C.aesKeySize
-      baseIV <- C.IV <$> getRandomBytes (C.ivSize @AES256)
+      aesKey <- C.randomAesKey
+      baseIV <- C.randomIV
       pure SessionKey {aesKey, baseIV, counter = undefined}
     sendEncryptedKeys_4 :: C.PublicKey -> HandshakeKeys -> ExceptT TransportError IO ()
     sendEncryptedKeys_4 k keys =
@@ -266,25 +244,12 @@ handshakeKeysP = HandshakeKeys <$> keyP <*> keyP
   where
     keyP :: Parser SessionKey
     keyP = do
-      aesKey <- C.Key <$> A.take C.aesKeySize
-      baseIV <- C.IV <$> A.take (C.ivSize @AES256)
+      aesKey <- C.aesKeyP
+      baseIV <- C.ivP
       pure SessionKey {aesKey, baseIV, counter = undefined}
 
 parseHandshakeKeys :: ByteString -> Either TransportError HandshakeKeys
 parseHandshakeKeys = parse handshakeKeysP $ TransportHandshakeError "parsing keys"
-
-serializeKeyHash :: KeyHash -> ByteString
-serializeKeyHash = encode . BA.convert . unKeyHash
-
-keyHashP :: Parser KeyHash
-keyHashP = do
-  bs <- base64P
-  case digestFromByteString bs of
-    Just d -> pure $ KeyHash d
-    _ -> fail "invalid digest"
-
-parseKeyHash :: ByteString -> Either String KeyHash
-parseKeyHash = A.parseOnly (keyHashP <* A.endOfInput)
 
 transportHandle :: Handle -> SessionKey -> SessionKey -> IO THandle
 transportHandle h sk rk = do

@@ -13,6 +13,7 @@ module Simplex.Messaging.Crypto
     KeyPair,
     Key (..),
     IV (..),
+    KeyHash (..),
     generateKeyPair,
     publicKeyHash,
     publicKeySize,
@@ -26,15 +27,17 @@ module Simplex.Messaging.Crypto
     decryptAES,
     serializePrivKey,
     serializePubKey,
-    parsePrivKey,
-    parsePubKey,
+    serializeKeyHash,
     privKeyP,
     pubKeyP,
+    keyHashP,
     authTagSize,
     authTagToBS,
     bsToAuthTag,
-    ivSize,
-    aesKeySize,
+    randomAesKey,
+    randomIV,
+    aesKeyP,
+    ivP,
   )
 where
 
@@ -44,8 +47,7 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, hash)
-import Crypto.Hash.Algorithms (SHA256 (..))
+import Crypto.Hash (Digest, SHA256 (..), digestFromByteString, hash)
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
 import Crypto.Number.Serialize (i2osp, os2ip)
@@ -68,7 +70,7 @@ import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P)
+import Simplex.Messaging.Parsers (base64P, parseAll)
 import Simplex.Messaging.Util (bshow, liftEitherError, (<$$>))
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
@@ -86,14 +88,14 @@ instance ToField PublicKey where toField = toField . serializePubKey
 
 instance FromField PrivateKey where
   fromField f@(Field (SQLBlob b) _) =
-    case parsePrivKey b of
+    case parseAll privKeyP b of
       Right k -> Ok k
       Left e -> returnError ConversionFailed f ("couldn't parse PrivateKey field: " ++ e)
   fromField f = returnError ConversionFailed f "expecting SQLBlob column type"
 
 instance FromField PublicKey where
   fromField f@(Field (SQLBlob b) _) =
-    case parsePubKey b of
+    case parseAll pubKeyP b of
       Right k -> Ok k
       Left e -> returnError ConversionFailed f ("couldn't parse PublicKey field: " ++ e)
   fromField f = returnError ConversionFailed f "expecting SQLBlob column type"
@@ -156,25 +158,55 @@ newtype Key = Key {unKey :: ByteString}
 
 newtype IV = IV {unIV :: ByteString}
 
+newtype KeyHash = KeyHash {unKeyHash :: Digest SHA256} deriving (Eq, Ord, Show)
+
+instance IsString KeyHash where
+  fromString = either error id . parseAll keyHashP . fromString
+
+instance ToField KeyHash where toField = toField . serializeKeyHash
+
+instance FromField KeyHash where
+  fromField f@(Field (SQLBlob b) _) =
+    case parseAll keyHashP b of
+      Right k -> Ok k
+      Left e -> returnError ConversionFailed f ("couldn't parse KeyHash field: " ++ e)
+  fromField f = returnError ConversionFailed f "expecting SQLBlob column type"
+
+serializeKeyHash :: KeyHash -> ByteString
+serializeKeyHash = encode . BA.convert . unKeyHash
+
+keyHashP :: Parser KeyHash
+keyHashP = do
+  bs <- base64P
+  case digestFromByteString bs of
+    Just d -> pure $ KeyHash d
+    _ -> fail "invalid digest"
+
 serializeHeader :: Header -> ByteString
 serializeHeader Header {aesKey, ivBytes, authTag, msgSize} =
   unKey aesKey <> unIV ivBytes <> authTagToBS authTag <> (encodeWord32 . fromIntegral) msgSize
 
 headerP :: Parser Header
 headerP = do
-  aesKey <- Key <$> A.take aesKeySize
-  ivBytes <- IV <$> A.take (ivSize @AES256)
+  aesKey <- aesKeyP
+  ivBytes <- ivP
   authTag <- bsToAuthTag <$> A.take authTagSize
   msgSize <- fromIntegral . decodeWord32 <$> A.take 4
   return Header {aesKey, ivBytes, authTag, msgSize}
 
+aesKeyP :: Parser Key
+aesKeyP = Key <$> A.take aesKeySize
+
+ivP :: Parser IV
+ivP = IV <$> A.take (ivSize @AES256)
+
 parseHeader :: ByteString -> Either CryptoError Header
-parseHeader = first CryptoHeaderError . A.parseOnly (headerP <* A.endOfInput)
+parseHeader = first CryptoHeaderError . parseAll headerP
 
 encrypt :: PublicKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
 encrypt k paddedSize msg = do
-  aesKey <- Key <$> randomBytes aesKeySize
-  ivBytes <- IV <$> randomBytes (ivSize @AES256)
+  aesKey <- liftIO randomAesKey
+  ivBytes <- liftIO randomIV
   (authTag, msg') <- encryptAES aesKey ivBytes paddedSize msg
   let header = Header {aesKey, ivBytes, authTag, msgSize = B.length msg}
   encHeader <- encryptOAEP k $ serializeHeader header
@@ -211,14 +243,17 @@ initAEAD (Key aesKey) (IV ivBytes) = do
     cipher <- AES.cipherInit aesKey
     AES.aeadInit AES.AEAD_GCM cipher iv
 
+randomAesKey :: IO Key
+randomAesKey = Key <$> getRandomBytes aesKeySize
+
+randomIV :: IO IV
+randomIV = IV <$> getRandomBytes (ivSize @AES256)
+
 ivSize :: forall c. AES.BlockCipher c => Int
 ivSize = AES.blockSize (undefined :: c)
 
 makeIV :: AES.BlockCipher c => ByteString -> ExceptT CryptoError IO (AES.IV c)
 makeIV bs = maybeError CryptoIVError $ AES.makeIV bs
-
-randomBytes :: Int -> ExceptT CryptoError IO ByteString
-randomBytes n = ExceptT $ Right <$> getRandomBytes n
 
 maybeError :: CryptoError -> Maybe a -> ExceptT CryptoError IO a
 maybeError e = maybe (throwE e) return
@@ -274,12 +309,6 @@ privKeyP :: Parser PrivateKey
 privKeyP = do
   (private_size, private_n, private_d) <- keyParser_
   return PrivateKey {private_size, private_n, private_d}
-
-parsePubKey :: ByteString -> Either String PublicKey
-parsePubKey = A.parseOnly (pubKeyP <* A.endOfInput)
-
-parsePrivKey :: ByteString -> Either String PrivateKey
-parsePrivKey = A.parseOnly (privKeyP <* A.endOfInput)
 
 keyParser_ :: Parser (Int, Integer, Integer)
 keyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
