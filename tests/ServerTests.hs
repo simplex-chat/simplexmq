@@ -13,6 +13,7 @@ import qualified Data.ByteString.Char8 as B
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Transport
 import System.Timeout
 import Test.HUnit
 import Test.Hspec

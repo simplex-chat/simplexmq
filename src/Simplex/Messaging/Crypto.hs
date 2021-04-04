@@ -14,10 +14,14 @@ module Simplex.Messaging.Crypto
     Key (..),
     IV (..),
     generateKeyPair,
+    publicKeyHash,
+    publicKeySize,
     sign,
     verify,
     encrypt,
     decrypt,
+    encryptOAEP,
+    decryptOAEP,
     encryptAES,
     decryptAES,
     serializePrivKey,
@@ -29,6 +33,8 @@ module Simplex.Messaging.Crypto
     authTagSize,
     authTagToBS,
     bsToAuthTag,
+    ivSize,
+    aesKeySize,
   )
 where
 
@@ -38,6 +44,7 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Error as CE
+import Crypto.Hash (Digest, hash)
 import Crypto.Hash.Algorithms (SHA256 (..))
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
@@ -131,6 +138,12 @@ generateKeyPair size = loop
        in if d * d < n
             then loop
             else return (PublicKey pub, privateKey s n d)
+
+publicKeyHash :: PublicKey -> Digest SHA256
+publicKeyHash = hash . serializePubKey
+
+publicKeySize :: PublicKey -> Int
+publicKeySize = R.public_size . rsaPublicKey
 
 data Header = Header
   { aesKey :: Key,

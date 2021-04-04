@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -6,6 +7,7 @@
 module SMPClient where
 
 import Control.Monad (void)
+import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
@@ -18,7 +20,6 @@ import Simplex.Messaging.Transport
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM
 
 testHost :: HostName
 testHost = "localhost"
@@ -29,27 +30,10 @@ testPort = "5000"
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
 testSMPClient client = do
   threadDelay 250_000 -- TODO hack: thread delay for SMP server to start
-  runTCPClient testHost testPort $ \h -> do
-    sndCounter <- newTVarIO 0
-    rcvCounter <- newTVarIO 0
-    let th =
-          THandle
-            { handle = h,
-              sendKey =
-                TransportKey
-                  { aesKey = C.Key "\206@T\153\238\&7[\EOT\224GI\227N\128t\246+L\182{\226\227\EM?\ESC\DLE\196\158\150\188~\\",
-                    baseIV = C.IV "\DC4\191(UlYy\212\170si\STX\170(\t{",
-                    counter = sndCounter
-                  },
-              receiveKey =
-                TransportKey
-                  { aesKey = C.Key "\131\137\ETX\SO\FS\169,\178\251\207\CAN\RS\227\202N*\201\245\216\227cq\DC3U\"\150\128\240r\166\246\&9",
-                    baseIV = C.IV "o\254\a\170i>\250\130\237\153\225\227v\243\DC1i",
-                    counter = rcvCounter
-                  },
-              blockSize = 8192
-            }
-    client th
+  runTCPClient testHost testPort $ \h ->
+    liftIO (runExceptT $ clientHandshake h) >>= \case
+      Right th -> client th
+      Left e -> error $ show e
 
 cfg :: ServerConfig
 cfg =
@@ -110,5 +94,5 @@ tPutRaw h (sig, corrId, queueId, command) = do
 
 tGetRaw :: THandle -> IO RawTransmission
 tGetRaw h = do
-  Right t <- tGetEncrypted h
+  Right t <- tGetParse h
   return t

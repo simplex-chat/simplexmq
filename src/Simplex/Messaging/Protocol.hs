@@ -13,13 +13,10 @@
 module Simplex.Messaging.Protocol where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
-import qualified Crypto.Cipher.Types as AES
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.ByteArray (xor)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -28,13 +25,10 @@ import Data.Kind
 import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
-import Data.Word (Word32)
-import GHC.IO.Handle.Internals (ioe_EOF)
-import Network.Transport.Internal (encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
+import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
-import System.IO
 
 data Party = Broker | Recipient | Sender
   deriving (Show)
@@ -43,19 +37,6 @@ data SParty :: Party -> Type where
   SBroker :: SParty Broker
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
-
-data THandle = THandle
-  { handle :: Handle,
-    sendKey :: TransportKey,
-    receiveKey :: TransportKey,
-    blockSize :: Int
-  }
-
-data TransportKey = TransportKey
-  { aesKey :: C.Key,
-    baseIV :: C.IV,
-    counter :: TVar Word32
-  }
 
 deriving instance Show (SParty a)
 
@@ -211,44 +192,9 @@ serializeCommand = \case
   where
     serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
 
-data TransportError = TransportCryptoError C.CryptoError | TransportParsingError
-  deriving (Eq, Show)
-
-tGetEncrypted :: THandle -> IO (Either TransportError RawTransmission)
-tGetEncrypted THandle {handle = h, receiveKey, blockSize} =
-  B.hGet h blockSize >>= decryptBlock receiveKey >>= \case
-    Left e -> pure . Left $ TransportCryptoError e
-    Right "" -> ioe_EOF
-    Right msg -> pure $ parse transmissionP TransportParsingError msg
-
-decryptBlock :: TransportKey -> ByteString -> IO (Either C.CryptoError ByteString)
-decryptBlock tKey block = do
-  let (authTag, msg') = B.splitAt C.authTagSize block
-  ivBytes <- makeNextIV tKey
-  runExceptT $ C.decryptAES (aesKey tKey) ivBytes msg' (C.bsToAuthTag authTag)
-
 tPut :: THandle -> SignedRawTransmission -> IO (Either TransportError ())
-tPut THandle {handle = h, sendKey, blockSize} (C.Signature sig, t) =
-  encryptBlock sendKey size block >>= \case
-    Left e -> return . Left $ TransportCryptoError e
-    Right (authTag, msg) -> Right <$> B.hPut h (C.authTagToBS authTag <> msg)
-  where
-    size = blockSize - C.authTagSize
-    block = encode sig <> " " <> t <> " "
-
-encryptBlock :: TransportKey -> Int -> ByteString -> IO (Either C.CryptoError (AES.AuthTag, ByteString))
-encryptBlock tKey size block = do
-  ivBytes <- makeNextIV tKey
-  runExceptT $ C.encryptAES (aesKey tKey) ivBytes size block
-
-makeNextIV :: TransportKey -> IO C.IV
-makeNextIV TransportKey {baseIV, counter} = atomically $ do
-  c <- readTVar counter
-  writeTVar counter $ c + 1
-  pure $ iv c
-  where
-    (start, rest) = B.splitAt 4 $ C.unIV baseIV
-    iv c = C.IV $ (start `xor` encodeWord32 c) <> rest
+tPut th (C.Signature sig, t) =
+  tPutEncrypted th $ encode sig <> " " <> t <> " "
 
 serializeTransmission :: Transmission -> ByteString
 serializeTransmission (CorrId corrId, queueId, command) =
@@ -264,16 +210,21 @@ fromServer = \case
   cmd@(Cmd SBroker _) -> Right cmd
   _ -> Left PROHIBITED
 
+tGetParse :: THandle -> IO (Either TransportError RawTransmission)
+tGetParse th = (>>= parse transmissionP TransportParsingError) <$> tGetEncrypted th
+
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
 tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> THandle -> m SignedTransmissionOrError
-tGet fromParty th = do
-  liftIO (tGetEncrypted th) >>= \case
-    Right (signature, corrId, queueId, command) -> do
-      let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
-      either (const $ tError corrId) tParseValidate decodedTransmission
-    Left _ -> tError ""
+tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
   where
+    decodeParseValidate :: Either TransportError RawTransmission -> m SignedTransmissionOrError
+    decodeParseValidate = \case
+      Right (signature, corrId, queueId, command) ->
+        let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
+         in either (const $ tError corrId) tParseValidate decodedTransmission
+      Left _ -> tError ""
+
     tError :: ByteString -> m SignedTransmissionOrError
     tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left $ SYNTAX errBadTransmission))
 

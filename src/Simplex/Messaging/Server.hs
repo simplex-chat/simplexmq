@@ -15,6 +15,7 @@ module Simplex.Messaging.Server (runSMPServer, randomBytes) where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
+import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
@@ -59,29 +60,16 @@ runSMPServer cfg@ServerConfig {tcpPort} = do
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
-  -- liftIO $ putLn h "Welcome to SMP v0.2.0"
+  keyPair <- asks serverKeyPair
+  liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
+    Right th -> runClientTransport th
+    Left _ -> pure ()
+
+runClientTransport :: (MonadUnliftIO m, MonadReader Env m) => THandle -> m ()
+runClientTransport th = do
   q <- asks $ tbqSize . config
   c <- atomically $ newClient q
   s <- asks server
-  sndCounter <- newTVarIO 0
-  rcvCounter <- newTVarIO 0
-  let th =
-        THandle
-          { handle = h,
-            sendKey =
-              TransportKey
-                { aesKey = C.Key "\131\137\ETX\SO\FS\169,\178\251\207\CAN\RS\227\202N*\201\245\216\227cq\DC3U\"\150\128\240r\166\246\&9",
-                  baseIV = C.IV "o\254\a\170i>\250\130\237\153\225\227v\243\DC1i",
-                  counter = sndCounter
-                },
-            receiveKey =
-              TransportKey
-                { aesKey = C.Key "\206@T\153\238\&7[\EOT\224GI\227N\128t\246+L\182{\226\227\EM?\ESC\DLE\196\158\150\188~\\",
-                  baseIV = C.IV "\DC4\191(UlYy\212\170si\STX\170(\t{",
-                  counter = rcvCounter
-                },
-            blockSize = 8192
-          }
   raceAny_ [send th c, client c s, receive th c]
     `finally` cancelSubscribers c
 

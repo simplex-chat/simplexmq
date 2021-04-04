@@ -124,7 +124,7 @@ main = do
   t <- getChatClient smpServer user
   ct <- newChatTerminal (tbqSize cfg) user termMode
   -- setLogLevel LogInfo -- LogError
-  -- withGlobalLogging logCfg $
+  -- withGlobalLogging logCfg $ do
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
   dogFoodChat t ct env
 
