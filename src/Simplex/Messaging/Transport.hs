@@ -120,8 +120,11 @@ getLn h = trim_cr <$> B.hGetLine h
 data SMPVersion = SMPVersion Int Int Int Int
   deriving (Eq, Ord)
 
-currentSmpVersion :: SMPVersion
-currentSmpVersion = SMPVersion 0 2 0 0
+major :: SMPVersion -> (Int, Int)
+major (SMPVersion a b _ _) = (a, b)
+
+currentSMPVersion :: SMPVersion
+currentSMPVersion = SMPVersion 0 2 0 0
 
 serializeSMPVersion :: SMPVersion -> ByteString
 serializeSMPVersion (SMPVersion a b c d) = B.intercalate "." [bshow a, bshow b, bshow c, bshow d]
@@ -211,7 +214,7 @@ serverHandshake h (k, pk) = do
       liftError TransportCryptoError (C.decryptOAEP pk encKeys)
         >>= liftEither . parseHandshakeKeys
     sendWelcome_6 :: THandle -> ExceptT TransportError IO ()
-    sendWelcome_6 th = ExceptT . tPutEncrypted th $ serializeSMPVersion currentSmpVersion <> " "
+    sendWelcome_6 th = ExceptT . tPutEncrypted th $ serializeSMPVersion currentSMPVersion <> " "
 
 -- | implements client transport handshake as per /rfcs/2021-01-26-crypto.md#transport-encryption
 -- The numbers in function names refer to the steps in the document
@@ -221,7 +224,7 @@ clientHandshake h keyHash = do
   keys@HandshakeKeys {sndKey, rcvKey} <- liftIO generateKeys_3
   sendEncryptedKeys_4 k keys
   th <- liftIO $ transportHandle h sndKey rcvKey
-  void $ getWelcome_6 th
+  getWelcome_6 th >>= checkVersion
   pure th
   where
     getPublicKey_1_2 :: ExceptT TransportError IO C.PublicKey
@@ -250,6 +253,10 @@ clientHandshake h keyHash = do
     getWelcome_6 th = ExceptT $ (>>= parseSMPVersion) <$> tGetEncrypted th
     parseSMPVersion :: ByteString -> Either TransportError SMPVersion
     parseSMPVersion = first TransportHandshakeError . A.parseOnly (smpVersionP <* A.space)
+    checkVersion :: SMPVersion -> ExceptT TransportError IO ()
+    checkVersion smpVersion =
+      when (major smpVersion > major currentSMPVersion) . throwE $
+        TransportHandshakeError "SMP server version"
 
 serializeHandshakeKeys :: HandshakeKeys -> ByteString
 serializeHandshakeKeys HandshakeKeys {sndKey, rcvKey} =

@@ -46,7 +46,7 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), digestFromByteString, hash)
+import Crypto.Hash (Digest, SHA256 (..), digestFromByteString)
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
 import Crypto.Number.Serialize (i2osp, os2ip)
