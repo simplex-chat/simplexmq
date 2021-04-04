@@ -8,7 +8,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Transport where
 
@@ -18,6 +17,7 @@ import Control.Monad.Trans.Except (throwE)
 import Crypto.Cipher.Types (AuthTag)
 import Crypto.Hash (hash)
 import Data.Attoparsec.ByteString.Char8 (Parser)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteArray (xor)
 import Data.ByteString.Char8 (ByteString)
@@ -31,7 +31,7 @@ import Network.Socket
 import Network.Transport.Internal (encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parse, parseAll)
-import Simplex.Messaging.Util (liftError)
+import Simplex.Messaging.Util (bshow, liftError)
 import System.IO
 import System.IO.Error
 import UnliftIO.Concurrent
@@ -117,6 +117,20 @@ getLn h = trim_cr <$> B.hGetLine h
 
 -- * Encrypted transport
 
+data SMPVersion = SMPVersion Int Int Int Int
+  deriving (Eq, Ord)
+
+currentSmpVersion :: SMPVersion
+currentSmpVersion = SMPVersion 0 2 0 0
+
+serializeSMPVersion :: SMPVersion -> ByteString
+serializeSMPVersion (SMPVersion a b c d) = B.intercalate "." [bshow a, bshow b, bshow c, bshow d]
+
+smpVersionP :: Parser SMPVersion
+smpVersionP =
+  let ver = A.decimal <* A.char '.'
+   in SMPVersion <$> ver <*> ver <*> ver <*> A.decimal
+
 data THandle = THandle
   { handle :: Handle,
     sndKey :: SessionKey,
@@ -181,8 +195,9 @@ serverHandshake h (k, pk) = do
   liftIO sendPublicKey_1
   encryptedKeys <- receiveEncryptedKeys_4
   HandshakeKeys {sndKey, rcvKey} <- decryptParseKeys_5 encryptedKeys
-  sendWelcome_6
-  liftIO $ transportHandle h rcvKey sndKey -- keys are swapped here
+  th <- liftIO $ transportHandle h rcvKey sndKey -- keys are swapped here
+  sendWelcome_6 th
+  pure th
   where
     sendPublicKey_1 :: IO ()
     sendPublicKey_1 = putLn h $ C.serializePubKey k
@@ -195,7 +210,8 @@ serverHandshake h (k, pk) = do
     decryptParseKeys_5 encKeys =
       liftError TransportCryptoError (C.decryptOAEP pk encKeys)
         >>= liftEither . parseHandshakeKeys
-    sendWelcome_6 = pure ()
+    sendWelcome_6 :: THandle -> ExceptT TransportError IO ()
+    sendWelcome_6 th = ExceptT . tPutEncrypted th $ serializeSMPVersion currentSmpVersion <> " "
 
 -- | implements client transport handshake as per /rfcs/2021-01-26-crypto.md#transport-encryption
 -- The numbers in function names refer to the steps in the document
@@ -204,8 +220,9 @@ clientHandshake h keyHash = do
   k <- getPublicKey_1_2
   keys@HandshakeKeys {sndKey, rcvKey} <- liftIO generateKeys_3
   sendEncryptedKeys_4 k keys
-  getWelcome_6
-  liftIO $ transportHandle h sndKey rcvKey
+  th <- liftIO $ transportHandle h sndKey rcvKey
+  void $ getWelcome_6 th
+  pure th
   where
     getPublicKey_1_2 :: ExceptT TransportError IO C.PublicKey
     getPublicKey_1_2 = do
@@ -229,8 +246,10 @@ clientHandshake h keyHash = do
     sendEncryptedKeys_4 k keys =
       liftError TransportCryptoError (C.encryptOAEP k $ serializeHandshakeKeys keys)
         >>= liftIO . B.hPut h
-    getWelcome_6 :: ExceptT TransportError IO ()
-    getWelcome_6 = pure ()
+    getWelcome_6 :: THandle -> ExceptT TransportError IO SMPVersion
+    getWelcome_6 th = ExceptT $ (>>= parseSMPVersion) <$> tGetEncrypted th
+    parseSMPVersion :: ByteString -> Either TransportError SMPVersion
+    parseSMPVersion = first TransportHandshakeError . A.parseOnly (smpVersionP <* A.space)
 
 serializeHandshakeKeys :: HandshakeKeys -> ByteString
 serializeHandshakeKeys HandshakeKeys {sndKey, rcvKey} =
