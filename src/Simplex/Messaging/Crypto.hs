@@ -15,7 +15,6 @@ module Simplex.Messaging.Crypto
     IV (..),
     KeyHash (..),
     generateKeyPair,
-    publicKeyHash,
     publicKeySize,
     sign,
     verify,
@@ -140,9 +139,6 @@ generateKeyPair size = loop
        in if d * d < n
             then loop
             else return (PublicKey pub, privateKey s n d)
-
-publicKeyHash :: PublicKey -> Digest SHA256
-publicKeyHash = hash . serializePubKey
 
 publicKeySize :: PublicKey -> Int
 publicKeySize = R.public_size . rsaPublicKey
