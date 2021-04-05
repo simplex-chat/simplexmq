@@ -2,14 +2,18 @@
 
 module Main where
 
+import Control.Monad (when)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (toLower)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
-import System.Directory (getAppUserDataDirectory)
+import System.Directory (doesFileExist, getAppUserDataDirectory)
+import System.Exit (exitFailure)
 import System.FilePath (combine)
+import System.IO (hFlush, stdout)
 
 cfg :: ServerConfig
 cfg =
@@ -22,26 +26,45 @@ cfg =
       serverKeyPair = undefined
     }
 
+newKeySize :: Int
+newKeySize = 2048 `div` 8
+
 main :: IO ()
 main = do
-  (k, pk) <- loadCreateKeys
+  (k, pk) <- readCreateKeys
   B.putStrLn $ "SMP transport key hash: " <> publicKeyHash k
   putStrLn $ "Listening on port " <> tcpPort cfg
   runSMPServer cfg {serverKeyPair = (k, pk)}
 
-loadCreateKeys :: IO C.KeyPair
-loadCreateKeys = do
+readCreateKeys :: IO C.KeyPair
+readCreateKeys = do
   dir <- getAppUserDataDirectory "simplex"
-  k <- getKey dir "server_key.pub" C.pubKeyP
-  pk <- getKey dir "server_key" C.privKeyP
-  pure (k, pk)
-
-getKey :: FilePath -> FilePath -> Parser a -> IO a
-getKey dir path parser =
-  B.readFile file >>= either parseError pure . parseAll parser . head . B.lines
+  let kPath = combine dir "server_key.pub"
+      pkPath = combine dir "server_key"
+  -- `||` is here to avoid creating keys and crash if one of two files exists
+  hasKeys <- (||) <$> doesFileExist kPath <*> doesFileExist pkPath
+  (if hasKeys then readKeys else createKeys) kPath pkPath
   where
-    file = combine dir path
-    parseError = fail . ((file <> ": ") <>)
+    createKeys :: FilePath -> FilePath -> IO C.KeyPair
+    createKeys kPath pkPath = do
+      confirm
+      (k, pk) <- C.generateKeyPair newKeySize
+      B.writeFile kPath $ C.serializePubKey k
+      B.writeFile pkPath $ C.serializePrivKey pk
+      pure (k, pk)
+    confirm :: IO ()
+    confirm = do
+      putStr "Generate new server key pair (y/N): "
+      hFlush stdout
+      ok <- getLine
+      when (map toLower ok /= "y") exitFailure
+    readKeys :: FilePath -> FilePath -> IO C.KeyPair
+    readKeys kPath pkPath =
+      (,) <$> readKey kPath C.pubKeyP <*> readKey pkPath C.privKeyP
+    readKey :: FilePath -> Parser a -> IO a
+    readKey path parser =
+      let parseError = fail . ((path <> ": ") <>)
+       in B.readFile path >>= either parseError pure . parseAll parser . head . B.lines
 
 publicKeyHash :: C.PublicKey -> B.ByteString
 publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.serializePubKey
