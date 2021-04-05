@@ -30,7 +30,10 @@ import Simplex.Messaging.Util (bshow, raceAny_)
 import System.Directory (getAppUserDataDirectory)
 import System.Exit (exitFailure)
 import System.Info (os)
+import System.Terminal
+import Terminal
 import Types
+import Data.Text.Prettyprint.Doc
 
 cfg :: AgentConfig
 cfg =
@@ -117,16 +120,28 @@ chatHelpInfo =
   \@<name> <message> - send <message> (any string) to contact <name>\n\
   \                    @<name> can be omitted to send to previous"
 
+-- main :: IO ()
+-- main = do
+--   ChatOpts {dbFileName, smpServer, name, termMode} <- welcomeGetOpts
+--   let user = Contact <$> name
+--   t <- getChatClient smpServer user
+--   ct <- newChatTerminal (tbqSize cfg) user termMode
+--   -- setLogLevel LogInfo -- LogError
+--   -- withGlobalLogging logCfg $
+--   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
+--   dogFoodChat t ct env
+
+-- main :: IO ()
+-- main = forever $ do
+--   s <- withTerminal . runTerminalT $ getTermLine
+--   putStrLn s
+
 main :: IO ()
-main = do
-  ChatOpts {dbFileName, smpServer, name, termMode} <- welcomeGetOpts
-  let user = Contact <$> name
-  t <- getChatClient smpServer user
-  ct <- newChatTerminal (tbqSize cfg) user termMode
-  -- setLogLevel LogInfo -- LogError
-  -- withGlobalLogging logCfg $
-  env <- newSMPAgentEnv cfg {dbFile = dbFileName}
-  dogFoodChat t ct env
+main = withTerminal . runTerminalT . putDoc $ annotate (foreground blue) "This is blue!" <> line <> annotate (foreground $ bright blue) "This is bright blue!" <> line
+  <> annotate bold ("Just bold!" <> otherDoc <> "..just bold again") <> annotate inverted  (" Just inverted !") <> annotate underlined  (" Just underlined!")
+
+otherDoc :: (MonadColorPrinter m, Attribute m ~ ann) => Doc ann
+otherDoc = annotate (background red) " BOLD ON RED BACKGROUND "
 
 welcomeGetOpts :: IO ChatOpts
 welcomeGetOpts = do
