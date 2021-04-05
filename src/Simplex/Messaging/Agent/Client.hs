@@ -47,7 +47,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
-import Simplex.Messaging.Util (liftError)
+import Simplex.Messaging.Util (bshow, liftError)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -133,7 +133,7 @@ withSMP c srv action =
 
     logServerError :: AgentErrorType -> m a
     logServerError e = do
-      logServer "<--" c srv "" $ (B.pack . show) e
+      logServer "<--" c srv "" $ bshow e
       throwError e
 
 withLogSMP :: AgentMonad m => AgentClient -> SMPServer -> QueueId -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
@@ -196,7 +196,7 @@ removeSubscription AgentClient {subscrConns, subscrSrvrs} connAlias = atomically
 
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
-  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> (B.pack . show) clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
+  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 
 showServer :: SMPServer -> ByteString
 showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)

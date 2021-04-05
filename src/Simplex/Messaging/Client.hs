@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -35,7 +36,6 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import qualified Crypto.PubKey.RSA.Types as RSA
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe
@@ -46,7 +46,7 @@ import Simplex.Messaging.Agent.Transmission (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (liftEitherError, raceAny_)
+import Simplex.Messaging.Util (bshow, liftEitherError, raceAny_)
 import System.IO
 import System.IO.Error
 import System.Timeout
@@ -91,7 +91,7 @@ data Request = Request
 
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO SMPClient
 getSMPClient
-  smpServer@SMPServer {host, port}
+  smpServer@SMPServer {host, port, keyHash}
   SMPClientConfig {qSize, defaultPort, tcpTimeout, smpPing}
   msgQ
   disconnected = do
@@ -103,7 +103,7 @@ getSMPClient
           `finally` atomically (putTMVar started False)
     tcpTimeout `timeout` atomically (takeTMVar started) >>= \case
       Just True -> return c {action}
-      _ -> throwIO err
+      _ -> throwIO err -- TODO report handshake error too, not only connection timeout
     where
       err :: IOException
       err = mkIOError TimeExpired "connection timeout" Nothing Nothing
@@ -128,18 +128,24 @@ getSMPClient
             }
 
       client :: SMPClient -> TMVar Bool -> Handle -> IO ()
-      client c started h = do
-        _ <- getLn h -- "Welcome to SMP"
+      client c started h =
+        runExceptT (clientHandshake h keyHash) >>= \case
+          Right th -> clientTransport c started th
+          -- TODO report error instead of True/False
+          Left _ -> atomically $ putTMVar started False
+
+      clientTransport :: SMPClient -> TMVar Bool -> THandle -> IO ()
+      clientTransport c started th = do
         atomically $ do
-          modifyTVar (connected c) (const True)
+          writeTVar (connected c) True
           putTMVar started True
-        raceAny_ [send c h, process c, receive c h, ping c]
+        raceAny_ [send c th, process c, receive c th, ping c]
           `finally` disconnected
 
-      send :: SMPClient -> Handle -> IO ()
+      send :: SMPClient -> THandle -> IO ()
       send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
-      receive :: SMPClient -> Handle -> IO ()
+      receive :: SMPClient -> THandle -> IO ()
       receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
 
       ping :: SMPClient -> IO ()
@@ -241,7 +247,7 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
     getNextCorrId = do
       i <- (+ 1) <$> readTVar clientCorrId
       writeTVar clientCorrId i
-      return . CorrId . B.pack $ show i
+      return . CorrId $ bshow i
 
     signTransmission :: ByteString -> ExceptT SMPClientError IO SignedRawTransmission
     signTransmission t = case pKey of

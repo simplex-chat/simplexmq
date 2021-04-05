@@ -13,6 +13,7 @@ import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
+import SMPClient (teshKeyHashStr)
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import System.IO (Handle)
@@ -139,8 +140,8 @@ syntaxTests = do
       -- TODO: add tests with defined connection alias
       xit "only server" $ ("211", "", "NEW localhost") >#>= \case ("211", "", "INV" : _) -> True; _ -> False
       it "with port" $ ("212", "", "NEW localhost:5000") >#>= \case ("212", "", "INV" : _) -> True; _ -> False
-      xit "with keyHash" $ ("213", "", "NEW localhost#1234") >#>= \case ("213", "", "INV" : _) -> True; _ -> False
-      it "with port and keyHash" $ ("214", "", "NEW localhost:5000#1234") >#>= \case ("214", "", "INV" : _) -> True; _ -> False
+      xit "with keyHash" $ ("213", "", "NEW localhost#" <> teshKeyHashStr) >#>= \case ("213", "", "INV" : _) -> True; _ -> False
+      it "with port and keyHash" $ ("214", "", "NEW localhost:5000#" <> teshKeyHashStr) >#>= \case ("214", "", "INV" : _) -> True; _ -> False
     describe "invalid" do
       -- TODO: add tests with defined connection alias
       it "no parameters" $ ("221", "", "NEW") >#> ("221", "", "ERR SYNTAX 11")

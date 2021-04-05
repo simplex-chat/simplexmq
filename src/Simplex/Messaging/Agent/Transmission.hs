@@ -152,7 +152,7 @@ serializeSMPMessage = \case
      in smpMessage "" header body
   where
     messageHeader msgId ts prevMsgHash =
-      B.unwords [B.pack $ show msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
+      B.unwords [bshow msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
     smpMessage smpHeader aHeader aBody = B.intercalate "\n" [smpHeader, aHeader, aBody, ""]
 
 agentMessageP :: Parser AMessage
@@ -173,11 +173,17 @@ smpQueueInfoP =
   "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> C.pubKeyP)
 
 smpServerP :: Parser SMPServer
-smpServerP = SMPServer <$> server <*> port <*> msgHash
+smpServerP = SMPServer <$> server <*> port <*> kHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
-    port = A.char ':' *> (Just . show <$> (A.decimal :: Parser Int)) <|> pure Nothing
-    msgHash = A.char '#' *> (Just <$> base64P) <|> pure Nothing
+    port = fromChar ':' $ show <$> (A.decimal :: Parser Int)
+    kHash = fromChar '#' C.keyHashP
+    fromChar :: Char -> Parser a -> Parser (Maybe a)
+    fromChar ch parser = do
+      c <- A.peekChar
+      if c == Just ch
+        then A.char ch *> (Just <$> parser)
+        else pure Nothing
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
@@ -194,16 +200,14 @@ serializeSmpQueueInfo (SMPQueueInfo srv qId ek) =
 
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} =
-  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack) keyHash
+  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . C.serializeKeyHash) keyHash
 
 data SMPServer = SMPServer
   { host :: HostName,
     port :: Maybe ServiceName,
-    keyHash :: Maybe KeyHash
+    keyHash :: Maybe C.KeyHash
   }
   deriving (Eq, Ord, Show)
-
-type KeyHash = Encoded
 
 type ConnAlias = ByteString
 
@@ -354,7 +358,7 @@ serializeCommand = \case
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
-  ERR e -> "ERR " <> B.pack (show e)
+  ERR e -> "ERR " <> bshow e
   OK -> "OK"
   where
     replyMode :: ReplyMode -> ByteString
@@ -370,13 +374,13 @@ serializeCommand = \case
       MsgError e ->
         "ERR" <> case e of
           MsgSkipped fromMsgId toMsgId ->
-            B.unwords ["NO_ID", B.pack $ show fromMsgId, B.pack $ show toMsgId]
-          MsgBadId aMsgId -> "ID " <> B.pack (show aMsgId)
+            B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
+          MsgBadId aMsgId -> "ID " <> bshow aMsgId
           MsgBadHash -> "HASH"
 
 -- TODO - save function as in the server Transmission - re-use?
 serializeMsg :: ByteString -> ByteString
-serializeMsg body = B.pack (show $ B.length body) <> "\n" <> body
+serializeMsg body = bshow (B.length body) <> "\n" <> body
 
 tPutRaw :: Handle -> ARawTransmission -> IO ()
 tPutRaw h (corrId, connAlias, command) = do

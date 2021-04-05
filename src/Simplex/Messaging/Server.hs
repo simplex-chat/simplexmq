@@ -15,6 +15,7 @@ module Simplex.Messaging.Server (runSMPServer, randomBytes) where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
+import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
@@ -59,11 +60,17 @@ runSMPServer cfg@ServerConfig {tcpPort} = do
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
-  liftIO $ putLn h "Welcome to SMP v0.2.0"
+  keyPair <- asks serverKeyPair
+  liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
+    Right th -> runClientTransport th
+    Left _ -> pure ()
+
+runClientTransport :: (MonadUnliftIO m, MonadReader Env m) => THandle -> m ()
+runClientTransport th = do
   q <- asks $ tbqSize . config
   c <- atomically $ newClient q
   s <- asks server
-  raceAny_ [send h c, client c s, receive h c]
+  raceAny_ [send th c, client c s, receive th c]
     `finally` cancelSubscribers c
 
 cancelSubscribers :: MonadUnliftIO m => Client -> m ()
@@ -75,7 +82,7 @@ cancelSub = \case
   Sub {subThread = SubThread t} -> killThread t
   _ -> return ()
 
-receive :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
+receive :: (MonadUnliftIO m, MonadReader Env m) => THandle -> Client -> m ()
 receive h Client {rcvQ} = forever $ do
   (signature, (corrId, queueId, cmdOrError)) <- tGet fromClient h
   t <- case cmdOrError of
@@ -83,7 +90,7 @@ receive h Client {rcvQ} = forever $ do
     Right cmd -> verifyTransmission (signature, (corrId, queueId, cmd))
   atomically $ writeTBQueue rcvQ t
 
-send :: MonadUnliftIO m => Handle -> Client -> m ()
+send :: MonadUnliftIO m => THandle -> Client -> m ()
 send h Client {sndQ} = forever $ do
   t <- atomically $ readTBQueue sndQ
   liftIO $ tPut h ("", serializeTransmission t)

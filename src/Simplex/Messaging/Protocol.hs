@@ -13,7 +13,7 @@ module Simplex.Messaging.Protocol where
 
 import Control.Applicative ((<|>))
 import Control.Monad
-import Control.Monad.IO.Class
+import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
@@ -28,8 +28,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
-import System.IO
-import Text.Read
 
 data Party = Broker | Recipient | Sender
   deriving (Show)
@@ -108,7 +106,7 @@ type MsgId = Encoded
 
 type MsgBody = ByteString
 
-data ErrorType = PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
+data ErrorType = PROHIBITED | SYNTAX Int | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
 
 errBadTransmission :: Int
 errBadTransmission = 1
@@ -127,6 +125,16 @@ errNoQueueId = 5
 
 errMessageBody :: Int
 errMessageBody = 6
+
+transmissionP :: Parser RawTransmission
+transmissionP = do
+  signature <- segment
+  corrId <- segment
+  queueId <- segment
+  command <- A.takeByteString
+  return (signature, corrId, queueId, command)
+  where
+    segment = A.takeTill (== ' ') <* " "
 
 commandP :: Parser Cmd
 commandP =
@@ -148,60 +156,47 @@ commandP =
     newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
     idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
     keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
-    sendCmd = Cmd SSender . SEND <$> A.takeWhile A.isDigit
+    sendCmd = do
+      size <- A.decimal <* A.space
+      Cmd SSender . SEND <$> A.take size <* A.space
     message = do
       msgId <- base64P <* A.space
       ts <- tsISO8601P <* A.space
-      Cmd SBroker . MSG msgId ts <$> A.takeWhile A.isDigit
+      size <- A.decimal <* A.space
+      Cmd SBroker . MSG msgId ts <$> A.take size <* A.space
     serverError = Cmd SBroker . ERR <$> errorType
     errorType =
       "PROHIBITED" $> PROHIBITED
         <|> "SYNTAX " *> (SYNTAX <$> A.decimal)
-        <|> "SIZE" $> SIZE
         <|> "AUTH" $> AUTH
         <|> "INTERNAL" $> INTERNAL
 
+-- TODO ignore the end of block, no need to parse it
 parseCommand :: ByteString -> Either ErrorType Cmd
-parseCommand = parse commandP $ SYNTAX errBadSMPCommand
+parseCommand = parse (commandP <* " " <* A.takeByteString) $ SYNTAX errBadSMPCommand
 
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
   Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
-  Cmd SRecipient cmd -> B.pack $ show cmd
-  Cmd SSender (SEND msgBody) -> "SEND" <> serializeMsg msgBody
+  Cmd SRecipient cmd -> bshow cmd
+  Cmd SSender (SEND msgBody) -> "SEND " <> serializeMsg msgBody
   Cmd SSender PING -> "PING"
   Cmd SBroker (MSG msgId ts msgBody) ->
-    B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts] <> serializeMsg msgBody
+    B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
-  Cmd SBroker (ERR err) -> "ERR " <> B.pack (show err)
-  Cmd SBroker resp -> B.pack $ show resp
+  Cmd SBroker (ERR err) -> "ERR " <> bshow err
+  Cmd SBroker resp -> bshow resp
   where
-    serializeMsg msgBody = " " <> B.pack (show $ B.length msgBody) <> "\r\n" <> msgBody
+    serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
 
-tPutRaw :: Handle -> RawTransmission -> IO ()
-tPutRaw h (signature, corrId, queueId, command) = do
-  putLn h signature
-  putLn h corrId
-  putLn h queueId
-  putLn h command
-
-tGetRaw :: Handle -> IO RawTransmission
-tGetRaw h = do
-  signature <- getLn h
-  corrId <- getLn h
-  queueId <- getLn h
-  command <- getLn h
-  return (signature, corrId, queueId, command)
-
-tPut :: Handle -> SignedRawTransmission -> IO ()
-tPut h (C.Signature sig, t) = do
-  putLn h $ encode sig
-  putLn h t
+tPut :: THandle -> SignedRawTransmission -> IO (Either TransportError ())
+tPut th (C.Signature sig, t) =
+  tPutEncrypted th $ encode sig <> " " <> t <> " "
 
 serializeTransmission :: Transmission -> ByteString
 serializeTransmission (CorrId corrId, queueId, command) =
-  B.intercalate "\r\n" [corrId, encode queueId, serializeCommand command]
+  B.intercalate " " [corrId, encode queueId, serializeCommand command]
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
@@ -213,22 +208,28 @@ fromServer = \case
   cmd@(Cmd SBroker _) -> Right cmd
   _ -> Left PROHIBITED
 
+tGetParse :: THandle -> IO (Either TransportError RawTransmission)
+tGetParse th = (>>= parse transmissionP TransportParsingError) <$> tGetEncrypted th
+
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
-tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m SignedTransmissionOrError
-tGet fromParty h = do
-  (signature, corrId, queueId, command) <- liftIO $ tGetRaw h
-  let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
-  either (const $ tError corrId) tParseLoadBody decodedTransmission
+tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> THandle -> m SignedTransmissionOrError
+tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
   where
+    decodeParseValidate :: Either TransportError RawTransmission -> m SignedTransmissionOrError
+    decodeParseValidate = \case
+      Right (signature, corrId, queueId, command) ->
+        let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
+         in either (const $ tError corrId) tParseValidate decodedTransmission
+      Left _ -> tError ""
+
     tError :: ByteString -> m SignedTransmissionOrError
     tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left $ SYNTAX errBadTransmission))
 
-    tParseLoadBody :: RawTransmission -> m SignedTransmissionOrError
-    tParseLoadBody t@(sig, corrId, queueId, command) = do
+    tParseValidate :: RawTransmission -> m SignedTransmissionOrError
+    tParseValidate t@(sig, corrId, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
-      fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (C.Signature sig, (CorrId corrId, queueId, fullCmd))
+      return (C.Signature sig, (CorrId corrId, queueId, cmd))
 
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, _, queueId, _) cmd = case cmd of
@@ -261,19 +262,3 @@ tGet fromParty h = do
       Cmd SRecipient _
         | B.null signature || B.null queueId -> Left $ SYNTAX errNoCredentials
         | otherwise -> Right cmd
-
-    cmdWithMsgBody :: Cmd -> m (Either ErrorType Cmd)
-    cmdWithMsgBody = \case
-      Cmd SSender (SEND sizeStr) ->
-        Cmd SSender . SEND <$$> getMsgBody sizeStr
-      Cmd SBroker (MSG msgId ts sizeStr) ->
-        Cmd SBroker . MSG msgId ts <$$> getMsgBody sizeStr
-      cmd -> return $ Right cmd
-
-    getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
-    getMsgBody sizeStr = case readMaybe (B.unpack sizeStr) :: Maybe Int of
-      Just size -> liftIO $ do
-        body <- B.hGet h size
-        s <- getLn h
-        return $ if B.null s then Right body else Left SIZE
-      Nothing -> return $ Left INTERNAL
