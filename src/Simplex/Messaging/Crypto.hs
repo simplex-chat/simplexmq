@@ -16,6 +16,7 @@ module Simplex.Messaging.Crypto
     IV (..),
     KeyHash (..),
     generateKeyPair,
+    validKeyPair,
     publicKeySize,
     sign,
     verify,
@@ -50,6 +51,7 @@ import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), digestFromByteString, hash)
 import Crypto.Number.Generate (generateMax)
+import Crypto.Number.ModArithmetic (expFast)
 import Crypto.Number.Prime (findPrimeFrom)
 import Crypto.Number.Serialize (i2osp, os2ip)
 import qualified Crypto.PubKey.RSA as R
@@ -147,6 +149,16 @@ generateKeyPair size = loop
        in if d * d < n
             then loop
             else return (PublicKey pub, privateKey s n d)
+
+validKeyPair :: KeyPair -> Bool
+validKeyPair
+  ( PublicKey R.PublicKey {public_size, public_n = n, public_e = e},
+    PrivateKey {private_size, private_n, private_d = d}
+    ) =
+    let m = 30577
+     in public_size == private_size
+          && n == private_n
+          && m == expFast (expFast m d n) e n
 
 publicKeySize :: PublicKey -> Int
 publicKeySize = R.public_size . rsaPublicKey

@@ -59,8 +59,9 @@ readCreateKeys = do
       ok <- getLine
       when (map toLower ok /= "y") exitFailure
     readKeys :: FilePath -> FilePath -> IO C.KeyPair
-    readKeys kPath pkPath =
-      (,) <$> readKey kPath C.pubKeyP <*> readKey pkPath C.privKeyP
+    readKeys kPath pkPath = do
+      ks <- (,) <$> readKey kPath C.pubKeyP <*> readKey pkPath C.privKeyP
+      if C.validKeyPair ks then pure ks else putStrLn "invalid key pair" >> exitFailure
     readKey :: FilePath -> Parser a -> IO a
     readKey path parser =
       let parseError = fail . ((path <> ": ") <>)
