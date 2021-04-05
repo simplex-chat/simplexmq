@@ -10,7 +10,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
-import System.Directory (doesFileExist, getAppUserDataDirectory)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (hFlush, stdout)
@@ -29,6 +29,9 @@ cfg =
 newKeySize :: Int
 newKeySize = 2048 `div` 8
 
+cfgDir :: FilePath
+cfgDir = "/etc/opt/simplex"
+
 main :: IO ()
 main = do
   (k, pk) <- readCreateKeys
@@ -38,9 +41,9 @@ main = do
 
 readCreateKeys :: IO C.KeyPair
 readCreateKeys = do
-  dir <- getAppUserDataDirectory "simplex"
-  let kPath = combine dir "server_key.pub"
-      pkPath = combine dir "server_key"
+  createDirectoryIfMissing True cfgDir
+  let kPath = combine cfgDir "server_key.pub"
+      pkPath = combine cfgDir "server_key"
   -- `||` is here to avoid creating keys and crash if one of two files exists
   hasKeys <- (||) <$> doesFileExist kPath <*> doesFileExist pkPath
   (if hasKeys then readKeys else createKeys) kPath pkPath
