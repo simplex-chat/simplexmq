@@ -86,10 +86,13 @@ data PrivateKey = PrivateKey
   deriving (Eq, Show)
 
 instance IsString PrivateKey where
-  fromString = either error id . parseAll privKeyP . fromString
+  fromString = parseString privKeyP
 
 instance IsString PublicKey where
-  fromString = either error id . parseAll pubKeyP . fromString
+  fromString = parseString pubKeyP
+
+parseString :: Parser a -> (String -> a)
+parseString parser = either error id . parseAll parser . fromString
 
 instance ToField PrivateKey where toField = toField . serializePrivKey
 
@@ -177,7 +180,7 @@ newtype IV = IV {unIV :: ByteString}
 newtype KeyHash = KeyHash {unKeyHash :: Digest SHA256} deriving (Eq, Ord, Show)
 
 instance IsString KeyHash where
-  fromString = either error id . parseAll keyHashP . fromString
+  fromString = parseString keyHashP
 
 instance ToField KeyHash where toField = toField . serializeKeyHash
 
