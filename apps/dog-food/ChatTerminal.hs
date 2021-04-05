@@ -24,7 +24,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding
 import Numeric.Natural
-import Simplex.Messaging.Transport (getLn, putLn)
+import Terminal (getLn, putLn)
 import qualified System.Console.ANSI as C
 import System.IO
 import Types
@@ -105,7 +105,7 @@ chatTerminal ct
 
 receiveFromTTY :: ChatTerminal -> IO ()
 receiveFromTTY ct =
-  forever $ getLn stdin >>= atomically . writeTBQueue (inputQ ct)
+  forever $ getLn >>= atomically . writeTBQueue (inputQ ct)
 
 withTermLock :: ChatTerminal -> IO () -> IO ()
 withTermLock ChatTerminal {termLock} action = do
@@ -233,7 +233,7 @@ promptString :: Maybe Contact -> String
 promptString a = maybe "" (B.unpack . toBs) a <> "> "
 
 sendToTTY :: ChatTerminal -> IO ()
-sendToTTY ct = forever $ readOutputQ ct >>= putLn stdout
+sendToTTY ct = forever $ readOutputQ ct >>= putLn
 
 sendToTTY' :: ChatTerminal -> IO ()
 sendToTTY' ct = forever $ do
