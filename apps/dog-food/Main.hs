@@ -30,6 +30,7 @@ import Simplex.Messaging.Util (bshow, raceAny_)
 import System.Directory (getAppUserDataDirectory)
 import System.Exit (exitFailure)
 import System.Info (os)
+import System.Terminal
 import Types
 
 cfg :: AgentConfig
@@ -117,16 +118,21 @@ chatHelpInfo =
   \@<name> <message> - send <message> (any string) to contact <name>\n\
   \                    @<name> can be omitted to send to previous"
 
+-- main :: IO ()
+-- main = do
+--   ChatOpts {dbFileName, smpServer, name, termMode} <- welcomeGetOpts
+--   let user = Contact <$> name
+--   t <- getChatClient smpServer user
+--   ct <- newChatTerminal (tbqSize cfg) user termMode
+--   -- setLogLevel LogInfo -- LogError
+--   -- withGlobalLogging logCfg $
+--   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
+--   dogFoodChat t ct env
+
 main :: IO ()
-main = do
-  ChatOpts {dbFileName, smpServer, name, termMode} <- welcomeGetOpts
-  let user = Contact <$> name
-  t <- getChatClient smpServer user
-  ct <- newChatTerminal (tbqSize cfg) user termMode
-  -- setLogLevel LogInfo -- LogError
-  -- withGlobalLogging logCfg $
-  env <- newSMPAgentEnv cfg {dbFile = dbFileName}
-  dogFoodChat t ct env
+main = forever $ do
+  s <- getLine
+  withTerminal . runTerminalT $ putStringLn s
 
 welcomeGetOpts :: IO ChatOpts
 welcomeGetOpts = do
