@@ -28,6 +28,7 @@ module Simplex.Messaging.Crypto
     serializePrivKey,
     serializePubKey,
     serializeKeyHash,
+    getKeyHash,
     privKeyP,
     pubKeyP,
     keyHashP,
@@ -47,7 +48,7 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), digestFromByteString)
+import Crypto.Hash (Digest, SHA256 (..), digestFromByteString, hash)
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
 import Crypto.Number.Serialize (i2osp, os2ip)
@@ -184,6 +185,9 @@ keyHashP = do
   case digestFromByteString bs of
     Just d -> pure $ KeyHash d
     _ -> fail "invalid digest"
+
+getKeyHash :: ByteString -> KeyHash
+getKeyHash = KeyHash . hash
 
 serializeHeader :: Header -> ByteString
 serializeHeader Header {aesKey, ivBytes, authTag, msgSize} =
