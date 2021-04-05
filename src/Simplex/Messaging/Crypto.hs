@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -80,6 +81,12 @@ data PrivateKey = PrivateKey
     private_d :: Integer
   }
   deriving (Eq, Show)
+
+instance IsString PrivateKey where
+  fromString = either error id . parseAll privKeyP . fromString
+
+instance IsString PublicKey where
+  fromString = either error id . parseAll pubKeyP . fromString
 
 instance ToField PrivateKey where toField = toField . serializePrivKey
 
@@ -314,16 +321,16 @@ keyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
 rsaPrivateKey :: PrivateKey -> R.PrivateKey
 rsaPrivateKey pk =
   R.PrivateKey
-    { R.private_pub =
+    { private_pub =
         R.PublicKey
-          { R.public_size = private_size pk,
-            R.public_n = private_n pk,
-            R.public_e = undefined
+          { public_size = private_size pk,
+            public_n = private_n pk,
+            public_e = undefined
           },
-      R.private_d = private_d pk,
-      R.private_p = 0,
-      R.private_q = 0,
-      R.private_dP = undefined,
-      R.private_dQ = undefined,
-      R.private_qinv = undefined
+      private_d = private_d pk,
+      private_p = 0,
+      private_q = 0,
+      private_dP = undefined,
+      private_dQ = undefined,
+      private_qinv = undefined
     }
