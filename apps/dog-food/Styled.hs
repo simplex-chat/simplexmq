@@ -11,8 +11,7 @@ instance Semigroup StyledString where (<>) = (:<>:)
 
 instance Monoid StyledString where mempty = plain ""
 
-instance IsString StyledString where
-  fromString = plain
+instance IsString StyledString where fromString = plain
 
 plain :: String -> StyledString
 plain = Styled []
