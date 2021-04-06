@@ -133,22 +133,6 @@ main = do
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
   dogFoodChat t ct env
 
--- main :: IO ()
--- main = forever $ do
---   s <- withTerminal . runTerminalT $ getTermLine
---   putStrLn s
-
--- main :: IO ()
--- main =
---   withTerminal . runTerminalT . putDoc $
---     annotate (foreground blue) "This is blue!" <> line <> "no color" <> line <> annotate (foreground $ bright blue) "This is bright blue!" <> line
---       <> annotate bold ("Just bold!" <> otherDoc <> "..just bold again")
---       <> annotate italic (" Just italic !")
---       <> annotate underlined (" Just underlined!")
-
--- otherDoc :: MonadColorPrinter m => Doc (Attribute m)
--- otherDoc = annotate (background red) " BOLD ON RED BACKGROUND "
-
 welcomeGetOpts :: IO ChatOpts
 welcomeGetOpts = do
   appDir <- getAppUserDataDirectory "simplex"

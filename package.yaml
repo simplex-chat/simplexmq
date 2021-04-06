@@ -62,7 +62,6 @@ executables:
     dependencies:
       - ansi-terminal == 0.10.*
       - optparse-applicative == 0.15.*
-      - prettyprinter == 1.6.*
       - simplex-messaging
       - terminal == 0.2.*
     ghc-options:
