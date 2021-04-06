@@ -8,8 +8,8 @@ module ChatTerminal
     newChatTerminal,
     chatTerminal,
     updateUsername,
-    ttyContact',
-    ttyFromContact',
+    ttyContact,
+    ttyFromContact,
   )
 where
 
@@ -17,12 +17,9 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race_)
 import Control.Concurrent.STM
 import Control.Monad
-import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe)
-import qualified Data.Text as T
-import Data.Text.Encoding
 import Numeric.Natural
 import Styled
 import qualified System.Console.ANSI as C
@@ -302,29 +299,14 @@ setTTY mode = do
   hSetBuffering stdin mode
   hSetBuffering stdout mode
 
-ttyContact' :: Contact -> StyledString
-ttyContact' (Contact a) = Styled contactSGR $ B.unpack a
+ttyContact :: Contact -> StyledString
+ttyContact (Contact a) = Styled contactSGR $ B.unpack a
 
-ttyFromContact' :: Contact -> StyledString
-ttyFromContact' (Contact a) = Styled contactSGR $ B.unpack a <> ">"
-
-ttyToContact' :: Contact -> StyledString
-ttyToContact' (Contact a) = Styled selfSGR $ "@" <> B.unpack a
-
--- ttyContact :: Contact -> ByteString
--- ttyContact (Contact a) = withSGR contactSGR a
-
--- ttyFromContact :: Contact -> ByteString
--- ttyFromContact (Contact a) = withSGR contactSGR $ a <> ">"
-
--- ttyToContact :: Contact -> ByteString
--- ttyToContact (Contact a) = withSGR selfSGR $ "@" <> B.pack a
+ttyFromContact :: Contact -> StyledString
+ttyFromContact (Contact a) = Styled contactSGR $ B.unpack a <> ">"
 
 contactSGR :: [C.SGR]
 contactSGR = [C.SetColor C.Foreground C.Vivid C.Yellow]
 
 selfSGR :: [C.SGR]
 selfSGR = [C.SetColor C.Foreground C.Vivid C.Cyan]
-
-withSGR :: [C.SGR] -> ByteString -> ByteString
-withSGR sgr s = B.pack (C.setSGRCode sgr) <> s <> B.pack (C.setSGRCode [C.Reset])

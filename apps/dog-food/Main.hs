@@ -28,13 +28,11 @@ import Simplex.Messaging.Agent.Client (AgentClient (..))
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
-import Simplex.Messaging.Util (bshow, raceAny_)
+import Simplex.Messaging.Util (raceAny_)
 import Styled
 import System.Directory (getAppUserDataDirectory)
 import System.Exit (exitFailure)
 import System.Info (os)
-import System.Terminal
-import Terminal
 import Types
 
 cfg :: AgentConfig
@@ -98,9 +96,9 @@ serializeChatResponse :: Maybe Contact -> ChatResponse -> StyledString
 serializeChatResponse name = \case
   ChatHelpInfo -> chatHelpInfo
   Invitation qInfo -> "ask your contact to enter: /accept " <> showName name <> " " <> (bPlain . serializeSmpQueueInfo) qInfo
-  Connected c -> ttyContact' c <> " connected"
-  ReceivedMessage c t -> ttyFromContact' c <> " " <> msgPlain t
-  Disconnected c -> "disconnected from " <> ttyContact' c <> " - try \"/chat " <> bPlain (toBs c) <> "\""
+  Connected c -> ttyContact c <> " connected"
+  ReceivedMessage c t -> ttyFromContact c <> " " <> msgPlain t
+  Disconnected c -> "disconnected from " <> ttyContact c <> " - try \"/chat " <> bPlain (toBs c) <> "\""
   YesYes -> "you got it!"
   ErrorInput t -> "invalid input: " <> bPlain t
   ChatError e -> "chat error: " <> plain (show e)
