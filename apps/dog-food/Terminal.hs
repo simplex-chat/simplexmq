@@ -3,19 +3,15 @@
 module Terminal where
 
 import Control.Monad.IO.Class (liftIO)
-import Data.ByteString.Char8 (ByteString)
-import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
+import Styled
 import System.Exit (exitSuccess)
 import System.Terminal as C
 
-getLn :: IO ByteString
-getLn = encodeUtf8 . T.pack <$> withTerminal (runTerminalT getTermLine)
+getLn :: IO String
+getLn = withTerminal (runTerminalT getTermLine)
 
-putLn :: ByteString -> IO ()
-putLn s = withTerminal . runTerminalT . putStringLn . T.unpack $ decodeUtf8With onError s
-  where
-    onError _ _ = Just '?'
+putLn :: StyledString -> IO ()
+putLn s = withTerminal . runTerminalT . putStringLn $ styledToPlain s
 
 getTermLine :: MonadTerminal m => m String
 getTermLine = getChars ""

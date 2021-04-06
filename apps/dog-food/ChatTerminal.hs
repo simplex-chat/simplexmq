@@ -8,8 +8,8 @@ module ChatTerminal
     newChatTerminal,
     chatTerminal,
     updateUsername,
-    ttyContact,
-    ttyFromContact,
+    ttyContact',
+    ttyFromContact',
   )
 where
 
@@ -24,14 +24,15 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding
 import Numeric.Natural
-import Terminal (getLn, putLn)
+import Styled
 import qualified System.Console.ANSI as C
 import System.IO
+import Terminal (getLn, putLn)
 import Types
 
 data ChatTerminal = ChatTerminal
-  { inputQ :: TBQueue ByteString,
-    outputQ :: TBQueue ByteString,
+  { inputQ :: TBQueue String,
+    outputQ :: TBQueue StyledString,
     activeContact :: TVar (Maybe Contact),
     username :: TVar (Maybe Contact),
     termMode :: TermMode,
@@ -130,9 +131,9 @@ receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
       msg <- atomically $ do
         ts <- readTVar termState
         writeTVar termState $ ts {inputString = "", inputPosition = 0}
-        let msg = encodeUtf8 . T.pack $ inputString ts
-        writeTBQueue inputQ msg
-        return msg
+        let s = inputString ts
+        writeTBQueue inputQ s
+        return s
       withTermLock ct . printMessage ct $ highlightContact msg
 
     updateTermState :: Maybe Contact -> Int -> Key -> TerminalState -> TerminalState
@@ -183,13 +184,11 @@ receiveFromTTY' ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
              in min (length s) $ p + length after - length afterWord
         ts' (s', p') = ts {inputString = s', inputPosition = p'}
 
-highlightContact :: ByteString -> ByteString
+highlightContact :: String -> StyledString
 highlightContact = \case
   "" -> ""
-  s ->
-    if B.head s == '@'
-      then let (c, rest) = B.span (/= ' ') $ B.drop 1 s in ttyToContact (Contact c) <> rest
-      else s
+  s@('@' : _) -> let (c, rest) = span (/= ' ') s in Styled selfSGR c <> plain rest
+  s -> plain s
 
 updateInput :: ChatTerminal -> IO ()
 updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
@@ -242,10 +241,10 @@ sendToTTY' ct = forever $ do
     printMessage ct msg
     updateInput ct
 
-readOutputQ :: ChatTerminal -> IO ByteString
+readOutputQ :: ChatTerminal -> IO StyledString
 readOutputQ = atomically . readTBQueue . outputQ
 
-printMessage :: ChatTerminal -> ByteString -> IO ()
+printMessage :: ChatTerminal -> StyledString -> IO ()
 printMessage ChatTerminal {termSize, nextMessageRow} msg = do
   nmr <- readTVarIO nextMessageRow
   C.setCursorPosition nmr 0
@@ -253,20 +252,21 @@ printMessage ChatTerminal {termSize, nextMessageRow} msg = do
   lc <- printLines tw msg
   atomically . writeTVar nextMessageRow $ min (th - 1) (nmr + lc)
   where
-    printLines :: Int -> ByteString -> IO Int
-    printLines tw s = do
-      let ls
-            | B.null s = [""]
-            | otherwise = B.lines s <> ["" | B.last s == '\n']
+    printLines :: Int -> StyledString -> IO Int
+    printLines tw ss = do
+      let s = styledToANSITerm ss
+          ls
+            | null s = [""]
+            | otherwise = lines s <> ["" | last s == '\n']
       print_ ls
-      return $ foldl (\lc l -> lc + (B.length l `div` tw) + 1) 0 ls
+      return $ foldl (\lc l -> lc + (length l `div` tw) + 1) 0 ls
 
-    print_ :: [ByteString] -> IO ()
+    print_ :: [String] -> IO ()
     print_ [] = return ()
     print_ (l : ls) = do
-      B.hPut stdout l
+      putStr l
       C.clearFromCursorToLineEnd
-      B.hPut stdout "\n"
+      putStr "\n"
       print_ ls
 
 getKey :: IO Key
@@ -302,14 +302,23 @@ setTTY mode = do
   hSetBuffering stdin mode
   hSetBuffering stdout mode
 
-ttyContact :: Contact -> ByteString
-ttyContact (Contact a) = withSGR contactSGR a
+ttyContact' :: Contact -> StyledString
+ttyContact' (Contact a) = Styled contactSGR $ B.unpack a
 
-ttyFromContact :: Contact -> ByteString
-ttyFromContact (Contact a) = withSGR contactSGR $ a <> ">"
+ttyFromContact' :: Contact -> StyledString
+ttyFromContact' (Contact a) = Styled contactSGR $ B.unpack a <> ">"
 
-ttyToContact :: Contact -> ByteString
-ttyToContact (Contact a) = withSGR selfSGR $ "@" <> a
+ttyToContact' :: Contact -> StyledString
+ttyToContact' (Contact a) = Styled selfSGR $ "@" <> B.unpack a
+
+-- ttyContact :: Contact -> ByteString
+-- ttyContact (Contact a) = withSGR contactSGR a
+
+-- ttyFromContact :: Contact -> ByteString
+-- ttyFromContact (Contact a) = withSGR contactSGR $ a <> ">"
+
+-- ttyToContact :: Contact -> ByteString
+-- ttyToContact (Contact a) = withSGR selfSGR $ "@" <> B.pack a
 
 contactSGR :: [C.SGR]
 contactSGR = [C.SetColor C.Foreground C.Vivid C.Yellow]
