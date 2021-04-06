@@ -9,7 +9,7 @@ import System.Exit (exitSuccess)
 import System.Terminal as C
 
 getLn :: IO String
-getLn = withTerminal (runTerminalT getTermLine)
+getLn = withTerminal $ runTerminalT getTermLine
 
 putLn :: StyledString -> IO ()
 putLn s =
