@@ -6,6 +6,7 @@ module SimplexMarkdown where
 import Control.Applicative ((<|>))
 import Data.Attoparsec.Text (Parser)
 import qualified Data.Attoparsec.Text as A
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -42,7 +43,7 @@ styleMarkdown (Markdown f s) = Styled sgr $ T.unpack s
   where
     sgr = case f of
       Bold -> [SetConsoleIntensity BoldIntensity]
-      Italic -> [SetUnderlining SingleUnderline]
+      Italic -> [SetUnderlining SingleUnderline, SetItalicized True]
       Underline -> [SetUnderlining SingleUnderline]
       StrikeThrough -> [SetSwapForegroundBackground True]
       Colored c -> [SetColor Foreground Vivid c]
@@ -69,6 +70,9 @@ colors =
       ("magenta", Magenta)
     ]
 
+parseMarkdown :: Text -> Markdown
+parseMarkdown s = fromRight (unmarked s) $ A.parseOnly (markdownP <* A.endOfInput) s
+
 markdownP :: Parser Markdown
 markdownP = merge <$> A.many' fragmentP
   where
@@ -77,12 +81,13 @@ markdownP = merge <$> A.many' fragmentP
     merge [f] = f
     merge (f : fs) = foldl (:|:) f fs
     fragmentP :: Parser Markdown
-    fragmentP = do
-      c <- A.anyChar
-      case M.lookup c formats of
-        Just (Colored White) -> coloredP
-        Just f -> formattedP c "" f
-        Nothing -> unformattedP c
+    fragmentP =
+      A.anyChar >>= \case
+        ' ' -> unmarked . (" " <>) <$> A.takeWhile (== ' ')
+        c -> case M.lookup c formats of
+          Just (Colored White) -> coloredP
+          Just f -> formattedP c "" f
+          Nothing -> unformattedP c
     formattedP :: Char -> Text -> Format -> Parser Markdown
     formattedP c p f = do
       s <- A.takeTill (== c)
