@@ -15,7 +15,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
 import Crypto.Cipher.Types (AuthTag)
-import Crypto.Hash (hash)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -235,8 +234,8 @@ clientHandshake h keyHash = do
     parseKey :: ByteString -> Either TransportError C.PublicKey
     parseKey = first TransportHandshakeError . parseAll C.pubKeyP
     validateKeyHash_2 :: ByteString -> C.KeyHash -> ExceptT TransportError IO ()
-    validateKeyHash_2 k (C.KeyHash kHash)
-      | hash k == kHash = pure ()
+    validateKeyHash_2 k kHash
+      | C.getKeyHash k == kHash = pure ()
       | otherwise = throwE $ TransportHandshakeError "wrong key hash"
     generateKeys_3 :: IO HandshakeKeys
     generateKeys_3 = HandshakeKeys <$> generateKey <*> generateKey

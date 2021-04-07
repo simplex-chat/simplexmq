@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -15,6 +16,7 @@ module Simplex.Messaging.Crypto
     IV (..),
     KeyHash (..),
     generateKeyPair,
+    validKeyPair,
     publicKeySize,
     sign,
     verify,
@@ -27,6 +29,7 @@ module Simplex.Messaging.Crypto
     serializePrivKey,
     serializePubKey,
     serializeKeyHash,
+    getKeyHash,
     privKeyP,
     pubKeyP,
     keyHashP,
@@ -46,8 +49,9 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), digestFromByteString)
+import Crypto.Hash (Digest, SHA256 (..), digestFromByteString, hash)
 import Crypto.Number.Generate (generateMax)
+import Crypto.Number.ModArithmetic (expFast)
 import Crypto.Number.Prime (findPrimeFrom)
 import Crypto.Number.Serialize (i2osp, os2ip)
 import qualified Crypto.PubKey.RSA as R
@@ -80,6 +84,15 @@ data PrivateKey = PrivateKey
     private_d :: Integer
   }
   deriving (Eq, Show)
+
+instance IsString PrivateKey where
+  fromString = parseString privKeyP
+
+instance IsString PublicKey where
+  fromString = parseString pubKeyP
+
+parseString :: Parser a -> (String -> a)
+parseString parser = either error id . parseAll parser . fromString
 
 instance ToField PrivateKey where toField = toField . serializePrivKey
 
@@ -140,6 +153,16 @@ generateKeyPair size = loop
             then loop
             else return (PublicKey pub, privateKey s n d)
 
+validKeyPair :: KeyPair -> Bool
+validKeyPair
+  ( PublicKey R.PublicKey {public_size, public_n = n, public_e = e},
+    PrivateKey {private_size, private_n, private_d = d}
+    ) =
+    let m = 30577
+     in public_size == private_size
+          && n == private_n
+          && m == expFast (expFast m d n) e n
+
 publicKeySize :: PublicKey -> Int
 publicKeySize = R.public_size . rsaPublicKey
 
@@ -157,7 +180,7 @@ newtype IV = IV {unIV :: ByteString}
 newtype KeyHash = KeyHash {unKeyHash :: Digest SHA256} deriving (Eq, Ord, Show)
 
 instance IsString KeyHash where
-  fromString = either error id . parseAll keyHashP . fromString
+  fromString = parseString keyHashP
 
 instance ToField KeyHash where toField = toField . serializeKeyHash
 
@@ -177,6 +200,9 @@ keyHashP = do
   case digestFromByteString bs of
     Just d -> pure $ KeyHash d
     _ -> fail "invalid digest"
+
+getKeyHash :: ByteString -> KeyHash
+getKeyHash = KeyHash . hash
 
 serializeHeader :: Header -> ByteString
 serializeHeader Header {aesKey, ivBytes, authTag, msgSize} =
@@ -314,16 +340,16 @@ keyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
 rsaPrivateKey :: PrivateKey -> R.PrivateKey
 rsaPrivateKey pk =
   R.PrivateKey
-    { R.private_pub =
+    { private_pub =
         R.PublicKey
-          { R.public_size = private_size pk,
-            R.public_n = private_n pk,
-            R.public_e = undefined
+          { public_size = private_size pk,
+            public_n = private_n pk,
+            public_e = undefined
           },
-      R.private_d = private_d pk,
-      R.private_p = 0,
-      R.private_q = 0,
-      R.private_dP = undefined,
-      R.private_dQ = undefined,
-      R.private_qinv = undefined
+      private_d = private_d pk,
+      private_p = 0,
+      private_q = 0,
+      private_dP = undefined,
+      private_dQ = undefined,
+      private_qinv = undefined
     }
