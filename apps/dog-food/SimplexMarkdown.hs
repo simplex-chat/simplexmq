@@ -3,6 +3,7 @@
 
 module SimplexMarkdown where
 
+import Control.Applicative ((<|>))
 import Data.Attoparsec.Text (Parser)
 import qualified Data.Attoparsec.Text as A
 import Data.Functor (($>))
@@ -69,43 +70,42 @@ colors =
     ]
 
 markdownP :: Parser Markdown
-markdownP = (:|:) <$> fragmentP <*> markdownP
+markdownP = merge <$> A.many' fragmentP
   where
+    merge :: [Markdown] -> Markdown
+    merge [] = ""
+    merge [f] = f
+    merge (f : fs) = foldl (:|:) f fs
     fragmentP :: Parser Markdown
     fragmentP = do
-      end <- A.atEnd
-      if end
-        then pure ""
-        else do
-          c <- A.anyChar
-          case M.lookup c formats of
-            Just (Colored White) -> coloredP
-            Just f -> formattedP c f
-            Nothing -> unformattedP c
-    formattedP :: Char -> Format -> Parser Markdown
-    formattedP c f = do
+      c <- A.anyChar
+      case M.lookup c formats of
+        Just (Colored White) -> coloredP
+        Just f -> formattedP c "" f
+        Nothing -> unformattedP c
+    formattedP :: Char -> Text -> Format -> Parser Markdown
+    formattedP c p f = do
       s <- A.takeTill (== c)
-      end <- A.atEnd
-      if end
-        then pure $ unmarked s
-        else A.anyChar $> Markdown f s
+      (A.char c $> Markdown f s) <|> noFormat (T.singleton c <> p <> s)
     coloredP :: Parser Markdown
     coloredP = do
-      cs <- A.takeTill (== ' ')
-      let f = maybe NoFormat Colored (M.lookup cs colors)
-      A.takeWhile (== ' ') *> formattedP '^' f
+      color <- A.takeWhile (\c -> c /= ' ' && c /= '^')
+      case M.lookup color colors of
+        Just c ->
+          let f = Colored c
+           in (A.char ' ' *> formattedP '^' (color <> " ") f)
+                <|> (A.char '^' $> Markdown f color)
+                <|> noFormat ("^" <> color)
+        _ -> noFormat ("^" <> color)
     unformattedP :: Char -> Parser Markdown
     unformattedP c = unmarked . (T.singleton c <>) <$> wordsP
     wordsP :: Parser Text
     wordsP = do
-      s <- A.takeTill (== ' ')
-      end <- A.atEnd
-      if end
-        then pure s
-        else do
-          _ <- A.anyChar -- this is space
-          A.peekChar >>= \case
-            Just c -> case M.lookup c formats of
-              Just _ -> pure s
-              Nothing -> (s <>) <$> wordsP
-            Nothing -> pure s
+      s <- (<>) <$> A.takeTill (== ' ') <*> A.takeWhile (== ' ')
+      A.peekChar >>= \case
+        Nothing -> pure s
+        Just c -> case M.lookup c formats of
+          Just _ -> pure s
+          Nothing -> (s <>) <$> wordsP
+    noFormat :: Text -> Parser Markdown
+    noFormat = pure . unmarked
