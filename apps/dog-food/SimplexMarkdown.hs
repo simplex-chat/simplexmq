@@ -67,7 +67,13 @@ colors =
       ("blue", Blue),
       ("yellow", Yellow),
       ("cyan", Cyan),
-      ("magenta", Magenta)
+      ("magenta", Magenta),
+      ("r", Red),
+      ("g", Green),
+      ("b", Blue),
+      ("y", Yellow),
+      ("c", Cyan),
+      ("m", Magenta)
     ]
 
 parseMarkdown :: Text -> Markdown
