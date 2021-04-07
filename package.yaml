@@ -63,6 +63,7 @@ executables:
       - ansi-terminal == 0.10.*
       - optparse-applicative == 0.15.*
       - simplex-messaging
+      - terminal == 0.2.*
     ghc-options:
       - -threaded
 
