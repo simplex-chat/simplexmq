@@ -1,12 +1,5 @@
 {
-  "categories": [
-    {
-        "title": "## 📦 Uncategorized",
-        "labels": []
-    }
-  ],
-  "template": "${{CHANGELOG}}\n\nUncategorized:\n${{UNCATEGORIZED}}\n\nIgnored:\n${{IGNORED}}\n\n${{UNCATEGORIZED_COUNT}}\n${{IGNORED_COUNT}}",
-  "pr_template": "- ${{TITLE}}\n",
+  "template": "${{UNCATEGORIZED}}",
   "empty_template": "${{OWNER}}\n${{REPO}}\n${{FROM_TAG}}\n${{TO_TAG}}",
   "tag_resolver": {
     "method": "sort"
