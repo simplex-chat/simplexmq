@@ -1,4 +1,6 @@
 {
   "template": "${{CHANGELOG}}",
-  "tag_resolver.method": "sort"
+  "tag_resolver": {
+    "method": "sort"
+  }
 }
