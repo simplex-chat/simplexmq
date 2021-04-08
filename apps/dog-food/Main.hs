@@ -34,6 +34,7 @@ import Styled
 import System.Directory (getAppUserDataDirectory)
 import System.Exit (exitFailure)
 import System.Info (os)
+import System.Terminal
 import Types
 
 cfg :: AgentConfig
@@ -133,6 +134,12 @@ main = do
   -- withGlobalLogging logCfg $
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
   dogFoodChat t ct env
+
+-- main :: IO ()
+-- main = withTerminal . runTerminalT . forever $ do
+--   flush
+--   ev <- awaitEvent
+--   putStringLn $ show ev
 
 welcomeGetOpts :: IO ChatOpts
 welcomeGetOpts = do

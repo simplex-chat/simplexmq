@@ -24,7 +24,7 @@ updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
       ih = inputHeight ts ct
       iStart = th - ih
       prompt = inputPrompt ts
-      (cRow, cCol) = relativeCursorPosition tw $ length prompt + inputPosition ts
+      (cRow, cCol) = positionRowColumn tw $ length prompt + inputPosition ts
   if nmr >= iStart
     then atomically $ writeTVar nextMessageRow iStart
     else clearLines nmr iStart
@@ -41,12 +41,6 @@ updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
         C.setCursorPosition from 0
         C.clearFromCursorToLineEnd
         clearLines (from + 1) till
-
-    relativeCursorPosition :: Int -> Int -> (Int, Int)
-    relativeCursorPosition width pos =
-      let row = pos `div` width
-          col = pos - row * width
-       in (row, col)
 
 printMessage :: ChatTerminal -> StyledString -> IO ()
 printMessage ChatTerminal {termSize, nextMessageRow} msg = do

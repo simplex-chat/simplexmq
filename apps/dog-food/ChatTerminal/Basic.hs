@@ -58,7 +58,7 @@ setSGR = mapM_ $ \case
 getTermLine :: MonadTerminal m => m String
 getTermLine = getChars ""
   where
-    getChars s = awaitEvent >>= processKey s
+    getChars s = flush >> awaitEvent >>= processKey s
     processKey s = \case
       Right (KeyEvent key ms) -> case key of
         CharKey c

@@ -52,6 +52,12 @@ data Key
 inputHeight :: TerminalState -> ChatTerminal -> Int
 inputHeight ts ct = length (inputPrompt ts <> inputString ts) `div` snd (termSize ct) + 1
 
+positionRowColumn :: Int -> Int -> (Int, Int)
+positionRowColumn width pos =
+  let row = pos `div` width
+      col = pos - row * width
+   in (row, col)
+
 updateTermState :: Maybe Contact -> Int -> Key -> TerminalState -> TerminalState
 updateTermState ac tw key ts@TerminalState {inputString = s, inputPosition = p} = case key of
   KeyChars cs -> insertCharsWithContact cs
