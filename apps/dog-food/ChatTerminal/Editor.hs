@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module ChatTerminal.Editor where
 
@@ -69,28 +70,28 @@ printMessage ChatTerminal {termSize, nextMessageRow} msg = withTerminal . runTer
 
 getKey :: IO C.Key
 getKey = withTerminal $ runTerminalT readKey
-  where
-    readKey :: MonadTerminal m => m C.Key
-    readKey =
-      flush >> awaitEvent >>= \case
-        Left Interrupt -> liftIO exitSuccess
-        Right (KeyEvent key ms) -> pure $ eventToKey key ms
-        _ -> readKey
 
-    eventToKey :: T.Key -> Modifiers -> C.Key
+readKey :: forall m. MonadTerminal m => m C.Key
+readKey =
+  flush >> awaitEvent >>= \case
+    Left Interrupt -> liftIO exitSuccess
+    Right (KeyEvent key ms) -> eventToKey key ms
+    _ -> readKey
+  where
+    eventToKey :: T.Key -> Modifiers -> m C.Key
     eventToKey key ms = case key of
-      EscapeKey -> KeyEsc
-      ArrowKey Upwards -> KeyUp
-      ArrowKey Downwards -> KeyDown
-      ArrowKey Leftwards -> KeyLeft
-      ArrowKey Rightwards -> KeyRight
-      EnterKey -> KeyEnter
-      BackspaceKey -> KeyBack
-      TabKey -> KeyTab
+      EscapeKey -> pure KeyEsc
+      ArrowKey Upwards -> pure KeyUp
+      ArrowKey Downwards -> pure KeyDown
+      ArrowKey Leftwards -> pure KeyLeft
+      ArrowKey Rightwards -> pure KeyRight
+      EnterKey -> pure KeyEnter
+      BackspaceKey -> pure KeyBack
+      TabKey -> pure KeyTab
       CharKey c
-        | ms == mempty || ms == shiftKey -> KeyChars [c]
-        | otherwise -> KeyUnsupported
-      _ -> KeyUnsupported
+        | ms == mempty || ms == shiftKey -> pure $ KeyChars [c]
+        | otherwise -> readKey
+      _ -> readKey
 
 -- "\ESCb" -> KeyAltLeft
 -- "\ESCf" -> KeyAltRight

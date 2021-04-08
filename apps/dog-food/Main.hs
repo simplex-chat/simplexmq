@@ -11,6 +11,7 @@ module Main where
 
 import ChatOptions
 import ChatTerminal
+import ChatTerminal.Editor (readKey)
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Logger.Simple
@@ -138,8 +139,8 @@ main = do
 -- main :: IO ()
 -- main = withTerminal . runTerminalT . forever $ do
 --   flush
---   ev <- awaitEvent
---   putStringLn $ show ev
+--   k <- readKey
+--   putStringLn $ show k
 
 welcomeGetOpts :: IO ChatOpts
 welcomeGetOpts = do

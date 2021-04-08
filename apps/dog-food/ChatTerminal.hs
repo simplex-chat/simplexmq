@@ -15,7 +15,7 @@ where
 
 import ChatTerminal.Basic (getLn, putLn)
 import ChatTerminal.Core
-import ChatTerminal.POSIX
+import ChatTerminal.Editor
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race_)
 import Control.Concurrent.STM

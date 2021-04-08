@@ -47,7 +47,7 @@ data Key
   | KeyEsc
   | KeyChars String
   | KeyUnsupported
-  deriving (Eq)
+  deriving (Eq, Show)
 
 inputHeight :: TerminalState -> ChatTerminal -> Int
 inputHeight ts ct = length (inputPrompt ts <> inputString ts) `div` snd (termSize ct) + 1
