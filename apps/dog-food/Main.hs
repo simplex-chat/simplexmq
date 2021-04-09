@@ -32,7 +32,6 @@ import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Util (raceAny_)
 import Styled
 import System.Directory (getAppUserDataDirectory)
-import System.Info (os)
 import Types
 
 cfg :: AgentConfig
@@ -136,20 +135,11 @@ main = do
 welcomeGetOpts :: IO ChatOpts
 welcomeGetOpts = do
   appDir <- getAppUserDataDirectory "simplex"
-  opts@ChatOpts {dbFileName, termMode} <- getChatOpts appDir
+  opts@ChatOpts {dbFileName} <- getChatOpts appDir
   putStrLn "simpleX chat prototype"
   putStrLn $ "db: " <> dbFileName
-  when (os == "mingw32") $ windowsWarning termMode
   putStrLn "type \"/help\" for usage information"
   pure opts
-
-windowsWarning :: TermMode -> IO ()
-windowsWarning = \case
-  m@TermModeBasic -> do
-    putStrLn $ "running in Windows (terminal mode is " <> termModeName m <> ", no utf8 support)"
-    putStrLn "it is recommended to use Windows Subsystem for Linux (WSL)"
-  m -> do
-    putStrLn $ "running in Windows, terminal mode " <> termModeName m <> " is not supported"
 
 dogFoodChat :: ChatClient -> ChatTerminal -> Env -> IO ()
 dogFoodChat t ct env = do
