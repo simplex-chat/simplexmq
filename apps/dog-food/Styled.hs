@@ -24,6 +24,7 @@ bPlain = Styled [] . B.unpack
 
 styleMarkdown :: Markdown -> StyledString
 styleMarkdown (s1 :|: s2) = styleMarkdown s1 <> styleMarkdown s2
+styleMarkdown (Markdown Snippet s) = plain . T.unpack $ '`' `T.cons` s `T.snoc` '`'
 styleMarkdown (Markdown f s) = Styled sgr $ T.unpack s
   where
     sgr = case f of
@@ -33,6 +34,7 @@ styleMarkdown (Markdown f s) = Styled sgr $ T.unpack s
       StrikeThrough -> [SetSwapForegroundBackground True]
       Colored Black -> [SetColor Foreground Dull Black]
       Colored c -> [SetColor Foreground Vivid c]
+      Snippet -> []
       NoFormat -> []
 
 styledToANSITerm :: StyledString -> String

@@ -23,6 +23,7 @@ data Format
   | Italic
   | Underline
   | StrikeThrough
+  | Snippet
   | Colored Color
   | NoFormat
   deriving (Show)
@@ -46,6 +47,7 @@ formats =
       ('_', Italic),
       ('+', Underline),
       ('~', StrikeThrough),
+      ('`', Snippet),
       (colorMD, Colored White)
     ]
 
