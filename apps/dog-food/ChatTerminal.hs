@@ -46,7 +46,8 @@ newTermState user =
   TerminalState
     { inputString = "",
       inputPosition = 0,
-      inputPrompt = promptString user
+      inputPrompt = promptString user,
+      previousInput = ""
     }
 
 chatTerminal :: ChatTerminal -> IO ()
@@ -89,8 +90,8 @@ receiveFromTTY ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
     submitInput = do
       msg <- atomically $ do
         ts <- readTVar termState
-        writeTVar termState $ ts {inputString = "", inputPosition = 0}
         let s = inputString ts
+        writeTVar termState $ ts {inputString = "", inputPosition = 0, previousInput = s}
         writeTBQueue inputQ s
         return s
       withTermLock ct . printMessage ct $ styleMessage msg

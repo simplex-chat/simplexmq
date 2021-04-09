@@ -28,7 +28,8 @@ data ChatTerminal = ChatTerminal
 data TerminalState = TerminalState
   { inputPrompt :: String,
     inputString :: String,
-    inputPosition :: Int
+    inputPosition :: Int,
+    previousInput :: String
   }
 
 inputHeight :: TerminalState -> ChatTerminal -> Int
@@ -49,25 +50,26 @@ updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition
     | otherwise -> ts
   TabKey -> insertCharsWithContact "    "
   BackspaceKey -> backDeleteChar
-  ArrowKey d -> setPosition $ case d of
+  ArrowKey d -> case d of
     Leftwards
-      | ms == mempty -> max 0 (p - 1)
-      | ms == shiftKey -> 0
-      | ms == ctrlKey -> prevWordPos
-      | ms == altKey -> prevWordPos
-      | otherwise -> p
+      | ms == mempty -> setPosition $ max 0 (p - 1)
+      | ms == shiftKey -> setPosition 0
+      | ms == ctrlKey -> setPosition prevWordPos
+      | ms == altKey -> setPosition prevWordPos
+      | otherwise -> setPosition p
     Rightwards
-      | ms == mempty -> min (length s) (p + 1)
-      | ms == shiftKey -> length s
-      | ms == ctrlKey -> nextWordPos
-      | ms == altKey -> nextWordPos
-      | otherwise -> p
+      | ms == mempty -> setPosition $ min (length s) (p + 1)
+      | ms == shiftKey -> setPosition $ length s
+      | ms == ctrlKey -> setPosition nextWordPos
+      | ms == altKey -> setPosition nextWordPos
+      | otherwise -> setPosition p
     Upwards
-      | ms == mempty -> let p' = p - tw in if p' > 0 then p' else p
-      | otherwise -> p
+      | ms == mempty && null s -> let s' = previousInput ts in ts' (s', length s')
+      | ms == mempty -> let p' = p - tw in setPosition $ if p' > 0 then p' else p
+      | otherwise -> setPosition p
     Downwards
-      | ms == mempty -> let p' = p + tw in if p' <= length s then p' else p
-      | otherwise -> p
+      | ms == mempty -> let p' = p + tw in setPosition $ if p' <= length s then p' else p
+      | otherwise -> setPosition p
   _ -> ts
   where
     insertCharsWithContact cs
