@@ -59,12 +59,18 @@ setSGR = mapM_ $ \case
       Cyan -> cyan
       White -> white
 
+getKey :: MonadTerminal m => m (Key, Modifiers)
+getKey =
+  awaitEvent >>= \case
+    Left Interrupt -> liftIO exitSuccess
+    Right (KeyEvent key ms) -> pure (key, ms)
+    _ -> getKey
+
 getTermLine :: MonadTerminal m => m String
 getTermLine = getChars ""
   where
-    getChars s = flush >> awaitEvent >>= processKey s
-    processKey s = \case
-      Right (KeyEvent key ms) -> case key of
+    getChars s =
+      getKey >>= \(key, ms) -> case key of
         CharKey c
           | ms == mempty || ms == shiftKey -> do
             C.putChar c
@@ -81,5 +87,3 @@ getTermLine = getChars ""
           flush
           getChars $ if null s then s else tail s
         _ -> getChars s
-      Left Interrupt -> liftIO exitSuccess
-      _ -> getChars s

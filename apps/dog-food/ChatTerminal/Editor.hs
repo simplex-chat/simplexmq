@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -6,9 +5,7 @@ module ChatTerminal.Editor where
 
 import ChatTerminal.Basic
 import ChatTerminal.Core
-import Control.Monad.IO.Class (liftIO)
 import Styled
-import System.Exit (exitSuccess)
 import System.Terminal
 import UnliftIO.STM
 
@@ -50,7 +47,7 @@ updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
         eraseInLine EraseForward
         clearLines (from + 1) till
 
-printMessage :: forall m. MonadTerminal m => ChatTerminal -> StyledString -> m ()
+printMessage :: MonadTerminal m => ChatTerminal -> StyledString -> m ()
 printMessage ChatTerminal {termSize, nextMessageRow} msg = do
   nmr <- readTVarIO nextMessageRow
   setCursorPosition $ Position nmr 0
@@ -61,10 +58,3 @@ printMessage ChatTerminal {termSize, nextMessageRow} msg = do
   putLn
   flush
   atomically . writeTVar nextMessageRow $ min (th - 1) (nmr + lc)
-
-getKey :: forall m. MonadTerminal m => m (Key, Modifiers)
-getKey =
-  awaitEvent >>= \case
-    Left Interrupt -> liftIO exitSuccess
-    Right (KeyEvent key ms) -> pure (key, ms)
-    _ -> getKey
