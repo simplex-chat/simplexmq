@@ -46,6 +46,7 @@ styleMarkdown (Markdown f s) = Styled sgr $ T.unpack s
       Italic -> [SetUnderlining SingleUnderline, SetItalicized True]
       Underline -> [SetUnderlining SingleUnderline]
       StrikeThrough -> [SetSwapForegroundBackground True]
+      Colored Black -> [SetColor Foreground Dull Black]
       Colored c -> [SetColor Foreground Vivid c]
       NoFormat -> []
 
