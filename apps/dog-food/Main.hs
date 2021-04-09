@@ -159,7 +159,8 @@ windowsWarning = \case
     putStrLn "it is recommended to use Windows Subsystem for Linux (WSL)"
   m -> do
     putStrLn $ "running in Windows, terminal mode " <> termModeName m <> " is not supported"
-    exitFailure
+
+-- exitFailure
 
 dogFoodChat :: ChatClient -> ChatTerminal -> Env -> IO ()
 dogFoodChat t ct env = do

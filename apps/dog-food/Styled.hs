@@ -1,4 +1,4 @@
-module Styled (StyledString (..), plain, bPlain, styledToANSITerm, styledToPlain) where
+module Styled where
 
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -27,3 +27,7 @@ styledToANSITerm (s1 :<>: s2) = styledToANSITerm s1 <> styledToANSITerm s2
 styledToPlain :: StyledString -> String
 styledToPlain (Styled _ s) = s
 styledToPlain (s1 :<>: s2) = styledToPlain s1 <> styledToPlain s2
+
+sLength :: StyledString -> Int
+sLength (Styled _ s) = length s
+sLength (s1 :<>: s2) = sLength s1 + sLength s2

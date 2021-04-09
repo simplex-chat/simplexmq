@@ -11,11 +11,15 @@ import System.Terminal as C
 getLn :: IO String
 getLn = withTerminal $ runTerminalT getTermLine
 
-putLn :: StyledString -> IO ()
-putLn s =
+putStyledLn :: StyledString -> IO ()
+putStyledLn s =
   withTerminal . runTerminalT $
     putStyled s >> C.putLn >> flush
 
+-- Currently it is assumed that the message does not have internal line breaks.
+-- Previous implementation in POSIX.hs "kind of" supported them,
+-- but it was not determining the number of printed lines correctly
+-- because of accounting for control sequences in length
 putStyled :: MonadTerminal m => StyledString -> m ()
 putStyled (s1 :<>: s2) = putStyled s1 >> putStyled s2
 putStyled (Styled [] s) = putString s

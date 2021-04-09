@@ -13,18 +13,19 @@ module ChatTerminal
   )
 where
 
-import ChatTerminal.Basic (getLn, putLn)
-import ChatTerminal.Core
+import ChatTerminal.Basic
+import ChatTerminal.Core as Core
 import ChatTerminal.Editor
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race_)
-import Control.Concurrent.STM
 import Control.Monad
 import Data.Maybe (fromMaybe)
 import Numeric.Natural
 import Styled
 import qualified System.Console.ANSI as C
+import System.Terminal
 import Types
+import UnliftIO.STM
 
 newChatTerminal :: Natural -> Maybe Contact -> TermMode -> IO ChatTerminal
 newChatTerminal qSize user termMode = do
@@ -54,7 +55,7 @@ chatTerminal ct
     run basicReceiveFromTTY basicSendToTTY
   | otherwise = do
     initTTY
-    updateInput ct
+    withTerminal . runTerminalT $ updateInput ct
     run receiveFromTTY sendToTTY
   where
     run receive send = race_ (receive ct) (send ct)
@@ -64,9 +65,9 @@ basicReceiveFromTTY ct =
   forever $ getLn >>= atomically . writeTBQueue (inputQ ct)
 
 basicSendToTTY :: ChatTerminal -> IO ()
-basicSendToTTY ct = forever $ readOutputQ ct >>= putLn
+basicSendToTTY ct = forever $ readOutputQ ct >>= putStyledLn
 
-withTermLock :: ChatTerminal -> IO () -> IO ()
+withTermLock :: MonadTerminal m => ChatTerminal -> m () -> m ()
 withTermLock ChatTerminal {termLock} action = do
   _ <- atomically $ takeTMVar termLock
   action
@@ -74,17 +75,17 @@ withTermLock ChatTerminal {termLock} action = do
 
 receiveFromTTY :: ChatTerminal -> IO ()
 receiveFromTTY ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
-  forever $
-    getKey >>= processKey >> withTermLock ct (updateInput ct)
+  withTerminal . runTerminalT . forever $
+    readKey >>= processKey >> withTermLock ct (updateInput ct)
   where
-    processKey :: Key -> IO ()
+    processKey :: MonadTerminal m => Core.Key -> m ()
     processKey = \case
       KeyEnter -> submitInput
       key -> atomically $ do
         ac <- readTVar activeContact
         modifyTVar termState $ updateTermState ac (snd termSize) key
 
-    submitInput :: IO ()
+    submitInput :: MonadTerminal m => m ()
     submitInput = do
       msg <- atomically $ do
         ts <- readTVar termState
@@ -97,7 +98,7 @@ receiveFromTTY ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
 sendToTTY :: ChatTerminal -> IO ()
 sendToTTY ct = forever $ do
   msg <- readOutputQ ct
-  withTermLock ct $ do
+  withTerminal . runTerminalT . withTermLock ct $ do
     printMessage ct msg
     updateInput ct
 
