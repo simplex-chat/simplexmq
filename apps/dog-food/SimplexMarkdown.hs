@@ -109,14 +109,14 @@ markdownP = merge <$> A.many' fragmentP
       (A.char c $> Markdown f s) <|> noFormat (T.singleton c <> p <> s)
     coloredP :: Parser Markdown
     coloredP = do
-      color <- A.takeWhile (\c -> c /= ' ' && c /= '^')
+      color <- A.takeWhile (\c -> c /= ' ' && c /= '=')
       case M.lookup color colors of
         Just c ->
           let f = Colored c
-           in (A.char ' ' *> formattedP '^' (color <> " ") f)
-                <|> (A.char '^' $> Markdown f color)
-                <|> noFormat ("^" <> color)
-        _ -> noFormat ("^" <> color)
+           in (A.char ' ' *> formattedP '=' (color <> " ") f)
+                <|> (A.char '=' $> Markdown f color)
+                <|> noFormat ("=" <> color)
+        _ -> noFormat ("=" <> color)
     unformattedP :: Char -> Parser Markdown
     unformattedP c = unmarked . (T.singleton c <>) <$> wordsP
     wordsP :: Parser Text
