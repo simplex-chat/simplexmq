@@ -33,9 +33,7 @@ import Simplex.Messaging.Util (raceAny_)
 import SimplexMarkdown
 import Styled
 import System.Directory (getAppUserDataDirectory)
-import System.Exit (exitFailure)
 import System.Info (os)
-import System.Terminal
 import Types
 
 cfg :: AgentConfig
@@ -159,8 +157,6 @@ windowsWarning = \case
     putStrLn "it is recommended to use Windows Subsystem for Linux (WSL)"
   m -> do
     putStrLn $ "running in Windows, terminal mode " <> termModeName m <> " is not supported"
-
--- exitFailure
 
 dogFoodChat :: ChatClient -> ChatTerminal -> Env -> IO ()
 dogFoodChat t ct env = do
