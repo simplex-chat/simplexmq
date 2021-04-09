@@ -17,7 +17,7 @@ putStyledLn s =
     putStyled s >> C.putLn >> flush
 
 -- Currently it is assumed that the message does not have internal line breaks.
--- Previous implementation in POSIX.hs "kind of" supported them,
+-- Previous implementation "kind of" supported them,
 -- but it was not determining the number of printed lines correctly
 -- because of accounting for control sequences in length
 putStyled :: MonadTerminal m => StyledString -> m ()

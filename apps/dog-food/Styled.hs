@@ -3,7 +3,10 @@ module Styled where
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.String
-import System.Console.ANSI (SGR (..), setSGRCode)
+import qualified Data.Text as T
+import Simplex.Markdown
+import System.Console.ANSI (setSGRCode)
+import System.Console.ANSI.Types
 
 data StyledString = Styled [SGR] String | StyledString :<>: StyledString
 
@@ -18,6 +21,19 @@ plain = Styled []
 
 bPlain :: ByteString -> StyledString
 bPlain = Styled [] . B.unpack
+
+styleMarkdown :: Markdown -> StyledString
+styleMarkdown (s1 :|: s2) = styleMarkdown s1 <> styleMarkdown s2
+styleMarkdown (Markdown f s) = Styled sgr $ T.unpack s
+  where
+    sgr = case f of
+      Bold -> [SetConsoleIntensity BoldIntensity]
+      Italic -> [SetUnderlining SingleUnderline, SetItalicized True]
+      Underline -> [SetUnderlining SingleUnderline]
+      StrikeThrough -> [SetSwapForegroundBackground True]
+      Colored Black -> [SetColor Foreground Dull Black]
+      Colored c -> [SetColor Foreground Vivid c]
+      NoFormat -> []
 
 styledToANSITerm :: StyledString -> String
 styledToANSITerm (Styled [] s) = s

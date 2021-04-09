@@ -76,11 +76,11 @@ withTermLock ChatTerminal {termLock} action = do
 receiveFromTTY :: ChatTerminal -> IO ()
 receiveFromTTY ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
   withTerminal . runTerminalT . forever $
-    readKey >>= processKey >> withTermLock ct (updateInput ct)
+    getKey >>= processKey >> withTermLock ct (updateInput ct)
   where
-    processKey :: MonadTerminal m => Core.Key -> m ()
+    processKey :: MonadTerminal m => (Key, Modifiers) -> m ()
     processKey = \case
-      KeyEnter -> submitInput
+      (EnterKey, _) -> submitInput
       key -> atomically $ do
         ac <- readTVar activeContact
         modifyTVar termState $ updateTermState ac (snd termSize) key

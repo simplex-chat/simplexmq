@@ -7,9 +7,10 @@ import Control.Concurrent.STM
 import qualified Data.ByteString.Char8 as B
 import Data.List (dropWhileEnd)
 import qualified Data.Text as T
-import SimplexMarkdown
+import Simplex.Markdown
 import Styled
 import System.Console.ANSI.Types
+import System.Terminal (Direction (..), Key (..), Modifiers, altKey, ctrlKey, shiftKey)
 import Types
 
 data ChatTerminal = ChatTerminal
@@ -30,25 +31,6 @@ data TerminalState = TerminalState
     inputPosition :: Int
   }
 
-data Key
-  = KeyLeft
-  | KeyRight
-  | KeyUp
-  | KeyDown
-  | KeyAltLeft
-  | KeyAltRight
-  | KeyCtrlLeft
-  | KeyCtrlRight
-  | KeyShiftLeft
-  | KeyShiftRight
-  | KeyEnter
-  | KeyBack
-  | KeyTab
-  | KeyEsc
-  | KeyChars String
-  | KeyUnsupported
-  deriving (Eq, Show)
-
 inputHeight :: TerminalState -> ChatTerminal -> Int
 inputHeight ts ct = length (inputPrompt ts <> inputString ts) `div` snd (termSize ct) + 1
 
@@ -58,21 +40,34 @@ positionRowColumn width pos =
       col = pos - row * width
    in (row, col)
 
-updateTermState :: Maybe Contact -> Int -> Key -> TerminalState -> TerminalState
-updateTermState ac tw key ts@TerminalState {inputString = s, inputPosition = p} = case key of
-  KeyChars cs -> insertCharsWithContact cs
-  KeyTab -> insertChars "    "
-  KeyBack -> backDeleteChar
-  KeyLeft -> setPosition $ max 0 (p - 1)
-  KeyRight -> setPosition $ min (length s) (p + 1)
-  KeyUp -> setPosition $ let p' = p - tw in if p' > 0 then p' else p
-  KeyDown -> setPosition $ let p' = p + tw in if p' <= length s then p' else p
-  KeyAltLeft -> setPosition prevWordPos
-  KeyAltRight -> setPosition nextWordPos
-  KeyCtrlLeft -> setPosition prevWordPos
-  KeyCtrlRight -> setPosition nextWordPos
-  KeyShiftLeft -> setPosition 0
-  KeyShiftRight -> setPosition $ length s
+updateTermState :: Maybe Contact -> Int -> (Key, Modifiers) -> TerminalState -> TerminalState
+updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition = p} = case key of
+  CharKey c
+    | ms == mempty || ms == shiftKey -> insertCharsWithContact [c]
+    | ms == altKey && c == 'b' -> setPosition prevWordPos
+    | ms == altKey && c == 'f' -> setPosition nextWordPos
+    | otherwise -> ts
+  TabKey -> insertCharsWithContact "    "
+  BackspaceKey -> backDeleteChar
+  ArrowKey d -> setPosition $ case d of
+    Leftwards
+      | ms == mempty -> max 0 (p - 1)
+      | ms == shiftKey -> 0
+      | ms == ctrlKey -> prevWordPos
+      | ms == altKey -> prevWordPos
+      | otherwise -> p
+    Rightwards
+      | ms == mempty -> min (length s) (p + 1)
+      | ms == shiftKey -> length s
+      | ms == ctrlKey -> nextWordPos
+      | ms == altKey -> nextWordPos
+      | otherwise -> p
+    Upwards
+      | ms == mempty -> let p' = p - tw in if p' > 0 then p' else p
+      | otherwise -> p
+    Downwards
+      | ms == mempty -> let p' = p + tw in if p' <= length s then p' else p
+      | otherwise -> p
   _ -> ts
   where
     insertCharsWithContact cs

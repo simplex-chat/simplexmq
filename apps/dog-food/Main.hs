@@ -11,7 +11,6 @@ module Main where
 
 import ChatOptions
 import ChatTerminal
-import ChatTerminal.Editor (readKey)
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Logger.Simple
@@ -24,13 +23,13 @@ import Data.Functor (($>))
 import qualified Data.Text as T
 import Data.Text.Encoding
 import Numeric.Natural
+import Simplex.Markdown
 import Simplex.Messaging.Agent (getSMPAgentClient, runSMPAgentClient)
 import Simplex.Messaging.Agent.Client (AgentClient (..))
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
 import Simplex.Messaging.Util (raceAny_)
-import SimplexMarkdown
 import Styled
 import System.Directory (getAppUserDataDirectory)
 import System.Info (os)
@@ -133,12 +132,6 @@ main = do
   -- withGlobalLogging logCfg $
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
   dogFoodChat t ct env
-
--- main :: IO ()
--- main = withTerminal . runTerminalT . forever $ do
---   flush
---   k <- readKey
---   putStringLn $ show k
 
 welcomeGetOpts :: IO ChatOpts
 welcomeGetOpts = do

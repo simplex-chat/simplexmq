@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module SimplexMarkdown where
+module Simplex.Markdown where
 
 import Control.Applicative ((<|>))
 import Data.Attoparsec.Text (Parser)
@@ -13,7 +13,6 @@ import qualified Data.Map.Strict as M
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
-import Styled
 import System.Console.ANSI.Types
 
 data Markdown = Markdown Format Text | Markdown :|: Markdown
@@ -36,19 +35,6 @@ instance IsString Markdown where fromString = unmarked . T.pack
 
 unmarked :: Text -> Markdown
 unmarked = Markdown NoFormat
-
-styleMarkdown :: Markdown -> StyledString
-styleMarkdown (s1 :|: s2) = styleMarkdown s1 <> styleMarkdown s2
-styleMarkdown (Markdown f s) = Styled sgr $ T.unpack s
-  where
-    sgr = case f of
-      Bold -> [SetConsoleIntensity BoldIntensity]
-      Italic -> [SetUnderlining SingleUnderline, SetItalicized True]
-      Underline -> [SetUnderlining SingleUnderline]
-      StrikeThrough -> [SetSwapForegroundBackground True]
-      Colored Black -> [SetColor Foreground Dull Black]
-      Colored c -> [SetColor Foreground Vivid c]
-      NoFormat -> []
 
 colorMD :: Char
 colorMD = '='

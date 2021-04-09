@@ -12,6 +12,7 @@ extra-source-files:
   - README.md
 
 dependencies:
+  - ansi-terminal == 0.10.*
   - async == 2.2.*
   - attoparsec == 0.13.*
   - base >= 4.7 && < 5
