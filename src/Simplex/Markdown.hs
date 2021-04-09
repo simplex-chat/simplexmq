@@ -38,7 +38,7 @@ unmarked :: Text -> Markdown
 unmarked = Markdown NoFormat
 
 colorMD :: Char
-colorMD = '='
+colorMD = '!'
 
 formats :: Map Char Format
 formats =
