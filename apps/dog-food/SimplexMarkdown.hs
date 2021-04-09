@@ -56,24 +56,33 @@ formats =
       ('_', Italic),
       ('+', Underline),
       ('~', StrikeThrough),
-      ('^', Colored White)
+      ('=', Colored White)
     ]
 
 colors :: Map Text Color
 colors =
   M.fromList
-    [ ("red", Red),
+    [ ("black", Black),
+      ("red", Red),
       ("green", Green),
       ("blue", Blue),
       ("yellow", Yellow),
       ("cyan", Cyan),
       ("magenta", Magenta),
+      ("b", Black),
       ("r", Red),
       ("g", Green),
       ("b", Blue),
       ("y", Yellow),
       ("c", Cyan),
-      ("m", Magenta)
+      ("m", Magenta),
+      ("0", Black),
+      ("1", Red),
+      ("2", Green),
+      ("3", Blue),
+      ("4", Yellow),
+      ("5", Cyan),
+      ("6", Magenta)
     ]
 
 parseMarkdown :: Text -> Markdown
