@@ -1,8 +1,5 @@
 {
   "template": "${{UNCATEGORIZED}}",
   "pr_template": "- ${{TITLE}}\n",
-  "empty_template": "${{OWNER}}\n${{REPO}}\n${{FROM_TAG}}\n${{TO_TAG}}",
-  "tag_resolver": {
-    "method": "sort"
-  }
+  "empty_template": "${{OWNER}}\n${{REPO}}\n${{FROM_TAG}}\n${{TO_TAG}}"
 }
