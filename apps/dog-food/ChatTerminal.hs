@@ -14,7 +14,7 @@ module ChatTerminal
 where
 
 import ChatTerminal.Basic
-import ChatTerminal.Core as Core
+import ChatTerminal.Core
 import ChatTerminal.Editor
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race_)
@@ -55,7 +55,6 @@ chatTerminal ct
   | termSize ct == (0, 0) || termMode ct == TermModeBasic =
     run basicReceiveFromTTY basicSendToTTY
   | otherwise = do
-    initTTY
     withTerminal . runTerminalT $ updateInput ct
     run receiveFromTTY sendToTTY
   where
@@ -66,7 +65,7 @@ basicReceiveFromTTY ct =
   forever $ getLn >>= atomically . writeTBQueue (inputQ ct)
 
 basicSendToTTY :: ChatTerminal -> IO ()
-basicSendToTTY ct = forever $ readOutputQ ct >>= putStyledLn
+basicSendToTTY ct = forever $ atomically (readOutputQ ct) >>= putStyledLn
 
 withTermLock :: MonadTerminal m => ChatTerminal -> m () -> m ()
 withTermLock ChatTerminal {termLock} action = do
@@ -97,11 +96,11 @@ receiveFromTTY ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
       withTermLock ct . printMessage ct $ styleMessage msg
 
 sendToTTY :: ChatTerminal -> IO ()
-sendToTTY ct = forever $ do
-  msg <- readOutputQ ct
-  withTerminal . runTerminalT . withTermLock ct $ do
+sendToTTY ct = withTerminal . runTerminalT . forever $ do
+  msg <- atomically $ readOutputQ ct
+  withTermLock ct $ do
     printMessage ct msg
     updateInput ct
 
-readOutputQ :: ChatTerminal -> IO StyledString
-readOutputQ = atomically . readTBQueue . outputQ
+readOutputQ :: ChatTerminal -> STM StyledString
+readOutputQ = readTBQueue . outputQ

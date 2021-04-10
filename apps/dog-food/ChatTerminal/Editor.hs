@@ -9,9 +9,6 @@ import Styled
 import System.Terminal
 import UnliftIO.STM
 
-initTTY :: IO ()
-initTTY = pure ()
-
 -- debug :: MonadTerminal m => String -> m ()
 -- debug s = do
 --   saveCursor
