@@ -60,7 +60,7 @@ updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition
     Downwards -> setPosition downPos
     Upwards
       | ms == mempty && null s -> let s' = previousInput ts in ts' (s', length s')
-      | ms == mempty -> let p' = p - tw in setPosition $ if p' > 0 then p' else p
+      | ms == mempty -> let p' = p - tw in if p' > 0 then setPosition p' else ts
       | otherwise -> ts
   _ -> ts
   where
