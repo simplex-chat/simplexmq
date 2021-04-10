@@ -17,22 +17,21 @@ import UnliftIO.STM
 --   restoreCursor
 
 updateInput :: forall m. MonadTerminal m => ChatTerminal -> m ()
-updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
+updateInput ct@ChatTerminal {termSize = Size {height, width}, termState, nextMessageRow} = do
   hideCursor
   ts <- readTVarIO termState
   nmr <- readTVarIO nextMessageRow
-  let (th, tw) = termSize
-      ih = inputHeight ts ct
-      iStart = th - ih
+  let ih = inputHeight ts ct
+      iStart = height - ih
       prompt = inputPrompt ts
-      (cRow, cCol) = positionRowColumn tw $ length prompt + inputPosition ts
+      Position {row, col} = positionRowColumn width $ length prompt + inputPosition ts
   if nmr >= iStart
     then atomically $ writeTVar nextMessageRow iStart
     else clearLines nmr iStart
-  setCursorPosition $ Position (max nmr iStart) 0
+  setCursorPosition $ Position {row = max nmr iStart, col = 0}
   putString $ prompt <> inputString ts <> " "
   eraseInLine EraseForward
-  setCursorPosition $ Position (iStart + cRow) cCol
+  setCursorPosition $ Position {row = iStart + row, col}
   showCursor
   flush
   where
@@ -40,18 +39,17 @@ updateInput ct@ChatTerminal {termSize, termState, nextMessageRow} = do
     clearLines from till
       | from >= till = return ()
       | otherwise = do
-        setCursorPosition $ Position from 0
+        setCursorPosition $ Position {row = from, col = 0}
         eraseInLine EraseForward
         clearLines (from + 1) till
 
 printMessage :: MonadTerminal m => ChatTerminal -> StyledString -> m ()
-printMessage ChatTerminal {termSize, nextMessageRow} msg = do
+printMessage ChatTerminal {termSize = Size {height, width}, nextMessageRow} msg = do
   nmr <- readTVarIO nextMessageRow
-  setCursorPosition $ Position nmr 0
-  let (th, tw) = termSize
-      lc = sLength msg `div` tw + 1
+  setCursorPosition $ Position {row = nmr, col = 0}
+  let lc = sLength msg `div` width + 1
   putStyled msg
   eraseInLine EraseForward
   putLn
   flush
-  atomically . writeTVar nextMessageRow $ min (th - 1) (nmr + lc)
+  atomically . writeTVar nextMessageRow $ min (height - 1) (nmr + lc)

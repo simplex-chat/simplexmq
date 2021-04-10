@@ -19,10 +19,8 @@ import ChatTerminal.Editor
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race_)
 import Control.Monad
-import Data.Maybe (fromMaybe)
 import Numeric.Natural
 import Styled
-import qualified System.Console.ANSI as C
 import System.Terminal
 import Types
 import UnliftIO.STM
@@ -33,8 +31,8 @@ newChatTerminal qSize user termMode = do
   outputQ <- newTBQueueIO qSize
   activeContact <- newTVarIO Nothing
   username <- newTVarIO user
-  termSize <- fromMaybe (0, 0) <$> C.getTerminalSize
-  let lastRow = fst termSize - 1
+  termSize <- withTerminal . runTerminalT $ getWindowSize
+  let lastRow = height termSize - 1
   termState <- newTVarIO $ newTermState user
   termLock <- newTMVarIO ()
   nextMessageRow <- newTVarIO lastRow
@@ -52,7 +50,7 @@ newTermState user =
 
 chatTerminal :: ChatTerminal -> IO ()
 chatTerminal ct
-  | termSize ct == (0, 0) || termMode ct == TermModeBasic =
+  | termSize ct == Size 0 0 || termMode ct == TermModeBasic =
     run basicReceiveFromTTY basicSendToTTY
   | otherwise = do
     withTerminal . runTerminalT $ updateInput ct
@@ -83,7 +81,7 @@ receiveFromTTY ct@ChatTerminal {inputQ, activeContact, termSize, termState} =
       (EnterKey, _) -> submitInput
       key -> atomically $ do
         ac <- readTVar activeContact
-        modifyTVar termState $ updateTermState ac (snd termSize) key
+        modifyTVar termState $ updateTermState ac (width termSize) key
 
     submitInput :: MonadTerminal m => m ()
     submitInput = do

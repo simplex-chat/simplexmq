@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module ChatTerminal.Core where
@@ -10,7 +11,7 @@ import qualified Data.Text as T
 import Simplex.Markdown
 import Styled
 import System.Console.ANSI.Types
-import System.Terminal (Direction (..), Key (..), Modifiers, altKey, ctrlKey, shiftKey)
+import System.Terminal hiding (insertChars)
 import Types
 
 data ChatTerminal = ChatTerminal
@@ -20,7 +21,7 @@ data ChatTerminal = ChatTerminal
     username :: TVar (Maybe Contact),
     termMode :: TermMode,
     termState :: TVar TerminalState,
-    termSize :: (Int, Int),
+    termSize :: Size,
     nextMessageRow :: TVar Int,
     termLock :: TMVar ()
   }
@@ -33,13 +34,13 @@ data TerminalState = TerminalState
   }
 
 inputHeight :: TerminalState -> ChatTerminal -> Int
-inputHeight ts ct = length (inputPrompt ts <> inputString ts) `div` snd (termSize ct) + 1
+inputHeight ts ct = length (inputPrompt ts <> inputString ts) `div` width (termSize ct) + 1
 
-positionRowColumn :: Int -> Int -> (Int, Int)
-positionRowColumn width pos =
-  let row = pos `div` width
-      col = pos - row * width
-   in (row, col)
+positionRowColumn :: Int -> Int -> Position
+positionRowColumn wid pos =
+  let row = pos `div` wid
+      col = pos - row * wid
+   in Position {row, col}
 
 updateTermState :: Maybe Contact -> Int -> (Key, Modifiers) -> TerminalState -> TerminalState
 updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition = p} = case key of
