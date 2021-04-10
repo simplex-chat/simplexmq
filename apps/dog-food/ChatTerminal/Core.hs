@@ -51,6 +51,8 @@ updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition
     | otherwise -> ts
   TabKey -> insertCharsWithContact "    "
   BackspaceKey -> backDeleteChar
+  HomeKey -> setPosition 0
+  EndKey -> setPosition $ length s
   ArrowKey d -> case d of
     Leftwards
       | ms == mempty -> setPosition $ max 0 (p - 1)
