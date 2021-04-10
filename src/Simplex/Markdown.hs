@@ -24,6 +24,7 @@ data Format
   | Underline
   | StrikeThrough
   | Snippet
+  | Secret
   | Colored Color
   | NoFormat
   deriving (Eq, Show)
@@ -40,6 +41,9 @@ unmarked = Markdown NoFormat
 colorMD :: Char
 colorMD = '!'
 
+secretMD :: Char
+secretMD = '#'
+
 formats :: Map Char Format
 formats =
   M.fromList
@@ -48,6 +52,7 @@ formats =
       ('+', Underline),
       ('~', StrikeThrough),
       ('`', Snippet),
+      (secretMD, Secret),
       (colorMD, Colored White)
     ]
 
@@ -88,6 +93,7 @@ markdownP = merge <$> A.many' fragmentP
       A.anyChar >>= \case
         ' ' -> unmarked . T.cons ' ' <$> A.takeWhile (== ' ')
         c -> case M.lookup c formats of
+          Just Secret -> secretP
           Just (Colored White) -> coloredP
           Just f -> formattedP c "" f
           Nothing -> unformattedP c
@@ -100,6 +106,15 @@ markdownP = merge <$> A.many' fragmentP
       | T.null s || T.head s == ' ' || T.last s == ' ' =
         unmarked $ c `T.cons` p <> s `T.snoc` c
       | otherwise = Markdown f s
+    secretP :: Parser Markdown
+    secretP = secret <$> A.takeWhile (== secretMD) <*> A.takeTill (== secretMD) <*> A.takeWhile (== secretMD)
+    secret :: Text -> Text -> Text -> Markdown
+    secret b s a
+      | T.null a || T.null s || T.head s == ' ' || T.last s == ' ' =
+        unmarked $ secretMD `T.cons` ss
+      | otherwise = Markdown Secret $ T.init ss
+      where
+        ss = b <> s <> a
     coloredP :: Parser Markdown
     coloredP = do
       color <- A.takeWhile (\c -> c /= ' ' && c /= colorMD)
