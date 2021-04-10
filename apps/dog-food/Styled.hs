@@ -37,9 +37,12 @@ styleMarkdownText = styleMarkdown . parseMarkdown
 
 styleMarkdown :: Markdown -> StyledString
 styleMarkdown (s1 :|: s2) = styleMarkdown s1 <> styleMarkdown s2
-styleMarkdown (Markdown Snippet s) = styled Snippet $ '`' `T.cons` s `T.snoc` '`'
-styleMarkdown (Markdown Secret s) = plain "#" <> styled Secret s <> plain "#"
+styleMarkdown (Markdown Snippet s) = '`' `wrap` styled Snippet s
+styleMarkdown (Markdown Secret s) = '#' `wrap` styled Secret s
 styleMarkdown (Markdown f s) = styled f s
+
+wrap :: Char -> StyledString -> StyledString
+wrap c s = plain [c] <> s <> plain [c]
 
 styled :: Format -> Text -> StyledString
 styled f = Styled sgr . T.unpack
