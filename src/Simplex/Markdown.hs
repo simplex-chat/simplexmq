@@ -16,7 +16,7 @@ import qualified Data.Text as T
 import System.Console.ANSI.Types
 
 data Markdown = Markdown Format Text | Markdown :|: Markdown
-  deriving (Show)
+  deriving (Eq, Show)
 
 data Format
   = Bold
@@ -26,7 +26,7 @@ data Format
   | Snippet
   | Colored Color
   | NoFormat
-  deriving (Show)
+  deriving (Eq, Show)
 
 instance Semigroup Markdown where (<>) = (:|:)
 
@@ -82,8 +82,7 @@ markdownP = merge <$> A.many' fragmentP
   where
     merge :: [Markdown] -> Markdown
     merge [] = ""
-    merge [f] = f
-    merge (f : fs) = foldl (:|:) f fs
+    merge fs = foldr1 (:|:) fs
     fragmentP :: Parser Markdown
     fragmentP =
       A.anyChar >>= \case
