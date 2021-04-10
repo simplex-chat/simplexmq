@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module SimplexMarkdown where
+module Simplex.Markdown where
 
 import Control.Applicative ((<|>))
 import Data.Attoparsec.Text (Parser)
@@ -13,7 +13,6 @@ import qualified Data.Map.Strict as M
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
-import Styled
 import System.Console.ANSI.Types
 
 data Markdown = Markdown Format Text | Markdown :|: Markdown
@@ -24,6 +23,7 @@ data Format
   | Italic
   | Underline
   | StrikeThrough
+  | Snippet
   | Colored Color
   | NoFormat
   deriving (Show)
@@ -37,17 +37,8 @@ instance IsString Markdown where fromString = unmarked . T.pack
 unmarked :: Text -> Markdown
 unmarked = Markdown NoFormat
 
-styleMarkdown :: Markdown -> StyledString
-styleMarkdown (s1 :|: s2) = styleMarkdown s1 <> styleMarkdown s2
-styleMarkdown (Markdown f s) = Styled sgr $ T.unpack s
-  where
-    sgr = case f of
-      Bold -> [SetConsoleIntensity BoldIntensity]
-      Italic -> [SetUnderlining SingleUnderline, SetItalicized True]
-      Underline -> [SetUnderlining SingleUnderline]
-      StrikeThrough -> [SetSwapForegroundBackground True]
-      Colored c -> [SetColor Foreground Vivid c]
-      NoFormat -> []
+colorMD :: Char
+colorMD = '!'
 
 formats :: Map Char Format
 formats =
@@ -56,7 +47,8 @@ formats =
       ('_', Italic),
       ('+', Underline),
       ('~', StrikeThrough),
-      ('^', Colored White)
+      ('`', Snippet),
+      (colorMD, Colored White)
     ]
 
 colors :: Map Text Color
@@ -73,7 +65,13 @@ colors =
       ("b", Blue),
       ("y", Yellow),
       ("c", Cyan),
-      ("m", Magenta)
+      ("m", Magenta),
+      ("1", Red),
+      ("2", Green),
+      ("3", Blue),
+      ("4", Yellow),
+      ("5", Cyan),
+      ("6", Magenta)
     ]
 
 parseMarkdown :: Text -> Markdown
@@ -89,7 +87,7 @@ markdownP = merge <$> A.many' fragmentP
     fragmentP :: Parser Markdown
     fragmentP =
       A.anyChar >>= \case
-        ' ' -> unmarked . (" " <>) <$> A.takeWhile (== ' ')
+        ' ' -> unmarked . T.cons ' ' <$> A.takeWhile (== ' ')
         c -> case M.lookup c formats of
           Just (Colored White) -> coloredP
           Just f -> formattedP c "" f
@@ -97,19 +95,23 @@ markdownP = merge <$> A.many' fragmentP
     formattedP :: Char -> Text -> Format -> Parser Markdown
     formattedP c p f = do
       s <- A.takeTill (== c)
-      (A.char c $> Markdown f s) <|> noFormat (T.singleton c <> p <> s)
+      (A.char c $> markdown c p f s) <|> noFormat (c `T.cons` p <> s)
+    markdown :: Char -> Text -> Format -> Text -> Markdown
+    markdown c p f s
+      | T.null s || T.head s == ' ' || T.last s == ' ' =
+        unmarked $ c `T.cons` p <> s `T.snoc` c
+      | otherwise = Markdown f s
     coloredP :: Parser Markdown
     coloredP = do
-      color <- A.takeWhile (\c -> c /= ' ' && c /= '^')
+      color <- A.takeWhile (\c -> c /= ' ' && c /= colorMD)
       case M.lookup color colors of
         Just c ->
           let f = Colored c
-           in (A.char ' ' *> formattedP '^' (color <> " ") f)
-                <|> (A.char '^' $> Markdown f color)
-                <|> noFormat ("^" <> color)
-        _ -> noFormat ("^" <> color)
+           in (A.char ' ' *> formattedP colorMD (color `T.snoc` ' ') f)
+                <|> noFormat (colorMD `T.cons` color)
+        _ -> noFormat (colorMD `T.cons` color)
     unformattedP :: Char -> Parser Markdown
-    unformattedP c = unmarked . (T.singleton c <>) <$> wordsP
+    unformattedP c = unmarked . T.cons c <$> wordsP
     wordsP :: Parser Text
     wordsP = do
       s <- (<>) <$> A.takeTill (== ' ') <*> A.takeWhile (== ' ')
