@@ -57,10 +57,12 @@ updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition
   ArrowKey d -> case d of
     Leftwards -> setPosition leftPos
     Rightwards -> setPosition rightPos
-    Downwards -> setPosition downPos
     Upwards
       | ms == mempty && null s -> let s' = previousInput ts in ts' (s', length s')
       | ms == mempty -> let p' = p - tw in if p' > 0 then setPosition p' else ts
+      | otherwise -> ts
+    Downwards
+      | ms == mempty -> let p' = p + tw in if p' <= length s then setPosition p' else ts
       | otherwise -> ts
   _ -> ts
   where
@@ -93,9 +95,6 @@ updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition
       | ms == shiftKey = length s
       | ms == ctrlKey = nextWordPos
       | ms == altKey = nextWordPos
-      | otherwise = p
-    downPos
-      | ms == mempty = let p' = p + tw in if p' <= length s then p' else p
       | otherwise = p
     setPosition p' = ts' (s, p')
     prevWordPos
