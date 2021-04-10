@@ -51,6 +51,7 @@ updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition
     | otherwise -> ts
   TabKey -> insertCharsWithContact "    "
   BackspaceKey -> backDeleteChar
+  DeleteKey -> deleteChar
   HomeKey -> setPosition 0
   EndKey -> setPosition $ length s
   ArrowKey d -> case d of
@@ -91,6 +92,12 @@ updateTermState ac tw (key, ms) ts@TerminalState {inputString = s, inputPosition
       | otherwise = ts' backDelete
     backDeleteLast = if null s then (s, 0) else let s' = init s in (s', length s')
     backDelete = let (b, a) = splitAt p s in (init b <> a, p - 1)
+    deleteChar
+      | p >= length s || null s = ts
+      | p == 0 = ts' deleteFirst
+      | otherwise = ts' delete
+    deleteFirst = if null s then (s, 0) else (tail s, 0)
+    delete = let (b, a) = splitAt p s in (b <> tail a, p)
     setPosition p' = ts' (s, p')
     prevWordPos
       | p == 0 || null s = p
