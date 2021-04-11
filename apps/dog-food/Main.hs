@@ -53,8 +53,7 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 data ChatClient = ChatClient
   { inQ :: TBQueue ChatCommand,
     outQ :: TBQueue ChatResponse,
-    smpServer :: SMPServer,
-    username :: TVar (Maybe Contact)
+    smpServer :: SMPServer
   }
 
 -- | GroupMessage ChatGroup ByteString
@@ -65,7 +64,6 @@ data ChatCommand
   | AddContact Contact
   | AcceptContact Contact SMPQueueInfo
   | ChatWith Contact
-  | SetName Contact
   | SendMessage Contact ByteString
 
 chatCommandP :: Parser ChatCommand
@@ -75,12 +73,10 @@ chatCommandP =
     <|> "/add " *> (AddContact <$> contact)
     <|> "/accept " *> acceptContact
     <|> "/chat " *> chatWith
-    <|> "/name " *> setName
     <|> "@" *> sendMessage
   where
     acceptContact = AcceptContact <$> contact <* A.space <*> smpQueueInfoP
     chatWith = ChatWith <$> contact
-    setName = SetName <$> contact
     sendMessage = SendMessage <$> contact <* A.space <*> A.takeByteString
     contact = Contact <$> A.takeTill (== ' ')
 
@@ -96,11 +92,11 @@ data ChatResponse
   | ChatError AgentErrorType
   | NoChatResponse
 
-serializeChatResponse :: Maybe Contact -> ChatResponse -> [StyledString]
-serializeChatResponse name = \case
+serializeChatResponse :: ChatResponse -> [StyledString]
+serializeChatResponse = \case
   ChatHelpInfo -> chatHelpInfo
   MarkdownInfo -> markdownInfo
-  Invitation qInfo -> ["ask your contact to enter: /accept " <> showName name <> " " <> (bPlain . serializeSmpQueueInfo) qInfo]
+  Invitation qInfo -> ["ask your contact to enter: /accept <any_name_for_you> " <> (bPlain . serializeSmpQueueInfo) qInfo]
   Connected c -> [ttyContact c <> " connected"]
   ReceivedMessage c t -> prependFirst (ttyFromContact c) $ msgPlain t
   Disconnected c -> ["disconnected from " <> ttyContact c <> " - try \"/chat " <> bPlain (toBs c) <> "\""]
@@ -109,8 +105,6 @@ serializeChatResponse name = \case
   ChatError e -> ["chat error: " <> plain (show e)]
   NoChatResponse -> [""]
   where
-    showName Nothing = "<your name>"
-    showName (Just (Contact a)) = bPlain a
     prependFirst :: StyledString -> [StyledString] -> [StyledString]
     prependFirst s [] = [s]
     prependFirst s (s' : ss) = (s <> s') : ss
@@ -155,10 +149,9 @@ markdownInfo =
 
 main :: IO ()
 main = do
-  ChatOpts {dbFileName, smpServer, name, termMode} <- welcomeGetOpts
-  let user = Contact <$> name
-  t <- getChatClient smpServer user
-  ct <- newChatTerminal (tbqSize cfg) user termMode
+  ChatOpts {dbFileName, smpServer, termMode} <- welcomeGetOpts
+  t <- getChatClient smpServer
+  ct <- newChatTerminal (tbqSize cfg) termMode
   -- setLogLevel LogInfo -- LogError
   -- withGlobalLogging logCfg $
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
@@ -185,15 +178,14 @@ dogFoodChat t ct env = do
       chatTerminal ct
     ]
 
-getChatClient :: SMPServer -> Maybe Contact -> IO ChatClient
-getChatClient srv name = atomically $ newChatClient (tbqSize cfg) srv name
+getChatClient :: SMPServer -> IO ChatClient
+getChatClient srv = atomically $ newChatClient (tbqSize cfg) srv
 
-newChatClient :: Natural -> SMPServer -> Maybe Contact -> STM ChatClient
-newChatClient qSize smpServer name = do
+newChatClient :: Natural -> SMPServer -> STM ChatClient
+newChatClient qSize smpServer = do
   inQ <- newTBQueue qSize
   outQ <- newTBQueue qSize
-  username <- newTVar name
-  return ChatClient {inQ, outQ, smpServer, username}
+  return ChatClient {inQ, outQ, smpServer}
 
 receiveFromChatTerm :: ChatClient -> ChatTerminal -> IO ()
 receiveFromChatTerm t ct = forever $ do
@@ -204,21 +196,14 @@ receiveFromChatTerm t ct = forever $ do
       Left err -> writeOutQ . ErrorInput $ B.pack err
       Right ChatHelp -> writeOutQ ChatHelpInfo
       Right MarkdownHelp -> writeOutQ MarkdownInfo
-      Right (SetName a) -> atomically $ do
-        let user = Just a
-        writeTVar (username (t :: ChatClient)) user
-        updateUsername ct user
-        writeTBQueue (outQ t) YesYes
       Right cmd -> atomically $ writeTBQueue (inQ t) cmd
     writeOutQ = atomically . writeTBQueue (outQ t)
 
 sendToChatTerm :: ChatClient -> ChatTerminal -> IO ()
-sendToChatTerm ChatClient {outQ, username} ChatTerminal {outputQ} = forever $ do
+sendToChatTerm ChatClient {outQ} ChatTerminal {outputQ} = forever $ do
   atomically (readTBQueue outQ) >>= \case
     NoChatResponse -> return ()
-    resp -> do
-      name <- readTVarIO username
-      atomically . writeTBQueue outputQ $ serializeChatResponse name resp
+    resp -> atomically . writeTBQueue outputQ $ serializeChatResponse resp
 
 sendToAgent :: ChatClient -> ChatTerminal -> AgentClient -> IO ()
 sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} = do
@@ -242,7 +227,6 @@ sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} = do
       SendMessage a msg -> transmission a $ SEND msg
       ChatHelp -> Nothing
       MarkdownHelp -> Nothing
-      SetName _ -> Nothing
     transmission :: Contact -> ACommand 'Client -> Maybe (ATransmission 'Client)
     transmission (Contact a) cmd = Just ("1", a, cmd)
 
