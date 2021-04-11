@@ -99,7 +99,13 @@ serializeChatResponse :: ChatResponse -> [StyledString]
 serializeChatResponse = \case
   ChatHelpInfo -> chatHelpInfo
   MarkdownInfo -> markdownInfo
-  Invitation qInfo -> ["ask your contact to enter: /connect <any_name_for_you> " <> (bPlain . serializeSmpQueueInfo) qInfo]
+  Invitation qInfo ->
+    [ "pass this invitation to your contact (via any channel): ",
+      "",
+      (bPlain . serializeSmpQueueInfo) qInfo,
+      "",
+      "and ask them to connect: /c <name_for_you> <invitation_above>"
+    ]
   Connected c -> [ttyContact c <> " connected"]
   Confirmation c -> [ttyContact c <> " ok"]
   ReceivedMessage c t -> prependFirst (ttyFromContact c) $ msgPlain t
@@ -133,7 +139,8 @@ chatHelpInfo =
       highlight "/reset" <> "            - reset chat and all connections",
       highlight "/markdown" <> "         - markdown cheat-sheet",
       "",
-      "Commands can be abbreviated to 1 letter: " <> listCommands ["/h", "/a", "/c", "/d", "/r", "/m"]
+      "Commands can be abbreviated to 1 letter: ",
+      listCommands ["/h", "/a", "/c", "/d", "/r", "/m"]
     ]
   where
     listCommands = mconcat . intersperse ", " . map highlight
