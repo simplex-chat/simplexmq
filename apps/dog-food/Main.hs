@@ -21,6 +21,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.List (intersperse)
 import qualified Data.Text as T
 import Data.Text.Encoding
 import Numeric.Natural
@@ -115,18 +116,22 @@ chatHelpInfo =
   map
     styleMarkdown
     [ "Using chat:",
-      highlight "/add <name>" <> "       - create invitation to send out-of-band",
-      "                    to your contact <name>",
-      "                    (any unique string without spaces)",
-      highlight "/accept <name> <invitation>" <> " - accept <invitation>",
-      "                    (a string that starts from \"smp::\")",
-      "                    from your contact <name>",
-      highlight "/name <name>" <> "      - set <name> to use in invitations",
+      highlight "/add <name>" <> "       - create invitation to send out-of-band to your contact <name>",
+      "                    (<name> is the alias you choose to message your contact)",
+      highlight "/connect <name> <invitation>" <> " - connect using <invitation>",
+      "                    (a string returned by /add that starts from \"smp::\")",
+      "                    if /connect is used by your contact,",
+      "                    <name> is the alias your contact chooses to message you",
       highlight "@<name> <message>" <> " - send <message> (any string) to contact <name>",
-      "                    @<name> can be omitted to send to previous",
-      highlight "/md" <> "               - markdown cheat-sheet"
+      "                    @<name> will be auto-typed to send to the previous contact -",
+      "                    just start typing the message!",
+      highlight "/reset" <> "            - reset chat and all connections",
+      highlight "/markdown" <> "         - markdown cheat-sheet",
+      "",
+      "Commands can be abbreviated to 1 letter: " <> listCommands ["/h", "/a", "/c", "/r", "/m"]
     ]
   where
+    listCommands = mconcat . intersperse ", " . map highlight
     highlight = Markdown (Colored Cyan)
 
 markdownInfo :: [StyledString]
@@ -160,9 +165,9 @@ welcomeGetOpts :: IO ChatOpts
 welcomeGetOpts = do
   appDir <- getAppUserDataDirectory "simplex"
   opts@ChatOpts {dbFileName} <- getChatOpts appDir
-  putStrLn "simpleX chat prototype"
+  putStrLn "SimpleX chat prototype"
   putStrLn $ "db: " <> dbFileName
-  putStrLn "type \"/help\" for usage information"
+  putStrLn "type \"/help\" or \"/h\" for usage info"
   pure opts
 
 dogFoodChat :: ChatClient -> ChatTerminal -> Env -> IO ()
