@@ -231,11 +231,9 @@ sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} = do
   where
     setActiveContact :: ChatCommand -> STM ()
     setActiveContact = \case
-      SendMessage a _ -> set $ Just a
-      DeleteConnection _ -> set Nothing
+      SendMessage a _ -> setActive ct a
+      DeleteConnection a -> unsetActive ct a
       _ -> pure ()
-      where
-        set = writeTVar (activeContact ct)
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
       AddConnection a -> transmission a $ NEW smpServer
@@ -267,9 +265,15 @@ receiveFromAgent t ct c = forever . atomically $ do
         contact = Contact a
     setActiveContact :: ChatResponse -> STM ()
     setActiveContact = \case
-      Connected a -> set $ Just a
-      ReceivedMessage a _ -> set $ Just a
-      Disconnected _ -> set Nothing
+      Connected a -> setActive ct a
+      ReceivedMessage a _ -> setActive ct a
+      Disconnected a -> unsetActive ct a
       _ -> pure ()
-      where
-        set = writeTVar (activeContact ct)
+
+setActive :: ChatTerminal -> Contact -> STM ()
+setActive ct = writeTVar (activeContact ct) . Just
+
+unsetActive :: ChatTerminal -> Contact -> STM ()
+unsetActive ct a = modifyTVar (activeContact ct) unset
+  where
+    unset a' = if Just a == a' then Nothing else a'
