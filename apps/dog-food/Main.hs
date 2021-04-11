@@ -61,22 +61,21 @@ data ChatClient = ChatClient
 data ChatCommand
   = ChatHelp
   | MarkdownHelp
-  | AddContact Contact
-  | AcceptContact Contact SMPQueueInfo
-  | ChatWith Contact
+  | AddConnection Contact
+  | Connect Contact SMPQueueInfo
+  | ResetChat
   | SendMessage Contact ByteString
 
 chatCommandP :: Parser ChatCommand
 chatCommandP =
-  "/help" $> ChatHelp
-    <|> "/md" $> MarkdownHelp
-    <|> "/add " *> (AddContact <$> contact)
-    <|> "/accept " *> acceptContact
-    <|> "/chat " *> chatWith
+  ("/help" <|> "/h") $> ChatHelp
+    <|> ("/markdown" <|> "/m") $> MarkdownHelp
+    <|> ("/add " <|> "/a ") *> (AddConnection <$> contact)
+    <|> ("/connect " <> "/c ") *> connect
+    <|> ("/reset" <> "/r") $> ResetChat
     <|> "@" *> sendMessage
   where
-    acceptContact = AcceptContact <$> contact <* A.space <*> smpQueueInfoP
-    chatWith = ChatWith <$> contact
+    connect = Connect <$> contact <* A.space <*> smpQueueInfoP
     sendMessage = SendMessage <$> contact <* A.space <*> A.takeByteString
     contact = Contact <$> A.takeTill (== ' ')
 
@@ -96,7 +95,7 @@ serializeChatResponse :: ChatResponse -> [StyledString]
 serializeChatResponse = \case
   ChatHelpInfo -> chatHelpInfo
   MarkdownInfo -> markdownInfo
-  Invitation qInfo -> ["ask your contact to enter: /accept <any_name_for_you> " <> (bPlain . serializeSmpQueueInfo) qInfo]
+  Invitation qInfo -> ["ask your contact to enter: /connect <any_name_for_you> " <> (bPlain . serializeSmpQueueInfo) qInfo]
   Connected c -> [ttyContact c <> " connected"]
   ReceivedMessage c t -> prependFirst (ttyFromContact c) $ msgPlain t
   Disconnected c -> ["disconnected from " <> ttyContact c <> " - try \"/chat " <> bPlain (toBs c) <> "\""]
@@ -216,14 +215,13 @@ sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} = do
     setActiveContact :: ChatCommand -> STM ()
     setActiveContact cmd =
       writeTVar (activeContact ct) $ case cmd of
-        ChatWith a -> Just a
         SendMessage a _ -> Just a
         _ -> Nothing
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
-      AddContact a -> transmission a $ NEW smpServer
-      AcceptContact a qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
-      ChatWith a -> transmission a SUB
+      AddConnection a -> transmission a $ NEW smpServer
+      Connect a qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
+      ResetChat -> transmission (Contact "") SUBALL
       SendMessage a msg -> transmission a $ SEND msg
       ChatHelp -> Nothing
       MarkdownHelp -> Nothing
