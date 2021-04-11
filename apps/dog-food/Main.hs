@@ -64,6 +64,7 @@ data ChatCommand
   | MarkdownHelp
   | AddConnection Contact
   | Connect Contact SMPQueueInfo
+  | DeleteConnection Contact
   | ResetChat
   | SendMessage Contact ByteString
 
@@ -73,6 +74,7 @@ chatCommandP =
     <|> ("/markdown" <|> "/m") $> MarkdownHelp
     <|> ("/add " <|> "/a ") *> (AddConnection <$> contact)
     <|> ("/connect " <> "/c ") *> connect
+    <|> ("/delete " <> "/d ") *> (DeleteConnection <$> contact)
     <|> ("/reset" <> "/r") $> ResetChat
     <|> "@" *> sendMessage
   where
@@ -85,6 +87,7 @@ data ChatResponse
   | MarkdownInfo
   | Invitation SMPQueueInfo
   | Connected Contact
+  | Confirmation Contact
   | ReceivedMessage Contact ByteString
   | Disconnected Contact
   | YesYes
@@ -98,6 +101,7 @@ serializeChatResponse = \case
   MarkdownInfo -> markdownInfo
   Invitation qInfo -> ["ask your contact to enter: /connect <any_name_for_you> " <> (bPlain . serializeSmpQueueInfo) qInfo]
   Connected c -> [ttyContact c <> " connected"]
+  Confirmation c -> [ttyContact c <> " ok"]
   ReceivedMessage c t -> prependFirst (ttyFromContact c) $ msgPlain t
   Disconnected c -> ["disconnected from " <> ttyContact c <> " - try \"/chat " <> bPlain (toBs c) <> "\""]
   YesYes -> ["you got it!"]
@@ -125,10 +129,11 @@ chatHelpInfo =
       highlight "@<name> <message>" <> " - send <message> (any string) to contact <name>",
       "                    @<name> will be auto-typed to send to the previous contact -",
       "                    just start typing the message!",
+      highlight "/delete" <> "           - delete contact and all messages you had with them",
       highlight "/reset" <> "            - reset chat and all connections",
       highlight "/markdown" <> "         - markdown cheat-sheet",
       "",
-      "Commands can be abbreviated to 1 letter: " <> listCommands ["/h", "/a", "/c", "/r", "/m"]
+      "Commands can be abbreviated to 1 letter: " <> listCommands ["/h", "/a", "/c", "/d", "/r", "/m"]
     ]
   where
     listCommands = mconcat . intersperse ", " . map highlight
@@ -218,14 +223,17 @@ sendToAgent ChatClient {inQ, smpServer} ct AgentClient {rcvQ} = do
     setActiveContact cmd
   where
     setActiveContact :: ChatCommand -> STM ()
-    setActiveContact cmd =
-      writeTVar (activeContact ct) $ case cmd of
-        SendMessage a _ -> Just a
-        _ -> Nothing
+    setActiveContact = \case
+      SendMessage a _ -> set $ Just a
+      DeleteConnection _ -> set Nothing
+      _ -> pure ()
+      where
+        set = writeTVar (activeContact ct)
     agentTransmission :: ChatCommand -> Maybe (ATransmission 'Client)
     agentTransmission = \case
       AddConnection a -> transmission a $ NEW smpServer
       Connect a qInfo -> transmission a $ JOIN qInfo $ ReplyVia smpServer
+      DeleteConnection a -> transmission a DEL
       ResetChat -> transmission (Contact "") SUBALL
       SendMessage a msg -> transmission a $ SEND msg
       ChatHelp -> Nothing
@@ -246,7 +254,7 @@ receiveFromAgent t ct c = forever . atomically $ do
       END -> Disconnected contact
       MSG {m_body} -> ReceivedMessage contact m_body
       SENT _ -> NoChatResponse
-      OK -> Connected contact -- hack for subscribing to all
+      OK -> Confirmation contact
       ERR e -> ChatError e
       where
         contact = Contact a
@@ -255,6 +263,6 @@ receiveFromAgent t ct c = forever . atomically $ do
       Connected a -> set $ Just a
       ReceivedMessage a _ -> set $ Just a
       Disconnected _ -> set Nothing
-      _ -> return ()
+      _ -> pure ()
       where
-        set a = writeTVar (activeContact ct) a
+        set = writeTVar (activeContact ct)
