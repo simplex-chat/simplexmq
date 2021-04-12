@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -192,7 +193,7 @@ makeNextIV SessionKey {baseIV, counter} = atomically $ do
 
 -- | implements server transport handshake as per /rfcs/2021-01-26-crypto.md#transport-encryption
 -- The numbers in function names refer to the steps in the document
-serverHandshake :: Handle -> C.KeyPair -> ExceptT TransportError IO THandle
+serverHandshake :: Handle -> C.KeyPair 'C.FullRSAKey -> ExceptT TransportError IO THandle
 serverHandshake h (k, pk) = do
   liftIO sendPublicKey_1
   encryptedKeys <- receiveEncryptedKeys_4

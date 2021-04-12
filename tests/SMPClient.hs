@@ -29,10 +29,10 @@ testPort :: ServiceName
 testPort = "5000"
 
 teshKeyHashStr :: B.ByteString
-teshKeyHashStr = "8Cvd+AYVxLpSsB/glEhVxkKuEzMNBFdAL5yr7p9DGGk="
+teshKeyHashStr = "GrNRLZwEt5zG0tWto314B2O1GJQRr9bg5t+bY8wza88="
 
 teshKeyHash :: Maybe C.KeyHash
-teshKeyHash = Just "8Cvd+AYVxLpSsB/glEhVxkKuEzMNBFdAL5yr7p9DGGk="
+teshKeyHash = Just "GrNRLZwEt5zG0tWto314B2O1GJQRr9bg5t+bY8wza88="
 
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
 testSMPClient client = do
@@ -50,8 +50,43 @@ cfg =
       queueIdBytes = 12,
       msgIdBytes = 6,
       serverKeyPair =
-        ( "256,wgJfm+EgMI3MeGdZlNs+KEoMlO0bpvZ2sa7bK4zWGtWGWXoCq1m89gaMk+f+HZavNJbJmflqrviBAoCFtDrA5+xC4+mwGlU6mLWiWtpvxgRBtNBsuHg3l+oJv0giFNCxoscne3P6n4kaCQEbA1T6KdrsdvxcaqyqzbpI7SozLIzhy45gsVywJfzpu6GYHlYNizdBJtoX2r66v6jDQFX7/MVDG4Z84RRa8PzjzT0wXSY+nirwIy5uwD0V5jrwaB0S5re6UnL7aLp51zHLUHPI/C9okBIkjY9kyQg3mAYXOPxb0OlGf3ENWnVdPKG6WqYnC3SBMIEVd4rqqxoH4myTgQ==,DHXxHfufuxfbuReISV9tCNttWXm/EVXTTN//hHkW/1wPLppbpY6aOqW+SZWwGCodIdGvdPSmaY9W8kfftWQY9xCOOcpkrzZwYHppT995xBIoB30vXG01dyruebFr3HjurT+uUbRGnxNYGwZg3AjkcyQtMKmq1pANvOGsOUgeDiU=",
-          "256,wgJfm+EgMI3MeGdZlNs+KEoMlO0bpvZ2sa7bK4zWGtWGWXoCq1m89gaMk+f+HZavNJbJmflqrviBAoCFtDrA5+xC4+mwGlU6mLWiWtpvxgRBtNBsuHg3l+oJv0giFNCxoscne3P6n4kaCQEbA1T6KdrsdvxcaqyqzbpI7SozLIzhy45gsVywJfzpu6GYHlYNizdBJtoX2r66v6jDQFX7/MVDG4Z84RRa8PzjzT0wXSY+nirwIy5uwD0V5jrwaB0S5re6UnL7aLp51zHLUHPI/C9okBIkjY9kyQg3mAYXOPxb0OlGf3ENWnVdPKG6WqYnC3SBMIEVd4rqqxoH4myTgQ==,PC6r+lZm5vyVpOl6dS9SXv09iE1PZoav6yeUbqsK+FScwHiOMEOkTY2mUyTHZ99nA4l7grAo4RPS6UOQS07QtgD2siZyj6F6Z3qAiBGesiG3+tb59pQ/prhs+5Q7RBlRMulz5KEwFINUb4Wy9ft4oIL/JJT9iSnYtTuGGirUEjB6YGzLKQeTyhkWA0iN89C5Vx6drB/pHyu3Mu+uc0Rax0UPD47gsNmxPNWUM6xLlkpNAWnSOHcSJZ3SN4QDLLCeBfqkgDLYkE3vbwvz8drt+H2eLi8OzFErEdkkrXg/0VwNjfhpBTt8D4TX00I7XsVksh3b2BRHzLfHTbLGdExLLQ=="
+        ( "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\
+          \TmKzSAw7iVWwEUZR/PeiEKazqrpp9VU="
         )
     }
 

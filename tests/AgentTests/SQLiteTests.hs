@@ -100,10 +100,10 @@ rcvQueue1 =
     { server = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash,
       rcvId = "1234",
       connAlias = "conn1",
-      rcvPrivateKey = C.PrivateKey 1 2 3,
+      rcvPrivateKey = C.SafePrivateKey 1 2 3,
       sndId = Just "2345",
       sndKey = Nothing,
-      decryptKey = C.PrivateKey 1 2 3,
+      decryptKey = C.SafePrivateKey 1 2 3,
       verifyKey = Nothing,
       status = New
     }
@@ -114,9 +114,9 @@ sndQueue1 =
     { server = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash,
       sndId = "3456",
       connAlias = "conn1",
-      sndPrivateKey = C.PrivateKey 1 2 3,
+      sndPrivateKey = C.SafePrivateKey 1 2 3,
       encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-      signKey = C.PrivateKey 1 2 3,
+      signKey = C.SafePrivateKey 1 2 3,
       status = New
     }
 
@@ -215,9 +215,9 @@ testUpgradeRcvConnToDuplex = do
             { server = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash,
               sndId = "2345",
               connAlias = "conn1",
-              sndPrivateKey = C.PrivateKey 1 2 3,
+              sndPrivateKey = C.SafePrivateKey 1 2 3,
               encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-              signKey = C.PrivateKey 1 2 3,
+              signKey = C.SafePrivateKey 1 2 3,
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
@@ -237,10 +237,10 @@ testUpgradeSndConnToDuplex = do
             { server = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash,
               rcvId = "3456",
               connAlias = "conn1",
-              rcvPrivateKey = C.PrivateKey 1 2 3,
+              rcvPrivateKey = C.SafePrivateKey 1 2 3,
               sndId = Just "4567",
               sndKey = Nothing,
-              decryptKey = C.PrivateKey 1 2 3,
+              decryptKey = C.SafePrivateKey 1 2 3,
               verifyKey = Nothing,
               status = New
             }

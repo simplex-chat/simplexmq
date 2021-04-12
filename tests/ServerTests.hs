@@ -37,7 +37,7 @@ pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker
 sendRecv :: THandle -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
 
-signSendRecv :: THandle -> C.PrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+signSendRecv :: THandle -> C.PrivateKey 'C.SafeRSAKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 signSendRecv h pk (corrId, qId, cmd) = do
   let t = B.intercalate " " [corrId, encode qId, cmd]
   Right sig <- C.sign pk t

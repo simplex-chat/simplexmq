@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
@@ -21,7 +22,7 @@ data ServerConfig = ServerConfig
     tbqSize :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
-    serverKeyPair :: C.KeyPair
+    serverKeyPair :: C.KeyPair 'C.FullRSAKey
     -- serverId :: ByteString
   }
 
