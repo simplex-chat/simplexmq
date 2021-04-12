@@ -58,6 +58,11 @@ import qualified Crypto.PubKey.RSA as R
 import qualified Crypto.PubKey.RSA.OAEP as OAEP
 import qualified Crypto.PubKey.RSA.PSS as PSS
 import Crypto.Random (getRandomBytes)
+import Crypto.Store.PKCS8
+import Crypto.Store.X509
+import Data.ASN1.BinaryEncoding
+import Data.ASN1.Encoding
+import Data.ASN1.Types
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -66,7 +71,9 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
+import Data.ByteString.Lazy (toStrict)
 import Data.String
+import Data.X509
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
@@ -337,6 +344,14 @@ keyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
   where
     intP = os2ip <$> base64P
 
+privateKeyRSA :: R.PrivateKey -> PrivateKey
+privateKeyRSA R.PrivateKey {private_pub, private_d} =
+  PrivateKey
+    { private_size = R.public_size private_pub,
+      private_n = R.public_n private_pub,
+      private_d
+    }
+
 rsaPrivateKey :: PrivateKey -> R.PrivateKey
 rsaPrivateKey pk =
   R.PrivateKey
@@ -353,3 +368,15 @@ rsaPrivateKey pk =
       private_dQ = undefined,
       private_qinv = undefined
     }
+
+encodePubKey :: PublicKey -> ByteString
+encodePubKey (PublicKey k) = encode . toStrict . encodeASN1 DER $ toASN1 (PubKeyRSA k) []
+
+encodePrivKey :: R.PrivateKey -> ByteString
+encodePrivKey pk = encode . toStrict . encodeASN1 DER $ toASN1 (PrivKeyRSA pk) []
+
+encodePubKey' :: PublicKey -> ByteString
+encodePubKey' (PublicKey k) = writePubKeyFileToMemory [PubKeyRSA k]
+
+encodePrivKey' :: R.PrivateKey -> ByteString
+encodePrivKey' pk = writeKeyFileToMemory TraditionalFormat [PrivKeyRSA pk]
