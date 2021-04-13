@@ -93,12 +93,12 @@ instance IsString CorrId where
   fromString = CorrId . fromString
 
 -- only used by Agent, kept here so its definition is close to respective public key
-type RecipientPrivateKey = C.PrivateKey C.SafeRSAKey
+type RecipientPrivateKey = C.SafePrivateKey
 
 type RecipientPublicKey = C.PublicKey
 
 -- only used by Agent, kept here so its definition is close to respective public key
-type SenderPrivateKey = C.PrivateKey C.SafeRSAKey
+type SenderPrivateKey = C.SafePrivateKey
 
 type SenderPublicKey = C.PublicKey
 

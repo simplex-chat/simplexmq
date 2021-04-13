@@ -42,7 +42,7 @@ main = do
   putStrLn $ "Listening on port " <> tcpPort cfg
   runSMPServer cfg {serverKeyPair = (k, pk)}
 
-readCreateKeys :: IO (C.KeyPair 'C.FullRSAKey)
+readCreateKeys :: IO C.FullKeyPair
 readCreateKeys = do
   createDirectoryIfMissing True cfgDir
   let kPath = combine cfgDir "server_key.pub"
@@ -51,12 +51,12 @@ readCreateKeys = do
   hasKeys <- (||) <$> doesFileExist kPath <*> doesFileExist pkPath
   (if hasKeys then readKeys else createKeys) kPath pkPath
   where
-    createKeys :: FilePath -> FilePath -> IO (C.KeyPair 'C.FullRSAKey)
+    createKeys :: FilePath -> FilePath -> IO C.FullKeyPair
     createKeys kPath pkPath = do
       confirm
-      (k, pk) <- C.generateFullKeyPair newKeySize
+      (k, pk) <- C.generateKeyPair newKeySize
       writePubKeyFile kPath [PubKeyRSA $ C.rsaPublicKey k]
-      writeKeyFile TraditionalFormat pkPath [PrivKeyRSA $ C.fullPrivateKey pk]
+      writeKeyFile TraditionalFormat pkPath [PrivKeyRSA $ C.rsaPrivateKey pk]
       pure (k, pk)
     confirm :: IO ()
     confirm = do
@@ -64,7 +64,7 @@ readCreateKeys = do
       hFlush stdout
       ok <- getLine
       when (map toLower ok /= "y") exitFailure
-    readKeys :: FilePath -> FilePath -> IO (C.KeyPair 'C.FullRSAKey)
+    readKeys :: FilePath -> FilePath -> IO C.FullKeyPair
     readKeys kPath pkPath = do
       ks <- (,) <$> readPubKey kPath <*> readPrivKey pkPath
       if C.validKeyPair ks then pure ks else errorExit "private and public keys do not match"
@@ -73,7 +73,7 @@ readCreateKeys = do
       readPubKeyFile path >>= \case
         [PubKeyRSA k] -> pure $ C.PublicKey k
         res -> readKeyError path res
-    readPrivKey :: FilePath -> IO (C.PrivateKey 'C.FullRSAKey)
+    readPrivKey :: FilePath -> IO C.FullPrivateKey
     readPrivKey path =
       readKeyFile path >>= \case
         [Unprotected (PrivKeyRSA pk)] -> pure $ C.FullPrivateKey pk

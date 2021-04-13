@@ -29,10 +29,10 @@ testPort :: ServiceName
 testPort = "5000"
 
 teshKeyHashStr :: B.ByteString
-teshKeyHashStr = "GrNRLZwEt5zG0tWto314B2O1GJQRr9bg5t+bY8wza88="
+teshKeyHashStr = "p1xa/XuzchgqomEL6RX+Me+fX096w50V7nJPAA0wpDE="
 
 teshKeyHash :: Maybe C.KeyHash
-teshKeyHash = Just "GrNRLZwEt5zG0tWto314B2O1GJQRr9bg5t+bY8wza88="
+teshKeyHash = Just "p1xa/XuzchgqomEL6RX+Me+fX096w50V7nJPAA0wpDE="
 
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
 testSMPClient client = do

@@ -224,9 +224,9 @@ data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Eq, Show)
 
 type EncryptionKey = C.PublicKey
 
-type DecryptionKey = C.PrivateKey C.SafeRSAKey
+type DecryptionKey = C.SafePrivateKey
 
-type SignatureKey = C.PrivateKey C.SafeRSAKey
+type SignatureKey = C.SafePrivateKey
 
 type VerificationKey = C.PublicKey
 

@@ -16,6 +16,12 @@ base64P = do
   pad <- A.takeWhile (== '=')
   either fail pure $ decode (str <> pad)
 
+base64StringP :: Parser ByteString
+base64StringP = do
+  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
+  pad <- A.takeWhile (== '=')
+  pure $ str <> pad
+
 tsISO8601P :: Parser UTCTime
 tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
 
