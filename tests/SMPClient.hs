@@ -50,7 +50,7 @@ withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (Thr
 withSmpServerThreadOn port f = do
   started <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ runSMPServer started cfg {tcpPort = port}))
+    (forkIOWithUnmask ($ runSMPServerBlocking started cfg {tcpPort = port}))
     (liftIO . killThread)
     \x ->
       liftIO (1_000_000 `timeout` atomically (takeTMVar started)) >>= \case

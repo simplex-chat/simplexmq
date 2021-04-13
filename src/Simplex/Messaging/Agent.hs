@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Agent
   ( runSMPAgent,
+    runSMPAgentBlocking,
     getSMPAgentClient,
     runSMPAgentClient,
   )
@@ -42,8 +43,11 @@ import UnliftIO.Exception (SomeException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> AgentConfig -> m ()
-runSMPAgent started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< newSMPAgentEnv cfg
+runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m ()
+runSMPAgent cfg = newEmptyTMVarIO >>= (`runSMPAgentBlocking` cfg)
+
+runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> AgentConfig -> m ()
+runSMPAgentBlocking started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< newSMPAgentEnv cfg
   where
     smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpAgent = runTCPServer started tcpPort $ \h -> do

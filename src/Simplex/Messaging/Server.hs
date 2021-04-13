@@ -11,7 +11,7 @@
 {-# LANGUAGE TupleSections #-}
 
 -- TODO move randomBytes to another module
-module Simplex.Messaging.Server (runSMPServer, randomBytes) where
+module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking, randomBytes) where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
@@ -38,8 +38,11 @@ import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
 
-runSMPServer :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
-runSMPServer started cfg@ServerConfig {tcpPort} = do
+runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServerConfig -> m ()
+runSMPServer cfg = newEmptyTMVarIO >>= (`runSMPServerBlocking` cfg)
+
+runSMPServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
+runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
   env <- newEnv cfg
   runReaderT smpServer env
   where

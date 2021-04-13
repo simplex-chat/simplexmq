@@ -131,7 +131,7 @@ withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String
 withSmpAgentThreadOn (port', db') f = do
   started <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ runSMPAgent started cfg {tcpPort = port', dbFile = db'}))
+    (forkIOWithUnmask ($ runSMPAgentBlocking started cfg {tcpPort = port', dbFile = db'}))
     (liftIO . killThread >=> const (removeFile db'))
     \x ->
       liftIO (1_000_000 `timeout` atomically (takeTMVar started)) >>= \case

@@ -1,6 +1,5 @@
 module Main where
 
-import Control.Concurrent.STM (newEmptyTMVarIO)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 
@@ -16,5 +15,4 @@ cfg =
 main :: IO ()
 main = do
   putStrLn $ "Listening on port " ++ tcpPort cfg
-  started <- newEmptyTMVarIO
-  runSMPServer started cfg
+  runSMPServer cfg
