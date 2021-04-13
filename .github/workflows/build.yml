@@ -64,7 +64,7 @@ jobs:
             asset_name: dog-food-macos-x86-64
           - os: windows-latest
             cache_path: C:/sr
-            stack_args: ""
+            stack_args: "--test"
             artifact_rel_path: /bin/dog-food.exe
             asset_name: dog-food-windows-x86-64
     steps:
