@@ -6,8 +6,6 @@
 
 module SMPClient where
 
-import Control.Concurrent.STM (newEmptyTMVarIO)
-import Control.Concurrent.STM.TMVar (takeTMVar)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import GHC.IO.Exception (IOErrorType (TimeExpired))
@@ -22,7 +20,7 @@ import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.IO
-import UnliftIO.STM (atomically)
+import UnliftIO.STM (atomically, newEmptyTMVarIO, takeTMVar)
 
 testHost :: HostName
 testHost = "localhost"
@@ -50,9 +48,9 @@ cfg =
 
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerThreadOn port f = do
-  started <- liftIO newEmptyTMVarIO
+  started <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ runSMPServer cfg {tcpPort = port} started))
+    (forkIOWithUnmask ($ runSMPServer started cfg {tcpPort = port}))
     (liftIO . killThread)
     \x ->
       liftIO (1_000_000 `timeout` atomically (takeTMVar started)) >>= \case

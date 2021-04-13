@@ -38,8 +38,8 @@ import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
 
-runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServerConfig -> TMVar Bool -> m ()
-runSMPServer cfg@ServerConfig {tcpPort} started = do
+runSMPServer :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
+runSMPServer started cfg@ServerConfig {tcpPort} = do
   env <- newEnv cfg
   runReaderT smpServer env
   where
@@ -48,7 +48,7 @@ runSMPServer cfg@ServerConfig {tcpPort} started = do
       s <- asks server
       race_
         (serverThread s)
-        (runTCPServer tcpPort runClient started `finally` atomically (putTMVar started False))
+        (runTCPServer started tcpPort runClient `finally` atomically (putTMVar started False))
 
     serverThread :: MonadUnliftIO m => Server -> m ()
     serverThread Server {subscribedQ, subscribers} = forever . atomically $ do

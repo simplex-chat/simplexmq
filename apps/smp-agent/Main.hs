@@ -28,4 +28,4 @@ main = do
   setLogLevel LogInfo -- LogError
   withGlobalLogging logCfg $ do
     started <- newEmptyTMVarIO
-    runSMPAgent cfg started
+    runSMPAgent started cfg

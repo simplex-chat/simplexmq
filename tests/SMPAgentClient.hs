@@ -7,8 +7,6 @@
 
 module SMPAgentClient where
 
-import Control.Concurrent.STM (newEmptyTMVarIO)
-import Control.Concurrent.STM.TMVar (takeTMVar)
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
@@ -27,7 +25,7 @@ import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 import UnliftIO.IO
-import UnliftIO.STM (atomically)
+import UnliftIO.STM (atomically, newEmptyTMVarIO, takeTMVar)
 
 agentTestHost :: HostName
 agentTestHost = "localhost"
@@ -131,9 +129,9 @@ cfg =
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn (port', db') f = do
-  started <- liftIO newEmptyTMVarIO
+  started <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ runSMPAgent cfg {tcpPort = port', dbFile = db'} started))
+    (forkIOWithUnmask ($ runSMPAgent started cfg {tcpPort = port', dbFile = db'}))
     (liftIO . killThread >=> const (removeFile db'))
     \x ->
       liftIO (1_000_000 `timeout` atomically (takeTMVar started)) >>= \case

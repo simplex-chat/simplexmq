@@ -15,6 +15,6 @@ cfg =
 
 main :: IO ()
 main = do
-  started <- newEmptyTMVarIO
   putStrLn $ "Listening on port " ++ tcpPort cfg
-  runSMPServer cfg started
+  started <- newEmptyTMVarIO
+  runSMPServer started cfg
