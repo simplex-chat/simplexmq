@@ -59,7 +59,7 @@ jobs:
           # TODO re-enable tests for mac and windows when they consistently pass (remove stack_args altogether)
           - os: macos-latest
             cache_path: ~/.stack
-            stack_args: ""
+            stack_args: "--test"
             artifact_rel_path: /bin/dog-food
             asset_name: dog-food-macos-x86-64
           - os: windows-latest
