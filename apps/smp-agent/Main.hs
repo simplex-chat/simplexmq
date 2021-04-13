@@ -2,6 +2,7 @@
 
 module Main where
 
+import Control.Concurrent.STM (newEmptyTMVarIO)
 import Control.Logger.Simple
 import Simplex.Messaging.Agent (runSMPAgent)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -25,5 +26,6 @@ main :: IO ()
 main = do
   putStrLn $ "SMP agent listening on port " ++ tcpPort (cfg :: AgentConfig)
   setLogLevel LogInfo -- LogError
-  withGlobalLogging logCfg $
-    runSMPAgent cfg
+  withGlobalLogging logCfg $ do
+    started <- newEmptyTMVarIO
+    runSMPAgent cfg started

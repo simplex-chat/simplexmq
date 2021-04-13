@@ -42,11 +42,14 @@ import UnliftIO.Exception (SomeException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m ()
-runSMPAgent cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< newSMPAgentEnv cfg
+runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> TMVar Bool -> m ()
+runSMPAgent cfg@AgentConfig {tcpPort} started = runReaderT smpAgent =<< newSMPAgentEnv cfg
   where
     smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
-    smpAgent = runTCPServer tcpPort $ \h -> do
+    smpAgent = runTCPServer tcpPort runClient started
+
+    runClient :: (MonadUnliftIO m', MonadReader Env m') => Handle -> m' ()
+    runClient h = do
       liftIO $ putLn h "Welcome to SMP v0.2.0 agent"
       c <- getSMPAgentClient
       logConnection c True

@@ -24,13 +24,20 @@ import qualified UnliftIO.Exception as E
 import qualified UnliftIO.IO as IO
 import UnliftIO.STM
 
-runTCPServer :: MonadUnliftIO m => ServiceName -> (Handle -> m ()) -> m ()
-runTCPServer port server = do
+runTCPServer :: MonadUnliftIO m => ServiceName -> (Handle -> m ()) -> TMVar Bool -> m ()
+runTCPServer port server started = do
   clients <- newTVarIO S.empty
-  E.bracket (liftIO $ startTCPServer port) (liftIO . closeServer clients) $ \sock -> forever $ do
-    h <- liftIO $ acceptTCPConn sock
-    tid <- forkFinally (server h) (const $ IO.hClose h)
-    atomically . modifyTVar clients $ S.insert tid
+  E.bracket
+    ( do
+        sock <- liftIO $ startTCPServer port
+        atomically $ putTMVar started True
+        return sock
+    )
+    (liftIO . closeServer clients)
+    \sock -> forever $ do
+      h <- liftIO $ acceptTCPConn sock
+      tid <- forkFinally (server h) (const $ IO.hClose h)
+      atomically . modifyTVar clients $ S.insert tid
   where
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
     closeServer clients sock = readTVarIO clients >>= mapM_ killThread >> close sock

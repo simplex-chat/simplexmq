@@ -1,21 +1,28 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module SMPClient where
 
+import Control.Concurrent.STM (newEmptyTMVarIO)
+import Control.Concurrent.STM.TMVar (takeTMVar)
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import GHC.IO.Exception (IOErrorType (TimeExpired))
 import Network.Socket
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
+import System.IO.Error (mkIOError)
+import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.IO
+import UnliftIO.STM (atomically)
 
 testHost :: HostName
 testHost = "localhost"
@@ -25,7 +32,7 @@ testPort = "5000"
 
 testSMPClient :: MonadUnliftIO m => (Handle -> m a) -> m a
 testSMPClient client = do
-  threadDelay 250_000 -- TODO hack: thread delay for SMP server to start
+  -- threadDelay 25_000 -- TODO hack: thread delay for SMP server to start
   runTCPClient testHost testPort $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.2.0"
@@ -42,10 +49,18 @@ cfg =
     }
 
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerThreadOn port =
+withSmpServerThreadOn port f = do
+  started <- liftIO newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ runSMPServer cfg {tcpPort = port}))
+    (forkIOWithUnmask ($ runSMPServer cfg {tcpPort = port} started))
     (liftIO . killThread)
+    \x ->
+      liftIO (1_000_000 `timeout` atomically (takeTMVar started)) >>= \case
+        Just True -> f x
+        _ -> E.throwIO err
+  where
+    err :: E.IOException
+    err = mkIOError TimeExpired "connection timeout" Nothing Nothing
 
 withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
 withSmpServerOn port = withSmpServerThreadOn port . const

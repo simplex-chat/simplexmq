@@ -22,7 +22,7 @@ import Test.Hspec
 import UnliftIO.Directory (removeFile)
 
 testDB :: String
-testDB = "smp-agent.test.db"
+testDB = "tests/tmp/smp-agent.test.db"
 
 withStore :: SpecWith SQLiteStore -> Spec
 withStore = before createStore . after removeStore

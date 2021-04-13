@@ -30,7 +30,7 @@ agentTests = do
       smpAgentTest2 testDuplexConnection
   describe "Connection subscriptions" do
     -- TODO replace delays with a permanent fix, this often fails in github build
-    xit "should connect via one server and one agent" $
+    it "should connect via one server and one agent" $
       smpAgentTest3_1 testSubscription
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest testSubscrNotification
@@ -112,7 +112,6 @@ testSubscription alice1 alice2 bob = do
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   -- alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   t <- tGet SAgent alice1
-  print t
   t `shouldSatisfy` (\case ("", "bob", Msg "hello again") -> True; _ -> False) . correctTransmission
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
