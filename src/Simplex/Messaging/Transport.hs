@@ -24,10 +24,10 @@ import qualified UnliftIO.Exception as E
 import qualified UnliftIO.IO as IO
 import UnliftIO.STM
 
-runTCPServer :: MonadUnliftIO m => ServiceName -> (Handle -> m ()) -> m ()
-runTCPServer port server = do
+runTCPServer :: MonadUnliftIO m => TMVar Bool -> ServiceName -> (Handle -> m ()) -> m ()
+runTCPServer started port server = do
   clients <- newTVarIO S.empty
-  E.bracket (liftIO $ startTCPServer port) (liftIO . closeServer clients) $ \sock -> forever $ do
+  E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) \sock -> forever $ do
     h <- liftIO $ acceptTCPConn sock
     tid <- forkFinally (server h) (const $ IO.hClose h)
     atomically . modifyTVar clients $ S.insert tid
@@ -35,8 +35,8 @@ runTCPServer port server = do
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
     closeServer clients sock = readTVarIO clients >>= mapM_ killThread >> close sock
 
-startTCPServer :: ServiceName -> IO Socket
-startTCPServer port = withSocketsDo $ resolve >>= open
+startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
+startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
@@ -48,6 +48,7 @@ startTCPServer port = withSocketsDo $ resolve >>= open
       bind sock $ addrAddress addr
       listen sock 1024
       return sock
+    setStarted sock = atomically (putTMVar started True) >> pure sock
 
 acceptTCPConn :: Socket -> IO Handle
 acceptTCPConn sock = accept sock >>= getSocketHandle . fst

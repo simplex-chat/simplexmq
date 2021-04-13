@@ -25,5 +25,4 @@ main :: IO ()
 main = do
   putStrLn $ "SMP agent listening on port " ++ tcpPort (cfg :: AgentConfig)
   setLogLevel LogInfo -- LogError
-  withGlobalLogging logCfg $
-    runSMPAgent cfg
+  withGlobalLogging logCfg $ runSMPAgent cfg
