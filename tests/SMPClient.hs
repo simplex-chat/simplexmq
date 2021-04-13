@@ -30,7 +30,6 @@ testPort = "5000"
 
 testSMPClient :: MonadUnliftIO m => (Handle -> m a) -> m a
 testSMPClient client = do
-  -- threadDelay 25_000 -- TODO hack: thread delay for SMP server to start
   runTCPClient testHost testPort $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.2.0"
