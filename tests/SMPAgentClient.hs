@@ -1,6 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -10,15 +9,13 @@ module SMPAgentClient where
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import GHC.IO.Exception (IOErrorType (TimeExpired))
 import Network.Socket (HostName, ServiceName)
 import SMPClient (testPort, withSmpServer, withSmpServerThreadOn)
-import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
-import System.IO.Error (mkIOError)
 import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Concurrent
@@ -133,13 +130,7 @@ withSmpAgentThreadOn (port', db') f = do
   E.bracket
     (forkIOWithUnmask ($ runSMPAgentBlocking started cfg {tcpPort = port', dbFile = db'}))
     (liftIO . killThread >=> const (removeFile db'))
-    \x ->
-      liftIO (5_000_000 `timeout` atomically (takeTMVar started)) >>= \case
-        Just True -> f x
-        _ -> E.throwIO err
-  where
-    err :: E.IOException
-    err = mkIOError TimeExpired "connection timeout" Nothing Nothing
+    \x -> liftIO (5_000_000 `timeout` atomically (takeTMVar started)) >> f x
 
 withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> m a -> m a
 withSmpAgentOn (port', db') = withSmpAgentThreadOn (port', db') . const

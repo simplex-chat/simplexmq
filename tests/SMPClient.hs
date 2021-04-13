@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -8,13 +7,11 @@ module SMPClient where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import GHC.IO.Exception (IOErrorType (TimeExpired))
 import Network.Socket
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server
+import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
-import System.IO.Error (mkIOError)
 import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Concurrent
@@ -51,13 +48,7 @@ withSmpServerThreadOn port f = do
   E.bracket
     (forkIOWithUnmask ($ runSMPServerBlocking started cfg {tcpPort = port}))
     (liftIO . killThread)
-    \x ->
-      liftIO (5_000_000 `timeout` atomically (takeTMVar started)) >>= \case
-        Just True -> f x
-        _ -> E.throwIO err
-  where
-    err :: E.IOException
-    err = mkIOError TimeExpired "connection timeout" Nothing Nothing
+    \x -> liftIO (5_000_000 `timeout` atomically (takeTMVar started)) >> f x
 
 withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
 withSmpServerOn port = withSmpServerThreadOn port . const
