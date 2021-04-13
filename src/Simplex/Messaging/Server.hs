@@ -46,9 +46,7 @@ runSMPServer started cfg@ServerConfig {tcpPort} = do
     smpServer :: (MonadUnliftIO m, MonadReader Env m) => m ()
     smpServer = do
       s <- asks server
-      race_
-        (serverThread s)
-        (runTCPServer started tcpPort runClient `finally` atomically (putTMVar started False))
+      race_ (runTCPServer started tcpPort runClient) (serverThread s)
 
     serverThread :: MonadUnliftIO m => Server -> m ()
     serverThread Server {subscribedQ, subscribers} = forever . atomically $ do
