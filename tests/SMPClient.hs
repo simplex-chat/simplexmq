@@ -52,7 +52,7 @@ withSmpServerThreadOn port f = do
     (forkIOWithUnmask ($ runSMPServerBlocking started cfg {tcpPort = port}))
     (liftIO . killThread)
     \x ->
-      liftIO (1_000_000 `timeout` atomically (takeTMVar started)) >>= \case
+      liftIO (5_000_000 `timeout` atomically (takeTMVar started)) >>= \case
         Just True -> f x
         _ -> E.throwIO err
   where
