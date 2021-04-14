@@ -60,7 +60,7 @@ runSMPServer cfg@ServerConfig {tcpPort} = do
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
-  keyPair <- asks $ serverKeyPair . config
+  keyPair <- asks serverKeyPair
   liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
     Right th -> runClientTransport th
     Left _ -> pure ()

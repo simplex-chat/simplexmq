@@ -20,7 +20,7 @@ module Simplex.Messaging.Crypto
     IV (..),
     KeyHash (..),
     generateKeyPair,
-    validKeyPair,
+    publicKey,
     publicKeySize,
     safePrivateKey,
     sign,
@@ -180,8 +180,8 @@ generateKeyPair size = loop
 rsaPrivateSize :: PrivateKey k => k -> Int
 rsaPrivateSize = R.public_size . R.private_pub . rsaPrivateKey
 
-validKeyPair :: FullKeyPair -> Bool
-validKeyPair (PublicKey k, FullPrivateKey pk) = k == R.private_pub pk
+publicKey :: FullPrivateKey -> PublicKey
+publicKey = PublicKey . R.private_pub . rsaPrivateKey
 
 publicKeySize :: PublicKey -> Int
 publicKeySize = R.public_size . rsaPublicKey
