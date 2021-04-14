@@ -21,7 +21,7 @@ data ServerConfig = ServerConfig
     tbqSize :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
-    serverKeyPair :: C.KeyPair
+    serverPrivateKey :: C.FullPrivateKey
     -- serverId :: ByteString
   }
 
@@ -30,7 +30,8 @@ data Env = Env
     server :: Server,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
-    idsDrg :: TVar ChaChaDRG
+    idsDrg :: TVar ChaChaDRG,
+    serverKeyPair :: C.FullKeyPair
   }
 
 data Server = Server
@@ -75,4 +76,6 @@ newEnv config = do
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  return Env {config, server, queueStore, msgStore, idsDrg}
+  let pk = serverPrivateKey config
+      serverKeyPair = (C.publicKey pk, pk)
+  return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair}

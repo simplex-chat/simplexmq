@@ -1,23 +1,28 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Crypto
-  ( PrivateKey (..),
+  ( PrivateKey (rsaPrivateKey),
+    SafePrivateKey, -- constructor is not exported
+    FullPrivateKey (..),
     PublicKey (..),
     Signature (..),
     CryptoError (..),
-    KeyPair,
+    SafeKeyPair,
+    FullKeyPair,
     Key (..),
     IV (..),
     KeyHash (..),
     generateKeyPair,
-    validKeyPair,
+    publicKey,
     publicKeySize,
+    safePrivateKey,
     sign,
     verify,
     encrypt,
@@ -43,6 +48,7 @@ module Simplex.Messaging.Crypto
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Exception (Exception)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
@@ -51,13 +57,15 @@ import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), digestFromByteString, hash)
 import Crypto.Number.Generate (generateMax)
-import Crypto.Number.ModArithmetic (expFast)
 import Crypto.Number.Prime (findPrimeFrom)
-import Crypto.Number.Serialize (i2osp, os2ip)
+import Crypto.Number.Serialize (os2ip)
 import qualified Crypto.PubKey.RSA as R
 import qualified Crypto.PubKey.RSA.OAEP as OAEP
 import qualified Crypto.PubKey.RSA.PSS as PSS
 import Crypto.Random (getRandomBytes)
+import Data.ASN1.BinaryEncoding
+import Data.ASN1.Encoding
+import Data.ASN1.Types
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -66,53 +74,71 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
+import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.String
+import Data.Typeable (Typeable)
+import Data.X509
 import Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, parseAll)
-import Simplex.Messaging.Util (bshow, liftEitherError, (<$$>))
+import Simplex.Messaging.Parsers (base64P, base64StringP, parseAll)
+import Simplex.Messaging.Util (liftEitherError, (<$$>))
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
-data PrivateKey = PrivateKey
-  { private_size :: Int,
-    private_n :: Integer,
-    private_d :: Integer
-  }
-  deriving (Eq, Show)
+newtype SafePrivateKey = SafePrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
 
-instance IsString PrivateKey where
-  fromString = parseString privKeyP
+newtype FullPrivateKey = FullPrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
+
+class PrivateKey k where
+  rsaPrivateKey :: k -> R.PrivateKey
+  _privateKey :: R.PrivateKey -> k
+  mkPrivateKey :: R.PrivateKey -> k
+
+instance PrivateKey SafePrivateKey where
+  rsaPrivateKey = unPrivateKey
+  _privateKey = SafePrivateKey
+  mkPrivateKey R.PrivateKey {private_pub = k, private_d} =
+    safePrivateKey (R.public_size k, R.public_n k, private_d)
+
+instance PrivateKey FullPrivateKey where
+  rsaPrivateKey = unPrivateKey
+  _privateKey = FullPrivateKey
+  mkPrivateKey = FullPrivateKey
+
+instance IsString FullPrivateKey where
+  fromString = parseString decodePrivKey
 
 instance IsString PublicKey where
-  fromString = parseString pubKeyP
+  fromString = parseString decodePubKey
 
-parseString :: Parser a -> (String -> a)
-parseString parser = either error id . parseAll parser . fromString
+parseString :: (ByteString -> Either String a) -> (String -> a)
+parseString parse = either error id . parse . B.pack
 
-instance ToField PrivateKey where toField = toField . serializePrivKey
+instance ToField SafePrivateKey where toField = toField . serializePrivKey
 
 instance ToField PublicKey where toField = toField . serializePubKey
 
-instance FromField PrivateKey where
-  fromField f@(Field (SQLBlob b) _) =
-    case parseAll privKeyP b of
-      Right k -> Ok k
-      Left e -> returnError ConversionFailed f ("couldn't parse PrivateKey field: " ++ e)
-  fromField f = returnError ConversionFailed f "expecting SQLBlob column type"
+instance FromField SafePrivateKey where fromField = keyFromField privKeyP
 
-instance FromField PublicKey where
-  fromField f@(Field (SQLBlob b) _) =
-    case parseAll pubKeyP b of
-      Right k -> Ok k
-      Left e -> returnError ConversionFailed f ("couldn't parse PublicKey field: " ++ e)
-  fromField f = returnError ConversionFailed f "expecting SQLBlob column type"
+instance FromField PublicKey where fromField = keyFromField pubKeyP
 
-type KeyPair = (PublicKey, PrivateKey)
+keyFromField :: Typeable k => Parser k -> FieldParser k
+keyFromField p = \case
+  f@(Field (SQLBlob b) _) ->
+    case parseAll p b of
+      Right k -> Ok k
+      Left e -> returnError ConversionFailed f ("couldn't parse key field: " ++ e)
+  f -> returnError ConversionFailed f "expecting SQLBlob column type"
+
+type KeyPair k = (PublicKey, k)
+
+type SafeKeyPair = (PublicKey, SafePrivateKey)
+
+type FullKeyPair = (PublicKey, FullPrivateKey)
 
 newtype Signature = Signature {unSignature :: ByteString} deriving (Eq, Show)
 
@@ -139,29 +165,23 @@ aesKeySize = 256 `div` 8
 authTagSize :: Int
 authTagSize = 128 `div` 8
 
-generateKeyPair :: Int -> IO KeyPair
+generateKeyPair :: PrivateKey k => Int -> IO (KeyPair k)
 generateKeyPair size = loop
   where
     publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange
-    privateKey s n d = PrivateKey {private_size = s, private_n = n, private_d = d}
     loop = do
-      (pub, priv) <- R.generate size =<< publicExponent
-      let s = R.public_size pub
-          n = R.public_n pub
-          d = R.private_d priv
-       in if d * d < n
-            then loop
-            else return (PublicKey pub, privateKey s n d)
+      (k, pk) <- R.generate size =<< publicExponent
+      let n = R.public_n k
+          d = R.private_d pk
+      if d * d < n
+        then loop
+        else pure (PublicKey k, mkPrivateKey pk)
 
-validKeyPair :: KeyPair -> Bool
-validKeyPair
-  ( PublicKey R.PublicKey {public_size, public_n = n, public_e = e},
-    PrivateKey {private_size, private_n, private_d = d}
-    ) =
-    let m = 30577
-     in public_size == private_size
-          && n == private_n
-          && m == expFast (expFast m d n) e n
+rsaPrivateSize :: PrivateKey k => k -> Int
+rsaPrivateSize = R.public_size . R.private_pub . rsaPrivateKey
+
+publicKey :: FullPrivateKey -> PublicKey
+publicKey = PublicKey . R.private_pub . rsaPrivateKey
 
 publicKeySize :: PublicKey -> Int
 publicKeySize = R.public_size . rsaPublicKey
@@ -180,7 +200,7 @@ newtype IV = IV {unIV :: ByteString}
 newtype KeyHash = KeyHash {unKeyHash :: Digest SHA256} deriving (Eq, Ord, Show)
 
 instance IsString KeyHash where
-  fromString = parseString keyHashP
+  fromString = parseString $ parseAll keyHashP
 
 instance ToField KeyHash where toField = toField . serializeKeyHash
 
@@ -234,9 +254,9 @@ encrypt k paddedSize msg = do
   encHeader <- encryptOAEP k $ serializeHeader header
   return $ encHeader <> msg'
 
-decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
+decrypt :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
-  let (encHeader, msg') = B.splitAt (private_size pk) msg''
+  let (encHeader, msg') = B.splitAt (rsaPrivateSize pk) msg''
   header <- decryptOAEP pk encHeader
   Header {aesKey, ivBytes, authTag, msgSize} <- except $ parseHeader header
   msg <- decryptAES aesKey ivBytes msg' authTag
@@ -297,7 +317,7 @@ encryptOAEP (PublicKey k) aesKey =
   liftEitherError CryptoRSAError $
     OAEP.encrypt oaepParams k aesKey
 
-decryptOAEP :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
+decryptOAEP :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
 decryptOAEP pk encKey =
   liftEitherError CryptoRSAError $
     OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
@@ -305,51 +325,85 @@ decryptOAEP pk encKey =
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
 
-sign :: PrivateKey -> ByteString -> IO (Either R.Error Signature)
+sign :: PrivateKey k => k -> ByteString -> IO (Either R.Error Signature)
 sign pk msg = Signature <$$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
 
 verify :: PublicKey -> Signature -> ByteString -> Bool
 verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig
 
 serializePubKey :: PublicKey -> ByteString
-serializePubKey (PublicKey k) = serializeKey_ (R.public_size k, R.public_n k, R.public_e k)
+serializePubKey k = "rsa:" <> encodePubKey k
 
-serializePrivKey :: PrivateKey -> ByteString
-serializePrivKey pk = serializeKey_ (private_size pk, private_n pk, private_d pk)
-
-serializeKey_ :: (Int, Integer, Integer) -> ByteString
-serializeKey_ (size, n, ex) = bshow size <> "," <> encInt n <> "," <> encInt ex
-  where
-    encInt = encode . i2osp
+serializePrivKey :: PrivateKey k => k -> ByteString
+serializePrivKey pk = "rsa:" <> encodePrivKey pk
 
 pubKeyP :: Parser PublicKey
-pubKeyP = do
-  (public_size, public_n, public_e) <- keyParser_
-  return . PublicKey $ R.PublicKey {R.public_size, R.public_n, R.public_e}
+pubKeyP = keyP decodePubKey <|> legacyPubKeyP
 
-privKeyP :: Parser PrivateKey
-privKeyP = do
-  (private_size, private_n, private_d) <- keyParser_
-  return PrivateKey {private_size, private_n, private_d}
+privKeyP :: PrivateKey k => Parser k
+privKeyP = keyP decodePrivKey <|> legacyPrivKeyP
 
-keyParser_ :: Parser (Int, Integer, Integer)
-keyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
+keyP :: (ByteString -> Either String k) -> Parser k
+keyP dec = either fail pure . dec =<< ("rsa:" *> base64StringP)
+
+legacyPubKeyP :: Parser PublicKey
+legacyPubKeyP = do
+  (public_size, public_n, public_e) <- legacyKeyParser_
+  return . PublicKey $ R.PublicKey {public_size, public_n, public_e}
+
+legacyPrivKeyP :: PrivateKey k => Parser k
+legacyPrivKeyP = _privateKey . safeRsaPrivateKey <$> legacyKeyParser_
+
+legacyKeyParser_ :: Parser (Int, Integer, Integer)
+legacyKeyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
   where
     intP = os2ip <$> base64P
 
-rsaPrivateKey :: PrivateKey -> R.PrivateKey
-rsaPrivateKey pk =
+safePrivateKey :: (Int, Integer, Integer) -> SafePrivateKey
+safePrivateKey = SafePrivateKey . safeRsaPrivateKey
+
+safeRsaPrivateKey :: (Int, Integer, Integer) -> R.PrivateKey
+safeRsaPrivateKey (size, n, d) =
   R.PrivateKey
     { private_pub =
         R.PublicKey
-          { public_size = private_size pk,
-            public_n = private_n pk,
-            public_e = undefined
+          { public_size = size,
+            public_n = n,
+            public_e = 0
           },
-      private_d = private_d pk,
+      private_d = d,
       private_p = 0,
       private_q = 0,
-      private_dP = undefined,
-      private_dQ = undefined,
-      private_qinv = undefined
+      private_dP = 0,
+      private_dQ = 0,
+      private_qinv = 0
     }
+
+encodePubKey :: PublicKey -> ByteString
+encodePubKey = encodeKey . PubKeyRSA . rsaPublicKey
+
+encodePrivKey :: PrivateKey k => k -> ByteString
+encodePrivKey = encodeKey . PrivKeyRSA . rsaPrivateKey
+
+encodeKey :: ASN1Object a => a -> ByteString
+encodeKey k = encode . toStrict . encodeASN1 DER $ toASN1 k []
+
+decodePubKey :: ByteString -> Either String PublicKey
+decodePubKey s =
+  decodeKey s >>= \case
+    (PubKeyRSA k, []) -> Right $ PublicKey k
+    r -> keyError r
+
+decodePrivKey :: PrivateKey k => ByteString -> Either String k
+decodePrivKey s =
+  decodeKey s >>= \case
+    (PrivKeyRSA pk, []) -> Right $ mkPrivateKey pk
+    r -> keyError r
+
+decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
+decodeKey s = fromASN1 =<< first show . decodeASN1 DER . fromStrict =<< decode s
+
+keyError :: (a, [ASN1]) -> Either String b
+keyError = \case
+  (_, []) -> Left "not RSA key"
+  _ -> Left "more than one key"

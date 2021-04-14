@@ -21,7 +21,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.Kind
+import Data.Kind (Type)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
@@ -224,9 +224,9 @@ data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Eq, Show)
 
 type EncryptionKey = C.PublicKey
 
-type DecryptionKey = C.PrivateKey
+type DecryptionKey = C.SafePrivateKey
 
-type SignatureKey = C.PrivateKey
+type SignatureKey = C.SafePrivateKey
 
 type VerificationKey = C.PublicKey
 

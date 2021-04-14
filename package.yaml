@@ -12,6 +12,9 @@ extra-source-files:
   - README.md
 
 dependencies:
+  - ansi-terminal == 0.10.*
+  - asn1-encoding == 0.9.*
+  - asn1-types == 0.3.*
   - async == 2.2.*
   - attoparsec == 0.13.*
   - base >= 4.7 && < 5
@@ -35,6 +38,7 @@ dependencies:
   - transformers == 0.5.*
   - unliftio == 0.2.*
   - unliftio-core == 0.1.*
+  - x509 == 1.7.*
 
 library:
   source-dirs: src
@@ -44,6 +48,7 @@ executables:
     source-dirs: apps/smp-server
     main: Main.hs
     dependencies:
+      - cryptostore == 0.2.*
       - simplex-messaging
     ghc-options:
       - -threaded

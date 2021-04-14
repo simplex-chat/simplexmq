@@ -1,13 +1,14 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
 import Control.Monad (when)
-import Data.Attoparsec.ByteString.Char8 (Parser)
+import qualified Crypto.Store.PKCS8 as S
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
+import Data.X509 (PrivKey (PrivKeyRSA))
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -22,8 +23,8 @@ cfg =
       tbqSize = 16,
       queueIdBytes = 12,
       msgIdBytes = 6,
-      -- keys are loaded from files server_key.pub and server_key in ~/.simplex directory
-      serverKeyPair = undefined
+      -- key is loaded from the file server_key in /etc/opt/simplex directory
+      serverPrivateKey = undefined
     }
 
 newKeySize :: Int
@@ -34,41 +35,40 @@ cfgDir = "/etc/opt/simplex"
 
 main :: IO ()
 main = do
-  (k, pk) <- readCreateKeys
-  B.putStrLn $ "SMP transport key hash: " <> publicKeyHash k
+  pk <- readCreateKey
+  B.putStrLn $ "SMP transport key hash: " <> publicKeyHash (C.publicKey pk)
   putStrLn $ "Listening on port " <> tcpPort cfg
-  runSMPServer cfg {serverKeyPair = (k, pk)}
+  runSMPServer cfg {serverPrivateKey = pk}
 
-readCreateKeys :: IO C.KeyPair
-readCreateKeys = do
+readCreateKey :: IO C.FullPrivateKey
+readCreateKey = do
   createDirectoryIfMissing True cfgDir
-  let kPath = combine cfgDir "server_key.pub"
-      pkPath = combine cfgDir "server_key"
-  -- `||` is here to avoid creating keys and crash if one of two files exists
-  hasKeys <- (||) <$> doesFileExist kPath <*> doesFileExist pkPath
-  (if hasKeys then readKeys else createKeys) kPath pkPath
+  let path = combine cfgDir "server_key"
+  hasKey <- doesFileExist path
+  (if hasKey then readKey else createKey) path
   where
-    createKeys :: FilePath -> FilePath -> IO C.KeyPair
-    createKeys kPath pkPath = do
+    createKey :: FilePath -> IO C.FullPrivateKey
+    createKey path = do
       confirm
-      (k, pk) <- C.generateKeyPair newKeySize
-      B.writeFile kPath $ C.serializePubKey k
-      B.writeFile pkPath $ C.serializePrivKey pk
-      pure (k, pk)
+      (_, pk) <- C.generateKeyPair newKeySize
+      S.writeKeyFile S.TraditionalFormat path [PrivKeyRSA $ C.rsaPrivateKey pk]
+      pure pk
     confirm :: IO ()
     confirm = do
       putStr "Generate new server key pair (y/N): "
       hFlush stdout
       ok <- getLine
       when (map toLower ok /= "y") exitFailure
-    readKeys :: FilePath -> FilePath -> IO C.KeyPair
-    readKeys kPath pkPath = do
-      ks <- (,) <$> readKey kPath C.pubKeyP <*> readKey pkPath C.privKeyP
-      if C.validKeyPair ks then pure ks else putStrLn "invalid key pair" >> exitFailure
-    readKey :: FilePath -> Parser a -> IO a
-    readKey path parser =
-      let parseError = fail . ((path <> ": ") <>)
-       in B.readFile path >>= either parseError pure . parseAll parser . head . B.lines
+    readKey :: FilePath -> IO C.FullPrivateKey
+    readKey path = do
+      S.readKeyFile path >>= \case
+        [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.FullPrivateKey pk
+        [_] -> errorExit "not RSA key"
+        [] -> errorExit "invalid key file format"
+        _ -> errorExit "more than one key"
+      where
+        errorExit :: String -> IO b
+        errorExit e = putStrLn (e <> ": " <> path) >> exitFailure
 
 publicKeyHash :: C.PublicKey -> B.ByteString
 publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.serializePubKey
