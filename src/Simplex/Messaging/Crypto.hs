@@ -1,7 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -181,9 +180,8 @@ generateKeyPair size = loop
 rsaPrivateSize :: PrivateKey k => k -> Int
 rsaPrivateSize = R.public_size . R.private_pub . rsaPrivateKey
 
--- | it will fail on partial/safe private key
-validKeyPair :: PrivateKey k => KeyPair k -> Bool
-validKeyPair (PublicKey k, pk) = k == R.private_pub (rsaPrivateKey pk)
+validKeyPair :: FullKeyPair -> Bool
+validKeyPair (PublicKey k, FullPrivateKey pk) = k == R.private_pub pk
 
 publicKeySize :: PublicKey -> Int
 publicKeySize = R.public_size . rsaPublicKey

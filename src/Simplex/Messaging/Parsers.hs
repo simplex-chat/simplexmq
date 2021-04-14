@@ -11,10 +11,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
 
 base64P :: Parser ByteString
-base64P = do
-  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
-  pad <- A.takeWhile (== '=')
-  either fail pure $ decode (str <> pad)
+base64P = either fail pure . decode =<< base64StringP
 
 base64StringP :: Parser ByteString
 base64StringP = do

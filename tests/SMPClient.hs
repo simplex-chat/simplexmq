@@ -50,7 +50,8 @@ cfg =
       queueIdBytes = 12,
       msgIdBytes = 6,
       serverKeyPair =
-        ( "MIIBoTANBgkqhkiG9w0BAQEFAAOCAY4AMIIBiQKCAQEArZyrri/NAwt5buvYjwu+\
+        ( -- RSA public key (only for tests)
+          "MIIBoTANBgkqhkiG9w0BAQEFAAOCAY4AMIIBiQKCAQEArZyrri/NAwt5buvYjwu+\
           \B/MQeJUszDBpRgVqNddlI9kNwDXukaJ8chEhrtaUgXeSWGooWwqjXEUQE6RVbCC6\
           \QVo9VEBSP4xFwVVd9Fj7OsgfcXXhAqWxfctDcBZQ5jTUiJpdBc+Vz2ZkumVNl0W+\
           \j9kWm9nfkMLQj8c0cVSDxz4OKpZbqFuj0uzHkis7e7wsrKSKWLPg3M5ZXPZM1m9q\
@@ -59,6 +60,7 @@ cfg =
           \+QKBgQCySG4tzlcEm+tOVWRcwrWh6zsczGZp9mbf9c8itRx6dlldSYuDG1qnddL7\
           \0wuAZF2AgS1JZgvcRZECoZRoWP5qKq2wvpTIYjFPpC39lxgUoA/DXKVKZZdan+gw\
           \aVPAPT54my1CS32VrOiAY4gVJ3LJMn1/FqZXUFQA326pau3loQ==",
+          -- full RSA private key (only for tests)
           "MIIFIwIBAAKCAQEArZyrri/NAwt5buvYjwu+B/MQeJUszDBpRgVqNddlI9kNwDXu\
           \kaJ8chEhrtaUgXeSWGooWwqjXEUQE6RVbCC6QVo9VEBSP4xFwVVd9Fj7OsgfcXXh\
           \AqWxfctDcBZQ5jTUiJpdBc+Vz2ZkumVNl0W+j9kWm9nfkMLQj8c0cVSDxz4OKpZb\
