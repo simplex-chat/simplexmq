@@ -15,12 +15,14 @@ import qualified Data.ByteString.Char8 as B
 import Network.Socket
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server
+import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
+import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
+import UnliftIO.STM (atomically, newEmptyTMVarIO, takeTMVar)
 
 testHost :: HostName
 testHost = "localhost"
@@ -35,8 +37,7 @@ teshKeyHash :: Maybe C.KeyHash
 teshKeyHash = Just "p1xa/XuzchgqomEL6RX+Me+fX096w50V7nJPAA0wpDE="
 
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
-testSMPClient client = do
-  threadDelay 250_000 -- TODO hack: thread delay for SMP server to start
+testSMPClient client =
   runTCPClient testHost testPort $ \h ->
     liftIO (runExceptT $ clientHandshake h teshKeyHash) >>= \case
       Right th -> client th
@@ -82,10 +83,12 @@ cfg =
     }
 
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerThreadOn port =
+withSmpServerThreadOn port f = do
+  started <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ runSMPServer cfg {tcpPort = port}))
+    (forkIOWithUnmask ($ runSMPServerBlocking started cfg {tcpPort = port}))
     (liftIO . killThread)
+    \x -> liftIO (5_000_000 `timeout` atomically (takeTMVar started)) >> f x
 
 withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
 withSmpServerOn port = withSmpServerThreadOn port . const

@@ -1,3 +1,4 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -10,16 +11,18 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Network.Socket (HostName, ServiceName)
 import SMPClient (testPort, withSmpServer, withSmpServerThreadOn)
-import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
+import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 import UnliftIO.IO
+import UnliftIO.STM (atomically, newEmptyTMVarIO, takeTMVar)
 
 agentTestHost :: HostName
 agentTestHost = "localhost"
@@ -34,13 +37,13 @@ agentTestPort3 :: ServiceName
 agentTestPort3 = "5021"
 
 testDB :: String
-testDB = "smp-agent.test.protocol.db"
+testDB = "tests/tmp/smp-agent.test.protocol.db"
 
 testDB2 :: String
-testDB2 = "smp-agent2.test.protocol.db"
+testDB2 = "tests/tmp/smp-agent2.test.protocol.db"
 
 testDB3 :: String
-testDB3 = "smp-agent3.test.protocol.db"
+testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
 
 smpAgentTest :: ARawTransmission -> IO ARawTransmission
 smpAgentTest cmd = runSmpAgentTest $ \h -> tPutRaw h cmd >> tGetRaw h
@@ -122,10 +125,12 @@ cfg =
     }
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn (port', db') =
+withSmpAgentThreadOn (port', db') f = do
+  started <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ runSMPAgent cfg {tcpPort = port', dbFile = db'}))
+    (forkIOWithUnmask ($ runSMPAgentBlocking started cfg {tcpPort = port', dbFile = db'}))
     (liftIO . killThread >=> const (removeFile db'))
+    \x -> liftIO (5_000_000 `timeout` atomically (takeTMVar started)) >> f x
 
 withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> m a -> m a
 withSmpAgentOn (port', db') = withSmpAgentThreadOn (port', db') . const
@@ -135,7 +140,6 @@ withSmpAgent = withSmpAgentOn (agentTestPort, testDB)
 
 testSMPAgentClientOn :: MonadUnliftIO m => ServiceName -> (Handle -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  threadDelay 500_000 -- TODO hack: thread delay for SMP agent to start
   runTCPClient agentTestHost port' $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.2.0 agent"
