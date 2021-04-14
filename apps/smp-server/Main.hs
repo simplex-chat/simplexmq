@@ -4,10 +4,10 @@
 module Main where
 
 import Control.Monad (when)
-import Crypto.Store.PKCS8
+import qualified Crypto.Store.PKCS8 as S
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
-import Data.X509
+import Data.X509 (PrivKey (PrivKeyRSA))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
@@ -51,7 +51,7 @@ readCreateKey = do
     createKey path = do
       confirm
       (_, pk) <- C.generateKeyPair newKeySize
-      writeKeyFile TraditionalFormat path [PrivKeyRSA $ C.rsaPrivateKey pk]
+      S.writeKeyFile S.TraditionalFormat path [PrivKeyRSA $ C.rsaPrivateKey pk]
       pure pk
     confirm :: IO ()
     confirm = do
@@ -61,8 +61,8 @@ readCreateKey = do
       when (map toLower ok /= "y") exitFailure
     readKey :: FilePath -> IO C.FullPrivateKey
     readKey path = do
-      readKeyFile path >>= \case
-        [Unprotected (PrivKeyRSA pk)] -> pure $ C.FullPrivateKey pk
+      S.readKeyFile path >>= \case
+        [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.FullPrivateKey pk
         [_] -> errorExit "not RSA key"
         [] -> errorExit "invalid key file format"
         _ -> errorExit "more than one key"
