@@ -86,7 +86,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     newSMPClient = do
       smp <- connectClient
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-      -- TODO how can agent know client lost the connection?
       atomically . modifyTVar smpClients $ M.insert srv smp
       return smp
 

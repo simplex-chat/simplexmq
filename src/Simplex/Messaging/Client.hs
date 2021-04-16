@@ -183,7 +183,6 @@ data SMPClientError
   | SMPUnexpectedResponse
   | SMPResponseTimeout
   | SMPCryptoError RSA.Error
-  | SMPClientError
   deriving (Eq, Show, Exception)
 
 createSMPQueue ::

@@ -254,7 +254,7 @@ data AgentErrorType
   | CRYPTO C.CryptoError
   | SIZE
   | STORE
-  | INTERNAL -- etc. TODO SYNTAX Natural
+  | INTERNAL
   deriving (Eq, Show, Exception)
 
 data AckStatus = AckOk | AckError AckErrorType
