@@ -129,7 +129,7 @@ withSMP c srv action =
     smpClientError = \case
       SMPServerError e -> SMP e
       -- TODO handle other errors
-      _ -> INTERNAL
+      e -> INTERNAL $ bshow e
 
     logServerError :: AgentErrorType -> m a
     logServerError e = do
@@ -278,4 +278,4 @@ mkAgentMessage encKey senderTs agentMessage = do
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> MESSAGE LARGE
-  e -> AGENT $ bshow e
+  e -> INTERNAL $ bshow e

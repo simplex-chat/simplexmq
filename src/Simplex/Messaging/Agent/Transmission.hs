@@ -115,16 +115,16 @@ data SMPMessage
         previousMsgHash :: ByteString,
         agentMessage :: AMessage
       }
-  deriving (Show)
+  deriving (Eq, Show, Exception)
 
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
   A_MSG :: MsgBody -> AMessage
-  deriving (Show)
+  deriving (Eq, Show, Exception)
 
 parseSMPMessage :: ByteString -> Either AgentErrorType SMPMessage
-parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
+parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
   where
     smpMessageP :: Parser SMPMessage
     smpMessageP =
@@ -185,7 +185,7 @@ smpServerP = SMPServer <$> server <*> port <*> kHash
         else pure Nothing
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
-parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
+parseAgentMessage = parse agentMessageP $ AGENT A_MESSAGE
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
@@ -245,18 +245,25 @@ data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | Msg
   deriving (Eq, Show)
 
 data AgentErrorType
-  = PROHIBITED
-  | SYNTAX Int
-  | BROKER Natural
+  = BROKER Natural
+  | PROHIBITED
+  | UNEXPECTED -- -> BROKER?
   | SMP ErrorType
-  | INTERNAL
+  | AGENT SMPAgentError
+  | SYNTAX
   | CONN ConnectionErrorType
   | MESSAGE MessageErrorType
-  | AGENT ByteString
+  | INTERNAL ByteString
+  deriving (Eq, Show, Exception)
+
+data SMPAgentError
+  = A_MESSAGE -- possibly should include bytestring that failed to parse
+  | A_PROHIBITED -- possibly should include the prohibited SMP/agent message
   deriving (Eq, Show, Exception)
 
 data ConnectionErrorType
-  = UNKNOWN -- connection alias not in database
+  = REQUIRED -- connection is required in the transmission
+  | UNKNOWN -- connection alias not in database
   | DUPLICATE -- connection alias already exists
   | SIMPLEX_RCV -- operation requires send queue
   | SIMPLEX_SND -- operation requires receive queue
@@ -272,24 +279,6 @@ data AckStatus = AckOk | AckError AckErrorType
 
 data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
   deriving (Show)
-
-errBadEncoding :: Int
-errBadEncoding = 10
-
-errBadCommand :: Int
-errBadCommand = 11
-
-errBadInvitation :: Int
-errBadInvitation = 12
-
-errNoConnAlias :: Int
-errNoConnAlias = 13
-
-errBadMessage :: Int
-errBadMessage = 14
-
-errBadServer :: Int
-errBadServer = 15
 
 smpErrTCPConnection :: Natural
 smpErrTCPConnection = 1
@@ -344,7 +333,7 @@ commandP =
         <|> "HASH" $> MsgBadHash
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse commandP $ SYNTAX errBadCommand
+parseCommand = parse commandP SYNTAX
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
@@ -430,7 +419,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       ERR _ -> Right cmd
       -- other responses must have connAlias
       _
-        | B.null connAlias -> Left $ SYNTAX errNoConnAlias
+        | B.null connAlias -> Left $ CONN REQUIRED
         | otherwise -> Right cmd
 
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))

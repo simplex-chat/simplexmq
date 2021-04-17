@@ -32,17 +32,9 @@ Side note - why not rename it to Protocol.hs?
 
 Some of these errors are unused / unsupported and not parsed - see line 322 in Agent/Transmission.hs
 
-- UNKNOWN - was intended for unknown commands (as opposed to bad syntax), **currently not used**
-- PROHIBITED - used for two contexts:
-  1. server response sent as client command (and vice versa)
-  2. bad connection type. We considered different error type for this situation, see comment on line 159 in Agent.hs
-- SYNTAX Int - command is unknown or has invalid syntax. The proposal is to replace numbers with slugs (via a separate type `AgentSyntaxError` with a list of constructors)
-  - 10 (errBadEncoding) - **not used**. The intention was to differentiate base64 encoding failures
-  - 11 (errBadCommand) - failed command parsing
-  - 12 (errBadInvitation) - **not used**. Intended for incorrect invitation format
-  - 13 (errNoConnAlias) - requires connection alias and it is absent
-  - 14 (errBadMessage) - bad agent message
-  - 15 (errBadServer) - **not used**. Intended for incorrect server format
+- PROHIBITED - server response sent as client command (and vice versa)
+- UNEXPECTED - unexpected broker response (move to BROKER)
+- SYNTAX - command is unknown or has invalid syntax.
 - BROKER Natural
   - 1 (smpErrTCPConnection) - failed to connect to SMP server
   - 2 (smpErrCorrelationId) - **not used**. Probably, intended for incorrect correlation ID - currently client ignores responses with incorrect correlation ID, see comment on line 164 in Client.hs
@@ -51,15 +43,19 @@ Some of these errors are unused / unsupported and not parsed - see line 322 in A
 - INTERNAL - used to report internal/logical errors to agent clients
 
 New errors
+- AGENT - errors of another agent
+  - A_MESSAGE - SMP message failed to parse
+  - A_PROHIBITED - SMP message is prohibited with the current queue status
 - CONN - connection errors
-  - UNKNOWN -- connection alias not in database
-  - DUPLICATE -- connection alias already exists
-  - SIMPLEX_RCV -- operation requires send queue
-  - SIMPLEX_SND -- operation requires receive queue
+  - REQUIRED - connection is required in the command (and absent)
+  - UNKNOWN - connection alias not in database
+  - DUPLICATE - connection alias already exists
+  - SIMPLEX_RCV - operation requires send queue
+  - SIMPLEX_SND - operation requires receive queue
 - MESSAGE - message errors
   - SIZE - reports incorrect message size for agent messages (when parsing SEND and MSG)
   - LARGE - message does not fit in SMP block
-- AGENT string - agent implementation or dependency error
+- INTERNAL ByteString - agent implementation or dependency error
 
 ### SMPClientError (Client.hs)
 
