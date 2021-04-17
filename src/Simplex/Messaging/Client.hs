@@ -88,7 +88,7 @@ data Request = Request
     responseVar :: TMVar Response
   }
 
-type Response = Either SMPClientError (Command 'Broker)
+type Response = Either SMPClientError Cmd
 
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO (Either SMPClientError SMPClient)
 getSMPClient
@@ -168,9 +168,8 @@ getSMPClient
               if queueId == qId
                 then case respOrErr of
                   Left e -> Left $ SMPResponseError e
-                  Right (Cmd SBroker (ERR e)) -> Left $ SMPServerError e
-                  Right (Cmd SBroker cmd) -> Right cmd
-                  Right (Cmd _ _) -> Left SMPUnexpectedResponse
+                  Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
+                  Right r -> Right r
                 else Left SMPQueueIdError
 
 closeSMPClient :: SMPClient -> IO ()
@@ -195,14 +194,14 @@ createSMPQueue ::
 createSMPQueue c rpKey rKey =
   -- TODO add signing this request too - requires changes in the server
   sendSMPCommand c (Just rpKey) "" (Cmd SRecipient $ NEW rKey) >>= \case
-    IDS rId sId -> return (rId, sId)
+    Cmd _ (IDS rId sId) -> return (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
 subscribeSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId (Cmd SRecipient SUB) >>= \case
-    OK -> return ()
-    cmd@MSG {} ->
+    Cmd _ OK -> return ()
+    Cmd _ cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
@@ -212,14 +211,14 @@ secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY sender
 sendSMPMessage :: SMPClient -> Maybe SenderPrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
 sendSMPMessage c spKey sId msg =
   sendSMPCommand c spKey sId (Cmd SSender $ SEND msg) >>= \case
-    OK -> return ()
+    Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
 ackSMPMessage :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId (Cmd SRecipient ACK) >>= \case
-    OK -> return ()
-    cmd@MSG {} ->
+    Cmd _ OK -> return ()
+    Cmd _ cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
@@ -232,10 +231,10 @@ deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
 okSMPCommand :: Cmd -> SMPClient -> C.SafePrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c (Just pKey) qId cmd >>= \case
-    OK -> return ()
+    Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
-sendSMPCommand :: SMPClient -> Maybe C.SafePrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO (Command 'Broker)
+sendSMPCommand :: SMPClient -> Maybe C.SafePrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
   t <- signTransmission $ serializeTransmission (corrId, qId, cmd)
