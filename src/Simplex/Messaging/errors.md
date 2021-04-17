@@ -82,7 +82,7 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 ### TransportError (Transport.hs)
 
   - TECrypto C.CryptoError
-  - TEBadTransmission - error parsing transmission
+  - TEBadBlock - error parsing transmission
   - TEBadVersion - error parsing protocol version (handshake)
   - TEBadRSAKey - error parsing RSA key (handshake)
   - TEBadAESKeys - error parsing AES keys (handshake)

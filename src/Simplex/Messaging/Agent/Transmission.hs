@@ -249,10 +249,9 @@ data AgentErrorType
   | CONN ConnectionErrorType -- connection state errors
   | SMP ErrorType -- SMP protocol errors forwarded to agent clients
   | BROKER BrokerErrorType -- SMP server errors
-  | TRANSPORT TransportError -- handshake or other transport error
   | AGENT SMPAgentError -- errors of other agents
   | INTERNAL ByteString -- agent implementation errors
-  deriving (Eq, Show, Exception)
+  deriving (Eq, Read, Show, Exception)
 
 data CommandErrorType
   = PROHIBITED -- command is prohibited
@@ -260,27 +259,28 @@ data CommandErrorType
   | NO_CONN -- connection alias is required with this command
   | SIZE -- message size is not correct (no terminating space)
   | LARGE -- message does not fit SMP block
-  deriving (Eq, Show, Exception)
-
-data SMPAgentError
-  = A_MESSAGE -- possibly should include bytestring that failed to parse
-  | A_PROHIBITED -- possibly should include the prohibited SMP/agent message
-  deriving (Eq, Show, Exception)
+  deriving (Eq, Read, Show, Exception)
 
 data ConnectionErrorType
   = UNKNOWN -- connection alias not in database
   | DUPLICATE -- connection alias already exists
   | SIMPLEX_RCV -- operation requires send queue
   | SIMPLEX_SND -- operation requires receive queue
-  deriving (Eq, Show, Exception)
+  deriving (Eq, Read, Show, Exception)
 
 data BrokerErrorType
   = RESPONSE ErrorType -- invalid server response (failed to parse)
   | QUEUE -- queue ID in response is different from expected
   | UNEXPECTED -- unexpected response
   | NETWORK -- network error
+  | TRANSPORT TransportError -- handshake or other transport error
   | TIMEOUT -- command response timeout
-  deriving (Eq, Show, Exception)
+  deriving (Eq, Read, Show, Exception)
+
+data SMPAgentError
+  = A_MESSAGE -- possibly should include bytestring that failed to parse
+  | A_PROHIBITED -- possibly should include the prohibited SMP/agent message
+  deriving (Eq, Read, Show, Exception)
 
 commandP :: Parser ACmd
 commandP =
@@ -311,9 +311,6 @@ commandP =
       m_sender <- "S=" *> partyMeta A.decimal
       m_body <- A.takeByteString
       return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
-    -- TODO other error types
-    agentError = ACmd SAgent . ERR <$> ("SMP " *> smpErrorType)
-    smpErrorType = "AUTH" $> SMP SMP.AUTH
     replyMode =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)
@@ -324,6 +321,20 @@ commandP =
       "ID " *> (MsgBadId <$> A.decimal)
         <|> "NO_ID " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
         <|> "HASH" $> MsgBadHash
+    agentError = ACmd SAgent . ERR <$> agentErrorType
+    agentErrorType =
+      "SMP " *> (SMP <$> SMP.errorTypeP)
+        <|> "BROKER " *> (BROKER <$> brokerError)
+        <|> parseRead
+    brokerError =
+      "RESPONSE " *> (RESPONSE <$> SMP.errorTypeP)
+        <|> "TRANSPORT " *> (TRANSPORT <$> transportError)
+        <|> parseRead
+    transportError =
+      "BLOCK" $> TEBadBlock
+        <|> "AES_ENCRYPT" $> TEEncrypt
+        <|> "AES_DECRYPT" $> TEDecrypt
+        <|> TEHandshake <$> parseRead
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse commandP $ CMD SYNTAX
@@ -350,8 +361,7 @@ serializeCommand = \case
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
-  -- TODO serialize correctly
-  ERR e -> "ERR " <> bshow e
+  ERR e -> "ERR " <> agentError e
   OK -> "OK"
   where
     replyMode :: ReplyMode -> ByteString
@@ -370,8 +380,23 @@ serializeCommand = \case
             B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
           MsgBadId aMsgId -> "ID " <> bshow aMsgId
           MsgBadHash -> "HASH"
+    agentError :: AgentErrorType -> ByteString
+    agentError = \case
+      SMP e -> "SMP " <> bshow e
+      BROKER e -> "BROKER " <> brokerError e
+      e -> bshow e
+    brokerError :: BrokerErrorType -> ByteString
+    brokerError = \case
+      RESPONSE e -> "RESPONSE " <> bshow e
+      TRANSPORT e -> "TRANSPORT " <> transportError e
+      e -> bshow e
+    transportError :: TransportError -> ByteString
+    transportError = \case
+      TEEncrypt -> "AES_ENCRYPT"
+      TEDecrypt -> "AES_DECRYPT"
+      TEBadBlock -> "BLOCK"
+      TEHandshake e -> bshow e
 
--- TODO - save function as in the server Transmission - re-use?
 serializeMsg :: ByteString -> ByteString
 serializeMsg body = bshow (B.length body) <> "\n" <> body
 

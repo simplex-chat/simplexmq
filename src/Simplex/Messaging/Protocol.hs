@@ -28,7 +28,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
-import Text.Read (readMaybe)
 
 data Party = Broker | Recipient | Sender
   deriving (Show)
@@ -161,11 +160,13 @@ commandP =
       ts <- tsISO8601P <* A.space
       size <- A.decimal <* A.space
       Cmd SBroker . MSG msgId ts <$> A.take size <* A.space
-    serverError = Cmd SBroker . ERR <$> errorType
-    errorType = syntaxError <|> parseRead
-    syntaxError = "SYNTAX " *> (SYNTAX <$> parseRead)
-    parseRead :: Read a => Parser a
-    parseRead = maybe (fail "unknown error") pure . readMaybe . B.unpack =<< A.takeTill (== ' ')
+    serverError = Cmd SBroker . ERR <$> errorTypeP
+
+errorTypeP :: Parser ErrorType
+errorTypeP =
+  "AUTH" $> AUTH
+    <|> "SYNTAX " *> (SYNTAX <$> parseRead)
+    <|> parseRead
 
 -- TODO ignore the end of block, no need to parse it
 parseCommand :: ByteString -> Either ErrorType Cmd
@@ -205,7 +206,7 @@ fromServer = \case
   _ -> Left PROHIBITED
 
 tGetParse :: THandle -> IO (Either TransportError RawTransmission)
-tGetParse th = (>>= parse transmissionP TEBadTransmission) <$> tGetEncrypted th
+tGetParse th = (>>= parse transmissionP TEBadBlock) <$> tGetEncrypted th
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used

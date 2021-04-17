@@ -9,6 +9,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
+import Text.Read (readMaybe)
 
 base64P :: Parser ByteString
 base64P = either fail pure . decode =<< base64StringP
@@ -27,3 +28,6 @@ parse parser err = first (const err) . parseAll parser
 
 parseAll :: Parser a -> (ByteString -> Either String a)
 parseAll parser = A.parseOnly (parser <* A.endOfInput)
+
+parseRead :: Read a => Parser a
+parseRead = maybe (fail "unknown error") pure . readMaybe . B.unpack =<< A.takeTill (== ' ')
