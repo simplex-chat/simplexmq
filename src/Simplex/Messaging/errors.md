@@ -48,6 +48,9 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 - AGENT e - errors of other agents
   - A_MESSAGE - SMP message failed to parse
   - A_PROHIBITED - SMP message is prohibited with the current queue status
+  - A_ENCRYPTION - cannot RSA-decrypt
+  - A_DECRYPTED - bad decrypted header
+  - AES_ENCRYPTION - cannot AES-decrypt
 - INTERNAL ByteString - agent implementation or dependency error
 
 ### SMPClientError (Client.hs)
@@ -72,10 +75,11 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 
 ### CryptoError (Crypto.hs)
 
-- CryptoRSAError R.Error - RSA encryption/decryption error
-- CryptoCipherError CE.CryptoError - AES initialization error
+- RSAEncryptError R.Error - RSA encryption error
+- RSADecryptError R.Error - RSA decryption error
+- AESCipherError CE.CryptoError - AES initialization error
 - CryptoIVError - IV generation error
-- CryptoDecryptError - AES decryption error
+- AESDecryptError - AES decryption error
 - CryptoLargeMsgError - message does not fit in SMP block
 - CryptoHeaderError String - failure parsing RSA-encrypted message header
 

@@ -146,7 +146,7 @@ smpClientError = \case
   SMPResponseTimeout -> BROKER TIMEOUT
   SMPNetworkError -> BROKER NETWORK
   SMPTransportError e -> BROKER $ TRANSPORT e
-  e@(SMPCryptoError _) -> INTERNAL $ bshow e
+  e@(SMPSignatureError _) -> INTERNAL $ bshow e
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
@@ -283,4 +283,7 @@ mkAgentMessage encKey senderTs agentMessage = do
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE
+  C.RSADecryptError _ -> AGENT A_ENCRYPTION
+  C.CryptoHeaderError _ -> AGENT A_DECRYPTED
+  C.AESDecryptError -> AGENT AES_ENCRYPTION
   e -> INTERNAL $ bshow e

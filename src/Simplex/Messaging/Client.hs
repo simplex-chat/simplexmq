@@ -34,7 +34,6 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
-import qualified Crypto.PubKey.RSA.Types as RSA
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -184,7 +183,7 @@ data SMPClientError
   | SMPResponseTimeout
   | SMPNetworkError
   | SMPTransportError TransportError
-  | SMPCryptoError RSA.Error
+  | SMPSignatureError C.CryptoError
   deriving (Eq, Show, Exception)
 
 createSMPQueue ::
@@ -254,7 +253,7 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId
     signTransmission t = case pKey of
       Nothing -> return ("", t)
       Just pk -> do
-        sig <- liftEitherError SMPCryptoError $ C.sign pk t
+        sig <- liftEitherError SMPSignatureError $ C.sign pk t
         return (sig, t)
 
     -- two separate "atomically" needed to avoid blocking

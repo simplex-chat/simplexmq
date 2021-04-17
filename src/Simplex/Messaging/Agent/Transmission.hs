@@ -280,6 +280,9 @@ data BrokerErrorType
 data SMPAgentError
   = A_MESSAGE -- possibly should include bytestring that failed to parse
   | A_PROHIBITED -- possibly should include the prohibited SMP/agent message
+  | A_ENCRYPTION -- cannot RSA-decrypt
+  | A_DECRYPTED -- bad decrypted header
+  | AES_ENCRYPTION -- cannot AES-decrypt
   deriving (Eq, Read, Show, Exception)
 
 commandP :: Parser ACmd

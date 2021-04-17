@@ -68,7 +68,7 @@ import Data.ASN1.Encoding
 import Data.ASN1.Types
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -85,7 +85,7 @@ import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Transport.Internal (decodeWord32, encodeWord32)
 import Simplex.Messaging.Parsers (base64P, base64StringP, parseAll)
-import Simplex.Messaging.Util (liftEitherError, (<$$>))
+import Simplex.Messaging.Util (liftEitherError)
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
@@ -148,10 +148,12 @@ instance IsString Signature where
 newtype Verified = Verified ByteString deriving (Show)
 
 data CryptoError
-  = CryptoRSAError R.Error
-  | CryptoCipherError CE.CryptoError
+  = RSAEncryptError R.Error
+  | RSADecryptError R.Error
+  | RSASignError R.Error
+  | AESCipherError CE.CryptoError
   | CryptoIVError
-  | CryptoDecryptError
+  | AESDecryptError
   | CryptoLargeMsgError
   | CryptoHeaderError String
   deriving (Eq, Show, Exception)
@@ -276,7 +278,7 @@ encryptAES aesKey ivBytes paddedSize msg = do
 decryptAES :: Key -> IV -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
 decryptAES aesKey ivBytes msg authTag = do
   aead <- initAEAD @AES256 aesKey ivBytes
-  maybeError CryptoDecryptError $ AES.aeadSimpleDecrypt aead B.empty msg authTag
+  maybeError AESDecryptError $ AES.aeadSimpleDecrypt aead B.empty msg authTag
 
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (Key aesKey) (IV ivBytes) = do
@@ -307,26 +309,26 @@ bsToAuthTag :: ByteString -> AES.AuthTag
 bsToAuthTag = AES.AuthTag . BA.pack . map c2w . B.unpack
 
 cryptoFailable :: CE.CryptoFailable a -> ExceptT CryptoError IO a
-cryptoFailable = liftEither . first CryptoCipherError . CE.eitherCryptoError
+cryptoFailable = liftEither . first AESCipherError . CE.eitherCryptoError
 
 oaepParams :: OAEP.OAEPParams SHA256 ByteString ByteString
 oaepParams = OAEP.defaultOAEPParams SHA256
 
 encryptOAEP :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
 encryptOAEP (PublicKey k) aesKey =
-  liftEitherError CryptoRSAError $
+  liftEitherError RSAEncryptError $
     OAEP.encrypt oaepParams k aesKey
 
 decryptOAEP :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
 decryptOAEP pk encKey =
-  liftEitherError CryptoRSAError $
+  liftEitherError RSADecryptError $
     OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
 
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
 
-sign :: PrivateKey k => k -> ByteString -> IO (Either R.Error Signature)
-sign pk msg = Signature <$$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
+sign :: PrivateKey k => k -> ByteString -> IO (Either CryptoError Signature)
+sign pk msg = bimap RSASignError Signature <$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
 
 verify :: PublicKey -> Signature -> ByteString -> Bool
 verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig
