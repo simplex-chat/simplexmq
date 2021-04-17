@@ -246,15 +246,22 @@ data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | Msg
   deriving (Eq, Show)
 
 data AgentErrorType
-  = UNKNOWN
-  | PROHIBITED
+  = PROHIBITED
   | SYNTAX Int
   | BROKER Natural
   | SMP ErrorType
   | CRYPTO C.CryptoError
   | SIZE
-  | STORE
   | INTERNAL
+  | CONN ConnectionErrorType
+  | AGENT ByteString
+  deriving (Eq, Show, Exception)
+
+data ConnectionErrorType
+  = UNKNOWN -- connection alias not in database
+  | DUPLICATE -- connection alias already exists
+  | SIMPLEX_RCV -- operation requires send queue
+  | SIMPLEX_SND -- operation requires receive queue
   deriving (Eq, Show, Exception)
 
 data AckStatus = AckOk | AckError AckErrorType
@@ -358,6 +365,7 @@ serializeCommand = \case
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
+  -- TODO serialize correctly
   ERR e -> "ERR " <> bshow e
   OK -> "OK"
   where

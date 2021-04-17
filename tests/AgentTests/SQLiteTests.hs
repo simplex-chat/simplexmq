@@ -175,7 +175,7 @@ testDeleteRcvConn = do
       `returnsResult` ()
     -- TODO check queues are deleted as well
     getConn store "conn1"
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
 
 testDeleteSndConn :: SpecWith SQLiteStore
 testDeleteSndConn = do
@@ -188,7 +188,7 @@ testDeleteSndConn = do
       `returnsResult` ()
     -- TODO check queues are deleted as well
     getConn store "conn1"
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
 
 testDeleteDuplexConn :: SpecWith SQLiteStore
 testDeleteDuplexConn = do
@@ -203,7 +203,7 @@ testDeleteDuplexConn = do
       `returnsResult` ()
     -- TODO check queues are deleted as well
     getConn store "conn1"
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
 
 testUpgradeRcvConnToDuplex :: SpecWith SQLiteStore
 testUpgradeRcvConnToDuplex = do
@@ -323,7 +323,7 @@ testCreateRcvMsgNoQueue = do
   it "should throw error on attempt to create a RcvMsg w/t a RcvQueue" $ \store -> do
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
     createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
     createSndConn store sndQueue1
       `returnsResult` ()
     createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
@@ -344,7 +344,7 @@ testCreateSndMsgNoQueue = do
   it "should throw error on attempt to create a SndMsg w/t a SndQueue" $ \store -> do
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
     createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
     createRcvConn store rcvQueue1
       `returnsResult` ()
     createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts

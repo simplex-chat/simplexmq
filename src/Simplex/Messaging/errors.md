@@ -50,8 +50,15 @@ Some of these errors are unused / unsupported and not parsed - see line 322 in A
 - SMP ErrorType - forwarding SMP errors (SMPServerError) to the agent client
 - CRYPTO C.CryptoError - report RSA encryption/decryption error
 - SIZE - reports incorrect message size for agent messages (when parsing SEND and MSG)
-- STORE - forwards store errors, including duplicate connection alias
 - INTERNAL - used to report internal/logical errors to agent clients
+
+New errors
+- CONN - connection errors
+  - UNKNOWN -- connection alias not in database
+  - DUPLICATE -- connection alias already exists
+  - SIMPLEX_RCV -- operation requires send queue
+  - SIMPLEX_SND -- operation requires receive queue
+- AGENT string - agent implementation or dependency error
 
 ### SMPClientError (Client.hs)
 
@@ -61,16 +68,14 @@ Some of these errors are unused / unsupported and not parsed - see line 322 in A
 - SMPUnexpectedResponse - different response from what is expected to a given command, e.g. server should respond `IDS` or `ERR` to `NEW` command, other responses would result in this error. Probably should be forwarded to the client as SMP error.
 - SMPResponseTimeout - not used in Client.hs (probably should be used in `sendRecv`), only used in Agent/Client.hs to signal failed retries of hello message.
 - SMPCryptoError RSA.Error - error when cryptographically "signing" the command returned by RSA primitives.
-- SMPClientError (removed in this PR) - this was probably intended to mean any other client error, but it is not used anywhere.
 
 ### StoreError (Agent/Store.hs)
 
 - SEInternal - signals exceptions in store actions (without returning the actual exception). Maybe should be `SEInternal e`
-- SENotFound - seems only used in `getRcvQueue`. 
-- SEBadConn -> SEConnNoQueues - returned by `getConn` (should be SENotFound?), `updateRcvConnWithSndQueue` (SENotFound?), `updateSndConnWithRcvQueue` (SENotFound?),  `insertRcvMsg` (SENotFound?), `insertSndMsg` (SENotFound?). Not sure what was the point of this error, this seem to be use in cases where SENotFound would be better, unless I am missing something.
+- SEConnNotFound - connection alias not found (or both queues absent).
+- SEConnDuplicate - connection alias already used. 
 - SEBadConnType ConnType - wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa. `updateRcvConnWithSndQueue` and `updateSndConnWithRcvQueue` do not allow duplex connections - they would also return this error.
 - SEBadQueueStatus - the intention was to pass current expected queue status in methods, as we always know what it should be at any stage of the protocol, and in case it does not match use this error. **Currently not used**.
-- SEBadQueueDirection - not sure what the intention was, but I think it is ensured on schema and types level that the wrong queue cannot be passed. **Currently not used**.
 - SENotImplemented - only used in `getMsg` that is not implemented/used. To remove?
 
 ### CryptoError (Crypto.hs)

@@ -114,7 +114,10 @@ withStore ::
 withStore action = do
   runExceptT (action `E.catch` handleInternal) >>= \case
     Right c -> return c
-    Left _ -> throwError STORE
+    Left e -> throwError $ case e of
+      SEConnNotFound -> CONN UNKNOWN
+      SEConnDuplicate -> CONN DUPLICATE
+      _ -> AGENT $ bshow e
   where
     handleInternal :: (MonadError StoreError m') => SomeException -> m' a
     handleInternal _ = throwError SEInternal
@@ -156,9 +159,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st cAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
         SomeConn _ (RcvConnection _ rq) -> subscribe rq
-        -- TODO possibly there should be a separate error type trying
-        -- TODO to send the message to the connection without RcvQueue
-        _ -> throwError PROHIBITED
+        _ -> throwError $ CONN SIMPLEX_SND
       where
         subscribe rq = subscribeQueue c rq cAlias >> respond' cAlias OK
 
@@ -171,9 +172,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st connAlias) >>= \case
         SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
         SomeConn _ (SndConnection _ sq) -> sendMsg sq
-        -- TODO possibly there should be a separate error type trying
-        -- TODO to send the message to the connection without SndQueue
-        _ -> throwError PROHIBITED -- NOT_READY ?
+        _ -> throwError $ CONN SIMPLEX_RCV
       where
         sendMsg sq = do
           senderTs <- liftIO getCurrentTime
@@ -186,7 +185,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> suspend rq
         SomeConn _ (RcvConnection _ rq) -> suspend rq
-        _ -> throwError PROHIBITED
+        _ -> throwError $ CONN SIMPLEX_SND
       where
         suspend rq = suspendQueue c rq >> respond OK
 
@@ -195,13 +194,13 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> delete rq
         SomeConn _ (RcvConnection _ rq) -> delete rq
-        _ -> throwError PROHIBITED
+        _ -> delConn
       where
+        delConn = withStore (deleteConn st connAlias) >> respond OK
         delete rq = do
           deleteQueue c rq
           removeSubscription c connAlias
-          withStore (deleteConn st connAlias)
-          respond OK
+          delConn
 
     sendReplyQInfo :: SMPServer -> SndQueue -> m ()
     sendReplyQInfo srv sq = do
