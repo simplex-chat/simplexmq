@@ -47,6 +47,7 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
   - QUEUE - queue in response is different from the queue in sent command
   - UNEXPECTED - unexpected response
   - NETWORK - network TCP connection error
+  - TRANSPORT - handshake or other transport error
   - TIMEOUT - command response timeout
 - AGENT e - errors of other agents
   - A_MESSAGE - SMP message failed to parse

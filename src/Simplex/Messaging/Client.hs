@@ -105,7 +105,7 @@ getSMPClient
     tcpTimeout `timeout` atomically (takeTMVar err) >>= \case
       Just Nothing -> pure $ Right c {action}
       Just (Just e) -> pure $ Left e
-      Nothing -> pure $ Left SMPResponseTimeout
+      Nothing -> pure $ Left SMPNetworkError
     where
       mkSMPClient :: STM SMPClient
       mkSMPClient = do

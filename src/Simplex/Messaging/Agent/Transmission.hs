@@ -114,13 +114,13 @@ data SMPMessage
         previousMsgHash :: ByteString,
         agentMessage :: AMessage
       }
-  deriving (Eq, Show, Exception)
+  deriving (Show)
 
 data AMessage where
   HELLO :: VerificationKey -> AckMode -> AMessage
   REPLY :: SMPQueueInfo -> AMessage
   A_MSG :: MsgBody -> AMessage
-  deriving (Eq, Show, Exception)
+  deriving (Show)
 
 parseSMPMessage :: ByteString -> Either AgentErrorType SMPMessage
 parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
@@ -277,6 +277,7 @@ data BrokerErrorType
   | QUEUE
   | UNEXPECTED
   | NETWORK
+  | TRANSPORT
   | TIMEOUT
   deriving (Eq, Show, Exception)
 
@@ -285,15 +286,6 @@ data AckStatus = AckOk | AckError AckErrorType
 
 data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
   deriving (Show)
-
--- smpErrTCPConnection :: Natural
--- smpErrTCPConnection = 1
-
--- smpErrCorrelationId :: Natural
--- smpErrCorrelationId = 2
-
--- smpUnexpectedResponse :: Natural
--- smpUnexpectedResponse = 3
 
 commandP :: Parser ACmd
 commandP =
