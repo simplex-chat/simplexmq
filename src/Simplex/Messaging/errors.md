@@ -62,7 +62,7 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 - SMPResponseTimeout - used for TCP connection and command response timeouts.
 - SMPNetworkError - fails to establish TCP connection
 - SMPTransportError - fails connection handshake or some other transport error
-- SMPCryptoError RSA.Error - error when cryptographically "signing" the command returned by RSA primitives.
+- SMPSignatureError C.CryptoError - error when cryptographically "signing" the command.
 
 ### StoreError (Agent/Store.hs)
 
@@ -77,6 +77,7 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 
 - RSAEncryptError R.Error - RSA encryption error
 - RSADecryptError R.Error - RSA decryption error
+- RSASignError R.Error - RSA signature error
 - AESCipherError CE.CryptoError - AES initialization error
 - CryptoIVError - IV generation error
 - AESDecryptError - AES decryption error
@@ -85,11 +86,18 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 
 ### TransportError (Transport.hs)
 
-  - TECrypto C.CryptoError
-  - TEBadBlock - error parsing transmission
-  - TEBadVersion - error parsing protocol version (handshake)
-  - TEBadRSAKey - error parsing RSA key (handshake)
-  - TEBadAESKeys - error parsing AES keys (handshake)
-  - TEWrongKeyHash - not matching RSA key hash (handshake)
-  - TEMajorVersion - lower agent version than protocol version (handshake)
-  - TETerminated - transport terminated (handshake)
+  - TEBadBlock - error parsing block
+  - TEEncrypt - block encryption error
+  - TEDecrypt - block decryption error
+  - TEHandshake HandshakeError
+
+### HandshakeError (Transport.hs)
+
+  - ENCRYPT - encryption error
+  - DECRYPT - decryption error
+  - VERSION - error parsing protocol version
+  - RSA_KEY - error parsing RSA key
+  - AES_KEYS - error parsing AES keys
+  - BAD_HASH - not matching RSA key hash
+  - MAJOR_VERSION - lower agent version than protocol version
+  - TERMINATED - transport terminated
