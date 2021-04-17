@@ -165,7 +165,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             addQueueRetry n = do
               ids <- getIds
               atomically (addQueue st rKey ids) >>= \case
-                Left DUPLICATE -> addQueueRetry $ n - 1
+                Left DUPLICATE_ -> addQueueRetry $ n - 1
                 Left e -> return $ Left e
                 Right _ -> return $ Right ids
 

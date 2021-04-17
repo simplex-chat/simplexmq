@@ -14,19 +14,17 @@
 ### ErrorType (Protocol.hs)
 
 - PROHIBITED - command is valid but not allowed in the current context:
-  1. server response sent from client
-  2. acknowledging the message without message - maybe should be **another error**?
-- UNKNOWN - it is removed. previously we differentiated between UNKNOWN commands and syntax errors, but not any more. It is more complex to do with the way we parse, but do we want it?
-- SYNTAX Int - command is unknown or has invalid syntax. The proposal is to replace numbers with slugs (via a separate type `SyntaxError` with a list of constructors)
-  - 1 (errBadTransmission) - "TRANSMISSION"
-  - 2 (errBadSMPCommand) - "COMMAND"
-  - 3 (errNoCredentials) - "NO_CREDENTIALS"
-  - 4 (errHasCredentials) - "HAS_CREDENTIALS"
-  - 5 (errNoQueueId) - "QUEUE_ID"
-  - 6 (errMessageBody) - "SIZE" - this is actually not used in SMP protocol any more, as incorrect message size would fail with `SYNTAX 2` error.
-- AUTH - command is not authorised.
+  1. server response sent from client or vice versa
+  2. acknowledging the message without message
+- SYNTAX error - command is unknown or has invalid syntax, where `error` can be:
+  - TRANSMISSION - incorrect transmission format or encoding
+  - COMMAND - error parsing command
+  - NO_AUTH - transmission has no required credentials (signature or queue ID)
+  - HAS_AUTH - transmission has not allowed credentials
+  - NO_QUEUE - transmission has not queue ID
+- AUTH - command is not authorised (queue does not exist or signature verification failed).
 - INTERNAL - internal server error.
-- DUPLICATE - it is used to signal that the queue ID is already used. This is NOT used in the protocol, instead INTERNAL is sent to the client. This is effectively a hack, we should have used a different type to signal server store errors as we did with Agent store. At least it should be renamed to _DUPLICATE.
+- DUPLICATE_ - it is used internally to signal that the queue ID is already used. This is NOT used in the protocol, instead INTERNAL is sent to the client. It has to be removed.
 
 ### AgentErrorType (Agent/Transmission.hs)
 
@@ -69,7 +67,7 @@ Some of these errors are unused / unsupported and not parsed - see line 322 in A
 
 - SEInternal - signals exceptions in store actions (without returning the actual exception). Maybe should be `SEInternal e`
 - SENotFound - seems only used in `getRcvQueue`. 
-- SEBadConn - returned by `getConn` (should be SENotFound?), `updateRcvConnWithSndQueue` (SENotFound?), `updateSndConnWithRcvQueue` (SENotFound?),  `insertRcvMsg` (SENotFound?), `insertSndMsg` (SENotFound?). Not sure what was the point of this error, this seem to be use in cases where SENotFound would be better, unless I am missing something.
+- SEBadConn -> SEConnNoQueues - returned by `getConn` (should be SENotFound?), `updateRcvConnWithSndQueue` (SENotFound?), `updateSndConnWithRcvQueue` (SENotFound?),  `insertRcvMsg` (SENotFound?), `insertSndMsg` (SENotFound?). Not sure what was the point of this error, this seem to be use in cases where SENotFound would be better, unless I am missing something.
 - SEBadConnType ConnType - wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa. `updateRcvConnWithSndQueue` and `updateSndConnWithRcvQueue` do not allow duplex connections - they would also return this error.
 - SEBadQueueStatus - the intention was to pass current expected queue status in methods, as we always know what it should be at any stage of the protocol, and in case it does not match use this error. **Currently not used**.
 - SEBadQueueDirection - not sure what the intention was, but I think it is ensured on schema and types level that the wrong queue cannot be passed. **Currently not used**.
