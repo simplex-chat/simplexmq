@@ -153,21 +153,26 @@ data HandshakeKeys = HandshakeKeys
   }
 
 data TransportError
-  = TransportCryptoError C.CryptoError
-  | TransportParsingError
-  | TransportHandshakeError String
+  = TECrypto C.CryptoError
+  | TEBadTransmission
+  | TEBadVersion
+  | TEBadRSAKey
+  | TEBadAESKeys
+  | TEWrongKeyHash
+  | TEMajorVersion
+  | TETerminated
   deriving (Eq, Show, Exception)
 
 tPutEncrypted :: THandle -> ByteString -> IO (Either TransportError ())
 tPutEncrypted THandle {handle = h, sndKey, blockSize} block =
   encryptBlock sndKey (blockSize - C.authTagSize) block >>= \case
-    Left e -> return . Left $ TransportCryptoError e
+    Left e -> return . Left $ TECrypto e
     Right (authTag, msg) -> Right <$> B.hPut h (C.authTagToBS authTag <> msg)
 
 tGetEncrypted :: THandle -> IO (Either TransportError ByteString)
 tGetEncrypted THandle {handle = h, rcvKey, blockSize} =
   B.hGet h blockSize >>= decryptBlock rcvKey >>= \case
-    Left e -> pure . Left $ TransportCryptoError e
+    Left e -> pure . Left $ TECrypto e
     Right "" -> ioe_EOF
     Right msg -> pure $ Right msg
 
@@ -207,11 +212,11 @@ serverHandshake h (k, pk) = do
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString
     receiveEncryptedKeys_4 =
       liftIO (B.hGet h $ C.publicKeySize k) >>= \case
-        "" -> throwE $ TransportHandshakeError "EOF"
+        "" -> throwE TETerminated
         ks -> pure ks
     decryptParseKeys_5 :: ByteString -> ExceptT TransportError IO HandshakeKeys
     decryptParseKeys_5 encKeys =
-      liftError TransportCryptoError (C.decryptOAEP pk encKeys)
+      liftError TECrypto (C.decryptOAEP pk encKeys)
         >>= liftEither . parseHandshakeKeys
     sendWelcome_6 :: THandle -> ExceptT TransportError IO ()
     sendWelcome_6 th = ExceptT . tPutEncrypted th $ serializeSMPVersion currentSMPVersion <> " "
@@ -233,11 +238,11 @@ clientHandshake h keyHash = do
       maybe (pure ()) (validateKeyHash_2 s) keyHash
       liftEither $ parseKey s
     parseKey :: ByteString -> Either TransportError C.PublicKey
-    parseKey = first TransportHandshakeError . parseAll C.pubKeyP
+    parseKey = first (const TEBadRSAKey) . parseAll C.pubKeyP
     validateKeyHash_2 :: ByteString -> C.KeyHash -> ExceptT TransportError IO ()
     validateKeyHash_2 k kHash
       | C.getKeyHash k == kHash = pure ()
-      | otherwise = throwE $ TransportHandshakeError "wrong key hash"
+      | otherwise = throwE TEWrongKeyHash
     generateKeys_3 :: IO HandshakeKeys
     generateKeys_3 = HandshakeKeys <$> generateKey <*> generateKey
     generateKey :: IO SessionKey
@@ -247,16 +252,15 @@ clientHandshake h keyHash = do
       pure SessionKey {aesKey, baseIV, counter = undefined}
     sendEncryptedKeys_4 :: C.PublicKey -> HandshakeKeys -> ExceptT TransportError IO ()
     sendEncryptedKeys_4 k keys =
-      liftError TransportCryptoError (C.encryptOAEP k $ serializeHandshakeKeys keys)
+      liftError TECrypto (C.encryptOAEP k $ serializeHandshakeKeys keys)
         >>= liftIO . B.hPut h
     getWelcome_6 :: THandle -> ExceptT TransportError IO SMPVersion
     getWelcome_6 th = ExceptT $ (>>= parseSMPVersion) <$> tGetEncrypted th
     parseSMPVersion :: ByteString -> Either TransportError SMPVersion
-    parseSMPVersion = first TransportHandshakeError . A.parseOnly (smpVersionP <* A.space)
+    parseSMPVersion = first (const TEBadVersion) . A.parseOnly (smpVersionP <* A.space)
     checkVersion :: SMPVersion -> ExceptT TransportError IO ()
     checkVersion smpVersion =
-      when (major smpVersion > major currentSMPVersion) . throwE $
-        TransportHandshakeError "SMP server version"
+      when (major smpVersion > major currentSMPVersion) . throwE $ TEMajorVersion
 
 serializeHandshakeKeys :: HandshakeKeys -> ByteString
 serializeHandshakeKeys HandshakeKeys {sndKey, rcvKey} =
@@ -275,7 +279,7 @@ handshakeKeysP = HandshakeKeys <$> keyP <*> keyP
       pure SessionKey {aesKey, baseIV, counter = undefined}
 
 parseHandshakeKeys :: ByteString -> Either TransportError HandshakeKeys
-parseHandshakeKeys = parse handshakeKeysP $ TransportHandshakeError "parsing keys"
+parseHandshakeKeys = parse handshakeKeysP TEBadAESKeys
 
 transportHandle :: Handle -> SessionKey -> SessionKey -> IO THandle
 transportHandle h sk rk = do

@@ -243,25 +243,21 @@ data MsgStatus = MsgOk | MsgError MsgErrorType
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
   deriving (Eq, Show)
 
+-- | error type used in errors sent to agent clients
 data AgentErrorType
-  = CMD CommandErrorType
-  | CONN ConnectionErrorType
-  | SMP ErrorType
-  | BROKER BrokerErrorType
-  | AGENT SMPAgentError
-  | INTERNAL ByteString
+  = CMD CommandErrorType -- command errors
+  | CONN ConnectionErrorType -- connection state errors
+  | SMP ErrorType -- SMP protocol errors forwarded to agent clients
+  | BROKER BrokerErrorType -- SMP server errors
+  | TRANSPORT TransportError -- handshake or other transport error
+  | AGENT SMPAgentError -- errors of other agents
+  | INTERNAL ByteString -- agent implementation errors
   deriving (Eq, Show, Exception)
 
-data AckStatus = AckOk | AckError AckErrorType
-  deriving (Show)
-
-data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
-  deriving (Show)
-
 data CommandErrorType
-  = PROHIBITED
-  | SYNTAX
-  | NO_CONN -- connection is required in the transmission
+  = PROHIBITED -- command is prohibited
+  | SYNTAX -- command syntax is invalid
+  | NO_CONN -- connection alias is required with this command
   | SIZE -- message size is not correct (no terminating space)
   | LARGE -- message does not fit SMP block
   deriving (Eq, Show, Exception)
@@ -279,12 +275,11 @@ data ConnectionErrorType
   deriving (Eq, Show, Exception)
 
 data BrokerErrorType
-  = RESPONSE ErrorType
-  | QUEUE
-  | UNEXPECTED
-  | NETWORK
-  | TRANSPORT
-  | TIMEOUT
+  = RESPONSE ErrorType -- invalid server response (failed to parse)
+  | QUEUE -- queue ID in response is different from expected
+  | UNEXPECTED -- unexpected response
+  | NETWORK -- network error
+  | TIMEOUT -- command response timeout
   deriving (Eq, Show, Exception)
 
 commandP :: Parser ACmd

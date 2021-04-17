@@ -145,7 +145,7 @@ smpClientError = \case
   SMPUnexpectedResponse -> BROKER UNEXPECTED
   SMPResponseTimeout -> BROKER TIMEOUT
   SMPNetworkError -> BROKER NETWORK
-  SMPTransportError -> BROKER TRANSPORT
+  SMPTransportError e -> TRANSPORT e
   e@(SMPCryptoError _) -> INTERNAL $ bshow e
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)

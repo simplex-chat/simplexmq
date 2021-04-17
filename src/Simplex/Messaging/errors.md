@@ -4,10 +4,6 @@
 
 - using numbers and strings to indicate errors (in protocol and in code) - ErrorType, AgentErrorType, TransportError
 - re-using the same type in multiple contexts (with some constructors not applicable to all contexts) - ErrorType
-- inconsistent error semantics (e.g. SENotFound and SEBadConnection used to indicate missing connection - TBC)
-- unused constructors in error types
-- unhandled constructors in error types
-- store errors are not translated to meaningful errors (e.g. duplicate connection alias)
 
 ## Error types
 
@@ -42,12 +38,12 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
   - SIMPLEX_RCV - operation requires send queue
   - SIMPLEX_SND - operation requires receive queue
 - SMP ErrorType - forwarding SMP errors (SMPServerError) to the agent client
+- TRANSPORT TransportError - handshake or other transport error
 - BROKER e - SMP server errors
   - RESPONSE ErrorType - invalid SMP server response
   - QUEUE - queue in response is different from the queue in sent command
   - UNEXPECTED - unexpected response
   - NETWORK - network TCP connection error
-  - TRANSPORT - handshake or other transport error
   - TIMEOUT - command response timeout
 - AGENT e - errors of other agents
   - A_MESSAGE - SMP message failed to parse
@@ -85,6 +81,11 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 
 ### TransportError (Transport.hs)
 
-- TransportCryptoError C.CryptoError - handshake (RSA) of transport decryption (AES) error
-- TransportParsingError - error parsing transmission
-- TransportHandshakeError String - should be probably enumerable constructor, currently we use strings
+  - TECrypto C.CryptoError
+  - TEBadTransmission - error parsing transmission
+  - TEBadVersion - error parsing protocol version (handshake)
+  - TEBadRSAKey - error parsing RSA key (handshake)
+  - TEBadAESKeys - error parsing AES keys (handshake)
+  - TEWrongKeyHash - not matching RSA key hash (handshake)
+  - TEMajorVersion - lower agent version than protocol version (handshake)
+  - TETerminated - transport terminated (handshake)

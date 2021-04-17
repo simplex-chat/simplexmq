@@ -205,7 +205,7 @@ fromServer = \case
   _ -> Left PROHIBITED
 
 tGetParse :: THandle -> IO (Either TransportError RawTransmission)
-tGetParse th = (>>= parse transmissionP TransportParsingError) <$> tGetEncrypted th
+tGetParse th = (>>= parse transmissionP TEBadTransmission) <$> tGetEncrypted th
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used

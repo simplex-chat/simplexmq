@@ -131,7 +131,7 @@ getSMPClient
       client c err h =
         runExceptT (clientHandshake h keyHash) >>= \case
           Right th -> clientTransport c err th
-          Left _ -> atomically . putTMVar err $ Just SMPTransportError
+          Left e -> atomically . putTMVar err . Just $ SMPTransportError e
 
       clientTransport :: SMPClient -> TMVar (Maybe SMPClientError) -> THandle -> IO ()
       clientTransport c err th = do
@@ -182,7 +182,7 @@ data SMPClientError
   | SMPUnexpectedResponse
   | SMPResponseTimeout
   | SMPNetworkError
-  | SMPTransportError
+  | SMPTransportError TransportError
   | SMPCryptoError RSA.Error
   deriving (Eq, Show, Exception)
 
