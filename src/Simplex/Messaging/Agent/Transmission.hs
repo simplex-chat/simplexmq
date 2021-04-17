@@ -252,6 +252,12 @@ data AgentErrorType
   | INTERNAL ByteString
   deriving (Eq, Show, Exception)
 
+data AckStatus = AckOk | AckError AckErrorType
+  deriving (Show)
+
+data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
+  deriving (Show)
+
 data CommandErrorType
   = PROHIBITED
   | SYNTAX
@@ -280,12 +286,6 @@ data BrokerErrorType
   | TRANSPORT
   | TIMEOUT
   deriving (Eq, Show, Exception)
-
-data AckStatus = AckOk | AckError AckErrorType
-  deriving (Show)
-
-data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
-  deriving (Show)
 
 commandP :: Parser ACmd
 commandP =
