@@ -48,7 +48,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
-import Simplex.Messaging.Util (bshow, liftError)
+import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -93,8 +93,8 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     connectClient :: m SMPClient
     connectClient = do
       cfg <- asks $ smpCfg . config
-      liftIO (getSMPClient srv cfg msgQ clientDisconnected)
-        `E.catch` \(_ :: IOException) -> throwError (BROKER smpErrTCPConnection)
+      liftEitherError smpClientError (getSMPClient srv cfg msgQ clientDisconnected)
+        `E.catch` \(e :: IOException) -> throwError (INTERNAL $ bshow e)
 
     clientDisconnected :: IO ()
     clientDisconnected = do
@@ -125,12 +125,6 @@ withSMP c srv action =
     runAction :: SMPClient -> m a
     runAction smp = liftError smpClientError $ action smp
 
-    smpClientError :: SMPClientError -> AgentErrorType
-    smpClientError = \case
-      SMPServerError e -> SMP e
-      -- TODO handle other errors
-      e -> INTERNAL $ bshow e
-
     logServerError :: AgentErrorType -> m a
     logServerError e = do
       logServer "<--" c srv "" $ bshow e
@@ -142,6 +136,15 @@ withLogSMP c srv qId cmdStr action = do
   res <- withSMP c srv action
   logServer "<--" c srv qId "OK"
   return res
+
+smpClientError :: SMPClientError -> AgentErrorType
+smpClientError = \case
+  SMPServerError e -> SMP e
+  SMPResponseError e -> BROKER $ RESPONSE e
+  SMPQueueIdError -> BROKER QUEUE
+  SMPUnexpectedResponse -> BROKER UNEXPECTED
+  SMPResponseTimeout -> BROKER TIMEOUT
+  e -> INTERNAL $ bshow e
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
@@ -228,11 +231,11 @@ sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
       mkAgentMessage encryptKey senderTs $ HELLO verifyKey ackMode
 
     send :: Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
-    send 0 _ _ = throwE SMPResponseTimeout -- TODO different error
+    send 0 _ _ = throwE $ SMPServerError AUTH
     send retry msg smp =
       sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
         SMPServerError AUTH -> do
-          threadDelay 100000
+          threadDelay 200000
           send (retry - 1) msg smp
         e -> throwE e
 

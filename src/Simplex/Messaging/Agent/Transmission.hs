@@ -27,7 +27,6 @@ import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
 import Network.Socket
-import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
@@ -245,12 +244,11 @@ data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | Msg
   deriving (Eq, Show)
 
 data AgentErrorType
-  = BROKER Natural
-  | PROHIBITED
-  | UNEXPECTED -- -> BROKER?
-  | SMP ErrorType
-  | AGENT SMPAgentError
+  = PROHIBITED
   | SYNTAX
+  | SMP ErrorType
+  | BROKER BrokerErrorType
+  | AGENT SMPAgentError
   | CONN ConnectionErrorType
   | MESSAGE MessageErrorType
   | INTERNAL ByteString
@@ -274,20 +272,28 @@ data MessageErrorType
   | SIZE -- message size is not correct (no terminating space)
   deriving (Eq, Show, Exception)
 
+data BrokerErrorType
+  = RESPONSE ErrorType
+  | QUEUE
+  | UNEXPECTED
+  | NETWORK
+  | TIMEOUT
+  deriving (Eq, Show, Exception)
+
 data AckStatus = AckOk | AckError AckErrorType
   deriving (Show)
 
 data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
   deriving (Show)
 
-smpErrTCPConnection :: Natural
-smpErrTCPConnection = 1
+-- smpErrTCPConnection :: Natural
+-- smpErrTCPConnection = 1
 
-smpErrCorrelationId :: Natural
-smpErrCorrelationId = 2
+-- smpErrCorrelationId :: Natural
+-- smpErrCorrelationId = 2
 
-smpUnexpectedResponse :: Natural
-smpUnexpectedResponse = 3
+-- smpUnexpectedResponse :: Natural
+-- smpUnexpectedResponse = 3
 
 commandP :: Parser ACmd
 commandP =

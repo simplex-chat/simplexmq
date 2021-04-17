@@ -35,14 +35,16 @@ Some of these errors are unused / unsupported and not parsed - see line 322 in A
 - PROHIBITED - server response sent as client command (and vice versa)
 - UNEXPECTED - unexpected broker response (move to BROKER)
 - SYNTAX - command is unknown or has invalid syntax.
-- BROKER Natural
-  - 1 (smpErrTCPConnection) - failed to connect to SMP server
-  - 2 (smpErrCorrelationId) - **not used**. Probably, intended for incorrect correlation ID - currently client ignores responses with incorrect correlation ID, see comment on line 164 in Client.hs
-  - 3 (smpUnexpectedResponse) - **not used**. Probably, was intended for the agent to report unexpected responses (SMPUnexpectedResponse) - see line 131 in Agent/Client.hs
 - SMP ErrorType - forwarding SMP errors (SMPServerError) to the agent client
 - INTERNAL - used to report internal/logical errors to agent clients
 
 New errors
+- BROKER - SMP server errors
+  - RESPONSE ErrorType - invalid SMP server response
+  - QUEUE - queue in response is different from the queue in sent command
+  - UNEXPECTED - unexpected response
+  - NETWORK - network TCP connection error
+  - TIMEOUT - command response timeout
 - AGENT - errors of another agent
   - A_MESSAGE - SMP message failed to parse
   - A_PROHIBITED - SMP message is prohibited with the current queue status
@@ -59,11 +61,13 @@ New errors
 
 ### SMPClientError (Client.hs)
 
-- SMPServerError ErrorType - this is correctly parsed server ERR response. This error is forwarded to the agent client as `SMP err`, other errors are not processed (see line 131 in Agent/Client.hs)
-- SMPResponseError ErrorType - this is invalid server response that failed to parse. We use ErrorType in both, which confuses things a bit.
-- SMPQueueIdError - queue ID in response is different from queue ID in the sent command (commands are correlated using sequential correlation ID). Arguably, given that we have correlation ID, we could say that queue ID is redundant, but there may be cases when having it is convenient (same for agent - we do not do correlation in chat client atm, we simply rely on queue ID).
-- SMPUnexpectedResponse - different response from what is expected to a given command, e.g. server should respond `IDS` or `ERR` to `NEW` command, other responses would result in this error. Probably should be forwarded to the client as SMP error.
-- SMPResponseTimeout - not used in Client.hs (probably should be used in `sendRecv`), only used in Agent/Client.hs to signal failed retries of hello message.
+- SMPServerError ErrorType - this is correctly parsed server ERR response. This error is forwarded to the agent client as `ERR SMP err`
+- SMPResponseError ErrorType - this is invalid server response that failed to parse - forwarded to the client as `ERR BROKER RESPONSE`.
+- SMPQueueIdError - queue ID in response is different from queue ID in the sent command (commands are correlated using sequential correlation ID) - forwarded to the client as `ERR BROKER QUEUE`.
+- SMPUnexpectedResponse - different response from what is expected to a given command, e.g. server should respond `IDS` or `ERR` to `NEW` command, other responses would result in this error - forwarded to the client as `ERR BROKER UNEXPECTED`.
+- SMPResponseTimeout - used for TCP connection and command response timeouts.
+- SMPNetworkError - fails to establish TCP connection
+- SMPTransportError - fails connection handshake or some other transport error
 - SMPCryptoError RSA.Error - error when cryptographically "signing" the command returned by RSA primitives.
 
 ### StoreError (Agent/Store.hs)
@@ -73,7 +77,7 @@ New errors
 - SEConnDuplicate - connection alias already used.
 - SEBadConnType ConnType - wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa. `updateRcvConnWithSndQueue` and `updateSndConnWithRcvQueue` do not allow duplex connections - they would also return this error.
 - SEBadQueueStatus - the intention was to pass current expected queue status in methods, as we always know what it should be at any stage of the protocol, and in case it does not match use this error. **Currently not used**.
-- SENotImplemented - only used in `getMsg` that is not implemented/used. To remove?
+- SENotImplemented - used in `getMsg` that is not implemented/used.
 
 ### CryptoError (Crypto.hs)
 

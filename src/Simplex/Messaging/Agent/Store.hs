@@ -220,12 +220,11 @@ type InternalTs = UTCTime
 
 -- * Store errors
 
--- TODO revise
 data StoreError
   = SEInternal ByteString
   | SEConnNotFound
   | SEConnDuplicate
   | SEBadConnType ConnType
-  | SEBadQueueStatus
+  | SEBadQueueStatus -- not used, planned to check strictly
   | SENotImplemented -- TODO remove
   deriving (Eq, Show, Exception)

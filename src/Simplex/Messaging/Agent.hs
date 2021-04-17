@@ -284,8 +284,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
       notify connAlias END
     _ -> do
       logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
-      -- TODO ERR BROKER?
-      notify connAlias $ ERR UNEXPECTED
+      notify connAlias . ERR $ BROKER UNEXPECTED
   where
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
