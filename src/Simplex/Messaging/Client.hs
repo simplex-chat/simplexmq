@@ -102,10 +102,11 @@ getSMPClient
       async $
         runTCPClient host (fromMaybe defaultPort port) (client c err)
           `finally` atomically (putTMVar err $ Just SMPNetworkError)
-    tcpTimeout `timeout` atomically (takeTMVar err) >>= \case
-      Just Nothing -> pure $ Right c {action}
-      Just (Just e) -> pure $ Left e
-      Nothing -> pure $ Left SMPNetworkError
+    ok <- tcpTimeout `timeout` atomically (takeTMVar err)
+    pure $ case ok of
+      Just Nothing -> Right c {action}
+      Just (Just e) -> Left e
+      Nothing -> Left SMPNetworkError
     where
       mkSMPClient :: STM SMPClient
       mkSMPClient = do
