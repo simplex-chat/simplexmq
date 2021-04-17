@@ -114,13 +114,15 @@ withStore ::
 withStore action = do
   runExceptT (action `E.catch` handleInternal) >>= \case
     Right c -> return c
-    Left e -> throwError $ case e of
-      SEConnNotFound -> CONN UNKNOWN
-      SEConnDuplicate -> CONN DUPLICATE
-      _ -> AGENT $ bshow e
+    Left e -> throwError $ storeError e
   where
     handleInternal :: (MonadError StoreError m') => SomeException -> m' a
     handleInternal e = throwError . SEInternal $ bshow e
+    storeError :: StoreError -> AgentErrorType
+    storeError = \case
+      SEConnNotFound -> CONN UNKNOWN
+      SEConnDuplicate -> CONN DUPLICATE
+      e -> AGENT $ bshow e
 
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
 processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
@@ -294,7 +296,7 @@ connectToSendQueue c st sq senderKey verifyKey = do
   withStore $ setSndQueueStatus st sq Active
 
 decryptMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => DecryptionKey -> ByteString -> m ByteString
-decryptMessage decryptKey msg = liftError CRYPTO $ C.decrypt decryptKey msg
+decryptMessage decryptKey msg = liftError cryptoError $ C.decrypt decryptKey msg
 
 newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SndQueue, SenderPublicKey, VerificationKey)

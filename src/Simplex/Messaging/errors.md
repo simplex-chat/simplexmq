@@ -48,8 +48,6 @@ Some of these errors are unused / unsupported and not parsed - see line 322 in A
   - 2 (smpErrCorrelationId) - **not used**. Probably, intended for incorrect correlation ID - currently client ignores responses with incorrect correlation ID, see comment on line 164 in Client.hs
   - 3 (smpUnexpectedResponse) - **not used**. Probably, was intended for the agent to report unexpected responses (SMPUnexpectedResponse) - see line 131 in Agent/Client.hs
 - SMP ErrorType - forwarding SMP errors (SMPServerError) to the agent client
-- CRYPTO C.CryptoError - report RSA encryption/decryption error
-- SIZE - reports incorrect message size for agent messages (when parsing SEND and MSG)
 - INTERNAL - used to report internal/logical errors to agent clients
 
 New errors
@@ -58,6 +56,9 @@ New errors
   - DUPLICATE -- connection alias already exists
   - SIMPLEX_RCV -- operation requires send queue
   - SIMPLEX_SND -- operation requires receive queue
+- MESSAGE - message errors
+  - SIZE - reports incorrect message size for agent messages (when parsing SEND and MSG)
+  - LARGE - message does not fit in SMP block
 - AGENT string - agent implementation or dependency error
 
 ### SMPClientError (Client.hs)

@@ -37,7 +37,6 @@ import Simplex.Messaging.Protocol
     MsgBody,
     MsgId,
     SenderPublicKey,
-    errMessageBody,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
@@ -250,10 +249,9 @@ data AgentErrorType
   | SYNTAX Int
   | BROKER Natural
   | SMP ErrorType
-  | CRYPTO C.CryptoError
-  | SIZE
   | INTERNAL
   | CONN ConnectionErrorType
+  | MESSAGE MessageErrorType
   | AGENT ByteString
   deriving (Eq, Show, Exception)
 
@@ -262,6 +260,11 @@ data ConnectionErrorType
   | DUPLICATE -- connection alias already exists
   | SIMPLEX_RCV -- operation requires send queue
   | SIMPLEX_SND -- operation requires receive queue
+  deriving (Eq, Show, Exception)
+
+data MessageErrorType
+  = LARGE -- message does not fit SMP block
+  | SIZE -- message size is not correct (no terminating space)
   deriving (Eq, Show, Exception)
 
 data AckStatus = AckOk | AckError AckErrorType
@@ -445,5 +448,5 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
           Just size -> liftIO $ do
             body <- B.hGet h size
             s <- getLn h
-            return $ if B.null s then Right body else Left SIZE
-          Nothing -> return . Left $ SYNTAX errMessageBody
+            return $ if B.null s then Right body else Left $ MESSAGE SIZE
+          Nothing -> return . Left $ MESSAGE LARGE

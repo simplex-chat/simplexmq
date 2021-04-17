@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Client
     deleteQueue,
     logServer,
     removeSubscription,
+    cryptoError,
   )
 where
 
@@ -213,7 +214,7 @@ sendConfirmation c SndQueue {server, sndId, encryptKey} senderKey = do
     mkConfirmation = do
       let msg = serializeSMPMessage $ SMPConfirmation senderKey
       paddedSize <- asks paddedMsgSize
-      liftError CRYPTO $ C.encrypt encryptKey paddedSize msg
+      liftError cryptoError $ C.encrypt encryptKey paddedSize msg
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
 sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
@@ -272,4 +273,9 @@ mkAgentMessage encKey senderTs agentMessage = do
               agentMessage
             }
   paddedSize <- asks paddedMsgSize
-  liftError CRYPTO $ C.encrypt encKey paddedSize msg
+  liftError cryptoError $ C.encrypt encKey paddedSize msg
+
+cryptoError :: C.CryptoError -> AgentErrorType
+cryptoError = \case
+  C.CryptoLargeMsgError -> MESSAGE LARGE
+  e -> AGENT $ bshow e

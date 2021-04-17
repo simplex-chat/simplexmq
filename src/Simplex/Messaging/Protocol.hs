@@ -123,9 +123,6 @@ data SyntaxError
   | NO_QUEUE
   deriving (Eq, Read, Show)
 
-errMessageBody :: Int
-errMessageBody = 6
-
 transmissionP :: Parser RawTransmission
 transmissionP = do
   signature <- segment
