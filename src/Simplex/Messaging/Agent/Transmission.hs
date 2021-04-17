@@ -244,14 +244,20 @@ data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | Msg
   deriving (Eq, Show)
 
 data AgentErrorType
-  = PROHIBITED
-  | SYNTAX
+  = CMD CommandErrorType
+  | CONN ConnectionErrorType
   | SMP ErrorType
   | BROKER BrokerErrorType
   | AGENT SMPAgentError
-  | CONN ConnectionErrorType
-  | MESSAGE MessageErrorType
   | INTERNAL ByteString
+  deriving (Eq, Show, Exception)
+
+data CommandErrorType
+  = PROHIBITED
+  | SYNTAX
+  | NO_CONN -- connection is required in the transmission
+  | SIZE -- message size is not correct (no terminating space)
+  | LARGE -- message does not fit SMP block
   deriving (Eq, Show, Exception)
 
 data SMPAgentError
@@ -260,16 +266,10 @@ data SMPAgentError
   deriving (Eq, Show, Exception)
 
 data ConnectionErrorType
-  = REQUIRED -- connection is required in the transmission
-  | UNKNOWN -- connection alias not in database
+  = UNKNOWN -- connection alias not in database
   | DUPLICATE -- connection alias already exists
   | SIMPLEX_RCV -- operation requires send queue
   | SIMPLEX_SND -- operation requires receive queue
-  deriving (Eq, Show, Exception)
-
-data MessageErrorType
-  = LARGE -- message does not fit SMP block
-  | SIZE -- message size is not correct (no terminating space)
   deriving (Eq, Show, Exception)
 
 data BrokerErrorType
@@ -339,7 +339,7 @@ commandP =
         <|> "HASH" $> MsgBadHash
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse commandP SYNTAX
+parseCommand = parse commandP $ CMD SYNTAX
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
@@ -414,7 +414,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     fromParty :: ACmd -> Either AgentErrorType (ACommand p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
       Just Refl -> Right cmd
-      _ -> Left PROHIBITED
+      _ -> Left $ CMD PROHIBITED
 
     tConnAlias :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnAlias (_, connAlias, _) cmd = case cmd of
@@ -425,7 +425,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       ERR _ -> Right cmd
       -- other responses must have connAlias
       _
-        | B.null connAlias -> Left $ CONN REQUIRED
+        | B.null connAlias -> Left $ CMD NO_CONN
         | otherwise -> Right cmd
 
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
@@ -443,5 +443,5 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
           Just size -> liftIO $ do
             body <- B.hGet h size
             s <- getLn h
-            return $ if B.null s then Right body else Left $ MESSAGE SIZE
-          Nothing -> return . Left $ MESSAGE LARGE
+            return $ if B.null s then Right body else Left $ CMD SIZE
+          Nothing -> return . Left $ CMD SYNTAX

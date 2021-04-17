@@ -280,5 +280,5 @@ mkAgentMessage encKey senderTs agentMessage = do
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
-  C.CryptoLargeMsgError -> MESSAGE LARGE
+  C.CryptoLargeMsgError -> CMD LARGE
   e -> INTERNAL $ bshow e

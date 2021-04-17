@@ -28,35 +28,29 @@
 
 ### AgentErrorType (Agent/Transmission.hs)
 
-Side note - why not rename it to Protocol.hs?
+Some of these errors are not correctly serialized/parsed - see line 322 in Agent/Transmission.hs
 
-Some of these errors are unused / unsupported and not parsed - see line 322 in Agent/Transmission.hs
-
-- PROHIBITED - server response sent as client command (and vice versa)
-- UNEXPECTED - unexpected broker response (move to BROKER)
-- SYNTAX - command is unknown or has invalid syntax.
+- CMD e - command or response error
+  - PROHIBITED - server response sent as client command (and vice versa)
+  - SYNTAX - command is unknown or has invalid syntax.
+  - NO_CONN - connection is required in the command (and absent)
+  - SIZE - incorrect message size of messages (when parsing SEND and MSG)
+  - LARGE -- message does not fit SMP block
+- CONN e - connection errors
+  - UNKNOWN - connection alias not in database
+  - DUPLICATE - connection alias already exists
+  - SIMPLEX_RCV - operation requires send queue
+  - SIMPLEX_SND - operation requires receive queue
 - SMP ErrorType - forwarding SMP errors (SMPServerError) to the agent client
-- INTERNAL - used to report internal/logical errors to agent clients
-
-New errors
-- BROKER - SMP server errors
+- BROKER e - SMP server errors
   - RESPONSE ErrorType - invalid SMP server response
   - QUEUE - queue in response is different from the queue in sent command
   - UNEXPECTED - unexpected response
   - NETWORK - network TCP connection error
   - TIMEOUT - command response timeout
-- AGENT - errors of another agent
+- AGENT e - errors of other agents
   - A_MESSAGE - SMP message failed to parse
   - A_PROHIBITED - SMP message is prohibited with the current queue status
-- CONN - connection errors
-  - REQUIRED - connection is required in the command (and absent)
-  - UNKNOWN - connection alias not in database
-  - DUPLICATE - connection alias already exists
-  - SIMPLEX_RCV - operation requires send queue
-  - SIMPLEX_SND - operation requires receive queue
-- MESSAGE - message errors
-  - SIZE - reports incorrect message size for agent messages (when parsing SEND and MSG)
-  - LARGE - message does not fit in SMP block
 - INTERNAL ByteString - agent implementation or dependency error
 
 ### SMPClientError (Client.hs)
