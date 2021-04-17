@@ -66,14 +66,14 @@ storeTests = withStore do
       describe "setRcvQueueStatus" testSetRcvQueueStatus
       describe "setSndQueueStatus" testSetSndQueueStatus
       describe "DuplexConnection" testSetQueueStatusDuplex
-      xdescribe "RcvQueue doesn't exist" testSetRcvQueueStatusNoQueue
-      xdescribe "SndQueue doesn't exist" testSetSndQueueStatusNoQueue
+      xdescribe "RcvQueue does not exist" testSetRcvQueueStatusNoQueue
+      xdescribe "SndQueue does not exist" testSetSndQueueStatusNoQueue
     describe "createRcvMsg" do
       describe "RcvQueue exists" testCreateRcvMsg
-      describe "RcvQueue doesn't exist" testCreateRcvMsgNoQueue
+      describe "RcvQueue does not exist" testCreateRcvMsgNoQueue
     describe "createSndMsg" do
       describe "SndQueue exists" testCreateSndMsg
-      describe "SndQueue doesn't exist" testCreateSndMsgNoQueue
+      describe "SndQueue does not exist" testCreateSndMsgNoQueue
 
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe = do
@@ -298,15 +298,15 @@ testSetQueueStatusDuplex = do
 
 testSetRcvQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetRcvQueueStatusNoQueue = do
-  it "should throw error on attempt to update status of nonexistent RcvQueue" $ \store -> do
+  it "should throw error on attempt to update status of non-existent RcvQueue" $ \store -> do
     setRcvQueueStatus store rcvQueue1 Confirmed
-      `throwsError` SEInternal
+      `throwsError` SEInternal ""
 
 testSetSndQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetSndQueueStatusNoQueue = do
-  it "should throw error on attempt to update status of nonexistent SndQueue" $ \store -> do
+  it "should throw error on attempt to update status of non-existent SndQueue" $ \store -> do
     setSndQueueStatus store sndQueue1 Confirmed
-      `throwsError` SEInternal
+      `throwsError` SEInternal ""
 
 testCreateRcvMsg :: SpecWith SQLiteStore
 testCreateRcvMsg = do

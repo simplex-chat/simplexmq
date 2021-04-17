@@ -71,9 +71,9 @@ New errors
 
 ### StoreError (Agent/Store.hs)
 
-- SEInternal - signals exceptions in store actions (without returning the actual exception). Maybe should be `SEInternal e`
+- SEInternal ByteString - signals exceptions in store actions.
 - SEConnNotFound - connection alias not found (or both queues absent).
-- SEConnDuplicate - connection alias already used. 
+- SEConnDuplicate - connection alias already used.
 - SEBadConnType ConnType - wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa. `updateRcvConnWithSndQueue` and `updateSndConnWithRcvQueue` do not allow duplex connections - they would also return this error.
 - SEBadQueueStatus - the intention was to pass current expected queue status in methods, as we always know what it should be at any stage of the protocol, and in case it does not match use this error. **Currently not used**.
 - SENotImplemented - only used in `getMsg` that is not implemented/used. To remove?

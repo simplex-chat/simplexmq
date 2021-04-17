@@ -120,7 +120,7 @@ withStore action = do
       _ -> AGENT $ bshow e
   where
     handleInternal :: (MonadError StoreError m') => SomeException -> m' a
-    handleInternal _ = throwError SEInternal
+    handleInternal e = throwError . SEInternal $ bshow e
 
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
 processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =

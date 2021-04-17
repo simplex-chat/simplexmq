@@ -10,6 +10,7 @@
 module Simplex.Messaging.Agent.Store where
 
 import Control.Exception (Exception)
+import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.Time (UTCTime)
@@ -221,7 +222,7 @@ type InternalTs = UTCTime
 
 -- TODO revise
 data StoreError
-  = SEInternal
+  = SEInternal ByteString
   | SEConnNotFound
   | SEConnDuplicate
   | SEBadConnType ConnType
