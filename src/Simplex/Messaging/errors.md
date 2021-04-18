@@ -36,7 +36,6 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
   - DUPLICATE - connection alias already exists
   - SIMPLEX - connection is simplex, but operation requires another queue
 - SMP ErrorType - forwarding SMP errors (SMPServerError) to the agent client
-- TRANSPORT TransportError - handshake or other transport error
 - BROKER e - SMP server errors
   - RESPONSE ErrorType - invalid SMP server response
   - UNEXPECTED - unexpected response
@@ -53,11 +52,10 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 
 - SMPServerError ErrorType - this is correctly parsed server ERR response. This error is forwarded to the agent client as `ERR SMP err`
 - SMPResponseError ErrorType - this is invalid server response that failed to parse - forwarded to the client as `ERR BROKER RESPONSE`.
-- SMPQueueIdError - queue ID in response is different from queue ID in the sent command (commands are correlated using sequential correlation ID) - forwarded to the client as `ERR BROKER QUEUE`.
 - SMPUnexpectedResponse - different response from what is expected to a given command, e.g. server should respond `IDS` or `ERR` to `NEW` command, other responses would result in this error - forwarded to the client as `ERR BROKER UNEXPECTED`.
-- SMPResponseTimeout - used for TCP connection and command response timeouts.
-- SMPNetworkError - fails to establish TCP connection
-- SMPTransportError - fails connection handshake or some other transport error
+- SMPResponseTimeout - used for TCP connection and command response timeouts -> `ERR BROKER TIMEOUT`.
+- SMPNetworkError - fails to establish TCP connection -> `ERR BROKER NETWORK`
+- SMPTransportError e - fails connection handshake or some other transport error -> `ERR BROKER TRANSPORT e`
 - SMPSignatureError C.CryptoError - error when cryptographically "signing" the command.
 
 ### StoreError (Agent/Store.hs)
