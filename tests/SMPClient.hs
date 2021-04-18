@@ -6,7 +6,7 @@
 
 module SMPClient where
 
-import Control.Monad (void, (>=>))
+import Control.Monad (void)
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
 import Crypto.Random
@@ -83,21 +83,20 @@ cfg =
     }
 
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerThreadOn port f = do
+withSmpServerThreadOn port =
+  serverBracket
+    (\started -> runSMPServerBlocking started cfg {tcpPort = port})
+    (pure ())
+
+serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
+serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ runSMPServerBlocking started cfg {tcpPort = port}))
-    (waitStopped started)
-    (waitFor started f)
-
-waitFor :: MonadUnliftIO m => TMVar Bool -> (b -> m a) -> (b -> m a)
-waitFor started f x =
-  5_000_000 `timeout` atomically (takeTMVar started) >>= \case
-    Just _ -> f x
-    Nothing -> error "server did not start"
-
-waitStopped :: MonadUnliftIO m => TMVar Bool -> (ThreadId -> m ())
-waitStopped started = killThread >=> waitFor started (const $ pure ())
+    (forkIOWithUnmask ($ process started))
+    (\t -> killThread t >> waitFor started >> afterProcess)
+    (\t -> waitFor started >> f t)
+  where
+    waitFor started = 5_000_000 `timeout` atomically (takeTMVar started)
 
 withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
 withSmpServerOn port = withSmpServerThreadOn port . const

@@ -6,11 +6,10 @@
 
 module SMPAgentClient where
 
-import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Network.Socket (HostName, ServiceName)
-import SMPClient (testPort, waitFor, waitStopped, withSmpServer, withSmpServerThreadOn)
+import SMPClient (serverBracket, testPort, withSmpServer, withSmpServerThreadOn)
 import Simplex.Messaging.Agent (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
@@ -19,9 +18,7 @@ import Simplex.Messaging.Transport
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
-import qualified UnliftIO.Exception as E
 import UnliftIO.IO
-import UnliftIO.STM (newEmptyTMVarIO)
 
 agentTestHost :: HostName
 agentTestHost = "localhost"
@@ -124,12 +121,10 @@ cfg =
     }
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn (port', db') f = do
-  started <- newEmptyTMVarIO
-  E.bracket
-    (forkIOWithUnmask ($ runSMPAgentBlocking started cfg {tcpPort = port', dbFile = db'}))
-    (waitStopped started >=> const (removeFile db'))
-    (waitFor started f)
+withSmpAgentThreadOn (port', db') =
+  serverBracket
+    (\started -> runSMPAgentBlocking started cfg {tcpPort = port', dbFile = db'})
+    (removeFile db')
 
 withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> m a -> m a
 withSmpAgentOn (port', db') = withSmpAgentThreadOn (port', db') . const
