@@ -94,7 +94,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     connectClient = do
       cfg <- asks $ smpCfg . config
       liftEitherError smpClientError (getSMPClient srv cfg msgQ clientDisconnected)
-        `E.catch` \(e :: IOException) -> throwError (INTERNAL $ bshow e)
+        `E.catch` \(_ :: IOException) -> throwError INTERNAL
 
     clientDisconnected :: IO ()
     clientDisconnected = do
@@ -141,12 +141,11 @@ smpClientError :: SMPClientError -> AgentErrorType
 smpClientError = \case
   SMPServerError e -> SMP e
   SMPResponseError e -> BROKER $ RESPONSE e
-  SMPQueueIdError -> BROKER QUEUE
   SMPUnexpectedResponse -> BROKER UNEXPECTED
   SMPResponseTimeout -> BROKER TIMEOUT
   SMPNetworkError -> BROKER NETWORK
   SMPTransportError e -> BROKER $ TRANSPORT e
-  e@(SMPSignatureError _) -> INTERNAL $ bshow e
+  SMPSignatureError _ -> INTERNAL
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
@@ -284,6 +283,6 @@ cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE
   C.RSADecryptError _ -> AGENT A_ENCRYPTION
-  C.CryptoHeaderError _ -> AGENT A_DECRYPTED
-  C.AESDecryptError -> AGENT AES_ENCRYPTION
-  e -> INTERNAL $ bshow e
+  C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
+  C.AESDecryptError -> AGENT A_ENCRYPTION
+  _ -> INTERNAL

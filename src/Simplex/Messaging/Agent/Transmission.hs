@@ -250,7 +250,7 @@ data AgentErrorType
   | SMP ErrorType -- SMP protocol errors forwarded to agent clients
   | BROKER BrokerErrorType -- SMP server errors
   | AGENT SMPAgentError -- errors of other agents
-  | INTERNAL ByteString -- agent implementation errors
+  | INTERNAL -- agent implementation errors
   deriving (Eq, Read, Show, Exception)
 
 data CommandErrorType
@@ -264,13 +264,11 @@ data CommandErrorType
 data ConnectionErrorType
   = UNKNOWN -- connection alias not in database
   | DUPLICATE -- connection alias already exists
-  | SIMPLEX_RCV -- operation requires send queue
-  | SIMPLEX_SND -- operation requires receive queue
+  | SIMPLEX -- connection is simplex, but operation requires another queue
   deriving (Eq, Read, Show, Exception)
 
 data BrokerErrorType
   = RESPONSE ErrorType -- invalid server response (failed to parse)
-  | QUEUE -- queue ID in response is different from expected
   | UNEXPECTED -- unexpected response
   | NETWORK -- network error
   | TRANSPORT TransportError -- handshake or other transport error
@@ -280,9 +278,7 @@ data BrokerErrorType
 data SMPAgentError
   = A_MESSAGE -- possibly should include bytestring that failed to parse
   | A_PROHIBITED -- possibly should include the prohibited SMP/agent message
-  | A_ENCRYPTION -- cannot RSA-decrypt
-  | A_DECRYPTED -- bad decrypted header
-  | AES_ENCRYPTION -- cannot AES-decrypt
+  | A_ENCRYPTION -- cannot RSA/AES-decrypt or parse decrypted header
   deriving (Eq, Read, Show, Exception)
 
 commandP :: Parser ACmd

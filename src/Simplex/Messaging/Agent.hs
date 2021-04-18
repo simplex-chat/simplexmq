@@ -122,7 +122,7 @@ withStore action = do
     storeError = \case
       SEConnNotFound -> CONN UNKNOWN
       SEConnDuplicate -> CONN DUPLICATE
-      e -> INTERNAL $ bshow e
+      _ -> INTERNAL
 
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
 processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
@@ -161,7 +161,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st cAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
         SomeConn _ (RcvConnection _ rq) -> subscribe rq
-        _ -> throwError $ CONN SIMPLEX_SND
+        _ -> throwError $ CONN SIMPLEX
       where
         subscribe rq = subscribeQueue c rq cAlias >> respond' cAlias OK
 
@@ -174,7 +174,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st connAlias) >>= \case
         SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
         SomeConn _ (SndConnection _ sq) -> sendMsg sq
-        _ -> throwError $ CONN SIMPLEX_RCV
+        _ -> throwError $ CONN SIMPLEX
       where
         sendMsg sq = do
           senderTs <- liftIO getCurrentTime
@@ -187,7 +187,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> suspend rq
         SomeConn _ (RcvConnection _ rq) -> suspend rq
-        _ -> throwError $ CONN SIMPLEX_SND
+        _ -> throwError $ CONN SIMPLEX
       where
         suspend rq = suspendQueue c rq >> respond OK
 
@@ -258,11 +258,11 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               withStore $ upgradeRcvConnToDuplex st connAlias sq
               connectToSendQueue c st sq senderKey verifyKey
               notify connAlias CON
-            A_MSG body ->
+            A_MSG body -> do
               -- TODO check message status
+              logServer "<--" c srv rId "MSG <MSG>"
               case status of
                 Active -> do
-                  logServer "<--" c srv rId "MSG <MSG>"
                   recipientTs <- liftIO getCurrentTime
                   let m_sender = (senderMsgId, senderTimestamp)
                   let m_broker = (srvMsgId, srvTs)

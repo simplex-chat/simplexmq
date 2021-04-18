@@ -9,16 +9,15 @@
 
 ### ErrorType (Protocol.hs)
 
-- PROHIBITED - command is valid but not allowed in the current context:
-  1. server response sent from client or vice versa
-  2. acknowledging the message without message
-- SYNTAX error - command is unknown or has invalid syntax, where `error` can be:
-  - TRANSMISSION - incorrect transmission format or encoding
-  - COMMAND - error parsing command
+- BLOCK - incorrect block format or encoding
+- CMD error - command is unknown or has invalid syntax, where `error` can be:
+  - PROHIBITED - server response sent from client or vice versa
+  - SYNTAX - error parsing command
   - NO_AUTH - transmission has no required credentials (signature or queue ID)
   - HAS_AUTH - transmission has not allowed credentials
   - NO_QUEUE - transmission has not queue ID
 - AUTH - command is not authorised (queue does not exist or signature verification failed).
+- NO_MSG - acknowledging (ACK) the message without message
 - INTERNAL - internal server error.
 - DUPLICATE_ - it is used internally to signal that the queue ID is already used. This is NOT used in the protocol, instead INTERNAL is sent to the client. It has to be removed.
 
@@ -35,22 +34,19 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 - CONN e - connection errors
   - UNKNOWN - connection alias not in database
   - DUPLICATE - connection alias already exists
-  - SIMPLEX_RCV - operation requires send queue
-  - SIMPLEX_SND - operation requires receive queue
+  - SIMPLEX - connection is simplex, but operation requires another queue
 - SMP ErrorType - forwarding SMP errors (SMPServerError) to the agent client
 - TRANSPORT TransportError - handshake or other transport error
 - BROKER e - SMP server errors
   - RESPONSE ErrorType - invalid SMP server response
-  - QUEUE - queue in response is different from the queue in sent command
   - UNEXPECTED - unexpected response
   - NETWORK - network TCP connection error
+  - TRANSPORT TransportError -- handshake or other transport error
   - TIMEOUT - command response timeout
 - AGENT e - errors of other agents
   - A_MESSAGE - SMP message failed to parse
   - A_PROHIBITED - SMP message is prohibited with the current queue status
-  - A_ENCRYPTION - cannot RSA-decrypt
-  - A_DECRYPTED - bad decrypted header
-  - AES_ENCRYPTION - cannot AES-decrypt
+  - A_ENCRYPTION - cannot RSA/AES-decrypt or parse decrypted header
 - INTERNAL ByteString - agent implementation or dependency error
 
 ### SMPClientError (Client.hs)

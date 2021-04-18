@@ -170,7 +170,7 @@ getSMPClient
                   Left e -> Left $ SMPResponseError e
                   Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
                   Right r -> Right r
-                else Left SMPQueueIdError
+                else Left SMPUnexpectedResponse
 
 closeSMPClient :: SMPClient -> IO ()
 closeSMPClient = uninterruptibleCancel . action
@@ -178,7 +178,6 @@ closeSMPClient = uninterruptibleCancel . action
 data SMPClientError
   = SMPServerError ErrorType
   | SMPResponseError ErrorType
-  | SMPQueueIdError
   | SMPUnexpectedResponse
   | SMPResponseTimeout
   | SMPNetworkError
