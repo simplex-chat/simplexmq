@@ -148,7 +148,7 @@ smpClientError = \case
   SMPResponseTimeout -> BROKER TIMEOUT
   SMPNetworkError -> BROKER NETWORK
   SMPTransportError e -> BROKER $ TRANSPORT e
-  e@(SMPSignatureError _) -> INTERNAL $ show e
+  e -> INTERNAL $ show e
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
@@ -227,20 +227,20 @@ sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKe
 sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
   msg <- mkHello $ AckMode On
   withLogSMP c server sndId "SEND <HELLO> (retrying)" $
-    send 20 msg
+    send 8 100000 msg
   where
     mkHello :: AckMode -> m ByteString
     mkHello ackMode = do
       senderTs <- liftIO getCurrentTime
       mkAgentMessage encryptKey senderTs $ HELLO verifyKey ackMode
 
-    send :: Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
-    send 0 _ _ = throwE $ SMPServerError AUTH
-    send retry msg smp =
+    send :: Int -> Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
+    send 0 _ _ _ = throwE $ SMPServerError AUTH
+    send retry delay msg smp =
       sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
         SMPServerError AUTH -> do
-          threadDelay 200000
-          send (retry - 1) msg smp
+          threadDelay delay
+          send (retry - 1) (delay * 3 `div` 2) msg smp
         e -> throwE e
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
