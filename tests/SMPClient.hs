@@ -93,10 +93,13 @@ serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
   E.bracket
     (forkIOWithUnmask ($ process started))
-    (\t -> killThread t >> waitFor started >> afterProcess)
-    (\t -> waitFor started >> f t)
+    (\t -> killThread t >> afterProcess >> waitFor started "stop")
+    (\t -> waitFor started "start" >> f t)
   where
-    waitFor started = 5_000_000 `timeout` atomically (takeTMVar started)
+    waitFor started s =
+      5_000_000 `timeout` atomically (takeTMVar started) >>= \case
+        Nothing -> error $ "server did not " <> s
+        _ -> pure ()
 
 withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
 withSmpServerOn port = withSmpServerThreadOn port . const
