@@ -257,10 +257,9 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId
 
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: CorrId -> SignedRawTransmission -> IO Response
-    sendRecv corrId t =
-      fromMaybe (Left SMPResponseTimeout) <$> do
-        r <- atomically (send corrId t)
-        (timeout tcpTimeout . atomically . takeTMVar) r
+    sendRecv corrId t = atomically (send corrId t) >>= withTimeout . atomically . takeTMVar
+      where
+        withTimeout a = fromMaybe (Left SMPResponseTimeout) <$> timeout tcpTimeout a
 
     send :: CorrId -> SignedRawTransmission -> STM (TMVar Response)
     send corrId t = do
