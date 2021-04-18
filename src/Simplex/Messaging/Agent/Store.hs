@@ -10,6 +10,7 @@
 module Simplex.Messaging.Agent.Store where
 
 import Control.Exception (Exception)
+import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.Time (UTCTime)
@@ -219,13 +220,11 @@ type InternalTs = UTCTime
 
 -- * Store errors
 
--- TODO revise
 data StoreError
-  = SEInternal
-  | SENotFound
-  | SEBadConn
+  = SEInternal ByteString
+  | SEConnNotFound
+  | SEConnDuplicate
   | SEBadConnType ConnType
-  | SEBadQueueStatus
-  | SEBadQueueDirection
+  | SEBadQueueStatus -- not used, planned to check strictly
   | SENotImplemented -- TODO remove
   deriving (Eq, Show, Exception)

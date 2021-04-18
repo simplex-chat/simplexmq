@@ -165,7 +165,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             addQueueRetry n = do
               ids <- getIds
               atomically (addQueue st rKey ids) >>= \case
-                Left DUPLICATE -> addQueueRetry $ n - 1
+                Left DUPLICATE_ -> addQueueRetry $ n - 1
                 Left e -> return $ Left e
                 Right _ -> return $ Right ids
 
@@ -200,7 +200,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           atomically (withSub queueId $ \s -> const s <$$> tryTakeTMVar (delivered s))
             >>= \case
               Just (Just s) -> deliverMessage tryDelPeekMsg queueId s
-              _ -> return $ err PROHIBITED
+              _ -> return $ err NO_MSG
 
         withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
         withSub rId f = readTVar subscriptions >>= mapM f . M.lookup rId

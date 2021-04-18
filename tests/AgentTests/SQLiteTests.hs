@@ -66,14 +66,14 @@ storeTests = withStore do
       describe "setRcvQueueStatus" testSetRcvQueueStatus
       describe "setSndQueueStatus" testSetSndQueueStatus
       describe "DuplexConnection" testSetQueueStatusDuplex
-      xdescribe "RcvQueue doesn't exist" testSetRcvQueueStatusNoQueue
-      xdescribe "SndQueue doesn't exist" testSetSndQueueStatusNoQueue
+      xdescribe "RcvQueue does not exist" testSetRcvQueueStatusNoQueue
+      xdescribe "SndQueue does not exist" testSetSndQueueStatusNoQueue
     describe "createRcvMsg" do
       describe "RcvQueue exists" testCreateRcvMsg
-      describe "RcvQueue doesn't exist" testCreateRcvMsgNoQueue
+      describe "RcvQueue does not exist" testCreateRcvMsgNoQueue
     describe "createSndMsg" do
       describe "SndQueue exists" testCreateSndMsg
-      describe "SndQueue doesn't exist" testCreateSndMsgNoQueue
+      describe "SndQueue does not exist" testCreateSndMsgNoQueue
 
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe = do
@@ -175,7 +175,7 @@ testDeleteRcvConn = do
       `returnsResult` ()
     -- TODO check queues are deleted as well
     getConn store "conn1"
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
 
 testDeleteSndConn :: SpecWith SQLiteStore
 testDeleteSndConn = do
@@ -188,7 +188,7 @@ testDeleteSndConn = do
       `returnsResult` ()
     -- TODO check queues are deleted as well
     getConn store "conn1"
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
 
 testDeleteDuplexConn :: SpecWith SQLiteStore
 testDeleteDuplexConn = do
@@ -203,7 +203,7 @@ testDeleteDuplexConn = do
       `returnsResult` ()
     -- TODO check queues are deleted as well
     getConn store "conn1"
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
 
 testUpgradeRcvConnToDuplex :: SpecWith SQLiteStore
 testUpgradeRcvConnToDuplex = do
@@ -298,15 +298,15 @@ testSetQueueStatusDuplex = do
 
 testSetRcvQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetRcvQueueStatusNoQueue = do
-  it "should throw error on attempt to update status of nonexistent RcvQueue" $ \store -> do
+  it "should throw error on attempt to update status of non-existent RcvQueue" $ \store -> do
     setRcvQueueStatus store rcvQueue1 Confirmed
-      `throwsError` SEInternal
+      `throwsError` SEInternal ""
 
 testSetSndQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetSndQueueStatusNoQueue = do
-  it "should throw error on attempt to update status of nonexistent SndQueue" $ \store -> do
+  it "should throw error on attempt to update status of non-existent SndQueue" $ \store -> do
     setSndQueueStatus store sndQueue1 Confirmed
-      `throwsError` SEInternal
+      `throwsError` SEInternal ""
 
 testCreateRcvMsg :: SpecWith SQLiteStore
 testCreateRcvMsg = do
@@ -323,7 +323,7 @@ testCreateRcvMsgNoQueue = do
   it "should throw error on attempt to create a RcvMsg w/t a RcvQueue" $ \store -> do
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
     createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
     createSndConn store sndQueue1
       `returnsResult` ()
     createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
@@ -344,7 +344,7 @@ testCreateSndMsgNoQueue = do
   it "should throw error on attempt to create a SndMsg w/t a SndQueue" $ \store -> do
     let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
     createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
-      `throwsError` SEBadConn
+      `throwsError` SEConnNotFound
     createRcvConn store rcvQueue1
       `returnsResult` ()
     createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts

@@ -95,7 +95,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       (Just rcvQ, Just sndQ) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
       (Just rcvQ, Nothing) -> return $ SomeConn SCRcv (RcvConnection connAlias rcvQ)
       (Nothing, Just sndQ) -> return $ SomeConn SCSnd (SndConnection connAlias sndQ)
-      _ -> throwError SEBadConn
+      _ -> throwError SEConnNotFound
 
   getAllConnAliases :: SQLiteStore -> m [ConnAlias]
   getAllConnAliases SQLiteStore {dbConn} =
@@ -109,7 +109,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         retrieveRcvQueue dbConn host port rcvId
     case rcvQueue of
       Just rcvQ -> return rcvQ
-      _ -> throwError SENotFound
+      _ -> throwError SEConnNotFound
 
   deleteConn :: SQLiteStore -> ConnAlias -> m ()
   deleteConn SQLiteStore {dbConn} connAlias =
@@ -415,7 +415,7 @@ updateRcvConnWithSndQueue dbConn connAlias sndQueue =
         return $ Right ()
       (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
       (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
-      _ -> return $ Left SEBadConn
+      _ -> return $ Left SEConnNotFound
 
 updateConnWithSndQueue_ :: DB.Connection -> ConnAlias -> SndQueue -> IO ()
 updateConnWithSndQueue_ dbConn connAlias SndQueue {server, sndId} = do
@@ -443,7 +443,7 @@ updateSndConnWithRcvQueue dbConn connAlias rcvQueue =
         return $ Right ()
       (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
       (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
-      _ -> return $ Left SEBadConn
+      _ -> return $ Left SEConnNotFound
 
 updateConnWithRcvQueue_ :: DB.Connection -> ConnAlias -> RcvQueue -> IO ()
 updateConnWithRcvQueue_ dbConn connAlias RcvQueue {server, rcvId} = do
@@ -508,7 +508,7 @@ insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) 
         updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
         return $ Right internalId
       (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
-      _ -> return $ Left SEBadConn
+      _ -> return $ Left SEConnNotFound
 
 retrieveLastInternalIdsRcv_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalRcvId)
 retrieveLastInternalIdsRcv_ dbConn connAlias = do
@@ -599,7 +599,7 @@ insertSndMsg dbConn connAlias msgBody internalTs =
         updateLastInternalIdsSnd_ dbConn connAlias internalId internalSndId
         return $ Right internalId
       (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
-      _ -> return $ Left SEBadConn
+      _ -> return $ Left SEConnNotFound
 
 retrieveLastInternalIdsSnd_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalSndId)
 retrieveLastInternalIdsSnd_ dbConn connAlias = do

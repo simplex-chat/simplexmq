@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -11,6 +12,7 @@
 
 module Simplex.Messaging.Transport where
 
+import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
@@ -21,18 +23,22 @@ import Data.Bifunctor (first)
 import Data.ByteArray (xor)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Word (Word32)
+import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
+import Generic.Random (genericArbitraryU)
 import Network.Socket
 import Network.Transport.Internal (encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (parse, parseAll)
+import Simplex.Messaging.Parsers (parse, parseAll, parseRead1)
 import Simplex.Messaging.Util (bshow, liftError)
 import System.IO
 import System.IO.Error
+import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Concurrent
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
@@ -50,7 +56,10 @@ runTCPServer started port server = do
     atomically . modifyTVar clients $ S.insert tid
   where
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
-    closeServer clients sock = readTVarIO clients >>= mapM_ killThread >> close sock
+    closeServer clients sock = do
+      readTVarIO clients >>= mapM_ killThread
+      close sock
+      void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
@@ -76,9 +85,7 @@ runTCPClient host port client = do
   client h `E.finally` IO.hClose h
 
 startTCPClient :: HostName -> ServiceName -> IO Handle
-startTCPClient host port =
-  withSocketsDo $
-    resolve >>= foldM tryOpen (Left err) >>= either E.throwIO return -- replace fold with recursion
+startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
@@ -88,9 +95,10 @@ startTCPClient host port =
       let hints = defaultHints {addrSocketType = Stream}
        in getAddrInfo (Just hints) (Just host) (Just port)
 
-    tryOpen :: Exception e => Either e Handle -> AddrInfo -> IO (Either e Handle)
-    tryOpen (Left _) addr = E.try $ open addr
-    tryOpen h _ = return h
+    tryOpen :: IOException -> [AddrInfo] -> IO Handle
+    tryOpen e [] = E.throwIO e
+    tryOpen _ (addr : as) =
+      E.try (open addr) >>= either (`tryOpen` as) pure
 
     open :: AddrInfo -> IO Handle
     open addr = do
@@ -153,21 +161,51 @@ data HandshakeKeys = HandshakeKeys
   }
 
 data TransportError
-  = TransportCryptoError C.CryptoError
-  | TransportParsingError
-  | TransportHandshakeError String
-  deriving (Eq, Show, Exception)
+  = TEBadBlock
+  | TEEncrypt
+  | TEDecrypt
+  | TEHandshake HandshakeError
+  deriving (Eq, Generic, Read, Show, Exception)
+
+data HandshakeError
+  = ENCRYPT
+  | DECRYPT
+  | VERSION
+  | RSA_KEY
+  | AES_KEYS
+  | BAD_HASH
+  | MAJOR_VERSION
+  | TERMINATED
+  deriving (Eq, Generic, Read, Show, Exception)
+
+instance Arbitrary TransportError where arbitrary = genericArbitraryU
+
+instance Arbitrary HandshakeError where arbitrary = genericArbitraryU
+
+transportErrorP :: Parser TransportError
+transportErrorP =
+  "BLOCK" $> TEBadBlock
+    <|> "AES_ENCRYPT" $> TEEncrypt
+    <|> "AES_DECRYPT" $> TEDecrypt
+    <|> TEHandshake <$> parseRead1
+
+serializeTransportError :: TransportError -> ByteString
+serializeTransportError = \case
+  TEEncrypt -> "AES_ENCRYPT"
+  TEDecrypt -> "AES_DECRYPT"
+  TEBadBlock -> "BLOCK"
+  TEHandshake e -> bshow e
 
 tPutEncrypted :: THandle -> ByteString -> IO (Either TransportError ())
 tPutEncrypted THandle {handle = h, sndKey, blockSize} block =
   encryptBlock sndKey (blockSize - C.authTagSize) block >>= \case
-    Left e -> return . Left $ TransportCryptoError e
+    Left _ -> pure $ Left TEEncrypt
     Right (authTag, msg) -> Right <$> B.hPut h (C.authTagToBS authTag <> msg)
 
 tGetEncrypted :: THandle -> IO (Either TransportError ByteString)
 tGetEncrypted THandle {handle = h, rcvKey, blockSize} =
   B.hGet h blockSize >>= decryptBlock rcvKey >>= \case
-    Left e -> pure . Left $ TransportCryptoError e
+    Left _ -> pure $ Left TEDecrypt
     Right "" -> ioe_EOF
     Right msg -> pure $ Right msg
 
@@ -207,11 +245,11 @@ serverHandshake h (k, pk) = do
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString
     receiveEncryptedKeys_4 =
       liftIO (B.hGet h $ C.publicKeySize k) >>= \case
-        "" -> throwE $ TransportHandshakeError "EOF"
+        "" -> throwE $ TEHandshake TERMINATED
         ks -> pure ks
     decryptParseKeys_5 :: ByteString -> ExceptT TransportError IO HandshakeKeys
     decryptParseKeys_5 encKeys =
-      liftError TransportCryptoError (C.decryptOAEP pk encKeys)
+      liftError (const $ TEHandshake DECRYPT) (C.decryptOAEP pk encKeys)
         >>= liftEither . parseHandshakeKeys
     sendWelcome_6 :: THandle -> ExceptT TransportError IO ()
     sendWelcome_6 th = ExceptT . tPutEncrypted th $ serializeSMPVersion currentSMPVersion <> " "
@@ -233,11 +271,11 @@ clientHandshake h keyHash = do
       maybe (pure ()) (validateKeyHash_2 s) keyHash
       liftEither $ parseKey s
     parseKey :: ByteString -> Either TransportError C.PublicKey
-    parseKey = first TransportHandshakeError . parseAll C.pubKeyP
+    parseKey = first (const $ TEHandshake RSA_KEY) . parseAll C.pubKeyP
     validateKeyHash_2 :: ByteString -> C.KeyHash -> ExceptT TransportError IO ()
     validateKeyHash_2 k kHash
       | C.getKeyHash k == kHash = pure ()
-      | otherwise = throwE $ TransportHandshakeError "wrong key hash"
+      | otherwise = throwE $ TEHandshake BAD_HASH
     generateKeys_3 :: IO HandshakeKeys
     generateKeys_3 = HandshakeKeys <$> generateKey <*> generateKey
     generateKey :: IO SessionKey
@@ -247,16 +285,16 @@ clientHandshake h keyHash = do
       pure SessionKey {aesKey, baseIV, counter = undefined}
     sendEncryptedKeys_4 :: C.PublicKey -> HandshakeKeys -> ExceptT TransportError IO ()
     sendEncryptedKeys_4 k keys =
-      liftError TransportCryptoError (C.encryptOAEP k $ serializeHandshakeKeys keys)
+      liftError (const $ TEHandshake ENCRYPT) (C.encryptOAEP k $ serializeHandshakeKeys keys)
         >>= liftIO . B.hPut h
     getWelcome_6 :: THandle -> ExceptT TransportError IO SMPVersion
     getWelcome_6 th = ExceptT $ (>>= parseSMPVersion) <$> tGetEncrypted th
     parseSMPVersion :: ByteString -> Either TransportError SMPVersion
-    parseSMPVersion = first TransportHandshakeError . A.parseOnly (smpVersionP <* A.space)
+    parseSMPVersion = first (const $ TEHandshake VERSION) . A.parseOnly (smpVersionP <* A.space)
     checkVersion :: SMPVersion -> ExceptT TransportError IO ()
     checkVersion smpVersion =
       when (major smpVersion > major currentSMPVersion) . throwE $
-        TransportHandshakeError "SMP server version"
+        TEHandshake MAJOR_VERSION
 
 serializeHandshakeKeys :: HandshakeKeys -> ByteString
 serializeHandshakeKeys HandshakeKeys {sndKey, rcvKey} =
@@ -275,7 +313,7 @@ handshakeKeysP = HandshakeKeys <$> keyP <*> keyP
       pure SessionKey {aesKey, baseIV, counter = undefined}
 
 parseHandshakeKeys :: ByteString -> Either TransportError HandshakeKeys
-parseHandshakeKeys = parse handshakeKeysP $ TransportHandshakeError "parsing keys"
+parseHandshakeKeys = parse handshakeKeysP $ TEHandshake AES_KEYS
 
 transportHandle :: Handle -> SessionKey -> SessionKey -> IO THandle
 transportHandle h sk rk = do

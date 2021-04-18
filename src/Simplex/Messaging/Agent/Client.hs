@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Client
     deleteQueue,
     logServer,
     removeSubscription,
+    cryptoError,
   )
 where
 
@@ -47,7 +48,7 @@ import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
-import Simplex.Messaging.Util (bshow, liftError)
+import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import UnliftIO.Concurrent
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -86,15 +87,17 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     newSMPClient = do
       smp <- connectClient
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-      -- TODO how can agent know client lost the connection?
       atomically . modifyTVar smpClients $ M.insert srv smp
       return smp
 
     connectClient :: m SMPClient
     connectClient = do
       cfg <- asks $ smpCfg . config
-      liftIO (getSMPClient srv cfg msgQ clientDisconnected)
-        `E.catch` \(_ :: IOException) -> throwError (BROKER smpErrTCPConnection)
+      liftEitherError smpClientError (getSMPClient srv cfg msgQ clientDisconnected)
+        `E.catch` internalError
+      where
+        internalError :: IOException -> m SMPClient
+        internalError = throwError . INTERNAL . show
 
     clientDisconnected :: IO ()
     clientDisconnected = do
@@ -125,12 +128,6 @@ withSMP c srv action =
     runAction :: SMPClient -> m a
     runAction smp = liftError smpClientError $ action smp
 
-    smpClientError :: SMPClientError -> AgentErrorType
-    smpClientError = \case
-      SMPServerError e -> SMP e
-      -- TODO handle other errors
-      _ -> INTERNAL
-
     logServerError :: AgentErrorType -> m a
     logServerError e = do
       logServer "<--" c srv "" $ bshow e
@@ -142,6 +139,16 @@ withLogSMP c srv qId cmdStr action = do
   res <- withSMP c srv action
   logServer "<--" c srv qId "OK"
   return res
+
+smpClientError :: SMPClientError -> AgentErrorType
+smpClientError = \case
+  SMPServerError e -> SMP e
+  SMPResponseError e -> BROKER $ RESPONSE e
+  SMPUnexpectedResponse -> BROKER UNEXPECTED
+  SMPResponseTimeout -> BROKER TIMEOUT
+  SMPNetworkError -> BROKER NETWORK
+  SMPTransportError e -> BROKER $ TRANSPORT e
+  e -> INTERNAL $ show e
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
@@ -214,26 +221,26 @@ sendConfirmation c SndQueue {server, sndId, encryptKey} senderKey = do
     mkConfirmation = do
       let msg = serializeSMPMessage $ SMPConfirmation senderKey
       paddedSize <- asks paddedMsgSize
-      liftError CRYPTO $ C.encrypt encryptKey paddedSize msg
+      liftError cryptoError $ C.encrypt encryptKey paddedSize msg
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
 sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
   msg <- mkHello $ AckMode On
   withLogSMP c server sndId "SEND <HELLO> (retrying)" $
-    send 20 msg
+    send 8 100000 msg
   where
     mkHello :: AckMode -> m ByteString
     mkHello ackMode = do
       senderTs <- liftIO getCurrentTime
       mkAgentMessage encryptKey senderTs $ HELLO verifyKey ackMode
 
-    send :: Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
-    send 0 _ _ = throwE SMPResponseTimeout -- TODO different error
-    send retry msg smp =
+    send :: Int -> Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
+    send 0 _ _ _ = throwE $ SMPServerError AUTH
+    send retry delay msg smp =
       sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
         SMPServerError AUTH -> do
-          threadDelay 100000
-          send (retry - 1) msg smp
+          threadDelay delay
+          send (retry - 1) (delay * 3 `div` 2) msg smp
         e -> throwE e
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
@@ -273,4 +280,12 @@ mkAgentMessage encKey senderTs agentMessage = do
               agentMessage
             }
   paddedSize <- asks paddedMsgSize
-  liftError CRYPTO $ C.encrypt encKey paddedSize msg
+  liftError cryptoError $ C.encrypt encKey paddedSize msg
+
+cryptoError :: C.CryptoError -> AgentErrorType
+cryptoError = \case
+  C.CryptoLargeMsgError -> CMD LARGE
+  C.RSADecryptError _ -> AGENT A_ENCRYPTION
+  C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
+  C.AESDecryptError -> AGENT A_ENCRYPTION
+  e -> INTERNAL $ show e

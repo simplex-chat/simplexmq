@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -24,10 +25,13 @@ import Data.Kind
 import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
+import GHC.Generics (Generic)
+import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
+import Test.QuickCheck (Arbitrary (..))
 
 data Party = Broker | Recipient | Sender
   deriving (Show)
@@ -106,25 +110,26 @@ type MsgId = Encoded
 
 type MsgBody = ByteString
 
-data ErrorType = PROHIBITED | SYNTAX Int | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
+data ErrorType
+  = BLOCK
+  | CMD CommandError
+  | AUTH
+  | NO_MSG
+  | INTERNAL
+  | DUPLICATE_ -- TODO remove, not part of SMP protocol
+  deriving (Eq, Generic, Read, Show)
 
-errBadTransmission :: Int
-errBadTransmission = 1
+data CommandError
+  = PROHIBITED
+  | SYNTAX
+  | NO_AUTH
+  | HAS_AUTH
+  | NO_QUEUE
+  deriving (Eq, Generic, Read, Show)
 
-errBadSMPCommand :: Int
-errBadSMPCommand = 2
+instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
-errNoCredentials :: Int
-errNoCredentials = 3
-
-errHasCredentials :: Int
-errHasCredentials = 4
-
-errNoQueueId :: Int
-errNoQueueId = 5
-
-errMessageBody :: Int
-errMessageBody = 6
+instance Arbitrary CommandError where arbitrary = genericArbitraryU
 
 transmissionP :: Parser RawTransmission
 transmissionP = do
@@ -164,16 +169,11 @@ commandP =
       ts <- tsISO8601P <* A.space
       size <- A.decimal <* A.space
       Cmd SBroker . MSG msgId ts <$> A.take size <* A.space
-    serverError = Cmd SBroker . ERR <$> errorType
-    errorType =
-      "PROHIBITED" $> PROHIBITED
-        <|> "SYNTAX " *> (SYNTAX <$> A.decimal)
-        <|> "AUTH" $> AUTH
-        <|> "INTERNAL" $> INTERNAL
+    serverError = Cmd SBroker . ERR <$> errorTypeP
 
 -- TODO ignore the end of block, no need to parse it
 parseCommand :: ByteString -> Either ErrorType Cmd
-parseCommand = parse (commandP <* " " <* A.takeByteString) $ SYNTAX errBadSMPCommand
+parseCommand = parse (commandP <* " " <* A.takeByteString) $ CMD SYNTAX
 
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
@@ -185,10 +185,16 @@ serializeCommand = \case
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
-  Cmd SBroker (ERR err) -> "ERR " <> bshow err
+  Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
   Cmd SBroker resp -> bshow resp
   where
     serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
+
+errorTypeP :: Parser ErrorType
+errorTypeP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
+
+serializeErrorType :: ErrorType -> ByteString
+serializeErrorType = bshow
 
 tPut :: THandle -> SignedRawTransmission -> IO (Either TransportError ())
 tPut th (C.Signature sig, t) =
@@ -200,16 +206,16 @@ serializeTransmission (CorrId corrId, queueId, command) =
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
-  Cmd SBroker _ -> Left PROHIBITED
+  Cmd SBroker _ -> Left $ CMD PROHIBITED
   cmd -> Right cmd
 
 fromServer :: Cmd -> Either ErrorType Cmd
 fromServer = \case
   cmd@(Cmd SBroker _) -> Right cmd
-  _ -> Left PROHIBITED
+  _ -> Left $ CMD PROHIBITED
 
 tGetParse :: THandle -> IO (Either TransportError RawTransmission)
-tGetParse th = (>>= parse transmissionP TransportParsingError) <$> tGetEncrypted th
+tGetParse th = (>>= parse transmissionP TEBadBlock) <$> tGetEncrypted th
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
@@ -224,7 +230,7 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
       Left _ -> tError ""
 
     tError :: ByteString -> m SignedTransmissionOrError
-    tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left $ SYNTAX errBadTransmission))
+    tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left BLOCK))
 
     tParseValidate :: RawTransmission -> m SignedTransmissionOrError
     tParseValidate t@(sig, corrId, queueId, command) = do
@@ -233,32 +239,32 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
 
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, _, queueId, _) cmd = case cmd of
-      -- IDS response should not have queue ID
+      -- IDS response must not have queue ID
       Cmd SBroker (IDS _ _) -> Right cmd
       -- ERR response does not always have queue ID
       Cmd SBroker (ERR _) -> Right cmd
-      -- PONG response should not have queue ID
+      -- PONG response must not have queue ID
       Cmd SBroker PONG
         | B.null queueId -> Right cmd
-        | otherwise -> Left $ SYNTAX errHasCredentials
+        | otherwise -> Left $ CMD HAS_AUTH
       -- other responses must have queue ID
       Cmd SBroker _
-        | B.null queueId -> Left $ SYNTAX errNoQueueId
+        | B.null queueId -> Left $ CMD NO_QUEUE
         | otherwise -> Right cmd
       -- NEW must NOT have signature or queue ID
       Cmd SRecipient (NEW _)
-        | B.null signature -> Left $ SYNTAX errNoCredentials
-        | not (B.null queueId) -> Left $ SYNTAX errHasCredentials
+        | B.null signature -> Left $ CMD NO_AUTH
+        | not (B.null queueId) -> Left $ CMD HAS_AUTH
         | otherwise -> Right cmd
       -- SEND must have queue ID, signature is not always required
       Cmd SSender (SEND _)
-        | B.null queueId -> Left $ SYNTAX errNoQueueId
+        | B.null queueId -> Left $ CMD NO_QUEUE
         | otherwise -> Right cmd
       -- PING must not have queue ID or signature
       Cmd SSender PING
         | B.null queueId && B.null signature -> Right cmd
-        | otherwise -> Left $ SYNTAX errHasCredentials
+        | otherwise -> Left $ CMD HAS_AUTH
       -- other client commands must have both signature and queue ID
       Cmd SRecipient _
-        | B.null signature || B.null queueId -> Left $ SYNTAX errNoCredentials
+        | B.null signature || B.null queueId -> Left $ CMD NO_AUTH
         | otherwise -> Right cmd

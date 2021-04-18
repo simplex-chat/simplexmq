@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -26,8 +27,9 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
+import GHC.Generics (Generic)
+import Generic.Random (genericArbitraryU)
 import Network.Socket
-import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
@@ -37,12 +39,12 @@ import Simplex.Messaging.Protocol
     MsgBody,
     MsgId,
     SenderPublicKey,
-    errMessageBody,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
 import System.IO
+import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception
 
@@ -125,7 +127,7 @@ data AMessage where
   deriving (Show)
 
 parseSMPMessage :: ByteString -> Either AgentErrorType SMPMessage
-parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ SYNTAX errBadMessage
+parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
   where
     smpMessageP :: Parser SMPMessage
     smpMessageP =
@@ -186,7 +188,7 @@ smpServerP = SMPServer <$> server <*> port <*> kHash
         else pure Nothing
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
-parseAgentMessage = parse agentMessageP $ SYNTAX errBadMessage
+parseAgentMessage = parse agentMessageP $ AGENT A_MESSAGE
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
@@ -245,50 +247,53 @@ data MsgStatus = MsgOk | MsgError MsgErrorType
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
   deriving (Eq, Show)
 
+-- | error type used in errors sent to agent clients
 data AgentErrorType
-  = UNKNOWN
-  | PROHIBITED
-  | SYNTAX Int
-  | BROKER Natural
-  | SMP ErrorType
-  | CRYPTO C.CryptoError
-  | SIZE
-  | STORE
-  | INTERNAL -- etc. TODO SYNTAX Natural
-  deriving (Eq, Show, Exception)
+  = CMD CommandErrorType -- command errors
+  | CONN ConnectionErrorType -- connection state errors
+  | SMP ErrorType -- SMP protocol errors forwarded to agent clients
+  | BROKER BrokerErrorType -- SMP server errors
+  | AGENT SMPAgentError -- errors of other agents
+  | INTERNAL String -- agent implementation errors
+  deriving (Eq, Generic, Read, Show, Exception)
 
-data AckStatus = AckOk | AckError AckErrorType
-  deriving (Show)
+data CommandErrorType
+  = PROHIBITED -- command is prohibited
+  | SYNTAX -- command syntax is invalid
+  | NO_CONN -- connection alias is required with this command
+  | SIZE -- message size is not correct (no terminating space)
+  | LARGE -- message does not fit SMP block
+  deriving (Eq, Generic, Read, Show, Exception)
 
-data AckErrorType = AckUnknown | AckProhibited | AckSyntax Int -- etc.
-  deriving (Show)
+data ConnectionErrorType
+  = UNKNOWN -- connection alias not in database
+  | DUPLICATE -- connection alias already exists
+  | SIMPLEX -- connection is simplex, but operation requires another queue
+  deriving (Eq, Generic, Read, Show, Exception)
 
-errBadEncoding :: Int
-errBadEncoding = 10
+data BrokerErrorType
+  = RESPONSE ErrorType -- invalid server response (failed to parse)
+  | UNEXPECTED -- unexpected response
+  | NETWORK -- network error
+  | TRANSPORT TransportError -- handshake or other transport error
+  | TIMEOUT -- command response timeout
+  deriving (Eq, Generic, Read, Show, Exception)
 
-errBadCommand :: Int
-errBadCommand = 11
+data SMPAgentError
+  = A_MESSAGE -- possibly should include bytestring that failed to parse
+  | A_PROHIBITED -- possibly should include the prohibited SMP/agent message
+  | A_ENCRYPTION -- cannot RSA/AES-decrypt or parse decrypted header
+  deriving (Eq, Generic, Read, Show, Exception)
 
-errBadInvitation :: Int
-errBadInvitation = 12
+instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 
-errNoConnAlias :: Int
-errNoConnAlias = 13
+instance Arbitrary CommandErrorType where arbitrary = genericArbitraryU
 
-errBadMessage :: Int
-errBadMessage = 14
+instance Arbitrary ConnectionErrorType where arbitrary = genericArbitraryU
 
-errBadServer :: Int
-errBadServer = 15
+instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
 
-smpErrTCPConnection :: Natural
-smpErrTCPConnection = 1
-
-smpErrCorrelationId :: Natural
-smpErrCorrelationId = 2
-
-smpUnexpectedResponse :: Natural
-smpUnexpectedResponse = 3
+instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 
 commandP :: Parser ACmd
 commandP =
@@ -319,9 +324,6 @@ commandP =
       m_sender <- "S=" *> partyMeta A.decimal
       m_body <- A.takeByteString
       return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
-    -- TODO other error types
-    agentError = ACmd SAgent . ERR <$> ("SMP " *> smpErrorType)
-    smpErrorType = "AUTH" $> SMP SMP.AUTH
     replyMode =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)
@@ -332,9 +334,10 @@ commandP =
       "ID " *> (MsgBadId <$> A.decimal)
         <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
         <|> "HASH" $> MsgBadHash
+    agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse commandP $ SYNTAX errBadCommand
+parseCommand = parse commandP $ CMD SYNTAX
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
@@ -358,7 +361,7 @@ serializeCommand = \case
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
-  ERR e -> "ERR " <> bshow e
+  ERR e -> "ERR " <> serializeAgentError e
   OK -> "OK"
   where
     replyMode :: ReplyMode -> ByteString
@@ -378,7 +381,21 @@ serializeCommand = \case
           MsgBadId aMsgId -> "ID " <> bshow aMsgId
           MsgBadHash -> "HASH"
 
--- TODO - save function as in the server Transmission - re-use?
+agentErrorTypeP :: Parser AgentErrorType
+agentErrorTypeP =
+  "SMP " *> (SMP <$> SMP.errorTypeP)
+    <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> SMP.errorTypeP)
+    <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
+    <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
+    <|> parseRead2
+
+serializeAgentError :: AgentErrorType -> ByteString
+serializeAgentError = \case
+  SMP e -> "SMP " <> SMP.serializeErrorType e
+  BROKER (RESPONSE e) -> "BROKER RESPONSE " <> SMP.serializeErrorType e
+  BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
+  e -> bshow e
+
 serializeMsg :: ByteString -> ByteString
 serializeMsg body = bshow (B.length body) <> "\n" <> body
 
@@ -408,7 +425,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     fromParty :: ACmd -> Either AgentErrorType (ACommand p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
       Just Refl -> Right cmd
-      _ -> Left PROHIBITED
+      _ -> Left $ CMD PROHIBITED
 
     tConnAlias :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnAlias (_, connAlias, _) cmd = case cmd of
@@ -419,7 +436,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       ERR _ -> Right cmd
       -- other responses must have connAlias
       _
-        | B.null connAlias -> Left $ SYNTAX errNoConnAlias
+        | B.null connAlias -> Left $ CMD NO_CONN
         | otherwise -> Right cmd
 
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
@@ -437,5 +454,5 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
           Just size -> liftIO $ do
             body <- B.hGet h size
             s <- getLn h
-            return $ if B.null s then Right body else Left SIZE
-          Nothing -> return . Left $ SYNTAX errMessageBody
+            return $ if B.null s then Right body else Left $ CMD SIZE
+          Nothing -> return . Left $ CMD SYNTAX

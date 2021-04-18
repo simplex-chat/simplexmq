@@ -34,12 +34,10 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
-import qualified Crypto.PubKey.RSA.Types as RSA
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe
-import GHC.IO.Exception (IOErrorType (..))
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Transmission (SMPServer (..))
@@ -48,13 +46,13 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, liftEitherError, raceAny_)
 import System.IO
-import System.IO.Error
 import System.Timeout
 
 data SMPClient = SMPClient
   { action :: Async (),
     connected :: TVar Bool,
     smpServer :: SMPServer,
+    tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TVar (Map CorrId Request),
     sndQ :: TBQueue SignedRawTransmission,
@@ -78,7 +76,7 @@ smpDefaultConfig =
   SMPClientConfig
     { qSize = 16,
       defaultPort = "5223",
-      tcpTimeout = 2_000_000,
+      tcpTimeout = 4_000_000,
       smpPing = 30_000_000,
       blockSize = 8_192, -- 16_384,
       smpCommandSize = 256
@@ -86,28 +84,29 @@ smpDefaultConfig =
 
 data Request = Request
   { queueId :: QueueId,
-    responseVar :: TMVar (Either SMPClientError Cmd)
+    responseVar :: TMVar Response
   }
 
-getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO SMPClient
+type Response = Either SMPClientError Cmd
+
+getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO (Either SMPClientError SMPClient)
 getSMPClient
   smpServer@SMPServer {host, port, keyHash}
   SMPClientConfig {qSize, defaultPort, tcpTimeout, smpPing}
   msgQ
   disconnected = do
     c <- atomically mkSMPClient
-    started <- newEmptyTMVarIO
+    err <- newEmptyTMVarIO
     action <-
       async $
-        runTCPClient host (fromMaybe defaultPort port) (client c started)
-          `finally` atomically (putTMVar started False)
-    tcpTimeout `timeout` atomically (takeTMVar started) >>= \case
-      Just True -> return c {action}
-      _ -> throwIO err -- TODO report handshake error too, not only connection timeout
+        runTCPClient host (fromMaybe defaultPort port) (client c err)
+          `finally` atomically (putTMVar err $ Just SMPNetworkError)
+    ok <- tcpTimeout `timeout` atomically (takeTMVar err)
+    pure $ case ok of
+      Just Nothing -> Right c {action}
+      Just (Just e) -> Left e
+      Nothing -> Left SMPNetworkError
     where
-      err :: IOException
-      err = mkIOError TimeExpired "connection timeout" Nothing Nothing
-
       mkSMPClient :: STM SMPClient
       mkSMPClient = do
         connected <- newTVar False
@@ -120,6 +119,7 @@ getSMPClient
             { action = undefined,
               connected,
               smpServer,
+              tcpTimeout,
               clientCorrId,
               sentCommands,
               sndQ,
@@ -127,18 +127,17 @@ getSMPClient
               msgQ
             }
 
-      client :: SMPClient -> TMVar Bool -> Handle -> IO ()
-      client c started h =
+      client :: SMPClient -> TMVar (Maybe SMPClientError) -> Handle -> IO ()
+      client c err h =
         runExceptT (clientHandshake h keyHash) >>= \case
-          Right th -> clientTransport c started th
-          -- TODO report error instead of True/False
-          Left _ -> atomically $ putTMVar started False
+          Right th -> clientTransport c err th
+          Left e -> atomically . putTMVar err . Just $ SMPTransportError e
 
-      clientTransport :: SMPClient -> TMVar Bool -> THandle -> IO ()
-      clientTransport c started th = do
+      clientTransport :: SMPClient -> TMVar (Maybe SMPClientError) -> THandle -> IO ()
+      clientTransport c err th = do
         atomically $ do
           writeTVar (connected c) True
-          putTMVar started True
+          putTMVar err Nothing
         raceAny_ [send c th, process c, receive c th, ping c]
           `finally` disconnected
 
@@ -171,7 +170,7 @@ getSMPClient
                   Left e -> Left $ SMPResponseError e
                   Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
                   Right r -> Right r
-                else Left SMPQueueIdError
+                else Left SMPUnexpectedResponse
 
 closeSMPClient :: SMPClient -> IO ()
 closeSMPClient = uninterruptibleCancel . action
@@ -179,11 +178,11 @@ closeSMPClient = uninterruptibleCancel . action
 data SMPClientError
   = SMPServerError ErrorType
   | SMPResponseError ErrorType
-  | SMPQueueIdError
   | SMPUnexpectedResponse
   | SMPResponseTimeout
-  | SMPCryptoError RSA.Error
-  | SMPClientError
+  | SMPNetworkError
+  | SMPTransportError TransportError
+  | SMPSignatureError C.CryptoError
   deriving (Eq, Show, Exception)
 
 createSMPQueue ::
@@ -235,7 +234,7 @@ okSMPCommand cmd c pKey qId =
     _ -> throwE SMPUnexpectedResponse
 
 sendSMPCommand :: SMPClient -> Maybe C.SafePrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
-sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
+sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
   t <- signTransmission $ serializeTransmission (corrId, qId, cmd)
   ExceptT $ sendRecv corrId t
@@ -253,14 +252,16 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId} pKey qId cmd = do
     signTransmission t = case pKey of
       Nothing -> return ("", t)
       Just pk -> do
-        sig <- liftEitherError SMPCryptoError $ C.sign pk t
+        sig <- liftEitherError SMPSignatureError $ C.sign pk t
         return (sig, t)
 
     -- two separate "atomically" needed to avoid blocking
-    sendRecv :: CorrId -> SignedRawTransmission -> IO (Either SMPClientError Cmd)
-    sendRecv corrId t = atomically (send corrId t) >>= atomically . takeTMVar
+    sendRecv :: CorrId -> SignedRawTransmission -> IO Response
+    sendRecv corrId t = atomically (send corrId t) >>= withTimeout . atomically . takeTMVar
+      where
+        withTimeout a = fromMaybe (Left SMPResponseTimeout) <$> timeout tcpTimeout a
 
-    send :: CorrId -> SignedRawTransmission -> STM (TMVar (Either SMPClientError Cmd))
+    send :: CorrId -> SignedRawTransmission -> STM (TMVar Response)
     send corrId t = do
       r <- newEmptyTMVar
       modifyTVar sentCommands . M.insert corrId $ Request qId r

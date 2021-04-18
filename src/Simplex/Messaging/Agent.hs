@@ -114,10 +114,15 @@ withStore ::
 withStore action = do
   runExceptT (action `E.catch` handleInternal) >>= \case
     Right c -> return c
-    Left _ -> throwError STORE
+    Left e -> throwError $ storeError e
   where
     handleInternal :: (MonadError StoreError m') => SomeException -> m' a
-    handleInternal _ = throwError SEInternal
+    handleInternal e = throwError . SEInternal $ bshow e
+    storeError :: StoreError -> AgentErrorType
+    storeError = \case
+      SEConnNotFound -> CONN UNKNOWN
+      SEConnDuplicate -> CONN DUPLICATE
+      e -> INTERNAL $ show e
 
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
 processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
@@ -156,9 +161,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st cAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
         SomeConn _ (RcvConnection _ rq) -> subscribe rq
-        -- TODO possibly there should be a separate error type trying
-        -- TODO to send the message to the connection without RcvQueue
-        _ -> throwError PROHIBITED
+        _ -> throwError $ CONN SIMPLEX
       where
         subscribe rq = subscribeQueue c rq cAlias >> respond' cAlias OK
 
@@ -171,9 +174,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st connAlias) >>= \case
         SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
         SomeConn _ (SndConnection _ sq) -> sendMsg sq
-        -- TODO possibly there should be a separate error type trying
-        -- TODO to send the message to the connection without SndQueue
-        _ -> throwError PROHIBITED -- NOT_READY ?
+        _ -> throwError $ CONN SIMPLEX
       where
         sendMsg sq = do
           senderTs <- liftIO getCurrentTime
@@ -186,7 +187,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> suspend rq
         SomeConn _ (RcvConnection _ rq) -> suspend rq
-        _ -> throwError PROHIBITED
+        _ -> throwError $ CONN SIMPLEX
       where
         suspend rq = suspendQueue c rq >> respond OK
 
@@ -195,13 +196,13 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       withStore (getConn st connAlias) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> delete rq
         SomeConn _ (RcvConnection _ rq) -> delete rq
-        _ -> throwError PROHIBITED
+        _ -> delConn
       where
+        delConn = withStore (deleteConn st connAlias) >> respond OK
         delete rq = do
           deleteQueue c rq
           removeSubscription c connAlias
-          withStore (deleteConn st connAlias)
-          respond OK
+          delConn
 
     sendReplyQInfo :: SMPServer -> SndQueue -> m ()
     sendReplyQInfo srv sq = do
@@ -242,17 +243,14 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               -- TODO update sender key in the store?
               secureQueue c rq senderKey
               withStore $ setRcvQueueStatus st rq Secured
-              sendAck c rq
-            s ->
-              -- TODO maybe send notification to the user
-              liftIO . putStrLn $ "unexpected SMP confirmation, queue status " <> show s
+            _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
         SMPMessage {agentMessage, senderMsgId, senderTimestamp} ->
           case agentMessage of
             HELLO _verifyKey _ -> do
               logServer "<--" c srv rId "MSG <HELLO>"
-              -- TODO send status update to the user?
-              withStore $ setRcvQueueStatus st rq Active
-              sendAck c rq
+              case status of
+                Active -> notify connAlias . ERR $ AGENT A_PROHIBITED
+                _ -> withStore $ setRcvQueueStatus st rq Active
             REPLY qInfo -> do
               logServer "<--" c srv rId "MSG <REPLY>"
               -- TODO move senderKey inside SndQueue
@@ -260,29 +258,33 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               withStore $ upgradeRcvConnToDuplex st connAlias sq
               connectToSendQueue c st sq senderKey verifyKey
               notify connAlias CON
-              sendAck c rq
             A_MSG body -> do
-              logServer "<--" c srv rId "MSG <MSG>"
               -- TODO check message status
-              recipientTs <- liftIO getCurrentTime
-              let m_sender = (senderMsgId, senderTimestamp)
-              let m_broker = (srvMsgId, srvTs)
-              recipientId <- withStore $ createRcvMsg st connAlias body recipientTs m_sender m_broker
-              notify connAlias $
-                MSG
-                  { m_status = MsgOk,
-                    m_recipient = (unId recipientId, recipientTs),
-                    m_sender,
-                    m_broker,
-                    m_body = body
-                  }
-              sendAck c rq
+              logServer "<--" c srv rId "MSG <MSG>"
+              case status of
+                Active -> do
+                  recipientTs <- liftIO getCurrentTime
+                  let m_sender = (senderMsgId, senderTimestamp)
+                  let m_broker = (srvMsgId, srvTs)
+                  recipientId <- withStore $ createRcvMsg st connAlias body recipientTs m_sender m_broker
+                  notify connAlias $
+                    MSG
+                      { m_status = MsgOk,
+                        m_recipient = (unId recipientId, recipientTs),
+                        m_sender,
+                        m_broker,
+                        m_body = body
+                      }
+                _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
+      sendAck c rq
       return ()
     SMP.END -> do
       removeSubscription c connAlias
       logServer "<--" c srv rId "END"
       notify connAlias END
-    _ -> logServer "<--" c srv rId $ "unexpected:" <> bshow cmd
+    _ -> do
+      logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
+      notify connAlias . ERR $ BROKER UNEXPECTED
   where
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
@@ -295,7 +297,7 @@ connectToSendQueue c st sq senderKey verifyKey = do
   withStore $ setSndQueueStatus st sq Active
 
 decryptMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => DecryptionKey -> ByteString -> m ByteString
-decryptMessage decryptKey msg = liftError CRYPTO $ C.decrypt decryptKey msg
+decryptMessage decryptKey msg = liftError cryptoError $ C.decrypt decryptKey msg
 
 newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SndQueue, SenderPublicKey, VerificationKey)
