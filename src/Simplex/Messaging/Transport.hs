@@ -82,9 +82,7 @@ runTCPClient host port client = do
   client h `E.finally` IO.hClose h
 
 startTCPClient :: HostName -> ServiceName -> IO Handle
-startTCPClient host port =
-  withSocketsDo $
-    resolve >>= foldM tryOpen (Left err) >>= either E.throwIO return -- replace fold with recursion
+startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
@@ -94,9 +92,10 @@ startTCPClient host port =
       let hints = defaultHints {addrSocketType = Stream}
        in getAddrInfo (Just hints) (Just host) (Just port)
 
-    tryOpen :: Exception e => Either e Handle -> AddrInfo -> IO (Either e Handle)
-    tryOpen (Left _) addr = E.try $ open addr
-    tryOpen h _ = return h
+    tryOpen :: IOException -> [AddrInfo] -> IO Handle
+    tryOpen e [] = E.throwIO e
+    tryOpen _ (addr : as) =
+      E.try (open addr) >>= either (`tryOpen` as) pure
 
     open :: AddrInfo -> IO Handle
     open addr = do
