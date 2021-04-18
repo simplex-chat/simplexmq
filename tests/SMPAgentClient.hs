@@ -10,7 +10,7 @@ import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Network.Socket (HostName, ServiceName)
-import SMPClient (testPort, waitFor, withSmpServer, withSmpServerThreadOn)
+import SMPClient (testPort, waitFor, waitStopped, withSmpServer, withSmpServerThreadOn)
 import Simplex.Messaging.Agent (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
@@ -128,7 +128,7 @@ withSmpAgentThreadOn (port', db') f = do
   started <- newEmptyTMVarIO
   E.bracket
     (forkIOWithUnmask ($ runSMPAgentBlocking started cfg {tcpPort = port', dbFile = db'}))
-    (liftIO . killThread >=> const (removeFile db'))
+    (waitStopped started >=> const (removeFile db'))
     (waitFor started f)
 
 withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, String) -> m a -> m a

@@ -56,7 +56,10 @@ runTCPServer started port server = do
     atomically . modifyTVar clients $ S.insert tid
   where
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
-    closeServer clients sock = readTVarIO clients >>= mapM_ killThread >> close sock
+    closeServer clients sock = do
+      readTVarIO clients >>= mapM_ killThread
+      close sock
+      void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
