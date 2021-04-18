@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -24,10 +25,13 @@ import Data.Kind
 import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
+import GHC.Generics (Generic)
+import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
+import Test.QuickCheck (Arbitrary (..))
 
 data Party = Broker | Recipient | Sender
   deriving (Show)
@@ -113,7 +117,7 @@ data ErrorType
   | NO_MSG
   | INTERNAL
   | DUPLICATE_ -- TODO remove, not part of SMP protocol
-  deriving (Eq, Read, Show)
+  deriving (Eq, Generic, Read, Show)
 
 data CommandError
   = PROHIBITED
@@ -121,7 +125,11 @@ data CommandError
   | NO_AUTH
   | HAS_AUTH
   | NO_QUEUE
-  deriving (Eq, Read, Show)
+  deriving (Eq, Generic, Read, Show)
+
+instance Arbitrary ErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary CommandError where arbitrary = genericArbitraryU
 
 transmissionP :: Parser RawTransmission
 transmissionP = do
@@ -163,12 +171,6 @@ commandP =
       Cmd SBroker . MSG msgId ts <$> A.take size <* A.space
     serverError = Cmd SBroker . ERR <$> errorTypeP
 
-errorTypeP :: Parser ErrorType
-errorTypeP =
-  "AUTH" $> AUTH
-    <|> "CMD " *> (CMD <$> parseRead)
-    <|> parseRead
-
 -- TODO ignore the end of block, no need to parse it
 parseCommand :: ByteString -> Either ErrorType Cmd
 parseCommand = parse (commandP <* " " <* A.takeByteString) $ CMD SYNTAX
@@ -183,10 +185,16 @@ serializeCommand = \case
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
-  Cmd SBroker (ERR err) -> "ERR " <> bshow err
+  Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
   Cmd SBroker resp -> bshow resp
   where
     serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
+
+errorTypeP :: Parser ErrorType
+errorTypeP = "CMD " *> (CMD <$> parseRead) <|> parseRead
+
+serializeErrorType :: ErrorType -> ByteString
+serializeErrorType = bshow
 
 tPut :: THandle -> SignedRawTransmission -> IO (Either TransportError ())
 tPut th (C.Signature sig, t) =

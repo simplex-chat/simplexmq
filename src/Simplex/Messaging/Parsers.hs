@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Simplex.Messaging.Parsers where
 
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -29,5 +31,14 @@ parse parser err = first (const err) . parseAll parser
 parseAll :: Parser a -> (ByteString -> Either String a)
 parseAll parser = A.parseOnly (parser <* A.endOfInput)
 
+parseRead_ :: Read a => Parser ByteString -> Parser a
+parseRead_ = (>>= maybe (fail "cannot read") pure . readMaybe . B.unpack)
+
 parseRead :: Read a => Parser a
-parseRead = maybe (fail "unknown error") pure . readMaybe . B.unpack =<< A.takeTill (== ' ')
+parseRead = parseRead_ $ A.takeTill (== ' ')
+
+parseRead2 :: Read a => Parser a
+parseRead2 = parseRead_ $ do
+  w1 <- A.takeTill (== ' ') <* A.char ' '
+  w2 <- A.takeTill (== ' ')
+  pure $ w1 <> " " <> w2

@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -26,6 +27,8 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
+import GHC.Generics (Generic)
+import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
@@ -41,6 +44,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
 import System.IO
+import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception
 
@@ -251,7 +255,7 @@ data AgentErrorType
   | BROKER BrokerErrorType -- SMP server errors
   | AGENT SMPAgentError -- errors of other agents
   | INTERNAL -- agent implementation errors
-  deriving (Eq, Read, Show, Exception)
+  deriving (Eq, Generic, Read, Show, Exception)
 
 data CommandErrorType
   = PROHIBITED -- command is prohibited
@@ -259,13 +263,13 @@ data CommandErrorType
   | NO_CONN -- connection alias is required with this command
   | SIZE -- message size is not correct (no terminating space)
   | LARGE -- message does not fit SMP block
-  deriving (Eq, Read, Show, Exception)
+  deriving (Eq, Generic, Read, Show, Exception)
 
 data ConnectionErrorType
   = UNKNOWN -- connection alias not in database
   | DUPLICATE -- connection alias already exists
   | SIMPLEX -- connection is simplex, but operation requires another queue
-  deriving (Eq, Read, Show, Exception)
+  deriving (Eq, Generic, Read, Show, Exception)
 
 data BrokerErrorType
   = RESPONSE ErrorType -- invalid server response (failed to parse)
@@ -273,13 +277,23 @@ data BrokerErrorType
   | NETWORK -- network error
   | TRANSPORT TransportError -- handshake or other transport error
   | TIMEOUT -- command response timeout
-  deriving (Eq, Read, Show, Exception)
+  deriving (Eq, Generic, Read, Show, Exception)
 
 data SMPAgentError
   = A_MESSAGE -- possibly should include bytestring that failed to parse
   | A_PROHIBITED -- possibly should include the prohibited SMP/agent message
   | A_ENCRYPTION -- cannot RSA/AES-decrypt or parse decrypted header
-  deriving (Eq, Read, Show, Exception)
+  deriving (Eq, Generic, Read, Show, Exception)
+
+instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary CommandErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary ConnectionErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 
 commandP :: Parser ACmd
 commandP =
@@ -320,20 +334,7 @@ commandP =
       "ID " *> (MsgBadId <$> A.decimal)
         <|> "NO_ID " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
         <|> "HASH" $> MsgBadHash
-    agentError = ACmd SAgent . ERR <$> agentErrorType
-    agentErrorType =
-      "SMP " *> (SMP <$> SMP.errorTypeP)
-        <|> "BROKER " *> (BROKER <$> brokerError)
-        <|> parseRead
-    brokerError =
-      "RESPONSE " *> (RESPONSE <$> SMP.errorTypeP)
-        <|> "TRANSPORT " *> (TRANSPORT <$> transportError)
-        <|> parseRead
-    transportError =
-      "BLOCK" $> TEBadBlock
-        <|> "AES_ENCRYPT" $> TEEncrypt
-        <|> "AES_DECRYPT" $> TEDecrypt
-        <|> TEHandshake <$> parseRead
+    agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse commandP $ CMD SYNTAX
@@ -360,7 +361,7 @@ serializeCommand = \case
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
-  ERR e -> "ERR " <> agentError e
+  ERR e -> "ERR " <> serializeAgentError e
   OK -> "OK"
   where
     replyMode :: ReplyMode -> ByteString
@@ -379,22 +380,21 @@ serializeCommand = \case
             B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
           MsgBadId aMsgId -> "ID " <> bshow aMsgId
           MsgBadHash -> "HASH"
-    agentError :: AgentErrorType -> ByteString
-    agentError = \case
-      SMP e -> "SMP " <> bshow e
-      BROKER e -> "BROKER " <> brokerError e
-      e -> bshow e
-    brokerError :: BrokerErrorType -> ByteString
-    brokerError = \case
-      RESPONSE e -> "RESPONSE " <> bshow e
-      TRANSPORT e -> "TRANSPORT " <> transportError e
-      e -> bshow e
-    transportError :: TransportError -> ByteString
-    transportError = \case
-      TEEncrypt -> "AES_ENCRYPT"
-      TEDecrypt -> "AES_DECRYPT"
-      TEBadBlock -> "BLOCK"
-      TEHandshake e -> bshow e
+
+agentErrorTypeP :: Parser AgentErrorType
+agentErrorTypeP =
+  "SMP " *> (SMP <$> SMP.errorTypeP)
+    <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> SMP.errorTypeP)
+    <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
+    <|> "INTERNAL" $> INTERNAL
+    <|> parseRead2
+
+serializeAgentError :: AgentErrorType -> ByteString
+serializeAgentError = \case
+  SMP e -> "SMP " <> bshow e
+  BROKER (RESPONSE e) -> "BROKER RESPONSE " <> bshow e
+  BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
+  e -> bshow e
 
 serializeMsg :: ByteString -> ByteString
 serializeMsg body = bshow (B.length body) <> "\n" <> body

@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -11,6 +12,7 @@
 
 module Simplex.Messaging.Transport where
 
+import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
@@ -21,18 +23,22 @@ import Data.Bifunctor (first)
 import Data.ByteArray (xor)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Word (Word32)
+import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
+import Generic.Random (genericArbitraryU)
 import Network.Socket
 import Network.Transport.Internal (encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (parse, parseAll)
+import Simplex.Messaging.Parsers (parse, parseAll, parseRead)
 import Simplex.Messaging.Util (bshow, liftError)
 import System.IO
 import System.IO.Error
+import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Concurrent
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
@@ -157,7 +163,7 @@ data TransportError
   | TEEncrypt
   | TEDecrypt
   | TEHandshake HandshakeError
-  deriving (Eq, Read, Show, Exception)
+  deriving (Eq, Generic, Read, Show, Exception)
 
 data HandshakeError
   = ENCRYPT
@@ -168,7 +174,25 @@ data HandshakeError
   | BAD_HASH
   | MAJOR_VERSION
   | TERMINATED
-  deriving (Eq, Read, Show, Exception)
+  deriving (Eq, Generic, Read, Show, Exception)
+
+instance Arbitrary TransportError where arbitrary = genericArbitraryU
+
+instance Arbitrary HandshakeError where arbitrary = genericArbitraryU
+
+transportErrorP :: Parser TransportError
+transportErrorP =
+  "BLOCK" $> TEBadBlock
+    <|> "AES_ENCRYPT" $> TEEncrypt
+    <|> "AES_DECRYPT" $> TEDecrypt
+    <|> TEHandshake <$> parseRead
+
+serializeTransportError :: TransportError -> ByteString
+serializeTransportError = \case
+  TEEncrypt -> "AES_ENCRYPT"
+  TEDecrypt -> "AES_DECRYPT"
+  TEBadBlock -> "BLOCK"
+  TEHandshake e -> bshow e
 
 tPutEncrypted :: THandle -> ByteString -> IO (Either TransportError ())
 tPutEncrypted THandle {handle = h, sndKey, blockSize} block =
