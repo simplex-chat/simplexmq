@@ -94,7 +94,10 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     connectClient = do
       cfg <- asks $ smpCfg . config
       liftEitherError smpClientError (getSMPClient srv cfg msgQ clientDisconnected)
-        `E.catch` \(_ :: IOException) -> throwError INTERNAL
+        `E.catch` internalError
+      where
+        internalError :: IOException -> m SMPClient
+        internalError = throwError . INTERNAL . show
 
     clientDisconnected :: IO ()
     clientDisconnected = do
@@ -145,7 +148,7 @@ smpClientError = \case
   SMPResponseTimeout -> BROKER TIMEOUT
   SMPNetworkError -> BROKER NETWORK
   SMPTransportError e -> BROKER $ TRANSPORT e
-  SMPSignatureError _ -> INTERNAL
+  e@(SMPSignatureError _) -> INTERNAL $ show e
 
 newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)
 newReceiveQueue c srv connAlias = do
@@ -285,4 +288,4 @@ cryptoError = \case
   C.RSADecryptError _ -> AGENT A_ENCRYPTION
   C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
   C.AESDecryptError -> AGENT A_ENCRYPTION
-  _ -> INTERNAL
+  e -> INTERNAL $ show e

@@ -254,7 +254,7 @@ data AgentErrorType
   | SMP ErrorType -- SMP protocol errors forwarded to agent clients
   | BROKER BrokerErrorType -- SMP server errors
   | AGENT SMPAgentError -- errors of other agents
-  | INTERNAL -- agent implementation errors
+  | INTERNAL String -- agent implementation errors
   deriving (Eq, Generic, Read, Show, Exception)
 
 data CommandErrorType
@@ -386,13 +386,13 @@ agentErrorTypeP =
   "SMP " *> (SMP <$> SMP.errorTypeP)
     <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> SMP.errorTypeP)
     <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
-    <|> "INTERNAL" $> INTERNAL
+    <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
     <|> parseRead2
 
 serializeAgentError :: AgentErrorType -> ByteString
 serializeAgentError = \case
-  SMP e -> "SMP " <> bshow e
-  BROKER (RESPONSE e) -> "BROKER RESPONSE " <> bshow e
+  SMP e -> "SMP " <> SMP.serializeErrorType e
+  BROKER (RESPONSE e) -> "BROKER RESPONSE " <> SMP.serializeErrorType e
   BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
   e -> bshow e
 

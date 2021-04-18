@@ -191,7 +191,7 @@ serializeCommand = \case
     serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
 
 errorTypeP :: Parser ErrorType
-errorTypeP = "CMD " *> (CMD <$> parseRead) <|> parseRead
+errorTypeP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
 
 serializeErrorType :: ErrorType -> ByteString
 serializeErrorType = bshow

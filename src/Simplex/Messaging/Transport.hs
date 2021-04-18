@@ -34,7 +34,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import Network.Transport.Internal (encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (parse, parseAll, parseRead)
+import Simplex.Messaging.Parsers (parse, parseAll, parseRead1)
 import Simplex.Messaging.Util (bshow, liftError)
 import System.IO
 import System.IO.Error
@@ -185,7 +185,7 @@ transportErrorP =
   "BLOCK" $> TEBadBlock
     <|> "AES_ENCRYPT" $> TEEncrypt
     <|> "AES_DECRYPT" $> TEDecrypt
-    <|> TEHandshake <$> parseRead
+    <|> TEHandshake <$> parseRead1
 
 serializeTransportError :: TransportError -> ByteString
 serializeTransportError = \case

@@ -122,7 +122,7 @@ withStore action = do
     storeError = \case
       SEConnNotFound -> CONN UNKNOWN
       SEConnDuplicate -> CONN DUPLICATE
-      _ -> INTERNAL
+      e -> INTERNAL $ show e
 
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
 processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =

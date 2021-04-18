@@ -3,7 +3,6 @@ module ProtocolErrorTests where
 import Simplex.Messaging.Agent.Transmission (AgentErrorType, agentErrorTypeP, serializeAgentError)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ErrorType, errorTypeP, serializeErrorType)
-import Simplex.Messaging.Util (bshow)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck

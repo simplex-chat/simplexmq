@@ -31,14 +31,14 @@ parse parser err = first (const err) . parseAll parser
 parseAll :: Parser a -> (ByteString -> Either String a)
 parseAll parser = A.parseOnly (parser <* A.endOfInput)
 
-parseRead_ :: Read a => Parser ByteString -> Parser a
-parseRead_ = (>>= maybe (fail "cannot read") pure . readMaybe . B.unpack)
+parseRead :: Read a => Parser ByteString -> Parser a
+parseRead = (>>= maybe (fail "cannot read") pure . readMaybe . B.unpack)
 
-parseRead :: Read a => Parser a
-parseRead = parseRead_ $ A.takeTill (== ' ')
+parseRead1 :: Read a => Parser a
+parseRead1 = parseRead $ A.takeTill (== ' ')
 
 parseRead2 :: Read a => Parser a
-parseRead2 = parseRead_ $ do
+parseRead2 = parseRead $ do
   w1 <- A.takeTill (== ' ') <* A.char ' '
   w2 <- A.takeTill (== ' ')
   pure $ w1 <> " " <> w2
