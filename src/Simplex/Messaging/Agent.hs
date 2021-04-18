@@ -26,6 +26,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
+import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
@@ -39,7 +40,6 @@ import Simplex.Messaging.Transport (putLn, runTCPServer)
 import Simplex.Messaging.Util (bshow, liftError)
 import System.IO (Handle)
 import UnliftIO.Async (race_)
-import UnliftIO.Exception (SomeException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -116,7 +116,7 @@ withStore action = do
     Right c -> return c
     Left e -> throwError $ storeError e
   where
-    handleInternal :: (MonadError StoreError m') => SomeException -> m' a
+    handleInternal :: (MonadError StoreError m') => SQLError -> m' a
     handleInternal e = throwError . SEInternal $ bshow e
     storeError :: StoreError -> AgentErrorType
     storeError = \case
