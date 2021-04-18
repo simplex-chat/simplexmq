@@ -166,8 +166,8 @@ agentMessageP =
     hello = HELLO <$> C.pubKeyP <*> ackMode
     reply = REPLY <$> smpQueueInfoP
     a_msg = do
-      size :: Int <- A.decimal
-      A_MSG <$> (A.endOfLine *> A.take size <* A.endOfLine)
+      size :: Int <- A.decimal <* A.endOfLine
+      A_MSG <$> A.take size <* A.endOfLine
     ackMode = " NO_ACK" $> AckMode Off <|> pure (AckMode On)
 
 smpQueueInfoP :: Parser SMPQueueInfo
@@ -332,7 +332,7 @@ commandP =
     status = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
     msgErrorType =
       "ID " *> (MsgBadId <$> A.decimal)
-        <|> "NO_ID " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
+        <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
         <|> "HASH" $> MsgBadHash
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
