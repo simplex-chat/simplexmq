@@ -52,8 +52,12 @@ storeTests = withStore do
   describe "compiled as threadsafe" testCompiledThreadsafe
   describe "foreign keys enabled" testForeignKeysEnabled
   describe "store methods" do
-    describe "createRcvConn" testCreateRcvConn
-    describe "createSndConn" testCreateSndConn
+    describe "createRcvConn" do
+      describe "unique" testCreateRcvConn
+      describe "duplicate" testCreateRcvConnDuplicate
+    describe "createSndConn" do
+      describe "unique" testCreateSndConn
+      describe "duplicate" testCreateSndConnDuplicate
     describe "getAllConnAliases" testGetAllConnAliases
     describe "getRcvQueue" testGetRcvQueue
     describe "deleteConn" do
@@ -132,6 +136,14 @@ testCreateRcvConn = do
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
 
+testCreateRcvConnDuplicate :: SpecWith SQLiteStore
+testCreateRcvConnDuplicate = do
+  it "should throw error on attempt to create duplicate RcvConnection" $ \store -> do
+    createRcvConn store rcvQueue1
+      `returnsResult` ()
+    createRcvConn store rcvQueue1
+      `returnsResult` ()
+
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
   it "should create SndConnection and add RcvQueue" $ \store -> do
@@ -143,6 +155,14 @@ testCreateSndConn = do
       `returnsResult` ()
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
+
+testCreateSndConnDuplicate :: SpecWith SQLiteStore
+testCreateSndConnDuplicate = do
+  it "should throw error on attempt to create duplicate SndConnection" $ \store -> do
+    createSndConn store sndQueue1
+      `returnsResult` ()
+    createSndConn store sndQueue1
+      `returnsResult` ()
 
 testGetAllConnAliases :: SpecWith SQLiteStore
 testGetAllConnAliases = do
