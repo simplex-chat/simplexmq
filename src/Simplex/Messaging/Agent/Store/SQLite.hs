@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -21,6 +22,7 @@ where
 import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Data.Bifunctor (first)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (isPrefixOf)
@@ -38,7 +40,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (liftIOEither)
+import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath (takeDirectory)
 import Text.Read (readMaybe)
@@ -75,24 +77,20 @@ connectSQLiteStore dbFilePath = do
   liftIO $ DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
   return SQLiteStore {dbFilePath, dbConn}
 
+checkDuplicate :: (MonadUnliftIO m, MonadError StoreError m) => IO () -> m ()
+checkDuplicate action = liftIOEither $ first handleError <$> E.try action
+  where
+    handleError :: SQLError -> StoreError
+    handleError e
+      | DB.sqlError e == DB.ErrorConstraint = SEConnDuplicate
+      | otherwise = SEInternal $ bshow e
+
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
-  createRcvConn SQLiteStore {dbConn} rcvQueue =
-    liftIOEither $
-      (Right <$> createRcvQueueAndConn dbConn rcvQueue)
-        `E.catch` \(e :: SQLError) ->
-          if DB.sqlError e == DB.ErrorConstraint
-            then return (Left SEConnDuplicate)
-            else E.throwIO e
+  createRcvConn SQLiteStore {dbConn} = checkDuplicate . createRcvQueueAndConn dbConn
 
   createSndConn :: SQLiteStore -> SndQueue -> m ()
-  createSndConn SQLiteStore {dbConn} sndQueue =
-    liftIOEither $
-      (Right <$> createSndQueueAndConn dbConn sndQueue)
-        `E.catch` \(e :: SQLError) ->
-          if DB.sqlError e == DB.ErrorConstraint
-            then return (Left SEConnDuplicate)
-            else E.throwIO e
+  createSndConn SQLiteStore {dbConn} = checkDuplicate . createSndQueueAndConn dbConn
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
   getConn SQLiteStore {dbConn} connAlias = do
