@@ -142,7 +142,7 @@ testCreateRcvConnDuplicate = do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     createRcvConn store rcvQueue1
-      `returnsResult` ()
+      `throwsError` SEConnDuplicate
 
 testCreateSndConn :: SpecWith SQLiteStore
 testCreateSndConn = do
@@ -162,7 +162,7 @@ testCreateSndConnDuplicate = do
     createSndConn store sndQueue1
       `returnsResult` ()
     createSndConn store sndQueue1
-      `returnsResult` ()
+      `throwsError` SEConnDuplicate
 
 testGetAllConnAliases :: SpecWith SQLiteStore
 testGetAllConnAliases = do

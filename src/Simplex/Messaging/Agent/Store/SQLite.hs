@@ -78,13 +78,21 @@ connectSQLiteStore dbFilePath = do
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
   createRcvConn SQLiteStore {dbConn} rcvQueue =
-    liftIO $
-      createRcvQueueAndConn dbConn rcvQueue
+    liftIOEither $
+      (Right <$> createRcvQueueAndConn dbConn rcvQueue)
+        `E.catch` \(e :: SQLError) ->
+          if DB.sqlError e == DB.ErrorConstraint
+            then return (Left SEConnDuplicate)
+            else E.throwIO e
 
   createSndConn :: SQLiteStore -> SndQueue -> m ()
   createSndConn SQLiteStore {dbConn} sndQueue =
-    liftIO $
-      createSndQueueAndConn dbConn sndQueue
+    liftIOEither $
+      (Right <$> createSndQueueAndConn dbConn sndQueue)
+        `E.catch` \(e :: SQLError) ->
+          if DB.sqlError e == DB.ErrorConstraint
+            then return (Left SEConnDuplicate)
+            else E.throwIO e
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
   getConn SQLiteStore {dbConn} connAlias = do
