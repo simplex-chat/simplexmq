@@ -18,11 +18,11 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
-import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM (atomically, newEmptyTMVarIO, takeTMVar)
+import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, takeTMVar)
+import UnliftIO.Timeout (timeout)
 
 testHost :: HostName
 testHost = "localhost"
@@ -88,7 +88,13 @@ withSmpServerThreadOn port f = do
   E.bracket
     (forkIOWithUnmask ($ runSMPServerBlocking started cfg {tcpPort = port}))
     (liftIO . killThread)
-    \x -> liftIO (5_000_000 `timeout` atomically (takeTMVar started)) >> f x
+    (waitFor started f)
+
+waitFor :: MonadUnliftIO m => TMVar Bool -> (ThreadId -> m a) -> (ThreadId -> m a)
+waitFor started f tid =
+  5_000_000 `timeout` atomically (takeTMVar started) >>= \case
+    Just _ -> f tid
+    Nothing -> error "server did not start"
 
 withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
 withSmpServerOn port = withSmpServerThreadOn port . const
