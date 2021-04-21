@@ -129,25 +129,34 @@ chatHelpInfo :: [StyledString]
 chatHelpInfo =
   map
     styleMarkdown
-    [ "Using chat:",
-      highlight "/add <name>" <> "       - create invitation to send out-of-band to your contact <name>",
-      "                    (<name> is the alias you choose to message your contact)",
-      highlight "/connect <name> <invitation>" <> " - connect using <invitation>",
-      "                    (a string returned by /add that starts from \"smp::\")",
-      "                    if /connect is used by your contact,",
-      "                    <name> is the alias your contact chooses to message you",
-      highlight "@<name> <message>" <> " - send <message> (any string) to contact <name>",
-      "                    @<name> will be auto-typed to send to the previous contact -",
-      "                    just start typing the message!",
-      highlight "/delete" <> "           - delete contact and all messages you had with them",
-      highlight "/markdown" <> "         - markdown cheat-sheet",
+      
+    [ "Using SimpleX:",
       "",
-      "Commands can be abbreviated to 1 letter: ",
-      listCommands ["/h", "/a", "/c", "/d", "/m"]
+      "For an illustration of how SimpleX works, consult the README",
+      "",
+      highlight "/add " <> highlight_var "<name>",
+      "Use the add command to create an invitation. Enter the command followed by an alias for your contact. The command will then output an invitation key. The key should be sent to your contact out of band using a trusted method.",
+      "",
+      highlight "/connect " <> highlight_var "<name> <invitation>",
+      "Use the connect command when you have received an invitation key from your contact. The command should be entered followed by an alias for your contact and then the invitation key.",
+      "",
+      highlight "@<name> <message>",
+      "Both contacts will be notified once a connection has been successfully established. You will be automatically connected to your contact and you can enter a message to send.",
+      "",
+      highlight "/delete ",
+      "Use the delete command to delete your contact and all communications with them.",
+      "",
+      highlight "/markdown",
+      "Use the markdown command to display a cheatsheet of markdown syntax supported by SimpleX",
+      "",
+      "",
+      "The above commands may be abbreviated to a single letter: ",
+      listCommands ["/a", "/c", "/m", "/d"]
     ]
   where
     listCommands = mconcat . intersperse ", " . map highlight
     highlight = Markdown (Colored Cyan)
+    highlight_var = Markdown (Colored Yellow)
 
 markdownInfo :: [StyledString]
 markdownInfo =
