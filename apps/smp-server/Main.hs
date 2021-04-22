@@ -71,4 +71,4 @@ readCreateKey = do
         errorExit e = putStrLn (e <> ": " <> path) >> exitFailure
 
 publicKeyHash :: C.PublicKey -> B.ByteString
-publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.serializePubKey
+publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.binaryEncodePubKey

@@ -32,7 +32,7 @@ import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
 import Network.Socket
-import Network.Transport.Internal (encodeWord32)
+import Network.Transport.Internal (decodeNum16, decodeNum32, encodeEnum16, encodeEnum32, encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parse, parseAll, parseRead1)
 import Simplex.Messaging.Util (bshow, liftError)
@@ -172,6 +172,7 @@ data HandshakeError
   | DECRYPT
   | VERSION
   | RSA_KEY
+  | HEADER
   | AES_KEYS
   | BAD_HASH
   | MAJOR_VERSION
@@ -233,15 +234,18 @@ makeNextIV SessionKey {baseIV, counter} = atomically $ do
 -- The numbers in function names refer to the steps in the document
 serverHandshake :: Handle -> C.FullKeyPair -> ExceptT TransportError IO THandle
 serverHandshake h (k, pk) = do
-  liftIO sendPublicKey_1
+  liftIO sendHeaderAndPublicKey_1
   encryptedKeys <- receiveEncryptedKeys_4
   HandshakeKeys {sndKey, rcvKey} <- decryptParseKeys_5 encryptedKeys
-  th <- liftIO $ transportHandle h rcvKey sndKey -- keys are swapped here
+  th <- liftIO $ transportHandle h rcvKey sndKey transportBlockSize -- keys are swapped here
   sendWelcome_6 th
   pure th
   where
-    sendPublicKey_1 :: IO ()
-    sendPublicKey_1 = putLn h $ C.serializePubKey k
+    sendHeaderAndPublicKey_1 :: IO ()
+    sendHeaderAndPublicKey_1 = do
+      let sKey = C.binaryEncodePubKey k
+          header = TransportHeader {blockSize = transportBlockSize, keySize = B.length sKey}
+      B.hPut h $ binaryTransportHeader header <> sKey
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString
     receiveEncryptedKeys_4 =
       liftIO (B.hGet h $ C.publicKeySize k) >>= \case
@@ -258,20 +262,25 @@ serverHandshake h (k, pk) = do
 -- The numbers in function names refer to the steps in the document
 clientHandshake :: Handle -> Maybe C.KeyHash -> ExceptT TransportError IO THandle
 clientHandshake h keyHash = do
-  k <- getPublicKey_1_2
+  (k, blkSize) <- getHeaderAndPublicKey_1_2
   keys@HandshakeKeys {sndKey, rcvKey} <- liftIO generateKeys_3
   sendEncryptedKeys_4 k keys
-  th <- liftIO $ transportHandle h sndKey rcvKey
+  th <- liftIO $ transportHandle h sndKey rcvKey blkSize
   getWelcome_6 th >>= checkVersion
   pure th
   where
-    getPublicKey_1_2 :: ExceptT TransportError IO C.PublicKey
-    getPublicKey_1_2 = do
-      s <- liftIO $ getLn h
+    getHeaderAndPublicKey_1_2 :: ExceptT TransportError IO (C.PublicKey, Int)
+    getHeaderAndPublicKey_1_2 = do
+      header <- liftIO (B.hGet h transportHeaderSize)
+      TransportHeader {blockSize, keySize} <- liftEither $ parse transportHeaderP (TEHandshake HEADER) header
+      when (blockSize < transportBlockSize || blockSize > maxTransportBlockSize) $
+        throwError $ TEHandshake HEADER
+      s <- liftIO $ B.hGet h keySize
       maybe (pure ()) (validateKeyHash_2 s) keyHash
-      liftEither $ parseKey s
+      key <- liftEither $ parseKey s
+      pure (key, blockSize)
     parseKey :: ByteString -> Either TransportError C.PublicKey
-    parseKey = first (const $ TEHandshake RSA_KEY) . parseAll C.pubKeyP
+    parseKey = first (const $ TEHandshake RSA_KEY) . parseAll C.binaryPubKeyP
     validateKeyHash_2 :: ByteString -> C.KeyHash -> ExceptT TransportError IO ()
     validateKeyHash_2 k kHash
       | C.getKeyHash k == kHash = pure ()
@@ -296,6 +305,35 @@ clientHandshake h keyHash = do
       when (major smpVersion > major currentSMPVersion) . throwE $
         TEHandshake MAJOR_VERSION
 
+data TransportHeader = TransportHeader {blockSize :: Int, keySize :: Int}
+  deriving (Eq, Show)
+
+binaryRsaTransport :: Int
+binaryRsaTransport = 0
+
+transportBlockSize :: Int
+transportBlockSize = 8192
+
+maxTransportBlockSize :: Int
+maxTransportBlockSize = 65536
+
+transportHeaderSize :: Int
+transportHeaderSize = 8
+
+binaryTransportHeader :: TransportHeader -> ByteString
+binaryTransportHeader TransportHeader {blockSize, keySize} =
+  encodeEnum32 blockSize <> encodeEnum16 binaryRsaTransport <> encodeEnum16 keySize
+
+transportHeaderP :: Parser TransportHeader
+transportHeaderP = TransportHeader <$> int32 <* binaryRsaTransportP <*> int16
+  where
+    int32 = decodeNum32 <$> A.take 4
+    int16 = decodeNum16 <$> A.take 2
+    binaryRsaTransportP = binaryRsa <$> int16
+    binaryRsa :: Int -> Parser Int
+    binaryRsa 0 = pure 0
+    binaryRsa _ = fail "unknown transport mode"
+
 serializeHandshakeKeys :: HandshakeKeys -> ByteString
 serializeHandshakeKeys HandshakeKeys {sndKey, rcvKey} =
   serializeKey sndKey <> serializeKey rcvKey
@@ -315,8 +353,8 @@ handshakeKeysP = HandshakeKeys <$> keyP <*> keyP
 parseHandshakeKeys :: ByteString -> Either TransportError HandshakeKeys
 parseHandshakeKeys = parse handshakeKeysP $ TEHandshake AES_KEYS
 
-transportHandle :: Handle -> SessionKey -> SessionKey -> IO THandle
-transportHandle h sk rk = do
+transportHandle :: Handle -> SessionKey -> SessionKey -> Int -> IO THandle
+transportHandle h sk rk blockSize = do
   sndCounter <- newTVarIO 0
   rcvCounter <- newTVarIO 0
   pure
@@ -324,5 +362,5 @@ transportHandle h sk rk = do
       { handle = h,
         sndKey = sk {counter = sndCounter},
         rcvKey = rk {counter = rcvCounter},
-        blockSize = 8192
+        blockSize
       }

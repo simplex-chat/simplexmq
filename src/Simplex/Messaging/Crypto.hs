@@ -33,10 +33,12 @@ module Simplex.Messaging.Crypto
     decryptAES,
     serializePrivKey,
     serializePubKey,
+    binaryEncodePubKey,
     serializeKeyHash,
     getKeyHash,
     privKeyP,
     pubKeyP,
+    binaryPubKeyP,
     keyHashP,
     authTagSize,
     authTagToBS,
@@ -179,8 +181,8 @@ generateKeyPair size = loop
         then loop
         else pure (PublicKey k, mkPrivateKey pk)
 
-rsaPrivateSize :: PrivateKey k => k -> Int
-rsaPrivateSize = R.public_size . R.private_pub . rsaPrivateKey
+privateKeySize :: PrivateKey k => k -> Int
+privateKeySize = R.public_size . R.private_pub . rsaPrivateKey
 
 publicKey :: FullPrivateKey -> PublicKey
 publicKey = PublicKey . R.private_pub . rsaPrivateKey
@@ -258,7 +260,7 @@ encrypt k paddedSize msg = do
 
 decrypt :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
-  let (encHeader, msg') = B.splitAt (rsaPrivateSize pk) msg''
+  let (encHeader, msg') = B.splitAt (privateKeySize pk) msg''
   header <- decryptOAEP pk encHeader
   Header {aesKey, ivBytes, authTag, msgSize} <- except $ parseHeader header
   msg <- decryptAES aesKey ivBytes msg' authTag
@@ -342,6 +344,9 @@ serializePrivKey pk = "rsa:" <> encodePrivKey pk
 pubKeyP :: Parser PublicKey
 pubKeyP = keyP decodePubKey <|> legacyPubKeyP
 
+binaryPubKeyP :: Parser PublicKey
+binaryPubKeyP = either fail pure . binaryDecodePubKey =<< A.takeByteString
+
 privKeyP :: PrivateKey k => Parser k
 privKeyP = keyP decodePrivKey <|> legacyPrivKeyP
 
@@ -382,28 +387,34 @@ safeRsaPrivateKey (size, n, d) =
     }
 
 encodePubKey :: PublicKey -> ByteString
-encodePubKey = encodeKey . PubKeyRSA . rsaPublicKey
+encodePubKey = encode . binaryEncodePubKey
+
+binaryEncodePubKey :: PublicKey -> ByteString
+binaryEncodePubKey = binaryEncodeKey . PubKeyRSA . rsaPublicKey
 
 encodePrivKey :: PrivateKey k => k -> ByteString
-encodePrivKey = encodeKey . PrivKeyRSA . rsaPrivateKey
+encodePrivKey = encode . binaryEncodeKey . PrivKeyRSA . rsaPrivateKey
 
-encodeKey :: ASN1Object a => a -> ByteString
-encodeKey k = encode . toStrict . encodeASN1 DER $ toASN1 k []
+binaryEncodeKey :: ASN1Object a => a -> ByteString
+binaryEncodeKey k = toStrict . encodeASN1 DER $ toASN1 k []
 
 decodePubKey :: ByteString -> Either String PublicKey
-decodePubKey s =
-  decodeKey s >>= \case
+decodePubKey = binaryDecodePubKey <=< decode
+
+binaryDecodePubKey :: ByteString -> Either String PublicKey
+binaryDecodePubKey =
+  binaryDecodeKey >=> \case
     (PubKeyRSA k, []) -> Right $ PublicKey k
     r -> keyError r
 
 decodePrivKey :: PrivateKey k => ByteString -> Either String k
-decodePrivKey s =
-  decodeKey s >>= \case
+decodePrivKey =
+  decode >=> binaryDecodeKey >=> \case
     (PrivKeyRSA pk, []) -> Right $ mkPrivateKey pk
     r -> keyError r
 
-decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
-decodeKey s = fromASN1 =<< first show . decodeASN1 DER . fromStrict =<< decode s
+binaryDecodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
+binaryDecodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
 
 keyError :: (a, [ASN1]) -> Either String b
 keyError = \case
