@@ -122,24 +122,30 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
 closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
 closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient
 
-withSMP :: forall a m. AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
-withSMP c srv action =
-  (getSMPServerClient c srv >>= runAction) `catchError` logServerError
+withSMP_ :: forall a m. AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> m a) -> m a
+withSMP_ c srv action =
+  (getSMPServerClient c srv >>= action) `catchError` logServerError
   where
-    runAction :: SMPClient -> m a
-    runAction smp = liftError smpClientError $ action smp
-
     logServerError :: AgentErrorType -> m a
     logServerError e = do
       logServer "<--" c srv "" $ bshow e
       throwError e
 
-withLogSMP :: AgentMonad m => AgentClient -> SMPServer -> QueueId -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
-withLogSMP c srv qId cmdStr action = do
+withLogSMP_ :: AgentMonad m => AgentClient -> SMPServer -> QueueId -> ByteString -> (SMPClient -> m a) -> m a
+withLogSMP_ c srv qId cmdStr action = do
   logServer "-->" c srv qId cmdStr
-  res <- withSMP c srv action
+  res <- withSMP_ c srv action
   logServer "<--" c srv qId "OK"
   return res
+
+withSMP :: AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
+withSMP c srv action = withSMP_ c srv $ liftSMP . action
+
+withLogSMP :: AgentMonad m => AgentClient -> SMPServer -> QueueId -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
+withLogSMP c srv qId cmdStr action = withLogSMP_ c srv qId cmdStr $ liftSMP . action
+
+liftSMP :: AgentMonad m => ExceptT SMPClientError IO a -> m a
+liftSMP = liftError smpClientError
 
 smpClientError :: SMPClientError -> AgentErrorType
 smpClientError = \case
@@ -213,24 +219,24 @@ logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
 sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} senderKey = do
-  msg <- mkConfirmation
-  withLogSMP c server sndId "SEND <KEY>" $ \smp ->
-    sendSMPMessage smp Nothing sndId msg
+sendConfirmation c sq@SndQueue {server, sndId} senderKey =
+  withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
+    msg <- mkConfirmation smp
+    liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
-    mkConfirmation :: m MsgBody
-    mkConfirmation = encryptMessage sq $ SMPConfirmation senderKey
+    mkConfirmation :: SMPClient -> m MsgBody
+    mkConfirmation smp = encryptMessage smp sq $ SMPConfirmation senderKey
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
-sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey = do
-  msg <- mkHello $ AckMode On
-  withLogSMP c server sndId "SEND <HELLO> (retrying)" $
-    send 8 100000 msg
+sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =
+  withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
+    msg <- mkHello smp $ AckMode On
+    liftSMP $ send 8 100000 msg smp
   where
-    mkHello :: AckMode -> m ByteString
-    mkHello ackMode = do
+    mkHello :: SMPClient -> AckMode -> m ByteString
+    mkHello smp ackMode = do
       senderTs <- liftIO getCurrentTime
-      mkAgentMessage sq senderTs $ HELLO verifyKey ackMode
+      mkAgentMessage smp sq senderTs $ HELLO verifyKey ackMode
 
     send :: Int -> Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
     send 0 _ _ _ = throwE $ SMPServerError AUTH
@@ -262,14 +268,14 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
     deleteSMPQueue smp rcvPrivateKey rcvId
 
 sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> SenderTimestamp -> AMessage -> m ()
-sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} senderTs agentMsg = do
-  msg <- mkAgentMessage sq senderTs agentMsg
-  withLogSMP c server sndId "SEND <message>" $ \smp ->
-    sendSMPMessage smp (Just sndPrivateKey) sndId msg
+sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} senderTs agentMsg =
+  withLogSMP_ c server sndId "SEND <message>" $ \smp -> do
+    msg <- mkAgentMessage smp sq senderTs agentMsg
+    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
-mkAgentMessage :: AgentMonad m => SndQueue -> SenderTimestamp -> AMessage -> m ByteString
-mkAgentMessage sq senderTs agentMessage =
-  encryptMessage sq $
+mkAgentMessage :: AgentMonad m => SMPClient -> SndQueue -> SenderTimestamp -> AMessage -> m ByteString
+mkAgentMessage smp sq senderTs agentMessage = do
+  encryptMessage smp sq $
     SMPMessage
       { senderMsgId = 0,
         senderTimestamp = senderTs,
@@ -277,9 +283,9 @@ mkAgentMessage sq senderTs agentMessage =
         agentMessage
       }
 
-encryptMessage :: AgentMonad m => SndQueue -> SMPMessage -> m ByteString
-encryptMessage SndQueue {encryptKey, signKey} msg = do
-  paddedSize <- asks $ (8192 -) . reservedMsgSize
+encryptMessage :: AgentMonad m => SMPClient -> SndQueue -> SMPMessage -> m ByteString
+encryptMessage smp SndQueue {encryptKey, signKey} msg = do
+  paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
   liftError cryptoError $ do
     encBody <- C.encrypt encryptKey paddedSize $ serializeSMPMessage msg
     C.Signature sig <- C.sign signKey encBody

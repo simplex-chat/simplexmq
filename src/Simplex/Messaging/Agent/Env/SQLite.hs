@@ -27,7 +27,6 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     reservedMsgSize :: Int
-    -- paddedMsgSize :: Int
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env

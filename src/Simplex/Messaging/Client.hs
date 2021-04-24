@@ -9,7 +9,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Client
-  ( SMPClient,
+  ( SMPClient (blockSize),
     getSMPClient,
     closeSMPClient,
     createSMPQueue,
@@ -68,7 +68,6 @@ data SMPClientConfig = SMPClientConfig
     defaultPort :: ServiceName,
     tcpTimeout :: Int,
     smpPing :: Int,
-    -- blockSize :: Int,
     smpCommandSize :: Int
   }
 
@@ -79,7 +78,6 @@ smpDefaultConfig =
       defaultPort = "5223",
       tcpTimeout = 4_000_000,
       smpPing = 30_000_000,
-      -- blockSize = 8_192, -- 16_384,
       smpCommandSize = 256
     }
 

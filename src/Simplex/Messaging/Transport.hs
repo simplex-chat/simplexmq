@@ -315,7 +315,7 @@ binaryRsaTransportBS :: ByteString
 binaryRsaTransportBS = encodeEnum16 binaryRsaTransport
 
 transportBlockSize :: Int
-transportBlockSize = 8192
+transportBlockSize = 4096
 
 maxTransportBlockSize :: Int
 maxTransportBlockSize = 65536
