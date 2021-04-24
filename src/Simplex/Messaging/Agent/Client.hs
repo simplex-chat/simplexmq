@@ -19,6 +19,7 @@ module Simplex.Messaging.Agent.Client
     sendHello,
     secureQueue,
     sendAgentMessage,
+    decryptMessage,
     sendAck,
     suspendQueue,
     deleteQueue,
@@ -212,19 +213,16 @@ logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
 sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> m ()
-sendConfirmation c SndQueue {server, sndId, encryptKey} senderKey = do
+sendConfirmation c sq@SndQueue {server, sndId} senderKey = do
   msg <- mkConfirmation
   withLogSMP c server sndId "SEND <KEY>" $ \smp ->
     sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: m MsgBody
-    mkConfirmation = do
-      let msg = serializeSMPMessage $ SMPConfirmation senderKey
-      paddedSize <- asks paddedMsgSize
-      liftError cryptoError $ C.encrypt encryptKey paddedSize msg
+    mkConfirmation = encryptMessage sq $ SMPConfirmation senderKey
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
-sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
+sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey = do
   msg <- mkHello $ AckMode On
   withLogSMP c server sndId "SEND <HELLO> (retrying)" $
     send 8 100000 msg
@@ -232,7 +230,7 @@ sendHello c SndQueue {server, sndId, sndPrivateKey, encryptKey} verifyKey = do
     mkHello :: AckMode -> m ByteString
     mkHello ackMode = do
       senderTs <- liftIO getCurrentTime
-      mkAgentMessage encryptKey senderTs $ HELLO verifyKey ackMode
+      mkAgentMessage sq senderTs $ HELLO verifyKey ackMode
 
     send :: Int -> Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
     send 0 _ _ _ = throwE $ SMPServerError AUTH
@@ -264,23 +262,37 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
     deleteSMPQueue smp rcvPrivateKey rcvId
 
 sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> SenderTimestamp -> AMessage -> m ()
-sendAgentMessage c SndQueue {server, sndId, sndPrivateKey, encryptKey} senderTs agentMsg = do
-  msg <- mkAgentMessage encryptKey senderTs agentMsg
+sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} senderTs agentMsg = do
+  msg <- mkAgentMessage sq senderTs agentMsg
   withLogSMP c server sndId "SEND <message>" $ \smp ->
     sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
-mkAgentMessage :: AgentMonad m => EncryptionKey -> SenderTimestamp -> AMessage -> m ByteString
-mkAgentMessage encKey senderTs agentMessage = do
-  let msg =
-        serializeSMPMessage
-          SMPMessage
-            { senderMsgId = 0,
-              senderTimestamp = senderTs,
-              previousMsgHash = "1234", -- TODO hash of the previous message
-              agentMessage
-            }
-  paddedSize <- asks paddedMsgSize
-  liftError cryptoError $ C.encrypt encKey paddedSize msg
+mkAgentMessage :: AgentMonad m => SndQueue -> SenderTimestamp -> AMessage -> m ByteString
+mkAgentMessage sq senderTs agentMessage =
+  encryptMessage sq $
+    SMPMessage
+      { senderMsgId = 0,
+        senderTimestamp = senderTs,
+        previousMsgHash = "1234", -- TODO hash of the previous message
+        agentMessage
+      }
+
+encryptMessage :: AgentMonad m => SndQueue -> SMPMessage -> m ByteString
+encryptMessage SndQueue {encryptKey, signKey} msg = do
+  paddedSize <- asks $ (8192 -) . reservedMsgSize
+  liftError cryptoError $ do
+    encBody <- C.encrypt encryptKey paddedSize $ serializeSMPMessage msg
+    C.Signature sig <- C.sign signKey encBody
+    pure $ sig <> encBody
+
+decryptMessage :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
+decryptMessage RcvQueue {decryptKey, verifyKey} msg' = do
+  size <- asks $ rsaKeySize . config
+  let (sig, encBody) = B.splitAt size msg'
+  msg <- liftError cryptoError $ C.decrypt decryptKey encBody
+  if maybe True (\k -> C.verify k (C.Signature sig) encBody) verifyKey
+    then pure msg
+    else throwError $ AGENT A_ENCRYPTION
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case

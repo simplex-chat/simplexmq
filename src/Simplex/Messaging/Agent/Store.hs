@@ -39,6 +39,7 @@ class Monad m => MonadAgentStore s m where
   upgradeRcvConnToDuplex :: s -> ConnAlias -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnAlias -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
+  setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management

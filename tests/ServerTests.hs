@@ -7,6 +7,7 @@
 
 module ServerTests where
 
+import Control.Monad.Except (runExceptT)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -40,7 +41,7 @@ sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >>
 signSendRecv :: THandle -> C.SafePrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 signSendRecv h pk (corrId, qId, cmd) = do
   let t = B.intercalate " " [corrId, encode qId, cmd]
-  Right sig <- C.sign pk t
+  Right sig <- runExceptT $ C.sign pk t
   _ <- tPut h (sig, t)
   tGet fromServer h
 
