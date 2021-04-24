@@ -38,6 +38,6 @@ newSMPAgentEnv config = do
   where
     -- 1st rsaKeySize is used by the RSA signature in each command,
     -- 2nd - by encrypted message body header
-    -- 3rd - by encrypted message signature
+    -- 3rd - by message signature
     -- smpCommandSize - is the estimated max size for SMP command, queueId, corrId
     reservedMsgSize = 3 * rsaKeySize config + smpCommandSize (smpCfg config)
