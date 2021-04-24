@@ -288,9 +288,9 @@ encryptMessage :: AgentMonad m => SMPClient -> SndQueue -> SMPMessage -> m ByteS
 encryptMessage smp SndQueue {encryptKey, signKey} msg = do
   paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
   liftError cryptoError $ do
-    encBody <- C.encrypt encryptKey paddedSize $ serializeSMPMessage msg
-    C.Signature sig <- C.sign signKey encBody
-    pure $ sig <> encBody
+    enc <- C.encrypt encryptKey paddedSize $ serializeSMPMessage msg
+    C.Signature sig <- C.sign signKey enc
+    pure $ sig <> enc
 
 decryptMessage :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
 decryptMessage RcvQueue {decryptKey, verifyKey} msg =
@@ -300,10 +300,12 @@ decryptMessage RcvQueue {decryptKey, verifyKey} msg =
 verifyMessage :: AgentMonad m => Maybe VerificationKey -> ByteString -> m ByteString
 verifyMessage verifyKey msg = do
   size <- asks $ rsaKeySize . config
-  let (sig, encBody) = B.splitAt size msg
-  if maybe True (\k -> C.verify k (C.Signature sig) encBody) verifyKey
-    then pure encBody
-    else throwError $ AGENT A_SIGNATURE
+  let (sig, enc) = B.splitAt size msg
+  case verifyKey of
+    Nothing -> pure enc
+    Just k
+      | C.verify k (C.Signature sig) enc -> pure enc
+      | otherwise -> throwError $ AGENT A_SIGNATURE
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
