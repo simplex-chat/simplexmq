@@ -39,11 +39,11 @@ infixl 4 <$$>
 bshow :: Show a => a -> ByteString
 bshow = B.pack . show
 
-liftIOEither :: (MonadUnliftIO m, MonadError e m) => IO (Either e a) -> m a
+liftIOEither :: (MonadIO m, MonadError e m) => IO (Either e a) -> m a
 liftIOEither a = liftIO a >>= liftEither
 
-liftError :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> ExceptT e IO a -> m a
+liftError :: (MonadIO m, MonadError e' m) => (e -> e') -> ExceptT e IO a -> m a
 liftError f = liftEitherError f . runExceptT
 
-liftEitherError :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
+liftEitherError :: (MonadIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
 liftEitherError f a = liftIOEither (first f <$> a)
