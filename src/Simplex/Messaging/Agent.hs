@@ -246,17 +246,19 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
             _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
         SMPMessage {agentMessage, senderMsgId, senderTimestamp} ->
           case agentMessage of
-            HELLO verKey _ -> do
+            HELLO verifyKey _ -> do
               logServer "<--" c srv rId "MSG <HELLO>"
               case status of
                 Active -> notify connAlias . ERR $ AGENT A_PROHIBITED
-                _ -> withStore $ setRcvQueueActive st rq verKey
+                _ -> do
+                  void $ verifyMessage (Just verifyKey) msgBody
+                  withStore $ setRcvQueueActive st rq verifyKey
             REPLY qInfo -> do
               logServer "<--" c srv rId "MSG <REPLY>"
               -- TODO move senderKey inside SndQueue
-              (sq, senderKey, verKey) <- newSendQueue qInfo connAlias
+              (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
               withStore $ upgradeRcvConnToDuplex st connAlias sq
-              connectToSendQueue c st sq senderKey verKey
+              connectToSendQueue c st sq senderKey verifyKey
               notify connAlias CON
             A_MSG body -> do
               -- TODO check message status

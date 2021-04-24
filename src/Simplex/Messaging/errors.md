@@ -46,6 +46,7 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
   - A_MESSAGE - SMP message failed to parse
   - A_PROHIBITED - SMP message is prohibited with the current queue status
   - A_ENCRYPTION - cannot RSA/AES-decrypt or parse decrypted header
+  - A_SIGNATURE - invalid RSA signature
 - INTERNAL ByteString - agent implementation or dependency error
 
 ### SMPClientError (Client.hs)

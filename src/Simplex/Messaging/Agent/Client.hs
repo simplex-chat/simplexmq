@@ -20,6 +20,7 @@ module Simplex.Messaging.Agent.Client
     secureQueue,
     sendAgentMessage,
     decryptMessage,
+    verifyMessage,
     sendAck,
     suspendQueue,
     deleteQueue,
@@ -292,13 +293,17 @@ encryptMessage smp SndQueue {encryptKey, signKey} msg = do
     pure $ sig <> encBody
 
 decryptMessage :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
-decryptMessage RcvQueue {decryptKey, verifyKey} msg' = do
+decryptMessage RcvQueue {decryptKey, verifyKey} msg =
+  verifyMessage verifyKey msg
+    >>= liftError cryptoError . C.decrypt decryptKey
+
+verifyMessage :: AgentMonad m => Maybe VerificationKey -> ByteString -> m ByteString
+verifyMessage verifyKey msg = do
   size <- asks $ rsaKeySize . config
-  let (sig, encBody) = B.splitAt size msg'
-  msg <- liftError cryptoError $ C.decrypt decryptKey encBody
+  let (sig, encBody) = B.splitAt size msg
   if maybe True (\k -> C.verify k (C.Signature sig) encBody) verifyKey
-    then pure msg
-    else throwError $ AGENT A_ENCRYPTION
+    then pure encBody
+    else throwError $ AGENT A_SIGNATURE
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
