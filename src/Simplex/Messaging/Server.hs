@@ -279,13 +279,12 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
 
         delQueueAndMsgs :: QueueStore -> m Transmission
         delQueueAndMsgs st = do
+          withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
-          atomically (deleteQueue st queueId) >>= \case
-            Left e -> pure $ err e
-            Right _ -> do
-              withLog (`logDeleteQueue` queueId)
-              atomically (delMsgQueue ms queueId)
-              pure ok
+          atomically $
+            deleteQueue st queueId >>= \case
+              Left e -> return $ err e
+              Right _ -> delMsgQueue ms queueId $> ok
 
         withLog :: (StoreLog 'WriteMode -> IO a) -> m ()
         withLog action = do
