@@ -1,4 +1,7 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
@@ -7,14 +10,17 @@ import Control.Monad (when)
 import qualified Crypto.Store.PKCS8 as S
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
+import Data.Functor (($>))
 import Data.X509 (PrivKey (PrivKeyRSA))
+import ServerOptions
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog)
+import System.Directory (createDirectoryIfMissing, doesFileExist, getAppUserDataDirectory)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (hFlush, stdout)
+import System.IO (IOMode (..), hFlush, stdout)
 
 cfg :: ServerConfig
 cfg =
@@ -23,8 +29,7 @@ cfg =
       tbqSize = 16,
       queueIdBytes = 12,
       msgIdBytes = 6,
-      loadQueueLog = False,
-      saveQueueLog = False,
+      storeLog = Nothing,
       -- key is loaded from the file server_key in /etc/opt/simplex directory
       serverPrivateKey = undefined
     }
@@ -37,10 +42,13 @@ cfgDir = "/etc/opt/simplex"
 
 main :: IO ()
 main = do
+  opts <- getServerOpts =<< getAppUserDataDirectory "simplex"
+  putStrLn "SMP Server (-h for help)"
+  storeLog <- openStoreLog opts
   pk <- readCreateKey
-  B.putStrLn $ "SMP transport key hash: " <> publicKeyHash (C.publicKey pk)
-  putStrLn $ "Listening on port " <> tcpPort cfg
-  runSMPServer cfg {serverPrivateKey = pk}
+  B.putStrLn $ "transport key hash: " <> publicKeyHash (C.publicKey pk)
+  putStrLn $ "listening on port " <> tcpPort cfg
+  runSMPServer cfg {serverPrivateKey = pk, storeLog}
 
 readCreateKey :: IO C.FullPrivateKey
 readCreateKey = do
@@ -74,3 +82,8 @@ readCreateKey = do
 
 publicKeyHash :: C.PublicKey -> B.ByteString
 publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.binaryEncodePubKey
+
+openStoreLog :: ServerOpts -> IO (Maybe (StoreLog 'ReadMode))
+openStoreLog ServerOpts {enableStoreLog, storeLogFile = f}
+  | enableStoreLog = putStrLn ("store log: " <> f) >> Just <$> openReadStoreLog f
+  | otherwise = putStrLn "store log disabled" $> Nothing

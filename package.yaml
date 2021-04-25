@@ -51,6 +51,7 @@ executables:
     main: Main.hs
     dependencies:
       - cryptostore == 0.2.*
+      - optparse-applicative == 0.15.*
       - simplex-messaging
     ghc-options:
       - -threaded

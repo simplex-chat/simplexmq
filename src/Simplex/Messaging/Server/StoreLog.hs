@@ -8,17 +8,18 @@
 
 module Simplex.Messaging.Server.StoreLog
   ( StoreLog, -- constructors are not exported
-    StoreLogRecord (..),
     openWriteStoreLog,
     openReadStoreLog,
     closeStoreLog,
-    writeStoreLogRecord,
-    writeQueues,
-    readQueues,
+    logCreateQueue,
+    logSecureQueue,
+    logDeleteQueue,
+    readWriteStoreLog,
   )
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Monad (unless)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first, second)
@@ -36,29 +37,28 @@ import Simplex.Messaging.Parsers (base64P, parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (QueueRec (..), QueueStatus (..))
 import Simplex.Messaging.Transport (trimCR)
+import System.Directory (doesFileExist)
 import System.IO
 
 -- | opaque container for file handle with a type-safe IOMode
 -- constructors are not exported, openWriteStoreLog and openReadStoreLog should be used instead
 data StoreLog (a :: IOMode) where
-  ReadStoreLog :: Handle -> StoreLog 'ReadMode
-  WriteStoreLog :: Handle -> StoreLog 'WriteMode
+  ReadStoreLog :: FilePath -> Handle -> StoreLog 'ReadMode
+  WriteStoreLog :: FilePath -> Handle -> StoreLog 'WriteMode
 
 data StoreLogRecord
   = CreateQueue QueueRec
   | SecureQueue QueueId SenderPublicKey
-  | SuspendQueue QueueId
   | DeleteQueue QueueId
 
 storeLogRecordP :: Parser StoreLogRecord
 storeLogRecordP =
-  "CREATE " *> createQueue
-    <|> "SECURE " *> secureQueue
-    <|> "SUSPEND " *> (SuspendQueue <$> base64P)
+  "CREATE " *> createQueueP
+    <|> "SECURE " *> secureQueueP
     <|> "DELETE " *> (DeleteQueue <$> base64P)
   where
-    createQueue = CreateQueue <$> queueRecP
-    secureQueue = SecureQueue <$> base64P <* A.space <*> C.pubKeyP
+    createQueueP = CreateQueue <$> queueRecP
+    secureQueueP = SecureQueue <$> base64P <* A.space <*> C.pubKeyP
     queueRecP = do
       recipientId <- "rid=" *> base64P <* A.space
       senderId <- "sid=" *> base64P <* A.space
@@ -70,7 +70,6 @@ serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
   CreateQueue q -> "CREATE " <> serializeQueue q
   SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> C.serializePubKey sKey
-  SuspendQueue rId -> "SUSPEND " <> encode rId
   DeleteQueue rId -> "DELETE " <> encode rId
   where
     serializeQueue QueueRec {recipientId, senderId, recipientKey, senderKey} =
@@ -82,18 +81,39 @@ serializeStoreLogRecord = \case
         ]
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
-openWriteStoreLog f = WriteStoreLog <$> openFile f WriteMode
+openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
 
 openReadStoreLog :: FilePath -> IO (StoreLog 'ReadMode)
-openReadStoreLog f = ReadStoreLog <$> openFile f ReadMode
+openReadStoreLog f = do
+  doesFileExist f >>= (`unless` writeFile f "")
+  ReadStoreLog f <$> openFile f ReadMode
 
 closeStoreLog :: StoreLog a -> IO ()
 closeStoreLog = \case
-  WriteStoreLog h -> hClose h
-  ReadStoreLog h -> hClose h
+  WriteStoreLog _ h -> hClose h
+  ReadStoreLog _ h -> hClose h
 
 writeStoreLogRecord :: StoreLog 'WriteMode -> StoreLogRecord -> IO ()
-writeStoreLogRecord (WriteStoreLog h) = B.hPutStr h . serializeStoreLogRecord
+writeStoreLogRecord (WriteStoreLog _ h) r = do
+  B.hPutStrLn h $ serializeStoreLogRecord r
+  hFlush h
+
+logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
+logCreateQueue s = writeStoreLogRecord s . CreateQueue
+
+logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SenderPublicKey -> IO ()
+logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
+
+logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
+logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
+
+readWriteStoreLog :: StoreLog 'ReadMode -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
+readWriteStoreLog s@(ReadStoreLog f _) = do
+  qs <- readQueues s
+  closeStoreLog s
+  s' <- openWriteStoreLog f
+  writeQueues s' qs
+  pure (qs, s')
 
 writeQueues :: StoreLog 'WriteMode -> Map RecipientId QueueRec -> IO ()
 writeQueues s = mapM_ (writeStoreLogRecord s . CreateQueue) . M.filter active
@@ -103,7 +123,7 @@ writeQueues s = mapM_ (writeStoreLogRecord s . CreateQueue) . M.filter active
 type LogParsingError = (String, ByteString)
 
 readQueues :: StoreLog 'ReadMode -> IO (Map RecipientId QueueRec)
-readQueues (ReadStoreLog h) = LB.hGetContents h >>= returnResult . procStoreLog
+readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLog
   where
     procStoreLog :: LB.ByteString -> ([LogParsingError], Map RecipientId QueueRec)
     procStoreLog = second (foldl' procLogRecord M.empty) . partitionEithers . map parseLogRecord . LB.lines
@@ -115,7 +135,6 @@ readQueues (ReadStoreLog h) = LB.hGetContents h >>= returnResult . procStoreLog
     procLogRecord m = \case
       CreateQueue q -> M.insert (recipientId q) q m
       SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
-      SuspendQueue qId -> M.delete qId m
       DeleteQueue qId -> M.delete qId m
     printError :: LogParsingError -> IO ()
     printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
