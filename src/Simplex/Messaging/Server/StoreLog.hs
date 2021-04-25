@@ -110,7 +110,7 @@ readQueues (ReadStoreLog h) = LB.hGetContents h >>= returnResult . procStoreLog
     returnResult :: ([LogParsingError], Map RecipientId QueueRec) -> IO (Map RecipientId QueueRec)
     returnResult (errs, res) = mapM_ printError errs $> res
     parseLogRecord :: LB.ByteString -> Either LogParsingError StoreLogRecord
-    parseLogRecord = (\s -> first (,s) . parseAll storeLogRecordP s) . trimCR . LB.toStrict
+    parseLogRecord = (\s -> first (,s) $ parseAll storeLogRecordP s) . trimCR . LB.toStrict
     procLogRecord :: Map RecipientId QueueRec -> StoreLogRecord -> Map RecipientId QueueRec
     procLogRecord m = \case
       CreateQueue q -> M.insert (recipientId q) q m
