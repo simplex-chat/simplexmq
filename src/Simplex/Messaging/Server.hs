@@ -288,8 +288,9 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
               pure ok
 
         withLog :: (StoreLog 'WriteMode -> IO a) -> m ()
-        withLog action =
-          asks (storeLog :: Env -> Maybe (StoreLog 'WriteMode)) >>= liftIO . mapM_ action
+        withLog action = do
+          env <- ask
+          liftIO . mapM_ action $ storeLog (env :: Env)
 
         ok :: Transmission
         ok = mkResp corrId queueId OK
