@@ -43,14 +43,18 @@ runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServerConfig -> m ()
 runSMPServer cfg = newEmptyTMVarIO >>= (`runSMPServerBlocking` cfg)
 
 runSMPServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
-runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
+runSMPServerBlocking started cfg@ServerConfig {tcpPort, loadQueueLog} = do
   env <- newEnv cfg
   runReaderT smpServer env
   where
     smpServer :: (MonadUnliftIO m, MonadReader Env m) => m ()
     smpServer = do
       s <- asks server
+      when loadQueueLog $ mkClient >>= (`loadSmpQueues` s)
       race_ (runTCPServer started tcpPort runClient) (serverThread s)
+
+    loadSmpQueues :: (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
+    loadSmpQueues _ _ = pure ()
 
     serverThread :: MonadUnliftIO m => Server -> m ()
     serverThread Server {subscribedQ, subscribers} = forever . atomically $ do
@@ -70,11 +74,13 @@ runClient h = do
 
 runClientTransport :: (MonadUnliftIO m, MonadReader Env m) => THandle -> m ()
 runClientTransport th = do
-  q <- asks $ tbqSize . config
-  c <- atomically $ newClient q
+  c <- mkClient
   s <- asks server
   raceAny_ [send th c, client c s, receive th c]
     `finally` cancelSubscribers c
+
+mkClient :: (MonadUnliftIO m, MonadReader Env m) => m Client
+mkClient = asks (tbqSize . config) >>= atomically . newClient
 
 cancelSubscribers :: MonadUnliftIO m => Client -> m ()
 cancelSubscribers Client {subscriptions} =

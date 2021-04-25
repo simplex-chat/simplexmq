@@ -50,6 +50,8 @@ cfg =
       tbqSize = 1,
       queueIdBytes = 12,
       msgIdBytes = 6,
+      loadQueueLog = False,
+      saveQueueLog = False,
       serverPrivateKey =
         -- full RSA private key (only for tests)
         "MIIFIwIBAAKCAQEArZyrri/NAwt5buvYjwu+B/MQeJUszDBpRgVqNddlI9kNwDXu\

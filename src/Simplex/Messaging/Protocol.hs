@@ -131,8 +131,15 @@ instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary CommandError where arbitrary = genericArbitraryU
 
-transmissionP :: Parser RawTransmission
+transmissionP :: Parser Transmission
 transmissionP = do
+  corrId <- CorrId <$> base64P
+  queueId <- base64P
+  command <- commandP
+  return (corrId, queueId, command)
+
+rawTransmissionP :: Parser RawTransmission
+rawTransmissionP = do
   signature <- segment
   corrId <- segment
   queueId <- segment
@@ -215,7 +222,7 @@ fromServer = \case
   _ -> Left $ CMD PROHIBITED
 
 tGetParse :: THandle -> IO (Either TransportError RawTransmission)
-tGetParse th = (>>= parse transmissionP TEBadBlock) <$> tGetEncrypted th
+tGetParse th = (>>= parse rawTransmissionP TEBadBlock) <$> tGetEncrypted th
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used

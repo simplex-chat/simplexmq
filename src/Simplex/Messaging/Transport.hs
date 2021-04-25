@@ -118,10 +118,11 @@ putLn :: Handle -> ByteString -> IO ()
 putLn h = B.hPut h . (<> "\r\n")
 
 getLn :: Handle -> IO ByteString
-getLn h = trim_cr <$> B.hGetLine h
-  where
-    trim_cr "" = ""
-    trim_cr s = if B.last s == '\r' then B.init s else s
+getLn h = trimCR <$> B.hGetLine h
+
+trimCR :: ByteString -> ByteString
+trimCR "" = ""
+trimCR s = if B.last s == '\r' then B.init s else s
 
 -- * Encrypted transport
 

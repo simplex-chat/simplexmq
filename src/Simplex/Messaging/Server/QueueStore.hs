@@ -15,7 +15,7 @@ data QueueRec = QueueRec
     status :: QueueStatus
   }
 
-data QueueStatus = QueueActive | QueueOff
+data QueueStatus = QueueActive | QueueOff deriving (Eq)
 
 class MonadQueueStore s m where
   addQueue :: s -> RecipientPublicKey -> (RecipientId, SenderId) -> m (Either ErrorType ())

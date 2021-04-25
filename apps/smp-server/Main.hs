@@ -23,6 +23,8 @@ cfg =
       tbqSize = 16,
       queueIdBytes = 12,
       msgIdBytes = 6,
+      loadQueueLog = False,
+      saveQueueLog = False,
       -- key is loaded from the file server_key in /etc/opt/simplex directory
       serverPrivateKey = undefined
     }

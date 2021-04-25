@@ -21,6 +21,8 @@ data ServerConfig = ServerConfig
     tbqSize :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
+    loadQueueLog :: Bool,
+    saveQueueLog :: Bool,
     serverPrivateKey :: C.FullPrivateKey
     -- serverId :: ByteString
   }
