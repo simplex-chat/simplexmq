@@ -13,6 +13,7 @@ module Simplex.Messaging.Server.StoreLog
     openReadStoreLog,
     closeStoreLog,
     writeStoreLogRecord,
+    writeQueues,
     readQueues,
   )
 where
@@ -62,12 +63,12 @@ storeLogRecordP =
       recipientId <- "rid=" *> base64P <* A.space
       senderId <- "sid=" *> base64P <* A.space
       recipientKey <- "rk=" *> C.pubKeyP <* A.space
-      senderKey <- "sk" *> optional C.pubKeyP
+      senderKey <- "sk=" *> optional C.pubKeyP
       pure QueueRec {recipientId, senderId, recipientKey, senderKey, status = QueueActive}
 
 serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
-  CreateQueue q -> "CREATE " <> encode (recipientId q)
+  CreateQueue q -> "CREATE " <> serializeQueue q
   SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> C.serializePubKey sKey
   SuspendQueue rId -> "SUSPEND " <> encode rId
   DeleteQueue rId -> "DELETE " <> encode rId
@@ -109,13 +110,12 @@ readQueues (ReadStoreLog h) = LB.hGetContents h >>= returnResult . procStoreLog
     returnResult :: ([LogParsingError], Map RecipientId QueueRec) -> IO (Map RecipientId QueueRec)
     returnResult (errs, res) = mapM_ printError errs $> res
     parseLogRecord :: LB.ByteString -> Either LogParsingError StoreLogRecord
-    parseLogRecord = (\r -> first (,r) $ parseAll storeLogRecordP r) . trimCR . LB.toStrict
+    parseLogRecord = (\s -> first (,s) . parseAll storeLogRecordP s) . trimCR . LB.toStrict
     procLogRecord :: Map RecipientId QueueRec -> StoreLogRecord -> Map RecipientId QueueRec
-    -- TODO
     procLogRecord m = \case
-      CreateQueue q -> m
-      SecureQueue qId senderKey -> m
-      SuspendQueue qId -> m
-      DeleteQueue qId -> m
+      CreateQueue q -> M.insert (recipientId q) q m
+      SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
+      SuspendQueue qId -> M.delete qId m
+      DeleteQueue qId -> M.delete qId m
     printError :: LogParsingError -> IO ()
-    printError (e, r) = putStrLn ("Error parsing log: " <> e <> " " <> B.unpack r)
+    printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
