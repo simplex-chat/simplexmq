@@ -138,9 +138,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       updateRcvQueueStatus dbConn rcvQueue status
 
   setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
-  setRcvQueueActive SQLiteStore {dbConn} sndQueue verifyKey =
+  setRcvQueueActive SQLiteStore {dbConn} rcvQueue verifyKey =
     liftIO $
-      updateRcvQueueActive dbConn sndQueue verifyKey
+      updateRcvQueueActive dbConn rcvQueue verifyKey
 
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
   setSndQueueStatus SQLiteStore {dbConn} sndQueue status =
