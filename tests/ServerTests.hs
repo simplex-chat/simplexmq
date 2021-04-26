@@ -7,6 +7,8 @@
 
 module ServerTests where
 
+import Control.Concurrent (ThreadId, killThread)
+import Control.Concurrent.STM
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -15,6 +17,7 @@ import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
+import System.Directory (removeFile)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
@@ -31,6 +34,7 @@ serverTests = do
   describe "SMP messages" do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
+  describe "Store log" testWithStoreLog
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
@@ -261,6 +265,43 @@ testSwitchSub =
       1000 `timeout` tGet fromServer rh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
+
+testWithStoreLog :: Spec
+testWithStoreLog =
+  it "should store simplex queues to log and restore them after server restart" $ do
+    (rPub, rKey) <- C.generateKeyPair rsaKeySize
+    (sPub, sKey) <- C.generateKeyPair rsaKeySize
+    recipientId <- newTVarIO ""
+    senderId <- newTVarIO ""
+
+    withSmpServerStoreLogOn testPort . runTest $ \h -> do
+      Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      atomically $ do
+        writeTVar recipientId rId
+        writeTVar senderId sId
+      let keyCmd = "KEY " <> C.serializePubKey sPub
+      Resp "dabc" rId2 OK <- signSendRecv h rKey ("dabc", rId, keyCmd)
+      (rId2, rId) #== "same queue ID"
+      Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, "SEND 5 hello ")
+      pure ()
+
+    withSmpServerThreadOn testPort . runTest $ \h -> do
+      sId <- readTVarIO senderId
+      -- fails if store log is disabled
+      Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey ("bcda", sId, "SEND 5 hello ")
+      pure ()
+
+    withSmpServerStoreLogOn testPort . runTest $ \h -> do
+      sId <- readTVarIO senderId
+      Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, "SEND 5 hello ")
+      pure ()
+
+    removeFile testStoreLogFile
+  where
+    runTest :: (THandle -> IO ()) -> ThreadId -> Expectation
+    runTest test' server = do
+      testSMPClient test' `shouldReturn` ()
+      killThread server
 
 syntaxTests :: Spec
 syntaxTests = do

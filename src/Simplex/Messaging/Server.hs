@@ -52,6 +52,7 @@ runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
     smpServer = do
       s <- asks server
       race_ (runTCPServer started tcpPort runClient) (serverThread s)
+        `finally` withLog closeStoreLog
 
     serverThread :: MonadUnliftIO m => Server -> m ()
     serverThread Server {subscribedQ, subscribers} = forever . atomically $ do
@@ -286,11 +287,6 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
               Left e -> return $ err e
               Right _ -> delMsgQueue ms queueId $> ok
 
-        withLog :: (StoreLog 'WriteMode -> IO a) -> m ()
-        withLog action = do
-          env <- ask
-          liftIO . mapM_ action $ storeLog (env :: Env)
-
         ok :: Transmission
         ok = mkResp corrId queueId OK
 
@@ -302,6 +298,11 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
 
         msgCmd :: Message -> Command 'Broker
         msgCmd Message {msgId, ts, msgBody} = MSG msgId ts msgBody
+
+withLog :: (MonadUnliftIO m, MonadReader Env m) => (StoreLog 'WriteMode -> IO a) -> m ()
+withLog action = do
+  env <- ask
+  liftIO . mapM_ action $ storeLog (env :: Env)
 
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m Encoded
 randomId n = do
