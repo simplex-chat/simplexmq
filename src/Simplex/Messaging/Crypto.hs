@@ -329,8 +329,8 @@ decryptOAEP pk encKey =
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
 
-sign :: PrivateKey k => k -> ByteString -> IO (Either CryptoError Signature)
-sign pk msg = bimap RSASignError Signature <$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
+sign :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO Signature
+sign pk msg = ExceptT $ bimap RSASignError Signature <$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
 
 verify :: PublicKey -> Signature -> ByteString -> Bool
 verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig

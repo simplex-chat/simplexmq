@@ -37,7 +37,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (CorrId (..), MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (putLn, runTCPServer)
-import Simplex.Messaging.Util (bshow, liftError)
+import Simplex.Messaging.Util (bshow)
 import System.IO (Handle)
 import UnliftIO.Async (race_)
 import qualified UnliftIO.Exception as E
@@ -227,11 +227,11 @@ subscriber c@AgentClient {msgQ} st = forever $ do
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> SMPServerTransmission -> m ()
 processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
-  rq@RcvQueue {connAlias, decryptKey, status} <- withStore $ getRcvQueue st srv rId
+  rq@RcvQueue {connAlias, status} <- withStore $ getRcvQueue st srv rId
   case cmd of
     SMP.MSG srvMsgId srvTs msgBody -> do
       -- TODO deduplicate with previously received
-      agentMsg <- liftEither . parseSMPMessage =<< decryptMessage decryptKey msgBody
+      agentMsg <- liftEither . parseSMPMessage =<< decryptAndVerify rq msgBody
       case agentMsg of
         SMPConfirmation senderKey -> do
           logServer "<--" c srv rId "MSG <KEY>"
@@ -246,11 +246,13 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
             _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
         SMPMessage {agentMessage, senderMsgId, senderTimestamp} ->
           case agentMessage of
-            HELLO _verifyKey _ -> do
+            HELLO verifyKey _ -> do
               logServer "<--" c srv rId "MSG <HELLO>"
               case status of
                 Active -> notify connAlias . ERR $ AGENT A_PROHIBITED
-                _ -> withStore $ setRcvQueueStatus st rq Active
+                _ -> do
+                  void $ verifyMessage (Just verifyKey) msgBody
+                  withStore $ setRcvQueueActive st rq verifyKey
             REPLY qInfo -> do
               logServer "<--" c srv rId "MSG <REPLY>"
               -- TODO move senderKey inside SndQueue
@@ -295,9 +297,6 @@ connectToSendQueue c st sq senderKey verifyKey = do
   withStore $ setSndQueueStatus st sq Confirmed
   sendHello c sq verifyKey
   withStore $ setSndQueueStatus st sq Active
-
-decryptMessage :: (MonadUnliftIO m, MonadError AgentErrorType m) => DecryptionKey -> ByteString -> m ByteString
-decryptMessage decryptKey msg = liftError cryptoError $ C.decrypt decryptKey msg
 
 newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> ConnAlias -> m (SndQueue, SenderPublicKey, VerificationKey)

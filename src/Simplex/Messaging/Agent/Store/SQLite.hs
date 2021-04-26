@@ -137,6 +137,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateRcvQueueStatus dbConn rcvQueue status
 
+  setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
+  setRcvQueueActive SQLiteStore {dbConn} rcvQueue verifyKey =
+    liftIO $
+      updateRcvQueueActive dbConn rcvQueue verifyKey
+
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
   setSndQueueStatus SQLiteStore {dbConn} sndQueue status =
     liftIO $
@@ -476,6 +481,25 @@ updateRcvQueueStatus dbConn RcvQueue {rcvId, server = SMPServer {host, port}} st
       WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
     |]
     [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
+
+-- * setRcvQueueActive helper
+
+-- ? throw error if queue doesn't exist?
+updateRcvQueueActive :: DB.Connection -> RcvQueue -> VerificationKey -> IO ()
+updateRcvQueueActive dbConn RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
+  DB.executeNamed
+    dbConn
+    [sql|
+      UPDATE rcv_queues
+      SET verify_key = :verify_key, status = :status
+      WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
+    |]
+    [ ":verify_key" := Just verifyKey,
+      ":status" := Active,
+      ":host" := host,
+      ":port" := serializePort_ port,
+      ":rcv_id" := rcvId
+    ]
 
 -- * setSndQueueStatus helper
 

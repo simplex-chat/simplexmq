@@ -283,6 +283,7 @@ data SMPAgentError
   = A_MESSAGE -- possibly should include bytestring that failed to parse
   | A_PROHIBITED -- possibly should include the prohibited SMP/agent message
   | A_ENCRYPTION -- cannot RSA/AES-decrypt or parse decrypted header
+  | A_SIGNATURE -- invalid RSA signature
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU

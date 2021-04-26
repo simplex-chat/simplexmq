@@ -9,7 +9,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Client
-  ( SMPClient,
+  ( SMPClient (blockSize),
     getSMPClient,
     closeSMPClient,
     createSMPQueue,
@@ -44,7 +44,7 @@ import Simplex.Messaging.Agent.Transmission (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (bshow, liftEitherError, raceAny_)
+import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.IO
 import System.Timeout
 
@@ -57,7 +57,8 @@ data SMPClient = SMPClient
     sentCommands :: TVar (Map CorrId Request),
     sndQ :: TBQueue SignedRawTransmission,
     rcvQ :: TBQueue SignedTransmissionOrError,
-    msgQ :: TBQueue SMPServerTransmission
+    msgQ :: TBQueue SMPServerTransmission,
+    blockSize :: Int
   }
 
 type SMPServerTransmission = (SMPServer, RecipientId, Command 'Broker)
@@ -67,7 +68,6 @@ data SMPClientConfig = SMPClientConfig
     defaultPort :: ServiceName,
     tcpTimeout :: Int,
     smpPing :: Int,
-    blockSize :: Int,
     smpCommandSize :: Int
   }
 
@@ -78,7 +78,6 @@ smpDefaultConfig =
       defaultPort = "5223",
       tcpTimeout = 4_000_000,
       smpPing = 30_000_000,
-      blockSize = 8_192, -- 16_384,
       smpCommandSize = 256
     }
 
@@ -96,15 +95,15 @@ getSMPClient
   msgQ
   disconnected = do
     c <- atomically mkSMPClient
-    err <- newEmptyTMVarIO
+    thVar <- newEmptyTMVarIO
     action <-
       async $
-        runTCPClient host (fromMaybe defaultPort port) (client c err)
-          `finally` atomically (putTMVar err $ Just SMPNetworkError)
-    ok <- tcpTimeout `timeout` atomically (takeTMVar err)
-    pure $ case ok of
-      Just Nothing -> Right c {action}
-      Just (Just e) -> Left e
+        runTCPClient host (fromMaybe defaultPort port) (client c thVar)
+          `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
+    tHandle <- tcpTimeout `timeout` atomically (takeTMVar thVar)
+    pure $ case tHandle of
+      Just (Right THandle {blockSize}) -> Right c {action, blockSize}
+      Just (Left e) -> Left e
       Nothing -> Left SMPNetworkError
     where
       mkSMPClient :: STM SMPClient
@@ -117,6 +116,7 @@ getSMPClient
         return
           SMPClient
             { action = undefined,
+              blockSize = undefined,
               connected,
               smpServer,
               tcpTimeout,
@@ -127,17 +127,17 @@ getSMPClient
               msgQ
             }
 
-      client :: SMPClient -> TMVar (Maybe SMPClientError) -> Handle -> IO ()
-      client c err h =
+      client :: SMPClient -> TMVar (Either SMPClientError THandle) -> Handle -> IO ()
+      client c thVar h =
         runExceptT (clientHandshake h keyHash) >>= \case
-          Right th -> clientTransport c err th
-          Left e -> atomically . putTMVar err . Just $ SMPTransportError e
+          Right th -> clientTransport c thVar th
+          Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
 
-      clientTransport :: SMPClient -> TMVar (Maybe SMPClientError) -> THandle -> IO ()
-      clientTransport c err th = do
+      clientTransport :: SMPClient -> TMVar (Either SMPClientError THandle) -> THandle -> IO ()
+      clientTransport c thVar th = do
         atomically $ do
           writeTVar (connected c) True
-          putTMVar err Nothing
+          putTMVar thVar $ Right th
         raceAny_ [send c th, process c, receive c th, ping c]
           `finally` disconnected
 
@@ -252,7 +252,7 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId
     signTransmission t = case pKey of
       Nothing -> return ("", t)
       Just pk -> do
-        sig <- liftEitherError SMPSignatureError $ C.sign pk t
+        sig <- liftError SMPSignatureError $ C.sign pk t
         return (sig, t)
 
     -- two separate "atomically" needed to avoid blocking

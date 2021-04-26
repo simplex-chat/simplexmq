@@ -311,8 +311,11 @@ data TransportHeader = TransportHeader {blockSize :: Int, keySize :: Int}
 binaryRsaTransport :: Int
 binaryRsaTransport = 0
 
+binaryRsaTransportBS :: ByteString
+binaryRsaTransportBS = encodeEnum16 binaryRsaTransport
+
 transportBlockSize :: Int
-transportBlockSize = 8192
+transportBlockSize = 4096
 
 maxTransportBlockSize :: Int
 maxTransportBlockSize = 65536
@@ -322,7 +325,7 @@ transportHeaderSize = 8
 
 binaryTransportHeader :: TransportHeader -> ByteString
 binaryTransportHeader TransportHeader {blockSize, keySize} =
-  encodeEnum32 blockSize <> encodeEnum16 binaryRsaTransport <> encodeEnum16 keySize
+  encodeEnum32 blockSize <> binaryRsaTransportBS <> encodeEnum16 keySize
 
 transportHeaderP :: Parser TransportHeader
 transportHeaderP = TransportHeader <$> int32 <* binaryRsaTransportP <*> int16
@@ -330,9 +333,10 @@ transportHeaderP = TransportHeader <$> int32 <* binaryRsaTransportP <*> int16
     int32 = decodeNum32 <$> A.take 4
     int16 = decodeNum16 <$> A.take 2
     binaryRsaTransportP = binaryRsa <$> int16
-    binaryRsa :: Int -> Parser Int
-    binaryRsa 0 = pure 0
-    binaryRsa _ = fail "unknown transport mode"
+    binaryRsa :: Int -> Parser ()
+    binaryRsa n
+      | n == binaryRsaTransport = pure ()
+      | otherwise = fail "unknown transport mode"
 
 serializeHandshakeKeys :: HandshakeKeys -> ByteString
 serializeHandshakeKeys HandshakeKeys {sndKey, rcvKey} =
