@@ -17,7 +17,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog)
-import System.Directory (createDirectoryIfMissing, doesFileExist, getAppUserDataDirectory)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, stdout)
@@ -40,9 +40,12 @@ newKeySize = 2048 `div` 8
 cfgDir :: FilePath
 cfgDir = "/etc/opt/simplex"
 
+logDir :: FilePath
+logDir = "/var/opt/simplex"
+
 main :: IO ()
 main = do
-  opts <- getServerOpts =<< getAppUserDataDirectory "simplex"
+  opts <- getServerOpts logDir
   putStrLn "SMP Server (-h for help)"
   storeLog <- openStoreLog opts
   pk <- readCreateKey
@@ -85,5 +88,8 @@ publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.binaryEncodePubKey
 
 openStoreLog :: ServerOpts -> IO (Maybe (StoreLog 'ReadMode))
 openStoreLog ServerOpts {enableStoreLog, storeLogFile = f}
-  | enableStoreLog = putStrLn ("store log: " <> f) >> Just <$> openReadStoreLog f
+  | enableStoreLog = do
+    createDirectoryIfMissing True logDir
+    putStrLn ("store log: " <> f)
+    Just <$> openReadStoreLog f
   | otherwise = putStrLn "store log disabled" $> Nothing
