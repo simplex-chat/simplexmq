@@ -255,7 +255,6 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
                   withStore $ setRcvQueueActive st rq verifyKey
             REPLY qInfo -> do
               logServer "<--" c srv rId "MSG <REPLY>"
-              -- TODO move senderKey inside SndQueue
               (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
               withStore $ upgradeRcvConnToDuplex st connAlias sq
               connectToSendQueue c st sq senderKey verifyKey
