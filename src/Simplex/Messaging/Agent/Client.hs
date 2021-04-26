@@ -19,7 +19,7 @@ module Simplex.Messaging.Agent.Client
     sendHello,
     secureQueue,
     sendAgentMessage,
-    decryptMessage,
+    decryptAndVerify,
     verifyMessage,
     sendAck,
     suspendQueue,
@@ -226,7 +226,7 @@ sendConfirmation c sq@SndQueue {server, sndId} senderKey =
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: SMPClient -> m MsgBody
-    mkConfirmation smp = encryptMessage smp sq $ SMPConfirmation senderKey
+    mkConfirmation smp = encryptAndSign smp sq $ SMPConfirmation senderKey
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =
@@ -276,7 +276,7 @@ sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} senderTs agentMsg 
 
 mkAgentMessage :: AgentMonad m => SMPClient -> SndQueue -> SenderTimestamp -> AMessage -> m ByteString
 mkAgentMessage smp sq senderTs agentMessage = do
-  encryptMessage smp sq $
+  encryptAndSign smp sq $
     SMPMessage
       { senderMsgId = 0,
         senderTimestamp = senderTs,
@@ -284,16 +284,16 @@ mkAgentMessage smp sq senderTs agentMessage = do
         agentMessage
       }
 
-encryptMessage :: AgentMonad m => SMPClient -> SndQueue -> SMPMessage -> m ByteString
-encryptMessage smp SndQueue {encryptKey, signKey} msg = do
+encryptAndSign :: AgentMonad m => SMPClient -> SndQueue -> SMPMessage -> m ByteString
+encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
   paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
   liftError cryptoError $ do
     enc <- C.encrypt encryptKey paddedSize $ serializeSMPMessage msg
     C.Signature sig <- C.sign signKey enc
     pure $ sig <> enc
 
-decryptMessage :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
-decryptMessage RcvQueue {decryptKey, verifyKey} msg =
+decryptAndVerify :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
+decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
   verifyMessage verifyKey msg
     >>= liftError cryptoError . C.decrypt decryptKey
 

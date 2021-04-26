@@ -231,7 +231,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
   case cmd of
     SMP.MSG srvMsgId srvTs msgBody -> do
       -- TODO deduplicate with previously received
-      agentMsg <- liftEither . parseSMPMessage =<< decryptMessage rq msgBody
+      agentMsg <- liftEither . parseSMPMessage =<< decryptAndVerify rq msgBody
       case agentMsg of
         SMPConfirmation senderKey -> do
           logServer "<--" c srv rId "MSG <KEY>"
