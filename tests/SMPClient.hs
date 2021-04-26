@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -50,6 +51,7 @@ cfg =
       tbqSize = 1,
       queueIdBytes = 12,
       msgIdBytes = 6,
+      storeLog = Nothing,
       serverPrivateKey =
         -- full RSA private key (only for tests)
         "MIIFIwIBAAKCAQEArZyrri/NAwt5buvYjwu+B/MQeJUszDBpRgVqNddlI9kNwDXu\

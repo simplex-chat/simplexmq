@@ -31,6 +31,7 @@ import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
+import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
 import UnliftIO.Async
@@ -147,8 +148,8 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           NEW rKey -> createQueue st rKey
           SUB -> subscribeQueue queueId
           ACK -> acknowledgeMsg
-          KEY sKey -> okResp <$> atomically (secureQueue st queueId sKey)
-          OFF -> okResp <$> atomically (suspendQueue st queueId)
+          KEY sKey -> secureQueue_ st sKey
+          OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
       where
         createQueue :: QueueStore -> RecipientPublicKey -> m Transmission
@@ -158,7 +159,9 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             addSubscribe =
               addQueueRetry 3 >>= \case
                 Left e -> return $ ERR e
-                Right (rId, sId) -> subscribeQueue rId $> IDS rId sId
+                Right (rId, sId) -> do
+                  withLog (`logCreateById` rId)
+                  subscribeQueue rId $> IDS rId sId
 
             addQueueRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
             addQueueRetry 0 = return $ Left INTERNAL
@@ -169,10 +172,26 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
                 Left e -> return $ Left e
                 Right _ -> return $ Right ids
 
+            logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
+            logCreateById s rId =
+              atomically (getQueue st SRecipient rId) >>= \case
+                Right q -> logCreateQueue s q
+                _ -> pure ()
+
             getIds :: m (RecipientId, SenderId)
             getIds = do
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
+
+        secureQueue_ :: QueueStore -> SenderPublicKey -> m Transmission
+        secureQueue_ st sKey = do
+          withLog $ \s -> logSecureQueue s queueId sKey
+          okResp <$> atomically (secureQueue st queueId sKey)
+
+        suspendQueue_ :: QueueStore -> m Transmission
+        suspendQueue_ st = do
+          withLog (`logDeleteQueue` queueId)
+          okResp <$> atomically (suspendQueue st queueId)
 
         subscribeQueue :: RecipientId -> m Transmission
         subscribeQueue rId =
@@ -260,11 +279,17 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
 
         delQueueAndMsgs :: QueueStore -> m Transmission
         delQueueAndMsgs st = do
+          withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
           atomically $
             deleteQueue st queueId >>= \case
               Left e -> return $ err e
               Right _ -> delMsgQueue ms queueId $> ok
+
+        withLog :: (StoreLog 'WriteMode -> IO a) -> m ()
+        withLog action = do
+          env <- ask
+          liftIO . mapM_ action $ storeLog (env :: Env)
 
         ok :: Transmission
         ok = mkResp corrId queueId OK
