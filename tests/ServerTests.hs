@@ -290,7 +290,7 @@ testWithStoreLog =
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, "DEL")
       pure ()
 
-    initialLogSize <- logSize
+    logSize `shouldReturn` 5
 
     withSmpServerThreadOn testPort . runTest $ \h -> do
       sId1 <- readTVarIO senderId1
@@ -307,7 +307,7 @@ testWithStoreLog =
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
       pure ()
 
-    (initialLogSize >) <$> logSize `shouldReturn` True
+    logSize `shouldReturn` 1
     removeFile testStoreLogFile
   where
     createAndSecureQueue :: THandle -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
@@ -326,7 +326,7 @@ testWithStoreLog =
 
     logSize :: IO Int
     logSize =
-      try (B.length <$> B.readFile testStoreLogFile) >>= \case
+      try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
         Right l -> pure l
         Left (_ :: SomeException) -> logSize
 
