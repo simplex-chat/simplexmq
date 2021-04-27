@@ -178,7 +178,8 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       where
         sendMsg sq = do
           senderTs <- liftIO getCurrentTime
-          senderId <- withStore $ createSndMsg st connAlias msgBody senderTs
+          -- TODO insert real hash, send previous hash
+          (senderId, _prevSndHash) <- withStore $ createSndMsg st connAlias msgBody senderTs "hash_dummy"
           sendAgentMessage c sq senderTs $ A_MSG msgBody
           respond $ SENT (unId senderId)
 
@@ -267,7 +268,9 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
                   recipientTs <- liftIO getCurrentTime
                   let m_sender = (senderMsgId, senderTimestamp)
                   let m_broker = (srvMsgId, srvTs)
-                  recipientId <- withStore $ createRcvMsg st connAlias body recipientTs m_sender m_broker
+                  -- TODO insert real hash, check hash and external snd id
+                  (recipientId, _prevExternalSndId, _prevSndHash) <-
+                    withStore $ createRcvMsg st connAlias body recipientTs m_sender m_broker "hash_dummy"
                   notify connAlias $
                     MSG
                       { m_status = MsgOk,

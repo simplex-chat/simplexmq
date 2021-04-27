@@ -7,6 +7,7 @@ module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Monad.Except (ExceptT, runExceptT)
 import qualified Crypto.PubKey.RSA as R
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
@@ -49,45 +50,54 @@ action `throwsError` e = runExceptT action `shouldReturn` Left e
 -- TODO add null port tests
 storeTests :: Spec
 storeTests = withStore do
-  describe "compiled as threadsafe" testCompiledThreadsafe
-  describe "foreign keys enabled" testForeignKeysEnabled
+  describe "store setup" do
+    testCompiledThreadsafe
+    testForeignKeysEnabled
   describe "store methods" do
-    describe "createRcvConn" do
-      describe "unique" testCreateRcvConn
-      describe "duplicate" testCreateRcvConnDuplicate
-    describe "createSndConn" do
-      describe "unique" testCreateSndConn
-      describe "duplicate" testCreateSndConnDuplicate
-    describe "getAllConnAliases" testGetAllConnAliases
-    describe "getRcvQueue" testGetRcvQueue
-    describe "deleteConn" do
-      describe "RcvConnection" testDeleteRcvConn
-      describe "SndConnection" testDeleteSndConn
-      describe "DuplexConnection" testDeleteDuplexConn
-    describe "upgradeRcvConnToDuplex" testUpgradeRcvConnToDuplex
-    describe "upgradeSndConnToDuplex" testUpgradeSndConnToDuplex
-    describe "set queue status" do
-      describe "setRcvQueueStatus" testSetRcvQueueStatus
-      describe "setSndQueueStatus" testSetSndQueueStatus
-      describe "DuplexConnection" testSetQueueStatusDuplex
-      xdescribe "RcvQueue does not exist" testSetRcvQueueStatusNoQueue
-      xdescribe "SndQueue does not exist" testSetSndQueueStatusNoQueue
-    describe "createRcvMsg" do
-      describe "RcvQueue exists" testCreateRcvMsg
-      describe "RcvQueue does not exist" testCreateRcvMsgNoQueue
-    describe "createSndMsg" do
-      describe "SndQueue exists" testCreateSndMsg
-      describe "SndQueue does not exist" testCreateSndMsgNoQueue
+    describe "Queue and Connection management" do
+      describe "createRcvConn" do
+        testCreateRcvConn
+        testCreateRcvConnDuplicate
+      describe "createSndConn" do
+        testCreateSndConn
+        testCreateSndConnDuplicate
+      describe "getAllConnAliases" testGetAllConnAliases
+      describe "getRcvQueue" testGetRcvQueue
+      describe "deleteConn" do
+        testDeleteRcvConn
+        testDeleteSndConn
+        testDeleteDuplexConn
+      describe "upgradeRcvConnToDuplex" do
+        testUpgradeRcvConnToDuplex
+      describe "upgradeSndConnToDuplex" do
+        testUpgradeSndConnToDuplex
+      describe "set Queue status" do
+        describe "setRcvQueueStatus" do
+          testSetRcvQueueStatus
+          testSetRcvQueueStatusNoQueue
+        describe "setSndQueueStatus" do
+          testSetSndQueueStatus
+          testSetSndQueueStatusNoQueue
+        testSetQueueStatusDuplex
+    describe "Msg management" do
+      describe "create Msg" do
+        describe "createRcvMsg" do
+          testCreateRcvMsg
+          testCreateRcvMsgNoQueue
+        describe "createSndMsg" do
+          testCreateSndMsg
+          testCreateSndMsgNoQueue
+        testCreateRcvAndSndMsgs
 
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe = do
-  it "should throw error if compiled sqlite library is not threadsafe" $ \store -> do
+  it "compiled sqlite library should be threadsafe" $ \store -> do
     compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
     compileOptions `shouldNotContain` [["THREADSAFE=0"]]
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
 testForeignKeysEnabled = do
-  it "should throw error if foreign keys are enabled" $ \store -> do
+  it "foreign keys should be enabled" $ \store -> do
     let inconsistentQuery =
           [sql|
             INSERT INTO connections
@@ -318,54 +328,82 @@ testSetQueueStatusDuplex = do
 
 testSetRcvQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetRcvQueueStatusNoQueue = do
-  it "should throw error on attempt to update status of non-existent RcvQueue" $ \store -> do
+  xit "should throw error on attempt to update status of non-existent RcvQueue" $ \store -> do
     setRcvQueueStatus store rcvQueue1 Confirmed
       `throwsError` SEInternal ""
 
 testSetSndQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetSndQueueStatusNoQueue = do
-  it "should throw error on attempt to update status of non-existent SndQueue" $ \store -> do
+  xit "should throw error on attempt to update status of non-existent SndQueue" $ \store -> do
     setSndQueueStatus store sndQueue1 Confirmed
       `throwsError` SEInternal ""
 
+hw :: ByteString
+hw = encodeUtf8 "Hello world!"
+
+ts :: UTCTime
+ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
+
 testCreateRcvMsg :: SpecWith SQLiteStore
 testCreateRcvMsg = do
-  it "should create a RcvMsg and return InternalId" $ \store -> do
+  it "should create a RcvMsg and return InternalId, PrevExternalSndId and PrevRcvMsgHash" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
     -- TODO getMsg to check message
-    let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
-      `returnsResult` InternalId 1
+    createRcvMsg store "conn1" hw ts (1, ts) ("1", ts) "hash_dummy"
+      `returnsResult` (InternalId 1, 0, "")
+    createRcvMsg store "conn1" hw ts (2, ts) ("2", ts) "new_hash_dummy"
+      `returnsResult` (InternalId 2, 1, "hash_dummy")
 
 testCreateRcvMsgNoQueue :: SpecWith SQLiteStore
 testCreateRcvMsgNoQueue = do
   it "should throw error on attempt to create a RcvMsg w/t a RcvQueue" $ \store -> do
-    let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
+    createRcvMsg store "conn1" hw ts (1, ts) ("1", ts) "hash_dummy"
       `throwsError` SEConnNotFound
     createSndConn store sndQueue1
       `returnsResult` ()
-    createRcvMsg store "conn1" (encodeUtf8 "Hello world!") ts (1, ts) ("1", ts)
+    createRcvMsg store "conn1" hw ts (1, ts) ("1", ts) "hash_dummy"
       `throwsError` SEBadConnType CSnd
 
 testCreateSndMsg :: SpecWith SQLiteStore
 testCreateSndMsg = do
-  it "should create a SndMsg and return InternalId" $ \store -> do
+  it "should create a SndMsg and return InternalId and PrevSndMsgHash" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
     -- TODO getMsg to check message
-    let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
-      `returnsResult` InternalId 1
+    createSndMsg store "conn1" hw ts "hash_dummy"
+      `returnsResult` (InternalId 1, "")
+    createSndMsg store "conn1" hw ts "new_hash_dummy"
+      `returnsResult` (InternalId 2, "hash_dummy")
 
 testCreateSndMsgNoQueue :: SpecWith SQLiteStore
 testCreateSndMsgNoQueue = do
   it "should throw error on attempt to create a SndMsg w/t a SndQueue" $ \store -> do
-    let ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
-    createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
+    createSndMsg store "conn1" hw ts "hash_dummy"
       `throwsError` SEConnNotFound
     createRcvConn store rcvQueue1
       `returnsResult` ()
-    createSndMsg store "conn1" (encodeUtf8 "Hello world!") ts
+    createSndMsg store "conn1" hw ts "hash_dummy"
       `throwsError` SEBadConnType CRcv
+
+testCreateRcvAndSndMsgs :: SpecWith SQLiteStore
+testCreateRcvAndSndMsgs = do
+  it "should create multiple RcvMsg and SndMsg, correctly ordering internal Ids and returning previous state" $ \store -> do
+    -- create DuplexConnection
+    createRcvConn store rcvQueue1
+      `returnsResult` ()
+    upgradeRcvConnToDuplex store "conn1" sndQueue1
+      `returnsResult` ()
+    -- create RcvMsg and SndMsg in arbitrary order
+    createRcvMsg store "conn1" hw ts (1, ts) ("1", ts) "rcv_hash_1"
+      `returnsResult` (InternalId 1, 0, "")
+    createRcvMsg store "conn1" hw ts (2, ts) ("2", ts) "rcv_hash_2"
+      `returnsResult` (InternalId 2, 1, "rcv_hash_1")
+    createSndMsg store "conn1" hw ts "snd_hash_1"
+      `returnsResult` (InternalId 3, "")
+    createSndMsg store "conn1" hw ts "snd_hash_2"
+      `returnsResult` (InternalId 4, "snd_hash_1")
+    createRcvMsg store "conn1" hw ts (3, ts) ("3", ts) "rcv_hash_3"
+      `returnsResult` (InternalId 5, 2, "rcv_hash_2")
+    createSndMsg store "conn1" hw ts "snd_hash_3"
+      `returnsResult` (InternalId 6, "snd_hash_2")

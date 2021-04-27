@@ -147,15 +147,23 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> m InternalId
-  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) =
+  createRcvMsg ::
+    SQLiteStore ->
+    ConnAlias ->
+    MsgBody ->
+    InternalTs ->
+    (ExternalSndId, ExternalSndTs) ->
+    (BrokerId, BrokerTs) ->
+    MsgHash ->
+    m (InternalId, PrevExternalSndId, PrevRcvMsgHash)
+  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash =
     liftIOEither $
-      insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs)
+      insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash
 
-  createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
-  createSndMsg SQLiteStore {dbConn} connAlias msgBody internalTs =
+  createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> m (InternalId, PrevSndMsgHash)
+  createSndMsg SQLiteStore {dbConn} connAlias msgBody internalTs msgHash =
     liftIOEither $
-      insertSndMsg dbConn connAlias msgBody internalTs
+      insertSndMsg dbConn connAlias msgBody internalTs msgHash
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
@@ -266,10 +274,11 @@ insertRcvConnection_ dbConn RcvQueue {server, rcvId, connAlias} = do
     [sql|
       INSERT INTO connections
         ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
-          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
+          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
+          last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
       VALUES
         (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL,
-                            0,                        0,                        0);
+          0, 0, 0, 0, x'', x'');
     |]
     [":conn_alias" := connAlias, ":rcv_host" := host server, ":rcv_port" := port_, ":rcv_id" := rcvId]
 
@@ -311,10 +320,11 @@ insertSndConnection_ dbConn SndQueue {server, sndId, connAlias} = do
     [sql|
       INSERT INTO connections
         ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
-          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
+          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
+          last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
       VALUES
         (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id,
-                            0,                        0,                        0);
+          0, 0, 0, 0, x'', x'');
     |]
     [":conn_alias" := connAlias, ":snd_host" := host server, ":snd_port" := port_, ":snd_id" := sndId]
 
@@ -524,34 +534,35 @@ insertRcvMsg ::
   InternalTs ->
   (ExternalSndId, ExternalSndTs) ->
   (BrokerId, BrokerTs) ->
-  IO (Either StoreError InternalId)
-insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) =
+  MsgHash ->
+  IO (Either StoreError (InternalId, PrevExternalSndId, PrevRcvMsgHash))
+insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (Just _rcvQ, _) -> do
-        (lastInternalId, lastInternalRcvId) <- retrieveLastInternalIdsRcv_ dbConn connAlias
+        (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ dbConn connAlias
         let internalId = InternalId $ unId lastInternalId + 1
         let internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
         insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
         insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs)
-        updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
-        return $ Right internalId
+        updateLastIdsAndHashRcv_ dbConn connAlias internalId internalRcvId externalSndId msgHash
+        return $ Right (internalId, lastExternalSndId, lastRcvHash)
       (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
       _ -> return $ Left SEConnNotFound
 
-retrieveLastInternalIdsRcv_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalRcvId)
-retrieveLastInternalIdsRcv_ dbConn connAlias = do
-  [(lastInternalId, lastInternalRcvId)] <-
+retrieveLastIdsAndHashRcv_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+retrieveLastIdsAndHashRcv_ dbConn connAlias = do
+  [(lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)] <-
     DB.queryNamed
       dbConn
       [sql|
-        SELECT last_internal_msg_id, last_internal_rcv_msg_id
+        SELECT last_internal_msg_id, last_internal_rcv_msg_id, last_external_snd_msg_id, last_rcv_msg_hash
         FROM connections
         WHERE conn_alias = :conn_alias;
       |]
       [":conn_alias" := connAlias]
-  return (lastInternalId, lastInternalRcvId)
+  return (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)
 
 insertRcvMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalTs -> InternalRcvId -> MsgBody -> IO ()
 insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody = do
@@ -599,50 +610,59 @@ insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, e
       ":rcv_status" := Received
     ]
 
-updateLastInternalIdsRcv_ :: DB.Connection -> ConnAlias -> InternalId -> InternalRcvId -> IO ()
-updateLastInternalIdsRcv_ dbConn connAlias newInternalId newInternalRcvId =
+updateLastIdsAndHashRcv_ :: DB.Connection -> ConnAlias -> InternalId -> InternalRcvId -> ExternalSndId -> MsgHash -> IO ()
+updateLastIdsAndHashRcv_ dbConn connAlias newInternalId newInternalRcvId newExternalSndId newRcvHash =
   DB.executeNamed
     dbConn
     [sql|
       UPDATE connections
-      SET last_internal_msg_id = :last_internal_msg_id, last_internal_rcv_msg_id = :last_internal_rcv_msg_id
+      SET last_internal_msg_id = :last_internal_msg_id, last_internal_rcv_msg_id = :last_internal_rcv_msg_id,
+          last_external_snd_msg_id = :last_external_snd_msg_id, last_rcv_msg_hash = :last_rcv_msg_hash
       WHERE conn_alias = :conn_alias;
     |]
     [ ":last_internal_msg_id" := newInternalId,
       ":last_internal_rcv_msg_id" := newInternalRcvId,
+      ":last_external_snd_msg_id" := newExternalSndId,
+      ":last_rcv_msg_hash" := newRcvHash,
       ":conn_alias" := connAlias
     ]
 
 -- * createSndMsg helpers
 
-insertSndMsg :: DB.Connection -> ConnAlias -> MsgBody -> InternalTs -> IO (Either StoreError InternalId)
-insertSndMsg dbConn connAlias msgBody internalTs =
+insertSndMsg ::
+  DB.Connection ->
+  ConnAlias ->
+  MsgBody ->
+  InternalTs ->
+  MsgHash ->
+  IO (Either StoreError (InternalId, PrevSndMsgHash))
+insertSndMsg dbConn connAlias msgBody internalTs msgHash =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias
     case queues of
       (_, Just _sndQ) -> do
-        (lastInternalId, lastInternalSndId) <- retrieveLastInternalIdsSnd_ dbConn connAlias
+        (lastInternalId, lastInternalSndId, lastSndHash) <- retrieveLastIdsAndHashSnd_ dbConn connAlias
         let internalId = InternalId $ unId lastInternalId + 1
         let internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
         insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
         insertSndMsgDetails_ dbConn connAlias internalSndId internalId
-        updateLastInternalIdsSnd_ dbConn connAlias internalId internalSndId
-        return $ Right internalId
+        updateLastIdsAndHashSnd_ dbConn connAlias internalId internalSndId msgHash
+        return $ Right (internalId, lastSndHash)
       (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
       _ -> return $ Left SEConnNotFound
 
-retrieveLastInternalIdsSnd_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalSndId)
-retrieveLastInternalIdsSnd_ dbConn connAlias = do
-  [(lastInternalId, lastInternalSndId)] <-
+retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalSndId, PrevSndMsgHash)
+retrieveLastIdsAndHashSnd_ dbConn connAlias = do
+  [(lastInternalId, lastInternalSndId, lastSndHash)] <-
     DB.queryNamed
       dbConn
       [sql|
-        SELECT last_internal_msg_id, last_internal_snd_msg_id
+        SELECT last_internal_msg_id, last_internal_snd_msg_id, last_snd_msg_hash
         FROM connections
         WHERE conn_alias = :conn_alias;
       |]
       [":conn_alias" := connAlias]
-  return (lastInternalId, lastInternalSndId)
+  return (lastInternalId, lastInternalSndId, lastSndHash)
 
 insertSndMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalTs -> InternalSndId -> MsgBody -> IO ()
 insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody = do
@@ -677,16 +697,18 @@ insertSndMsgDetails_ dbConn connAlias internalSndId internalId =
       ":snd_status" := Created
     ]
 
-updateLastInternalIdsSnd_ :: DB.Connection -> ConnAlias -> InternalId -> InternalSndId -> IO ()
-updateLastInternalIdsSnd_ dbConn connAlias newInternalId newInternalSndId =
+updateLastIdsAndHashSnd_ :: DB.Connection -> ConnAlias -> InternalId -> InternalSndId -> MsgHash -> IO ()
+updateLastIdsAndHashSnd_ dbConn connAlias newInternalId newInternalSndId newSndHash =
   DB.executeNamed
     dbConn
     [sql|
       UPDATE connections
-      SET last_internal_msg_id = :last_internal_msg_id, last_internal_snd_msg_id = :last_internal_snd_msg_id
+      SET last_internal_msg_id = :last_internal_msg_id, last_internal_snd_msg_id = :last_internal_snd_msg_id,
+          last_snd_msg_hash = :last_snd_msg_hash
       WHERE conn_alias = :conn_alias;
     |]
     [ ":last_internal_msg_id" := newInternalId,
       ":last_internal_snd_msg_id" := newInternalSndId,
+      ":last_snd_msg_hash" := newSndHash,
       ":conn_alias" := connAlias
     ]

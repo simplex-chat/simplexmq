@@ -43,8 +43,16 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
-  createRcvMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> m InternalId
-  createSndMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
+  createRcvMsg ::
+    s ->
+    ConnAlias ->
+    MsgBody ->
+    InternalTs ->
+    (ExternalSndId, ExternalSndTs) ->
+    (BrokerId, BrokerTs) ->
+    MsgHash ->
+    m (InternalId, PrevExternalSndId, PrevRcvMsgHash)
+  createSndMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> m (InternalId, PrevSndMsgHash)
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
 -- * Queue types
@@ -124,6 +132,19 @@ instance Eq SomeConn where
     _ -> False
 
 deriving instance Show SomeConn
+
+-- * Message integrity validation types
+
+type MsgHash = ByteString
+
+-- | Corresponds to `last_external_snd_msg_id` in `connections` table
+type PrevExternalSndId = Int64
+
+-- | Corresponds to `last_rcv_msg_hash` in `connections` table
+type PrevRcvMsgHash = ByteString
+
+-- | Corresponds to `last_snd_msg_hash` in `connections` table
+type PrevSndMsgHash = ByteString
 
 -- * Message types
 
