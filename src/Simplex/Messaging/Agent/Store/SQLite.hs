@@ -174,14 +174,18 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       pure msg
 
   createSndMsg'' :: SQLiteStore -> ConnAlias -> (InternalId -> PrevSndMsgHash -> m SndMsgData) -> m SndMsgData
-  createSndMsg'' SQLiteStore {dbConn} connAlias getMsg =
-    withTransaction dbConn $ do
-      (lastInternalId, lastInternalSndId, prevSndHash) <- liftIO $ retrieveLastIdsAndHashSnd_ dbConn connAlias
-      let internalId = InternalId $ unId lastInternalId + 1
-          internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-      msg@SndMsgData {internalTs, msgBody, msgHash} <- getMsg internalId prevSndHash
-      -- save message here
-      pure msg
+  createSndMsg'' SQLiteStore {dbConn} connAlias getMsgData =
+    withTransaction dbConn $
+      liftIO (retrieveConnQueues_ dbConn connAlias) >>= \case
+        (_, Just _sndQ) -> do
+          (lastInternalId, lastInternalSndId, prevSndHash) <- liftIO $ retrieveLastIdsAndHashSnd_ dbConn connAlias
+          let internalId = InternalId $ unId lastInternalId + 1
+              internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
+          msg <- getMsgData internalId prevSndHash
+          liftIO $ insertSndMsg'' dbConn connAlias internalId internalSndId msg
+          pure msg
+        (Just _, Nothing) -> throwError $ SEBadConnType CRcv
+        _ -> throwError SEConnNotFound
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
@@ -656,6 +660,13 @@ insertSndMsg dbConn connAlias msgBody internalTs msgHash =
         return $ Right (internalId, lastSndHash)
       (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
       _ -> return $ Left SEConnNotFound
+
+insertSndMsg'' ::
+  DB.Connection -> ConnAlias -> InternalId -> InternalSndId -> SndMsgData -> IO ()
+insertSndMsg'' dbConn connAlias internalId internalSndId SndMsgData {internalTs, msgBody, msgHash} = do
+  insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
+  insertSndMsgDetails_ dbConn connAlias internalSndId internalId
+  updateLastIdsAndHashSnd_ dbConn connAlias internalId internalSndId msgHash
 
 retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalSndId, PrevSndMsgHash)
 retrieveLastIdsAndHashSnd_ dbConn connAlias = do
