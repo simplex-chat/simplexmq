@@ -23,6 +23,7 @@ import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO, withRunInIO)
 import Data.Bifunctor (first)
+import Data.ByteString.Char8 (ByteString)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (isPrefixOf)
@@ -173,17 +174,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       -- save message here
       pure msg
 
-  createSndMsg'' :: SQLiteStore -> ConnAlias -> (InternalId -> PrevSndMsgHash -> m SndMsgData) -> m SndMsgData
-  createSndMsg'' SQLiteStore {dbConn} connAlias getMsgData =
+  createSndMsg'' :: SQLiteStore -> ConnAlias -> (InternalId -> PrevSndMsgHash -> (ByteString, SndMsgData)) -> m (InternalId, ByteString)
+  createSndMsg'' SQLiteStore {dbConn} connAlias mkMsgData =
     withTransaction dbConn $
       liftIO (retrieveConnQueues_ dbConn connAlias) >>= \case
         (_, Just _sndQ) -> do
           (lastInternalId, lastInternalSndId, prevSndHash) <- liftIO $ retrieveLastIdsAndHashSnd_ dbConn connAlias
           let internalId = InternalId $ unId lastInternalId + 1
               internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-          msg <- getMsgData internalId prevSndHash
-          liftIO $ insertSndMsg'' dbConn connAlias internalId internalSndId msg
-          pure msg
+              (msg, msgData) = mkMsgData internalId prevSndHash
+          liftIO $ insertSndMsg'' dbConn connAlias internalId internalSndId msgData
+          pure (internalId, msg)
         (Just _, Nothing) -> throwError $ SEBadConnType CRcv
         _ -> throwError SEConnNotFound
 

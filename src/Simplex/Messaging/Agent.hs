@@ -178,16 +178,26 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       where
         sendMsg sq = do
           senderTimestamp <- liftIO getCurrentTime
-          -- TODO insert real hash, send previous hash
-          (senderId, previousMsgHash) <- withStore $ createSndMsg st connAlias msgBody senderTimestamp "hash_dummy"
-          sendAgentMessage c sq . serializeSMPMessage $
-            SMPMessage
-              { senderMsgId = unId senderId,
-                senderTimestamp,
-                previousMsgHash,
-                agentMessage = A_MSG msgBody
-              }
+          (senderId, msg) <- withStore $ createSndMsg'' st connAlias $ mkMsgData senderTimestamp
+          sendAgentMessage c sq msg
           respond $ SENT (unId senderId)
+        mkMsgData :: InternalTs -> InternalId -> PrevSndMsgHash -> (ByteString, SndMsgData)
+        mkMsgData senderTimestamp internalId previousMsgHash =
+          let msg =
+                serializeSMPMessage
+                  SMPMessage
+                    { senderMsgId = unId internalId,
+                      senderTimestamp,
+                      previousMsgHash,
+                      agentMessage = A_MSG msgBody
+                    }
+              msgData =
+                SndMsgData
+                  { internalTs = senderTimestamp,
+                    msgBody,
+                    msgHash = C.sha256Hash msg
+                  }
+           in (msg, msgData)
 
     suspendConnection :: m ()
     suspendConnection =

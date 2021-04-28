@@ -49,7 +49,7 @@ class Monad m => MonadAgentStore s m where
     s -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> m (InternalId, PrevSndMsgHash)
 
   createRcvMsg'' :: s -> ConnAlias -> (InternalId -> PrevExternalSndId -> PrevRcvMsgHash -> m RcvMsgData) -> m RcvMsgData
-  createSndMsg'' :: s -> ConnAlias -> (InternalId -> PrevSndMsgHash -> m SndMsgData) -> m SndMsgData
+  createSndMsg'' :: s -> ConnAlias -> (InternalId -> PrevSndMsgHash -> (ByteString, SndMsgData)) -> m (InternalId, ByteString)
 
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
@@ -66,8 +66,7 @@ data RcvMsgData = RcvMsgData
 data SndMsgData = SndMsgData
   { internalTs :: InternalTs,
     msgBody :: MsgBody,
-    msgHash :: MsgHash,
-    serialized :: ByteString
+    msgHash :: MsgHash
   }
 
 -- * Queue types
