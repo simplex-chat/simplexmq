@@ -240,7 +240,7 @@ type SenderTimestamp = UTCTime
 data MsgIntegrity = MsgOk | MsgError MsgErrorType
   deriving (Eq, Show)
 
-data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
+data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash | MsgDuplicate
   deriving (Eq, Show)
 
 -- | error type used in errors sent to agent clients
@@ -331,6 +331,7 @@ commandP =
       "ID " *> (MsgBadId <$> A.decimal)
         <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
         <|> "HASH" $> MsgBadHash
+        <|> "DUPLICATE" $> MsgDuplicate
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
@@ -377,6 +378,7 @@ serializeCommand = \case
             B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
           MsgBadId aMsgId -> "ID " <> bshow aMsgId
           MsgBadHash -> "HASH"
+          MsgDuplicate -> "DUPLICATE"
 
 agentErrorTypeP :: Parser AgentErrorType
 agentErrorTypeP =

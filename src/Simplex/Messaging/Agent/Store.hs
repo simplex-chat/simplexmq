@@ -43,7 +43,7 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
-  createRcvMsg :: s -> ConnAlias -> (InternalId -> PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData) -> m (InternalId, RcvMsgData)
+  createRcvMsg :: s -> ConnAlias -> (PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData) -> m (InternalId, RcvMsgData)
   createSndMsg :: s -> ConnAlias -> (InternalId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 

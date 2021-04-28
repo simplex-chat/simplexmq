@@ -268,7 +268,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               secureQueue c rq senderKey
               withStore $ setRcvQueueStatus st rq Secured
             _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
-        SMPMessage {agentMessage, senderMsgId, senderTimestamp} ->
+        SMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
           case agentMessage of
             HELLO verifyKey _ -> do
               logServer "<--" c srv rId "MSG <HELLO>"
@@ -283,7 +283,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               withStore $ upgradeRcvConnToDuplex st connAlias sq
               connectToSendQueue c st sq senderKey verifyKey
               notify connAlias CON
-            A_MSG body -> agentClientMsg rq (senderMsgId, senderTimestamp) (srvMsgId, srvTs) body msgHash
+            A_MSG body -> agentClientMsg rq previousMsgHash (senderMsgId, senderTimestamp) (srvMsgId, srvTs) body msgHash
       sendAck c rq
       return ()
     SMP.END -> do
@@ -296,34 +296,43 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
   where
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
-    agentClientMsg :: RcvQueue -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
-    agentClientMsg RcvQueue {connAlias, status} m_sender m_broker body msgHash = do
+    agentClientMsg :: RcvQueue -> PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
+    agentClientMsg RcvQueue {connAlias, status} receivedPrevMsgHash m_sender m_broker body msgHash = do
       -- TODO check message status
       logServer "<--" c srv rId "MSG <MSG>"
       case status of
         Active -> do
           internalTs <- liftIO getCurrentTime
-          (recipientId, RcvMsgData {}) <- withStore $ createRcvMsg st connAlias $ mkMsgData internalTs
+          (recipientId, RcvMsgData {m_integrity}) <- withStore $ createRcvMsg st connAlias $ mkMsgData internalTs
           notify connAlias $
             MSG
-              { m_integrity = MsgOk,
-                m_recipient = (unId recipientId, internalTs),
+              { m_recipient = (unId recipientId, internalTs),
                 m_sender,
                 m_broker,
-                m_body = body
+                m_body = body,
+                m_integrity
               }
         _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
       where
-        mkMsgData :: InternalTs -> InternalId -> PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData
-        mkMsgData internalTs internalId prevExtSndId prevMsgHash =
+        mkMsgData :: InternalTs -> PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData
+        mkMsgData internalTs prevExtSndId internalPrevMsgHash =
           RcvMsgData
             { internalTs,
               msgHash,
               m_sender,
               m_broker,
               m_body = body,
-              m_integrity = MsgOk
+              m_integrity = msgIntegrity prevExtSndId (fst m_sender) internalPrevMsgHash
             }
+        msgIntegrity :: PrevExternalSndId -> ExternalSndId ->PrevRcvMsgHash ->  MsgIntegrity
+        msgIntegrity  prevExtSndId extSndId internalPrevMsgHash
+          | extSndId == prevExtSndId + 1 && internalPrevMsgHash /= receivedPrevMsgHash = MsgOk
+          -- | extSndId < prevExtSndId = MsgError $ MsgBadId extSndId
+          -- | extSndId == prevExtSndId -> deduplicate?
+          -- | extSndId > prevExtSndId + 1 = MsgError $ MsgSkipped (prevExtSndId + 1) (extSndId - 1)
+          | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
+          | otherwise = MsgOk -- MsgError MsgDuplicate
+          
 
 connectToSendQueue :: AgentMonad m => AgentClient -> SQLiteStore -> SndQueue -> SenderPublicKey -> VerificationKey -> m ()
 connectToSendQueue c st sq senderKey verifyKey = do
