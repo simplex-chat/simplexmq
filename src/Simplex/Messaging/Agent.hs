@@ -285,7 +285,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
                     withStore $ createRcvMsg st connAlias body recipientTs m_sender m_broker "hash_dummy"
                   notify connAlias $
                     MSG
-                      { m_status = MsgOk,
+                      { m_integrity = MsgOk,
                         m_recipient = (unId recipientId, recipientTs),
                         m_sender,
                         m_broker,

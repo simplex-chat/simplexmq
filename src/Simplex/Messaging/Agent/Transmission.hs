@@ -93,7 +93,7 @@ data ACommand (p :: AParty) where
     { m_recipient :: (AgentMsgId, UTCTime),
       m_broker :: (MsgId, UTCTime),
       m_sender :: (AgentMsgId, UTCTime),
-      m_status :: MsgStatus,
+      m_integrity :: MsgIntegrity,
       m_body :: MsgBody
     } ->
     ACommand Agent
@@ -237,7 +237,7 @@ type AgentMsgId = Int64
 
 type SenderTimestamp = UTCTime
 
-data MsgStatus = MsgOk | MsgError MsgErrorType
+data MsgIntegrity = MsgOk | MsgError MsgErrorType
   deriving (Eq, Show)
 
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
@@ -315,18 +315,18 @@ commandP =
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
     message = do
-      m_status <- status <* A.space
+      m_integrity <- integrity <* A.space
       m_recipient <- "R=" *> partyMeta A.decimal
       m_broker <- "B=" *> partyMeta base64P
       m_sender <- "S=" *> partyMeta A.decimal
       m_body <- A.takeByteString
-      return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
+      return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_integrity, m_body}
     replyMode =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)
         <|> pure ReplyOn
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
-    status = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
+    integrity = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
     msgErrorType =
       "ID " *> (MsgBadId <$> A.decimal)
         <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
@@ -346,10 +346,10 @@ serializeCommand = \case
   END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   SENT mId -> "SENT " <> bshow mId
-  MSG {m_recipient = (rmId, rTs), m_broker = (bmId, bTs), m_sender = (smId, sTs), m_status, m_body} ->
+  MSG {m_recipient = (rmId, rTs), m_broker = (bmId, bTs), m_sender = (smId, sTs), m_integrity, m_body} ->
     B.unwords
       [ "MSG",
-        msgStatus m_status,
+        msgIntegrity m_integrity,
         "R=" <> bshow rmId <> "," <> showTs rTs,
         "B=" <> encode bmId <> "," <> showTs bTs,
         "S=" <> bshow smId <> "," <> showTs sTs,
@@ -368,8 +368,8 @@ serializeCommand = \case
       ReplyOn -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
-    msgStatus :: MsgStatus -> ByteString
-    msgStatus = \case
+    msgIntegrity :: MsgIntegrity -> ByteString
+    msgIntegrity = \case
       MsgOk -> "OK"
       MsgError e ->
         "ERR" <> case e of
@@ -439,7 +439,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
     cmdWithMsgBody = \case
       SEND body -> SEND <$$> getMsgBody body
-      MSG agentMsgId srvTS agentTS status body -> MSG agentMsgId srvTS agentTS status <$$> getMsgBody body
+      MSG agentMsgId srvTS agentTS integrity body -> MSG agentMsgId srvTS agentTS integrity <$$> getMsgBody body
       cmd -> return $ Right cmd
 
     -- TODO refactor with server

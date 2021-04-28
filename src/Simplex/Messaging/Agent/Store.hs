@@ -29,9 +29,6 @@ import qualified Simplex.Messaging.Protocol as SMP
 
 -- | Store class type. Defines store access methods for implementations.
 class Monad m => MonadAgentStore s m where
-  -- transactions
-  withTransaction :: s -> m a -> m a
-
   -- Queue and Connection management
   createRcvConn :: s -> RcvQueue -> m ()
   createSndConn :: s -> SndQueue -> m ()
@@ -47,10 +44,31 @@ class Monad m => MonadAgentStore s m where
 
   -- Msg management
   createRcvMsg ::
-    s -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgHash -> m SendMsgInfo
+    s -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgHash -> m (InternalId, PrevExternalSndId, PrevRcvMsgHash)
   createSndMsg ::
     s -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> m (InternalId, PrevSndMsgHash)
+
+  createRcvMsg'' :: s -> ConnAlias -> (InternalId -> PrevExternalSndId -> PrevRcvMsgHash -> m RcvMsgData) -> m RcvMsgData
+  createSndMsg'' :: s -> ConnAlias -> (InternalId -> PrevSndMsgHash -> m SndMsgData) -> m SndMsgData
+
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
+
+data RcvMsgData = RcvMsgData
+  { internalTs :: InternalTs,
+    msgBody :: MsgBody,
+    msgHash :: MsgHash,
+    sender :: (ExternalSndId, ExternalSndTs),
+    broker :: (BrokerId, BrokerTs),
+    integrity :: MsgIntegrity,
+    serialized :: ByteString
+  }
+
+data SndMsgData = SndMsgData
+  { internalTs :: InternalTs,
+    msgBody :: MsgBody,
+    msgHash :: MsgHash,
+    serialized :: ByteString
+  }
 
 -- * Queue types
 
@@ -133,8 +151,6 @@ deriving instance Show SomeConn
 -- * Message integrity validation types
 
 type MsgHash = ByteString
-
-type SendMsgInfo = (InternalId, PrevExternalSndId, PrevRcvMsgHash)
 
 -- | Corresponds to `last_external_snd_msg_id` in `connections` table
 type PrevExternalSndId = Int64
