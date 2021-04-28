@@ -177,10 +177,16 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
         _ -> throwError $ CONN SIMPLEX
       where
         sendMsg sq = do
-          senderTs <- liftIO getCurrentTime
+          senderTimestamp <- liftIO getCurrentTime
           -- TODO insert real hash, send previous hash
-          (senderId, _prevSndHash) <- withStore $ createSndMsg st connAlias msgBody senderTs "hash_dummy"
-          sendAgentMessage c sq senderTs $ A_MSG msgBody
+          (senderId, previousMsgHash) <- withStore $ createSndMsg st connAlias msgBody senderTimestamp "hash_dummy"
+          sendAgentMessage c sq . serializeSMPMessage $
+            SMPMessage
+              { senderMsgId = unId senderId,
+                senderTimestamp,
+                previousMsgHash,
+                agentMessage = A_MSG msgBody
+              }
           respond $ SENT (unId senderId)
 
     suspendConnection :: m ()
@@ -209,8 +215,14 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
     sendReplyQInfo srv sq = do
       (rq, qInfo) <- newReceiveQueue c srv connAlias
       withStore $ upgradeSndConnToDuplex st connAlias rq
-      senderTs <- liftIO getCurrentTime
-      sendAgentMessage c sq senderTs $ REPLY qInfo
+      senderTimestamp <- liftIO getCurrentTime
+      sendAgentMessage c sq . serializeSMPMessage $
+        SMPMessage
+          { senderMsgId = 0,
+            senderTimestamp,
+            previousMsgHash = "",
+            agentMessage = REPLY qInfo
+          }
 
     respond :: ACommand 'Agent -> m ()
     respond = respond' connAlias

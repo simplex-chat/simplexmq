@@ -29,6 +29,9 @@ import qualified Simplex.Messaging.Protocol as SMP
 
 -- | Store class type. Defines store access methods for implementations.
 class Monad m => MonadAgentStore s m where
+  -- transactions
+  withTransaction :: s -> m a -> m a
+
   -- Queue and Connection management
   createRcvConn :: s -> RcvQueue -> m ()
   createSndConn :: s -> SndQueue -> m ()
@@ -44,15 +47,9 @@ class Monad m => MonadAgentStore s m where
 
   -- Msg management
   createRcvMsg ::
-    s ->
-    ConnAlias ->
-    MsgBody ->
-    InternalTs ->
-    (ExternalSndId, ExternalSndTs) ->
-    (BrokerId, BrokerTs) ->
-    MsgHash ->
-    m (InternalId, PrevExternalSndId, PrevRcvMsgHash)
-  createSndMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> m (InternalId, PrevSndMsgHash)
+    s -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgHash -> m SendMsgInfo
+  createSndMsg ::
+    s -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> m (InternalId, PrevSndMsgHash)
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
 -- * Queue types
@@ -137,14 +134,16 @@ deriving instance Show SomeConn
 
 type MsgHash = ByteString
 
+type SendMsgInfo = (InternalId, PrevExternalSndId, PrevRcvMsgHash)
+
 -- | Corresponds to `last_external_snd_msg_id` in `connections` table
 type PrevExternalSndId = Int64
 
 -- | Corresponds to `last_rcv_msg_hash` in `connections` table
-type PrevRcvMsgHash = ByteString
+type PrevRcvMsgHash = MsgHash
 
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
-type PrevSndMsgHash = ByteString
+type PrevSndMsgHash = MsgHash
 
 -- * Message types
 

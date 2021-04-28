@@ -21,7 +21,7 @@ where
 
 import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
-import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.IO.Unlift (MonadUnliftIO, withRunInIO)
 import Data.Bifunctor (first)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
@@ -86,6 +86,10 @@ checkDuplicate action = liftIOEither $ first handleError <$> E.try action
       | otherwise = SEInternal $ bshow e
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
+  withTransaction :: SQLiteStore -> m a -> m a
+  withTransaction SQLiteStore {dbConn} action =
+    withRunInIO $ DB.withTransaction dbConn . ($ action)
+
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
   createRcvConn SQLiteStore {dbConn} = checkDuplicate . createRcvQueueAndConn dbConn
 
@@ -148,14 +152,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       updateSndQueueStatus dbConn sndQueue status
 
   createRcvMsg ::
-    SQLiteStore ->
-    ConnAlias ->
-    MsgBody ->
-    InternalTs ->
-    (ExternalSndId, ExternalSndTs) ->
-    (BrokerId, BrokerTs) ->
-    MsgHash ->
-    m (InternalId, PrevExternalSndId, PrevRcvMsgHash)
+    SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgHash -> m SendMsgInfo
   createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash =
     liftIOEither $
       insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash
@@ -528,14 +525,7 @@ updateSndQueueStatus dbConn SndQueue {sndId, server = SMPServer {host, port}} st
 -- * createRcvMsg helpers
 
 insertRcvMsg ::
-  DB.Connection ->
-  ConnAlias ->
-  MsgBody ->
-  InternalTs ->
-  (ExternalSndId, ExternalSndTs) ->
-  (BrokerId, BrokerTs) ->
-  MsgHash ->
-  IO (Either StoreError (InternalId, PrevExternalSndId, PrevRcvMsgHash))
+  DB.Connection -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgHash -> IO (Either StoreError SendMsgInfo)
 insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash =
   DB.withTransaction dbConn $ do
     queues <- retrieveConnQueues_ dbConn connAlias

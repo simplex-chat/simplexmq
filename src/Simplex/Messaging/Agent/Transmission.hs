@@ -13,7 +13,7 @@
 
 module Simplex.Messaging.Agent.Transmission where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -142,7 +142,9 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
       SMPMessage
         <$> A.decimal <* A.space
         <*> tsISO8601P <* A.space
-        <*> base64P <* A.endOfLine
+        -- TODO previous message hash should become mandatory when we support HELLO and REPLY
+        -- (for HELLO it would be the hash of SMPConfirmation)
+        <*> (base64P <|> pure "") <* A.endOfLine
         <*> agentMessageP
 
 serializeSMPMessage :: SMPMessage -> ByteString
@@ -175,17 +177,11 @@ smpQueueInfoP =
   "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> C.pubKeyP)
 
 smpServerP :: Parser SMPServer
-smpServerP = SMPServer <$> server <*> port <*> kHash
+smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
-    port = fromChar ':' $ show <$> (A.decimal :: Parser Int)
-    kHash = fromChar '#' C.keyHashP
-    fromChar :: Char -> Parser a -> Parser (Maybe a)
-    fromChar ch parser = do
-      c <- A.peekChar
-      if c == Just ch
-        then A.char ch *> (Just <$> parser)
-        else pure Nothing
+    port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
+    kHash = A.char '#' *> C.keyHashP
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ AGENT A_MESSAGE

@@ -226,7 +226,7 @@ sendConfirmation c sq@SndQueue {server, sndId} senderKey =
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: SMPClient -> m MsgBody
-    mkConfirmation smp = encryptAndSign smp sq $ SMPConfirmation senderKey
+    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =
@@ -236,8 +236,14 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =
   where
     mkHello :: SMPClient -> AckMode -> m ByteString
     mkHello smp ackMode = do
-      senderTs <- liftIO getCurrentTime
-      mkAgentMessage smp sq senderTs $ HELLO verifyKey ackMode
+      senderTimestamp <- liftIO getCurrentTime
+      encryptAndSign smp sq . serializeSMPMessage $
+        SMPMessage
+          { senderMsgId = 0,
+            senderTimestamp,
+            previousMsgHash = "",
+            agentMessage = HELLO verifyKey ackMode
+          }
 
     send :: Int -> Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
     send 0 _ _ _ = throwE $ SMPServerError AUTH
@@ -268,27 +274,17 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
-sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> SenderTimestamp -> AMessage -> m ()
-sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} senderTs agentMsg =
+sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
+sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
   withLogSMP_ c server sndId "SEND <message>" $ \smp -> do
-    msg <- mkAgentMessage smp sq senderTs agentMsg
-    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
+    msg' <- encryptAndSign smp sq msg
+    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg'
 
-mkAgentMessage :: AgentMonad m => SMPClient -> SndQueue -> SenderTimestamp -> AMessage -> m ByteString
-mkAgentMessage smp sq senderTs agentMessage = do
-  encryptAndSign smp sq $
-    SMPMessage
-      { senderMsgId = 0,
-        senderTimestamp = senderTs,
-        previousMsgHash = "1234", -- TODO hash of the previous message
-        agentMessage
-      }
-
-encryptAndSign :: AgentMonad m => SMPClient -> SndQueue -> SMPMessage -> m ByteString
+encryptAndSign :: AgentMonad m => SMPClient -> SndQueue -> ByteString -> m ByteString
 encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
   paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
   liftError cryptoError $ do
-    enc <- C.encrypt encryptKey paddedSize $ serializeSMPMessage msg
+    enc <- C.encrypt encryptKey paddedSize msg
     C.Signature sig <- C.sign signKey enc
     pure $ sig <> enc
 
