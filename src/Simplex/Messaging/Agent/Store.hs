@@ -43,30 +43,24 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
-  createRcvMsg ::
-    s -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgHash -> m (InternalId, PrevExternalSndId, PrevRcvMsgHash)
-  createSndMsg ::
-    s -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> m (InternalId, PrevSndMsgHash)
-
-  createRcvMsg'' :: s -> ConnAlias -> (InternalId -> PrevExternalSndId -> PrevRcvMsgHash -> m RcvMsgData) -> m RcvMsgData
-  createSndMsg'' :: s -> ConnAlias -> (InternalId -> PrevSndMsgHash -> (ByteString, SndMsgData)) -> m (InternalId, ByteString)
-
+  createRcvMsg :: s -> ConnAlias -> (InternalId -> PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData) -> m (InternalId, RcvMsgData)
+  createSndMsg :: s -> ConnAlias -> (InternalId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
 data RcvMsgData = RcvMsgData
   { internalTs :: InternalTs,
-    msgBody :: MsgBody,
     msgHash :: MsgHash,
-    sender :: (ExternalSndId, ExternalSndTs),
-    broker :: (BrokerId, BrokerTs),
-    integrity :: MsgIntegrity,
-    serialized :: ByteString
+    m_sender :: (ExternalSndId, ExternalSndTs),
+    m_broker :: (BrokerId, BrokerTs),
+    m_body :: MsgBody,
+    m_integrity :: MsgIntegrity
   }
 
 data SndMsgData = SndMsgData
   { internalTs :: InternalTs,
     msgBody :: MsgBody,
-    msgHash :: MsgHash
+    msgHash :: MsgHash,
+    msgStr :: ByteString
   }
 
 -- * Queue types

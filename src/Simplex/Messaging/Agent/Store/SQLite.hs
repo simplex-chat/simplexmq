@@ -21,9 +21,8 @@ where
 
 import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
-import Control.Monad.IO.Unlift (MonadUnliftIO, withRunInIO)
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Bifunctor (first)
-import Data.ByteString.Char8 (ByteString)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (isPrefixOf)
@@ -87,10 +86,6 @@ checkDuplicate action = liftIOEither $ first handleError <$> E.try action
       | DB.sqlError e == DB.ErrorConstraint = SEConnDuplicate
       | otherwise = SEInternal $ bshow e
 
-withTransaction :: (MonadUnliftIO m, MonadError StoreError m) => DB.Connection -> m a -> m a
-withTransaction dbConn action =
-  withRunInIO $ DB.withTransaction dbConn . ($ action)
-
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
   createRcvConn SQLiteStore {dbConn} = checkDuplicate . createRcvQueueAndConn dbConn
@@ -153,42 +148,45 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createRcvMsg ::
-    SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgHash -> m (InternalId, PrevExternalSndId, PrevRcvMsgHash)
-  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash =
-    liftIOEither $
-      insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash
+  createRcvMsg :: SQLiteStore -> ConnAlias -> (InternalId -> PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData) -> m (InternalId, RcvMsgData)
+  createRcvMsg SQLiteStore {dbConn} connAlias mkMsgData =
+    liftIOEither . DB.withTransaction dbConn $
+      retrieveConnQueues_ dbConn connAlias >>= \case
+        (Just _rcvQ, _) -> do
+          (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ dbConn connAlias
+          let internalId = InternalId $ unId lastInternalId + 1
+              internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
+              msg = mkMsgData internalId lastExternalSndId lastRcvHash
+          insert internalId internalRcvId msg
+          pure $ Right (internalId, msg)
+        (Nothing, Just _) -> pure . Left $ SEBadConnType CSnd
+        _ -> pure $ Left SEConnNotFound
+    where
+      insert :: InternalId -> InternalRcvId -> RcvMsgData -> IO ()
+      insert internalId internalRcvId RcvMsgData {internalTs, msgHash, m_sender, m_broker, m_body, m_integrity} = do
+        insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId m_body
+        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId m_sender m_broker
+        updateLastIdsAndHashRcv_ dbConn connAlias internalId internalRcvId (fst m_sender) msgHash
 
-  createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> m (InternalId, PrevSndMsgHash)
-  createSndMsg SQLiteStore {dbConn} connAlias msgBody internalTs msgHash =
-    liftIOEither $
-      insertSndMsg dbConn connAlias msgBody internalTs msgHash
-
-  createRcvMsg'' :: SQLiteStore -> ConnAlias -> (InternalId -> PrevExternalSndId -> PrevRcvMsgHash -> m RcvMsgData) -> m RcvMsgData
-  createRcvMsg'' SQLiteStore {dbConn} connAlias getMsg =
-    withTransaction dbConn $ do
-      (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- liftIO $ retrieveLastIdsAndHashRcv_ dbConn connAlias
-      let internalId = InternalId $ unId lastInternalId + 1
-          internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
-      msg@RcvMsgData {internalTs, msgBody, msgHash, sender, broker, integrity} <- getMsg internalId lastExternalSndId lastRcvHash
-      -- save message here
-      pure msg
-
-  createSndMsg'' :: SQLiteStore -> ConnAlias -> (InternalId -> PrevSndMsgHash -> (ByteString, SndMsgData)) -> m (InternalId, ByteString)
-  createSndMsg'' SQLiteStore {dbConn} connAlias mkMsgData =
-    liftIOEither $ insertSndMsg'' dbConn connAlias mkMsgData
-
-  -- withTransaction dbConn $
-  --   liftIO (retrieveConnQueues_ dbConn connAlias) >>= \case
-  --     (_, Just _sndQ) -> do
-  --       (lastInternalId, lastInternalSndId, prevSndHash) <- liftIO $ retrieveLastIdsAndHashSnd_ dbConn connAlias
-  --       let internalId = InternalId $ unId lastInternalId + 1
-  --           internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-  --           (msg, msgData) = mkMsgData internalId prevSndHash
-  --       liftIO $ insertSndMsg'' dbConn connAlias internalId internalSndId msgData
-  --       pure (internalId, msg)
-  --     (Just _, Nothing) -> throwError $ SEBadConnType CRcv
-  --     _ -> throwError SEConnNotFound
+  createSndMsg :: SQLiteStore -> ConnAlias -> (InternalId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
+  createSndMsg SQLiteStore {dbConn} connAlias mkMsgData =
+    liftIOEither . DB.withTransaction dbConn $
+      retrieveConnQueues_ dbConn connAlias >>= \case
+        (_, Just _sndQ) -> do
+          (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ dbConn connAlias
+          let internalId = InternalId $ unId lastInternalId + 1
+              internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
+              msg = mkMsgData internalId prevSndHash
+          insert internalId internalSndId msg
+          pure $ Right (internalId, msg)
+        (Just _, Nothing) -> pure . Left $ SEBadConnType CRcv
+        _ -> pure $ Left SEConnNotFound
+    where
+      insert :: InternalId -> InternalSndId -> SndMsgData -> IO ()
+      insert internalId internalSndId SndMsgData {internalTs, msgBody, msgHash} = do
+        insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
+        insertSndMsgDetails_ dbConn connAlias internalSndId internalId
+        updateLastIdsAndHashSnd_ dbConn connAlias internalId internalSndId msgHash
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
@@ -552,23 +550,6 @@ updateSndQueueStatus dbConn SndQueue {sndId, server = SMPServer {host, port}} st
 
 -- * createRcvMsg helpers
 
-insertRcvMsg ::
-  DB.Connection -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgHash -> IO (Either StoreError (InternalId, PrevExternalSndId, PrevRcvMsgHash))
-insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) msgHash =
-  DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (Just _rcvQ, _) -> do
-        (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ dbConn connAlias
-        let internalId = InternalId $ unId lastInternalId + 1
-            internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
-        insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
-        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs)
-        updateLastIdsAndHashRcv_ dbConn connAlias internalId internalRcvId externalSndId msgHash
-        return $ Right (internalId, lastExternalSndId, lastRcvHash)
-      (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
-      _ -> return $ Left SEConnNotFound
-
 retrieveLastIdsAndHashRcv_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
 retrieveLastIdsAndHashRcv_ dbConn connAlias = do
   [(lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)] <-
@@ -646,44 +627,6 @@ updateLastIdsAndHashRcv_ dbConn connAlias newInternalId newInternalRcvId newExte
     ]
 
 -- * createSndMsg helpers
-
-insertSndMsg ::
-  DB.Connection -> ConnAlias -> MsgBody -> InternalTs -> MsgHash -> IO (Either StoreError (InternalId, PrevSndMsgHash))
-insertSndMsg dbConn connAlias msgBody internalTs msgHash =
-  DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (_, Just _sndQ) -> do
-        (lastInternalId, lastInternalSndId, lastSndHash) <- retrieveLastIdsAndHashSnd_ dbConn connAlias
-        let internalId = InternalId $ unId lastInternalId + 1
-            internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-        insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
-        insertSndMsgDetails_ dbConn connAlias internalSndId internalId
-        updateLastIdsAndHashSnd_ dbConn connAlias internalId internalSndId msgHash
-        return $ Right (internalId, lastSndHash)
-      (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
-      _ -> return $ Left SEConnNotFound
-
-insertSndMsg'' ::
-  DB.Connection -> ConnAlias -> (InternalId -> PrevSndMsgHash -> (ByteString, SndMsgData)) -> IO (Either StoreError (InternalId, ByteString))
-insertSndMsg'' dbConn connAlias mkMsgData = do
-  DB.withTransaction dbConn $
-    retrieveConnQueues_ dbConn connAlias >>= \case
-      (_, Just _sndQ) -> do
-        (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ dbConn connAlias
-        let internalId = InternalId $ unId lastInternalId + 1
-            internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-            (msg, msgData) = mkMsgData internalId prevSndHash
-        insert internalId internalSndId msgData
-        pure $ Right (internalId, msg)
-      (Just _, Nothing) -> pure . Left $ SEBadConnType CRcv
-      _ -> pure $ Left SEConnNotFound
-  where
-    insert :: InternalId -> InternalSndId -> SndMsgData -> IO ()
-    insert internalId internalSndId SndMsgData {internalTs, msgBody, msgHash} = do
-      insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
-      insertSndMsgDetails_ dbConn connAlias internalSndId internalId
-      updateLastIdsAndHashSnd_ dbConn connAlias internalId internalSndId msgHash
 
 retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalSndId, PrevSndMsgHash)
 retrieveLastIdsAndHashSnd_ dbConn connAlias = do
