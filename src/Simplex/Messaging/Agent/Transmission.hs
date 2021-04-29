@@ -375,7 +375,7 @@ serializeCommand = \case
     msgIntegrity = \case
       MsgOk -> "OK"
       MsgError e ->
-        "ERR" <> case e of
+        "ERR " <> case e of
           MsgSkipped fromMsgId toMsgId ->
             B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
           MsgBadId aMsgId -> "ID " <> bshow aMsgId
