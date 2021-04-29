@@ -39,6 +39,7 @@ import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Transmission
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
@@ -177,13 +178,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           let internalId = InternalId $ unId lastInternalId + 1
               internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
               serializedMsg = computeSerialized internalSndId prevSndHash
-          insert internalId internalSndId sndMsgData
+              msgHash = C.sha256Hash serializedMsg
+          insert internalId internalSndId sndMsgData msgHash
           pure $ Right (internalId, serializedMsg)
         (Just _, Nothing) -> pure . Left $ SEBadConnType CRcv
         _ -> pure $ Left SEConnNotFound
     where
-      insert :: InternalId -> InternalSndId -> SndMsgData -> IO ()
-      insert internalId internalSndId SndMsgData {internalTs, msgBody, msgHash} = do
+      insert :: InternalId -> InternalSndId -> SndMsgData -> MsgHash -> IO ()
+      insert internalId internalSndId SndMsgData {internalTs, msgBody} msgHash = do
         insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
         insertSndMsgDetails_ dbConn connAlias internalSndId internalId
         updateLastIdsAndHashSnd_ dbConn connAlias internalId internalSndId msgHash

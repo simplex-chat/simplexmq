@@ -147,7 +147,9 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
         <*> (base64P <|> pure "") <* A.endOfLine
         <*> agentMessageP
 
-serializeSMPMessage :: SMPMessage -> ByteString
+type SerializedSMPMessage = ByteString
+
+serializeSMPMessage :: SMPMessage -> SerializedSMPMessage
 serializeSMPMessage = \case
   SMPConfirmation sKey -> smpMessage ("KEY " <> C.serializePubKey sKey) "" ""
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->

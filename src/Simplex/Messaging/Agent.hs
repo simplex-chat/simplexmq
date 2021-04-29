@@ -181,18 +181,17 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
           let sndMsgData =
                 SndMsgData
                   { internalTs = senderTimestamp,
-                    msgBody,
-                    msgHash = C.sha256Hash msgStr -- ? move hash computation into computeSerialized
+                    msgBody
                   }
-          (internalId, serializedMsg) <- withStore $ createSndMsg st connAlias sndMsgData computeSerialized
+          (internalId, serializedMsg) <- withStore $ createSndMsg st connAlias sndMsgData $ computeSerialized senderTimestamp
           sendAgentMessage c sq serializedMsg
           respond $ SENT (unId internalId)
-        computeSerialized :: InternalSndId -> PrevSndMsgHash -> SerializedSMPMessage
-        computeSerialized internalSndId previousMsgHash =
+        computeSerialized :: InternalTs -> InternalSndId -> PrevSndMsgHash -> SerializedSMPMessage
+        computeSerialized internalTs internalSndId previousMsgHash =
           serializeSMPMessage
             SMPMessage
               { senderMsgId = unSndId internalSndId,
-                senderTimestamp,
+                senderTimestamp = internalTs,
                 previousMsgHash,
                 agentMessage = A_MSG msgBody
               }

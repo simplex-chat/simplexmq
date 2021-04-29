@@ -47,22 +47,6 @@ class Monad m => MonadAgentStore s m where
   createSndMsg :: s -> ConnAlias -> SndMsgData -> (InternalSndId -> PrevSndMsgHash -> SerializedSMPMessage) -> m (InternalId, SerializedSMPMessage)
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
-type SerializedSMPMessage = ByteString
-
-data RcvMsgData = RcvMsgData
-  { internalTs :: InternalTs,
-    msgBody :: MsgBody,
-    msgHash :: MsgHash,
-    senderMeta :: (ExternalSndId, ExternalSndTs),
-    brokerMeta :: (BrokerId, BrokerTs)
-  }
-
-data SndMsgData = SndMsgData
-  { internalTs :: InternalTs,
-    msgBody :: MsgBody,
-    msgHash :: MsgHash
-  }
-
 -- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
@@ -153,6 +137,21 @@ type PrevRcvMsgHash = MsgHash
 
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
 type PrevSndMsgHash = MsgHash
+
+-- * Message data containers - used on Msg creation to reduce number of parameters
+
+data RcvMsgData = RcvMsgData
+  { internalTs :: InternalTs,
+    msgBody :: MsgBody,
+    msgHash :: MsgHash,
+    senderMeta :: (ExternalSndId, ExternalSndTs),
+    brokerMeta :: (BrokerId, BrokerTs)
+  }
+
+data SndMsgData = SndMsgData
+  { internalTs :: InternalTs,
+    msgBody :: MsgBody
+  }
 
 -- * Message types
 
