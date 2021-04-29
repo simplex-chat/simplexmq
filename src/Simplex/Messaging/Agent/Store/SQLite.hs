@@ -168,7 +168,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId m_sender m_broker
         updateLastIdsAndHashRcv_ dbConn connAlias internalId internalRcvId (fst m_sender) msgHash
 
-  createSndMsg :: SQLiteStore -> ConnAlias -> (InternalId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
+  createSndMsg :: SQLiteStore -> ConnAlias -> (InternalSndId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
   createSndMsg SQLiteStore {dbConn} connAlias mkMsgData =
     liftIOEither . DB.withTransaction dbConn $
       retrieveConnQueues_ dbConn connAlias >>= \case
@@ -176,7 +176,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ dbConn connAlias
           let internalId = InternalId $ unId lastInternalId + 1
               internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-              msg = mkMsgData internalId prevSndHash
+              msg = mkMsgData internalSndId prevSndHash
           insert internalId internalSndId msg
           pure $ Right (internalId, msg)
         (Just _, Nothing) -> pure . Left $ SEBadConnType CRcv

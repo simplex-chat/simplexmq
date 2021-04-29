@@ -44,7 +44,7 @@ class Monad m => MonadAgentStore s m where
 
   -- Msg management
   createRcvMsg :: s -> ConnAlias -> (PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData) -> m (InternalId, RcvMsgData)
-  createSndMsg :: s -> ConnAlias -> (InternalId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
+  createSndMsg :: s -> ConnAlias -> (InternalSndId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
 data RcvMsgData = RcvMsgData
@@ -54,7 +54,7 @@ data RcvMsgData = RcvMsgData
     m_broker :: (BrokerId, BrokerTs),
     m_body :: MsgBody,
     m_integrity :: MsgIntegrity,
-    prevId :: PrevExternalSndId
+    prevExtSndId :: PrevExternalSndId
   }
 
 data SndMsgData = SndMsgData

@@ -178,15 +178,15 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       where
         sendMsg sq = do
           senderTimestamp <- liftIO getCurrentTime
-          (senderId, SndMsgData {msgStr}) <- withStore $ createSndMsg st connAlias $ mkMsgData senderTimestamp
+          (internalId, SndMsgData {msgStr}) <- withStore $ createSndMsg st connAlias $ mkMsgData senderTimestamp
           sendAgentMessage c sq msgStr
-          respond $ SENT (unId senderId)
-        mkMsgData :: InternalTs -> InternalId -> PrevSndMsgHash -> SndMsgData
-        mkMsgData senderTimestamp internalId previousMsgHash =
+          respond $ SENT (unId internalId)
+        mkMsgData :: InternalTs -> InternalSndId -> PrevSndMsgHash -> SndMsgData
+        mkMsgData senderTimestamp internalSndId previousMsgHash =
           let msgStr =
                 serializeSMPMessage
                   SMPMessage
-                    { senderMsgId = unId internalId,
+                    { senderMsgId = unSndId internalSndId,
                       senderTimestamp,
                       previousMsgHash,
                       agentMessage = A_MSG msgBody
@@ -331,7 +331,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               prevExtSndId
             }
         msgIntegrity :: PrevExternalSndId -> ExternalSndId ->PrevRcvMsgHash ->  MsgIntegrity
-        msgIntegrity  prevExtSndId extSndId internalPrevMsgHash
+        msgIntegrity prevExtSndId extSndId internalPrevMsgHash
           | extSndId == prevExtSndId + 1 && internalPrevMsgHash /= receivedPrevMsgHash = MsgOk
           -- | extSndId < prevExtSndId = MsgError $ MsgBadId extSndId
           -- | extSndId == prevExtSndId -> deduplicate?
