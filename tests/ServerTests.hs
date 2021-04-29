@@ -4,9 +4,13 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module ServerTests where
 
+import Control.Concurrent (ThreadId, killThread)
+import Control.Concurrent.STM
+import Control.Exception (SomeException, try)
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -15,6 +19,7 @@ import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
+import System.Directory (removeFile)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
@@ -31,6 +36,7 @@ serverTests = do
   describe "SMP messages" do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
+  describe "Store log" testWithStoreLog
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
@@ -261,6 +267,68 @@ testSwitchSub =
       1000 `timeout` tGet fromServer rh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
+
+testWithStoreLog :: Spec
+testWithStoreLog =
+  it "should store simplex queues to log and restore them after server restart" $ do
+    (sPub1, sKey1) <- C.generateKeyPair rsaKeySize
+    (sPub2, sKey2) <- C.generateKeyPair rsaKeySize
+    senderId1 <- newTVarIO ""
+    senderId2 <- newTVarIO ""
+
+    withSmpServerStoreLogOn testPort . runTest $ \h -> do
+      (sId1, _, _) <- createAndSecureQueue h sPub1
+      atomically $ writeTVar senderId1 sId1
+      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      Resp "" _ (MSG _ _ "hello") <- tGet fromServer h
+
+      (sId2, rId2, rKey2) <- createAndSecureQueue h sPub2
+      atomically $ writeTVar senderId2 sId2
+      Resp "cdab" _ OK <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
+      Resp "" _ (MSG _ _ "hello too") <- tGet fromServer h
+
+      Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, "DEL")
+      pure ()
+
+    logSize `shouldReturn` 5
+
+    withSmpServerThreadOn testPort . runTest $ \h -> do
+      sId1 <- readTVarIO senderId1
+      -- fails if store log is disabled
+      Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      pure ()
+
+    withSmpServerStoreLogOn testPort . runTest $ \h -> do
+      -- this queue is restored
+      sId1 <- readTVarIO senderId1
+      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      -- this queue is removed - not restored
+      sId2 <- readTVarIO senderId2
+      Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
+      pure ()
+
+    logSize `shouldReturn` 1
+    removeFile testStoreLogFile
+  where
+    createAndSecureQueue :: THandle -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
+    createAndSecureQueue h sPub = do
+      (rPub, rKey) <- C.generateKeyPair rsaKeySize
+      Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      let keyCmd = "KEY " <> C.serializePubKey sPub
+      Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, keyCmd)
+      (rId', rId) #== "same queue ID"
+      pure (sId, rId, rKey)
+
+    runTest :: (THandle -> IO ()) -> ThreadId -> Expectation
+    runTest test' server = do
+      testSMPClient test' `shouldReturn` ()
+      killThread server
+
+    logSize :: IO Int
+    logSize =
+      try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
+        Right l -> pure l
+        Left (_ :: SomeException) -> logSize
 
 syntaxTests :: Spec
 syntaxTests = do
