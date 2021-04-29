@@ -303,7 +303,12 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
       case status of
         Active -> do
           internalTs <- liftIO getCurrentTime
-          (recipientId, RcvMsgData {m_integrity}) <- withStore $ createRcvMsg st connAlias $ mkMsgData internalTs
+          (recipientId, RcvMsgData {m_integrity, prevExtSndId}) <- withStore $ createRcvMsg st connAlias $ mkMsgData internalTs
+          liftIO $ do
+            putStrLn $ "hash " <> show receivedPrevMsgHash
+            putStrLn $ "received ID " <> show (fst m_sender)
+            putStrLn $ "saved previous ID " <> show prevExtSndId
+            putStrLn $ "message body: " <> show body
           notify connAlias $
             MSG
               { m_recipient = (unId recipientId, internalTs),
@@ -322,7 +327,8 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               m_sender,
               m_broker,
               m_body = body,
-              m_integrity = msgIntegrity prevExtSndId (fst m_sender) internalPrevMsgHash
+              m_integrity = msgIntegrity prevExtSndId (fst m_sender) internalPrevMsgHash,
+              prevExtSndId
             }
         msgIntegrity :: PrevExternalSndId -> ExternalSndId ->PrevRcvMsgHash ->  MsgIntegrity
         msgIntegrity  prevExtSndId extSndId internalPrevMsgHash

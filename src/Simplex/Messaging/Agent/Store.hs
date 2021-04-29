@@ -53,7 +53,8 @@ data RcvMsgData = RcvMsgData
     m_sender :: (ExternalSndId, ExternalSndTs),
     m_broker :: (BrokerId, BrokerTs),
     m_body :: MsgBody,
-    m_integrity :: MsgIntegrity
+    m_integrity :: MsgIntegrity,
+    prevId :: PrevExternalSndId
   }
 
 data SndMsgData = SndMsgData
