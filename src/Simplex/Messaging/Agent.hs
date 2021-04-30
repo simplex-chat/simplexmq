@@ -178,7 +178,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       where
         sendMsg sq = do
           internalTs <- liftIO getCurrentTime
-          (internalId, internalSndId, previousMsgHash) <- withStore $ updateSndIds st connAlias
+          (internalId, internalSndId, previousMsgHash) <- withStore $ updateSndIds st sq
           let msgStr =
                 serializeSMPMessage
                   SMPMessage
@@ -189,7 +189,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
                     }
               msgHash = C.sha256Hash msgStr
           withStore $
-            createSndMsg st connAlias $
+            createSndMsg st sq $
               SndMsgData {internalId, internalSndId, internalTs, msgBody, msgHash}
           sendAgentMessage c sq msgStr
           respond $ SENT (unId internalId)
@@ -293,15 +293,15 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
     agentClientMsg :: RcvQueue -> PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
-    agentClientMsg RcvQueue {connAlias, status} receivedPrevMsgHash m_sender m_broker m_body msgHash = do
+    agentClientMsg rq@RcvQueue {connAlias, status} receivedPrevMsgHash m_sender m_broker m_body msgHash = do
       logServer "<--" c srv rId "MSG <MSG>"
       case status of
         Active -> do
           internalTs <- liftIO getCurrentTime
-          (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore $ updateRcvIds st connAlias
+          (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore $ updateRcvIds st rq
           let m_integrity = msgIntegrity prevExtSndId (fst m_sender) prevRcvMsgHash
           withStore $
-            createRcvMsg st connAlias $
+            createRcvMsg st rq $
               RcvMsgData
                 { internalId,
                   internalRcvId,
