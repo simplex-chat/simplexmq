@@ -32,11 +32,11 @@ testHost = "localhost"
 testPort :: ServiceName
 testPort = "5000"
 
-teshKeyHashStr :: B.ByteString
-teshKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHashStr :: B.ByteString
+testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 
-teshKeyHash :: Maybe C.KeyHash
-teshKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHash :: Maybe C.KeyHash
+testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
@@ -44,7 +44,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
 testSMPClient client =
   runTCPClient testHost testPort $ \h ->
-    liftIO (runExceptT $ clientHandshake h teshKeyHash) >>= \case
+    liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e
 

@@ -13,7 +13,7 @@ import Data.Time
 import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
-import SMPClient (teshKeyHash)
+import SMPClient (testKeyHash)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission
@@ -101,7 +101,7 @@ testForeignKeysEnabled = do
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
   RcvQueue
-    { server = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash,
+    { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       rcvId = "1234",
       connAlias = "conn1",
       rcvPrivateKey = C.safePrivateKey (1, 2, 3),
@@ -115,7 +115,7 @@ rcvQueue1 =
 sndQueue1 :: SndQueue
 sndQueue1 =
   SndQueue
-    { server = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash,
+    { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
       connAlias = "conn1",
       sndPrivateKey = C.safePrivateKey (1, 2, 3),
@@ -177,7 +177,7 @@ testGetAllConnAliases = do
 testGetRcvQueue :: SpecWith SQLiteStore
 testGetRcvQueue = do
   it "should get RcvQueue" $ \store -> do
-    let smpServer = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash
+    let smpServer = SMPServer "smp.simplex.im" (Just "5223") testKeyHash
     let recipientId = "1234"
     createRcvConn store rcvQueue1
       `returnsResult` ()
@@ -232,7 +232,7 @@ testUpgradeRcvConnToDuplex = do
       `returnsResult` ()
     let anotherSndQueue =
           SndQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash,
+            { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               sndId = "2345",
               connAlias = "conn1",
               sndPrivateKey = C.safePrivateKey (1, 2, 3),
@@ -254,7 +254,7 @@ testUpgradeSndConnToDuplex = do
       `returnsResult` ()
     let anotherRcvQueue =
           RcvQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") teshKeyHash,
+            { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               rcvId = "3456",
               connAlias = "conn1",
               rcvPrivateKey = C.safePrivateKey (1, 2, 3),

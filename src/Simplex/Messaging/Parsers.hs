@@ -11,10 +11,11 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
+import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
 
 base64P :: Parser ByteString
-base64P = either fail pure . decode =<< base64StringP
+base64P = decode <$?> base64StringP
 
 base64StringP :: Parser ByteString
 base64StringP = do

@@ -31,10 +31,13 @@ raceAny_ = r []
     r as (m : ms) = withAsync m $ \a -> r (a : as) ms
     r as [] = void $ waitAnyCancel as
 
-infixl 4 <$$>
+infixl 4 <$$>, <$?>
 
 (<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
 (<$$>) = fmap . fmap
+
+(<$?>) :: MonadFail m => (a -> Either String b) -> m a -> m b
+f <$?> m = m >>= either fail pure . f
 
 bshow :: Show a => a -> ByteString
 bshow = B.pack . show
