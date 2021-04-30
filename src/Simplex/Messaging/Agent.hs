@@ -177,26 +177,22 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
         _ -> throwError $ CONN SIMPLEX
       where
         sendMsg sq = do
-          senderTimestamp <- liftIO getCurrentTime
-          (internalId, SndMsgData {msgStr}) <- withStore $ createSndMsg st connAlias $ mkMsgData senderTimestamp
-          sendAgentMessage c sq msgStr
-          respond $ SENT (unId internalId)
-        mkMsgData :: InternalTs -> InternalSndId -> PrevSndMsgHash -> SndMsgData
-        mkMsgData senderTimestamp internalSndId previousMsgHash =
+          internalTs <- liftIO getCurrentTime
+          (internalId, internalSndId, previousMsgHash) <- withStore $ updateSndIds st connAlias
           let msgStr =
                 serializeSMPMessage
                   SMPMessage
                     { senderMsgId = unSndId internalSndId,
-                      senderTimestamp,
+                      senderTimestamp = internalTs,
                       previousMsgHash,
                       agentMessage = A_MSG msgBody
                     }
-           in SndMsgData
-                { internalTs = senderTimestamp,
-                  msgBody,
-                  msgHash = C.sha256Hash msgStr,
-                  msgStr
-                }
+              msgHash = C.sha256Hash msgStr
+          withStore $
+            createSndMsg st connAlias $
+              SndMsgData {internalId, internalSndId, internalTs, msgBody, msgHash}
+          sendAgentMessage c sq msgStr
+          respond $ SENT (unId internalId)
 
     suspendConnection :: m ()
     suspendConnection =
@@ -297,48 +293,43 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
     agentClientMsg :: RcvQueue -> PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
-    agentClientMsg RcvQueue {connAlias, status} receivedPrevMsgHash m_sender m_broker body msgHash = do
-      -- TODO check message status
+    agentClientMsg RcvQueue {connAlias, status} receivedPrevMsgHash m_sender m_broker m_body msgHash = do
       logServer "<--" c srv rId "MSG <MSG>"
       case status of
         Active -> do
           internalTs <- liftIO getCurrentTime
-          (recipientId, RcvMsgData {m_integrity, prevExtSndId}) <- withStore $ createRcvMsg st connAlias $ mkMsgData internalTs
-          liftIO $ do
-            putStrLn $ "hash " <> show receivedPrevMsgHash
-            putStrLn $ "received ID " <> show (fst m_sender)
-            putStrLn $ "saved previous ID " <> show prevExtSndId
-            putStrLn $ "message body: " <> show body
+          (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore $ updateRcvIds st connAlias
+          let m_integrity = msgIntegrity prevExtSndId (fst m_sender) prevRcvMsgHash
+          withStore $
+            createRcvMsg st connAlias $
+              RcvMsgData
+                { internalId,
+                  internalRcvId,
+                  internalTs,
+                  msgHash,
+                  m_sender,
+                  m_broker,
+                  m_body,
+                  m_integrity
+                }
           notify connAlias $
             MSG
-              { m_recipient = (unId recipientId, internalTs),
+              { m_recipient = (unId internalId, internalTs),
                 m_sender,
                 m_broker,
-                m_body = body,
+                m_body,
                 m_integrity
               }
         _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
       where
-        mkMsgData :: InternalTs -> PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData
-        mkMsgData internalTs prevExtSndId internalPrevMsgHash =
-          RcvMsgData
-            { internalTs,
-              msgHash,
-              m_sender,
-              m_broker,
-              m_body = body,
-              m_integrity = msgIntegrity prevExtSndId (fst m_sender) internalPrevMsgHash,
-              prevExtSndId
-            }
-        msgIntegrity :: PrevExternalSndId -> ExternalSndId ->PrevRcvMsgHash ->  MsgIntegrity
+        msgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> MsgIntegrity
         msgIntegrity prevExtSndId extSndId internalPrevMsgHash
           | extSndId == prevExtSndId + 1 && internalPrevMsgHash == receivedPrevMsgHash = MsgOk
           | extSndId < prevExtSndId = MsgError $ MsgBadId extSndId
-          | extSndId == prevExtSndId = MsgError $ MsgBadId extSndId -- ? deduplicate
+          | extSndId == prevExtSndId = MsgError MsgDuplicate -- ? deduplicate
           | extSndId > prevExtSndId + 1 = MsgError $ MsgSkipped (prevExtSndId + 1) (extSndId - 1)
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
-          | otherwise = MsgError MsgDuplicate
-          
+          | otherwise = MsgError MsgDuplicate -- this case is not possible
 
 connectToSendQueue :: AgentMonad m => AgentClient -> SQLiteStore -> SndQueue -> SenderPublicKey -> VerificationKey -> m ()
 connectToSendQueue c st sq senderKey verifyKey = do
