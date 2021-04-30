@@ -147,9 +147,7 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
         <*> (base64P <|> pure "") <* A.endOfLine
         <*> agentMessageP
 
-type SerializedSMPMessage = ByteString
-
-serializeSMPMessage :: SMPMessage -> SerializedSMPMessage
+serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
   SMPConfirmation sKey -> smpMessage ("KEY " <> C.serializePubKey sKey) "" ""
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
@@ -375,7 +373,7 @@ serializeCommand = \case
     msgIntegrity = \case
       MsgOk -> "OK"
       MsgError e ->
-        "ERR " <> case e of
+        "ERR" <> case e of
           MsgSkipped fromMsgId toMsgId ->
             B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
           MsgBadId aMsgId -> "ID " <> bshow aMsgId

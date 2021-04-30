@@ -39,7 +39,6 @@ import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Transmission
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
@@ -149,43 +148,42 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       updateSndQueueStatus dbConn sndQueue status
 
-  createRcvMsg :: SQLiteStore -> ConnAlias -> RcvMsgData -> (PrevExternalSndId -> PrevRcvMsgHash -> MsgIntegrity) -> m (InternalId, MsgIntegrity)
-  createRcvMsg SQLiteStore {dbConn} connAlias rcvMsgData computeIntegrity =
+  createRcvMsg :: SQLiteStore -> ConnAlias -> (PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData) -> m (InternalId, RcvMsgData)
+  createRcvMsg SQLiteStore {dbConn} connAlias mkMsgData =
     liftIOEither . DB.withTransaction dbConn $
       retrieveConnQueues_ dbConn connAlias >>= \case
         (Just _rcvQ, _) -> do
           (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ dbConn connAlias
           let internalId = InternalId $ unId lastInternalId + 1
               internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
-              msgIntegrity = computeIntegrity lastExternalSndId lastRcvHash
-          insert internalId internalRcvId rcvMsgData msgIntegrity
-          pure $ Right (internalId, msgIntegrity)
+              msg = mkMsgData lastExternalSndId lastRcvHash
+          insert internalId internalRcvId msg
+          pure $ Right (internalId, msg)
         (Nothing, Just _) -> pure . Left $ SEBadConnType CSnd
         _ -> pure $ Left SEConnNotFound
     where
-      insert :: InternalId -> InternalRcvId -> RcvMsgData -> MsgIntegrity -> IO ()
-      insert internalId internalRcvId RcvMsgData {internalTs, msgBody, msgHash, senderMeta, brokerMeta} msgIntegrity = do
-        insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
-        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId senderMeta brokerMeta
-        updateLastIdsAndHashRcv_ dbConn connAlias internalId internalRcvId (fst senderMeta) msgHash
+      insert :: InternalId -> InternalRcvId -> RcvMsgData -> IO ()
+      insert internalId internalRcvId RcvMsgData {internalTs, msgHash, m_sender, m_broker, m_body, m_integrity} = do
+        insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId m_body
+        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId m_sender m_broker
+        updateLastIdsAndHashRcv_ dbConn connAlias internalId internalRcvId (fst m_sender) msgHash
 
-  createSndMsg :: SQLiteStore -> ConnAlias -> SndMsgData -> (InternalSndId -> PrevSndMsgHash -> SerializedSMPMessage) -> m (InternalId, SerializedSMPMessage)
-  createSndMsg SQLiteStore {dbConn} connAlias sndMsgData computeSerialized =
+  createSndMsg :: SQLiteStore -> ConnAlias -> (InternalSndId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
+  createSndMsg SQLiteStore {dbConn} connAlias mkMsgData =
     liftIOEither . DB.withTransaction dbConn $
       retrieveConnQueues_ dbConn connAlias >>= \case
         (_, Just _sndQ) -> do
           (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ dbConn connAlias
           let internalId = InternalId $ unId lastInternalId + 1
               internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-              serializedMsg = computeSerialized internalSndId prevSndHash
-              msgHash = C.sha256Hash serializedMsg
-          insert internalId internalSndId sndMsgData msgHash
-          pure $ Right (internalId, serializedMsg)
+              msg = mkMsgData internalSndId prevSndHash
+          insert internalId internalSndId msg
+          pure $ Right (internalId, msg)
         (Just _, Nothing) -> pure . Left $ SEBadConnType CRcv
         _ -> pure $ Left SEConnNotFound
     where
-      insert :: InternalId -> InternalSndId -> SndMsgData -> MsgHash -> IO ()
-      insert internalId internalSndId SndMsgData {internalTs, msgBody} msgHash = do
+      insert :: InternalId -> InternalSndId -> SndMsgData -> IO ()
+      insert internalId internalSndId SndMsgData {internalTs, msgBody, msgHash} = do
         insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
         insertSndMsgDetails_ dbConn connAlias internalSndId internalId
         updateLastIdsAndHashSnd_ dbConn connAlias internalId internalSndId msgHash

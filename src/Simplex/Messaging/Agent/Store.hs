@@ -43,9 +43,26 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
-  createRcvMsg :: s -> ConnAlias -> RcvMsgData -> (PrevExternalSndId -> PrevRcvMsgHash -> MsgIntegrity) -> m (InternalId, MsgIntegrity)
-  createSndMsg :: s -> ConnAlias -> SndMsgData -> (InternalSndId -> PrevSndMsgHash -> SerializedSMPMessage) -> m (InternalId, SerializedSMPMessage)
+  createRcvMsg :: s -> ConnAlias -> (PrevExternalSndId -> PrevRcvMsgHash -> RcvMsgData) -> m (InternalId, RcvMsgData)
+  createSndMsg :: s -> ConnAlias -> (InternalSndId -> PrevSndMsgHash -> SndMsgData) -> m (InternalId, SndMsgData)
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
+
+data RcvMsgData = RcvMsgData
+  { internalTs :: InternalTs,
+    msgHash :: MsgHash,
+    m_sender :: (ExternalSndId, ExternalSndTs),
+    m_broker :: (BrokerId, BrokerTs),
+    m_body :: MsgBody,
+    m_integrity :: MsgIntegrity,
+    prevExtSndId :: PrevExternalSndId
+  }
+
+data SndMsgData = SndMsgData
+  { internalTs :: InternalTs,
+    msgBody :: MsgBody,
+    msgHash :: MsgHash,
+    msgStr :: ByteString
+  }
 
 -- * Queue types
 
@@ -137,21 +154,6 @@ type PrevRcvMsgHash = MsgHash
 
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
 type PrevSndMsgHash = MsgHash
-
--- * Message data containers - used on Msg creation to reduce number of parameters
-
-data RcvMsgData = RcvMsgData
-  { internalTs :: InternalTs,
-    msgBody :: MsgBody,
-    msgHash :: MsgHash,
-    senderMeta :: (ExternalSndId, ExternalSndTs),
-    brokerMeta :: (BrokerId, BrokerTs)
-  }
-
-data SndMsgData = SndMsgData
-  { internalTs :: InternalTs,
-    msgBody :: MsgBody
-  }
 
 -- * Message types
 
