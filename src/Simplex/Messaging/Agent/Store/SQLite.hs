@@ -1,6 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -104,16 +105,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         insertSndConnection_ dbConn q
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
-  getConn SQLiteStore {dbConn} connAlias = do
-    queues <-
-      liftIO $
-        -- Avoid inconsistent state between queue reads
-        DB.withTransaction dbConn $ retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (Just rcvQ, Just sndQ) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
-      (Just rcvQ, Nothing) -> return $ SomeConn SCRcv (RcvConnection connAlias rcvQ)
-      (Nothing, Just sndQ) -> return $ SomeConn SCSnd (SndConnection connAlias sndQ)
-      _ -> throwError SEConnNotFound
+  getConn SQLiteStore {dbConn} connAlias =
+    liftIOEither . DB.withTransaction dbConn $
+      getConn_ dbConn connAlias
 
   getAllConnAliases :: SQLiteStore -> m [ConnAlias]
   getAllConnAliases SQLiteStore {dbConn} =
@@ -122,9 +116,24 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       return (concat r)
 
   getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m RcvQueue
-  getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId =
-    liftIO (retrieveRcvQueue dbConn host port rcvId) >>= \case
-      Just rcvQ -> return rcvQ
+  getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId = do
+    r <-
+      liftIO $
+        DB.queryNamed
+          dbConn
+          [sql|
+            SELECT
+              s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
+              q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
+            FROM rcv_queues q
+            INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+            WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
+          |]
+          [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
+    case r of
+      [(keyHash, hst, prt, rId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] ->
+        let srv = SMPServer hst (deserializePort_ prt) keyHash
+         in pure $ RcvQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
       _ -> throwError SEConnNotFound
 
   deleteConn :: SQLiteStore -> ConnAlias -> m ()
@@ -136,30 +145,30 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":conn_alias" := connAlias]
 
   upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SndQueue -> m ()
-  upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sndQueue =
+  upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sq@SndQueue {server} =
     liftIOEither . DB.withTransaction dbConn $
-      retrieveConnQueues_ dbConn connAlias >>= \case
-        (Just _rcvQ, Nothing) -> do
-          upsertServer_ dbConn (server (sndQueue :: SndQueue))
-          insertSndQueue_ dbConn sndQueue
-          updateConnWithSndQueue_ dbConn connAlias sndQueue
-          return $ Right ()
-        (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
-        (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
-        _ -> return $ Left SEConnNotFound
+      getConn_ dbConn connAlias >>= \case
+        Right (SomeConn SCRcv (RcvConnection _ _)) -> do
+          upsertServer_ dbConn server
+          insertSndQueue_ dbConn sq
+          updateConnWithSndQueue_ dbConn connAlias sq
+          pure $ Right ()
+        Right (SomeConn SCSnd _) -> pure $ Left (SEBadConnType CSnd)
+        Right (SomeConn SCDuplex _) -> pure $ Left (SEBadConnType CDuplex)
+        _ -> pure $ Left SEConnNotFound
 
   upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> RcvQueue -> m ()
-  upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rcvQueue =
+  upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rq@RcvQueue {server} =
     liftIOEither . DB.withTransaction dbConn $
-      retrieveConnQueues_ dbConn connAlias >>= \case
-        (Nothing, Just _sndQ) -> do
-          upsertServer_ dbConn (server (rcvQueue :: RcvQueue))
-          insertRcvQueue_ dbConn rcvQueue
-          updateConnWithRcvQueue_ dbConn connAlias rcvQueue
-          return $ Right ()
-        (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
-        (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
-        _ -> return $ Left SEConnNotFound
+      getConn_ dbConn connAlias >>= \case
+        Right (SomeConn SCSnd (SndConnection _ _)) -> do
+          upsertServer_ dbConn server
+          insertRcvQueue_ dbConn rq
+          updateConnWithRcvQueue_ dbConn connAlias rq
+          pure $ Right ()
+        Right (SomeConn SCRcv _) -> pure $ Left (SEBadConnType CRcv)
+        Right (SomeConn SCDuplex _) -> pure $ Left (SEBadConnType CDuplex)
+        _ -> pure $ Left SEConnNotFound
 
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueStatus SQLiteStore {dbConn} RcvQueue {rcvId, server = SMPServer {host, port}} status =
@@ -388,13 +397,15 @@ insertSndConnection_ dbConn SndQueue {server, sndId, connAlias} = do
 
 -- * getConn helpers
 
--- Separate transactionless version of retrieveConnQueues to be reused in other functions that already wrap
--- multiple statements in transaction - otherwise they'd be attempting to start a transaction within a transaction
-retrieveConnQueues_ :: DB.Connection -> ConnAlias -> IO (Maybe RcvQueue, Maybe SndQueue)
-retrieveConnQueues_ dbConn connAlias = do
-  rcvQ <- retrieveRcvQueueByConnAlias_ dbConn connAlias
-  sndQ <- retrieveSndQueueByConnAlias_ dbConn connAlias
-  return (rcvQ, sndQ)
+getConn_ :: DB.Connection -> ConnAlias -> IO (Either StoreError SomeConn)
+getConn_ dbConn connAlias = do
+  rQ <- retrieveRcvQueueByConnAlias_ dbConn connAlias
+  sQ <- retrieveSndQueueByConnAlias_ dbConn connAlias
+  pure $ case (rQ, sQ) of
+    (Just rcvQ, Just sndQ) -> Right $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
+    (Just rcvQ, Nothing) -> Right $ SomeConn SCRcv (RcvConnection connAlias rcvQ)
+    (Nothing, Just sndQ) -> Right $ SomeConn SCSnd (SndConnection connAlias sndQ)
+    _ -> Left SEConnNotFound
 
 retrieveRcvQueueByConnAlias_ :: DB.Connection -> ConnAlias -> IO (Maybe RcvQueue)
 retrieveRcvQueueByConnAlias_ dbConn connAlias = do
@@ -434,28 +445,6 @@ retrieveSndQueueByConnAlias_ dbConn connAlias = do
     [(keyHash, host, port, sndId, cAlias, sndPrivateKey, encryptKey, signKey, status)] -> do
       let srv = SMPServer host (deserializePort_ port) keyHash
       return . Just $ SndQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
-    _ -> return Nothing
-
--- * getRcvQueue helper
-
-retrieveRcvQueue :: DB.Connection -> HostName -> Maybe ServiceName -> SMP.RecipientId -> IO (Maybe RcvQueue)
-retrieveRcvQueue dbConn host port rcvId = do
-  r <-
-    DB.queryNamed
-      dbConn
-      [sql|
-        SELECT
-          s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
-          q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
-        FROM rcv_queues q
-        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
-      |]
-      [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
-  case r of
-    [(keyHash, hst, prt, rId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
-      let srv = SMPServer hst (deserializePort_ prt) keyHash
-      return . Just $ RcvQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
     _ -> return Nothing
 
 -- * upgradeRcvConnToDuplex helpers
