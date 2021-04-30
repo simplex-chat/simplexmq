@@ -127,6 +127,11 @@ data SConnType :: ConnType -> Type where
   SCSnd :: SConnType CSnd
   SCDuplex :: SConnType CDuplex
 
+connType :: SConnType c -> ConnType
+connType SCRcv = CRcv
+connType SCSnd = CSnd
+connType SCDuplex = CDuplex
+
 deriving instance Eq (SConnType d)
 
 deriving instance Show (SConnType d)

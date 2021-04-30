@@ -153,8 +153,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           insertSndQueue_ dbConn sq
           updateConnWithSndQueue_ dbConn connAlias sq
           pure $ Right ()
-        Right (SomeConn SCSnd _) -> pure $ Left (SEBadConnType CSnd)
-        Right (SomeConn SCDuplex _) -> pure $ Left (SEBadConnType CDuplex)
+        Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
         _ -> pure $ Left SEConnNotFound
 
   upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> RcvQueue -> m ()
@@ -166,8 +165,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           insertRcvQueue_ dbConn rq
           updateConnWithRcvQueue_ dbConn connAlias rq
           pure $ Right ()
-        Right (SomeConn SCRcv _) -> pure $ Left (SEBadConnType CRcv)
-        Right (SomeConn SCDuplex _) -> pure $ Left (SEBadConnType CDuplex)
+        Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
         _ -> pure $ Left SEConnNotFound
 
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
