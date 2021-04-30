@@ -332,12 +332,12 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
             }
         msgIntegrity :: PrevExternalSndId -> ExternalSndId ->PrevRcvMsgHash ->  MsgIntegrity
         msgIntegrity prevExtSndId extSndId internalPrevMsgHash
-          | extSndId == prevExtSndId + 1 && internalPrevMsgHash /= receivedPrevMsgHash = MsgOk
-          -- | extSndId < prevExtSndId = MsgError $ MsgBadId extSndId
-          -- | extSndId == prevExtSndId -> deduplicate?
-          -- | extSndId > prevExtSndId + 1 = MsgError $ MsgSkipped (prevExtSndId + 1) (extSndId - 1)
+          | extSndId == prevExtSndId + 1 && internalPrevMsgHash == receivedPrevMsgHash = MsgOk
+          | extSndId < prevExtSndId = MsgError $ MsgBadId extSndId
+          | extSndId == prevExtSndId = MsgError $ MsgBadId extSndId -- ? deduplicate
+          | extSndId > prevExtSndId + 1 = MsgError $ MsgSkipped (prevExtSndId + 1) (extSndId - 1)
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
-          | otherwise = MsgOk -- MsgError MsgDuplicate
+          | otherwise = MsgError MsgDuplicate
           
 
 connectToSendQueue :: AgentMonad m => AgentClient -> SQLiteStore -> SndQueue -> SenderPublicKey -> VerificationKey -> m ()
