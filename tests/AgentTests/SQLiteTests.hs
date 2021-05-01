@@ -330,13 +330,13 @@ testSetRcvQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetRcvQueueStatusNoQueue = do
   xit "should throw error on attempt to update status of non-existent RcvQueue" $ \store -> do
     setRcvQueueStatus store rcvQueue1 Confirmed
-      `throwsError` SEInternal ""
+      `throwsError` SEConnNotFound
 
 testSetSndQueueStatusNoQueue :: SpecWith SQLiteStore
 testSetSndQueueStatusNoQueue = do
   xit "should throw error on attempt to update status of non-existent SndQueue" $ \store -> do
     setSndQueueStatus store sndQueue1 Confirmed
-      `throwsError` SEInternal ""
+      `throwsError` SEConnNotFound
 
 hw :: ByteString
 hw = encodeUtf8 "Hello world!"
@@ -346,8 +346,23 @@ ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
 
 testCreateRcvMsg :: SpecWith SQLiteStore
 testCreateRcvMsg = do
-  it "should create a RcvMsg and return InternalId, PrevExternalSndId and PrevRcvMsgHash" $ \store -> do
+  it "should reserve internal ids create RcvMsg" $ \store -> do
     createRcvConn store rcvQueue1
+      `returnsResult` ()
+    updateRcvIds store rcvQueue1
+      `returnsResult` (InternalId 1, InternalRcvId 1, 0, "")
+    let rcvMsgData =
+          RcvMsgData
+            { internalId = InternalId 1,
+              internalRcvId = InternalRcvId 1,
+              internalTs = ts,
+              senderMeta = (1, ts),
+              brokerMeta = ("1", ts),
+              msgBody = hw,
+              msgHash = "hash_dummy",
+              msgIntegrity = MsgOk
+            }
+    createRcvMsg store rcvQueue1 rcvMsgData
       `returnsResult` ()
 
 -- TODO getMsg to check message
