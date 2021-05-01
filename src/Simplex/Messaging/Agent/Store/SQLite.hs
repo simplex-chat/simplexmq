@@ -40,6 +40,7 @@ import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Parsers (parseAll)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Exit (ExitCode (ExitFailure), exitWith)
@@ -275,6 +276,16 @@ instance FromField InternalId where fromField x = InternalId <$> fromField x
 instance ToField RcvMsgStatus where toField = toField . show
 
 instance ToField SndMsgStatus where toField = toField . show
+
+instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
+
+instance FromField MsgIntegrity where
+  fromField = \case
+    f@(Field (SQLBlob b) _) ->
+      case parseAll msgIntegrityP b of
+        Right k -> Ok k
+        Left e -> returnError ConversionFailed f ("can't parse msg integrity field: " ++ e)
+    f -> returnError ConversionFailed f "expecting SQLBlob column type"
 
 fromFieldToReadable_ :: forall a. (Read a, E.Typeable a) => Field -> Ok a
 fromFieldToReadable_ = \case
