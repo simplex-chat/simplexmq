@@ -249,7 +249,7 @@ serverHandshake h (k, pk) = do
     sendHeaderAndPublicKey_1 = do
       let sKey = C.encodePubKey k
           header = ServerHeader {blockSize = transportBlockSize, keySize = B.length sKey}
-      B.hPut h $ binaryTServerHeader header <> sKey
+      B.hPut h $ binaryServerHeader header <> sKey
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString
     receiveEncryptedKeys_4 =
       liftIO (B.hGet h $ C.publicKeySize k) >>= \case
@@ -276,8 +276,8 @@ clientHandshake h keyHash = do
   where
     getHeaderAndPublicKey_1_2 :: ExceptT TransportError IO (C.PublicKey, Int)
     getHeaderAndPublicKey_1_2 = do
-      header <- liftIO (B.hGet h tServerHeaderSize)
-      ServerHeader {blockSize, keySize} <- liftEither $ parse tServerHeaderP (TEHandshake HEADER) header
+      header <- liftIO (B.hGet h serverHeaderSize)
+      ServerHeader {blockSize, keySize} <- liftEither $ parse serverHeaderP (TEHandshake HEADER) header
       when (blockSize < transportBlockSize || blockSize > maxTransportBlockSize) $
         throwError $ TEHandshake HEADER
       s <- liftIO $ B.hGet h keySize
@@ -322,15 +322,15 @@ transportBlockSize = 4096
 maxTransportBlockSize :: Int
 maxTransportBlockSize = 65536
 
-tServerHeaderSize :: Int
-tServerHeaderSize = 8
+serverHeaderSize :: Int
+serverHeaderSize = 8
 
-binaryTServerHeader :: ServerHeader -> ByteString
-binaryTServerHeader ServerHeader {blockSize, keySize} =
+binaryServerHeader :: ServerHeader -> ByteString
+binaryServerHeader ServerHeader {blockSize, keySize} =
   encodeEnum32 blockSize <> encodeEnum16 binaryRsaTransport <> encodeEnum16 keySize
 
-tServerHeaderP :: Parser ServerHeader
-tServerHeaderP = ServerHeader <$> int32 <* binaryRsaTransportP <*> int16
+serverHeaderP :: Parser ServerHeader
+serverHeaderP = ServerHeader <$> int32 <* binaryRsaTransportP <*> int16
 
 serializeClientHandshake :: ClientHandshake -> ByteString
 serializeClientHandshake ClientHandshake {blockSize, sndKey, rcvKey} =
