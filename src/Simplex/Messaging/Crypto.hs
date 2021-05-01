@@ -79,8 +79,8 @@ import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.String
 import Data.Typeable (Typeable)
 import Data.X509
-import Database.SQLite.Simple as DB
-import Database.SQLite.Simple.FromField
+import Database.SQLite.Simple (ResultError (..), SQLData (..))
+import Database.SQLite.Simple.FromField (FieldParser, FromField (..), returnError)
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))

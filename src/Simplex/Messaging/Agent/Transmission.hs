@@ -315,7 +315,7 @@ commandP =
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
     message = do
-      msgIntegrity <- integrity <* A.space
+      msgIntegrity <- msgIntegrityP <* A.space
       recipientMeta <- "R=" *> partyMeta A.decimal
       brokerMeta <- "B=" *> partyMeta base64P
       senderMeta <- "S=" *> partyMeta A.decimal
@@ -326,13 +326,16 @@ commandP =
         <|> A.space *> (ReplyVia <$> smpServerP)
         <|> pure ReplyOn
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
-    integrity = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
+    agentError = ACmd SAgent . ERR <$> agentErrorTypeP
+
+msgIntegrityP :: Parser MsgIntegrity
+msgIntegrityP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
+  where
     msgErrorType =
       "ID " *> (MsgBadId <$> A.decimal)
         <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
         <|> "HASH" $> MsgBadHash
         <|> "DUPLICATE" $> MsgDuplicate
-    agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse commandP $ CMD SYNTAX
@@ -369,16 +372,17 @@ serializeCommand = \case
       ReplyOn -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
-    serializeMsgIntegrity :: MsgIntegrity -> ByteString
-    serializeMsgIntegrity = \case
-      MsgOk -> "OK"
-      MsgError e ->
-        "ERR " <> case e of
-          MsgSkipped fromMsgId toMsgId ->
-            B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
-          MsgBadId aMsgId -> "ID " <> bshow aMsgId
-          MsgBadHash -> "HASH"
-          MsgDuplicate -> "DUPLICATE"
+
+serializeMsgIntegrity :: MsgIntegrity -> ByteString
+serializeMsgIntegrity = \case
+  MsgOk -> "OK"
+  MsgError e ->
+    "ERR " <> case e of
+      MsgSkipped fromMsgId toMsgId ->
+        B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
+      MsgBadId aMsgId -> "ID " <> bshow aMsgId
+      MsgBadHash -> "HASH"
+      MsgDuplicate -> "DUPLICATE"
 
 agentErrorTypeP :: Parser AgentErrorType
 agentErrorTypeP =
