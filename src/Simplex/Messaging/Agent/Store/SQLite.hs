@@ -540,11 +540,11 @@ insertRcvMsgDetails_ dbConn connAlias RcvMsgData {..} =
       INSERT INTO rcv_messages
         ( conn_alias, internal_rcv_id, internal_id, external_snd_id, external_snd_ts,
           broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts,
-          hash, prev_snd_hash, integrity)
+          hash, prev_external_snd_hash, integrity)
       VALUES
         (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,:external_snd_ts,
          :broker_id,:broker_ts,:rcv_status,           NULL,          NULL,
-         :hash,:prev_snd_hash,:integrity);
+         :hash,:prev_external_snd_hash,:integrity);
     |]
     [ ":conn_alias" := connAlias,
       ":internal_rcv_id" := internalRcvId,
@@ -555,7 +555,7 @@ insertRcvMsgDetails_ dbConn connAlias RcvMsgData {..} =
       ":broker_ts" := snd brokerMeta,
       ":rcv_status" := Received,
       ":hash" := msgHash,
-      ":prev_snd_hash" := prevSndMsgHash,
+      ":prev_external_snd_hash" := prevExternalSndHash,
       ":integrity" := msgIntegrity
     ]
 

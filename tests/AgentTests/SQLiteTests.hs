@@ -332,7 +332,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId msgHash =
       brokerMeta = (brokerId, ts),
       msgBody = hw,
       msgHash = msgHash,
-      prevSndMsgHash = "hash_from_sender",
+      prevExternalSndHash = "hash_from_sender",
       msgIntegrity = MsgOk
     }
 
