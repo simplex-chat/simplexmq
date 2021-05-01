@@ -51,25 +51,6 @@ class Monad m => MonadAgentStore s m where
 
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
-data RcvMsgData = RcvMsgData
-  { internalId :: InternalId,
-    internalRcvId :: InternalRcvId,
-    internalTs :: InternalTs,
-    msgHash :: MsgHash,
-    m_sender :: (ExternalSndId, ExternalSndTs),
-    m_broker :: (BrokerId, BrokerTs),
-    m_body :: MsgBody,
-    m_integrity :: MsgIntegrity
-  }
-
-data SndMsgData = SndMsgData
-  { internalId :: InternalId,
-    internalSndId :: InternalSndId,
-    internalTs :: InternalTs,
-    msgBody :: MsgBody,
-    msgHash :: MsgHash
-  }
-
 -- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
@@ -165,6 +146,27 @@ type PrevRcvMsgHash = MsgHash
 
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
 type PrevSndMsgHash = MsgHash
+
+-- * Message data containers - used on Msg creation to reduce number of parameters
+
+data RcvMsgData = RcvMsgData
+  { internalId :: InternalId,
+    internalRcvId :: InternalRcvId,
+    internalTs :: InternalTs,
+    senderMeta :: (ExternalSndId, ExternalSndTs),
+    brokerMeta :: (BrokerId, BrokerTs),
+    msgBody :: MsgBody,
+    msgHash :: MsgHash,
+    msgIntegrity :: MsgIntegrity
+  }
+
+data SndMsgData = SndMsgData
+  { internalId :: InternalId,
+    internalSndId :: InternalSndId,
+    internalTs :: InternalTs,
+    msgBody :: MsgBody,
+    msgHash :: MsgHash
+  }
 
 -- * Message types
 

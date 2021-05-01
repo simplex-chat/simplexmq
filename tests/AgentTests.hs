@@ -80,7 +80,7 @@ h #:# err = tryGet `shouldReturn` ()
         _ -> return ()
 
 pattern Msg :: MsgBody -> ACommand 'Agent
-pattern Msg m_body <- MSG {m_body, m_integrity = MsgOk}
+pattern Msg msgBody <- MSG {msgBody, msgIntegrity = MsgOk}
 
 testDuplexConnection :: Handle -> Handle -> IO ()
 testDuplexConnection alice bob = do

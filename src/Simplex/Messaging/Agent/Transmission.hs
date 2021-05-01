@@ -90,11 +90,11 @@ data ACommand (p :: AParty) where
   SEND :: MsgBody -> ACommand Client
   SENT :: AgentMsgId -> ACommand Agent
   MSG ::
-    { m_recipient :: (AgentMsgId, UTCTime),
-      m_broker :: (MsgId, UTCTime),
-      m_sender :: (AgentMsgId, UTCTime),
-      m_integrity :: MsgIntegrity,
-      m_body :: MsgBody
+    { recipientMeta :: (AgentMsgId, UTCTime),
+      brokerMeta :: (MsgId, UTCTime),
+      senderMeta :: (AgentMsgId, UTCTime),
+      msgIntegrity :: MsgIntegrity,
+      msgBody :: MsgBody
     } ->
     ACommand Agent
   -- ACK :: AgentMsgId -> ACommand Client
@@ -315,12 +315,12 @@ commandP =
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
     message = do
-      m_integrity <- integrity <* A.space
-      m_recipient <- "R=" *> partyMeta A.decimal
-      m_broker <- "B=" *> partyMeta base64P
-      m_sender <- "S=" *> partyMeta A.decimal
-      m_body <- A.takeByteString
-      return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_integrity, m_body}
+      msgIntegrity <- integrity <* A.space
+      recipientMeta <- "R=" *> partyMeta A.decimal
+      brokerMeta <- "B=" *> partyMeta base64P
+      senderMeta <- "S=" *> partyMeta A.decimal
+      msgBody <- A.takeByteString
+      return $ ACmd SAgent MSG {recipientMeta, brokerMeta, senderMeta, msgIntegrity, msgBody}
     replyMode =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)
@@ -347,14 +347,14 @@ serializeCommand = \case
   END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   SENT mId -> "SENT " <> bshow mId
-  MSG {m_recipient = (rmId, rTs), m_broker = (bmId, bTs), m_sender = (smId, sTs), m_integrity, m_body} ->
+  MSG {recipientMeta = (rmId, rTs), brokerMeta = (bmId, bTs), senderMeta = (smId, sTs), msgIntegrity, msgBody} ->
     B.unwords
       [ "MSG",
-        msgIntegrity m_integrity,
+        serializeMsgIntegrity msgIntegrity,
         "R=" <> bshow rmId <> "," <> showTs rTs,
         "B=" <> encode bmId <> "," <> showTs bTs,
         "S=" <> bshow smId <> "," <> showTs sTs,
-        serializeMsg m_body
+        serializeMsg msgBody
       ]
   OFF -> "OFF"
   DEL -> "DEL"
@@ -369,8 +369,8 @@ serializeCommand = \case
       ReplyOn -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
-    msgIntegrity :: MsgIntegrity -> ByteString
-    msgIntegrity = \case
+    serializeMsgIntegrity :: MsgIntegrity -> ByteString
+    serializeMsgIntegrity = \case
       MsgOk -> "OK"
       MsgError e ->
         "ERR " <> case e of

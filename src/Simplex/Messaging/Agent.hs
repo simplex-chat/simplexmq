@@ -293,37 +293,37 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
     notify :: ConnAlias -> ACommand 'Agent -> m ()
     notify connAlias msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
     agentClientMsg :: RcvQueue -> PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
-    agentClientMsg rq@RcvQueue {connAlias, status} receivedPrevMsgHash m_sender m_broker m_body msgHash = do
+    agentClientMsg rq@RcvQueue {connAlias, status} receivedPrevMsgHash senderMeta brokerMeta msgBody msgHash = do
       logServer "<--" c srv rId "MSG <MSG>"
       case status of
         Active -> do
           internalTs <- liftIO getCurrentTime
           (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore $ updateRcvIds st rq
-          let m_integrity = msgIntegrity prevExtSndId (fst m_sender) prevRcvMsgHash
+          let msgIntegrity = computeMsgIntegrity prevExtSndId (fst senderMeta) prevRcvMsgHash
           withStore $
             createRcvMsg st rq $
               RcvMsgData
                 { internalId,
                   internalRcvId,
                   internalTs,
+                  senderMeta,
+                  brokerMeta,
+                  msgBody,
                   msgHash,
-                  m_sender,
-                  m_broker,
-                  m_body,
-                  m_integrity
+                  msgIntegrity
                 }
           notify connAlias $
             MSG
-              { m_recipient = (unId internalId, internalTs),
-                m_sender,
-                m_broker,
-                m_body,
-                m_integrity
+              { recipientMeta = (unId internalId, internalTs),
+                senderMeta,
+                brokerMeta,
+                msgBody,
+                msgIntegrity
               }
         _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
       where
-        msgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> MsgIntegrity
-        msgIntegrity prevExtSndId extSndId internalPrevMsgHash
+        computeMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> MsgIntegrity
+        computeMsgIntegrity prevExtSndId extSndId internalPrevMsgHash
           | extSndId == prevExtSndId + 1 && internalPrevMsgHash == receivedPrevMsgHash = MsgOk
           | extSndId < prevExtSndId = MsgError $ MsgBadId extSndId
           | extSndId == prevExtSndId = MsgError MsgDuplicate -- ? deduplicate

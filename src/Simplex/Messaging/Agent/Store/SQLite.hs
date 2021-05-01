@@ -222,11 +222,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
 
   createRcvMsg :: SQLiteStore -> RcvQueue -> RcvMsgData -> m ()
-  createRcvMsg SQLiteStore {dbConn} RcvQueue {connAlias} RcvMsgData {internalId, internalRcvId, internalTs, msgHash, m_sender, m_broker, m_body, m_integrity} =
+  createRcvMsg SQLiteStore {dbConn} RcvQueue {connAlias} RcvMsgData {..} =
     liftIO . DB.withTransaction dbConn $ do
-      insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId m_body
-      insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId m_sender m_broker
-      updateHashRcv_ dbConn connAlias internalId (fst m_sender) msgHash
+      insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
+      insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId senderMeta brokerMeta
+      updateHashRcv_ dbConn connAlias internalId (fst senderMeta) msgHash
 
   updateSndIds :: SQLiteStore -> SndQueue -> m (InternalId, InternalSndId, PrevSndMsgHash)
   updateSndIds SQLiteStore {dbConn} SndQueue {connAlias} =
