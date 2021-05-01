@@ -90,6 +90,9 @@ connections =
       last_internal_msg_id INTEGER NOT NULL,
       last_internal_rcv_msg_id INTEGER NOT NULL,
       last_internal_snd_msg_id INTEGER NOT NULL,
+      last_external_snd_msg_id INTEGER NOT NULL,
+      last_rcv_msg_hash BLOB NOT NULL,
+      last_snd_msg_hash BLOB NOT NULL,
       PRIMARY KEY (conn_alias),
       FOREIGN KEY (rcv_host, rcv_port, rcv_id) REFERENCES rcv_queues (host, port, rcv_id),
       FOREIGN KEY (snd_host, snd_port, snd_id) REFERENCES snd_queues (host, port, snd_id)
