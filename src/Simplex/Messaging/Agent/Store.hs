@@ -157,6 +157,7 @@ data RcvMsgData = RcvMsgData
     brokerMeta :: (BrokerId, BrokerTs),
     msgBody :: MsgBody,
     msgHash :: MsgHash,
+    prevSndMsgHash :: PrevSndMsgHash,
     msgIntegrity :: MsgIntegrity
   }
 
