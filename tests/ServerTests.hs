@@ -20,7 +20,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
 import System.Directory (removeFile)
-import System.TimeIt
+import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
@@ -343,19 +343,15 @@ testTiming =
       let keyCmd = "KEY " <> C.serializePubKey sPub
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, keyCmd)
 
-      t1 <- timeRepeat 25 $ do
-        Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, "SEND 5 hello ")
-        return ()
-      t2 <- timeRepeat 25 $ do
-        -- no queue
+      Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, "SEND 5 hello ")
+
+      timeNoQueue <- timeRepeat 25 $ do
         Resp "dabc" _ (ERR AUTH) <- signSendRecv sh sKey ("dabc", rId, "SEND 5 hello ")
         return ()
-      t3 <- timeRepeat 25 $ do
-        -- wrong key
+      timeWrongKey <- timeRepeat 25 $ do
         Resp "cdab" _ (ERR AUTH) <- signSendRecv sh rKey ("cdab", sId, "SEND 5 hello ")
         return ()
-      abs (t1 - t2) < 0.15 * t2 `shouldBe` True
-      abs (t3 - t2) < 0.15 * t2 `shouldBe` True
+      abs (timeNoQueue - timeWrongKey) / timeNoQueue < 0.15 `shouldBe` True
   where
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
 
