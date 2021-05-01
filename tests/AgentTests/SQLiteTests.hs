@@ -323,7 +323,7 @@ ts :: UTCTime
 ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
 
 mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> BrokerId -> MsgHash -> RcvMsgData
-mkRcvMsgData internalId internalRcvId externalSndId brokerId msgHash =
+mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
   RcvMsgData
     { internalId,
       internalRcvId,
@@ -331,8 +331,8 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId msgHash =
       senderMeta = (externalSndId, ts),
       brokerMeta = (brokerId, ts),
       msgBody = hw,
-      msgHash = msgHash,
-      prevExternalSndHash = "hash_from_sender",
+      internalHash,
+      externalPrevSndHash = "hash_from_sender",
       msgIntegrity = MsgOk
     }
 
@@ -352,13 +352,13 @@ testCreateRcvMsg = do
     testCreateRcvMsg' store 1 "hash_dummy" rcvQueue1 $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "new_hash_dummy"
 
 mkSndMsgData :: InternalId -> InternalSndId -> MsgHash -> SndMsgData
-mkSndMsgData internalId internalSndId msgHash =
+mkSndMsgData internalId internalSndId internalHash =
   SndMsgData
     { internalId,
       internalSndId,
       internalTs = ts,
       msgBody = hw,
-      msgHash = msgHash
+      internalHash
     }
 
 testCreateSndMsg' :: SQLiteStore -> PrevSndMsgHash -> SndQueue -> SndMsgData -> Expectation

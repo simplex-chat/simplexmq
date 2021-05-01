@@ -540,11 +540,11 @@ insertRcvMsgDetails_ dbConn connAlias RcvMsgData {..} =
       INSERT INTO rcv_messages
         ( conn_alias, internal_rcv_id, internal_id, external_snd_id, external_snd_ts,
           broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts,
-          hash, prev_external_snd_hash, integrity)
+          internal_hash, external_prev_snd_hash, integrity)
       VALUES
         (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,:external_snd_ts,
          :broker_id,:broker_ts,:rcv_status,           NULL,          NULL,
-         :hash,:prev_external_snd_hash,:integrity);
+         :internal_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_alias" := connAlias,
       ":internal_rcv_id" := internalRcvId,
@@ -554,8 +554,8 @@ insertRcvMsgDetails_ dbConn connAlias RcvMsgData {..} =
       ":broker_id" := fst brokerMeta,
       ":broker_ts" := snd brokerMeta,
       ":rcv_status" := Received,
-      ":hash" := msgHash,
-      ":prev_external_snd_hash" := prevExternalSndHash,
+      ":internal_hash" := internalHash,
+      ":external_prev_snd_hash" := externalPrevSndHash,
       ":integrity" := msgIntegrity
     ]
 
@@ -572,7 +572,7 @@ updateHashRcv_ dbConn connAlias RcvMsgData {..} =
         AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
     [ ":last_external_snd_msg_id" := fst senderMeta,
-      ":last_rcv_msg_hash" := msgHash,
+      ":last_rcv_msg_hash" := internalHash,
       ":conn_alias" := connAlias,
       ":last_internal_rcv_msg_id" := internalRcvId
     ]
@@ -632,15 +632,15 @@ insertSndMsgDetails_ dbConn connAlias SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts, hash)
+        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts, internal_hash)
       VALUES
-        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL,:hash);
+        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL,:internal_hash);
     |]
     [ ":conn_alias" := connAlias,
       ":internal_snd_id" := internalSndId,
       ":internal_id" := internalId,
       ":snd_status" := Created,
-      ":hash" := msgHash
+      ":internal_hash" := internalHash
     ]
 
 updateHashSnd_ :: DB.Connection -> ConnAlias -> SndMsgData -> IO ()
@@ -654,7 +654,7 @@ updateHashSnd_ dbConn connAlias SndMsgData {..} =
       WHERE conn_alias = :conn_alias
         AND last_internal_snd_msg_id = :last_internal_snd_msg_id;
     |]
-    [ ":last_snd_msg_hash" := msgHash,
+    [ ":last_snd_msg_hash" := internalHash,
       ":conn_alias" := connAlias,
       ":last_internal_snd_msg_id" := internalSndId
     ]

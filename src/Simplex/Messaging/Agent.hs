@@ -190,7 +190,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
               msgHash = C.sha256Hash msgStr
           withStore $
             createSndMsg st sq $
-              SndMsgData {internalId, internalSndId, internalTs, msgBody, msgHash}
+              SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = msgHash}
           sendAgentMessage c sq msgStr
           respond $ SENT (unId internalId)
 
@@ -309,8 +309,8 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
                   senderMeta,
                   brokerMeta,
                   msgBody,
-                  msgHash,
-                  prevExternalSndHash = receivedPrevMsgHash,
+                  internalHash = msgHash,
+                  externalPrevSndHash = receivedPrevMsgHash,
                   msgIntegrity
                 }
           notify connAlias $

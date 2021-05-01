@@ -138,8 +138,8 @@ rcvMessages =
       rcv_status TEXT NOT NULL,
       ack_brocker_ts TEXT,
       ack_sender_ts TEXT,
-      hash BLOB NOT NULL,
-      prev_external_snd_hash BLOB NOT NULL,
+      internal_hash BLOB NOT NULL,
+      external_prev_snd_hash BLOB NOT NULL,
       integrity BLOB NOT NULL,
       PRIMARY KEY (conn_alias, internal_rcv_id),
       FOREIGN KEY (conn_alias, internal_id)
@@ -158,7 +158,7 @@ sndMessages =
       snd_status TEXT NOT NULL,
       sent_ts TEXT,
       delivered_ts TEXT,
-      hash BLOB NOT NULL,
+      internal_hash BLOB NOT NULL,
       PRIMARY KEY (conn_alias, internal_snd_id),
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)

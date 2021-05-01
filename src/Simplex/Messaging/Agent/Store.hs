@@ -156,8 +156,8 @@ data RcvMsgData = RcvMsgData
     senderMeta :: (ExternalSndId, ExternalSndTs),
     brokerMeta :: (BrokerId, BrokerTs),
     msgBody :: MsgBody,
-    msgHash :: MsgHash,
-    prevExternalSndHash :: MsgHash,
+    internalHash :: MsgHash,
+    externalPrevSndHash :: MsgHash,
     msgIntegrity :: MsgIntegrity
   }
 
@@ -166,7 +166,7 @@ data SndMsgData = SndMsgData
     internalSndId :: InternalSndId,
     internalTs :: InternalTs,
     msgBody :: MsgBody,
-    msgHash :: MsgHash
+    internalHash :: MsgHash
   }
 
 -- * Message types
@@ -197,7 +197,7 @@ data RcvMsg = RcvMsg
     -- which in its turn corresponds to `internalTs` in sending agent.
     ackSenderTs :: AckSenderTs,
     -- | Hash of previous message as received from sender - stored for integrity forensics.
-    prevExternalSndHash :: MsgHash,
+    externalPrevSndHash :: MsgHash,
     msgIntegrity :: MsgIntegrity
   }
   deriving (Eq, Show)
@@ -260,7 +260,7 @@ data MsgBase = MsgBase
     internalTs :: InternalTs,
     msgBody :: MsgBody,
     -- | Hash of the message as computed by agent.
-    msgHash :: MsgHash
+    internalHash :: MsgHash
   }
   deriving (Eq, Show)
 
