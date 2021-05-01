@@ -87,6 +87,7 @@ tests:
       - HUnit == 1.6.*
       - random == 1.1.*
       - QuickCheck == 2.13.*
+      - timeit == 2.0.*
 
 ghc-options:
   # - -haddock

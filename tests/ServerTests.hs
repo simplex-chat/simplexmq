@@ -11,7 +11,7 @@ module ServerTests where
 import Control.Concurrent (ThreadId, killThread)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
-import Control.Monad.Except (runExceptT)
+import Control.Monad.Except (forM_, runExceptT)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -20,12 +20,13 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
 import System.Directory (removeFile)
+import System.TimeIt
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
 
 rsaKeySize :: Int
-rsaKeySize = 1024 `div` 8
+rsaKeySize = 2048 `div` 8
 
 serverTests :: Spec
 serverTests = do
@@ -37,6 +38,7 @@ serverTests = do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
   describe "Store log" testWithStoreLog
+  describe "Timing of AUTH error" testTiming
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
@@ -329,6 +331,33 @@ testWithStoreLog =
       try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
         Right l -> pure l
         Left (_ :: SomeException) -> logSize
+
+testTiming :: Spec
+testTiming =
+  it "should have similar time for auth error whether queue exists or not" $
+    smpTest2 \rh sh -> do
+      (rPub, rKey) <- C.generateKeyPair rsaKeySize
+      Resp "abcd" "" (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+
+      (sPub, sKey) <- C.generateKeyPair rsaKeySize
+      let keyCmd = "KEY " <> C.serializePubKey sPub
+      Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, keyCmd)
+
+      t1 <- timeRepeat 25 $ do
+        Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, "SEND 5 hello ")
+        return ()
+      t2 <- timeRepeat 25 $ do
+        -- no queue
+        Resp "dabc" _ (ERR AUTH) <- signSendRecv sh sKey ("dabc", rId, "SEND 5 hello ")
+        return ()
+      t3 <- timeRepeat 25 $ do
+        -- wrong key
+        Resp "cdab" _ (ERR AUTH) <- signSendRecv sh rKey ("cdab", sId, "SEND 5 hello ")
+        return ()
+      abs (t1 - t2) < 0.15 * t2 `shouldBe` True
+      abs (t3 - t2) < 0.15 * t2 `shouldBe` True
+  where
+    timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
 
 samplePubKey :: ByteString
 samplePubKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
