@@ -108,25 +108,27 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
     Cmd SRecipient (NEW k) -> return $ verifySignature k
-    Cmd SRecipient _ -> withQueueRec SRecipient $ verifySignature . recipientKey
-    Cmd SSender (SEND _) -> withQueueRec SSender $ verifySend sig . senderKey
+    Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
+    Cmd SSender (SEND _) -> verifyCmd SSender $ verifySend sig . senderKey
     Cmd SSender PING -> return cmd
   where
-    withQueueRec :: SParty (p :: Party) -> (QueueRec -> Cmd) -> m Cmd
-    withQueueRec party f = do
+    verifyCmd :: SParty p -> (QueueRec -> Cmd) -> m Cmd
+    verifyCmd party f = do
+      (aKey, _) <- asks serverKeyPair -- any public key can be used to mitigate timing attack
       st <- asks queueStore
-      qr <- atomically $ getQueue st party queueId
-      return $ either smpErr f qr
+      q <- atomically $ getQueue st party queueId
+      pure $ either (const $ fakeVerify aKey) f q
+    fakeVerify :: C.PublicKey -> Cmd
+    fakeVerify aKey = if verify aKey then authErr else authErr
     verifySend :: C.Signature -> Maybe SenderPublicKey -> Cmd
     verifySend "" = maybe cmd (const authErr)
     verifySend _ = maybe authErr verifySignature
     verifySignature :: C.PublicKey -> Cmd
-    verifySignature key =
-      if C.verify key sig (serializeTransmission t)
-        then cmd
-        else authErr
-
-    smpErr e = Cmd SBroker $ ERR e
+    verifySignature key = if verify key then cmd else authErr
+    verify :: C.PublicKey -> Bool
+    verify key = C.verify key sig (serializeTransmission t)
+    smpErr :: ErrorType -> Cmd
+    smpErr = Cmd SBroker . ERR
     authErr = smpErr AUTH
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()

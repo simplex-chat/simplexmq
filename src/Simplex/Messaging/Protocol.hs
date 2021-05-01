@@ -251,7 +251,7 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
       Cmd SBroker _
         | B.null queueId -> Left $ CMD NO_QUEUE
         | otherwise -> Right cmd
-      -- NEW must NOT have signature or queue ID
+      -- NEW must have signature but NOT queue ID
       Cmd SRecipient (NEW _)
         | B.null signature -> Left $ CMD NO_AUTH
         | not (B.null queueId) -> Left $ CMD HAS_AUTH
