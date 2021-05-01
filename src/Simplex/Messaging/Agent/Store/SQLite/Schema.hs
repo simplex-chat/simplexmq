@@ -140,7 +140,7 @@ rcvMessages =
       ack_sender_ts TEXT,
       hash BLOB NOT NULL,
       prev_snd_hash BLOB NOT NULL,
-      integrity BLOB NOT NULL,
+      integrity TEXT NOT NULL,
       PRIMARY KEY (conn_alias, internal_rcv_id),
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)
