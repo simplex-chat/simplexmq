@@ -299,7 +299,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
         Active -> do
           internalTs <- liftIO getCurrentTime
           (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore $ updateRcvIds st rq
-          let msgIntegrity = computeMsgIntegrity prevExtSndId (fst senderMeta) prevRcvMsgHash
+          let msgIntegrity = checkMsgIntegrity prevExtSndId (fst senderMeta) prevRcvMsgHash
           withStore $
             createRcvMsg st rq $
               RcvMsgData
@@ -322,8 +322,8 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               }
         _ -> notify connAlias . ERR $ AGENT A_PROHIBITED
       where
-        computeMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> MsgIntegrity
-        computeMsgIntegrity prevExtSndId extSndId internalPrevMsgHash
+        checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> MsgIntegrity
+        checkMsgIntegrity prevExtSndId extSndId internalPrevMsgHash
           | extSndId == prevExtSndId + 1 && internalPrevMsgHash == receivedPrevMsgHash = MsgOk
           | extSndId < prevExtSndId = MsgError $ MsgBadId extSndId
           | extSndId == prevExtSndId = MsgError MsgDuplicate -- ? deduplicate
