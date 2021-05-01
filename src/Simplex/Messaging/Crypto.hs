@@ -33,7 +33,7 @@ module Simplex.Messaging.Crypto
     decryptAES,
     serializePrivKey,
     serializePubKey,
-    binaryEncodePubKey,
+    encodePubKey,
     serializeKeyHash,
     getKeyHash,
     sha256Hash,
@@ -51,7 +51,6 @@ module Simplex.Messaging.Crypto
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Exception (Exception)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
@@ -61,7 +60,6 @@ import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), digestFromByteString, hash)
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
-import Crypto.Number.Serialize (os2ip)
 import qualified Crypto.PubKey.RSA as R
 import qualified Crypto.PubKey.RSA.OAEP as OAEP
 import qualified Crypto.PubKey.RSA.PSS as PSS
@@ -73,7 +71,7 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
-import Data.ByteString.Base64
+import Data.ByteString.Base64 (decode, encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
@@ -87,8 +85,8 @@ import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, base64StringP, parseAll)
-import Simplex.Messaging.Util (liftEitherError)
+import Simplex.Messaging.Parsers (base64P, parseAll)
+import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
@@ -113,21 +111,21 @@ instance PrivateKey FullPrivateKey where
   mkPrivateKey = FullPrivateKey
 
 instance IsString FullPrivateKey where
-  fromString = parseString decodePrivKey
+  fromString = parseString (decode >=> decodePrivKey)
 
 instance IsString PublicKey where
-  fromString = parseString decodePubKey
+  fromString = parseString (decode >=> decodePubKey)
 
 parseString :: (ByteString -> Either String a) -> (String -> a)
 parseString parse = either error id . parse . B.pack
 
-instance ToField SafePrivateKey where toField = toField . serializePrivKey
+instance ToField SafePrivateKey where toField = toField . encodePrivKey
 
-instance ToField PublicKey where toField = toField . serializePubKey
+instance ToField PublicKey where toField = toField . encodePubKey
 
-instance FromField SafePrivateKey where fromField = keyFromField privKeyP
+instance FromField SafePrivateKey where fromField = keyFromField binaryPrivKeyP
 
-instance FromField PublicKey where fromField = keyFromField pubKeyP
+instance FromField PublicKey where fromField = keyFromField binaryPubKeyP
 
 keyFromField :: Typeable k => Parser k -> FieldParser k
 keyFromField p = \case
@@ -340,35 +338,22 @@ verify :: PublicKey -> Signature -> ByteString -> Bool
 verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig
 
 serializePubKey :: PublicKey -> ByteString
-serializePubKey k = "rsa:" <> encodePubKey k
+serializePubKey = ("rsa:" <>) . encode . encodePubKey
 
 serializePrivKey :: PrivateKey k => k -> ByteString
-serializePrivKey pk = "rsa:" <> encodePrivKey pk
+serializePrivKey = ("rsa:" <>) . encode . encodePrivKey
 
 pubKeyP :: Parser PublicKey
-pubKeyP = keyP decodePubKey <|> legacyPubKeyP
+pubKeyP = decodePubKey <$?> ("rsa:" *> base64P)
 
 binaryPubKeyP :: Parser PublicKey
-binaryPubKeyP = either fail pure . binaryDecodePubKey =<< A.takeByteString
+binaryPubKeyP = decodePubKey <$?> A.takeByteString
 
 privKeyP :: PrivateKey k => Parser k
-privKeyP = keyP decodePrivKey <|> legacyPrivKeyP
+privKeyP = decodePrivKey <$?> ("rsa:" *> base64P)
 
-keyP :: (ByteString -> Either String k) -> Parser k
-keyP dec = either fail pure . dec =<< ("rsa:" *> base64StringP)
-
-legacyPubKeyP :: Parser PublicKey
-legacyPubKeyP = do
-  (public_size, public_n, public_e) <- legacyKeyParser_
-  return . PublicKey $ R.PublicKey {public_size, public_n, public_e}
-
-legacyPrivKeyP :: PrivateKey k => Parser k
-legacyPrivKeyP = _privateKey . safeRsaPrivateKey <$> legacyKeyParser_
-
-legacyKeyParser_ :: Parser (Int, Integer, Integer)
-legacyKeyParser_ = (,,) <$> (A.decimal <* ",") <*> (intP <* ",") <*> intP
-  where
-    intP = os2ip <$> base64P
+binaryPrivKeyP :: PrivateKey k => Parser k
+binaryPrivKeyP = decodePrivKey <$?> A.takeByteString
 
 safePrivateKey :: (Int, Integer, Integer) -> SafePrivateKey
 safePrivateKey = SafePrivateKey . safeRsaPrivateKey
@@ -391,34 +376,28 @@ safeRsaPrivateKey (size, n, d) =
     }
 
 encodePubKey :: PublicKey -> ByteString
-encodePubKey = encode . binaryEncodePubKey
-
-binaryEncodePubKey :: PublicKey -> ByteString
-binaryEncodePubKey = binaryEncodeKey . PubKeyRSA . rsaPublicKey
+encodePubKey = encodeKey . PubKeyRSA . rsaPublicKey
 
 encodePrivKey :: PrivateKey k => k -> ByteString
-encodePrivKey = encode . binaryEncodeKey . PrivKeyRSA . rsaPrivateKey
+encodePrivKey = encodeKey . PrivKeyRSA . rsaPrivateKey
 
-binaryEncodeKey :: ASN1Object a => a -> ByteString
-binaryEncodeKey k = toStrict . encodeASN1 DER $ toASN1 k []
+encodeKey :: ASN1Object a => a -> ByteString
+encodeKey k = toStrict . encodeASN1 DER $ toASN1 k []
 
 decodePubKey :: ByteString -> Either String PublicKey
-decodePubKey = binaryDecodePubKey <=< decode
-
-binaryDecodePubKey :: ByteString -> Either String PublicKey
-binaryDecodePubKey =
-  binaryDecodeKey >=> \case
+decodePubKey =
+  decodeKey >=> \case
     (PubKeyRSA k, []) -> Right $ PublicKey k
     r -> keyError r
 
 decodePrivKey :: PrivateKey k => ByteString -> Either String k
 decodePrivKey =
-  decode >=> binaryDecodeKey >=> \case
+  decodeKey >=> \case
     (PrivKeyRSA pk, []) -> Right $ mkPrivateKey pk
     r -> keyError r
 
-binaryDecodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
-binaryDecodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
+decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
+decodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
 
 keyError :: (a, [ASN1]) -> Either String b
 keyError = \case

@@ -244,7 +244,7 @@ serverHandshake h (k, pk) = do
   where
     sendHeaderAndPublicKey_1 :: IO ()
     sendHeaderAndPublicKey_1 = do
-      let sKey = C.binaryEncodePubKey k
+      let sKey = C.encodePubKey k
           header = TransportHeader {blockSize = transportBlockSize, keySize = B.length sKey}
       B.hPut h $ binaryTransportHeader header <> sKey
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString

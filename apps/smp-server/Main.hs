@@ -127,7 +127,7 @@ confirm msg = do
   when (map toLower ok /= "y") exitFailure
 
 publicKeyHash :: C.PublicKey -> B.ByteString
-publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.binaryEncodePubKey
+publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.encodePubKey
 
 openStoreLog :: IniOpts -> IO (Maybe (StoreLog 'ReadMode))
 openStoreLog IniOpts {enableStoreLog, storeLogFile = f}

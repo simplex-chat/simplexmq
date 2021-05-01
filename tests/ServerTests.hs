@@ -4,9 +4,13 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module ServerTests where
 
+import Control.Concurrent (ThreadId, killThread)
+import Control.Concurrent.STM
+import Control.Exception (SomeException, try)
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -15,6 +19,7 @@ import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
+import System.Directory (removeFile)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
@@ -31,6 +36,7 @@ serverTests = do
   describe "SMP messages" do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another SMP queue" testSwitchSub
+  describe "Store log" testWithStoreLog
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
@@ -262,20 +268,85 @@ testSwitchSub =
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
+testWithStoreLog :: Spec
+testWithStoreLog =
+  it "should store simplex queues to log and restore them after server restart" $ do
+    (sPub1, sKey1) <- C.generateKeyPair rsaKeySize
+    (sPub2, sKey2) <- C.generateKeyPair rsaKeySize
+    senderId1 <- newTVarIO ""
+    senderId2 <- newTVarIO ""
+
+    withSmpServerStoreLogOn testPort . runTest $ \h -> do
+      (sId1, _, _) <- createAndSecureQueue h sPub1
+      atomically $ writeTVar senderId1 sId1
+      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      Resp "" _ (MSG _ _ "hello") <- tGet fromServer h
+
+      (sId2, rId2, rKey2) <- createAndSecureQueue h sPub2
+      atomically $ writeTVar senderId2 sId2
+      Resp "cdab" _ OK <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
+      Resp "" _ (MSG _ _ "hello too") <- tGet fromServer h
+
+      Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, "DEL")
+      pure ()
+
+    logSize `shouldReturn` 5
+
+    withSmpServerThreadOn testPort . runTest $ \h -> do
+      sId1 <- readTVarIO senderId1
+      -- fails if store log is disabled
+      Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      pure ()
+
+    withSmpServerStoreLogOn testPort . runTest $ \h -> do
+      -- this queue is restored
+      sId1 <- readTVarIO senderId1
+      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      -- this queue is removed - not restored
+      sId2 <- readTVarIO senderId2
+      Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
+      pure ()
+
+    logSize `shouldReturn` 1
+    removeFile testStoreLogFile
+  where
+    createAndSecureQueue :: THandle -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
+    createAndSecureQueue h sPub = do
+      (rPub, rKey) <- C.generateKeyPair rsaKeySize
+      Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      let keyCmd = "KEY " <> C.serializePubKey sPub
+      Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, keyCmd)
+      (rId', rId) #== "same queue ID"
+      pure (sId, rId, rKey)
+
+    runTest :: (THandle -> IO ()) -> ThreadId -> Expectation
+    runTest test' server = do
+      testSMPClient test' `shouldReturn` ()
+      killThread server
+
+    logSize :: IO Int
+    logSize =
+      try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
+        Right l -> pure l
+        Left (_ :: SomeException) -> logSize
+
+samplePubKey :: ByteString
+samplePubKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
+
 syntaxTests :: Spec
 syntaxTests = do
   it "unknown command" $ ("", "abcd", "1234", "HELLO") >#> ("", "abcd", "1234", "ERR CMD SYNTAX")
   describe "NEW" do
     it "no parameters" $ ("1234", "bcda", "", "NEW") >#> ("", "bcda", "", "ERR CMD SYNTAX")
-    it "many parameters" $ ("1234", "cdab", "", "NEW 1 2") >#> ("", "cdab", "", "ERR CMD SYNTAX")
-    it "no signature" $ ("", "dabc", "", "NEW 3,1234,1234") >#> ("", "dabc", "", "ERR CMD NO_AUTH")
-    it "queue ID" $ ("1234", "abcd", "12345678", "NEW 3,1234,1234") >#> ("", "abcd", "12345678", "ERR CMD HAS_AUTH")
+    it "many parameters" $ ("1234", "cdab", "", "NEW 1 " <> samplePubKey) >#> ("", "cdab", "", "ERR CMD SYNTAX")
+    it "no signature" $ ("", "dabc", "", "NEW " <> samplePubKey) >#> ("", "dabc", "", "ERR CMD NO_AUTH")
+    it "queue ID" $ ("1234", "abcd", "12345678", "NEW " <> samplePubKey) >#> ("", "abcd", "12345678", "ERR CMD HAS_AUTH")
   describe "KEY" do
-    it "valid syntax" $ ("1234", "bcda", "12345678", "KEY 3,4567,4567") >#> ("", "bcda", "12345678", "ERR AUTH")
+    it "valid syntax" $ ("1234", "bcda", "12345678", "KEY " <> samplePubKey) >#> ("", "bcda", "12345678", "ERR AUTH")
     it "no parameters" $ ("1234", "cdab", "12345678", "KEY") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
-    it "many parameters" $ ("1234", "dabc", "12345678", "KEY 1 2") >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
-    it "no signature" $ ("", "abcd", "12345678", "KEY 3,4567,4567") >#> ("", "abcd", "12345678", "ERR CMD NO_AUTH")
-    it "no queue ID" $ ("1234", "bcda", "", "KEY 3,4567,4567") >#> ("", "bcda", "", "ERR CMD NO_AUTH")
+    it "many parameters" $ ("1234", "dabc", "12345678", "KEY 1 " <> samplePubKey) >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
+    it "no signature" $ ("", "abcd", "12345678", "KEY " <> samplePubKey) >#> ("", "abcd", "12345678", "ERR CMD NO_AUTH")
+    it "no queue ID" $ ("1234", "bcda", "", "KEY " <> samplePubKey) >#> ("", "bcda", "", "ERR CMD NO_AUTH")
   noParamsSyntaxTest "SUB"
   noParamsSyntaxTest "ACK"
   noParamsSyntaxTest "OFF"

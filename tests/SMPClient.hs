@@ -18,6 +18,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.StoreLog (openReadStoreLog)
 import Simplex.Messaging.Transport
 import Test.Hspec
 import UnliftIO.Concurrent
@@ -31,16 +32,19 @@ testHost = "localhost"
 testPort :: ServiceName
 testPort = "5000"
 
-teshKeyHashStr :: B.ByteString
-teshKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHashStr :: B.ByteString
+testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 
-teshKeyHash :: Maybe C.KeyHash
-teshKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHash :: Maybe C.KeyHash
+testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+
+testStoreLogFile :: FilePath
+testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
 testSMPClient client =
   runTCPClient testHost testPort $ \h ->
-    liftIO (runExceptT $ clientHandshake h teshKeyHash) >>= \case
+    liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -83,6 +87,14 @@ cfg =
         \hul7Swx0SHFN3WpXu8uj+B6MLpRcCbDHO65qU4kQLs+IaXXsuuTjMvJ5LwjkZVrQ\
         \TmKzSAw7iVWwEUZR/PeiEKazqrpp9VU="
     }
+
+withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreLogOn port client = do
+  s <- liftIO $ openReadStoreLog testStoreLogFile
+  serverBracket
+    (\started -> runSMPServerBlocking started cfg {tcpPort = port, storeLog = Just s})
+    (pure ())
+    client
 
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerThreadOn port =
