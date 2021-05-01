@@ -310,7 +310,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
                   brokerMeta,
                   msgBody,
                   msgHash,
-                  prevSndMsgHash = receivedPrevMsgHash,
+                  prevExternalSndHash = receivedPrevMsgHash,
                   msgIntegrity
                 }
           notify connAlias $

@@ -157,7 +157,7 @@ data RcvMsgData = RcvMsgData
     brokerMeta :: (BrokerId, BrokerTs),
     msgBody :: MsgBody,
     msgHash :: MsgHash,
-    prevSndMsgHash :: PrevSndMsgHash,
+    prevExternalSndHash :: MsgHash,
     msgIntegrity :: MsgIntegrity
   }
 
@@ -195,7 +195,10 @@ data RcvMsg = RcvMsg
     -- | Timestamp of acknowledgement to sender, corresponds to `AcknowledgedToSender` status.
     -- Do not mix up with `externalSndTs` - timestamp created at sender before sending,
     -- which in its turn corresponds to `internalTs` in sending agent.
-    ackSenderTs :: AckSenderTs
+    ackSenderTs :: AckSenderTs,
+    -- | Hash of previous message as received from sender - stored for integrity forensics.
+    prevExternalSndHash :: MsgHash,
+    msgIntegrity :: MsgIntegrity
   }
   deriving (Eq, Show)
 
@@ -255,7 +258,9 @@ data MsgBase = MsgBase
     -- due to a possibility of implementation errors in different agents.
     internalId :: InternalId,
     internalTs :: InternalTs,
-    msgBody :: MsgBody
+    msgBody :: MsgBody,
+    -- | Hash of the message as computed by agent.
+    msgHash :: MsgHash
   }
   deriving (Eq, Show)
 
