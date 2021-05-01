@@ -226,7 +226,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO . DB.withTransaction dbConn $ do
       insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
       insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId senderMeta brokerMeta
-      updateHashRcv_ dbConn connAlias internalId (fst senderMeta) msgHash
+      updateHashRcv_ dbConn connAlias internalRcvId (fst senderMeta) msgHash
 
   updateSndIds :: SQLiteStore -> SndQueue -> m (InternalId, InternalSndId, PrevSndMsgHash)
   updateSndIds SQLiteStore {dbConn} SndQueue {connAlias} =
@@ -238,11 +238,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       pure (internalId, internalSndId, prevSndHash)
 
   createSndMsg :: SQLiteStore -> SndQueue -> SndMsgData -> m ()
-  createSndMsg SQLiteStore {dbConn} SndQueue {connAlias} msg@SndMsgData {internalId, internalSndId, msgHash} =
+  createSndMsg SQLiteStore {dbConn} SndQueue {connAlias} msg@SndMsgData {..} =
     liftIO . DB.withTransaction dbConn $ do
       insertSndMsgBase_ dbConn connAlias msg
       insertSndMsgDetails_ dbConn connAlias internalSndId internalId
-      updateHashSnd_ dbConn connAlias internalId msgHash
+      updateHashSnd_ dbConn connAlias internalSndId msgHash
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
@@ -551,21 +551,22 @@ insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, e
       ":rcv_status" := Received
     ]
 
-updateHashRcv_ :: DB.Connection -> ConnAlias -> InternalId -> ExternalSndId -> MsgHash -> IO ()
-updateHashRcv_ dbConn connAlias internalId newExternalSndId newRcvHash =
+updateHashRcv_ :: DB.Connection -> ConnAlias -> InternalRcvId -> ExternalSndId -> MsgHash -> IO ()
+updateHashRcv_ dbConn connAlias internalRcvId newExternalSndId newRcvHash =
   DB.executeNamed
     dbConn
+    -- last_internal_rcv_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections
       SET last_external_snd_msg_id = :last_external_snd_msg_id,
           last_rcv_msg_hash = :last_rcv_msg_hash
       WHERE conn_alias = :conn_alias
-        AND last_internal_msg_id = :internal_id;
+        AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
     [ ":last_external_snd_msg_id" := newExternalSndId,
       ":last_rcv_msg_hash" := newRcvHash,
       ":conn_alias" := connAlias,
-      ":internal_id" := internalId
+      ":last_internal_rcv_msg_id" := internalRcvId
     ]
 
 -- * updateSndIds helpers
@@ -601,7 +602,7 @@ updateLastIdsSnd_ dbConn connAlias newInternalId newInternalSndId =
 -- * createSndMsg helpers
 
 insertSndMsgBase_ :: DB.Connection -> ConnAlias -> SndMsgData -> IO ()
-insertSndMsgBase_ dbConn connAlias SndMsgData {internalId, internalSndId, internalTs, msgBody, msgHash} = do
+insertSndMsgBase_ dbConn connAlias SndMsgData {..} = do
   DB.executeNamed
     dbConn
     [sql|
@@ -633,17 +634,18 @@ insertSndMsgDetails_ dbConn connAlias internalSndId internalId =
       ":snd_status" := Created
     ]
 
-updateHashSnd_ :: DB.Connection -> ConnAlias -> InternalId -> MsgHash -> IO ()
-updateHashSnd_ dbConn connAlias internalId newSndHash =
+updateHashSnd_ :: DB.Connection -> ConnAlias -> InternalSndId -> MsgHash -> IO ()
+updateHashSnd_ dbConn connAlias internalSndId newSndHash =
   DB.executeNamed
     dbConn
+    -- last_internal_snd_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections
       SET last_snd_msg_hash = :last_snd_msg_hash
       WHERE conn_alias = :conn_alias
-        AND last_internal_msg_id = :internal_id;
+        AND last_internal_snd_msg_id = :last_internal_snd_msg_id;
     |]
     [ ":last_snd_msg_hash" := newSndHash,
       ":conn_alias" := connAlias,
-      ":internal_id" := internalId
+      ":last_internal_snd_msg_id" := internalSndId
     ]
