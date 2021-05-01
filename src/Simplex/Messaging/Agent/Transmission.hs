@@ -13,7 +13,7 @@
 
 module Simplex.Messaging.Agent.Transmission where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -90,11 +90,11 @@ data ACommand (p :: AParty) where
   SEND :: MsgBody -> ACommand Client
   SENT :: AgentMsgId -> ACommand Agent
   MSG ::
-    { m_recipient :: (AgentMsgId, UTCTime),
-      m_broker :: (MsgId, UTCTime),
-      m_sender :: (AgentMsgId, UTCTime),
-      m_status :: MsgStatus,
-      m_body :: MsgBody
+    { recipientMeta :: (AgentMsgId, UTCTime),
+      brokerMeta :: (MsgId, UTCTime),
+      senderMeta :: (AgentMsgId, UTCTime),
+      msgIntegrity :: MsgIntegrity,
+      msgBody :: MsgBody
     } ->
     ACommand Agent
   -- ACK :: AgentMsgId -> ACommand Client
@@ -142,7 +142,9 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
       SMPMessage
         <$> A.decimal <* A.space
         <*> tsISO8601P <* A.space
-        <*> base64P <* A.endOfLine
+        -- TODO previous message hash should become mandatory when we support HELLO and REPLY
+        -- (for HELLO it would be the hash of SMPConfirmation)
+        <*> (base64P <|> pure "") <* A.endOfLine
         <*> agentMessageP
 
 serializeSMPMessage :: SMPMessage -> ByteString
@@ -175,17 +177,11 @@ smpQueueInfoP =
   "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> C.pubKeyP)
 
 smpServerP :: Parser SMPServer
-smpServerP = SMPServer <$> server <*> port <*> kHash
+smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
-    port = fromChar ':' $ show <$> (A.decimal :: Parser Int)
-    kHash = fromChar '#' C.keyHashP
-    fromChar :: Char -> Parser a -> Parser (Maybe a)
-    fromChar ch parser = do
-      c <- A.peekChar
-      if c == Just ch
-        then A.char ch *> (Just <$> parser)
-        else pure Nothing
+    port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
+    kHash = A.char '#' *> C.keyHashP
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ AGENT A_MESSAGE
@@ -241,10 +237,10 @@ type AgentMsgId = Int64
 
 type SenderTimestamp = UTCTime
 
-data MsgStatus = MsgOk | MsgError MsgErrorType
+data MsgIntegrity = MsgOk | MsgError MsgErrorType
   deriving (Eq, Show)
 
-data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash
+data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash | MsgDuplicate
   deriving (Eq, Show)
 
 -- | error type used in errors sent to agent clients
@@ -319,22 +315,23 @@ commandP =
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
     message = do
-      m_status <- status <* A.space
-      m_recipient <- "R=" *> partyMeta A.decimal
-      m_broker <- "B=" *> partyMeta base64P
-      m_sender <- "S=" *> partyMeta A.decimal
-      m_body <- A.takeByteString
-      return $ ACmd SAgent MSG {m_recipient, m_broker, m_sender, m_status, m_body}
+      msgIntegrity <- integrity <* A.space
+      recipientMeta <- "R=" *> partyMeta A.decimal
+      brokerMeta <- "B=" *> partyMeta base64P
+      senderMeta <- "S=" *> partyMeta A.decimal
+      msgBody <- A.takeByteString
+      return $ ACmd SAgent MSG {recipientMeta, brokerMeta, senderMeta, msgIntegrity, msgBody}
     replyMode =
       " NO_REPLY" $> ReplyOff
         <|> A.space *> (ReplyVia <$> smpServerP)
         <|> pure ReplyOn
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
-    status = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
+    integrity = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
     msgErrorType =
       "ID " *> (MsgBadId <$> A.decimal)
         <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
         <|> "HASH" $> MsgBadHash
+        <|> "DUPLICATE" $> MsgDuplicate
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
@@ -350,14 +347,14 @@ serializeCommand = \case
   END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   SENT mId -> "SENT " <> bshow mId
-  MSG {m_recipient = (rmId, rTs), m_broker = (bmId, bTs), m_sender = (smId, sTs), m_status, m_body} ->
+  MSG {recipientMeta = (rmId, rTs), brokerMeta = (bmId, bTs), senderMeta = (smId, sTs), msgIntegrity, msgBody} ->
     B.unwords
       [ "MSG",
-        msgStatus m_status,
+        serializeMsgIntegrity msgIntegrity,
         "R=" <> bshow rmId <> "," <> showTs rTs,
         "B=" <> encode bmId <> "," <> showTs bTs,
         "S=" <> bshow smId <> "," <> showTs sTs,
-        serializeMsg m_body
+        serializeMsg msgBody
       ]
   OFF -> "OFF"
   DEL -> "DEL"
@@ -372,15 +369,16 @@ serializeCommand = \case
       ReplyOn -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
-    msgStatus :: MsgStatus -> ByteString
-    msgStatus = \case
+    serializeMsgIntegrity :: MsgIntegrity -> ByteString
+    serializeMsgIntegrity = \case
       MsgOk -> "OK"
       MsgError e ->
-        "ERR" <> case e of
+        "ERR " <> case e of
           MsgSkipped fromMsgId toMsgId ->
             B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
           MsgBadId aMsgId -> "ID " <> bshow aMsgId
           MsgBadHash -> "HASH"
+          MsgDuplicate -> "DUPLICATE"
 
 agentErrorTypeP :: Parser AgentErrorType
 agentErrorTypeP =
@@ -443,7 +441,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
     cmdWithMsgBody = \case
       SEND body -> SEND <$$> getMsgBody body
-      MSG agentMsgId srvTS agentTS status body -> MSG agentMsgId srvTS agentTS status <$$> getMsgBody body
+      MSG agentMsgId srvTS agentTS integrity body -> MSG agentMsgId srvTS agentTS integrity <$$> getMsgBody body
       cmd -> return $ Right cmd
 
     -- TODO refactor with server

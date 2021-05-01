@@ -80,7 +80,7 @@ h #:# err = tryGet `shouldReturn` ()
         _ -> return ()
 
 pattern Msg :: MsgBody -> ACommand 'Agent
-pattern Msg m_body <- MSG {m_body}
+pattern Msg msgBody <- MSG {msgBody, msgIntegrity = MsgOk}
 
 testDuplexConnection :: Handle -> Handle -> IO ()
 testDuplexConnection alice bob = do
@@ -88,13 +88,13 @@ testDuplexConnection alice bob = do
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
   alice <# ("", "bob", CON)
-  alice #: ("2", "bob", "SEND :hello") =#> \case ("2", "bob", SENT _) -> True; _ -> False
-  alice #: ("3", "bob", "SEND :how are you?") =#> \case ("3", "bob", SENT _) -> True; _ -> False
+  alice #: ("2", "bob", "SEND :hello") =#> \case ("2", "bob", SENT 1) -> True; _ -> False
+  alice #: ("3", "bob", "SEND :how are you?") =#> \case ("3", "bob", SENT 2) -> True; _ -> False
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
-  bob #: ("14", "alice", "SEND 9\nhello too") =#> \case ("14", "alice", SENT _) -> True; _ -> False
+  bob #: ("14", "alice", "SEND 9\nhello too") =#> \case ("14", "alice", SENT 3) -> True; _ -> False
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
-  bob #: ("15", "alice", "SEND 9\nmessage 1") =#> \case ("15", "alice", SENT _) -> True; _ -> False
+  bob #: ("15", "alice", "SEND 9\nmessage 1") =#> \case ("15", "alice", SENT 4) -> True; _ -> False
   alice <#= \case ("", "bob", Msg "message 1") -> True; _ -> False
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", ERR (SMP AUTH))

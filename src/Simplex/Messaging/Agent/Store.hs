@@ -43,8 +43,12 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
-  createRcvMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> m InternalId
-  createSndMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
+  updateRcvIds :: s -> RcvQueue -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+  createRcvMsg :: s -> RcvQueue -> RcvMsgData -> m ()
+
+  updateSndIds :: s -> SndQueue -> m (InternalId, InternalSndId, PrevSndMsgHash)
+  createSndMsg :: s -> SndQueue -> SndMsgData -> m ()
+
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
 -- * Queue types
@@ -104,6 +108,11 @@ data SConnType :: ConnType -> Type where
   SCSnd :: SConnType CSnd
   SCDuplex :: SConnType CDuplex
 
+connType :: SConnType c -> ConnType
+connType SCRcv = CRcv
+connType SCSnd = CSnd
+connType SCDuplex = CDuplex
+
 deriving instance Eq (SConnType d)
 
 deriving instance Show (SConnType d)
@@ -124,6 +133,40 @@ instance Eq SomeConn where
     _ -> False
 
 deriving instance Show SomeConn
+
+-- * Message integrity validation types
+
+type MsgHash = ByteString
+
+-- | Corresponds to `last_external_snd_msg_id` in `connections` table
+type PrevExternalSndId = Int64
+
+-- | Corresponds to `last_rcv_msg_hash` in `connections` table
+type PrevRcvMsgHash = MsgHash
+
+-- | Corresponds to `last_snd_msg_hash` in `connections` table
+type PrevSndMsgHash = MsgHash
+
+-- * Message data containers - used on Msg creation to reduce number of parameters
+
+data RcvMsgData = RcvMsgData
+  { internalId :: InternalId,
+    internalRcvId :: InternalRcvId,
+    internalTs :: InternalTs,
+    senderMeta :: (ExternalSndId, ExternalSndTs),
+    brokerMeta :: (BrokerId, BrokerTs),
+    msgBody :: MsgBody,
+    msgHash :: MsgHash,
+    msgIntegrity :: MsgIntegrity
+  }
+
+data SndMsgData = SndMsgData
+  { internalId :: InternalId,
+    internalSndId :: InternalSndId,
+    internalTs :: InternalTs,
+    msgBody :: MsgBody,
+    msgHash :: MsgHash
+  }
 
 -- * Message types
 

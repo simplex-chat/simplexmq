@@ -36,6 +36,7 @@ module Simplex.Messaging.Crypto
     encodePubKey,
     serializeKeyHash,
     getKeyHash,
+    sha256Hash,
     privKeyP,
     pubKeyP,
     binaryPubKeyP,
@@ -225,6 +226,9 @@ keyHashP = do
 
 getKeyHash :: ByteString -> KeyHash
 getKeyHash = KeyHash . hash
+
+sha256Hash :: ByteString -> ByteString
+sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
 
 serializeHeader :: Header -> ByteString
 serializeHeader Header {aesKey, ivBytes, authTag, msgSize} =
