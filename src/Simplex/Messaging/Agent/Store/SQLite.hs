@@ -1,5 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -21,24 +23,26 @@ where
 import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Data.Bifunctor (first)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (isPrefixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
-import Database.SQLite.Simple as DB
+import Database.SQLite.Simple (FromRow, NamedParam (..), SQLData (..), SQLError, field)
+import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
-import Network.Socket (HostName, ServiceName)
+import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Transmission
-import Simplex.Messaging.Protocol (MsgBody)
+import Simplex.Messaging.Parsers (parseAll)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (liftIOEither)
+import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath (takeDirectory)
 import Text.Read (readMaybe)
@@ -75,76 +79,170 @@ connectSQLiteStore dbFilePath = do
   liftIO $ DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
   return SQLiteStore {dbFilePath, dbConn}
 
+checkDuplicate :: (MonadUnliftIO m, MonadError StoreError m) => IO () -> m ()
+checkDuplicate action = liftIOEither $ first handleError <$> E.try action
+  where
+    handleError :: SQLError -> StoreError
+    handleError e
+      | DB.sqlError e == DB.ErrorConstraint = SEConnDuplicate
+      | otherwise = SEInternal $ bshow e
+
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
-  createRcvConn SQLiteStore {dbConn} rcvQueue =
-    liftIO $
-      createRcvQueueAndConn dbConn rcvQueue
+  createRcvConn SQLiteStore {dbConn} q@RcvQueue {server} =
+    checkDuplicate $
+      DB.withTransaction dbConn $ do
+        upsertServer_ dbConn server
+        insertRcvQueue_ dbConn q
+        insertRcvConnection_ dbConn q
 
   createSndConn :: SQLiteStore -> SndQueue -> m ()
-  createSndConn SQLiteStore {dbConn} sndQueue =
-    liftIO $
-      createSndQueueAndConn dbConn sndQueue
+  createSndConn SQLiteStore {dbConn} q@SndQueue {server} =
+    checkDuplicate $
+      DB.withTransaction dbConn $ do
+        upsertServer_ dbConn server
+        insertSndQueue_ dbConn q
+        insertSndConnection_ dbConn q
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
-  getConn SQLiteStore {dbConn} connAlias = do
-    queues <-
-      liftIO $
-        retrieveConnQueues dbConn connAlias
-    case queues of
-      (Just rcvQ, Just sndQ) -> return $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
-      (Just rcvQ, Nothing) -> return $ SomeConn SCRcv (RcvConnection connAlias rcvQ)
-      (Nothing, Just sndQ) -> return $ SomeConn SCSnd (SndConnection connAlias sndQ)
-      _ -> throwError SEBadConn
+  getConn SQLiteStore {dbConn} connAlias =
+    liftIOEither . DB.withTransaction dbConn $
+      getConn_ dbConn connAlias
 
   getAllConnAliases :: SQLiteStore -> m [ConnAlias]
   getAllConnAliases SQLiteStore {dbConn} =
-    liftIO $
-      retrieveAllConnAliases dbConn
+    liftIO $ do
+      r <- DB.query_ dbConn "SELECT conn_alias FROM connections;" :: IO [[ConnAlias]]
+      return (concat r)
 
   getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m RcvQueue
   getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId = do
-    rcvQueue <-
+    r <-
       liftIO $
-        retrieveRcvQueue dbConn host port rcvId
-    case rcvQueue of
-      Just rcvQ -> return rcvQ
-      _ -> throwError SENotFound
+        DB.queryNamed
+          dbConn
+          [sql|
+            SELECT
+              s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
+              q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
+            FROM rcv_queues q
+            INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+            WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
+          |]
+          [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
+    case r of
+      [(keyHash, hst, prt, rId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] ->
+        let srv = SMPServer hst (deserializePort_ prt) keyHash
+         in pure $ RcvQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
+      _ -> throwError SEConnNotFound
 
   deleteConn :: SQLiteStore -> ConnAlias -> m ()
   deleteConn SQLiteStore {dbConn} connAlias =
     liftIO $
-      deleteConnCascade dbConn connAlias
+      DB.executeNamed
+        dbConn
+        "DELETE FROM connections WHERE conn_alias = :conn_alias;"
+        [":conn_alias" := connAlias]
 
   upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SndQueue -> m ()
-  upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sndQueue =
-    liftIOEither $
-      updateRcvConnWithSndQueue dbConn connAlias sndQueue
+  upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sq@SndQueue {server} =
+    liftIOEither . DB.withTransaction dbConn $
+      getConn_ dbConn connAlias >>= \case
+        Right (SomeConn SCRcv (RcvConnection _ _)) -> do
+          upsertServer_ dbConn server
+          insertSndQueue_ dbConn sq
+          updateConnWithSndQueue_ dbConn connAlias sq
+          pure $ Right ()
+        Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+        _ -> pure $ Left SEConnNotFound
 
   upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> RcvQueue -> m ()
-  upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rcvQueue =
-    liftIOEither $
-      updateSndConnWithRcvQueue dbConn connAlias rcvQueue
+  upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rq@RcvQueue {server} =
+    liftIOEither . DB.withTransaction dbConn $
+      getConn_ dbConn connAlias >>= \case
+        Right (SomeConn SCSnd (SndConnection _ _)) -> do
+          upsertServer_ dbConn server
+          insertRcvQueue_ dbConn rq
+          updateConnWithRcvQueue_ dbConn connAlias rq
+          pure $ Right ()
+        Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+        _ -> pure $ Left SEConnNotFound
 
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueStatus SQLiteStore {dbConn} rcvQueue status =
+  setRcvQueueStatus SQLiteStore {dbConn} RcvQueue {rcvId, server = SMPServer {host, port}} status =
+    -- ? throw error if queue doesn't exist?
     liftIO $
-      updateRcvQueueStatus dbConn rcvQueue status
+      DB.executeNamed
+        dbConn
+        [sql|
+          UPDATE rcv_queues
+          SET status = :status
+          WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
+        |]
+        [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
+
+  setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
+  setRcvQueueActive SQLiteStore {dbConn} RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
+    -- ? throw error if queue doesn't exist?
+    liftIO $
+      DB.executeNamed
+        dbConn
+        [sql|
+          UPDATE rcv_queues
+          SET verify_key = :verify_key, status = :status
+          WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
+        |]
+        [ ":verify_key" := Just verifyKey,
+          ":status" := Active,
+          ":host" := host,
+          ":port" := serializePort_ port,
+          ":rcv_id" := rcvId
+        ]
 
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
-  setSndQueueStatus SQLiteStore {dbConn} sndQueue status =
+  setSndQueueStatus SQLiteStore {dbConn} SndQueue {sndId, server = SMPServer {host, port}} status =
+    -- ? throw error if queue doesn't exist?
     liftIO $
-      updateSndQueueStatus dbConn sndQueue status
+      DB.executeNamed
+        dbConn
+        [sql|
+          UPDATE snd_queues
+          SET status = :status
+          WHERE host = :host AND port = :port AND snd_id = :snd_id;
+        |]
+        [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
-  createRcvMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> m InternalId
-  createRcvMsg SQLiteStore {dbConn} connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) =
-    liftIOEither $
-      insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs)
+  updateRcvIds :: SQLiteStore -> RcvQueue -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+  updateRcvIds SQLiteStore {dbConn} RcvQueue {connAlias} =
+    liftIO . DB.withTransaction dbConn $ do
+      (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ dbConn connAlias
+      let internalId = InternalId $ unId lastInternalId + 1
+          internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
+      updateLastIdsRcv_ dbConn connAlias internalId internalRcvId
+      pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
 
-  createSndMsg :: SQLiteStore -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
-  createSndMsg SQLiteStore {dbConn} connAlias msgBody internalTs =
-    liftIOEither $
-      insertSndMsg dbConn connAlias msgBody internalTs
+  createRcvMsg :: SQLiteStore -> RcvQueue -> RcvMsgData -> m ()
+  createRcvMsg SQLiteStore {dbConn} RcvQueue {connAlias} rcvMsgData =
+    liftIO . DB.withTransaction dbConn $ do
+      insertRcvMsgBase_ dbConn connAlias rcvMsgData
+      insertRcvMsgDetails_ dbConn connAlias rcvMsgData
+      updateHashRcv_ dbConn connAlias rcvMsgData
+
+  updateSndIds :: SQLiteStore -> SndQueue -> m (InternalId, InternalSndId, PrevSndMsgHash)
+  updateSndIds SQLiteStore {dbConn} SndQueue {connAlias} =
+    liftIO . DB.withTransaction dbConn $ do
+      (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ dbConn connAlias
+      let internalId = InternalId $ unId lastInternalId + 1
+          internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
+      updateLastIdsSnd_ dbConn connAlias internalId internalSndId
+      pure (internalId, internalSndId, prevSndHash)
+
+  createSndMsg :: SQLiteStore -> SndQueue -> SndMsgData -> m ()
+  createSndMsg SQLiteStore {dbConn} SndQueue {connAlias} sndMsgData =
+    liftIO . DB.withTransaction dbConn $ do
+      insertSndMsgBase_ dbConn connAlias sndMsgData
+      insertSndMsgDetails_ dbConn connAlias sndMsgData
+      updateHashSnd_ dbConn connAlias sndMsgData
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
@@ -178,6 +276,16 @@ instance FromField InternalId where fromField x = InternalId <$> fromField x
 instance ToField RcvMsgStatus where toField = toField . show
 
 instance ToField SndMsgStatus where toField = toField . show
+
+instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
+
+instance FromField MsgIntegrity where
+  fromField = \case
+    f@(Field (SQLBlob b) _) ->
+      case parseAll msgIntegrityP b of
+        Right k -> Ok k
+        Left e -> returnError ConversionFailed f ("can't parse msg integrity field: " ++ e)
+    f -> returnError ConversionFailed f "expecting SQLBlob column type"
 
 fromFieldToReadable_ :: forall a. (Read a, E.Typeable a) => Field -> Ok a
 fromFieldToReadable_ = \case
@@ -217,13 +325,6 @@ upsertServer_ dbConn SMPServer {host, port, keyHash} = do
 
 -- * createRcvConn helpers
 
-createRcvQueueAndConn :: DB.Connection -> RcvQueue -> IO ()
-createRcvQueueAndConn dbConn rcvQueue =
-  DB.withTransaction dbConn $ do
-    upsertServer_ dbConn (server (rcvQueue :: RcvQueue))
-    insertRcvQueue_ dbConn rcvQueue
-    insertRcvConnection_ dbConn rcvQueue
-
 insertRcvQueue_ :: DB.Connection -> RcvQueue -> IO ()
 insertRcvQueue_ dbConn RcvQueue {..} = do
   let port_ = serializePort_ $ port server
@@ -255,21 +356,15 @@ insertRcvConnection_ dbConn RcvQueue {server, rcvId, connAlias} = do
     [sql|
       INSERT INTO connections
         ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
-          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
+          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
+          last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
       VALUES
         (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL,
-                            0,                        0,                        0);
+          0, 0, 0, 0, x'', x'');
     |]
     [":conn_alias" := connAlias, ":rcv_host" := host server, ":rcv_port" := port_, ":rcv_id" := rcvId]
 
 -- * createSndConn helpers
-
-createSndQueueAndConn :: DB.Connection -> SndQueue -> IO ()
-createSndQueueAndConn dbConn sndQueue =
-  DB.withTransaction dbConn $ do
-    upsertServer_ dbConn (server (sndQueue :: SndQueue))
-    insertSndQueue_ dbConn sndQueue
-    insertSndConnection_ dbConn sndQueue
 
 insertSndQueue_ :: DB.Connection -> SndQueue -> IO ()
 insertSndQueue_ dbConn SndQueue {..} = do
@@ -300,28 +395,25 @@ insertSndConnection_ dbConn SndQueue {server, sndId, connAlias} = do
     [sql|
       INSERT INTO connections
         ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
-          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id)
+          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
+          last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
       VALUES
         (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id,
-                            0,                        0,                        0);
+          0, 0, 0, 0, x'', x'');
     |]
     [":conn_alias" := connAlias, ":snd_host" := host server, ":snd_port" := port_, ":snd_id" := sndId]
 
 -- * getConn helpers
 
-retrieveConnQueues :: DB.Connection -> ConnAlias -> IO (Maybe RcvQueue, Maybe SndQueue)
-retrieveConnQueues dbConn connAlias =
-  DB.withTransaction -- Avoid inconsistent state between queue reads
-    dbConn
-    $ retrieveConnQueues_ dbConn connAlias
-
--- Separate transactionless version of retrieveConnQueues to be reused in other functions that already wrap
--- multiple statements in transaction - otherwise they'd be attempting to start a transaction within a transaction
-retrieveConnQueues_ :: DB.Connection -> ConnAlias -> IO (Maybe RcvQueue, Maybe SndQueue)
-retrieveConnQueues_ dbConn connAlias = do
-  rcvQ <- retrieveRcvQueueByConnAlias_ dbConn connAlias
-  sndQ <- retrieveSndQueueByConnAlias_ dbConn connAlias
-  return (rcvQ, sndQ)
+getConn_ :: DB.Connection -> ConnAlias -> IO (Either StoreError SomeConn)
+getConn_ dbConn connAlias = do
+  rQ <- retrieveRcvQueueByConnAlias_ dbConn connAlias
+  sQ <- retrieveSndQueueByConnAlias_ dbConn connAlias
+  pure $ case (rQ, sQ) of
+    (Just rcvQ, Just sndQ) -> Right $ SomeConn SCDuplex (DuplexConnection connAlias rcvQ sndQ)
+    (Just rcvQ, Nothing) -> Right $ SomeConn SCRcv (RcvConnection connAlias rcvQ)
+    (Nothing, Just sndQ) -> Right $ SomeConn SCSnd (SndConnection connAlias sndQ)
+    _ -> Left SEConnNotFound
 
 retrieveRcvQueueByConnAlias_ :: DB.Connection -> ConnAlias -> IO (Maybe RcvQueue)
 retrieveRcvQueueByConnAlias_ dbConn connAlias = do
@@ -363,59 +455,7 @@ retrieveSndQueueByConnAlias_ dbConn connAlias = do
       return . Just $ SndQueue srv sndId cAlias sndPrivateKey encryptKey signKey status
     _ -> return Nothing
 
--- * getAllConnAliases helper
-
-retrieveAllConnAliases :: DB.Connection -> IO [ConnAlias]
-retrieveAllConnAliases dbConn = do
-  r <- DB.query_ dbConn "SELECT conn_alias FROM connections;" :: IO [[ConnAlias]]
-  return (concat r)
-
--- * getRcvQueue helper
-
-retrieveRcvQueue :: DB.Connection -> HostName -> Maybe ServiceName -> SMP.RecipientId -> IO (Maybe RcvQueue)
-retrieveRcvQueue dbConn host port rcvId = do
-  r <-
-    DB.queryNamed
-      dbConn
-      [sql|
-        SELECT
-          s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
-          q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
-        FROM rcv_queues q
-        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
-      |]
-      [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
-  case r of
-    [(keyHash, hst, prt, rId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
-      let srv = SMPServer hst (deserializePort_ prt) keyHash
-      return . Just $ RcvQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
-    _ -> return Nothing
-
--- * deleteConn helper
-
-deleteConnCascade :: DB.Connection -> ConnAlias -> IO ()
-deleteConnCascade dbConn connAlias =
-  DB.executeNamed
-    dbConn
-    "DELETE FROM connections WHERE conn_alias = :conn_alias;"
-    [":conn_alias" := connAlias]
-
 -- * upgradeRcvConnToDuplex helpers
-
-updateRcvConnWithSndQueue :: DB.Connection -> ConnAlias -> SndQueue -> IO (Either StoreError ())
-updateRcvConnWithSndQueue dbConn connAlias sndQueue =
-  DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (Just _rcvQ, Nothing) -> do
-        upsertServer_ dbConn (server (sndQueue :: SndQueue))
-        insertSndQueue_ dbConn sndQueue
-        updateConnWithSndQueue_ dbConn connAlias sndQueue
-        return $ Right ()
-      (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
-      (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
-      _ -> return $ Left SEBadConn
 
 updateConnWithSndQueue_ :: DB.Connection -> ConnAlias -> SndQueue -> IO ()
 updateConnWithSndQueue_ dbConn connAlias SndQueue {server, sndId} = do
@@ -431,20 +471,6 @@ updateConnWithSndQueue_ dbConn connAlias SndQueue {server, sndId} = do
 
 -- * upgradeSndConnToDuplex helpers
 
-updateSndConnWithRcvQueue :: DB.Connection -> ConnAlias -> RcvQueue -> IO (Either StoreError ())
-updateSndConnWithRcvQueue dbConn connAlias rcvQueue =
-  DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (Nothing, Just _sndQ) -> do
-        upsertServer_ dbConn (server (rcvQueue :: RcvQueue))
-        insertRcvQueue_ dbConn rcvQueue
-        updateConnWithRcvQueue_ dbConn connAlias rcvQueue
-        return $ Right ()
-      (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
-      (Just _rcvQ, Just _sndQ) -> return $ Left (SEBadConnType CDuplex)
-      _ -> return $ Left SEBadConn
-
 updateConnWithRcvQueue_ :: DB.Connection -> ConnAlias -> RcvQueue -> IO ()
 updateConnWithRcvQueue_ dbConn connAlias RcvQueue {server, rcvId} = do
   let port_ = serializePort_ $ port server
@@ -457,74 +483,40 @@ updateConnWithRcvQueue_ dbConn connAlias RcvQueue {server, rcvId} = do
     |]
     [":rcv_host" := host server, ":rcv_port" := port_, ":rcv_id" := rcvId, ":conn_alias" := connAlias]
 
--- * setRcvQueueStatus helper
+-- * updateRcvIds helpers
 
--- ? throw error if queue doesn't exist?
-updateRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
-updateRcvQueueStatus dbConn RcvQueue {rcvId, server = SMPServer {host, port}} status =
-  DB.executeNamed
-    dbConn
-    [sql|
-      UPDATE rcv_queues
-      SET status = :status
-      WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
-    |]
-    [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
-
--- * setSndQueueStatus helper
-
--- ? throw error if queue doesn't exist?
-updateSndQueueStatus :: DB.Connection -> SndQueue -> QueueStatus -> IO ()
-updateSndQueueStatus dbConn SndQueue {sndId, server = SMPServer {host, port}} status =
-  DB.executeNamed
-    dbConn
-    [sql|
-      UPDATE snd_queues
-      SET status = :status
-      WHERE host = :host AND port = :port AND snd_id = :snd_id;
-    |]
-    [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
-
--- * createRcvMsg helpers
-
-insertRcvMsg ::
-  DB.Connection ->
-  ConnAlias ->
-  MsgBody ->
-  InternalTs ->
-  (ExternalSndId, ExternalSndTs) ->
-  (BrokerId, BrokerTs) ->
-  IO (Either StoreError InternalId)
-insertRcvMsg dbConn connAlias msgBody internalTs (externalSndId, externalSndTs) (brokerId, brokerTs) =
-  DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (Just _rcvQ, _) -> do
-        (lastInternalId, lastInternalRcvId) <- retrieveLastInternalIdsRcv_ dbConn connAlias
-        let internalId = InternalId $ unId lastInternalId + 1
-        let internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
-        insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody
-        insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs)
-        updateLastInternalIdsRcv_ dbConn connAlias internalId internalRcvId
-        return $ Right internalId
-      (Nothing, Just _sndQ) -> return $ Left (SEBadConnType CSnd)
-      _ -> return $ Left SEBadConn
-
-retrieveLastInternalIdsRcv_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalRcvId)
-retrieveLastInternalIdsRcv_ dbConn connAlias = do
-  [(lastInternalId, lastInternalRcvId)] <-
+retrieveLastIdsAndHashRcv_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+retrieveLastIdsAndHashRcv_ dbConn connAlias = do
+  [(lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)] <-
     DB.queryNamed
       dbConn
       [sql|
-        SELECT last_internal_msg_id, last_internal_rcv_msg_id
+        SELECT last_internal_msg_id, last_internal_rcv_msg_id, last_external_snd_msg_id, last_rcv_msg_hash
         FROM connections
         WHERE conn_alias = :conn_alias;
       |]
       [":conn_alias" := connAlias]
-  return (lastInternalId, lastInternalRcvId)
+  return (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)
 
-insertRcvMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalTs -> InternalRcvId -> MsgBody -> IO ()
-insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody = do
+updateLastIdsRcv_ :: DB.Connection -> ConnAlias -> InternalId -> InternalRcvId -> IO ()
+updateLastIdsRcv_ dbConn connAlias newInternalId newInternalRcvId =
+  DB.executeNamed
+    dbConn
+    [sql|
+      UPDATE connections
+      SET last_internal_msg_id = :last_internal_msg_id,
+          last_internal_rcv_msg_id = :last_internal_rcv_msg_id
+      WHERE conn_alias = :conn_alias;
+    |]
+    [ ":last_internal_msg_id" := newInternalId,
+      ":last_internal_rcv_msg_id" := newInternalRcvId,
+      ":conn_alias" := connAlias
+    ]
+
+-- * createRcvMsg helpers
+
+insertRcvMsgBase_ :: DB.Connection -> ConnAlias -> RcvMsgData -> IO ()
+insertRcvMsgBase_ dbConn connAlias RcvMsgData {..} = do
   DB.executeNamed
     dbConn
     [sql|
@@ -540,82 +532,85 @@ insertRcvMsgBase_ dbConn connAlias internalId internalTs internalRcvId msgBody =
       ":body" := decodeUtf8 msgBody
     ]
 
-insertRcvMsgDetails_ ::
-  DB.Connection ->
-  ConnAlias ->
-  InternalRcvId ->
-  InternalId ->
-  (ExternalSndId, ExternalSndTs) ->
-  (BrokerId, BrokerTs) ->
-  IO ()
-insertRcvMsgDetails_ dbConn connAlias internalRcvId internalId (externalSndId, externalSndTs) (brokerId, brokerTs) =
+insertRcvMsgDetails_ :: DB.Connection -> ConnAlias -> RcvMsgData -> IO ()
+insertRcvMsgDetails_ dbConn connAlias RcvMsgData {..} =
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO rcv_messages
         ( conn_alias, internal_rcv_id, internal_id, external_snd_id, external_snd_ts,
-          broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts)
+          broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts,
+          internal_hash, external_prev_snd_hash, integrity)
       VALUES
         (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,:external_snd_ts,
-         :broker_id,:broker_ts,:rcv_status,           NULL,          NULL);
+         :broker_id,:broker_ts,:rcv_status,           NULL,          NULL,
+         :internal_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_alias" := connAlias,
       ":internal_rcv_id" := internalRcvId,
       ":internal_id" := internalId,
-      ":external_snd_id" := externalSndId,
-      ":external_snd_ts" := externalSndTs,
-      ":broker_id" := brokerId,
-      ":broker_ts" := brokerTs,
-      ":rcv_status" := Received
+      ":external_snd_id" := fst senderMeta,
+      ":external_snd_ts" := snd senderMeta,
+      ":broker_id" := fst brokerMeta,
+      ":broker_ts" := snd brokerMeta,
+      ":rcv_status" := Received,
+      ":internal_hash" := internalHash,
+      ":external_prev_snd_hash" := externalPrevSndHash,
+      ":integrity" := msgIntegrity
     ]
 
-updateLastInternalIdsRcv_ :: DB.Connection -> ConnAlias -> InternalId -> InternalRcvId -> IO ()
-updateLastInternalIdsRcv_ dbConn connAlias newInternalId newInternalRcvId =
+updateHashRcv_ :: DB.Connection -> ConnAlias -> RcvMsgData -> IO ()
+updateHashRcv_ dbConn connAlias RcvMsgData {..} =
+  DB.executeNamed
+    dbConn
+    -- last_internal_rcv_msg_id equality check prevents race condition in case next id was reserved
+    [sql|
+      UPDATE connections
+      SET last_external_snd_msg_id = :last_external_snd_msg_id,
+          last_rcv_msg_hash = :last_rcv_msg_hash
+      WHERE conn_alias = :conn_alias
+        AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
+    |]
+    [ ":last_external_snd_msg_id" := fst senderMeta,
+      ":last_rcv_msg_hash" := internalHash,
+      ":conn_alias" := connAlias,
+      ":last_internal_rcv_msg_id" := internalRcvId
+    ]
+
+-- * updateSndIds helpers
+
+retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalSndId, PrevSndMsgHash)
+retrieveLastIdsAndHashSnd_ dbConn connAlias = do
+  [(lastInternalId, lastInternalSndId, lastSndHash)] <-
+    DB.queryNamed
+      dbConn
+      [sql|
+        SELECT last_internal_msg_id, last_internal_snd_msg_id, last_snd_msg_hash
+        FROM connections
+        WHERE conn_alias = :conn_alias;
+      |]
+      [":conn_alias" := connAlias]
+  return (lastInternalId, lastInternalSndId, lastSndHash)
+
+updateLastIdsSnd_ :: DB.Connection -> ConnAlias -> InternalId -> InternalSndId -> IO ()
+updateLastIdsSnd_ dbConn connAlias newInternalId newInternalSndId =
   DB.executeNamed
     dbConn
     [sql|
       UPDATE connections
-      SET last_internal_msg_id = :last_internal_msg_id, last_internal_rcv_msg_id = :last_internal_rcv_msg_id
+      SET last_internal_msg_id = :last_internal_msg_id,
+          last_internal_snd_msg_id = :last_internal_snd_msg_id
       WHERE conn_alias = :conn_alias;
     |]
     [ ":last_internal_msg_id" := newInternalId,
-      ":last_internal_rcv_msg_id" := newInternalRcvId,
+      ":last_internal_snd_msg_id" := newInternalSndId,
       ":conn_alias" := connAlias
     ]
 
 -- * createSndMsg helpers
 
-insertSndMsg :: DB.Connection -> ConnAlias -> MsgBody -> InternalTs -> IO (Either StoreError InternalId)
-insertSndMsg dbConn connAlias msgBody internalTs =
-  DB.withTransaction dbConn $ do
-    queues <- retrieveConnQueues_ dbConn connAlias
-    case queues of
-      (_, Just _sndQ) -> do
-        (lastInternalId, lastInternalSndId) <- retrieveLastInternalIdsSnd_ dbConn connAlias
-        let internalId = InternalId $ unId lastInternalId + 1
-        let internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-        insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody
-        insertSndMsgDetails_ dbConn connAlias internalSndId internalId
-        updateLastInternalIdsSnd_ dbConn connAlias internalId internalSndId
-        return $ Right internalId
-      (Just _rcvQ, Nothing) -> return $ Left (SEBadConnType CRcv)
-      _ -> return $ Left SEBadConn
-
-retrieveLastInternalIdsSnd_ :: DB.Connection -> ConnAlias -> IO (InternalId, InternalSndId)
-retrieveLastInternalIdsSnd_ dbConn connAlias = do
-  [(lastInternalId, lastInternalSndId)] <-
-    DB.queryNamed
-      dbConn
-      [sql|
-        SELECT last_internal_msg_id, last_internal_snd_msg_id
-        FROM connections
-        WHERE conn_alias = :conn_alias;
-      |]
-      [":conn_alias" := connAlias]
-  return (lastInternalId, lastInternalSndId)
-
-insertSndMsgBase_ :: DB.Connection -> ConnAlias -> InternalId -> InternalTs -> InternalSndId -> MsgBody -> IO ()
-insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody = do
+insertSndMsgBase_ :: DB.Connection -> ConnAlias -> SndMsgData -> IO ()
+insertSndMsgBase_ dbConn connAlias SndMsgData {..} = do
   DB.executeNamed
     dbConn
     [sql|
@@ -631,32 +626,35 @@ insertSndMsgBase_ dbConn connAlias internalId internalTs internalSndId msgBody =
       ":body" := decodeUtf8 msgBody
     ]
 
-insertSndMsgDetails_ :: DB.Connection -> ConnAlias -> InternalSndId -> InternalId -> IO ()
-insertSndMsgDetails_ dbConn connAlias internalSndId internalId =
+insertSndMsgDetails_ :: DB.Connection -> ConnAlias -> SndMsgData -> IO ()
+insertSndMsgDetails_ dbConn connAlias SndMsgData {..} =
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts)
+        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts, internal_hash)
       VALUES
-        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL);
+        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL,:internal_hash);
     |]
     [ ":conn_alias" := connAlias,
       ":internal_snd_id" := internalSndId,
       ":internal_id" := internalId,
-      ":snd_status" := Created
+      ":snd_status" := Created,
+      ":internal_hash" := internalHash
     ]
 
-updateLastInternalIdsSnd_ :: DB.Connection -> ConnAlias -> InternalId -> InternalSndId -> IO ()
-updateLastInternalIdsSnd_ dbConn connAlias newInternalId newInternalSndId =
+updateHashSnd_ :: DB.Connection -> ConnAlias -> SndMsgData -> IO ()
+updateHashSnd_ dbConn connAlias SndMsgData {..} =
   DB.executeNamed
     dbConn
+    -- last_internal_snd_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections
-      SET last_internal_msg_id = :last_internal_msg_id, last_internal_snd_msg_id = :last_internal_snd_msg_id
-      WHERE conn_alias = :conn_alias;
+      SET last_snd_msg_hash = :last_snd_msg_hash
+      WHERE conn_alias = :conn_alias
+        AND last_internal_snd_msg_id = :last_internal_snd_msg_id;
     |]
-    [ ":last_internal_msg_id" := newInternalId,
-      ":last_internal_snd_msg_id" := newInternalSndId,
-      ":conn_alias" := connAlias
+    [ ":last_snd_msg_hash" := internalHash,
+      ":conn_alias" := connAlias,
+      ":last_internal_snd_msg_id" := internalSndId
     ]

@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -13,7 +14,7 @@ module Simplex.Messaging.Protocol where
 
 import Control.Applicative ((<|>))
 import Control.Monad
-import Control.Monad.IO.Class
+import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
@@ -24,12 +25,13 @@ import Data.Kind
 import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
+import GHC.Generics (Generic)
+import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
-import System.IO
-import Text.Read
+import Test.QuickCheck (Arbitrary (..))
 
 data Party = Broker | Recipient | Sender
   deriving (Show)
@@ -95,12 +97,12 @@ instance IsString CorrId where
   fromString = CorrId . fromString
 
 -- only used by Agent, kept here so its definition is close to respective public key
-type RecipientPrivateKey = C.PrivateKey
+type RecipientPrivateKey = C.SafePrivateKey
 
 type RecipientPublicKey = C.PublicKey
 
 -- only used by Agent, kept here so its definition is close to respective public key
-type SenderPrivateKey = C.PrivateKey
+type SenderPrivateKey = C.SafePrivateKey
 
 type SenderPublicKey = C.PublicKey
 
@@ -108,25 +110,36 @@ type MsgId = Encoded
 
 type MsgBody = ByteString
 
-data ErrorType = PROHIBITED | SYNTAX Int | SIZE | AUTH | INTERNAL | DUPLICATE deriving (Show, Eq)
+data ErrorType
+  = BLOCK
+  | CMD CommandError
+  | AUTH
+  | NO_MSG
+  | INTERNAL
+  | DUPLICATE_ -- TODO remove, not part of SMP protocol
+  deriving (Eq, Generic, Read, Show)
 
-errBadTransmission :: Int
-errBadTransmission = 1
+data CommandError
+  = PROHIBITED
+  | SYNTAX
+  | NO_AUTH
+  | HAS_AUTH
+  | NO_QUEUE
+  deriving (Eq, Generic, Read, Show)
 
-errBadSMPCommand :: Int
-errBadSMPCommand = 2
+instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
-errNoCredentials :: Int
-errNoCredentials = 3
+instance Arbitrary CommandError where arbitrary = genericArbitraryU
 
-errHasCredentials :: Int
-errHasCredentials = 4
-
-errNoQueueId :: Int
-errNoQueueId = 5
-
-errMessageBody :: Int
-errMessageBody = 6
+transmissionP :: Parser RawTransmission
+transmissionP = do
+  signature <- segment
+  corrId <- segment
+  queueId <- segment
+  command <- A.takeByteString
+  return (signature, corrId, queueId, command)
+  where
+    segment = A.takeTill (== ' ') <* " "
 
 commandP :: Parser Cmd
 commandP =
@@ -148,132 +161,110 @@ commandP =
     newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
     idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
     keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
-    sendCmd = Cmd SSender . SEND <$> A.takeWhile A.isDigit
+    sendCmd = do
+      size <- A.decimal <* A.space
+      Cmd SSender . SEND <$> A.take size <* A.space
     message = do
       msgId <- base64P <* A.space
       ts <- tsISO8601P <* A.space
-      Cmd SBroker . MSG msgId ts <$> A.takeWhile A.isDigit
-    serverError = Cmd SBroker . ERR <$> errorType
-    errorType =
-      "PROHIBITED" $> PROHIBITED
-        <|> "SYNTAX " *> (SYNTAX <$> A.decimal)
-        <|> "SIZE" $> SIZE
-        <|> "AUTH" $> AUTH
-        <|> "INTERNAL" $> INTERNAL
+      size <- A.decimal <* A.space
+      Cmd SBroker . MSG msgId ts <$> A.take size <* A.space
+    serverError = Cmd SBroker . ERR <$> errorTypeP
 
+-- TODO ignore the end of block, no need to parse it
 parseCommand :: ByteString -> Either ErrorType Cmd
-parseCommand = parse commandP $ SYNTAX errBadSMPCommand
+parseCommand = parse (commandP <* " " <* A.takeByteString) $ CMD SYNTAX
 
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
   Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
-  Cmd SRecipient cmd -> B.pack $ show cmd
-  Cmd SSender (SEND msgBody) -> "SEND" <> serializeMsg msgBody
+  Cmd SRecipient cmd -> bshow cmd
+  Cmd SSender (SEND msgBody) -> "SEND " <> serializeMsg msgBody
   Cmd SSender PING -> "PING"
   Cmd SBroker (MSG msgId ts msgBody) ->
-    B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts] <> serializeMsg msgBody
+    B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
-  Cmd SBroker (ERR err) -> "ERR " <> B.pack (show err)
-  Cmd SBroker resp -> B.pack $ show resp
+  Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
+  Cmd SBroker resp -> bshow resp
   where
-    serializeMsg msgBody = " " <> B.pack (show $ B.length msgBody) <> "\r\n" <> msgBody
+    serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
 
-tPutRaw :: Handle -> RawTransmission -> IO ()
-tPutRaw h (signature, corrId, queueId, command) = do
-  putLn h signature
-  putLn h corrId
-  putLn h queueId
-  putLn h command
+errorTypeP :: Parser ErrorType
+errorTypeP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
 
-tGetRaw :: Handle -> IO RawTransmission
-tGetRaw h = do
-  signature <- getLn h
-  corrId <- getLn h
-  queueId <- getLn h
-  command <- getLn h
-  return (signature, corrId, queueId, command)
+serializeErrorType :: ErrorType -> ByteString
+serializeErrorType = bshow
 
-tPut :: Handle -> SignedRawTransmission -> IO ()
-tPut h (C.Signature sig, t) = do
-  putLn h $ encode sig
-  putLn h t
+tPut :: THandle -> SignedRawTransmission -> IO (Either TransportError ())
+tPut th (C.Signature sig, t) =
+  tPutEncrypted th $ encode sig <> " " <> t <> " "
 
 serializeTransmission :: Transmission -> ByteString
 serializeTransmission (CorrId corrId, queueId, command) =
-  B.intercalate "\r\n" [corrId, encode queueId, serializeCommand command]
+  B.intercalate " " [corrId, encode queueId, serializeCommand command]
 
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
-  Cmd SBroker _ -> Left PROHIBITED
+  Cmd SBroker _ -> Left $ CMD PROHIBITED
   cmd -> Right cmd
 
 fromServer :: Cmd -> Either ErrorType Cmd
 fromServer = \case
   cmd@(Cmd SBroker _) -> Right cmd
-  _ -> Left PROHIBITED
+  _ -> Left $ CMD PROHIBITED
+
+tGetParse :: THandle -> IO (Either TransportError RawTransmission)
+tGetParse th = (>>= parse transmissionP TEBadBlock) <$> tGetEncrypted th
 
 -- | get client and server transmissions
 -- `fromParty` is used to limit allowed senders - `fromClient` or `fromServer` should be used
-tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> Handle -> m SignedTransmissionOrError
-tGet fromParty h = do
-  (signature, corrId, queueId, command) <- liftIO $ tGetRaw h
-  let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
-  either (const $ tError corrId) tParseLoadBody decodedTransmission
+tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> THandle -> m SignedTransmissionOrError
+tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
   where
-    tError :: ByteString -> m SignedTransmissionOrError
-    tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left $ SYNTAX errBadTransmission))
+    decodeParseValidate :: Either TransportError RawTransmission -> m SignedTransmissionOrError
+    decodeParseValidate = \case
+      Right (signature, corrId, queueId, command) ->
+        let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
+         in either (const $ tError corrId) tParseValidate decodedTransmission
+      Left _ -> tError ""
 
-    tParseLoadBody :: RawTransmission -> m SignedTransmissionOrError
-    tParseLoadBody t@(sig, corrId, queueId, command) = do
+    tError :: ByteString -> m SignedTransmissionOrError
+    tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left BLOCK))
+
+    tParseValidate :: RawTransmission -> m SignedTransmissionOrError
+    tParseValidate t@(sig, corrId, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
-      fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (C.Signature sig, (CorrId corrId, queueId, fullCmd))
+      return (C.Signature sig, (CorrId corrId, queueId, cmd))
 
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, _, queueId, _) cmd = case cmd of
-      -- IDS response should not have queue ID
+      -- IDS response must not have queue ID
       Cmd SBroker (IDS _ _) -> Right cmd
       -- ERR response does not always have queue ID
       Cmd SBroker (ERR _) -> Right cmd
-      -- PONG response should not have queue ID
+      -- PONG response must not have queue ID
       Cmd SBroker PONG
         | B.null queueId -> Right cmd
-        | otherwise -> Left $ SYNTAX errHasCredentials
+        | otherwise -> Left $ CMD HAS_AUTH
       -- other responses must have queue ID
       Cmd SBroker _
-        | B.null queueId -> Left $ SYNTAX errNoQueueId
+        | B.null queueId -> Left $ CMD NO_QUEUE
         | otherwise -> Right cmd
-      -- NEW must NOT have signature or queue ID
+      -- NEW must have signature but NOT queue ID
       Cmd SRecipient (NEW _)
-        | B.null signature -> Left $ SYNTAX errNoCredentials
-        | not (B.null queueId) -> Left $ SYNTAX errHasCredentials
+        | B.null signature -> Left $ CMD NO_AUTH
+        | not (B.null queueId) -> Left $ CMD HAS_AUTH
         | otherwise -> Right cmd
       -- SEND must have queue ID, signature is not always required
       Cmd SSender (SEND _)
-        | B.null queueId -> Left $ SYNTAX errNoQueueId
+        | B.null queueId -> Left $ CMD NO_QUEUE
         | otherwise -> Right cmd
       -- PING must not have queue ID or signature
       Cmd SSender PING
         | B.null queueId && B.null signature -> Right cmd
-        | otherwise -> Left $ SYNTAX errHasCredentials
+        | otherwise -> Left $ CMD HAS_AUTH
       -- other client commands must have both signature and queue ID
       Cmd SRecipient _
-        | B.null signature || B.null queueId -> Left $ SYNTAX errNoCredentials
+        | B.null signature || B.null queueId -> Left $ CMD NO_AUTH
         | otherwise -> Right cmd
-
-    cmdWithMsgBody :: Cmd -> m (Either ErrorType Cmd)
-    cmdWithMsgBody = \case
-      Cmd SSender (SEND sizeStr) ->
-        Cmd SSender . SEND <$$> getMsgBody sizeStr
-      Cmd SBroker (MSG msgId ts sizeStr) ->
-        Cmd SBroker . MSG msgId ts <$$> getMsgBody sizeStr
-      cmd -> return $ Right cmd
-
-    getMsgBody :: MsgBody -> m (Either ErrorType MsgBody)
-    getMsgBody sizeStr = case readMaybe (B.unpack sizeStr) :: Maybe Int of
-      Just size -> liftIO $ do
-        body <- B.hGet h size
-        s <- getLn h
-        return $ if B.null s then Right body else Left SIZE
-      Nothing -> return $ Left INTERNAL

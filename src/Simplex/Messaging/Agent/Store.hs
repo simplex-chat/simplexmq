@@ -10,6 +10,7 @@
 module Simplex.Messaging.Agent.Store where
 
 import Control.Exception (Exception)
+import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.Time (UTCTime)
@@ -38,11 +39,16 @@ class Monad m => MonadAgentStore s m where
   upgradeRcvConnToDuplex :: s -> ConnAlias -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnAlias -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
+  setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
-  createRcvMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> m InternalId
-  createSndMsg :: s -> ConnAlias -> MsgBody -> InternalTs -> m InternalId
+  updateRcvIds :: s -> RcvQueue -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+  createRcvMsg :: s -> RcvQueue -> RcvMsgData -> m ()
+
+  updateSndIds :: s -> SndQueue -> m (InternalId, InternalSndId, PrevSndMsgHash)
+  createSndMsg :: s -> SndQueue -> SndMsgData -> m ()
+
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
 -- * Queue types
@@ -102,6 +108,11 @@ data SConnType :: ConnType -> Type where
   SCSnd :: SConnType CSnd
   SCDuplex :: SConnType CDuplex
 
+connType :: SConnType c -> ConnType
+connType SCRcv = CRcv
+connType SCSnd = CSnd
+connType SCDuplex = CDuplex
+
 deriving instance Eq (SConnType d)
 
 deriving instance Show (SConnType d)
@@ -122,6 +133,42 @@ instance Eq SomeConn where
     _ -> False
 
 deriving instance Show SomeConn
+
+-- * Message integrity validation types
+
+type MsgHash = ByteString
+
+-- | Corresponds to `last_external_snd_msg_id` in `connections` table
+type PrevExternalSndId = Int64
+
+-- | Corresponds to `last_rcv_msg_hash` in `connections` table
+type PrevRcvMsgHash = MsgHash
+
+-- | Corresponds to `last_snd_msg_hash` in `connections` table
+type PrevSndMsgHash = MsgHash
+
+-- ? merge/replace these with RcvMsg and SndMsg
+-- * Message data containers - used on Msg creation to reduce number of parameters
+
+data RcvMsgData = RcvMsgData
+  { internalId :: InternalId,
+    internalRcvId :: InternalRcvId,
+    internalTs :: InternalTs,
+    senderMeta :: (ExternalSndId, ExternalSndTs),
+    brokerMeta :: (BrokerId, BrokerTs),
+    msgBody :: MsgBody,
+    internalHash :: MsgHash,
+    externalPrevSndHash :: MsgHash,
+    msgIntegrity :: MsgIntegrity
+  }
+
+data SndMsgData = SndMsgData
+  { internalId :: InternalId,
+    internalSndId :: InternalSndId,
+    internalTs :: InternalTs,
+    msgBody :: MsgBody,
+    internalHash :: MsgHash
+  }
 
 -- * Message types
 
@@ -149,7 +196,10 @@ data RcvMsg = RcvMsg
     -- | Timestamp of acknowledgement to sender, corresponds to `AcknowledgedToSender` status.
     -- Do not mix up with `externalSndTs` - timestamp created at sender before sending,
     -- which in its turn corresponds to `internalTs` in sending agent.
-    ackSenderTs :: AckSenderTs
+    ackSenderTs :: AckSenderTs,
+    -- | Hash of previous message as received from sender - stored for integrity forensics.
+    externalPrevSndHash :: MsgHash,
+    msgIntegrity :: MsgIntegrity
   }
   deriving (Eq, Show)
 
@@ -209,7 +259,9 @@ data MsgBase = MsgBase
     -- due to a possibility of implementation errors in different agents.
     internalId :: InternalId,
     internalTs :: InternalTs,
-    msgBody :: MsgBody
+    msgBody :: MsgBody,
+    -- | Hash of the message as computed by agent.
+    internalHash :: MsgHash
   }
   deriving (Eq, Show)
 
@@ -219,13 +271,11 @@ type InternalTs = UTCTime
 
 -- * Store errors
 
--- TODO revise
 data StoreError
-  = SEInternal
-  | SENotFound
-  | SEBadConn
+  = SEInternal ByteString
+  | SEConnNotFound
+  | SEConnDuplicate
   | SEBadConnType ConnType
-  | SEBadQueueStatus
-  | SEBadQueueDirection
+  | SEBadQueueStatus -- not used, planned to check strictly
   | SENotImplemented -- TODO remove
   deriving (Eq, Show, Exception)

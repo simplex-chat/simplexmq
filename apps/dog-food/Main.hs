@@ -31,6 +31,7 @@ import Simplex.Messaging.Agent.Client (AgentClient (..))
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (smpDefaultConfig)
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util (raceAny_)
 import Styled
 import System.Console.ANSI.Types
@@ -89,6 +90,7 @@ data ChatResponse
   | ReceivedMessage Contact ByteString
   | Disconnected Contact
   | YesYes
+  | ContactError ConnectionErrorType Contact
   | ErrorInput ByteString
   | ChatError AgentErrorType
   | NoChatResponse
@@ -107,8 +109,13 @@ serializeChatResponse = \case
   Connected c -> [ttyContact c <> " connected"]
   Confirmation c -> [ttyContact c <> " ok"]
   ReceivedMessage c t -> prependFirst (ttyFromContact c) $ msgPlain t
+  -- TODO either add command to re-connect or update message below
   Disconnected c -> ["disconnected from " <> ttyContact c <> " - try \"/chat " <> bPlain (toBs c) <> "\""]
   YesYes -> ["you got it!"]
+  ContactError e c -> case e of
+    UNKNOWN -> ["no contact " <> ttyContact c]
+    DUPLICATE -> ["contact " <> ttyContact c <> " already exists"]
+    SIMPLEX -> ["contact " <> ttyContact c <> " did not accept invitation yet"]
   ErrorInput t -> ["invalid input: " <> bPlain t]
   ChatError e -> ["chat error: " <> plain (show e)]
   NoChatResponse -> [""]
@@ -172,7 +179,7 @@ main = do
   t <- getChatClient smpServer
   ct <- newChatTerminal (tbqSize cfg) termMode
   -- setLogLevel LogInfo -- LogError
-  -- withGlobalLogging logCfg $
+  -- withGlobalLogging logCfg $ do
   env <- newSMPAgentEnv cfg {dbFile = dbFileName}
   dogFoodChat t ct env
 
@@ -209,7 +216,7 @@ newChatClient qSize smpServer = do
 receiveFromChatTerm :: ChatClient -> ChatTerminal -> IO ()
 receiveFromChatTerm t ct = forever $ do
   atomically (readTBQueue $ inputQ ct)
-    >>= processOrError . A.parseOnly (chatCommandP <* A.endOfInput) . encodeUtf8 . T.pack
+    >>= processOrError . parseAll chatCommandP . encodeUtf8 . T.pack
   where
     processOrError = \case
       Left err -> writeOutQ . ErrorInput $ B.pack err
@@ -259,9 +266,10 @@ receiveFromAgent t ct c = forever . atomically $ do
       INV qInfo -> Invitation qInfo
       CON -> Connected contact
       END -> Disconnected contact
-      MSG {m_body} -> ReceivedMessage contact m_body
+      MSG {msgBody} -> ReceivedMessage contact msgBody
       SENT _ -> NoChatResponse
       OK -> Confirmation contact
+      ERR (CONN e) -> ContactError e contact
       ERR e -> ChatError e
       where
         contact = Contact a

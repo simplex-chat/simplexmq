@@ -31,19 +31,22 @@ raceAny_ = r []
     r as (m : ms) = withAsync m $ \a -> r (a : as) ms
     r as [] = void $ waitAnyCancel as
 
-infixl 4 <$$>
+infixl 4 <$$>, <$?>
 
 (<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
 (<$$>) = fmap . fmap
 
+(<$?>) :: MonadFail m => (a -> Either String b) -> m a -> m b
+f <$?> m = m >>= either fail pure . f
+
 bshow :: Show a => a -> ByteString
 bshow = B.pack . show
 
-liftIOEither :: (MonadUnliftIO m, MonadError e m) => IO (Either e a) -> m a
+liftIOEither :: (MonadIO m, MonadError e m) => IO (Either e a) -> m a
 liftIOEither a = liftIO a >>= liftEither
 
-liftError :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> ExceptT e IO a -> m a
+liftError :: (MonadIO m, MonadError e' m) => (e -> e') -> ExceptT e IO a -> m a
 liftError f = liftEitherError f . runExceptT
 
-liftEitherError :: (MonadUnliftIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
+liftEitherError :: (MonadIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
 liftEitherError f a = liftIOEither (first f <$> a)

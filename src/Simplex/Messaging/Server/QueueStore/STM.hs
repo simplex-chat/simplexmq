@@ -32,7 +32,7 @@ instance MonadQueueStore QueueStore STM where
   addQueue store rKey ids@(rId, sId) = do
     cs@QueueStoreData {queues, senders} <- readTVar store
     if M.member rId queues || M.member sId senders
-      then return $ Left DUPLICATE
+      then return $ Left DUPLICATE_
       else do
         writeTVar store $
           cs

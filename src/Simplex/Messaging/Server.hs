@@ -15,6 +15,7 @@ module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking, randomBytes
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
+import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
@@ -30,6 +31,7 @@ import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
+import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
 import UnliftIO.Async
@@ -50,6 +52,7 @@ runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
     smpServer = do
       s <- asks server
       race_ (runTCPServer started tcpPort runClient) (serverThread s)
+        `finally` withLog closeStoreLog
 
     serverThread :: MonadUnliftIO m => Server -> m ()
     serverThread Server {subscribedQ, subscribers} = forever . atomically $ do
@@ -62,11 +65,17 @@ runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
 
 runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
 runClient h = do
-  liftIO $ putLn h "Welcome to SMP v0.2.0"
+  keyPair <- asks serverKeyPair
+  liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
+    Right th -> runClientTransport th
+    Left _ -> pure ()
+
+runClientTransport :: (MonadUnliftIO m, MonadReader Env m) => THandle -> m ()
+runClientTransport th = do
   q <- asks $ tbqSize . config
   c <- atomically $ newClient q
   s <- asks server
-  raceAny_ [send h c, client c s, receive h c]
+  raceAny_ [send th c, client c s, receive th c]
     `finally` cancelSubscribers c
 
 cancelSubscribers :: MonadUnliftIO m => Client -> m ()
@@ -78,7 +87,7 @@ cancelSub = \case
   Sub {subThread = SubThread t} -> killThread t
   _ -> return ()
 
-receive :: (MonadUnliftIO m, MonadReader Env m) => Handle -> Client -> m ()
+receive :: (MonadUnliftIO m, MonadReader Env m) => THandle -> Client -> m ()
 receive h Client {rcvQ} = forever $ do
   (signature, (corrId, queueId, cmdOrError)) <- tGet fromClient h
   t <- case cmdOrError of
@@ -86,7 +95,7 @@ receive h Client {rcvQ} = forever $ do
     Right cmd -> verifyTransmission (signature, (corrId, queueId, cmd))
   atomically $ writeTBQueue rcvQ t
 
-send :: MonadUnliftIO m => Handle -> Client -> m ()
+send :: MonadUnliftIO m => THandle -> Client -> m ()
 send h Client {sndQ} = forever $ do
   t <- atomically $ readTBQueue sndQ
   liftIO $ tPut h ("", serializeTransmission t)
@@ -99,25 +108,27 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
     Cmd SRecipient (NEW k) -> return $ verifySignature k
-    Cmd SRecipient _ -> withQueueRec SRecipient $ verifySignature . recipientKey
-    Cmd SSender (SEND _) -> withQueueRec SSender $ verifySend sig . senderKey
+    Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
+    Cmd SSender (SEND _) -> verifyCmd SSender $ verifySend sig . senderKey
     Cmd SSender PING -> return cmd
   where
-    withQueueRec :: SParty (p :: Party) -> (QueueRec -> Cmd) -> m Cmd
-    withQueueRec party f = do
+    verifyCmd :: SParty p -> (QueueRec -> Cmd) -> m Cmd
+    verifyCmd party f = do
+      (aKey, _) <- asks serverKeyPair -- any public key can be used to mitigate timing attack
       st <- asks queueStore
-      qr <- atomically $ getQueue st party queueId
-      return $ either smpErr f qr
+      q <- atomically $ getQueue st party queueId
+      pure $ either (const $ fakeVerify aKey) f q
+    fakeVerify :: C.PublicKey -> Cmd
+    fakeVerify aKey = if verify aKey then authErr else authErr
     verifySend :: C.Signature -> Maybe SenderPublicKey -> Cmd
     verifySend "" = maybe cmd (const authErr)
     verifySend _ = maybe authErr verifySignature
     verifySignature :: C.PublicKey -> Cmd
-    verifySignature key =
-      if C.verify key sig (serializeTransmission t)
-        then cmd
-        else authErr
-
-    smpErr e = Cmd SBroker $ ERR e
+    verifySignature key = if verify key then cmd else authErr
+    verify :: C.PublicKey -> Bool
+    verify key = C.verify key sig (serializeTransmission t)
+    smpErr :: ErrorType -> Cmd
+    smpErr = Cmd SBroker . ERR
     authErr = smpErr AUTH
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
@@ -140,8 +151,8 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           NEW rKey -> createQueue st rKey
           SUB -> subscribeQueue queueId
           ACK -> acknowledgeMsg
-          KEY sKey -> okResp <$> atomically (secureQueue st queueId sKey)
-          OFF -> okResp <$> atomically (suspendQueue st queueId)
+          KEY sKey -> secureQueue_ st sKey
+          OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
       where
         createQueue :: QueueStore -> RecipientPublicKey -> m Transmission
@@ -151,21 +162,39 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             addSubscribe =
               addQueueRetry 3 >>= \case
                 Left e -> return $ ERR e
-                Right (rId, sId) -> subscribeQueue rId $> IDS rId sId
+                Right (rId, sId) -> do
+                  withLog (`logCreateById` rId)
+                  subscribeQueue rId $> IDS rId sId
 
             addQueueRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
             addQueueRetry 0 = return $ Left INTERNAL
             addQueueRetry n = do
               ids <- getIds
               atomically (addQueue st rKey ids) >>= \case
-                Left DUPLICATE -> addQueueRetry $ n - 1
+                Left DUPLICATE_ -> addQueueRetry $ n - 1
                 Left e -> return $ Left e
                 Right _ -> return $ Right ids
+
+            logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
+            logCreateById s rId =
+              atomically (getQueue st SRecipient rId) >>= \case
+                Right q -> logCreateQueue s q
+                _ -> pure ()
 
             getIds :: m (RecipientId, SenderId)
             getIds = do
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
+
+        secureQueue_ :: QueueStore -> SenderPublicKey -> m Transmission
+        secureQueue_ st sKey = do
+          withLog $ \s -> logSecureQueue s queueId sKey
+          okResp <$> atomically (secureQueue st queueId sKey)
+
+        suspendQueue_ :: QueueStore -> m Transmission
+        suspendQueue_ st = do
+          withLog (`logDeleteQueue` queueId)
+          okResp <$> atomically (suspendQueue st queueId)
 
         subscribeQueue :: RecipientId -> m Transmission
         subscribeQueue rId =
@@ -193,7 +222,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           atomically (withSub queueId $ \s -> const s <$$> tryTakeTMVar (delivered s))
             >>= \case
               Just (Just s) -> deliverMessage tryDelPeekMsg queueId s
-              _ -> return $ err PROHIBITED
+              _ -> return $ err NO_MSG
 
         withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
         withSub rId f = readTVar subscriptions >>= mapM f . M.lookup rId
@@ -253,6 +282,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
 
         delQueueAndMsgs :: QueueStore -> m Transmission
         delQueueAndMsgs st = do
+          withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
           atomically $
             deleteQueue st queueId >>= \case
@@ -270,6 +300,11 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
 
         msgCmd :: Message -> Command 'Broker
         msgCmd Message {msgId, ts, msgBody} = MSG msgId ts msgBody
+
+withLog :: (MonadUnliftIO m, MonadReader Env m) => (StoreLog 'WriteMode -> IO a) -> m ()
+withLog action = do
+  env <- ask
+  liftIO . mapM_ action $ storeLog (env :: Env)
 
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m Encoded
 randomId n = do

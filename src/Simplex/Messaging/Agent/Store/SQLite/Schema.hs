@@ -90,6 +90,9 @@ connections =
       last_internal_msg_id INTEGER NOT NULL,
       last_internal_rcv_msg_id INTEGER NOT NULL,
       last_internal_snd_msg_id INTEGER NOT NULL,
+      last_external_snd_msg_id INTEGER NOT NULL,
+      last_rcv_msg_hash BLOB NOT NULL,
+      last_snd_msg_hash BLOB NOT NULL,
       PRIMARY KEY (conn_alias),
       FOREIGN KEY (rcv_host, rcv_port, rcv_id) REFERENCES rcv_queues (host, port, rcv_id),
       FOREIGN KEY (snd_host, snd_port, snd_id) REFERENCES snd_queues (host, port, snd_id)
@@ -135,6 +138,9 @@ rcvMessages =
       rcv_status TEXT NOT NULL,
       ack_brocker_ts TEXT,
       ack_sender_ts TEXT,
+      internal_hash BLOB NOT NULL,
+      external_prev_snd_hash BLOB NOT NULL,
+      integrity BLOB NOT NULL,
       PRIMARY KEY (conn_alias, internal_rcv_id),
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)
@@ -152,6 +158,7 @@ sndMessages =
       snd_status TEXT NOT NULL,
       sent_ts TEXT,
       delivered_ts TEXT,
+      internal_hash BLOB NOT NULL,
       PRIMARY KEY (conn_alias, internal_snd_id),
       FOREIGN KEY (conn_alias, internal_id)
         REFERENCES messages (conn_alias, internal_id)
