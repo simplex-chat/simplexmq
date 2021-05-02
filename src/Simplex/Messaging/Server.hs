@@ -107,29 +107,46 @@ verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => SignedTr
 verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
-    Cmd SRecipient (NEW k) -> return $ verifySignature k
+    Cmd SRecipient (NEW k) -> pure $ verifySignature k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> verifyCmd SSender $ verifySend sig . senderKey
     Cmd SSender PING -> return cmd
   where
     verifyCmd :: SParty p -> (QueueRec -> Cmd) -> m Cmd
     verifyCmd party f = do
-      (aKey, _) <- asks serverKeyPair -- any public key can be used to mitigate timing attack
       st <- asks queueStore
       q <- atomically $ getQueue st party queueId
-      pure $ either (const $ fakeVerify aKey) f q
-    fakeVerify :: C.PublicKey -> Cmd
-    fakeVerify aKey = if verify aKey then authErr else authErr
+      pure $ either (const $ dummyVerify authErr) f q
     verifySend :: C.Signature -> Maybe SenderPublicKey -> Cmd
     verifySend "" = maybe cmd (const authErr)
     verifySend _ = maybe authErr verifySignature
     verifySignature :: C.PublicKey -> Cmd
     verifySignature key = if verify key then cmd else authErr
-    verify :: C.PublicKey -> Bool
-    verify key = C.verify key sig (serializeTransmission t)
-    smpErr :: ErrorType -> Cmd
+    verify key
+      | C.publicKeySize key == sigLen = cryptoVerify key
+      | otherwise = dummyVerify False
+    cryptoVerify key = C.verify key sig (serializeTransmission t)
     smpErr = Cmd SBroker . ERR
     authErr = smpErr AUTH
+    dummyVerify :: a -> a
+    dummyVerify = seq $
+      cryptoVerify $ case sigLen of
+        128 -> dummyKey128
+        256 -> dummyKey256
+        512 -> dummyKey512
+        _ -> dummyKey256
+    sigLen = B.length $ C.unSignature sig
+
+-- These dummy keys are used with `dummyVerify` function to mitigate timing attacks
+-- by having the same time of the response whether a queue exists or nor, for all valid key/signature sizes
+dummyKey128 :: C.PublicKey
+dummyKey128 = "MIIBIDANBgkqhkiG9w0BAQEFAAOCAQ0AMIIBCAKBgQC2oeA7s4roXN5K2N6022I1/2CTeMKjWH0m00bSZWa4N8LDKeFcShh8YUxZea5giAveViTRNOOVLgcuXbKvR3u24szN04xP0+KnYUuUUIIoT3YSjX0IlomhDhhSyup4BmA0gAZ+D1OaIKZFX6J8yQ1Lr/JGLEfSRsBjw8l+4hs9OwKBgQDKA+YlZvGb3BcpDwKmatiCXN7ZRDWkjXbj8VAW5zV95tSRCCVN48hrFM1H4Ju2QMMUc6kPUVX+eW4ZjdCl5blIqIHMcTmsdcmsDDCg3PjUNrwc6bv/1TcirbAKcmnKt9iurIt6eerxSO7TZUXXMUVsi7eRwb/RUNhpCrpJ/hpIOw=="
+
+dummyKey256 :: C.PublicKey
+dummyKey256 = "MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAxwmTvaqmdTbkfUGNi8Yu0L/T4cxuOlQlx3zGZ9X9Qx0+oZjknWK+QHrdWTcpS+zH4Hi7fP6kanOQoQ90Hj6Ghl57VU1GEdUPywSw4i1/7t0Wv9uT9Q2ktHp2rqVo3xkC9IVIpL7EZAxdRviIN2OsOB3g4a/F1ZpjxcAaZeOMUugiAX1+GtkLuE0Xn4neYjCaOghLxQTdhybN70VtnkiQLx/X9NjkDIl/spYGm3tQFMyYKkP6IWoEpj0926hJ0fmlmhy8tAOhlZsb/baW5cgkEZ3E9jVVrySCgQzoLQgma610FIISRpRJbSyv26jU7MkMxiyuBiDaFOORkXFttoKbtQKBgEbDS9II2brsz+vfI7uP8atFcawkE52cx4M1UWQhqb1H3tBiRl+qO+dMq1pPQF2bW7dlZAWYzS4W/367bTAuALHBDGB8xi1P4Njhh9vaOgTvuqrHG9NJQ85BLy0qGw8rjIWSIXVmVpfrXFJ8po5l04UE258Ll2yocv3QRQmddQW9"
+
+dummyKey512 :: C.PublicKey
+dummyKey512 = "MIICoDANBgkqhkiG9w0BAQEFAAOCAo0AMIICiAKCAgEArkCY9DuverJ4mmzDektv9aZMFyeRV46WZK9NsOBKEc+1ncqMs+LhLti9asKNgUBRbNzmbOe0NYYftrUpwnATaenggkTFxxbJ4JGJuGYbsEdFWkXSvrbWGtM8YUmn5RkAGme12xQ89bSM4VoJAGnrYPHwmcQd+KYCPZvTUsxaxgrJTX65ejHN9BsAn8XtGViOtHTDJO9yUMD2WrJvd7wnNa+0ugEteDLzMU++xS98VC+uA1vfauUqi3yXVchdfrLdVUuM+JE0gUEXCgzjuHkaoHiaGNiGhdPYoAJJdOKQOIHAKdk7Th6OPhirPhc9XYNB4O8JDthKhNtfokvFIFlC4QBRzJhpLIENaEBDt08WmgpOnecZB/CuxkqqOrNa8j5K5jNrtXAI67W46VEC2jeQy/gZwb64Zit2A4D00xXzGbQTPGj4ehcEMhLx5LSCygViEf0w0tN3c3TEyUcgPzvECd2ZVpQLr9Z4a07Ebr+YSuxcHhjg4Rg1VyJyOTTvaCBGm5X2B3+tI4NUttmikIHOYpBnsLmHY2BgfH2KcrIsDyAhInXmTFr/L2+erFarUnlfATd2L8Ti43TNHDedO6k6jI5Gyi62yPwjqPLEIIK8l+pIeNfHJ3pPmjhHBfzFcQLMMMXffHWNK8kWklrQXK+4j4HiPcTBvlO1FEtG9nEIZhUCgYA4a6WtI2k5YNli1C89GY5rGUY7RP71T6RWri/D3Lz9T7GvU+FemAyYmsvCQwqijUOur0uLvwSP8VdxpSUcrjJJSWur2hrPWzWlu0XbNaeizxpFeKbQP+zSrWJ1z8RwfAeUjShxt8q1TuqGqY10wQyp3nyiTGvS+KwZVj5h5qx8NQ=="
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
 client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
@@ -157,7 +174,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
       where
         createQueue :: QueueStore -> RecipientPublicKey -> m Transmission
         createQueue st rKey =
-          mkResp corrId B.empty <$> addSubscribe
+          checkKeySize rKey addSubscribe
           where
             addSubscribe =
               addQueueRetry 3 >>= \case
@@ -189,7 +206,14 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         secureQueue_ :: QueueStore -> SenderPublicKey -> m Transmission
         secureQueue_ st sKey = do
           withLog $ \s -> logSecureQueue s queueId sKey
-          okResp <$> atomically (secureQueue st queueId sKey)
+          atomically . checkKeySize sKey $ either ERR (const OK) <$> secureQueue st queueId sKey
+
+        checkKeySize :: Monad m' => C.PublicKey -> m' (Command 'Broker) -> m' Transmission
+        checkKeySize key action =
+          mkResp corrId queueId
+            <$> if C.validKeySize $ C.publicKeySize key
+              then action
+              else pure . ERR $ CMD KEY_SIZE
 
         suspendQueue_ :: QueueStore -> m Transmission
         suspendQueue_ st = do

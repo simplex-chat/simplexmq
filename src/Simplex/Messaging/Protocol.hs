@@ -121,6 +121,7 @@ data ErrorType
 
 data CommandError
   = PROHIBITED
+  | KEY_SIZE
   | SYNTAX
   | NO_AUTH
   | HAS_AUTH
@@ -225,12 +226,17 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
     decodeParseValidate :: Either TransportError RawTransmission -> m SignedTransmissionOrError
     decodeParseValidate = \case
       Right (signature, corrId, queueId, command) ->
-        let decodedTransmission = liftM2 (,corrId,,command) (decode signature) (decode queueId)
+        let decodedTransmission = liftM2 (,corrId,,command) (validSig =<< decode signature) (decode queueId)
          in either (const $ tError corrId) tParseValidate decodedTransmission
       Left _ -> tError ""
 
+    validSig :: ByteString -> Either String ByteString
+    validSig sig
+      | B.null sig || C.validKeySize (B.length sig) = Right sig
+      | otherwise = Left "invalid signature size"
+
     tError :: ByteString -> m SignedTransmissionOrError
-    tError corrId = return (C.Signature B.empty, (CorrId corrId, B.empty, Left BLOCK))
+    tError corrId = return (C.Signature "", (CorrId corrId, "", Left BLOCK))
 
     tParseValidate :: RawTransmission -> m SignedTransmissionOrError
     tParseValidate t@(sig, corrId, queueId, command) = do
