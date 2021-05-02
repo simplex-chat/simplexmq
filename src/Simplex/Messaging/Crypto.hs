@@ -34,13 +34,11 @@ module Simplex.Messaging.Crypto
     serializePrivKey,
     serializePubKey,
     encodePubKey,
-    serializeKeyHash,
-    getKeyHash,
+    publicKeyHash,
     sha256Hash,
     privKeyP,
     pubKeyP,
     binaryPubKeyP,
-    keyHashP,
     authTagSize,
     authTagToBS,
     bsToAuthTag,
@@ -57,7 +55,7 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), digestFromByteString, hash)
+import Crypto.Hash (Digest, SHA256 (..), hash)
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
 import qualified Crypto.PubKey.RSA as R
@@ -200,32 +198,17 @@ newtype Key = Key {unKey :: ByteString}
 
 newtype IV = IV {unIV :: ByteString}
 
-newtype KeyHash = KeyHash {unKeyHash :: Digest SHA256} deriving (Eq, Ord, Show)
+newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
 instance IsString KeyHash where
-  fromString = parseString $ parseAll keyHashP
+  fromString = parseString . parseAll $ KeyHash <$> base64P
 
-instance ToField KeyHash where toField = toField . serializeKeyHash
+instance ToField KeyHash where toField = toField . unKeyHash
 
-instance FromField KeyHash where
-  fromField f@(Field (SQLBlob b) _) =
-    case parseAll keyHashP b of
-      Right k -> Ok k
-      Left e -> returnError ConversionFailed f ("couldn't parse KeyHash field: " ++ e)
-  fromField f = returnError ConversionFailed f "expecting SQLBlob column type"
+instance FromField KeyHash where fromField f = KeyHash <$> fromField f
 
-serializeKeyHash :: KeyHash -> ByteString
-serializeKeyHash = encode . BA.convert . unKeyHash
-
-keyHashP :: Parser KeyHash
-keyHashP = do
-  bs <- base64P
-  case digestFromByteString bs of
-    Just d -> pure $ KeyHash d
-    _ -> fail "invalid digest"
-
-getKeyHash :: ByteString -> KeyHash
-getKeyHash = KeyHash . hash
+publicKeyHash :: PublicKey -> KeyHash
+publicKeyHash = KeyHash . sha256Hash . encodePubKey
 
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)

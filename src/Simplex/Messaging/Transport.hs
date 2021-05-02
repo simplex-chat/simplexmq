@@ -287,8 +287,8 @@ clientHandshake h keyHash = do
     parseKey :: ByteString -> Either TransportError C.PublicKey
     parseKey = first (const $ TEHandshake RSA_KEY) . parseAll C.binaryPubKeyP
     validateKeyHash_2 :: ByteString -> C.KeyHash -> ExceptT TransportError IO ()
-    validateKeyHash_2 k kHash
-      | C.getKeyHash k == kHash = pure ()
+    validateKeyHash_2 k (C.KeyHash kHash)
+      | C.sha256Hash k == kHash = pure ()
       | otherwise = throwE $ TEHandshake BAD_HASH
     generateKeys_3 :: Int -> IO ClientHandshake
     generateKeys_3 blkSize = ClientHandshake blkSize <$> generateKey <*> generateKey
