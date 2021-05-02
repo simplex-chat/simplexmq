@@ -147,6 +147,7 @@ type PrevRcvMsgHash = MsgHash
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
 type PrevSndMsgHash = MsgHash
 
+-- ? merge/replace these with RcvMsg and SndMsg
 -- * Message data containers - used on Msg creation to reduce number of parameters
 
 data RcvMsgData = RcvMsgData
@@ -156,7 +157,8 @@ data RcvMsgData = RcvMsgData
     senderMeta :: (ExternalSndId, ExternalSndTs),
     brokerMeta :: (BrokerId, BrokerTs),
     msgBody :: MsgBody,
-    msgHash :: MsgHash,
+    internalHash :: MsgHash,
+    externalPrevSndHash :: MsgHash,
     msgIntegrity :: MsgIntegrity
   }
 
@@ -165,7 +167,7 @@ data SndMsgData = SndMsgData
     internalSndId :: InternalSndId,
     internalTs :: InternalTs,
     msgBody :: MsgBody,
-    msgHash :: MsgHash
+    internalHash :: MsgHash
   }
 
 -- * Message types
@@ -194,7 +196,10 @@ data RcvMsg = RcvMsg
     -- | Timestamp of acknowledgement to sender, corresponds to `AcknowledgedToSender` status.
     -- Do not mix up with `externalSndTs` - timestamp created at sender before sending,
     -- which in its turn corresponds to `internalTs` in sending agent.
-    ackSenderTs :: AckSenderTs
+    ackSenderTs :: AckSenderTs,
+    -- | Hash of previous message as received from sender - stored for integrity forensics.
+    externalPrevSndHash :: MsgHash,
+    msgIntegrity :: MsgIntegrity
   }
   deriving (Eq, Show)
 
@@ -254,7 +259,9 @@ data MsgBase = MsgBase
     -- due to a possibility of implementation errors in different agents.
     internalId :: InternalId,
     internalTs :: InternalTs,
-    msgBody :: MsgBody
+    msgBody :: MsgBody,
+    -- | Hash of the message as computed by agent.
+    internalHash :: MsgHash
   }
   deriving (Eq, Show)
 

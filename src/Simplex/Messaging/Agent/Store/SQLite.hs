@@ -40,6 +40,7 @@ import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
 import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Parsers (parseAll)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Exit (ExitCode (ExitFailure), exitWith)
@@ -275,6 +276,16 @@ instance FromField InternalId where fromField x = InternalId <$> fromField x
 instance ToField RcvMsgStatus where toField = toField . show
 
 instance ToField SndMsgStatus where toField = toField . show
+
+instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
+
+instance FromField MsgIntegrity where
+  fromField = \case
+    f@(Field (SQLBlob b) _) ->
+      case parseAll msgIntegrityP b of
+        Right k -> Ok k
+        Left e -> returnError ConversionFailed f ("can't parse msg integrity field: " ++ e)
+    f -> returnError ConversionFailed f "expecting SQLBlob column type"
 
 fromFieldToReadable_ :: forall a. (Read a, E.Typeable a) => Field -> Ok a
 fromFieldToReadable_ = \case
@@ -528,10 +539,12 @@ insertRcvMsgDetails_ dbConn connAlias RcvMsgData {..} =
     [sql|
       INSERT INTO rcv_messages
         ( conn_alias, internal_rcv_id, internal_id, external_snd_id, external_snd_ts,
-          broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts)
+          broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts,
+          internal_hash, external_prev_snd_hash, integrity)
       VALUES
         (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,:external_snd_ts,
-         :broker_id,:broker_ts,:rcv_status,           NULL,          NULL);
+         :broker_id,:broker_ts,:rcv_status,           NULL,          NULL,
+         :internal_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_alias" := connAlias,
       ":internal_rcv_id" := internalRcvId,
@@ -540,7 +553,10 @@ insertRcvMsgDetails_ dbConn connAlias RcvMsgData {..} =
       ":external_snd_ts" := snd senderMeta,
       ":broker_id" := fst brokerMeta,
       ":broker_ts" := snd brokerMeta,
-      ":rcv_status" := Received
+      ":rcv_status" := Received,
+      ":internal_hash" := internalHash,
+      ":external_prev_snd_hash" := externalPrevSndHash,
+      ":integrity" := msgIntegrity
     ]
 
 updateHashRcv_ :: DB.Connection -> ConnAlias -> RcvMsgData -> IO ()
@@ -556,7 +572,7 @@ updateHashRcv_ dbConn connAlias RcvMsgData {..} =
         AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
     [ ":last_external_snd_msg_id" := fst senderMeta,
-      ":last_rcv_msg_hash" := msgHash,
+      ":last_rcv_msg_hash" := internalHash,
       ":conn_alias" := connAlias,
       ":last_internal_rcv_msg_id" := internalRcvId
     ]
@@ -616,14 +632,15 @@ insertSndMsgDetails_ dbConn connAlias SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts)
+        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts, internal_hash)
       VALUES
-        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL);
+        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL,:internal_hash);
     |]
     [ ":conn_alias" := connAlias,
       ":internal_snd_id" := internalSndId,
       ":internal_id" := internalId,
-      ":snd_status" := Created
+      ":snd_status" := Created,
+      ":internal_hash" := internalHash
     ]
 
 updateHashSnd_ :: DB.Connection -> ConnAlias -> SndMsgData -> IO ()
@@ -637,7 +654,7 @@ updateHashSnd_ dbConn connAlias SndMsgData {..} =
       WHERE conn_alias = :conn_alias
         AND last_internal_snd_msg_id = :last_internal_snd_msg_id;
     |]
-    [ ":last_snd_msg_hash" := msgHash,
+    [ ":last_snd_msg_hash" := internalHash,
       ":conn_alias" := connAlias,
       ":last_internal_snd_msg_id" := internalSndId
     ]
