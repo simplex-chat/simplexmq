@@ -1,8 +1,8 @@
-name: simplex-messaging
-version: 0.1.0.0
+name: simplexmq
+version: 0.3.0
 #synopsis:
 #description:
-homepage: https://github.com/simplex-chat/simplex-messaging#readme
+homepage: https://github.com/simplex-chat/simplexmq#readme
 license: AGPL-3
 author: Evgeny Poberezkin
 maintainer: evgeny@poberezkin.com
@@ -53,7 +53,7 @@ executables:
       - cryptostore == 0.2.*
       - ini == 0.4.*
       - optparse-applicative == 0.15.*
-      - simplex-messaging
+      - simplexmq
     ghc-options:
       - -threaded
 
@@ -61,7 +61,7 @@ executables:
     source-dirs: apps/smp-agent
     main: Main.hs
     dependencies:
-      - simplex-messaging
+      - simplexmq
     ghc-options:
       - -threaded
 
@@ -71,7 +71,7 @@ executables:
     dependencies:
       - ansi-terminal == 0.10.*
       - optparse-applicative == 0.15.*
-      - simplex-messaging
+      - simplexmq
       - terminal == 0.2.*
     ghc-options:
       - -threaded
@@ -81,7 +81,7 @@ tests:
     source-dirs: tests
     main: Test.hs
     dependencies:
-      - simplex-messaging
+      - simplexmq
       - hspec == 2.7.*
       - hspec-core == 2.7.*
       - HUnit == 1.6.*
