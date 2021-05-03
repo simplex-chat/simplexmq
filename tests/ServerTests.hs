@@ -89,7 +89,7 @@ testCreateSecure =
       (sId2, sId) #== "same queue ID in response 2"
 
       let keyCmd = "KEY " <> C.serializePubKey sPub
-      Resp "bcda" _ err2 <- sendRecv h ("12345678", "bcda", rId, keyCmd)
+      Resp "bcda" _ err2 <- sendRecv h (sampleSig, "bcda", rId, keyCmd)
       (err2, ERR AUTH) #== "rejects KEY with wrong signature"
 
       Resp "cdab" _ err3 <- signSendRecv h rKey ("cdab", sId, keyCmd)
@@ -135,7 +135,7 @@ testCreateDelete =
       Resp "" _ (MSG _ _ msg1) <- tGet fromServer rh
       (msg1, "hello") #== "delivers message"
 
-      Resp "abcd" _ err1 <- sendRecv rh ("12345678", "abcd", rId, "OFF")
+      Resp "abcd" _ err1 <- sendRecv rh (sampleSig, "abcd", rId, "OFF")
       (err1, ERR AUTH) #== "rejects OFF with wrong signature"
 
       Resp "bcda" _ err2 <- signSendRecv rh rKey ("bcda", sId, "OFF")
@@ -157,7 +157,7 @@ testCreateDelete =
       Resp "cdab" _ (MSG _ _ msg) <- signSendRecv rh rKey ("cdab", rId, "SUB")
       (msg, "hello") #== "accepts SUB when suspended and delivers the message again (because was not ACKed)"
 
-      Resp "dabc" _ err5 <- sendRecv rh ("12345678", "dabc", rId, "DEL")
+      Resp "dabc" _ err5 <- sendRecv rh (sampleSig, "dabc", rId, "DEL")
       (err5, ERR AUTH) #== "rejects DEL with wrong signature"
 
       Resp "abcd" _ err6 <- signSendRecv rh rKey ("abcd", sId, "DEL")
@@ -334,64 +334,83 @@ testWithStoreLog =
 
 testTiming :: Spec
 testTiming =
-  it "should have similar time for auth error whether queue exists or not" $
-    smpTest2 \rh sh -> do
+  it "should have similar time for auth error, whether queue exists or not, for all key sizes" $
+    smpTest2 \rh sh ->
+      mapM_
+        (testSameTiming rh sh)
+        [ (128, 128, 100),
+          (128, 256, 25),
+          -- (128, 512, 15),
+          (256, 128, 100),
+          (256, 256, 25)
+          -- (256, 512, 15),
+          -- (512, 128, 100),
+          -- (512, 256, 25),
+          -- (512, 512, 15)
+        ]
+  where
+    timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
+    similarTime t1 t2 = abs (t1 - t2) / t1 < 0.2 `shouldBe` True
+    testSameTiming :: THandle -> THandle -> (Int, Int, Int) -> Expectation
+    testSameTiming rh sh (senderKeySize, badKeySize, n) = do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" "" (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
 
-      (sPub, sKey) <- C.generateKeyPair rsaKeySize
+      (sPub, sKey) <- C.generateKeyPair senderKeySize
       let keyCmd = "KEY " <> C.serializePubKey sPub
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, keyCmd)
 
+      (_, badKey) <- C.generateKeyPair badKeySize
       Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, "SEND 5 hello ")
-
-      timeNoQueue <- timeRepeat 25 $ do
-        Resp "dabc" _ (ERR AUTH) <- signSendRecv sh sKey ("dabc", rId, "SEND 5 hello ")
+      timeWrongKey <- timeRepeat n $ do
+        Resp "cdab" _ (ERR AUTH) <- signSendRecv sh badKey ("cdab", sId, "SEND 5 hello ")
         return ()
-      timeWrongKey <- timeRepeat 25 $ do
-        Resp "cdab" _ (ERR AUTH) <- signSendRecv sh rKey ("cdab", sId, "SEND 5 hello ")
+      timeNoQueue <- timeRepeat n $ do
+        Resp "dabc" _ (ERR AUTH) <- signSendRecv sh badKey ("dabc", "1234", "SEND 5 hello ")
         return ()
-      abs (timeNoQueue - timeWrongKey) / timeNoQueue < 0.15 `shouldBe` True
-  where
-    timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
+      Resp "" _ (MSG _ _ "hello") <- tGet fromServer rh
+      similarTime timeNoQueue timeWrongKey
 
 samplePubKey :: ByteString
 samplePubKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
+
+sampleSig :: ByteString
+sampleSig = "\128\207*\159eq\220i!\"\157\161\130\184\226\246\232_\\\170`\180\160\230sI\154\197\211\252\SUB\246\206ELL\t9K\ESC\196?\128\215%\222\148\NAK;9\155f\164\217e\242\156\CAN9\253\r\170\174'w\211\228?\205)\215\150\255\247z\DC115\DC1{\bn\145\rKD,K\230\202d8\233\167|7y\t_S\EM\248\EOT\216\172\167d\181\224)\137\ACKo\197j#c\217\243\228.\167\228\205\144\vr\134"
 
 syntaxTests :: Spec
 syntaxTests = do
   it "unknown command" $ ("", "abcd", "1234", "HELLO") >#> ("", "abcd", "1234", "ERR CMD SYNTAX")
   describe "NEW" do
-    it "no parameters" $ ("1234", "bcda", "", "NEW") >#> ("", "bcda", "", "ERR CMD SYNTAX")
-    it "many parameters" $ ("1234", "cdab", "", "NEW 1 " <> samplePubKey) >#> ("", "cdab", "", "ERR CMD SYNTAX")
+    it "no parameters" $ (sampleSig, "bcda", "", "NEW") >#> ("", "bcda", "", "ERR CMD SYNTAX")
+    it "many parameters" $ (sampleSig, "cdab", "", "NEW 1 " <> samplePubKey) >#> ("", "cdab", "", "ERR CMD SYNTAX")
     it "no signature" $ ("", "dabc", "", "NEW " <> samplePubKey) >#> ("", "dabc", "", "ERR CMD NO_AUTH")
-    it "queue ID" $ ("1234", "abcd", "12345678", "NEW " <> samplePubKey) >#> ("", "abcd", "12345678", "ERR CMD HAS_AUTH")
+    it "queue ID" $ (sampleSig, "abcd", "12345678", "NEW " <> samplePubKey) >#> ("", "abcd", "12345678", "ERR CMD HAS_AUTH")
   describe "KEY" do
-    it "valid syntax" $ ("1234", "bcda", "12345678", "KEY " <> samplePubKey) >#> ("", "bcda", "12345678", "ERR AUTH")
-    it "no parameters" $ ("1234", "cdab", "12345678", "KEY") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
-    it "many parameters" $ ("1234", "dabc", "12345678", "KEY 1 " <> samplePubKey) >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
+    it "valid syntax" $ (sampleSig, "bcda", "12345678", "KEY " <> samplePubKey) >#> ("", "bcda", "12345678", "ERR AUTH")
+    it "no parameters" $ (sampleSig, "cdab", "12345678", "KEY") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
+    it "many parameters" $ (sampleSig, "dabc", "12345678", "KEY 1 " <> samplePubKey) >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
     it "no signature" $ ("", "abcd", "12345678", "KEY " <> samplePubKey) >#> ("", "abcd", "12345678", "ERR CMD NO_AUTH")
-    it "no queue ID" $ ("1234", "bcda", "", "KEY " <> samplePubKey) >#> ("", "bcda", "", "ERR CMD NO_AUTH")
+    it "no queue ID" $ (sampleSig, "bcda", "", "KEY " <> samplePubKey) >#> ("", "bcda", "", "ERR CMD NO_AUTH")
   noParamsSyntaxTest "SUB"
   noParamsSyntaxTest "ACK"
   noParamsSyntaxTest "OFF"
   noParamsSyntaxTest "DEL"
   describe "SEND" do
-    it "valid syntax 1" $ ("1234", "cdab", "12345678", "SEND 5 hello ") >#> ("", "cdab", "12345678", "ERR AUTH")
-    it "valid syntax 2" $ ("1234", "dabc", "12345678", "SEND 11 hello there ") >#> ("", "dabc", "12345678", "ERR AUTH")
-    it "no parameters" $ ("1234", "abcd", "12345678", "SEND") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
-    it "no queue ID" $ ("1234", "bcda", "", "SEND 5 hello ") >#> ("", "bcda", "", "ERR CMD NO_QUEUE")
-    it "bad message body 1" $ ("1234", "cdab", "12345678", "SEND 11 hello ") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
-    it "bad message body 2" $ ("1234", "dabc", "12345678", "SEND hello ") >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
-    it "bigger body" $ ("1234", "abcd", "12345678", "SEND 4 hello ") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
+    it "valid syntax 1" $ (sampleSig, "cdab", "12345678", "SEND 5 hello ") >#> ("", "cdab", "12345678", "ERR AUTH")
+    it "valid syntax 2" $ (sampleSig, "dabc", "12345678", "SEND 11 hello there ") >#> ("", "dabc", "12345678", "ERR AUTH")
+    it "no parameters" $ (sampleSig, "abcd", "12345678", "SEND") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
+    it "no queue ID" $ (sampleSig, "bcda", "", "SEND 5 hello ") >#> ("", "bcda", "", "ERR CMD NO_QUEUE")
+    it "bad message body 1" $ (sampleSig, "cdab", "12345678", "SEND 11 hello ") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
+    it "bad message body 2" $ (sampleSig, "dabc", "12345678", "SEND hello ") >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
+    it "bigger body" $ (sampleSig, "abcd", "12345678", "SEND 4 hello ") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
   describe "PING" do
     it "valid syntax" $ ("", "abcd", "", "PING") >#> ("", "abcd", "", "PONG")
   describe "broker response not allowed" do
-    it "OK" $ ("1234", "bcda", "12345678", "OK") >#> ("", "bcda", "12345678", "ERR CMD PROHIBITED")
+    it "OK" $ (sampleSig, "bcda", "12345678", "OK") >#> ("", "bcda", "12345678", "ERR CMD PROHIBITED")
   where
     noParamsSyntaxTest :: ByteString -> Spec
     noParamsSyntaxTest cmd = describe (B.unpack cmd) do
-      it "valid syntax" $ ("1234", "abcd", "12345678", cmd) >#> ("", "abcd", "12345678", "ERR AUTH")
-      it "wrong terminator" $ ("1234", "bcda", "12345678", cmd <> "=") >#> ("", "bcda", "12345678", "ERR CMD SYNTAX")
+      it "valid syntax" $ (sampleSig, "abcd", "12345678", cmd) >#> ("", "abcd", "12345678", "ERR AUTH")
+      it "wrong terminator" $ (sampleSig, "bcda", "12345678", cmd <> "=") >#> ("", "bcda", "12345678", "ERR CMD SYNTAX")
       it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", "ERR CMD NO_AUTH")
-      it "no queue ID" $ ("1234", "dabc", "", cmd) >#> ("", "dabc", "", "ERR CMD NO_AUTH")
+      it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", "ERR CMD NO_AUTH")
