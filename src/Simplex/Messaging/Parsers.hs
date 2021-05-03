@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Parsers where
@@ -11,6 +12,11 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
+import Data.Typeable (Typeable)
+import Database.SQLite.Simple (ResultError (..), SQLData (..))
+import Database.SQLite.Simple.FromField (FieldParser, returnError)
+import Database.SQLite.Simple.Internal (Field (..))
+import Database.SQLite.Simple.Ok (Ok (Ok))
 import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
 
@@ -43,3 +49,11 @@ parseRead2 = parseRead $ do
   w1 <- A.takeTill (== ' ') <* A.char ' '
   w2 <- A.takeTill (== ' ')
   pure $ w1 <> " " <> w2
+
+blobFieldParser :: Typeable k => Parser k -> FieldParser k
+blobFieldParser p = \case
+  f@(Field (SQLBlob b) _) ->
+    case parseAll p b of
+      Right k -> Ok k
+      Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
+  f -> returnError ConversionFailed f "expecting SQLBlob column type"
