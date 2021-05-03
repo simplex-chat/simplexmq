@@ -50,3 +50,7 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 ## SMP agent design
 
 ![SMP agent design](./design/agent2.svg)
+
+## License
+
+[AGPL v3](./LICENSE)
