@@ -9,9 +9,10 @@
 
 ### ErrorType (Protocol.hs)
 
-- BLOCK - incorrect block format or encoding
+- BLOCK - incorrect block format, encoding or signature size
 - CMD error - command is unknown or has invalid syntax, where `error` can be:
   - PROHIBITED - server response sent from client or vice versa
+  - KEY_SIZE - bad RSA key size in NEW or KEY commands (only 1024, 2048 and 4096 bits keys are allowed)
   - SYNTAX - error parsing command
   - NO_AUTH - transmission has no required credentials (signature or queue ID)
   - HAS_AUTH - transmission has not allowed credentials

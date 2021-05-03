@@ -22,6 +22,7 @@ module Simplex.Messaging.Crypto
     generateKeyPair,
     publicKey,
     publicKeySize,
+    validKeySize,
     safePrivateKey,
     sign,
     verify,
@@ -186,6 +187,13 @@ publicKey = PublicKey . R.private_pub . rsaPrivateKey
 
 publicKeySize :: PublicKey -> Int
 publicKeySize = R.public_size . rsaPublicKey
+
+validKeySize :: Int -> Bool
+validKeySize = \case
+  128 -> True
+  256 -> True
+  512 -> True
+  _ -> False
 
 data Header = Header
   { aesKey :: Key,
