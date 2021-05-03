@@ -117,7 +117,7 @@ The messages sent over the queue are encrypted and decrypted using another key p
 
 **Simplex queue diagram:**
 
-![Simplex queue](/diagrams/simplex-messaging/simplex.svg)
+![Simplex queue](./diagrams/simplex-messaging/simplex.svg)
 
 Queue is defined by recipient ID `RID` and sender ID `SID`, unique for the server. Sender key (`SK`) is used by the server to verify sender's commands (identified by `SID`) to send messages. Recipient key (`RK`) is used by the server to verify recipient's commands (identified by `RID`) to retrieve messages.
 
@@ -187,7 +187,7 @@ This flow is shown on the sequence diagram below.
 
 **Creating simplex queue from Bob to Alice:**
 
-![Creating queue](/diagrams/simplex-messaging/simplex-creating.svg)
+![Creating queue](./diagrams/simplex-messaging/simplex-creating.svg)
 
 Bob now can securely send messages to Alice:
 
@@ -213,11 +213,11 @@ This flow is show on sequence diagram below.
 
 **Sending messages from Bob to Alice via simplex queue:**
 
-![Using queue](/diagrams/simplex-messaging/simplex-using.svg)
+![Using queue](./diagrams/simplex-messaging/simplex-using.svg)
 
 **Simplex queue operation:**
 
-![Simplex queue operations](/diagrams/simplex-messaging/simplex-op.svg)
+![Simplex queue operations](./diagrams/simplex-messaging/simplex-op.svg)
 
 Sequence diagram does not show E2E encryption - server knows nothing about encryption between the sender and the receiver.
 
