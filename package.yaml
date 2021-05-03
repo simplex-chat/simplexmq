@@ -65,17 +65,6 @@ executables:
     ghc-options:
       - -threaded
 
-  dog-food:
-    source-dirs: apps/dog-food
-    main: Main.hs
-    dependencies:
-      - ansi-terminal == 0.10.*
-      - optparse-applicative == 0.15.*
-      - simplexmq
-      - terminal == 0.2.*
-    ghc-options:
-      - -threaded
-
 tests:
   smp-server-test:
     source-dirs: tests
