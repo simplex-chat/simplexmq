@@ -76,15 +76,11 @@ import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.String
-import Data.Typeable (Typeable)
 import Data.X509
-import Database.SQLite.Simple (ResultError (..), SQLData (..))
-import Database.SQLite.Simple.FromField (FieldParser, FromField (..), returnError)
-import Database.SQLite.Simple.Internal (Field (..))
-import Database.SQLite.Simple.Ok (Ok (Ok))
+import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, parseAll)
+import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
@@ -122,17 +118,9 @@ instance ToField SafePrivateKey where toField = toField . encodePrivKey
 
 instance ToField PublicKey where toField = toField . encodePubKey
 
-instance FromField SafePrivateKey where fromField = keyFromField binaryPrivKeyP
+instance FromField SafePrivateKey where fromField = blobFieldParser binaryPrivKeyP
 
-instance FromField PublicKey where fromField = keyFromField binaryPubKeyP
-
-keyFromField :: Typeable k => Parser k -> FieldParser k
-keyFromField p = \case
-  f@(Field (SQLBlob b) _) ->
-    case parseAll p b of
-      Right k -> Ok k
-      Left e -> returnError ConversionFailed f ("couldn't parse key field: " ++ e)
-  f -> returnError ConversionFailed f "expecting SQLBlob column type"
+instance FromField PublicKey where fromField = blobFieldParser binaryPubKeyP
 
 type KeyPair k = (PublicKey, k)
 
@@ -211,9 +199,9 @@ newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 instance IsString KeyHash where
   fromString = parseString . parseAll $ KeyHash <$> base64P
 
-instance ToField KeyHash where toField = toField . unKeyHash
+instance ToField KeyHash where toField = toField . encode . unKeyHash
 
-instance FromField KeyHash where fromField f = KeyHash <$> fromField f
+instance FromField KeyHash where fromField = blobFieldParser $ KeyHash <$> base64P
 
 publicKeyHash :: PublicKey -> KeyHash
 publicKeyHash = KeyHash . sha256Hash . encodePubKey
