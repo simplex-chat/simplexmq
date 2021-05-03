@@ -11,23 +11,32 @@ SMP protocol is inspired by [Redis serialization protocol](https://redis.io/topi
 
 SimpleXMQ is implemented in Haskell - it benefits from robust software transactional memory and concurrency primitives that Haskell provides.
 
+## SimpleXMQ roadmap
+
+- Streams - high performance message queues. See [Streams RFC](./rfcs/2021-02-28-streams.md) for details.
+- "Small" connection groups, when each message will be sent by the SMP agent to multiple connections with a single client command. See [Groups RFC](./rfcs/2021-03-18-groups.md) for details.
+- SMP agents cluster to share connections and message management by multiple agents.
+- SMP queue redundancy and rotation in SMP agent duplex connections.
+- "Large" groups design and implementation. 
+
 ## Components
 
 ### SMP server
 
-[SMP server](./apps/smp-server/Main.hs) can be run on any Linux distribution without any dependencies. It uses in-memory persistence with an optional append-only log of created queues that allows to re-start the server without losing the connections. This log is compacted every time the server is started, permanently removing suspended and removed queues.
+[SMP server](./apps/smp-server/Main.hs) can be run on any Linux distribution without any dependencies. It uses in-memory persistence with an optional append-only log of created queues that allows to re-start the server without losing the connections. This log is compacted every on server restart, permanently removing suspended and removed queues.
 
 To enable the queue logging, uncomment `enable: on` option in `smp-server.ini` configuration file that is created the first time the server is started.
 
-On the first start the server generates RSA keys for encrypted transport handshake and logs its hash every time it runs - this hash should be used as part of the server address: `<hostname>:5223#<key hash>`
+On the first start the server generates RSA keys for encrypted transport handshake and outputs its hash every time it runs - this hash should be used as part of the server address: `<hostname>:5223#<key hash>`
 
-SimpleXMQ server implements [SMP protocol](./protocol/simplex-messaging.md).
-
-It uses cryptographic signatures to authorize commands using RSA public keys provided when the queues are created and secured.
+SMP server implements [SMP protocol](./protocol/simplex-messaging.md).
 
 ### SMP client library
 
-[SMP client](./src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers, execute commands with a functional API and receive notifications via STM queue.
+[SMP client](./src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
+- execute commands with a functional API.
+- receive message and other notifications via STM queue.
+- automatically send keep-alive commands.
 
 ### SMP agent
 
@@ -35,7 +44,9 @@ It uses cryptographic signatures to authorize commands using RSA public keys pro
 
 Haskell type [ACommand](./src/Simplex/Messaging/Agent/Transmission.hs) represents SMP agent protocol to communicate via STM queues.
 
-[SMP agent executable](./apps/smp-agent/Main.hs) can be used to run a standalone SMP agent process that implements [SMP agent protocol](./protocol/agent-protocol.md) and makes it accessible via TCP port 5224, so it can be used via telnet. It can be deployed in private networks to share access to the connections between multiple applications or services.
+See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for the example of integrating SMP agent into another application.
+
+[SMP agent executable](./apps/smp-agent/Main.hs) can be used to run a standalone SMP agent process that implements plaintext [SMP agent protocol](./protocol/agent-protocol.md) via TCP port 5224, so it can be used via telnet. It can be deployed in private networks to share access to the connections between multiple applications and services.
 
 ## Using SMP server and SMP agent
 
