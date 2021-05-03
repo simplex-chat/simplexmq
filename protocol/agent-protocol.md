@@ -61,7 +61,7 @@ SMP agent protocol has 3 main parts:
 
 ## Duplex connection procedure
 
-![Duplex connection procedure](/diagrams/duplex-messaging/duplex-creating.svg)
+![Duplex connection procedure](./diagrams/duplex-messaging/duplex-creating.svg)
 
 The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection comprised of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP servers (which could be the same server). It is shown on the diagram above and has these steps:
 
