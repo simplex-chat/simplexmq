@@ -181,7 +181,7 @@ smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
   where
     server = B.unpack <$> A.takeTill (A.inClass ":# ")
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
-    kHash = A.char '#' *> C.keyHashP
+    kHash = C.KeyHash <$> (A.char '#' *> base64P)
 
 parseAgentMessage :: ByteString -> Either AgentErrorType AMessage
 parseAgentMessage = parse agentMessageP $ AGENT A_MESSAGE
@@ -198,7 +198,7 @@ serializeSmpQueueInfo (SMPQueueInfo srv qId ek) =
 
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} =
-  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . C.serializeKeyHash) keyHash
+  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . encode . C.unKeyHash) keyHash
 
 data SMPServer = SMPServer
   { host :: HostName,

@@ -8,6 +8,7 @@ module Main where
 
 import Control.Monad (unless, when)
 import qualified Crypto.Store.PKCS8 as S
+import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
 import Data.Functor (($>))
@@ -55,7 +56,7 @@ main = do
   ini <- readCreateIni opts
   storeLog <- openStoreLog ini
   pk <- readCreateKey
-  B.putStrLn $ "transport key hash: " <> publicKeyHash (C.publicKey pk)
+  B.putStrLn $ "transport key hash: " <> serverKeyHash pk
   putStrLn $ "listening on port " <> tcpPort cfg
   runSMPServer cfg {serverPrivateKey = pk, storeLog}
 
@@ -126,8 +127,8 @@ confirm msg = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-publicKeyHash :: C.PublicKey -> B.ByteString
-publicKeyHash = C.serializeKeyHash . C.getKeyHash . C.encodePubKey
+serverKeyHash :: C.FullPrivateKey -> B.ByteString
+serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey
 
 openStoreLog :: IniOpts -> IO (Maybe (StoreLog 'ReadMode))
 openStoreLog IniOpts {enableStoreLog, storeLogFile = f}
