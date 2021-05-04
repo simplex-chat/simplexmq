@@ -112,19 +112,21 @@ Message syntax below uses [ABNF][3] with [case-sensitive strings extension][4].
 
 ```abnf
 decryptedSmpMessageBody = agentMsgHeader CRLF agentMessage CRLF msgPadding
-agentMsgHeader = agentMsgId SP agentTimestamp SP previousMsgHash
-agentMsgId = 1*DIGIT ; sequential agent message ID set by the sending agent
+agentMsgHeader = agentMsgId SP agentTimestamp SP previousMsgHash ; here `agentMsgId` is sequential ID set by the sending agent
+agentMsgId = 1*DIGIT
+agentTimestamp = <date-time> ; RFC3339
+previousMsgHash = encoded
+encoded = <base64 encoded>
 
-agentMessage = helloMsg / replyQueueMsg / deleteQueueMsg
-               / clientMsg / acknowledgeMsg
+agentMessage = helloMsg / replyQueueMsg / deleteQueueMsg / clientMsg / acknowledgeMsg
 
 msgPadding = *OCTET ; optional random bytes to get messages to the same size (as defined in SMP message size)
 
 helloMsg = %s"HELLO" SP signatureVerificationKey [SP %s"NO_ACK"]
 ; NO_ACK means that acknowledgements to client messages will NOT be sent in this connection by the agent that sent `HELLO` message.
-signatureVerificationKey = encoded ; base64 encoded
+signatureVerificationKey = encoded
 
-replyQueueMsg = %s"REPLY" SP qInfo ; `qInfo` is the same as in out-of-band message
+replyQueueMsg = %s"REPLY" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
 ; this message can only be sent by the second connection party
 
 deleteQueueMsg = %s"DEL" ; notification that recipient queue will be deleted
@@ -146,9 +148,9 @@ ackErrorType = ackUnknownMsg / ackProhibitedMsg / ackSyntaxErr
 
 ackUnknownMsg = %s"UNKNOWN"
 
-ackProhibitedMsg = %"PROHIBITED" ; e.g. "HELLO" or "REPLY"
+ackProhibitedMsg = %s"PROHIBITED" ; e.g. "HELLO" or "REPLY"
 
-ackSyntaxErr = %"SYNTAX" SP syntaxErrCode
+ackSyntaxErr = %s"SYNTAX" SP syntaxErrCode
 syntaxErrCode = 1*DIGIT ; TODO
 ```
 
@@ -184,24 +186,13 @@ cId = encoded
 cName = 1*(ALPHA / DIGIT / "_" / "-")
 
 agentCommand = (userCmd / agentMsg) CRLF
-userCmd = newCmd / joinCmd
-          / acceptCmd / subscribeCmd
-          / sendCmd / acknowledgeCmd
-          / suspendCmd / deleteCmd
+userCmd = newCmd / joinCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
+agentMsg = invitation / connected / unsubscribed / message / sent / received / ok / error
 
-agentMsg = invitation / confirmation
-          / connected / unsubscribed
-          / message / sent / received
-          / ok / error
-
-newCmd = %s"NEW" SP smpServer [SP %s"NO_ACK"]
+newCmd = %s"NEW" SP <smpServer> [SP %s"NO_ACK"] ; `smpServer` is the same as in out-of-band message, see SMP protocol
 ; response is `invitation` or `error`
-smpServer = srvHost [":" port] ["#" keyFingerprint]
-srvHost = hostname ; RFC1123, RFC5891
-port = 1*DIGIT
-keyFingerprint = encoded
 
-invitation = %s"INV" SP qInfo
+invitation = %s"INV" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
 
 connected = %s"CON"
 
@@ -211,17 +202,9 @@ unsubscribed = %s"END"
 ; when another agent (or another client of the same agent)
 ; subscribes to the same SMP queue on the server
 
-joinCmd = %s"JOIN" SP qInfo
-                [SP (smpServer / %s"NO_REPLY")] ; reply queue SMP server
-                ; server from qInfo is used by default
-                [SP %s"NO_ACK"]         
+joinCmd = %s"JOIN" SP <queueInfo> [replyJoin] [SP %s"NO_ACK"] ; `queueInfo` is the same as in out-of-band message, see SMP protocol
+replyJoin = SP (<smpServer> / %s"NO_REPLY") ; reply queue SMP server, by default server from queueInfo is used
 ; response is `connected` or `error`
-
-confirmation = %s"CONF" SP partyId SP partyInfo
-; currently not implemented
-
-acceptCmd = %s"LET" SP partyId ; response is `ok` or `error`
-; currently not implemented
 
 suspendCmd = %s"OFF" ; can be sent by either party, response `ok` or `error`
 
@@ -238,24 +221,26 @@ msgBody = *OCTET ; any content of specified size - safe for binary
 
 sent = %s"SENT" SP agentMsgId
 
-message = %s"MSG" SP msgIntegrity
-          SP %s"R=" agentMsgId "," agentTimestamp ; receiving agent
-          SP %s"B=" brokerMsgId "," srvTimestamp ; broker (server)
-          SP %s"S=" agentMsgId "," agentTimestamp ; sending agent
-          SP binaryMsg
-agentMsgId = 1*DIGIT
-srvTimestamp = date-time ; RFC3339
-agentTimestamp = date-time
+message = %s"MSG" SP msgIntegrity SP recipientMeta SP brokerMeta SP senderMeta SP binaryMsg
+recipientMeta = %s"R=" agentMsgId "," agentTimestamp ; receiving agent message metadata 
+brokerMeta = %s"B=" brokerMsgId "," brokerTimestamp ; broker (server) message metadata
+senderMeta = %s"S=" agentMsgId "," agentTimestamp ; sending agent message metadata 
+brokerMsgId = encoded
+brokerTimestamp = <date-time>
 msgIntegrity = ok / messageError
 
 messageError = %s"ERR" SP messageErrorType
 messageErrorType = skippedMsgErr / badMsgIdErr / badHashErr
 
-skippedMsgErr = %"IDS" SP missingFromMsgId SP missingToMsgId
-badMsgIdErr = %"ID" SP previousMsgId ; ID is lower than the previous
-badHashErr = %"HASH"
+skippedMsgErr = %s"NO_ID" SP missingFromMsgId SP missingToMsgId
+badMsgIdErr = %s"ID" SP previousMsgId ; ID is lower than the previous
+badHashErr = %s"HASH"
 
-acknowledge = %s"ACK" SP agentMsgId ; ID assigned by receiving agent (in MSG "R")
+missingFromMsgId = agentMsgId
+missingToMsgId = agentMsgId
+previousMsgId = agentMsgId
+
+acknowledgeCmd = %s"ACK" SP agentMsgId ; ID assigned by receiving agent (in MSG "R")
 ; currently not implemented
 
 received = %s"RCVD" SP agentMsgId ; ID assigned by sending agent (in SENT response)
@@ -263,9 +248,7 @@ received = %s"RCVD" SP agentMsgId ; ID assigned by sending agent (in SENT respon
 
 ok = %s"OK"
 
-error = %s"ERR" SP errorType
-
-encoded = base64
+error = %s"ERR" SP <errorType>
 ```
 
 ### Client commands and server responses
@@ -315,15 +298,9 @@ It is used to delete the connection and all messages in it, as well as the recei
 
 ## Connection invitation
 
-Connection invitation `qInfo` is generated by SMP agent in response to `newCmd` command (`"NEW"`), used by another party user with `joinCmd` command (`"JOIN"`), and then another invitation is sent by the agent in `replyQueueMsg` and used by the first party agent to connect to the reply queue (the second part of the process is invisible to the users).
+Connection invitation `queueInfo` is generated by SMP agent in response to `newCmd` command (`"NEW"`), used by another party user with `joinCmd` command (`"JOIN"`), and then another invitation is sent by the agent in `replyQueueMsg` and used by the first party agent to connect to the reply queue (the second part of the process is invisible to the users).
 
-Connection invitation is a text with the following syntax:
-
-```
-qInfo = %s"smp::" smpServer "::" queueId "::" ephemeralPublicKey
-queueId = encoded
-ephemeralPublicKey = %s"rsa:" encoded ; RSA key for sender to encrypt messages X509 base64 encoded
-```
+See SMP protocol [out-of-band messages](./simplex-messaging.md#out-of-band-messages) for connection invitation syntax.
 
 [1]: https://en.wikipedia.org/wiki/End-to-end_encryption
 [2]: https://en.wikipedia.org/wiki/Man-in-the-middle_attack
