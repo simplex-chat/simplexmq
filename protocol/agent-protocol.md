@@ -116,8 +116,7 @@ agentMsgHeader = agentMsgId SP agentTimestamp SP <previousMsgHash> ; here `agent
 agentMsgId = 1*DIGIT
 agentTimestamp = <date-time> ; RFC3339
 
-agentMessage = helloMsg / replyQueueMsg / deleteQueueMsg
-               / clientMsg / acknowledgeMsg
+agentMessage = helloMsg / replyQueueMsg / deleteQueueMsg / clientMsg / acknowledgeMsg
 
 msgPadding = *OCTET ; optional random bytes to get messages to the same size (as defined in SMP message size)
 
@@ -186,15 +185,8 @@ cId = encoded
 cName = 1*(ALPHA / DIGIT / "_" / "-")
 
 agentCommand = (userCmd / agentMsg) CRLF
-userCmd = newCmd / joinCmd
-          / acceptCmd / subscribeCmd
-          / sendCmd / acknowledgeCmd
-          / suspendCmd / deleteCmd
-
-agentMsg = invitation / confirmation
-          / connected / unsubscribed
-          / message / sent / received
-          / ok / error
+userCmd = newCmd / joinCmd / acceptCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
+agentMsg = invitation / confirmation / connected / unsubscribed / message / sent / received / ok / error
 
 newCmd = %s"NEW" SP <smpServer> [SP %s"NO_ACK"] ; `smpServer` is the same as in out-of-band message, see SMP protocol
 ; response is `invitation` or `error`
@@ -232,13 +224,12 @@ binaryMsg = size CRLF msgBody CRLF ; the last CRLF is in addition to CRLF in the
 size = 1*DIGIT ; size in bytes
 msgBody = *OCTET ; any content of specified size - safe for binary
 
-sent = %s"SENT" SP senderMsgId
+sent = %s"SENT" SP agentMsgId
 
-message = %s"MSG" SP msgIntegrity
-          SP %s"R=" agentMsgId "," agentTimestamp ; receiving agent
-          SP %s"B=" <brokerMsgId> "," srvTimestamp ; broker (server)
-          SP %s"S=" senderMsgId "," agentTimestamp ; sending agent
-          SP binaryMsg
+message = %s"MSG" SP msgIntegrity SP recipientMeta SP brokerMeta SP senderMeta SP binaryMsg
+recipientMeta = %s"R=" agentMsgId "," agentTimestamp ; receiving agent message metadata 
+brokerMeta = %s"B=" <brokerMsgId> "," srvTimestamp ; broker (server) message metadata
+senderMeta = %s"S=" agentMsgId "," agentTimestamp ; sending agent message metadata 
 srvTimestamp = <date-time>
 msgIntegrity = ok / messageError
 
@@ -253,7 +244,7 @@ missingFromMsgId = agentMsgId
 missingToMsgId = agentMsgId
 previousMsgId = agentMsgId
 
-acknowledge = %s"ACK" SP agentMsgId ; ID assigned by receiving agent (in MSG "R")
+acknowledgeCmd = %s"ACK" SP agentMsgId ; ID assigned by receiving agent (in MSG "R")
 ; currently not implemented
 
 received = %s"RCVD" SP agentMsgId ; ID assigned by sending agent (in SENT response)
