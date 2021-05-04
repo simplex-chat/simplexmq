@@ -112,9 +112,11 @@ Message syntax below uses [ABNF][3] with [case-sensitive strings extension][4].
 
 ```abnf
 decryptedSmpMessageBody = agentMsgHeader CRLF agentMessage CRLF msgPadding
-agentMsgHeader = agentMsgId SP agentTimestamp SP <previousMsgHash> ; here `agentMsgId` is sequential ID set by the sending agent
+agentMsgHeader = agentMsgId SP agentTimestamp SP previousMsgHash ; here `agentMsgId` is sequential ID set by the sending agent
 agentMsgId = 1*DIGIT
 agentTimestamp = <date-time> ; RFC3339
+previousMsgHash = encoded
+encoded = <base64 encoded>
 
 agentMessage = helloMsg / replyQueueMsg / deleteQueueMsg / clientMsg / acknowledgeMsg
 
@@ -123,7 +125,6 @@ msgPadding = *OCTET ; optional random bytes to get messages to the same size (as
 helloMsg = %s"HELLO" SP signatureVerificationKey [SP %s"NO_ACK"]
 ; NO_ACK means that acknowledgements to client messages will NOT be sent in this connection by the agent that sent `HELLO` message.
 signatureVerificationKey = encoded
-encoded = <base64 encoded>
 
 replyQueueMsg = %s"REPLY" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
 ; this message can only be sent by the second connection party
@@ -185,13 +186,13 @@ cId = encoded
 cName = 1*(ALPHA / DIGIT / "_" / "-")
 
 agentCommand = (userCmd / agentMsg) CRLF
-userCmd = newCmd / joinCmd / acceptCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
-agentMsg = invitation / confirmation / connected / unsubscribed / message / sent / received / ok / error
+userCmd = newCmd / joinCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
+agentMsg = invitation / connected / unsubscribed / message / sent / received / ok / error
 
 newCmd = %s"NEW" SP <smpServer> [SP %s"NO_ACK"] ; `smpServer` is the same as in out-of-band message, see SMP protocol
 ; response is `invitation` or `error`
 
-invitation = %s"INV" SP <queueInfo>
+invitation = %s"INV" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
 
 connected = %s"CON"
 
@@ -201,15 +202,9 @@ unsubscribed = %s"END"
 ; when another agent (or another client of the same agent)
 ; subscribes to the same SMP queue on the server
 
-joinCmd = %s"JOIN" SP <queueInfo> [replyJoin] [SP %s"NO_ACK"]
+joinCmd = %s"JOIN" SP <queueInfo> [replyJoin] [SP %s"NO_ACK"] ; `queueInfo` is the same as in out-of-band message, see SMP protocol
 replyJoin = SP (<smpServer> / %s"NO_REPLY") ; reply queue SMP server, by default server from queueInfo is used
 ; response is `connected` or `error`
-
-confirmation = %s"CONF" SP <partyId> SP <partyInfo>
-; currently not implemented
-
-acceptCmd = %s"LET" SP <partyId> ; response is `ok` or `error`
-; currently not implemented
 
 suspendCmd = %s"OFF" ; can be sent by either party, response `ok` or `error`
 
@@ -228,9 +223,10 @@ sent = %s"SENT" SP agentMsgId
 
 message = %s"MSG" SP msgIntegrity SP recipientMeta SP brokerMeta SP senderMeta SP binaryMsg
 recipientMeta = %s"R=" agentMsgId "," agentTimestamp ; receiving agent message metadata 
-brokerMeta = %s"B=" <brokerMsgId> "," srvTimestamp ; broker (server) message metadata
+brokerMeta = %s"B=" brokerMsgId "," brokerTimestamp ; broker (server) message metadata
 senderMeta = %s"S=" agentMsgId "," agentTimestamp ; sending agent message metadata 
-srvTimestamp = <date-time>
+brokerMsgId = encoded
+brokerTimestamp = <date-time>
 msgIntegrity = ok / messageError
 
 messageError = %s"ERR" SP messageErrorType
