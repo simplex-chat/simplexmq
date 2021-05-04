@@ -77,14 +77,14 @@ The out-of-band message with the queue information is sent via some trusted alte
 The [ABNF][8] syntax of the message is:
 
 ```abnf
-outOfBandMsg = "smp::" server "::" queueId "::" encryptionKey
+outOfBandMsg = %s"smp::" server "::" queueId "::" encryptionKey
 server = <hostname> [":" port] ["#" serverKeyHash]
 port = 1*DIGIT
 serverKeyHash = encoded
 queueId = encoded
 encryptionKey = %s"rsa:" x509encoded ; the recipient's RSA public key for sender to encrypt messages
 x509encoded = <base64 X509 key encoding>
-encoded = <base64 encoded binary>
+encoded = <base64 encoded>
 ```
 
 `hostname` can be IP address or domain name, as defined in RFC 1123, section 2.1.
@@ -404,7 +404,7 @@ The first message will be delivered either immediately or as soon as it is avail
 
 This command is sent by the recipient to the server to add sender's key to the queue:
 
-```
+```abnf
 secure = %s"KEY" SP senderKey
 senderKey = %s"rsa:" x509encoded ; the sender's RSA public key for this queue
 ```
