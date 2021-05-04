@@ -74,7 +74,7 @@ Creating and using the queue requires sending commands to the SMP server from th
 
 The out-of-band message with the queue information is sent via some trusted alternative channel from the recipient to the sender. This message is used to share the encryption (a.k.a. "public") key that the sender will use to encrypt the messages (to be decrypted by the recipient), sender queue ID, server hostname and any other information necessary to establish secure encrypted connection with SMP server (see [Appendix A](#appendix-a) for SMP transport protocol).
 
-The [ABNF][8]  syntax of the message is:
+The [ABNF][8] syntax of the message is:
 
 ```abnf
 outOfBandMsg = "smp::" server "::" queueId "::" encryptionKey
