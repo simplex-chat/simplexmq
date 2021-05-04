@@ -8,7 +8,7 @@ digraph SMPAgent {
 
   subgraph clusterPersistence {
     graph [fontsize=11 color=gray]
-    label="persistence (sqlite)\nQ: can multiple threads use it"
+    label="persistence (sqlite)"
     connectionsStore [shape=cylinder label="duplex connections,\nSMP queues,\nrecent messages"]
   }
 
