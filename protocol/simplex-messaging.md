@@ -77,8 +77,9 @@ The out-of-band message with the queue information is sent via some trusted alte
 The [ABNF][8] syntax of the message is:
 
 ```abnf
-outOfBandMsg = %s"smp::" server "::" queueId "::" encryptionKey
-server = <hostname> [":" port] ["#" serverKeyHash]
+queueInfo = %s"smp::" smpServer "::" queueId "::" encryptionKey
+smpServer = srvHost [":" port] ["#" serverKeyHash]
+srvHost = <hostname> ; RFC1123, RFC5891
 port = 1*DIGIT
 serverKeyHash = encoded
 queueId = encoded
