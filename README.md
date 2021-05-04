@@ -35,7 +35,7 @@ SMP server implements [SMP protocol](./protocol/simplex-messaging.md).
 
 [SMP client](./src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
 - execute commands with a functional API.
-- receive message and other notifications via STM queue.
+- receive messages and other notifications via STM queue.
 - automatically send keep-alive commands.
 
 ### SMP agent
