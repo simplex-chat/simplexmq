@@ -112,8 +112,8 @@ Message syntax below uses [ABNF][3] with [case-sensitive strings extension][4].
 
 ```abnf
 decryptedSmpMessageBody = agentMsgHeader CRLF agentMessage CRLF msgPadding
-agentMsgHeader = agentMsgId SP agentTimestamp SP previousMsgHash
-agentMsgId = 1*DIGIT ; sequential agent message ID set by the sending agent
+agentMsgHeader = agentMsgId SP agentTimestamp SP <previousMsgHash> ; here `agentMsgId` is sequential ID set by the sending agent
+agentMsgId = 1*DIGIT
 agentTimestamp = <date-time> ; RFC3339
 
 agentMessage = helloMsg / replyQueueMsg / deleteQueueMsg
@@ -209,10 +209,8 @@ unsubscribed = %s"END"
 ; when another agent (or another client of the same agent)
 ; subscribes to the same SMP queue on the server
 
-joinCmd = %s"JOIN" SP <queueInfo>
-                [SP (<smpServer> / %s"NO_REPLY")] ; reply queue SMP server
-                ; server from queueInfo is used by default
-                [SP %s"NO_ACK"]         
+joinCmd = %s"JOIN" SP <queueInfo> [replyJoin] [SP %s"NO_ACK"]
+replyJoin = SP (<smpServer> / %s"NO_REPLY") ; reply queue SMP server, by default server from queueInfo is used
 ; response is `connected` or `error`
 
 confirmation = %s"CONF" SP <partyId> SP <partyInfo>
@@ -234,16 +232,14 @@ binaryMsg = size CRLF msgBody CRLF ; the last CRLF is in addition to CRLF in the
 size = 1*DIGIT ; size in bytes
 msgBody = *OCTET ; any content of specified size - safe for binary
 
-sent = %s"SENT" SP agentMsgId
+sent = %s"SENT" SP senderMsgId
 
 message = %s"MSG" SP msgIntegrity
           SP %s"R=" agentMsgId "," agentTimestamp ; receiving agent
-          SP %s"B=" brokerMsgId "," srvTimestamp ; broker (server)
-          SP %s"S=" agentMsgId "," agentTimestamp ; sending agent
+          SP %s"B=" <brokerMsgId> "," srvTimestamp ; broker (server)
+          SP %s"S=" senderMsgId "," agentTimestamp ; sending agent
           SP binaryMsg
-agentMsgId = 1*DIGIT
 srvTimestamp = <date-time>
-agentTimestamp = <date-time>
 msgIntegrity = ok / messageError
 
 messageError = %s"ERR" SP messageErrorType
