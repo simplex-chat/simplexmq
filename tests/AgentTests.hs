@@ -25,12 +25,14 @@ agentTests = do
   describe "SMP agent protocol syntax" syntaxTests
   describe "Establishing duplex connection" do
     it "should connect via one server and one agent" $
-      smpAgentTest2_1 testDuplexConnection
+      smpAgentTest2_1_1 testDuplexConnection
     it "should connect via one server and 2 agents" $
-      smpAgentTest2 testDuplexConnection
+      smpAgentTest2_2_1 testDuplexConnection
+    it "should connect via 2 servers and 2 agents" $
+      smpAgentTest2_2_2 testDuplexConnection
   describe "Connection subscriptions" do
     it "should connect via one server and one agent" $
-      smpAgentTest3_1 testSubscription
+      smpAgentTest3_1_1 testSubscription
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest testSubscrNotification
 
