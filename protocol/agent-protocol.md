@@ -189,8 +189,7 @@ agentCommand = (userCmd / agentMsg) CRLF
 userCmd = newCmd / joinCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
 agentMsg = invitation / connected / unsubscribed / message / sent / received / ok / error
 
-newCmd = %s"NEW" SP <smpServer> [SP %s"NO_ACK"] ; `smpServer` is the same as in out-of-band message, see SMP protocol
-; response is `invitation` or `error`
+newCmd = %s"NEW" [SP %s"NO_ACK"] ; response is `invitation` or `error`
 
 invitation = %s"INV" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
 
@@ -203,7 +202,7 @@ unsubscribed = %s"END"
 ; subscribes to the same SMP queue on the server
 
 joinCmd = %s"JOIN" SP <queueInfo> [replyJoin] [SP %s"NO_ACK"] ; `queueInfo` is the same as in out-of-band message, see SMP protocol
-replyJoin = SP (<smpServer> / %s"NO_REPLY") ; reply queue SMP server, by default server from queueInfo is used
+replyJoin = SP %s"NO_REPLY" ; disable creating reply queue
 ; response is `connected` or `error`
 
 suspendCmd = %s"OFF" ; can be sent by either party, response `ok` or `error`

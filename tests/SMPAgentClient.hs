@@ -8,6 +8,7 @@ module SMPAgentClient where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import qualified Data.List.NonEmpty as L
 import Network.Socket (HostName, ServiceName)
 import SMPClient (serverBracket, testPort, withSmpServer, withSmpServerThreadOn)
 import Simplex.Messaging.Agent (runSMPAgentBlocking)
@@ -108,6 +109,7 @@ cfg :: AgentConfig
 cfg =
   AgentConfig
     { tcpPort = agentTestPort,
+      smpServers = L.fromList ["localhost:5000"],
       rsaKeySize = 2048 `div` 8,
       connIdBytes = 12,
       tbqSize = 1,

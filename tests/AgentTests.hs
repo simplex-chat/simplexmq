@@ -13,7 +13,6 @@ import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
-import SMPClient (testKeyHashStr)
 import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import System.IO (Handle)
@@ -84,7 +83,7 @@ pattern Msg msgBody <- MSG {msgBody, msgIntegrity = MsgOk}
 
 testDuplexConnection :: Handle -> Handle -> IO ()
 testDuplexConnection alice bob = do
-  ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW localhost:5000")
+  ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
   alice <# ("", "bob", CON)
@@ -103,17 +102,14 @@ testDuplexConnection alice bob = do
 
 testSubscription :: Handle -> Handle -> Handle -> IO ()
 testSubscription alice1 alice2 bob = do
-  ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW localhost:5000")
+  ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
   bob #: ("12", "alice", "SEND 5\nhello") =#> \case ("12", "alice", SENT _) -> True; _ -> False
   bob #: ("13", "alice", "SEND 11\nhello again") =#> \case ("13", "alice", SENT _) -> True; _ -> False
   alice1 <# ("", "bob", CON)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
-  -- alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
-  t <- tGet SAgent alice1
-  print t
-  t `shouldSatisfy` (\case ("", "bob", Msg "hello again") -> True; _ -> False) . correctTransmission
+  alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
   bob #: ("14", "alice", "SEND 2\nhi") =#> \case ("14", "alice", SENT _) -> True; _ -> False
@@ -122,7 +118,7 @@ testSubscription alice1 alice2 bob = do
 
 testSubscrNotification :: (ThreadId, ThreadId) -> Handle -> IO ()
 testSubscrNotification (server, _) client = do
-  client #: ("1", "conn1", "NEW localhost:5000") =#> \case ("1", "conn1", INV _) -> True; _ -> False
+  client #: ("1", "conn1", "NEW") =#> \case ("1", "conn1", INV _) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
   client <# ("", "conn1", END)
@@ -137,15 +133,10 @@ syntaxTests = do
     describe "valid" do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
-      xit "only server" $ ("211", "", "NEW localhost") >#>= \case ("211", "", "INV" : _) -> True; _ -> False
-      it "with port" $ ("212", "", "NEW localhost:5000") >#>= \case ("212", "", "INV" : _) -> True; _ -> False
-      xit "with keyHash" $ ("213", "", "NEW localhost#" <> testKeyHashStr) >#>= \case ("213", "", "INV" : _) -> True; _ -> False
-      it "with port and keyHash" $ ("214", "", "NEW localhost:5000#" <> testKeyHashStr) >#>= \case ("214", "", "INV" : _) -> True; _ -> False
+      xit "without parameters" $ ("211", "", "NEW") >#>= \case ("211", "", "INV" : _) -> True; _ -> False
     describe "invalid" do
       -- TODO: add tests with defined connection alias
-      it "no parameters" $ ("221", "", "NEW") >#> ("221", "", "ERR CMD SYNTAX")
-      it "many parameters" $ ("222", "", "NEW localhost:5000 hi") >#> ("222", "", "ERR CMD SYNTAX")
-      it "invalid server keyHash" $ ("223", "", "NEW localhost:5000#1") >#> ("223", "", "ERR CMD SYNTAX")
+      it "with parameters" $ ("222", "", "NEW hi") >#> ("222", "", "ERR CMD SYNTAX")
 
   describe "JOIN" do
     describe "valid" do

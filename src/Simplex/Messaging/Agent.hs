@@ -16,6 +16,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -23,6 +24,7 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.List.NonEmpty as L
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
@@ -127,7 +129,7 @@ withStore action = do
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
 processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
   case cmd of
-    NEW smpServer -> createNewConnection smpServer
+    NEW -> createNewConnection
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
     SUB -> subscribeConnection connAlias
     SUBALL -> subscribeAll
@@ -135,25 +137,31 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
     OFF -> suspendConnection
     DEL -> deleteConnection
   where
-    createNewConnection :: SMPServer -> m ()
-    createNewConnection server = do
+    createNewConnection :: m ()
+    createNewConnection = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
+      server <- getSMPServer
       (rq, qInfo) <- newReceiveQueue c server connAlias
       withStore $ createRcvConn st rq
       respond $ INV qInfo
 
+    getSMPServer :: m SMPServer
+    getSMPServer = do
+      servers <- asks $ smpServers . config
+      idx <- asks smpServerIdx
+      i <- atomically $ stateTVar idx $ \i -> (i, i + 1 `mod` L.length servers)
+      pure $ servers L.!! i
+
     joinConnection :: SMPQueueInfo -> ReplyMode -> m ()
-    joinConnection qInfo@(SMPQueueInfo srv _ _) replyMode = do
+    joinConnection qInfo@(SMPQueueInfo srv _ _) (ReplyMode replyMode) = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
       (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
       withStore $ createSndConn st sq
       connectToSendQueue c st sq senderKey verifyKey
-      case replyMode of
-        ReplyOn -> sendReplyQInfo srv sq
-        ReplyVia srv' -> sendReplyQInfo srv' sq
-        ReplyOff -> return ()
+      -- TODO reply via one of configured servers
+      when (replyMode == On) $ sendReplyQInfo srv sq
       respond CON
 
     subscribeConnection :: ConnAlias -> m ()
