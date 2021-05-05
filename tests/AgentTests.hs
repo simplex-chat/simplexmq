@@ -29,7 +29,7 @@ agentTests = do
     it "should connect via one server and 2 agents" $
       smpAgentTest2 testDuplexConnection
   describe "Connection subscriptions" do
-    xit "should connect via one server and one agent" $
+    it "should connect via one server and one agent" $
       smpAgentTest3_1 testSubscription
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest testSubscrNotification
