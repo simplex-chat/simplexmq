@@ -141,8 +141,8 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
     createNewConnection = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
-      server <- getSMPServer
-      (rq, qInfo) <- newReceiveQueue c server connAlias
+      srv <- getSMPServer
+      (rq, qInfo) <- newReceiveQueue c srv connAlias
       withStore $ createRcvConn st rq
       respond $ INV qInfo
 
@@ -160,8 +160,7 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
       (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
       withStore $ createSndConn st sq
       connectToSendQueue c st sq senderKey verifyKey
-      -- TODO reply via one of configured servers
-      when (replyMode == On) $ sendReplyQInfo srv sq
+      when (replyMode == On) $ sendReplyQInfo sq
       respond CON
 
     subscribeConnection :: ConnAlias -> m ()
@@ -224,8 +223,9 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
           removeSubscription c connAlias
           delConn
 
-    sendReplyQInfo :: SMPServer -> SndQueue -> m ()
-    sendReplyQInfo srv sq = do
+    sendReplyQInfo :: SndQueue -> m ()
+    sendReplyQInfo sq = do
+      srv <- getSMPServer
       (rq, qInfo) <- newReceiveQueue c srv connAlias
       withStore $ upgradeSndConnToDuplex st connAlias rq
       senderTimestamp <- liftIO getCurrentTime
