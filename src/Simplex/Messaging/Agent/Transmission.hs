@@ -23,6 +23,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.String (IsString (..))
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
@@ -75,7 +76,7 @@ data ACmd = forall p. ACmd (SAParty p) (ACommand p)
 deriving instance Show ACmd
 
 data ACommand (p :: AParty) where
-  NEW :: SMPServer -> ACommand Client -- response INV
+  NEW :: ACommand Client -- response INV
   INV :: SMPQueueInfo -> ACommand Agent
   JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client -- response OK
   CON :: ACommand Agent -- notification that connection is established
@@ -170,7 +171,7 @@ agentMessageP =
     a_msg = do
       size :: Int <- A.decimal <* A.endOfLine
       A_MSG <$> A.take size <* A.endOfLine
-    ackMode = " NO_ACK" $> AckMode Off <|> pure (AckMode On)
+    ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
 smpQueueInfoP :: Parser SMPQueueInfo
 smpQueueInfoP =
@@ -179,7 +180,7 @@ smpQueueInfoP =
 smpServerP :: Parser SMPServer
 smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
   where
-    server = B.unpack <$> A.takeTill (A.inClass ":# ")
+    server = B.unpack <$> A.takeWhile1 (A.notInClass ":# ")
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
     kHash = C.KeyHash <$> (A.char '#' *> base64P)
 
@@ -207,18 +208,21 @@ data SMPServer = SMPServer
   }
   deriving (Eq, Ord, Show)
 
+instance IsString SMPServer where
+  fromString = parseString . parseAll $ smpServerP
+
 type ConnAlias = ByteString
 
 type OtherPartyId = Encoded
 
-data Mode = On | Off deriving (Eq, Show, Read)
+data OnOff = On | Off deriving (Eq, Show, Read)
 
-newtype AckMode = AckMode Mode deriving (Eq, Show)
+newtype AckMode = AckMode OnOff deriving (Eq, Show)
 
 data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
   deriving (Eq, Show)
 
-data ReplyMode = ReplyOff | ReplyOn | ReplyVia SMPServer deriving (Eq, Show)
+newtype ReplyMode = ReplyMode OnOff deriving (Eq, Show)
 
 type EncryptionKey = C.PublicKey
 
@@ -294,7 +298,7 @@ instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 
 commandP :: Parser ACmd
 commandP =
-  "NEW " *> newCmd
+  "NEW" $> ACmd SClient NEW
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
     <|> "SUB" $> ACmd SClient SUB
@@ -309,7 +313,6 @@ commandP =
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
-    newCmd = ACmd SClient . NEW <$> smpServerP
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
@@ -321,10 +324,7 @@ commandP =
       senderMeta <- "S=" *> partyMeta A.decimal
       msgBody <- A.takeByteString
       return $ ACmd SAgent MSG {recipientMeta, brokerMeta, senderMeta, msgIntegrity, msgBody}
-    replyMode =
-      " NO_REPLY" $> ReplyOff
-        <|> A.space *> (ReplyVia <$> smpServerP)
-        <|> pure ReplyOn
+    replyMode = ReplyMode <$> (" NO_REPLY" $> Off <|> pure On)
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
@@ -342,7 +342,7 @@ parseCommand = parse commandP $ CMD SYNTAX
 
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW srv -> "NEW " <> serializeServer srv
+  NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
   SUB -> "SUB"
@@ -367,9 +367,8 @@ serializeCommand = \case
   where
     replyMode :: ReplyMode -> ByteString
     replyMode = \case
-      ReplyOff -> " NO_REPLY"
-      ReplyVia srv -> " " <> serializeServer srv
-      ReplyOn -> ""
+      ReplyMode Off -> " NO_REPLY"
+      ReplyMode On -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
 
@@ -433,7 +432,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     tConnAlias :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnAlias (_, connAlias, _) cmd = case cmd of
       -- NEW and JOIN have optional connAlias
-      NEW _ -> Right cmd
+      NEW -> Right cmd
       JOIN _ _ -> Right cmd
       -- ERROR response does not always have connAlias
       ERR _ -> Right cmd

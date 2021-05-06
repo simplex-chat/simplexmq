@@ -244,9 +244,8 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId
 
     getNextCorrId :: STM CorrId
     getNextCorrId = do
-      i <- (+ 1) <$> readTVar clientCorrId
-      writeTVar clientCorrId i
-      return . CorrId $ bshow i
+      i <- stateTVar clientCorrId $ \i -> (i, i + 1)
+      pure . CorrId $ bshow i
 
     signTransmission :: ByteString -> ExceptT SMPClientError IO SignedRawTransmission
     signTransmission t = case pKey of

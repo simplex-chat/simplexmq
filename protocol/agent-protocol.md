@@ -4,6 +4,7 @@
 
 - [Abstract](#abstract)
 - [SMP agent](#smp-agent)
+- [SMP servers management](#smp-servers-management)
 - [SMP agent protocol components](#smp-agent-protocol-components)
 - [Duplex connection procedure](#duplex-connection-procedure)
 - [Communication between SMP agents](#communication-between-smp-agents)
@@ -29,7 +30,7 @@
 The purpose of SMP agent protocol is to define the syntax and the semantics of communications between the client and the agent that connects to [SMP](./simplex-messaging.md) servers.
 
 It provides:
-- convenient protocol to create and manage a bi-directional (duplex) connection to the users of SMP agents consisting of two separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections.
+- convenient protocol to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the protocol.
 - management of E2E encryption between SMP agents, generating ephemeral RSA keys for each connection.
 - SMP command authentication on SMP servers, generating ephemeral RSA keys for each SMP queue.
 - TCP transport handshake and encryption with SMP servers.
@@ -48,6 +49,12 @@ The future versions of this protocol could provide:
 SMP agent is a client-side process or library that communicates via SMP servers using [simplex messaging protocol (SMP)](./simplex-messaging.md) with other SMP agents according to the commands received from its users. This protocol is a middle layer in SMP protocols stack (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
 
 The agent must have a persistent storage to manage the states of known connections and of the client-side information of two SMP queues that each connection consists of, and also the buffer of the most recent messages. The number of the messages that should be stored is implementation specific, depending on the error management approach that the agent implements; at the very least the agent must store the hash and id of the last received message.
+
+## SMP servers management
+
+SMP agent protocol commands do not contain SMP servers that the agent will use to establish the connections between their users. The servers are part of the agent configuration and can be dynamically added and removed by the agent implementation:
+- by the client applications via any API that is outside of scope of this protocol.
+- by the agents themselves based on servers availability and latency.
 
 ## SMP agent protocol components
 
@@ -189,8 +196,7 @@ agentCommand = (userCmd / agentMsg) CRLF
 userCmd = newCmd / joinCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
 agentMsg = invitation / connected / unsubscribed / message / sent / received / ok / error
 
-newCmd = %s"NEW" SP <smpServer> [SP %s"NO_ACK"] ; `smpServer` is the same as in out-of-band message, see SMP protocol
-; response is `invitation` or `error`
+newCmd = %s"NEW" [SP %s"NO_ACK"] ; response is `invitation` or `error`
 
 invitation = %s"INV" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
 
@@ -202,8 +208,8 @@ unsubscribed = %s"END"
 ; when another agent (or another client of the same agent)
 ; subscribes to the same SMP queue on the server
 
-joinCmd = %s"JOIN" SP <queueInfo> [replyJoin] [SP %s"NO_ACK"] ; `queueInfo` is the same as in out-of-band message, see SMP protocol
-replyJoin = SP (<smpServer> / %s"NO_REPLY") ; reply queue SMP server, by default server from queueInfo is used
+joinCmd = %s"JOIN" SP <queueInfo> [SP %s"NO_REPLY"] [SP %s"NO_ACK"]
+; `queueInfo` is the same as in out-of-band message, see SMP protocol
 ; response is `connected` or `error`
 
 suspendCmd = %s"OFF" ; can be sent by either party, response `ok` or `error`

@@ -16,6 +16,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -23,6 +24,8 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
@@ -39,6 +42,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (putLn, runTCPServer)
 import Simplex.Messaging.Util (bshow)
 import System.IO (Handle)
+import System.Random (randomR)
 import UnliftIO.Async (race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -51,7 +55,7 @@ runSMPAgentBlocking started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< 
   where
     smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpAgent = runTCPServer started tcpPort $ \h -> do
-      liftIO $ putLn h "Welcome to SMP v0.2.0 agent"
+      liftIO $ putLn h "Welcome to SMP v0.3.0 agent"
       c <- getSMPAgentClient
       logConnection c True
       race_ (connectClient h c) (runSMPAgentClient c)
@@ -127,7 +131,7 @@ withStore action = do
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
 processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
   case cmd of
-    NEW smpServer -> createNewConnection smpServer
+    NEW -> createNewConnection
     JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
     SUB -> subscribeConnection connAlias
     SUBALL -> subscribeAll
@@ -135,25 +139,32 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
     OFF -> suspendConnection
     DEL -> deleteConnection
   where
-    createNewConnection :: SMPServer -> m ()
-    createNewConnection server = do
+    createNewConnection :: m ()
+    createNewConnection = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
-      (rq, qInfo) <- newReceiveQueue c server connAlias
+      srv <- getSMPServer
+      (rq, qInfo) <- newReceiveQueue c srv connAlias
       withStore $ createRcvConn st rq
       respond $ INV qInfo
 
+    getSMPServer :: m SMPServer
+    getSMPServer =
+      asks (smpServers . config) >>= \case
+        srv :| [] -> pure srv
+        servers -> do
+          gen <- asks randomServer
+          i <- atomically . stateTVar gen $ randomR (0, L.length servers - 1)
+          pure $ servers L.!! i
+
     joinConnection :: SMPQueueInfo -> ReplyMode -> m ()
-    joinConnection qInfo@(SMPQueueInfo srv _ _) replyMode = do
+    joinConnection qInfo (ReplyMode replyMode) = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
       (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
       withStore $ createSndConn st sq
       connectToSendQueue c st sq senderKey verifyKey
-      case replyMode of
-        ReplyOn -> sendReplyQInfo srv sq
-        ReplyVia srv' -> sendReplyQInfo srv' sq
-        ReplyOff -> return ()
+      when (replyMode == On) $ createReplyQueue sq
       respond CON
 
     subscribeConnection :: ConnAlias -> m ()
@@ -216,8 +227,9 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
           removeSubscription c connAlias
           delConn
 
-    sendReplyQInfo :: SMPServer -> SndQueue -> m ()
-    sendReplyQInfo srv sq = do
+    createReplyQueue :: SndQueue -> m ()
+    createReplyQueue sq = do
+      srv <- getSMPServer
       (rq, qInfo) <- newReceiveQueue c srv connAlias
       withStore $ upgradeSndConnToDuplex st connAlias rq
       senderTimestamp <- liftIO getCurrentTime

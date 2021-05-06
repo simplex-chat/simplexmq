@@ -50,6 +50,9 @@ parseRead2 = parseRead $ do
   w2 <- A.takeTill (== ' ')
   pure $ w1 <> " " <> w2
 
+parseString :: (ByteString -> Either String a) -> (String -> a)
+parseString p = either error id . p . B.pack
+
 blobFieldParser :: Typeable k => Parser k -> FieldParser k
 blobFieldParser p = \case
   f@(Field (SQLBlob b) _) ->

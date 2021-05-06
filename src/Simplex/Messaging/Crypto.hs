@@ -80,7 +80,7 @@ import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll)
+import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
@@ -110,9 +110,6 @@ instance IsString FullPrivateKey where
 
 instance IsString PublicKey where
   fromString = parseString (decode >=> decodePubKey)
-
-parseString :: (ByteString -> Either String a) -> (String -> a)
-parseString parse = either error id . parse . B.pack
 
 instance ToField SafePrivateKey where toField = toField . encodePrivKey
 
