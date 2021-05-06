@@ -115,26 +115,20 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       r <- DB.query_ dbConn "SELECT conn_alias FROM connections;" :: IO [[ConnAlias]]
       return (concat r)
 
-  getRcvQueue :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m RcvQueue
-  getRcvQueue SQLiteStore {dbConn} SMPServer {host, port} rcvId = do
-    r <-
-      liftIO $
-        DB.queryNamed
-          dbConn
-          [sql|
-            SELECT
-              s.key_hash, q.host, q.port, q.rcv_id, q.conn_alias, q.rcv_private_key,
-              q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
-            FROM rcv_queues q
-            INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-            WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
-          |]
-          [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
-    case r of
-      [(keyHash, hst, prt, rId, connAlias, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] ->
-        let srv = SMPServer hst (deserializePort_ prt) keyHash
-         in pure $ RcvQueue srv rId connAlias rcvPrivateKey sndId sndKey decryptKey verifyKey status
-      _ -> throwError SEConnNotFound
+  getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
+  getRcvConn SQLiteStore {dbConn} SMPServer {host, port} rcvId =
+    liftIOEither . DB.withTransaction dbConn $
+      DB.queryNamed
+        dbConn
+        [sql|
+          SELECT q.host, q.conn_alias
+          FROM rcv_queues q
+          WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
+        |]
+        [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
+        >>= \case
+          [(_ :: String, connAlias)] -> getConn_ dbConn connAlias
+          _ -> pure $ Left SEConnNotFound
 
   deleteConn :: SQLiteStore -> ConnAlias -> m ()
   deleteConn SQLiteStore {dbConn} connAlias =

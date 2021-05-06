@@ -34,7 +34,7 @@ class Monad m => MonadAgentStore s m where
   createSndConn :: s -> SndQueue -> m ()
   getConn :: s -> ConnAlias -> m SomeConn
   getAllConnAliases :: s -> m [ConnAlias] -- TODO remove - hack for subscribing to all
-  getRcvQueue :: s -> SMPServer -> SMP.RecipientId -> m RcvQueue
+  getRcvConn :: s -> SMPServer -> SMP.RecipientId -> m SomeConn
   deleteConn :: s -> ConnAlias -> m ()
   upgradeRcvConnToDuplex :: s -> ConnAlias -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnAlias -> RcvQueue -> m ()
@@ -148,6 +148,7 @@ type PrevRcvMsgHash = MsgHash
 type PrevSndMsgHash = MsgHash
 
 -- ? merge/replace these with RcvMsg and SndMsg
+
 -- * Message data containers - used on Msg creation to reduce number of parameters
 
 data RcvMsgData = RcvMsgData
