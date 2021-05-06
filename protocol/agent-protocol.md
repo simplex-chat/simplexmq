@@ -30,7 +30,7 @@
 The purpose of SMP agent protocol is to define the syntax and the semantics of communications between the client and the agent that connects to [SMP](./simplex-messaging.md) servers.
 
 It provides:
-- convenient protocol to create and manage a bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the protocol.
+- convenient protocol to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the protocol.
 - management of E2E encryption between SMP agents, generating ephemeral RSA keys for each connection.
 - SMP command authentication on SMP servers, generating ephemeral RSA keys for each SMP queue.
 - TCP transport handshake and encryption with SMP servers.
@@ -208,8 +208,8 @@ unsubscribed = %s"END"
 ; when another agent (or another client of the same agent)
 ; subscribes to the same SMP queue on the server
 
-joinCmd = %s"JOIN" SP <queueInfo> [replyJoin] [SP %s"NO_ACK"] ; `queueInfo` is the same as in out-of-band message, see SMP protocol
-replyJoin = SP %s"NO_REPLY" ; disable creating reply queue
+joinCmd = %s"JOIN" SP <queueInfo> [SP %s"NO_REPLY"] [SP %s"NO_ACK"]
+; `queueInfo` is the same as in out-of-band message, see SMP protocol
 ; response is `connected` or `error`
 
 suspendCmd = %s"OFF" ; can be sent by either party, response `ok` or `error`

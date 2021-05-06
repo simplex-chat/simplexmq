@@ -215,14 +215,14 @@ type ConnAlias = ByteString
 
 type OtherPartyId = Encoded
 
-data Mode = On | Off deriving (Eq, Show, Read)
+data OnOff = On | Off deriving (Eq, Show, Read)
 
-newtype AckMode = AckMode Mode deriving (Eq, Show)
+newtype AckMode = AckMode OnOff deriving (Eq, Show)
 
 data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
   deriving (Eq, Show)
 
-newtype ReplyMode = ReplyMode Mode deriving (Eq, Show)
+newtype ReplyMode = ReplyMode OnOff deriving (Eq, Show)
 
 type EncryptionKey = C.PublicKey
 

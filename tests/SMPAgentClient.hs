@@ -166,7 +166,7 @@ testSMPAgentClientOn :: MonadUnliftIO m => ServiceName -> (Handle -> m a) -> m a
 testSMPAgentClientOn port' client = do
   runTCPClient agentTestHost port' $ \h -> do
     line <- liftIO $ getLn h
-    if line == "Welcome to SMP v0.2.0 agent"
+    if line == "Welcome to SMP v0.3.0 agent"
       then client h
       else error "not connected"
 

@@ -13,6 +13,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Transmission (SMPServer)
 import Simplex.Messaging.Client
+import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
 data AgentConfig = AgentConfig
@@ -30,7 +31,7 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     reservedMsgSize :: Int,
-    smpServerIdx :: TVar Int
+    randomServer :: TVar StdGen
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -38,8 +39,8 @@ newSMPAgentEnv config = do
   idsDrg <- drgNew >>= newTVarIO
   _ <- createSQLiteStore $ dbFile config
   clientCounter <- newTVarIO 0
-  smpServerIdx <- newTVarIO 0
-  return Env {config, idsDrg, clientCounter, reservedMsgSize, smpServerIdx}
+  randomServer <- newTVarIO =<< liftIO newStdGen
+  return Env {config, idsDrg, clientCounter, reservedMsgSize, randomServer}
   where
     -- 1st rsaKeySize is used by the RSA signature in each command,
     -- 2nd - by encrypted message body header
