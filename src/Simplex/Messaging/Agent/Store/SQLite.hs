@@ -29,7 +29,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (isPrefixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
-import Database.SQLite.Simple (FromRow, NamedParam (..), SQLData (..), SQLError, field)
+import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, field)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
@@ -121,13 +121,13 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       DB.queryNamed
         dbConn
         [sql|
-          SELECT q.host, q.conn_alias
+          SELECT q.conn_alias
           FROM rcv_queues q
           WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
         |]
         [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
         >>= \case
-          [(_ :: String, connAlias)] -> getConn_ dbConn connAlias
+          [Only connAlias] -> getConn_ dbConn connAlias
           _ -> pure $ Left SEConnNotFound
 
   deleteConn :: SQLiteStore -> ConnAlias -> m ()
