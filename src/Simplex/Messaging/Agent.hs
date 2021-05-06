@@ -161,11 +161,12 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
     joinConnection qInfo (ReplyMode replyMode) = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
-      -- TODO possibly this command should respond OK
       (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
       withStore $ createSndConn st sq
       connectToSendQueue c st sq senderKey verifyKey
       when (replyMode == On) $ createReplyQueue sq
+    -- TODO this response is disabled to avoid two responses in terminal client (OK + CON),
+    -- respond OK
 
     subscribeConnection :: ConnAlias -> m ()
     subscribeConnection cAlias =
