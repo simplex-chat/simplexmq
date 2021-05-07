@@ -64,7 +64,7 @@ storeTests = withStore do
         testCreateSndConn
         testCreateSndConnDuplicate
       describe "getAllConnAliases" testGetAllConnAliases
-      describe "getRcvQueue" testGetRcvQueue
+      describe "getRcvConn" testGetRcvConn
       describe "deleteConn" do
         testDeleteRcvConn
         testDeleteSndConn
@@ -178,14 +178,14 @@ testGetAllConnAliases = do
     getAllConnAliases store
       `returnsResult` ["conn1" :: ConnAlias, "conn2" :: ConnAlias]
 
-testGetRcvQueue :: SpecWith SQLiteStore
-testGetRcvQueue = do
-  it "should get RcvQueue" $ \store -> do
+testGetRcvConn :: SpecWith SQLiteStore
+testGetRcvConn = do
+  it "should get connection using rcv queue id and server" $ \store -> do
     let smpServer = SMPServer "smp.simplex.im" (Just "5223") testKeyHash
     let recipientId = "1234"
     _ <- runExceptT $ createRcvConn store rcvQueue1
-    getRcvQueue store smpServer recipientId
-      `returnsResult` rcvQueue1
+    getRcvConn store smpServer recipientId
+      `returnsResult` SomeConn SCRcv (RcvConnection (connAlias (rcvQueue1 :: RcvQueue)) rcvQueue1)
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn = do

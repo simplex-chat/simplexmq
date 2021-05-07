@@ -87,7 +87,7 @@ testDuplexConnection :: Handle -> Handle -> IO ()
 testDuplexConnection alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
+  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
   alice <# ("", "bob", CON)
   alice #: ("2", "bob", "SEND :hello") =#> \case ("2", "bob", SENT 1) -> True; _ -> False
   alice #: ("3", "bob", "SEND :how are you?") =#> \case ("3", "bob", SENT 2) -> True; _ -> False
@@ -106,7 +106,7 @@ testSubscription :: Handle -> Handle -> Handle -> IO ()
 testSubscription alice1 alice2 bob = do
   ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", CON)
+  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
   bob #: ("12", "alice", "SEND 5\nhello") =#> \case ("12", "alice", SENT _) -> True; _ -> False
   bob #: ("13", "alice", "SEND 11\nhello again") =#> \case ("13", "alice", SENT _) -> True; _ -> False
   alice1 <# ("", "bob", CON)
