@@ -4,9 +4,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TupleSections #-}
 
-module AgentTests.SQLiteTests (storeTests) where
+module AgentTests.SQLiteTests (storeTests, storeStressTest) where
 
+import Control.Concurrent.Async (race_)
+import Control.Monad (replicateM_)
 import Control.Monad.Except (ExceptT, runExceptT)
 import qualified Crypto.PubKey.RSA as R
 import Data.ByteString.Char8 (ByteString)
@@ -30,18 +33,23 @@ testDB = "tests/tmp/smp-agent.test.db"
 
 withStore :: SpecWith SQLiteStore -> Spec
 withStore = before createStore . after removeStore
-  where
-    createStore :: IO SQLiteStore
-    createStore = do
-      -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
-      -- IO operations on multiple similarly named files; error seems to be environment specific
-      r <- randomIO :: IO Word32
-      createSQLiteStore $ testDB <> show r
 
-    removeStore :: SQLiteStore -> IO ()
-    removeStore store = do
-      DB.close $ dbConn store
-      removeFile $ dbFilePath store
+withStore2 :: SpecWith (SQLiteStore, SQLiteStore) -> Spec
+withStore2 =
+  before (createStore >>= \s -> (,s) <$> connectSQLiteStore (dbFilePath s))
+    . after (\(s, _) -> removeStore s)
+
+createStore :: IO SQLiteStore
+createStore = do
+  -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
+  -- IO operations on multiple similarly named files; error seems to be environment specific
+  r <- randomIO :: IO Word32
+  createSQLiteStore $ testDB <> show r
+
+removeStore :: SQLiteStore -> IO ()
+removeStore store = do
+  DB.close $ dbConn store
+  removeFile $ dbFilePath store
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r
@@ -87,6 +95,9 @@ storeTests = withStore do
         testCreateSndMsg
         testCreateRcvAndSndMsgs
 
+storeStressTest :: Spec
+storeStressTest = withStore2 testStressSQLiteBusy
+
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe = do
   it "compiled sqlite library should be threadsafe" $ \store -> do
@@ -105,6 +116,20 @@ testForeignKeysEnabled = do
           |]
     DB.execute_ (dbConn store) inconsistentQuery
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
+
+testStressSQLiteBusy :: SpecWith (SQLiteStore, SQLiteStore)
+testStressSQLiteBusy =
+  fit "should pass stress test on multiple concurrent write transactions" $ \(s1, s2) -> do
+    _ <- runExceptT $ createRcvConn s1 rcvQueue1
+    race_ (runTest s1) (runTest s2)
+  where
+    runTest :: SQLiteStore -> IO (Either StoreError ())
+    runTest = runExceptT . replicateM_ 100 . createRcvMsg'
+    createRcvMsg' :: SQLiteStore -> ExceptT StoreError IO ()
+    createRcvMsg' store = do
+      (internalId, internalRcvId, _, _) <- updateRcvIds store rcvQueue1
+      let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
+      createRcvMsg store rcvQueue1 rcvMsgData
 
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
