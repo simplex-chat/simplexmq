@@ -101,7 +101,6 @@ withTransaction db a = loop 5 50000
     loop n t =
       DB.withImmediateTransaction db a `E.catch` \(e :: SQLError) -> do
         threadDelay t
-        print e
         if n > 1 && DB.sqlError e == DB.ErrorBusy
           then loop (n - 1) (t * 3 `div` 2)
           else E.throwIO e

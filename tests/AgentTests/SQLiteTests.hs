@@ -9,7 +9,7 @@ module AgentTests.SQLiteTests (storeTests, storeStressTest) where
 
 import Control.Concurrent.Async (concurrently_)
 import Control.Monad (replicateM_)
-import Control.Monad.Except (ExceptT, liftIO, runExceptT)
+import Control.Monad.Except (ExceptT, runExceptT)
 import qualified Crypto.PubKey.RSA as R
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Text as T
@@ -107,7 +107,6 @@ storeStressTest = withStore2 $
     runTest :: SQLiteStore -> IO (Either StoreError ())
     runTest store = runExceptT . replicateM_ 100 $ do
       (internalId, internalRcvId, _, _) <- updateRcvIds store rcvQueue1
-      liftIO $ print internalId
       let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
       createRcvMsg store rcvQueue1 rcvMsgData
 
