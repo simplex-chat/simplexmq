@@ -76,7 +76,14 @@ createSQLiteStore dbFilePath = do
 connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
 connectSQLiteStore dbFilePath = do
   dbConn <- liftIO $ DB.open dbFilePath
-  liftIO $ DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
+  liftIO $
+    DB.execute_
+      dbConn
+      [sql|
+        PRAGMA foreign_keys = ON;
+        PRAGMA journal_mode = WAL;
+        PRAGMA busy_timeout = 300;
+      |]
   return SQLiteStore {dbFilePath, dbConn}
 
 checkDuplicate :: (MonadUnliftIO m, MonadError StoreError m) => IO () -> m ()
