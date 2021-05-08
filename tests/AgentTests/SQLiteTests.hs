@@ -7,10 +7,9 @@
 
 module AgentTests.SQLiteTests (storeTests, storeStressTest) where
 
-import Control.Concurrent.Async (race_)
+import Control.Concurrent.Async (concurrently_)
 import Control.Monad (replicateM_)
 import Control.Monad.Except (ExceptT, runExceptT)
-import Control.Monad.IO.Class
 import qualified Crypto.PubKey.RSA as R
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Text as T
@@ -123,18 +122,16 @@ testForeignKeysEnabled = do
 
 testStressSQLiteBusy :: SpecWith (SQLiteStore, SQLiteStore)
 testStressSQLiteBusy =
-  fit "should pass stress test on multiple concurrent write transactions" $ \(s1, s2) -> do
+  it "should pass stress test on multiple concurrent write transactions" $ \(s1, s2) -> do
     _ <- runExceptT $ createRcvConn s1 rcvQueue1
-    race_ (runTest s1) (runTest s2)
+    concurrently_ (runTest s1) (runTest s2)
   where
     runTest :: SQLiteStore -> IO (Either StoreError ())
-    runTest = runExceptT . replicateM_ 100 . createRcvMsg'
-    createRcvMsg' :: SQLiteStore -> ExceptT StoreError IO ()
-    createRcvMsg' store = do
-      (internalId, internalRcvId, _, _) <- updateRcvIds store rcvQueue1
-      liftIO $ print internalId
-      let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
-      createRcvMsg store rcvQueue1 rcvMsgData
+    runTest =
+      runExceptT . replicateM_ 100 . \store -> do
+        (internalId, internalRcvId, _, _) <- updateRcvIds store rcvQueue1
+        let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
+        createRcvMsg store rcvQueue1 rcvMsgData
 
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
