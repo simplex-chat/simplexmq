@@ -99,7 +99,16 @@ storeTests = withStore do
         testCreateRcvAndSndMsgs
 
 storeStressTest :: Spec
-storeStressTest = withStore2 testStressSQLiteBusy
+storeStressTest = withStore2 $
+  it "should pass stress test on multiple concurrent write transactions" $ \(s1, s2) -> do
+    _ <- runExceptT $ createRcvConn s1 rcvQueue1
+    concurrently_ (runTest s1) (runTest s2)
+  where
+    runTest :: SQLiteStore -> IO (Either StoreError ())
+    runTest store = runExceptT . replicateM_ 100 $ do
+      (internalId, internalRcvId, _, _) <- updateRcvIds store rcvQueue1
+      let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
+      createRcvMsg store rcvQueue1 rcvMsgData
 
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe = do
@@ -119,19 +128,6 @@ testForeignKeysEnabled = do
           |]
     DB.execute_ (dbConn store) inconsistentQuery
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
-
-testStressSQLiteBusy :: SpecWith (SQLiteStore, SQLiteStore)
-testStressSQLiteBusy =
-  it "should pass stress test on multiple concurrent write transactions" $ \(s1, s2) -> do
-    _ <- runExceptT $ createRcvConn s1 rcvQueue1
-    concurrently_ (runTest s1) (runTest s2)
-  where
-    runTest :: SQLiteStore -> IO (Either StoreError ())
-    runTest =
-      runExceptT . replicateM_ 100 . \store -> do
-        (internalId, internalRcvId, _, _) <- updateRcvIds store rcvQueue1
-        let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
-        createRcvMsg store rcvQueue1 rcvMsgData
 
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
