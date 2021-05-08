@@ -34,13 +34,12 @@ withStore :: SpecWith SQLiteStore -> Spec
 withStore = before createStore . after removeStore
 
 withStore2 :: SpecWith (SQLiteStore, SQLiteStore) -> Spec
-withStore2 =
-  before connect2 . after (removeStore . fst)
+withStore2 = before connect2 . after (removeStore . fst)
   where
     connect2 :: IO (SQLiteStore, SQLiteStore)
     connect2 = do
       s1 <- createStore
-      s2 <- connectSQLiteStore (dbFilePath s1)
+      s2 <- connectSQLiteStore $ dbFilePath s1
       pure (s1, s2)
 
 createStore :: IO SQLiteStore
