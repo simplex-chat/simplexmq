@@ -15,7 +15,7 @@ import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.Time (UTCTime)
 import Data.Type.Equality
-import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,

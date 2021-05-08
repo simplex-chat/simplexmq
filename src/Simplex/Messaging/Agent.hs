@@ -8,6 +8,18 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
+-- |
+-- Module      : Simplex.Messaging.Agent
+-- Copyright   : (c) SimpleX
+-- License     : AGPL-3
+--
+-- Maintainer  : chat@simplex.chat
+-- Stability   : experimental
+-- Portability : non-portable
+--
+-- This module defines SMP protocol agent with SQLite persistence
+--
+-- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent
   ( runSMPAgent,
     runSMPAgentBlocking,
@@ -32,9 +44,9 @@ import Data.Time.Clock
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore, connectSQLiteStore)
-import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (CorrId (..), MsgBody, SenderPublicKey)
@@ -47,9 +59,16 @@ import UnliftIO.Async (race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
+-- | Runs an SMP agent as a TCP service using passed configuration.
+--
+-- See a full agent executable here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-agent/Main.hs
 runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m ()
 runSMPAgent cfg = newEmptyTMVarIO >>= (`runSMPAgentBlocking` cfg)
 
+-- | Runs an SMP agent as a TCP service using passed configuration with signalling.
+--
+-- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
+-- and when it is disconnected from TCP socket is free once the server thread is killed (False).
 runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> AgentConfig -> m ()
 runSMPAgentBlocking started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< newSMPAgentEnv cfg
   where
@@ -61,6 +80,7 @@ runSMPAgentBlocking started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< 
       race_ (connectClient h c) (runSMPAgentClient c)
         `E.finally` (closeSMPServerClients c >> logConnection c False)
 
+-- | Creates an SMP agent instance that receives commands and sends responses via 'TBQueue's
 getSMPAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
 getSMPAgentClient = do
   n <- asks clientCounter
@@ -75,6 +95,7 @@ logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
    in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
 
+-- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's
 runSMPAgentClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 runSMPAgentClient c = do
   db <- asks $ dbFile . config

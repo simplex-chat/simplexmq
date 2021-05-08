@@ -9,18 +9,7 @@
 
 ### ErrorType (Protocol.hs)
 
-- BLOCK - incorrect block format, encoding or signature size
-- CMD error - command is unknown or has invalid syntax, where `error` can be:
-  - PROHIBITED - server response sent from client or vice versa
-  - KEY_SIZE - bad RSA key size in NEW or KEY commands (only 1024, 2048 and 4096 bits keys are allowed)
-  - SYNTAX - error parsing command
-  - NO_AUTH - transmission has no required credentials (signature or queue ID)
-  - HAS_AUTH - transmission has not allowed credentials
-  - NO_QUEUE - transmission has not queue ID
-- AUTH - command is not authorised (queue does not exist or signature verification failed).
-- NO_MSG - acknowledging (ACK) the message without message
-- INTERNAL - internal server error.
-- DUPLICATE_ - it is used internally to signal that the queue ID is already used. This is NOT used in the protocol, instead INTERNAL is sent to the client. It has to be removed.
+See haddock
 
 ### AgentErrorType (Agent/Transmission.hs)
 
@@ -52,13 +41,7 @@ Some of these errors are not correctly serialized/parsed - see line 322 in Agent
 
 ### SMPClientError (Client.hs)
 
-- SMPServerError ErrorType - this is correctly parsed server ERR response. This error is forwarded to the agent client as `ERR SMP err`
-- SMPResponseError ErrorType - this is invalid server response that failed to parse - forwarded to the client as `ERR BROKER RESPONSE`.
-- SMPUnexpectedResponse - different response from what is expected to a given command, e.g. server should respond `IDS` or `ERR` to `NEW` command, other responses would result in this error - forwarded to the client as `ERR BROKER UNEXPECTED`.
-- SMPResponseTimeout - used for TCP connection and command response timeouts -> `ERR BROKER TIMEOUT`.
-- SMPNetworkError - fails to establish TCP connection -> `ERR BROKER NETWORK`
-- SMPTransportError e - fails connection handshake or some other transport error -> `ERR BROKER TRANSPORT e`
-- SMPSignatureError C.CryptoError - error when cryptographically "signing" the command.
+see haddock
 
 ### StoreError (Agent/Store.hs)
 

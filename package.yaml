@@ -1,7 +1,16 @@
 name: simplexmq
 version: 0.3.0
-#synopsis:
-#description:
+synopsis: SimpleXMQ message broker
+description:  |
+  This package includes <./docs/Simplex-Messaging-Server.html server>,
+  <./docs/Simplex-Messaging-Client.html client> and
+  <./docs/Simplex-Messaging-Agent.html agent> for SMP protocols:
+  .
+  * <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md SMP protocol>
+  * <https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md SMP agent protocol>
+  .
+  See <https://github.com/simplex-chat/simplex-chat terminal chat prototype> build with SimpleXMQ broker.
+
 homepage: https://github.com/simplex-chat/simplexmq#readme
 license: AGPL-3
 author: Evgeny Poberezkin

@@ -8,18 +8,35 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
+-- |
+-- Module      : Simplex.Messaging.Client
+-- Copyright   : (c) SimpleX
+-- License     : AGPL-3
+--
+-- Maintainer  : chat@simplex.chat
+-- Stability   : experimental
+-- Portability : non-portable
+--
+-- This module provides a functional client API for SMP protocol.
+--
+-- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
-  ( SMPClient (blockSize),
+  ( -- * Connect (disconnect) client to (from) SMP server
+    SMPClient (blockSize),
     getSMPClient,
     closeSMPClient,
+
+    -- * SMP protocol command functions
     createSMPQueue,
     subscribeSMPQueue,
     secureSMPQueue,
     sendSMPMessage,
     ackSMPMessage,
-    sendSMPCommand,
     suspendSMPQueue,
     deleteSMPQueue,
+    sendSMPCommand,
+
+    -- * Supporting types and client configuration
     SMPClientError (..),
     SMPClientConfig (..),
     smpDefaultConfig,
@@ -40,7 +57,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Agent.Transmission (SMPServer (..))
+import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
@@ -48,6 +65,12 @@ import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.IO
 import System.Timeout
 
+-- | 'SMPClient' is a handle used to send commands to a specific SMP server.
+--
+-- The only exported selector is blockSize that is negotiated
+-- with the server during the TCP transport handshake.
+--
+-- Use 'getSMPClient' to connect to an SMP server and create a client handle.
 data SMPClient = SMPClient
   { action :: Async (),
     connected :: TVar Bool,
@@ -61,16 +84,25 @@ data SMPClient = SMPClient
     blockSize :: Int
   }
 
+-- | Type synonym for transmission from some SPM server queue.
 type SMPServerTransmission = (SMPServer, RecipientId, Command 'Broker)
 
+-- | SMP client configuration
 data SMPClientConfig = SMPClientConfig
-  { qSize :: Natural,
+  { -- | size of TBQueue to use for server commands and responses
+    qSize :: Natural,
+    -- | default SMP server port if port is not specified in SMPServer
     defaultPort :: ServiceName,
+    -- | timeout of TCP commands (microseconds)
     tcpTimeout :: Int,
+    -- | period for SMP ping commands (microseconds)
     smpPing :: Int,
+    -- | estimated maximum size of SMP command excluding message body,
+    -- determines the maximum allowed message size
     smpCommandSize :: Int
   }
 
+-- | default SMP client configuration
 smpDefaultConfig :: SMPClientConfig
 smpDefaultConfig =
   SMPClientConfig
@@ -88,6 +120,11 @@ data Request = Request
 
 type Response = Either SMPClientError Cmd
 
+-- | connects to passed 'SMPServer' using client configuration
+-- and queue for messages and notifications
+--
+-- A single queue can be used for multiple 'SMPClient' instances,
+-- as 'SMPServerTransmission' includes server information
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO (Either SMPClientError SMPClient)
 getSMPClient
   smpServer@SMPServer {host, port, keyHash}
@@ -172,19 +209,39 @@ getSMPClient
                   Right r -> Right r
                 else Left SMPUnexpectedResponse
 
+-- | Disconnects SMP client from the server and terminates client threads
 closeSMPClient :: SMPClient -> IO ()
 closeSMPClient = uninterruptibleCancel . action
 
+-- | SMP client error type
 data SMPClientError
-  = SMPServerError ErrorType
-  | SMPResponseError ErrorType
-  | SMPUnexpectedResponse
-  | SMPResponseTimeout
-  | SMPNetworkError
-  | SMPTransportError TransportError
-  | SMPSignatureError C.CryptoError
+  = -- | Correctly parsed SMP server ERR response.
+    -- This error is forwarded to the agent client as `ERR SMP err`
+    SMPServerError ErrorType
+  | -- | Invalid server response that failed to parse
+    -- Forwarded to the agent client as `ERR BROKER RESPONSE`.
+    SMPResponseError ErrorType
+  | -- | Different response from what is expected to a certain SMP command,
+    -- e.g. server should respond `IDS` or `ERR` to `NEW` command,
+    -- other responses would result in this error.
+    -- Forwarded to the agent client as `ERR BROKER UNEXPECTED`.
+    SMPUnexpectedResponse
+  | -- | Used for TCP connection and command response timeouts.
+    -- Forwarded to the agent client as `ERR BROKER TIMEOUT`.
+    SMPResponseTimeout
+  | -- | Failure to establish TCP connection.
+    -- Forwarded to the agent client as `ERR BROKER NETWORK`
+    SMPNetworkError
+  | -- | TCP transport handshake or some other transport error
+    -- Forwarded to the agent client as `ERR BROKER TRANSPORT e`
+    SMPTransportError TransportError
+  | -- | Error when cryptographically "signing" the command.
+    SMPSignatureError C.CryptoError
   deriving (Eq, Show, Exception)
 
+-- | Create a new SMP queue.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#create-queue-command
 createSMPQueue ::
   SMPClient ->
   RecipientPrivateKey ->
@@ -196,6 +253,9 @@ createSMPQueue c rpKey rKey =
     Cmd _ (IDS rId sId) -> return (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
+-- | Subscribe to the SMP queue.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId (Cmd SRecipient SUB) >>= \case
@@ -204,15 +264,24 @@ subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
+-- | Secure the SMP queue by adding a sender public key.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#secure-queue-command
 secureSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> SenderPublicKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
 
+-- | Send SMP message.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message
 sendSMPMessage :: SMPClient -> Maybe SenderPrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
 sendSMPMessage c spKey sId msg =
   sendSMPCommand c spKey sId (Cmd SSender $ SEND msg) >>= \case
     Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
+-- | Acknowledge message delivery (server deletes the message).
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
 ackSMPMessage :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId (Cmd SRecipient ACK) >>= \case
@@ -221,9 +290,16 @@ ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
+-- | Irreversibly suspend SMP queue.
+-- The existing messages from the queue will still be delivered.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#suspend-queue
 suspendSMPQueue :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 suspendSMPQueue = okSMPCommand $ Cmd SRecipient OFF
 
+-- | Irreversibly delete SMP queue and all messages in it.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#delete-queue
 deleteSMPQueue :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
 
@@ -233,6 +309,7 @@ okSMPCommand cmd c pKey qId =
     Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
+-- | Send any SMP command ('Cmd' type).
 sendSMPCommand :: SMPClient -> Maybe C.SafePrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
