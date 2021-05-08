@@ -60,7 +60,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport (THandle (..), TransportError, clientHandshake, runTCPClient)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.IO
 import System.Timeout

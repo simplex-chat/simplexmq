@@ -132,15 +132,24 @@ instance IsString Signature where
 
 newtype Verified = Verified ByteString deriving (Show)
 
+-- | Various cryptographic or related errors
 data CryptoError
-  = RSAEncryptError R.Error
-  | RSADecryptError R.Error
-  | RSASignError R.Error
-  | AESCipherError CE.CryptoError
-  | CryptoIVError
-  | AESDecryptError
-  | CryptoLargeMsgError
-  | CryptoHeaderError String
+  = -- | RSA OAEP encryption error
+    RSAEncryptError R.Error
+  | -- | RSA OAEP decryption error
+    RSADecryptError R.Error
+  | -- | RSA PSS signature error
+    RSASignError R.Error
+  | -- | AES initialization error
+    AESCipherError CE.CryptoError
+  | -- | IV generation error
+    CryptoIVError
+  | -- | AES decryption error
+    AESDecryptError
+  | -- | message does not fit in SMP block
+    CryptoLargeMsgError
+  | -- | failure parsing RSA-encrypted message header
+    CryptoHeaderError String
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer

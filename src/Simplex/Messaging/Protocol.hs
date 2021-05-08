@@ -80,7 +80,7 @@ import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport (THandle, TransportError (..), tGetEncrypted, tPutEncrypted)
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 

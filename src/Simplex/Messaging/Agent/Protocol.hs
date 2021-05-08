@@ -98,7 +98,7 @@ import Simplex.Messaging.Protocol
     SenderPublicKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport (TransportError, getLn, putLn, serializeTransportError, transportErrorP)
 import Simplex.Messaging.Util
 import System.IO
 import Test.QuickCheck (Arbitrary (..))

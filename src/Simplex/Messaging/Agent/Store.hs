@@ -272,11 +272,21 @@ type InternalTs = UTCTime
 
 -- * Store errors
 
+-- | Agent store error
 data StoreError
-  = SEInternal ByteString
-  | SEConnNotFound
-  | SEConnDuplicate
-  | SEBadConnType ConnType
-  | SEBadQueueStatus -- not used, planned to check strictly
-  | SENotImplemented -- TODO remove
+  = -- | IO exceptions in store actions.
+    SEInternal ByteString
+  | -- | Connection alias not found (or both queues absent).
+    SEConnNotFound
+  | -- | Connection alias already used.
+    SEConnDuplicate
+  | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
+    -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
+    SEBadConnType ConnType
+  | -- | Currently not used. The intention was to pass current expected queue status in methods,
+    -- as we always know what it should be at any stage of the protocol,
+    -- and in case it does not match use this error.
+    SEBadQueueStatus
+  | -- | Used in `getMsg` that is not implemented/used. TODO remove
+    SENotImplemented
   deriving (Eq, Show, Exception)
