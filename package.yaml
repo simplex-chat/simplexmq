@@ -13,9 +13,9 @@ description:  |
 
 homepage: https://github.com/simplex-chat/simplexmq#readme
 license: AGPL-3
-author: Evgeny Poberezkin
-maintainer: evgeny@poberezkin.com
-copyright: 2020 Evgeny Poberezkin
+author: simplex.chat
+maintainer: chat@simplex.chat
+copyright: 2020 simplex.chat
 category: Web, System, Services, Cryptography
 extra-source-files:
   - README.md
