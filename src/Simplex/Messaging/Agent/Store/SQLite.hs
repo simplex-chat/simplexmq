@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -82,7 +83,7 @@ connectSQLiteStore dbFilePath = do
       dbConn
       [sql|
         PRAGMA foreign_keys = ON;
-        PRAGMA busy_timeout = 300;
+        PRAGMA journal_mode = WAL;
       |]
   return SQLiteStore {dbFilePath, dbConn}
 
@@ -95,14 +96,14 @@ checkDuplicate action = liftIOEither $ first handleError <$> E.try action
       | otherwise = SEInternal $ bshow e
 
 withTransaction :: forall a. DB.Connection -> IO a -> IO a
-withTransaction db a = loop 5 50000
+withTransaction db a = loop 300 500_000
   where
     loop :: Int -> Int -> IO a
-    loop n t =
+    loop t tLim = do
       DB.withImmediateTransaction db a `E.catch` \(e :: SQLError) -> do
         threadDelay t
-        if n > 1 && DB.sqlError e == DB.ErrorBusy
-          then loop (n - 1) (t * 3 `div` 2)
+        if t < tLim && (DB.sqlError e == DB.ErrorBusy)
+          then loop (t * 3 `div` 2) tLim
           else E.throwIO e
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
