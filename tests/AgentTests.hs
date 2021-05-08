@@ -8,7 +8,7 @@
 
 module AgentTests where
 
-import AgentTests.SQLiteTests (storeTests)
+import AgentTests.SQLiteTests (storeStressTest, storeTests)
 import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -21,7 +21,9 @@ import Test.Hspec
 
 agentTests :: Spec
 agentTests = do
-  describe "SQLite store" storeTests
+  describe "SQLite store" do
+    storeTests
+    storeStressTest
   describe "SMP agent protocol syntax" syntaxTests
   describe "Establishing duplex connection" do
     it "should connect via one server and one agent" $

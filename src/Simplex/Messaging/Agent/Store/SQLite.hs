@@ -20,6 +20,7 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -76,7 +77,13 @@ createSQLiteStore dbFilePath = do
 connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
 connectSQLiteStore dbFilePath = do
   dbConn <- liftIO $ DB.open dbFilePath
-  liftIO $ DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
+  liftIO $
+    DB.execute_
+      dbConn
+      [sql|
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 300;
+      |]
   return SQLiteStore {dbFilePath, dbConn}
 
 checkDuplicate :: (MonadUnliftIO m, MonadError StoreError m) => IO () -> m ()
@@ -87,11 +94,22 @@ checkDuplicate action = liftIOEither $ first handleError <$> E.try action
       | DB.sqlError e == DB.ErrorConstraint = SEConnDuplicate
       | otherwise = SEInternal $ bshow e
 
+withTransaction :: forall a. DB.Connection -> IO a -> IO a
+withTransaction db a = loop 5 50000
+  where
+    loop :: Int -> Int -> IO a
+    loop n t =
+      DB.withImmediateTransaction db a `E.catch` \(e :: SQLError) -> do
+        threadDelay t
+        if n > 1 && DB.sqlError e == DB.ErrorBusy
+          then loop (n - 1) (t * 3 `div` 2)
+          else E.throwIO e
+
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
   createRcvConn SQLiteStore {dbConn} q@RcvQueue {server} =
     checkDuplicate $
-      DB.withTransaction dbConn $ do
+      withTransaction dbConn $ do
         upsertServer_ dbConn server
         insertRcvQueue_ dbConn q
         insertRcvConnection_ dbConn q
@@ -99,14 +117,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   createSndConn :: SQLiteStore -> SndQueue -> m ()
   createSndConn SQLiteStore {dbConn} q@SndQueue {server} =
     checkDuplicate $
-      DB.withTransaction dbConn $ do
+      withTransaction dbConn $ do
         upsertServer_ dbConn server
         insertSndQueue_ dbConn q
         insertSndConnection_ dbConn q
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
   getConn SQLiteStore {dbConn} connAlias =
-    liftIOEither . DB.withTransaction dbConn $
+    liftIOEither . withTransaction dbConn $
       getConn_ dbConn connAlias
 
   getAllConnAliases :: SQLiteStore -> m [ConnAlias]
@@ -117,7 +135,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
   getRcvConn SQLiteStore {dbConn} SMPServer {host, port} rcvId =
-    liftIOEither . DB.withTransaction dbConn $
+    liftIOEither . withTransaction dbConn $
       DB.queryNamed
         dbConn
         [sql|
@@ -140,7 +158,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   upgradeRcvConnToDuplex :: SQLiteStore -> ConnAlias -> SndQueue -> m ()
   upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sq@SndQueue {server} =
-    liftIOEither . DB.withTransaction dbConn $
+    liftIOEither . withTransaction dbConn $
       getConn_ dbConn connAlias >>= \case
         Right (SomeConn SCRcv (RcvConnection _ _)) -> do
           upsertServer_ dbConn server
@@ -152,7 +170,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   upgradeSndConnToDuplex :: SQLiteStore -> ConnAlias -> RcvQueue -> m ()
   upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rq@RcvQueue {server} =
-    liftIOEither . DB.withTransaction dbConn $
+    liftIOEither . withTransaction dbConn $
       getConn_ dbConn connAlias >>= \case
         Right (SomeConn SCSnd (SndConnection _ _)) -> do
           upsertServer_ dbConn server
@@ -208,7 +226,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   updateRcvIds :: SQLiteStore -> RcvQueue -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   updateRcvIds SQLiteStore {dbConn} RcvQueue {connAlias} =
-    liftIO . DB.withTransaction dbConn $ do
+    liftIO . withTransaction dbConn $ do
       (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ dbConn connAlias
       let internalId = InternalId $ unId lastInternalId + 1
           internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
@@ -217,14 +235,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   createRcvMsg :: SQLiteStore -> RcvQueue -> RcvMsgData -> m ()
   createRcvMsg SQLiteStore {dbConn} RcvQueue {connAlias} rcvMsgData =
-    liftIO . DB.withTransaction dbConn $ do
+    liftIO . withTransaction dbConn $ do
       insertRcvMsgBase_ dbConn connAlias rcvMsgData
       insertRcvMsgDetails_ dbConn connAlias rcvMsgData
       updateHashRcv_ dbConn connAlias rcvMsgData
 
   updateSndIds :: SQLiteStore -> SndQueue -> m (InternalId, InternalSndId, PrevSndMsgHash)
   updateSndIds SQLiteStore {dbConn} SndQueue {connAlias} =
-    liftIO . DB.withTransaction dbConn $ do
+    liftIO . withTransaction dbConn $ do
       (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ dbConn connAlias
       let internalId = InternalId $ unId lastInternalId + 1
           internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
@@ -233,7 +251,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   createSndMsg :: SQLiteStore -> SndQueue -> SndMsgData -> m ()
   createSndMsg SQLiteStore {dbConn} SndQueue {connAlias} sndMsgData =
-    liftIO . DB.withTransaction dbConn $ do
+    liftIO . withTransaction dbConn $ do
       insertSndMsgBase_ dbConn connAlias sndMsgData
       insertSndMsgDetails_ dbConn connAlias sndMsgData
       updateHashSnd_ dbConn connAlias sndMsgData
