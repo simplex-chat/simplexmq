@@ -10,7 +10,7 @@
 
 -- |
 -- Module      : Simplex.Messaging.Agent
--- Copyright   : (c) SimpleX
+-- Copyright   : (c) simplex.chat
 -- License     : AGPL-3
 --
 -- Maintainer  : chat@simplex.chat
@@ -68,7 +68,7 @@ runSMPAgent cfg = newEmptyTMVarIO >>= (`runSMPAgentBlocking` cfg)
 -- | Runs an SMP agent as a TCP service using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
--- and when it is disconnected from TCP socket is free once the server thread is killed (False).
+-- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> AgentConfig -> m ()
 runSMPAgentBlocking started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< newSMPAgentEnv cfg
   where

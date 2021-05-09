@@ -11,8 +11,8 @@
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 -- |
--- Module      : Simplex.Messaging.Client
--- Copyright   : (c) SimpleX
+-- Module      : Simplex.Messaging.Protocol
+-- Copyright   : (c) simplex.chat
 -- License     : AGPL-3
 --
 -- Maintainer  : chat@simplex.chat

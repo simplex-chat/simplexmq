@@ -12,8 +12,8 @@
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 -- |
--- Module      : Simplex.Messaging.Client
--- Copyright   : (c) SimpleX
+-- Module      : Simplex.Messaging.Agent.Protocol
+-- Copyright   : (c) simplex.chat
 -- License     : AGPL-3
 --
 -- Maintainer  : chat@simplex.chat
@@ -56,9 +56,12 @@ module Simplex.Messaging.Agent.Protocol
     serializeCommand,
     serializeSMPMessage,
     serializeMsgIntegrity,
+    serializeServer,
     serializeSmpQueueInfo,
     serializeAgentError,
     parseSMPMessage,
+    smpServerP,
+    smpQueueInfoP,
     msgIntegrityP,
     agentErrorTypeP,
 
@@ -174,7 +177,7 @@ deriving instance Show (ACommand p)
 -- | SMP message formats
 data SMPMessage
   = -- | SMP confirmation
-    -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message SMP protocol>
+    -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message SMP protocol>)
     SMPConfirmation SenderPublicKey
   | -- | Agent message header and envelope for client messages
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents SMP agent protocol>)
@@ -250,10 +253,12 @@ agentMessageP =
       A_MSG <$> A.take size <* A.endOfLine
     ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
+-- | SMP queue information parser.
 smpQueueInfoP :: Parser SMPQueueInfo
 smpQueueInfoP =
   "smp::" *> (SMPQueueInfo <$> smpServerP <* "::" <*> base64P <* "::" <*> C.pubKeyP)
 
+-- | SMP server location parser.
 smpServerP :: Parser SMPServer
 smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
   where
@@ -272,6 +277,7 @@ serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
 serializeSmpQueueInfo (SMPQueueInfo srv qId ek) =
   B.intercalate "::" ["smp", serializeServer srv, encode qId, C.serializePubKey ek]
 
+-- | Serialize SMP server location
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} =
   B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . encode . C.unKeyHash) keyHash

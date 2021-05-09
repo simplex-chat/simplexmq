@@ -10,7 +10,7 @@
 
 -- |
 -- Module      : Simplex.Messaging.Client
--- Copyright   : (c) SimpleX
+-- Copyright   : (c) simplex.chat
 -- License     : AGPL-3
 --
 -- Maintainer  : chat@simplex.chat

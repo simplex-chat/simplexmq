@@ -12,7 +12,7 @@
 
 -- |
 -- Module      : Simplex.Messaging.Server
--- Copyright   : (c) SimpleX
+-- Copyright   : (c) simplex.chat
 -- License     : AGPL-3
 --
 -- Maintainer  : chat@simplex.chat
@@ -61,7 +61,7 @@ runSMPServer cfg = newEmptyTMVarIO >>= (`runSMPServerBlocking` cfg)
 -- | Runs an SMP server using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
--- and when it is disconnected from TCP socket is free once the server thread is killed (False).
+-- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
 runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
   env <- newEnv cfg

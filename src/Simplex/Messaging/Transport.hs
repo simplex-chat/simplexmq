@@ -12,7 +12,7 @@
 
 -- |
 -- Module      : Simplex.Messaging.Transport
--- Copyright   : (c) SimpleX
+-- Copyright   : (c) simplex.chat
 -- License     : AGPL-3
 --
 -- Maintainer  : chat@simplex.chat

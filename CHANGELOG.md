@@ -23,4 +23,4 @@
 
 # 0.1.0
 
-- SMP protocol server implementation without encryption.
+- SMP protocol server implementation without encryption
