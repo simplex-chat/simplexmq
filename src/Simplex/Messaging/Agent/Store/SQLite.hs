@@ -96,14 +96,15 @@ checkDuplicate action = liftIOEither $ first handleError <$> E.try action
       | otherwise = SEInternal $ bshow e
 
 withTransaction :: forall a. DB.Connection -> IO a -> IO a
-withTransaction db a = loop 0 100_000 100
+withTransaction db a = loop 100 100_000
   where
-    loop :: Int -> Int -> Int -> IO a
-    loop tSum tLim t = do
-      DB.withImmediateTransaction db a `E.catch` \(e :: SQLError) -> do
-        threadDelay t
-        if tSum < tLim && (DB.sqlError e == DB.ErrorBusy)
-          then loop (tSum + t) tLim t
+    loop :: Int -> Int -> IO a
+    loop t tLim =
+      DB.withImmediateTransaction db a `E.catch` \(e :: SQLError) ->
+        if tLim > t && DB.sqlError e == DB.ErrorBusy
+          then do
+            threadDelay t
+            loop (t * 3 `div` 2) (tLim - t)
           else E.throwIO e
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
