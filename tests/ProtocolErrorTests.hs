@@ -1,6 +1,6 @@
 module ProtocolErrorTests where
 
-import Simplex.Messaging.Agent.Transmission (AgentErrorType, agentErrorTypeP, serializeAgentError)
+import Simplex.Messaging.Agent.Protocol (AgentErrorType, agentErrorTypeP, serializeAgentError)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ErrorType, errorTypeP, serializeErrorType)
 import Test.Hspec

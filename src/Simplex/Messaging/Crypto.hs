@@ -7,39 +7,50 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
+-- |
+-- Module      : Simplex.Messaging.Crypto
+-- Copyright   : (c) simplex.chat
+-- License     : AGPL-3
+--
+-- Maintainer  : chat@simplex.chat
+-- Stability   : experimental
+-- Portability : non-portable
+--
+-- This module provides cryptography implementation for SMP protocols based on
+-- <https://hackage.haskell.org/package/cryptonite cryptonite package>.
 module Simplex.Messaging.Crypto
-  ( PrivateKey (rsaPrivateKey),
+  ( -- * RSA keys
+    PrivateKey (rsaPrivateKey),
     SafePrivateKey, -- constructor is not exported
     FullPrivateKey (..),
     PublicKey (..),
-    Signature (..),
-    CryptoError (..),
     SafeKeyPair,
     FullKeyPair,
-    Key (..),
-    IV (..),
     KeyHash (..),
     generateKeyPair,
     publicKey,
     publicKeySize,
     validKeySize,
     safePrivateKey,
-    sign,
-    verify,
+
+    -- * E2E hybrid encryption scheme
     encrypt,
     decrypt,
+
+    -- * RSA OAEP encryption
     encryptOAEP,
     decryptOAEP,
+
+    -- * RSA PSS signing
+    Signature (..),
+    sign,
+    verify,
+
+    -- * AES256 AEAD-GCM scheme
+    Key (..),
+    IV (..),
     encryptAES,
     decryptAES,
-    serializePrivKey,
-    serializePubKey,
-    encodePubKey,
-    publicKeyHash,
-    sha256Hash,
-    privKeyP,
-    pubKeyP,
-    binaryPubKeyP,
     authTagSize,
     authTagToBS,
     bsToAuthTag,
@@ -47,6 +58,21 @@ module Simplex.Messaging.Crypto
     randomIV,
     aesKeyP,
     ivP,
+
+    -- * Encoding of RSA keys
+    serializePrivKey,
+    serializePubKey,
+    encodePubKey,
+    publicKeyHash,
+    privKeyP,
+    pubKeyP,
+    binaryPubKeyP,
+
+    -- * SHA256 hash
+    sha256Hash,
+
+    -- * Cryptography error type
+    CryptoError (..),
   )
 where
 
@@ -83,15 +109,27 @@ import Network.Transport.Internal (decodeWord32, encodeWord32)
 import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
+-- | A newtype of 'Crypto.PubKey.RSA.PublicKey'.
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
+-- | A newtype of 'Crypto.PubKey.RSA.PrivateKey', with PublicKey removed.
+--
+-- It is not possible to recover PublicKey from SafePrivateKey.
+-- The constructor of this type is not exported.
 newtype SafePrivateKey = SafePrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
 
+-- | A newtype of 'Crypto.PubKey.RSA.PrivateKey' (with PublicKey inside).
 newtype FullPrivateKey = FullPrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
 
+-- | Type-class used for both private key types: SafePrivateKey and FullPrivateKey.
 class PrivateKey k where
+  -- unwraps 'Crypto.PubKey.RSA.PrivateKey'
   rsaPrivateKey :: k -> R.PrivateKey
+
+  -- equivalent to data type constructor, not exported
   _privateKey :: R.PrivateKey -> k
+
+  -- smart constructor removing public key from SafePrivateKey but keeping it in FullPrivateKey
   mkPrivateKey :: R.PrivateKey -> k
 
 instance PrivateKey SafePrivateKey where
@@ -119,28 +157,39 @@ instance FromField SafePrivateKey where fromField = blobFieldParser binaryPrivKe
 
 instance FromField PublicKey where fromField = blobFieldParser binaryPubKeyP
 
+-- | Tuple of RSA 'PublicKey' and 'PrivateKey'.
 type KeyPair k = (PublicKey, k)
 
+-- | Tuple of RSA 'PublicKey' and 'SafePrivateKey'.
 type SafeKeyPair = (PublicKey, SafePrivateKey)
 
+-- | Tuple of RSA 'PublicKey' and 'FullPrivateKey'.
 type FullKeyPair = (PublicKey, FullPrivateKey)
 
+-- | RSA signature newtype.
 newtype Signature = Signature {unSignature :: ByteString} deriving (Eq, Show)
 
 instance IsString Signature where
   fromString = Signature . fromString
 
-newtype Verified = Verified ByteString deriving (Show)
-
+-- | Various cryptographic or related errors.
 data CryptoError
-  = RSAEncryptError R.Error
-  | RSADecryptError R.Error
-  | RSASignError R.Error
-  | AESCipherError CE.CryptoError
-  | CryptoIVError
-  | AESDecryptError
-  | CryptoLargeMsgError
-  | CryptoHeaderError String
+  = -- | RSA OAEP encryption error
+    RSAEncryptError R.Error
+  | -- | RSA OAEP decryption error
+    RSADecryptError R.Error
+  | -- | RSA PSS signature error
+    RSASignError R.Error
+  | -- | AES initialization error
+    AESCipherError CE.CryptoError
+  | -- | IV generation error
+    CryptoIVError
+  | -- | AES decryption error
+    AESDecryptError
+  | -- | message does not fit in SMP block
+    CryptoLargeMsgError
+  | -- | failure parsing RSA-encrypted message header
+    CryptoHeaderError String
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
@@ -152,6 +201,7 @@ aesKeySize = 256 `div` 8
 authTagSize :: Int
 authTagSize = 128 `div` 8
 
+-- | Generate RSA key pair with either SafePrivateKey or FullPrivateKey.
 generateKeyPair :: PrivateKey k => Int -> IO (KeyPair k)
 generateKeyPair size = loop
   where
@@ -187,10 +237,13 @@ data Header = Header
     msgSize :: Int
   }
 
+-- | AES key newtype.
 newtype Key = Key {unKey :: ByteString}
 
+-- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
 
+-- | Key hash newtype.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
 instance IsString KeyHash where
@@ -200,9 +253,11 @@ instance ToField KeyHash where toField = toField . encode . unKeyHash
 
 instance FromField KeyHash where fromField = blobFieldParser $ KeyHash <$> base64P
 
+-- | Digest (hash) of binary X509 encoding of RSA public key.
 publicKeyHash :: PublicKey -> KeyHash
 publicKeyHash = KeyHash . sha256Hash . encodePubKey
 
+-- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
 
@@ -218,15 +273,22 @@ headerP = do
   msgSize <- fromIntegral . decodeWord32 <$> A.take 4
   return Header {aesKey, ivBytes, authTag, msgSize}
 
+-- | AES256 key parser.
 aesKeyP :: Parser Key
 aesKeyP = Key <$> A.take aesKeySize
 
+-- | IV bytes parser.
 ivP :: Parser IV
 ivP = IV <$> A.take (ivSize @AES256)
 
 parseHeader :: ByteString -> Either CryptoError Header
 parseHeader = first CryptoHeaderError . parseAll headerP
 
+-- * E2E hybrid encryption scheme
+
+-- | E2E encrypt SMP agent messages.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-01-26-crypto.md#e2e-encryption
 encrypt :: PublicKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
 encrypt k paddedSize msg = do
   aesKey <- liftIO randomAesKey
@@ -236,6 +298,9 @@ encrypt k paddedSize msg = do
   encHeader <- encryptOAEP k $ serializeHeader header
   return $ encHeader <> msg'
 
+-- | E2E decrypt SMP agent messages.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-01-26-crypto.md#e2e-encryption
 decrypt :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
   let (encHeader, msg') = B.splitAt (privateKeySize pk) msg''
@@ -244,6 +309,9 @@ decrypt pk msg'' = do
   msg <- decryptAES aesKey ivBytes msg' authTag
   return $ B.take msgSize msg
 
+-- | AEAD-GCM encryption.
+--
+-- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
 encryptAES :: Key -> IV -> Int -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
 encryptAES aesKey ivBytes paddedSize msg = do
   aead <- initAEAD @AES256 aesKey ivBytes
@@ -255,6 +323,9 @@ encryptAES aesKey ivBytes paddedSize msg = do
       | len >= paddedSize = throwE CryptoLargeMsgError
       | otherwise = return (msg <> B.replicate (paddedSize - len) '#')
 
+-- | AEAD-GCM decryption.
+--
+-- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
 decryptAES :: Key -> IV -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
 decryptAES aesKey ivBytes msg authTag = do
   aead <- initAEAD @AES256 aesKey ivBytes
@@ -267,9 +338,11 @@ initAEAD (Key aesKey) (IV ivBytes) = do
     cipher <- AES.cipherInit aesKey
     AES.aeadInit AES.AEAD_GCM cipher iv
 
+-- | Random AES256 key.
 randomAesKey :: IO Key
 randomAesKey = Key <$> getRandomBytes aesKeySize
 
+-- | Random IV bytes for AES256 encryption.
 randomIV :: IO IV
 randomIV = IV <$> getRandomBytes (ivSize @AES256)
 
@@ -282,9 +355,11 @@ makeIV bs = maybeError CryptoIVError $ AES.makeIV bs
 maybeError :: CryptoError -> Maybe a -> ExceptT CryptoError IO a
 maybeError e = maybe (throwE e) return
 
+-- | Convert AEAD 'AuthTag' to ByteString.
 authTagToBS :: AES.AuthTag -> ByteString
 authTagToBS = B.pack . map w2c . BA.unpack . AES.unAuthTag
 
+-- | Convert ByteString to AEAD 'AuthTag'.
 bsToAuthTag :: ByteString -> AES.AuthTag
 bsToAuthTag = AES.AuthTag . BA.pack . map c2w . B.unpack
 
@@ -294,11 +369,17 @@ cryptoFailable = liftEither . first AESCipherError . CE.eitherCryptoError
 oaepParams :: OAEP.OAEPParams SHA256 ByteString ByteString
 oaepParams = OAEP.defaultOAEPParams SHA256
 
+-- | RSA OAEP encryption.
+--
+-- Used as part of hybrid E2E encryption scheme and for SMP transport handshake.
 encryptOAEP :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
 encryptOAEP (PublicKey k) aesKey =
   liftEitherError RSAEncryptError $
     OAEP.encrypt oaepParams k aesKey
 
+-- | RSA OAEP decryption.
+--
+-- Used as part of hybrid E2E encryption scheme and for SMP transport handshake.
 decryptOAEP :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
 decryptOAEP pk encKey =
   liftEitherError RSADecryptError $
@@ -307,30 +388,47 @@ decryptOAEP pk encKey =
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
 
+-- | RSA PSS message signing.
+--
+-- Used by SMP clients to sign SMP commands and by SMP agents to sign messages.
 sign :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO Signature
 sign pk msg = ExceptT $ bimap RSASignError Signature <$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
 
+-- | RSA PSS signature verification.
+--
+-- Used by SMP servers to authorize SMP commands and by SMP agents to verify messages.
 verify :: PublicKey -> Signature -> ByteString -> Bool
 verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig
 
+-- | Base-64 X509 encoding of RSA public key.
+--
+-- Used as part of SMP queue information (out-of-band message).
 serializePubKey :: PublicKey -> ByteString
 serializePubKey = ("rsa:" <>) . encode . encodePubKey
 
+-- | Base-64 PKCS8 encoding of PSA private key.
+--
+-- Not used as part of SMP protocols.
 serializePrivKey :: PrivateKey k => k -> ByteString
 serializePrivKey = ("rsa:" <>) . encode . encodePrivKey
 
+-- Base-64 X509 RSA public key parser.
 pubKeyP :: Parser PublicKey
 pubKeyP = decodePubKey <$?> ("rsa:" *> base64P)
 
+-- Binary X509 RSA public key parser.
 binaryPubKeyP :: Parser PublicKey
 binaryPubKeyP = decodePubKey <$?> A.takeByteString
 
+-- Base-64 PKCS8 RSA private key parser.
 privKeyP :: PrivateKey k => Parser k
 privKeyP = decodePrivKey <$?> ("rsa:" *> base64P)
 
+-- Binary PKCS8 RSA private key parser.
 binaryPrivKeyP :: PrivateKey k => Parser k
 binaryPrivKeyP = decodePrivKey <$?> A.takeByteString
 
+-- | Construct 'SafePrivateKey' from three numbers - used internally and in the tests.
 safePrivateKey :: (Int, Integer, Integer) -> SafePrivateKey
 safePrivateKey = SafePrivateKey . safeRsaPrivateKey
 
@@ -351,21 +449,25 @@ safeRsaPrivateKey (size, n, d) =
       private_qinv = 0
     }
 
+-- Binary X509 encoding of 'PublicKey'.
 encodePubKey :: PublicKey -> ByteString
 encodePubKey = encodeKey . PubKeyRSA . rsaPublicKey
 
+-- Binary PKCS8 encoding of 'PrivateKey'.
 encodePrivKey :: PrivateKey k => k -> ByteString
 encodePrivKey = encodeKey . PrivKeyRSA . rsaPrivateKey
 
 encodeKey :: ASN1Object a => a -> ByteString
 encodeKey k = toStrict . encodeASN1 DER $ toASN1 k []
 
+-- Decoding of binary X509 'PublicKey'.
 decodePubKey :: ByteString -> Either String PublicKey
 decodePubKey =
   decodeKey >=> \case
     (PubKeyRSA k, []) -> Right $ PublicKey k
     r -> keyError r
 
+-- Decoding of binary PKCS8 'PrivateKey'.
 decodePrivKey :: PrivateKey k => ByteString -> Either String k
 decodePrivKey =
   decodeKey >=> \case

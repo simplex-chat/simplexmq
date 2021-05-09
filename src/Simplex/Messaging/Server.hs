@@ -10,8 +10,20 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
--- TODO move randomBytes to another module
-module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking, randomBytes) where
+-- |
+-- Module      : Simplex.Messaging.Server
+-- Copyright   : (c) simplex.chat
+-- License     : AGPL-3
+--
+-- Maintainer  : chat@simplex.chat
+-- Stability   : experimental
+-- Portability : non-portable
+--
+-- This module defines SMP protocol server with in-memory persistence
+-- and optional append only log of SMP queue records.
+--
+-- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
+module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking) where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
@@ -40,9 +52,16 @@ import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
 
+-- | Runs an SMP server using passed configuration.
+--
+-- See a full server here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs
 runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServerConfig -> m ()
 runSMPServer cfg = newEmptyTMVarIO >>= (`runSMPServerBlocking` cfg)
 
+-- | Runs an SMP server using passed configuration with signalling.
+--
+-- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
+-- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
 runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
   env <- newEnv cfg
