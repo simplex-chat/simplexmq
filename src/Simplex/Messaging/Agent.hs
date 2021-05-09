@@ -74,7 +74,7 @@ runSMPAgentBlocking started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< 
   where
     smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpAgent = runTCPServer started tcpPort $ \h -> do
-      liftIO $ putLn h "Welcome to SMP v0.3.0 agent"
+      liftIO $ putLn h "Welcome to SMP v0.3.1 agent"
       c <- getSMPAgentClient
       logConnection c True
       race_ (connectClient h c) (runSMPAgentClient c)

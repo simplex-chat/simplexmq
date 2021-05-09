@@ -8,6 +8,7 @@ module SMPAgentClient where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import qualified Data.ByteString.Char8 as B
 import qualified Data.List.NonEmpty as L
 import Network.Socket (HostName, ServiceName)
 import SMPClient
@@ -166,9 +167,9 @@ testSMPAgentClientOn :: MonadUnliftIO m => ServiceName -> (Handle -> m a) -> m a
 testSMPAgentClientOn port' client = do
   runTCPClient agentTestHost port' $ \h -> do
     line <- liftIO $ getLn h
-    if line == "Welcome to SMP v0.3.0 agent"
+    if line == "Welcome to SMP v0.3.1 agent"
       then client h
-      else error "not connected"
+      else error $ "wrong welcome message: " <> B.unpack line
 
 testSMPAgentClient :: MonadUnliftIO m => (Handle -> m a) -> m a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort
