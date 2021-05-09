@@ -19,9 +19,9 @@ import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import SMPClient (testKeyHash)
+import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Transmission
 import qualified Simplex.Messaging.Crypto as C
 import System.Random (Random (randomIO))
 import Test.Hspec

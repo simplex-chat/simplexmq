@@ -39,9 +39,9 @@ import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
-import Simplex.Messaging.Agent.Transmission
 import Simplex.Messaging.Parsers (blobFieldParser)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)

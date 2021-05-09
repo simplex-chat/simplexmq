@@ -10,8 +10,8 @@ import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
 import Numeric.Natural
+import Simplex.Messaging.Agent.Protocol (SMPServer)
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Transmission (SMPServer)
 import Simplex.Messaging.Client
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM

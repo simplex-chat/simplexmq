@@ -21,7 +21,7 @@ import SMPClient
   )
 import Simplex.Messaging.Agent (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Transmission
+import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
 import Test.Hspec
