@@ -9,7 +9,7 @@ description:  |
   * <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md SMP protocol>
   * <https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md SMP agent protocol>
   .
-  See <https://github.com/simplex-chat/simplex-chat terminal chat prototype> build with SimpleXMQ broker.
+  See <https://github.com/simplex-chat/simplex-chat terminal chat prototype> built with SimpleXMQ broker.
 
 homepage: https://github.com/simplex-chat/simplexmq#readme
 license: AGPL-3
