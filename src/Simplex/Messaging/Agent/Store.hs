@@ -272,7 +272,7 @@ type InternalTs = UTCTime
 
 -- * Store errors
 
--- | Agent store error
+-- | Agent store error.
 data StoreError
   = -- | IO exceptions in store actions.
     SEInternal ByteString
@@ -287,6 +287,6 @@ data StoreError
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.
     SEBadQueueStatus
-  | -- | Used in `getMsg` that is not implemented/used. TODO remove
+  | -- | Used in `getMsg` that is not implemented/used. TODO remove.
     SENotImplemented
   deriving (Eq, Show, Exception)

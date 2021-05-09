@@ -59,6 +59,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeServer,
     serializeSmpQueueInfo,
     serializeAgentError,
+    commandP,
     parseSMPMessage,
     smpServerP,
     smpQueueInfoP,
@@ -108,20 +109,20 @@ import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception
 
--- | unparsed SMP agent protocol transmission
+-- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
 
--- | parsed SMP agent protocol transmission
+-- | Parsed SMP agent protocol transmission.
 type ATransmission p = (CorrId, ConnAlias, ACommand p)
 
--- | SMP agent protocol transmission or transmission error
+-- | SMP agent protocol transmission or transmission error.
 type ATransmissionOrError p = (CorrId, ConnAlias, Either AgentErrorType (ACommand p))
 
--- | SMP agent protocol participants
+-- | SMP agent protocol participants.
 data AParty = Agent | Client
   deriving (Eq, Show)
 
--- | Singleton types for SMP agent protocol participants
+-- | Singleton types for SMP agent protocol participants.
 data SAParty :: AParty -> Type where
   SAgent :: SAParty Agent
   SClient :: SAParty Client
@@ -139,7 +140,7 @@ data ACmd = forall p. ACmd (SAParty p) (ACommand p)
 
 deriving instance Show ACmd
 
--- | Parameterized type for SMP agent protocol commands and responses from all participants
+-- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) where
   NEW :: ACommand Client -- response INV
   INV :: SMPQueueInfo -> ACommand Agent
@@ -174,7 +175,7 @@ deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
 
--- | SMP message formats
+-- | SMP message formats.
 data SMPMessage
   = -- | SMP confirmation
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message SMP protocol>)
@@ -193,15 +194,15 @@ data SMPMessage
       }
   deriving (Show)
 
--- | Messages sent between agents once queue is secured
+-- | Messages sent between SMP agents once SMP queue is secured.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents
 data AMessage where
-  -- | The first message in the queue to validate it is secured
+  -- | the first message in the queue to validate it is secured
   HELLO :: VerificationKey -> AckMode -> AMessage
-  -- | Reply queue information
+  -- | reply queue information
   REPLY :: SMPQueueInfo -> AMessage
-  -- | Agent envelope for the client message
+  -- | agent envelope for the client message
   A_MSG :: MsgBody -> AMessage
   deriving (Show)
 
@@ -272,17 +273,17 @@ serializeAgentMessage = \case
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
   A_MSG body -> "MSG " <> serializeMsg body <> "\n"
 
--- | Serialize SMP queue information that is sent out-of-band
+-- | Serialize SMP queue information that is sent out-of-band.
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
 serializeSmpQueueInfo (SMPQueueInfo srv qId ek) =
   B.intercalate "::" ["smp", serializeServer srv, encode qId, C.serializePubKey ek]
 
--- | Serialize SMP server location
+-- | Serialize SMP server location.
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} =
   B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . encode . C.unKeyHash) keyHash
 
--- | SMP server location and transport key digest (hash)
+-- | SMP server location and transport key digest (hash).
 data SMPServer = SMPServer
   { host :: HostName,
     port :: Maybe ServiceName,
@@ -293,39 +294,39 @@ data SMPServer = SMPServer
 instance IsString SMPServer where
   fromString = parseString . parseAll $ smpServerP
 
--- | SMP agent connection alias
+-- | SMP agent connection alias.
 type ConnAlias = ByteString
 
--- | Connection modes
+-- | Connection modes.
 data OnOff = On | Off deriving (Eq, Show, Read)
 
--- | Message acknowledgement mode of the connection
+-- | Message acknowledgement mode of the connection.
 newtype AckMode = AckMode OnOff deriving (Eq, Show)
 
--- | SMP queue information sent out-of-band
+-- | SMP queue information sent out-of-band.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
 data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
   deriving (Eq, Show)
 
--- | Connection reply mode (used in JOIN command)
+-- | Connection reply mode (used in JOIN command).
 newtype ReplyMode = ReplyMode OnOff deriving (Eq, Show)
 
--- | public key used to E2E encrypt SMP messages
+-- | Public key used to E2E encrypt SMP messages.
 type EncryptionKey = C.PublicKey
 
--- | private key used to E2E decrypt SMP messages
+-- | Private key used to E2E decrypt SMP messages.
 type DecryptionKey = C.SafePrivateKey
 
--- | private key used to sign SMP commands
+-- | Private key used to sign SMP commands
 type SignatureKey = C.SafePrivateKey
 
--- | public key used by SMP server to authorize (verify) SMP commands
+-- | Public key used by SMP server to authorize (verify) SMP commands.
 type VerificationKey = C.PublicKey
 
 data QueueDirection = SND | RCV deriving (Show)
 
--- | SMP queue status
+-- | SMP queue status.
 data QueueStatus
   = -- | queue is created
     New
@@ -343,11 +344,11 @@ type AgentMsgId = Int64
 
 type SenderTimestamp = UTCTime
 
--- | Result of received message integrity validation
+-- | Result of received message integrity validation.
 data MsgIntegrity = MsgOk | MsgError MsgErrorType
   deriving (Eq, Show)
 
--- | Error of message integrity validation
+-- | Error of message integrity validation.
 data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash | MsgDuplicate
   deriving (Eq, Show)
 
@@ -367,7 +368,7 @@ data AgentErrorType
     INTERNAL String
   deriving (Eq, Generic, Read, Show, Exception)
 
--- | SMP agent protocol command or response error
+-- | SMP agent protocol command or response error.
 data CommandErrorType
   = -- | command is prohibited
     PROHIBITED
@@ -381,7 +382,7 @@ data CommandErrorType
     LARGE
   deriving (Eq, Generic, Read, Show, Exception)
 
--- | Connection error
+-- | Connection error.
 data ConnectionErrorType
   = -- | connection alias is not in the database
     UNKNOWN
@@ -391,7 +392,7 @@ data ConnectionErrorType
     SIMPLEX
   deriving (Eq, Generic, Read, Show, Exception)
 
--- | SMP server errors
+-- | SMP server errors.
 data BrokerErrorType
   = -- | invalid server response (failed to parse)
     RESPONSE ErrorType
@@ -405,7 +406,7 @@ data BrokerErrorType
     TIMEOUT
   deriving (Eq, Generic, Read, Show, Exception)
 
--- | Errors of another SMP agent
+-- | Errors of another SMP agent.
 data SMPAgentError
   = -- | possibly should include bytestring that failed to parse
     A_MESSAGE
@@ -427,6 +428,7 @@ instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 
+-- | AMP agent command and response parser
 commandP :: Parser ACmd
 commandP =
   "NEW" $> ACmd SClient NEW
@@ -459,7 +461,7 @@ commandP =
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
--- | message integrity validation result parser
+-- | Message integrity validation result parser.
 msgIntegrityP :: Parser MsgIntegrity
 msgIntegrityP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
   where
@@ -472,7 +474,7 @@ msgIntegrityP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
 parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse commandP $ CMD SYNTAX
 
--- | serialize SMP agent command
+-- | Serialize SMP agent command.
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
   NEW -> "NEW"
@@ -505,7 +507,7 @@ serializeCommand = \case
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
 
--- | serialize message integrity validation result
+-- | Serialize message integrity validation result.
 serializeMsgIntegrity :: MsgIntegrity -> ByteString
 serializeMsgIntegrity = \case
   MsgOk -> "OK"
@@ -517,7 +519,7 @@ serializeMsgIntegrity = \case
       MsgBadHash -> "HASH"
       MsgDuplicate -> "DUPLICATE"
 
--- SMP agent protocol error parser
+-- | SMP agent protocol error parser.
 agentErrorTypeP :: Parser AgentErrorType
 agentErrorTypeP =
   "SMP " *> (SMP <$> SMP.errorTypeP)
@@ -526,7 +528,7 @@ agentErrorTypeP =
     <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
     <|> parseRead2
 
--- | serialize SMP agent protocol error
+-- | Serialize SMP agent protocol error.
 serializeAgentError :: AgentErrorType -> ByteString
 serializeAgentError = \case
   SMP e -> "SMP " <> SMP.serializeErrorType e
@@ -537,23 +539,23 @@ serializeAgentError = \case
 serializeMsg :: ByteString -> ByteString
 serializeMsg body = bshow (B.length body) <> "\n" <> body
 
--- Send raw (unparsed) SMP agent protocol transmission to TCP connection
+-- | Send raw (unparsed) SMP agent protocol transmission to TCP connection.
 tPutRaw :: Handle -> ARawTransmission -> IO ()
 tPutRaw h (corrId, connAlias, command) = do
   putLn h corrId
   putLn h connAlias
   putLn h command
 
--- Receive raw (unparsed) SMP agent protocol transmission from TCP connection
+-- | Receive raw (unparsed) SMP agent protocol transmission from TCP connection.
 tGetRaw :: Handle -> IO ARawTransmission
 tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
--- | Send SMP agent protocol command (or response) to TCP connection
+-- | Send SMP agent protocol command (or response) to TCP connection.
 tPut :: MonadIO m => Handle -> ATransmission p -> m ()
 tPut h (CorrId corrId, connAlias, command) =
   liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
 
--- | Receive client and agent transmissions from TCP connection
+-- | Receive client and agent transmissions from TCP connection.
 tGet :: forall m p. MonadIO m => SAParty p -> Handle -> m (ATransmissionOrError p)
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where

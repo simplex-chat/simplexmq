@@ -17,7 +17,7 @@
 -- Stability   : experimental
 -- Portability : non-portable
 --
--- This module defines SMP protocol agent with SQLite persistence
+-- This module defines SMP protocol agent with SQLite persistence.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent
@@ -80,7 +80,7 @@ runSMPAgentBlocking started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< 
       race_ (connectClient h c) (runSMPAgentClient c)
         `E.finally` (closeSMPServerClients c >> logConnection c False)
 
--- | Creates an SMP agent instance that receives commands and sends responses via 'TBQueue's
+-- | Creates an SMP agent instance that receives commands and sends responses via 'TBQueue's.
 getSMPAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
 getSMPAgentClient = do
   n <- asks clientCounter
@@ -95,7 +95,7 @@ logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
    in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
 
--- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's
+-- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
 runSMPAgentClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 runSMPAgentClient c = do
   db <- asks $ dbFile . config

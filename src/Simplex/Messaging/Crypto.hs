@@ -172,7 +172,7 @@ newtype Signature = Signature {unSignature :: ByteString} deriving (Eq, Show)
 instance IsString Signature where
   fromString = Signature . fromString
 
--- | Various cryptographic or related errors
+-- | Various cryptographic or related errors.
 data CryptoError
   = -- | RSA OAEP encryption error
     RSAEncryptError R.Error
@@ -201,7 +201,7 @@ aesKeySize = 256 `div` 8
 authTagSize :: Int
 authTagSize = 128 `div` 8
 
--- | Generate RSA key pair with either SafePrivateKey or FullPrivateKey
+-- | Generate RSA key pair with either SafePrivateKey or FullPrivateKey.
 generateKeyPair :: PrivateKey k => Int -> IO (KeyPair k)
 generateKeyPair size = loop
   where
@@ -237,13 +237,13 @@ data Header = Header
     msgSize :: Int
   }
 
--- | AES key newtype
+-- | AES key newtype.
 newtype Key = Key {unKey :: ByteString}
 
--- | IV bytes newtype
+-- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
 
--- | Key hash newtype
+-- | Key hash newtype.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
 instance IsString KeyHash where
@@ -273,11 +273,11 @@ headerP = do
   msgSize <- fromIntegral . decodeWord32 <$> A.take 4
   return Header {aesKey, ivBytes, authTag, msgSize}
 
--- | AES256 key parser
+-- | AES256 key parser.
 aesKeyP :: Parser Key
 aesKeyP = Key <$> A.take aesKeySize
 
--- | IV bytes parser
+-- | IV bytes parser.
 ivP :: Parser IV
 ivP = IV <$> A.take (ivSize @AES256)
 
@@ -338,11 +338,11 @@ initAEAD (Key aesKey) (IV ivBytes) = do
     cipher <- AES.cipherInit aesKey
     AES.aeadInit AES.AEAD_GCM cipher iv
 
--- | Random AES256 key
+-- | Random AES256 key.
 randomAesKey :: IO Key
 randomAesKey = Key <$> getRandomBytes aesKeySize
 
--- | Random IV bytes for AES256 encryption
+-- | Random IV bytes for AES256 encryption.
 randomIV :: IO IV
 randomIV = IV <$> getRandomBytes (ivSize @AES256)
 

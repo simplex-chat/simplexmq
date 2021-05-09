@@ -19,7 +19,7 @@
 -- Stability   : experimental
 -- Portability : non-portable
 --
--- This module defines basic TCP server and client and SMP protocol encrypted transport over TCP
+-- This module defines basic TCP server and client and SMP protocol encrypted transport over TCP.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
@@ -112,7 +112,7 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
 acceptTCPConn :: Socket -> IO Handle
 acceptTCPConn sock = accept sock >>= getSocketHandle . fst
 
--- | Connect to passed TCP host:port and pass handle to the client
+-- | Connect to passed TCP host:port and pass handle to the client.
 runTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
 runTCPClient host port client = do
   h <- liftIO $ startTCPClient host port
@@ -148,15 +148,15 @@ getSocketHandle conn = do
   hSetBuffering h LineBuffering
   return h
 
--- | Send ByteString to TCP connection handle terminating it with CRLF
+-- | Send ByteString to TCP connection handle terminating it with CRLF.
 putLn :: Handle -> ByteString -> IO ()
 putLn h = B.hPut h . (<> "\r\n")
 
--- | Receive ByteString from TCP connection handle, allowing LF or CRLF termination
+-- | Receive ByteString from TCP connection handle, allowing LF or CRLF termination.
 getLn :: Handle -> IO ByteString
 getLn h = trimCR <$> B.hGetLine h
 
--- | Trim trailing CR from ByteString
+-- | Trim trailing CR from ByteString.
 trimCR :: ByteString -> ByteString
 trimCR "" = ""
 trimCR s = if B.last s == '\r' then B.init s else s
@@ -180,7 +180,7 @@ smpVersionP =
   let ver = A.decimal <* A.char '.'
    in SMPVersion <$> ver <*> ver <*> ver <*> A.decimal
 
--- | SMP encrypted transport handle
+-- | The handle for SMP encrypted transport connection over TCP.
 data THandle = THandle
   { handle :: Handle,
     sndKey :: SessionKey,
@@ -200,7 +200,7 @@ data ClientHandshake = ClientHandshake
     rcvKey :: SessionKey
   }
 
--- | Error of SMP encrypted transport over TCP
+-- | Error of SMP encrypted transport over TCP.
 data TransportError
   = -- | error parsing transport block
     TEBadBlock
@@ -212,7 +212,7 @@ data TransportError
     TEHandshake HandshakeError
   deriving (Eq, Generic, Read, Show, Exception)
 
--- | transport handshake error
+-- | Transport handshake error.
 data HandshakeError
   = -- | encryption error
     ENCRYPT
@@ -238,7 +238,7 @@ instance Arbitrary TransportError where arbitrary = genericArbitraryU
 
 instance Arbitrary HandshakeError where arbitrary = genericArbitraryU
 
--- | SMP encrypted transport error parser
+-- | SMP encrypted transport error parser.
 transportErrorP :: Parser TransportError
 transportErrorP =
   "BLOCK" $> TEBadBlock
@@ -246,7 +246,7 @@ transportErrorP =
     <|> "AES_DECRYPT" $> TEDecrypt
     <|> TEHandshake <$> parseRead1
 
--- | Serialize SMP encrypted transport error
+-- | Serialize SMP encrypted transport error.
 serializeTransportError :: TransportError -> ByteString
 serializeTransportError = \case
   TEEncrypt -> "AES_ENCRYPT"
@@ -254,14 +254,14 @@ serializeTransportError = \case
   TEBadBlock -> "BLOCK"
   TEHandshake e -> bshow e
 
--- | Encrypt and send block to SMP encrypted transport
+-- | Encrypt and send block to SMP encrypted transport.
 tPutEncrypted :: THandle -> ByteString -> IO (Either TransportError ())
 tPutEncrypted THandle {handle = h, sndKey, blockSize} block =
   encryptBlock sndKey (blockSize - C.authTagSize) block >>= \case
     Left _ -> pure $ Left TEEncrypt
     Right (authTag, msg) -> Right <$> B.hPut h (C.authTagToBS authTag <> msg)
 
--- | Receive and decrypt block from SMP encrypted transport
+-- | Receive and decrypt block from SMP encrypted transport.
 tGetEncrypted :: THandle -> IO (Either TransportError ByteString)
 tGetEncrypted THandle {handle = h, rcvKey, blockSize} =
   B.hGet h blockSize >>= decryptBlock rcvKey >>= \case

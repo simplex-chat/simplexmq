@@ -87,7 +87,7 @@ data SMPClient = SMPClient
 -- | Type synonym for transmission from some SPM server queue.
 type SMPServerTransmission = (SMPServer, RecipientId, Command 'Broker)
 
--- | SMP client configuration
+-- | SMP client configuration.
 data SMPClientConfig = SMPClientConfig
   { -- | size of TBQueue to use for server commands and responses
     qSize :: Natural,
@@ -102,7 +102,7 @@ data SMPClientConfig = SMPClientConfig
     smpCommandSize :: Int
   }
 
--- | default SMP client configuration
+-- | Default SMP client configuration.
 smpDefaultConfig :: SMPClientConfig
 smpDefaultConfig =
   SMPClientConfig
@@ -120,11 +120,11 @@ data Request = Request
 
 type Response = Either SMPClientError Cmd
 
--- | connects to passed 'SMPServer' using client configuration
--- and queue for messages and notifications
+-- | Connects to 'SMPServer' using passed client configuration
+-- and queue for messages and notifications.
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
--- as 'SMPServerTransmission' includes server information
+-- as 'SMPServerTransmission' includes server information.
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO (Either SMPClientError SMPClient)
 getSMPClient
   smpServer@SMPServer {host, port, keyHash}
@@ -209,16 +209,16 @@ getSMPClient
                   Right r -> Right r
                 else Left SMPUnexpectedResponse
 
--- | Disconnects SMP client from the server and terminates client threads
+-- | Disconnects SMP client from the server and terminates client threads.
 closeSMPClient :: SMPClient -> IO ()
 closeSMPClient = uninterruptibleCancel . action
 
--- | SMP client error type
+-- | SMP client error type.
 data SMPClientError
   = -- | Correctly parsed SMP server ERR response.
-    -- This error is forwarded to the agent client as `ERR SMP err`
+    -- This error is forwarded to the agent client as `ERR SMP err`.
     SMPServerError ErrorType
-  | -- | Invalid server response that failed to parse
+  | -- | Invalid server response that failed to parse.
     -- Forwarded to the agent client as `ERR BROKER RESPONSE`.
     SMPResponseError ErrorType
   | -- | Different response from what is expected to a certain SMP command,
@@ -230,10 +230,10 @@ data SMPClientError
     -- Forwarded to the agent client as `ERR BROKER TIMEOUT`.
     SMPResponseTimeout
   | -- | Failure to establish TCP connection.
-    -- Forwarded to the agent client as `ERR BROKER NETWORK`
+    -- Forwarded to the agent client as `ERR BROKER NETWORK`.
     SMPNetworkError
-  | -- | TCP transport handshake or some other transport error
-    -- Forwarded to the agent client as `ERR BROKER TRANSPORT e`
+  | -- | TCP transport handshake or some other transport error.
+    -- Forwarded to the agent client as `ERR BROKER TRANSPORT e`.
     SMPTransportError TransportError
   | -- | Error when cryptographically "signing" the command.
     SMPSignatureError C.CryptoError

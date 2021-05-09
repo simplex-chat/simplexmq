@@ -84,11 +84,11 @@ import Simplex.Messaging.Transport (THandle, TransportError (..), tGetEncrypted,
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
--- | SMP protocol participants
+-- | SMP protocol participants.
 data Party = Broker | Recipient | Sender
   deriving (Show)
 
--- | Singleton types for SMP protocol participants
+-- | Singleton types for SMP protocol participants.
 data SParty :: Party -> Type where
   SBroker :: SParty Broker
   SRecipient :: SParty Recipient
@@ -96,38 +96,38 @@ data SParty :: Party -> Type where
 
 deriving instance Show (SParty a)
 
--- | Type for command or response of any participant
+-- | Type for command or response of any participant.
 data Cmd = forall a. Cmd (SParty a) (Command a)
 
 deriving instance Show Cmd
 
--- | SMP transmission without signature
+-- | SMP transmission without signature.
 type Transmission = (CorrId, QueueId, Cmd)
 
--- | SMP transmission with signature
+-- | SMP transmission with signature.
 type SignedTransmission = (C.Signature, Transmission)
 
 type TransmissionOrError = (CorrId, QueueId, Either ErrorType Cmd)
 
--- | signed parsed transmission, with parsing error
+-- | signed parsed transmission, with parsing error.
 type SignedTransmissionOrError = (C.Signature, TransmissionOrError)
 
--- | unparsed SMP transmission with signature
+-- | unparsed SMP transmission with signature.
 type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
 
--- | unparsed SMP transmission with signature
+-- | unparsed SMP transmission with signature.
 type SignedRawTransmission = (C.Signature, ByteString)
 
--- | SMP queue ID for the recipient
+-- | SMP queue ID for the recipient.
 type RecipientId = QueueId
 
--- | SMP queue ID for the sender
+-- | SMP queue ID for the sender.
 type SenderId = QueueId
 
--- | SMP queue ID on the server
+-- | SMP queue ID on the server.
 type QueueId = Encoded
 
--- | Parameterized type for SMP protocol commands from all participants
+-- | Parameterized type for SMP protocol commands from all participants.
 data Command (a :: Party) where
   -- SMP recipient commands
   NEW :: RecipientPublicKey -> Command Recipient
@@ -151,40 +151,40 @@ deriving instance Show (Command a)
 
 deriving instance Eq (Command a)
 
--- | base-64 encoded string
+-- | Base-64 encoded string.
 type Encoded = ByteString
 
--- | transmission correlation ID.
+-- | Transmission correlation ID.
 --
--- newtype to avoid accidentally changing order of transmission parts.
+-- A newtype to avoid accidentally changing order of transmission parts.
 newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
 
 instance IsString CorrId where
   fromString = CorrId . fromString
 
--- | Recipient's private key used by the recipient to authorize (sign) SMP commands
+-- | Recipient's private key used by the recipient to authorize (sign) SMP commands.
 --
--- Only used by SMP agent, kept here so its definition is close to respective public key
+-- Only used by SMP agent, kept here so its definition is close to respective public key.
 type RecipientPrivateKey = C.SafePrivateKey
 
--- | Recipient's public key used by SMP server to verify authorization of SMP commands
+-- | Recipient's public key used by SMP server to verify authorization of SMP commands.
 type RecipientPublicKey = C.PublicKey
 
--- | Sender's private key used by the recipient to authorize (sign) SMP commands
+-- | Sender's private key used by the recipient to authorize (sign) SMP commands.
 --
--- Only used by SMP agent, kept here so its definition is close to respective public key
+-- Only used by SMP agent, kept here so its definition is close to respective public key.
 type SenderPrivateKey = C.SafePrivateKey
 
--- | Sender's public key used by SMP server to verify authorization of SMP commands
+-- | Sender's public key used by SMP server to verify authorization of SMP commands.
 type SenderPublicKey = C.PublicKey
 
--- | SMP message server ID
+-- | SMP message server ID.
 type MsgId = Encoded
 
--- | SMP message body
+-- | SMP message body.
 type MsgBody = ByteString
 
--- | Type for protocol errors
+-- | Type for protocol errors.
 data ErrorType
   = -- | incorrect block format, encoding or signature size
     BLOCK
@@ -200,7 +200,7 @@ data ErrorType
     DUPLICATE_ -- TODO remove, not part of SMP protocol
   deriving (Eq, Generic, Read, Show)
 
--- | SMP command error type
+-- | SMP command error type.
 data CommandError
   = -- | server response sent from client or vice versa
     PROHIBITED
@@ -220,7 +220,7 @@ instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary CommandError where arbitrary = genericArbitraryU
 
--- | SMP transmission parser
+-- | SMP transmission parser.
 transmissionP :: Parser RawTransmission
 transmissionP = do
   signature <- segment
@@ -231,7 +231,7 @@ transmissionP = do
   where
     segment = A.takeTill (== ' ') <* " "
 
--- | SMP command parser
+-- | SMP command parser.
 commandP :: Parser Cmd
 commandP =
   "NEW " *> newCmd
@@ -264,11 +264,11 @@ commandP =
 
 -- TODO ignore the end of block, no need to parse it
 
--- | parse SMP command
+-- | Parse SMP command.
 parseCommand :: ByteString -> Either ErrorType Cmd
 parseCommand = parse (commandP <* " " <* A.takeByteString) $ CMD SYNTAX
 
--- | serialize SMP command
+-- | Serialize SMP command.
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
   Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
@@ -284,42 +284,44 @@ serializeCommand = \case
   where
     serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
 
--- | SMP error parser
+-- | SMP error parser.
 errorTypeP :: Parser ErrorType
 errorTypeP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
 
--- | serialize SMP error
+-- | Serialize SMP error.
 serializeErrorType :: ErrorType -> ByteString
 serializeErrorType = bshow
 
--- | send signed SMP transmission to TCP transport
+-- | Send signed SMP transmission to TCP transport.
 tPut :: THandle -> SignedRawTransmission -> IO (Either TransportError ())
 tPut th (C.Signature sig, t) =
   tPutEncrypted th $ encode sig <> " " <> t <> " "
 
--- | serialize SMP transmission
+-- | Serialize SMP transmission.
 serializeTransmission :: Transmission -> ByteString
 serializeTransmission (CorrId corrId, queueId, command) =
   B.intercalate " " [corrId, encode queueId, serializeCommand command]
 
--- | "filter" allowing only client commands, used with 'tGet' by 'Simplex.Messaging.Server'
+-- | Validate that it is an SMP client command, used with 'tGet' by 'Simplex.Messaging.Server'.
 fromClient :: Cmd -> Either ErrorType Cmd
 fromClient = \case
   Cmd SBroker _ -> Left $ CMD PROHIBITED
   cmd -> Right cmd
 
--- | "filter" allowing only server commands, used with 'tGet' by 'Simplex.Messaging.Client'
+-- | Validate that it is an SMP server command, used with 'tGet' by 'Simplex.Messaging.Client'.
 fromServer :: Cmd -> Either ErrorType Cmd
 fromServer = \case
   cmd@(Cmd SBroker _) -> Right cmd
   _ -> Left $ CMD PROHIBITED
 
--- | receive and parse transmission from the TCP transport
+-- | Receive and parse transmission from the TCP transport.
 tGetParse :: THandle -> IO (Either TransportError RawTransmission)
 tGetParse th = (>>= parse transmissionP TEBadBlock) <$> tGetEncrypted th
 
--- | receive client and server transmissions
--- 'fromParty' is used to limit allowed senders - 'fromClient' or 'fromServer' should be used
+-- | Receive client and server transmissions.
+--
+-- The first argument is used to limit allowed senders.
+-- 'fromClient' or 'fromServer' should be used here.
 tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> THandle -> m SignedTransmissionOrError
 tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
   where
