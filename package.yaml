@@ -16,7 +16,7 @@ license: AGPL-3
 author: simplex.chat
 maintainer: chat@simplex.chat
 copyright: 2020 simplex.chat
-category: Web, System, Services, Cryptography
+category: Chat, Network, Web, System, Cryptography
 extra-source-files:
   - README.md
   - CHANGELOG.md
