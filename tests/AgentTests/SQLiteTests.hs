@@ -5,7 +5,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module AgentTests.SQLiteTests (storeTests, storeStressTest) where
+module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Concurrent.Async (concurrently_)
 import Control.Monad (replicateM_)
@@ -62,45 +62,48 @@ action `throwsError` e = runExceptT action `shouldReturn` Left e
 
 -- TODO add null port tests
 storeTests :: Spec
-storeTests = withStore do
-  describe "store setup" do
-    testCompiledThreadsafe
-    testForeignKeysEnabled
-  describe "store methods" do
-    describe "Queue and Connection management" do
-      describe "createRcvConn" do
-        testCreateRcvConn
-        testCreateRcvConnDuplicate
-      describe "createSndConn" do
-        testCreateSndConn
-        testCreateSndConnDuplicate
-      describe "getAllConnAliases" testGetAllConnAliases
-      describe "getRcvConn" testGetRcvConn
-      describe "deleteConn" do
-        testDeleteRcvConn
-        testDeleteSndConn
-        testDeleteDuplexConn
-      describe "upgradeRcvConnToDuplex" do
-        testUpgradeRcvConnToDuplex
-      describe "upgradeSndConnToDuplex" do
-        testUpgradeSndConnToDuplex
-      describe "set Queue status" do
-        describe "setRcvQueueStatus" do
-          testSetRcvQueueStatus
-          testSetRcvQueueStatusNoQueue
-        describe "setSndQueueStatus" do
-          testSetSndQueueStatus
-          testSetSndQueueStatusNoQueue
-        testSetQueueStatusDuplex
-    describe "Msg management" do
-      describe "create Msg" do
-        testCreateRcvMsg
-        testCreateSndMsg
-        testCreateRcvAndSndMsgs
+storeTests = do
+  withStore2 do
+    describe "stress test" testConcurrentWrites
+  withStore do
+    describe "store setup" do
+      testCompiledThreadsafe
+      testForeignKeysEnabled
+    describe "store methods" do
+      describe "Queue and Connection management" do
+        describe "createRcvConn" do
+          testCreateRcvConn
+          testCreateRcvConnDuplicate
+        describe "createSndConn" do
+          testCreateSndConn
+          testCreateSndConnDuplicate
+        describe "getAllConnAliases" testGetAllConnAliases
+        describe "getRcvConn" testGetRcvConn
+        describe "deleteConn" do
+          testDeleteRcvConn
+          testDeleteSndConn
+          testDeleteDuplexConn
+        describe "upgradeRcvConnToDuplex" do
+          testUpgradeRcvConnToDuplex
+        describe "upgradeSndConnToDuplex" do
+          testUpgradeSndConnToDuplex
+        describe "set Queue status" do
+          describe "setRcvQueueStatus" do
+            testSetRcvQueueStatus
+            testSetRcvQueueStatusNoQueue
+          describe "setSndQueueStatus" do
+            testSetSndQueueStatus
+            testSetSndQueueStatusNoQueue
+          testSetQueueStatusDuplex
+      describe "Msg management" do
+        describe "create Msg" do
+          testCreateRcvMsg
+          testCreateSndMsg
+          testCreateRcvAndSndMsgs
 
-storeStressTest :: Spec
-storeStressTest = withStore2 $
-  it "should pass stress test on multiple concurrent write transactions" $ \(s1, s2) -> do
+testConcurrentWrites :: SpecWith (SQLiteStore, SQLiteStore)
+testConcurrentWrites =
+  it "should complete multiple concurrent write transactions w/t sqlite busy errors" $ \(s1, s2) -> do
     _ <- runExceptT $ createRcvConn s1 rcvQueue1
     concurrently_ (runTest s1) (runTest s2)
   where
@@ -111,13 +114,13 @@ storeStressTest = withStore2 $
       createRcvMsg store rcvQueue1 rcvMsgData
 
 testCompiledThreadsafe :: SpecWith SQLiteStore
-testCompiledThreadsafe = do
+testCompiledThreadsafe =
   it "compiled sqlite library should be threadsafe" $ \store -> do
     compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
     compileOptions `shouldNotContain` [["THREADSAFE=0"]]
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
-testForeignKeysEnabled = do
+testForeignKeysEnabled =
   it "foreign keys should be enabled" $ \store -> do
     let inconsistentQuery =
           [sql|
@@ -156,7 +159,7 @@ sndQueue1 =
     }
 
 testCreateRcvConn :: SpecWith SQLiteStore
-testCreateRcvConn = do
+testCreateRcvConn =
   it "should create RcvConnection and add SndQueue" $ \store -> do
     createRcvConn store rcvQueue1
       `returnsResult` ()
@@ -168,14 +171,14 @@ testCreateRcvConn = do
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
 
 testCreateRcvConnDuplicate :: SpecWith SQLiteStore
-testCreateRcvConnDuplicate = do
+testCreateRcvConnDuplicate =
   it "should throw error on attempt to create duplicate RcvConnection" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     createRcvConn store rcvQueue1
       `throwsError` SEConnDuplicate
 
 testCreateSndConn :: SpecWith SQLiteStore
-testCreateSndConn = do
+testCreateSndConn =
   it "should create SndConnection and add RcvQueue" $ \store -> do
     createSndConn store sndQueue1
       `returnsResult` ()
@@ -187,14 +190,14 @@ testCreateSndConn = do
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 sndQueue1)
 
 testCreateSndConnDuplicate :: SpecWith SQLiteStore
-testCreateSndConnDuplicate = do
+testCreateSndConnDuplicate =
   it "should throw error on attempt to create duplicate SndConnection" $ \store -> do
     _ <- runExceptT $ createSndConn store sndQueue1
     createSndConn store sndQueue1
       `throwsError` SEConnDuplicate
 
 testGetAllConnAliases :: SpecWith SQLiteStore
-testGetAllConnAliases = do
+testGetAllConnAliases =
   it "should get all conn aliases" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     _ <- runExceptT $ createSndConn store sndQueue1 {connAlias = "conn2"}
@@ -202,7 +205,7 @@ testGetAllConnAliases = do
       `returnsResult` ["conn1" :: ConnAlias, "conn2" :: ConnAlias]
 
 testGetRcvConn :: SpecWith SQLiteStore
-testGetRcvConn = do
+testGetRcvConn =
   it "should get connection using rcv queue id and server" $ \store -> do
     let smpServer = SMPServer "smp.simplex.im" (Just "5223") testKeyHash
     let recipientId = "1234"
@@ -211,7 +214,7 @@ testGetRcvConn = do
       `returnsResult` SomeConn SCRcv (RcvConnection (connAlias (rcvQueue1 :: RcvQueue)) rcvQueue1)
 
 testDeleteRcvConn :: SpecWith SQLiteStore
-testDeleteRcvConn = do
+testDeleteRcvConn =
   it "should create RcvConnection and delete it" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     getConn store "conn1"
@@ -223,7 +226,7 @@ testDeleteRcvConn = do
       `throwsError` SEConnNotFound
 
 testDeleteSndConn :: SpecWith SQLiteStore
-testDeleteSndConn = do
+testDeleteSndConn =
   it "should create SndConnection and delete it" $ \store -> do
     _ <- runExceptT $ createSndConn store sndQueue1
     getConn store "conn1"
@@ -235,7 +238,7 @@ testDeleteSndConn = do
       `throwsError` SEConnNotFound
 
 testDeleteDuplexConn :: SpecWith SQLiteStore
-testDeleteDuplexConn = do
+testDeleteDuplexConn =
   it "should create DuplexConnection and delete it" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     _ <- runExceptT $ upgradeRcvConnToDuplex store "conn1" sndQueue1
@@ -248,7 +251,7 @@ testDeleteDuplexConn = do
       `throwsError` SEConnNotFound
 
 testUpgradeRcvConnToDuplex :: SpecWith SQLiteStore
-testUpgradeRcvConnToDuplex = do
+testUpgradeRcvConnToDuplex =
   it "should throw error on attempt to add SndQueue to SndConnection or DuplexConnection" $ \store -> do
     _ <- runExceptT $ createSndConn store sndQueue1
     let anotherSndQueue =
@@ -268,7 +271,7 @@ testUpgradeRcvConnToDuplex = do
       `throwsError` SEBadConnType CDuplex
 
 testUpgradeSndConnToDuplex :: SpecWith SQLiteStore
-testUpgradeSndConnToDuplex = do
+testUpgradeSndConnToDuplex =
   it "should throw error on attempt to add RcvQueue to RcvConnection or DuplexConnection" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     let anotherRcvQueue =
@@ -290,7 +293,7 @@ testUpgradeSndConnToDuplex = do
       `throwsError` SEBadConnType CDuplex
 
 testSetRcvQueueStatus :: SpecWith SQLiteStore
-testSetRcvQueueStatus = do
+testSetRcvQueueStatus =
   it "should update status of RcvQueue" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     getConn store "conn1"
@@ -301,7 +304,7 @@ testSetRcvQueueStatus = do
       `returnsResult` SomeConn SCRcv (RcvConnection "conn1" rcvQueue1 {status = Confirmed})
 
 testSetSndQueueStatus :: SpecWith SQLiteStore
-testSetSndQueueStatus = do
+testSetSndQueueStatus =
   it "should update status of SndQueue" $ \store -> do
     _ <- runExceptT $ createSndConn store sndQueue1
     getConn store "conn1"
@@ -312,7 +315,7 @@ testSetSndQueueStatus = do
       `returnsResult` SomeConn SCSnd (SndConnection "conn1" sndQueue1 {status = Confirmed})
 
 testSetQueueStatusDuplex :: SpecWith SQLiteStore
-testSetQueueStatusDuplex = do
+testSetQueueStatusDuplex =
   it "should update statuses of RcvQueue and SndQueue in DuplexConnection" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     _ <- runExceptT $ upgradeRcvConnToDuplex store "conn1" sndQueue1
@@ -328,13 +331,13 @@ testSetQueueStatusDuplex = do
       `returnsResult` SomeConn SCDuplex (DuplexConnection "conn1" rcvQueue1 {status = Secured} sndQueue1 {status = Confirmed})
 
 testSetRcvQueueStatusNoQueue :: SpecWith SQLiteStore
-testSetRcvQueueStatusNoQueue = do
+testSetRcvQueueStatusNoQueue =
   xit "should throw error on attempt to update status of non-existent RcvQueue" $ \store -> do
     setRcvQueueStatus store rcvQueue1 Confirmed
       `throwsError` SEConnNotFound
 
 testSetSndQueueStatusNoQueue :: SpecWith SQLiteStore
-testSetSndQueueStatusNoQueue = do
+testSetSndQueueStatusNoQueue =
   xit "should throw error on attempt to update status of non-existent SndQueue" $ \store -> do
     setSndQueueStatus store sndQueue1 Confirmed
       `throwsError` SEConnNotFound
@@ -367,7 +370,7 @@ testCreateRcvMsg' store expectedPrevSndId expectedPrevHash rcvQueue rcvMsgData@R
     `returnsResult` ()
 
 testCreateRcvMsg :: SpecWith SQLiteStore
-testCreateRcvMsg = do
+testCreateRcvMsg =
   it "should reserve internal ids and create a RcvMsg" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     -- TODO getMsg to check message
@@ -392,7 +395,7 @@ testCreateSndMsg' store expectedPrevHash sndQueue sndMsgData@SndMsgData {..} = d
     `returnsResult` ()
 
 testCreateSndMsg :: SpecWith SQLiteStore
-testCreateSndMsg = do
+testCreateSndMsg =
   it "should create a SndMsg and return InternalId and PrevSndMsgHash" $ \store -> do
     _ <- runExceptT $ createSndConn store sndQueue1
     -- TODO getMsg to check message
@@ -400,7 +403,7 @@ testCreateSndMsg = do
     testCreateSndMsg' store "hash_dummy" sndQueue1 $ mkSndMsgData (InternalId 2) (InternalSndId 2) "new_hash_dummy"
 
 testCreateRcvAndSndMsgs :: SpecWith SQLiteStore
-testCreateRcvAndSndMsgs = do
+testCreateRcvAndSndMsgs =
   it "should create multiple RcvMsg and SndMsg, correctly ordering internal Ids and returning previous state" $ \store -> do
     _ <- runExceptT $ createRcvConn store rcvQueue1
     _ <- runExceptT $ upgradeRcvConnToDuplex store "conn1" sndQueue1
