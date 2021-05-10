@@ -104,7 +104,7 @@ withTransaction db a = loop 100 100_000
         if tLim > t && DB.sqlError e == DB.ErrorBusy
           then do
             threadDelay t
-            loop (t * 5 `div` 4) (tLim - t)
+            loop (t * 9 `div` 8) (tLim - t)
           else E.throwIO e
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
