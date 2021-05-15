@@ -60,9 +60,8 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport (THandle (..), TransportError, clientHandshake, runTCPClient)
+import Simplex.Messaging.Transport (TCP, THandle (..), TransportError, clientHandshake, runTCPClient)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
-import System.IO
 import System.Timeout
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
@@ -164,13 +163,13 @@ getSMPClient
               msgQ
             }
 
-      client :: SMPClient -> TMVar (Either SMPClientError THandle) -> Handle -> IO ()
+      client :: SMPClient -> TMVar (Either SMPClientError (THandle TCP)) -> TCP -> IO ()
       client c thVar h =
         runExceptT (clientHandshake h keyHash) >>= \case
           Right th -> clientTransport c thVar th
           Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
 
-      clientTransport :: SMPClient -> TMVar (Either SMPClientError THandle) -> THandle -> IO ()
+      clientTransport :: SMPClient -> TMVar (Either SMPClientError (THandle TCP)) -> THandle TCP -> IO ()
       clientTransport c thVar th = do
         atomically $ do
           writeTVar (connected c) True
@@ -178,10 +177,10 @@ getSMPClient
         raceAny_ [send c th, process c, receive c th, ping c]
           `finally` disconnected
 
-      send :: SMPClient -> THandle -> IO ()
+      send :: SMPClient -> THandle TCP -> IO ()
       send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
-      receive :: SMPClient -> THandle -> IO ()
+      receive :: SMPClient -> THandle TCP -> IO ()
       receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
 
       ping :: SMPClient -> IO ()

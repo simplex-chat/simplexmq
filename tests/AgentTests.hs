@@ -5,6 +5,8 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module AgentTests where
 
@@ -15,37 +17,29 @@ import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
-import System.IO (Handle)
+import Simplex.Messaging.Transport (TConnection (..), Transport (..))
 import System.Timeout
 import Test.Hspec
 
-agentTests :: Spec
-agentTests = do
+agentTests :: forall c. TConnection c => Transport c -> Spec
+agentTests t = do
   describe "SQLite store" storeTests
-  describe "SMP agent protocol syntax" syntaxTests
+  describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" do
     it "should connect via one server and one agent" $
-      smpAgentTest2_1_1 testDuplexConnection
+      smpAgentTest2_1_1 $ testDuplexConnection @c
     it "should connect via one server and 2 agents" $
-      smpAgentTest2_2_1 testDuplexConnection
+      smpAgentTest2_2_1 $ testDuplexConnection @c
     it "should connect via 2 servers and 2 agents" $
-      smpAgentTest2_2_2 testDuplexConnection
+      smpAgentTest2_2_2 $ testDuplexConnection @c
   describe "Connection subscriptions" do
     it "should connect via one server and one agent" $
-      smpAgentTest3_1_1 testSubscription
+      smpAgentTest3_1_1 $ testSubscription @c
     it "should send notifications to client when server disconnects" $
-      smpAgentServerTest testSubscrNotification
-
--- | simple test for one command with the expected response
-(>#>) :: ARawTransmission -> ARawTransmission -> Expectation
-command >#> response = smpAgentTest command `shouldReturn` response
-
--- | simple test for one command with a predicate for the expected response
-(>#>=) :: ARawTransmission -> ((ByteString, ByteString, [ByteString]) -> Bool) -> Expectation
-command >#>= p = smpAgentTest command >>= (`shouldSatisfy` p . \(cId, cAlias, cmd) -> (cId, cAlias, B.words cmd))
+      smpAgentServerTest $ testSubscrNotification @c
 
 -- | send transmission `t` to handle `h` and get response
-(#:) :: Handle -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
+(#:) :: TConnection c => c -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
 h #: t = tPutRaw h t >> tGet SAgent h
 
 -- | action and expected response
@@ -64,15 +58,15 @@ correctTransmission (corrId, cAlias, cmdOrErr) = case cmdOrErr of
   Left e -> error $ show e
 
 -- | receive message to handle `h` and validate that it is the expected one
-(<#) :: Handle -> ATransmission 'Agent -> Expectation
+(<#) :: TConnection c => c -> ATransmission 'Agent -> Expectation
 h <# (corrId, cAlias, cmd) = tGet SAgent h `shouldReturn` (corrId, cAlias, Right cmd)
 
 -- | receive message to handle `h` and validate it using predicate `p`
-(<#=) :: Handle -> (ATransmission 'Agent -> Bool) -> Expectation
+(<#=) :: TConnection c => c -> (ATransmission 'Agent -> Bool) -> Expectation
 h <#= p = tGet SAgent h >>= (`shouldSatisfy` p . correctTransmission)
 
 -- | test that nothing is delivered to handle `h` during 10ms
-(#:#) :: Handle -> String -> Expectation
+(#:#) :: TConnection c => c -> String -> Expectation
 h #:# err = tryGet `shouldReturn` ()
   where
     tryGet =
@@ -83,7 +77,7 @@ h #:# err = tryGet `shouldReturn` ()
 pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG {msgBody, msgIntegrity = MsgOk}
 
-testDuplexConnection :: Handle -> Handle -> IO ()
+testDuplexConnection :: TConnection c => c -> c -> IO ()
 testDuplexConnection alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
@@ -102,7 +96,7 @@ testDuplexConnection alice bob = do
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
-testSubscription :: Handle -> Handle -> Handle -> IO ()
+testSubscription :: TConnection c => c -> c -> c -> IO ()
 testSubscription alice1 alice2 bob = do
   ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
@@ -118,7 +112,7 @@ testSubscription alice1 alice2 bob = do
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
 
-testSubscrNotification :: (ThreadId, ThreadId) -> Handle -> IO ()
+testSubscrNotification :: TConnection c => (ThreadId, ThreadId) -> c -> IO ()
 testSubscrNotification (server, _) client = do
   client #: ("1", "conn1", "NEW") =#> \case ("1", "conn1", INV _) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
@@ -128,8 +122,8 @@ testSubscrNotification (server, _) client = do
 samplePublicKey :: ByteString
 samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
 
-syntaxTests :: Spec
-syntaxTests = do
+syntaxTests :: forall c. TConnection c => Transport c -> Spec
+syntaxTests t = do
   it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
   describe "NEW" do
     describe "valid" do
@@ -149,3 +143,11 @@ syntaxTests = do
     describe "invalid" do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
+  where
+    -- simple test for one command with the expected response
+    (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
+    command >#> response = smpAgentTest t command `shouldReturn` response
+
+    -- simple test for one command with a predicate for the expected response
+    (>#>=) :: ARawTransmission -> ((ByteString, ByteString, [ByteString]) -> Bool) -> Expectation
+    command >#>= p = smpAgentTest t command >>= (`shouldSatisfy` p . \(cId, cAlias, cmd) -> (cId, cAlias, B.words cmd))

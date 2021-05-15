@@ -9,6 +9,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Server
@@ -55,25 +56,27 @@ import UnliftIO.STM
 -- | Runs an SMP server using passed configuration.
 --
 -- See a full server here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs
-runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServerConfig -> m ()
-runSMPServer cfg = newEmptyTMVarIO >>= (`runSMPServerBlocking` cfg)
+runSMPServer :: (TConnection c, MonadRandom m, MonadUnliftIO m) => Transport c -> ServerConfig -> m ()
+runSMPServer t cfg = do
+  started <- newEmptyTMVarIO
+  runSMPServerBlocking t started cfg
 
 -- | Runs an SMP server using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
-runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
+runSMPServerBlocking :: forall c m. (TConnection c, MonadRandom m, MonadUnliftIO m) => Transport c -> TMVar Bool -> ServerConfig -> m ()
+runSMPServerBlocking t started cfg@ServerConfig {tcpPort} = do
   env <- newEnv cfg
   runReaderT smpServer env
   where
-    smpServer :: (MonadUnliftIO m, MonadReader Env m) => m ()
+    smpServer :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpServer = do
       s <- asks server
-      race_ (runTCPServer started tcpPort runClient) (serverThread s)
+      race_ (runTCPServer started tcpPort (runClient t)) (serverThread s)
         `finally` withLog closeStoreLog
 
-    serverThread :: MonadUnliftIO m => Server -> m ()
+    serverThread :: MonadUnliftIO m' => Server -> m' ()
     serverThread Server {subscribedQ, subscribers} = forever . atomically $ do
       (rId, clnt) <- readTBQueue subscribedQ
       cs <- readTVar subscribers
@@ -82,14 +85,14 @@ runSMPServerBlocking started cfg@ServerConfig {tcpPort} = do
         Nothing -> return ()
       writeTVar subscribers $ M.insert rId clnt cs
 
-runClient :: (MonadUnliftIO m, MonadReader Env m) => Handle -> m ()
-runClient h = do
+runClient :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => Transport c -> c -> m ()
+runClient _ h = do
   keyPair <- asks serverKeyPair
   liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
     Right th -> runClientTransport th
     Left _ -> pure ()
 
-runClientTransport :: (MonadUnliftIO m, MonadReader Env m) => THandle -> m ()
+runClientTransport :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
 runClientTransport th = do
   q <- asks $ tbqSize . config
   c <- atomically $ newClient q
@@ -106,7 +109,7 @@ cancelSub = \case
   Sub {subThread = SubThread t} -> killThread t
   _ -> return ()
 
-receive :: (MonadUnliftIO m, MonadReader Env m) => THandle -> Client -> m ()
+receive :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Client -> m ()
 receive h Client {rcvQ} = forever $ do
   (signature, (corrId, queueId, cmdOrError)) <- tGet fromClient h
   t <- case cmdOrError of
@@ -114,7 +117,7 @@ receive h Client {rcvQ} = forever $ do
     Right cmd -> verifyTransmission (signature, (corrId, queueId, cmd))
   atomically $ writeTBQueue rcvQ t
 
-send :: MonadUnliftIO m => THandle -> Client -> m ()
+send :: (TConnection c, MonadUnliftIO m) => THandle c -> Client -> m ()
 send h Client {sndQ} = forever $ do
   t <- atomically $ readTBQueue sndQ
   liftIO $ tPut h ("", serializeTransmission t)

@@ -80,7 +80,7 @@ import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (THandle, TransportError (..), tGetEncrypted, tPutEncrypted)
+import Simplex.Messaging.Transport (TConnection, THandle, TransportError (..), tGetEncrypted, tPutEncrypted)
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
@@ -293,7 +293,7 @@ serializeErrorType :: ErrorType -> ByteString
 serializeErrorType = bshow
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: THandle -> SignedRawTransmission -> IO (Either TransportError ())
+tPut :: TConnection c => THandle c -> SignedRawTransmission -> IO (Either TransportError ())
 tPut th (C.Signature sig, t) =
   tPutEncrypted th $ encode sig <> " " <> t <> " "
 
@@ -315,14 +315,14 @@ fromServer = \case
   _ -> Left $ CMD PROHIBITED
 
 -- | Receive and parse transmission from the TCP transport.
-tGetParse :: THandle -> IO (Either TransportError RawTransmission)
+tGetParse :: TConnection c => THandle c -> IO (Either TransportError RawTransmission)
 tGetParse th = (>>= parse transmissionP TEBadBlock) <$> tGetEncrypted th
 
 -- | Receive client and server transmissions.
 --
 -- The first argument is used to limit allowed senders.
 -- 'fromClient' or 'fromServer' should be used here.
-tGet :: forall m. MonadIO m => (Cmd -> Either ErrorType Cmd) -> THandle -> m SignedTransmissionOrError
+tGet :: forall c m. (TConnection c, MonadIO m) => (Cmd -> Either ErrorType Cmd) -> THandle c -> m SignedTransmissionOrError
 tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m SignedTransmissionOrError

@@ -102,9 +102,8 @@ import Simplex.Messaging.Protocol
     SenderPublicKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (TransportError, getLn, putLn, serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport (TConnection (..), TransportError, serializeTransportError, transportErrorP)
 import Simplex.Messaging.Util
-import System.IO
 import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception
@@ -540,24 +539,24 @@ serializeMsg :: ByteString -> ByteString
 serializeMsg body = bshow (B.length body) <> "\n" <> body
 
 -- | Send raw (unparsed) SMP agent protocol transmission to TCP connection.
-tPutRaw :: Handle -> ARawTransmission -> IO ()
-tPutRaw h (corrId, connAlias, command) = do
-  putLn h corrId
-  putLn h connAlias
-  putLn h command
+tPutRaw :: TConnection c => c -> ARawTransmission -> IO ()
+tPutRaw c (corrId, connAlias, command) = do
+  cPutLn c corrId
+  cPutLn c connAlias
+  cPutLn c command
 
 -- | Receive raw (unparsed) SMP agent protocol transmission from TCP connection.
-tGetRaw :: Handle -> IO ARawTransmission
-tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
+tGetRaw :: TConnection c => c -> IO ARawTransmission
+tGetRaw c = (,,) <$> cGetLn c <*> cGetLn c <*> cGetLn c
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
-tPut :: MonadIO m => Handle -> ATransmission p -> m ()
-tPut h (CorrId corrId, connAlias, command) =
-  liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
+tPut :: (TConnection c, MonadIO m) => c -> ATransmission p -> m ()
+tPut c (CorrId corrId, connAlias, command) =
+  liftIO $ tPutRaw c (corrId, connAlias, serializeCommand command)
 
 -- | Receive client and agent transmissions from TCP connection.
-tGet :: forall m p. MonadIO m => SAParty p -> Handle -> m (ATransmissionOrError p)
-tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
+tGet :: forall c m p. (TConnection c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
+tGet party c = liftIO (tGetRaw c) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
     tParseLoadBody t@(corrId, connAlias, command) = do
@@ -595,7 +594,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         ':' : body -> return . Right $ B.pack body
         str -> case readMaybe str :: Maybe Int of
           Just size -> liftIO $ do
-            body <- B.hGet h size
-            s <- getLn h
+            body <- cGet c size
+            s <- cGetLn c
             return $ if B.null s then Right body else Left $ CMD SIZE
           Nothing -> return . Left $ CMD SYNTAX

@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Main where
 
@@ -20,6 +21,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog)
+import Simplex.Messaging.Transport (TCP, Transport (..))
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -58,7 +60,7 @@ main = do
   pk <- readCreateKey
   B.putStrLn $ "transport key hash: " <> serverKeyHash pk
   putStrLn $ "listening on port " <> tcpPort cfg
-  runSMPServer cfg {serverPrivateKey = pk, storeLog}
+  runSMPServer (Transport @TCP) cfg {serverPrivateKey = pk, storeLog}
 
 data IniOpts = IniOpts
   { enableStoreLog :: Bool,

@@ -4,6 +4,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module SMPClient where
 
@@ -44,7 +45,7 @@ testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
 
-testSMPClient :: MonadUnliftIO m => (THandle -> m a) -> m a
+testSMPClient :: (TConnection c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
   runTCPClient testHost testPort $ \h ->
     liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
@@ -91,18 +92,18 @@ cfg =
         \TmKzSAw7iVWwEUZR/PeiEKazqrpp9VU="
     }
 
-withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerStoreLogOn port client = do
+withSmpServerStoreLogOn :: (TConnection c, MonadUnliftIO m, MonadRandom m) => Transport c -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreLogOn t port client = do
   s <- liftIO $ openReadStoreLog testStoreLogFile
   serverBracket
-    (\started -> runSMPServerBlocking started cfg {tcpPort = port, storeLog = Just s})
+    (\started -> runSMPServerBlocking t started cfg {tcpPort = port, storeLog = Just s})
     (pure ())
     client
 
-withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerThreadOn port =
+withSmpServerThreadOn :: (TConnection c, MonadUnliftIO m, MonadRandom m) => Transport c -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerThreadOn t port =
   serverBracket
-    (\started -> runSMPServerBlocking started cfg {tcpPort = port})
+    (\started -> runSMPServerBlocking t started cfg {tcpPort = port})
     (pure ())
 
 serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
@@ -118,49 +119,49 @@ serverBracket process afterProcess f = do
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 
-withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ServiceName -> m a -> m a
-withSmpServerOn port = withSmpServerThreadOn port . const
+withSmpServerOn :: (TConnection c, MonadUnliftIO m, MonadRandom m) => Transport c -> ServiceName -> m a -> m a
+withSmpServerOn t port = withSmpServerThreadOn t port . const
 
-withSmpServer :: (MonadUnliftIO m, MonadRandom m) => m a -> m a
-withSmpServer = withSmpServerOn testPort
+withSmpServer :: (TConnection c, MonadUnliftIO m, MonadRandom m) => Transport c -> m a -> m a
+withSmpServer t = withSmpServerOn t testPort
 
-runSmpTest :: (MonadUnliftIO m, MonadRandom m) => (THandle -> m a) -> m a
-runSmpTest test = withSmpServer $ testSMPClient test
+runSmpTest :: forall c m a. (TConnection c, MonadUnliftIO m, MonadRandom m) => (THandle c -> m a) -> m a
+runSmpTest test = withSmpServer (Transport @c) $ testSMPClient test
 
-runSmpTestN :: forall m a. (MonadUnliftIO m, MonadRandom m) => Int -> ([THandle] -> m a) -> m a
-runSmpTestN nClients test = withSmpServer $ run nClients []
+runSmpTestN :: forall c m a. (TConnection c, MonadUnliftIO m, MonadRandom m) => Int -> ([THandle c] -> m a) -> m a
+runSmpTestN nClients test = withSmpServer (Transport @c) $ run nClients []
   where
-    run :: Int -> [THandle] -> m a
+    run :: Int -> [THandle c] -> m a
     run 0 hs = test hs
     run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
 
-smpServerTest :: RawTransmission -> IO RawTransmission
-smpServerTest cmd = runSmpTest $ \h -> tPutRaw h cmd >> tGetRaw h
+smpServerTest :: forall c. TConnection c => Transport c -> RawTransmission -> IO RawTransmission
+smpServerTest _ cmd = runSmpTest $ \(h :: THandle c) -> tPutRaw h cmd >> tGetRaw h
 
-smpTest :: (THandle -> IO ()) -> Expectation
+smpTest :: TConnection c => (THandle c -> IO ()) -> Expectation
 smpTest test' = runSmpTest test' `shouldReturn` ()
 
-smpTestN :: Int -> ([THandle] -> IO ()) -> Expectation
+smpTestN :: TConnection c => Int -> ([THandle c] -> IO ()) -> Expectation
 smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
 
-smpTest2 :: (THandle -> THandle -> IO ()) -> Expectation
+smpTest2 :: TConnection c => (THandle c -> THandle c -> IO ()) -> Expectation
 smpTest2 test' = smpTestN 2 _test
   where
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpTest3 :: (THandle -> THandle -> THandle -> IO ()) -> Expectation
+smpTest3 :: TConnection c => (THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
 smpTest3 test' = smpTestN 3 _test
   where
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
-tPutRaw :: THandle -> RawTransmission -> IO ()
+tPutRaw :: TConnection c => THandle c -> RawTransmission -> IO ()
 tPutRaw h (sig, corrId, queueId, command) = do
   let t = B.intercalate " " [corrId, queueId, command]
   void $ tPut h (C.Signature sig, t)
 
-tGetRaw :: THandle -> IO RawTransmission
+tGetRaw :: TConnection c => THandle c -> IO RawTransmission
 tGetRaw h = do
   ("", (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
   pure ("", corrId, encode qId, serializeCommand cmd)
