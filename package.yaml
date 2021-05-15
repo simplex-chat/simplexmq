@@ -84,6 +84,14 @@ executables:
     ghc-options:
       - -threaded
 
+  ws-client:
+    source-dirs: apps/ws-client
+    main: Main.hs
+    dependencies:
+      - websockets
+    ghc-options:
+      - -threaded
+
 tests:
   smp-server-test:
     source-dirs: tests
