@@ -51,6 +51,7 @@ dependencies:
   - transformers == 0.5.*
   - unliftio == 0.2.*
   - unliftio-core == 0.1.*
+  - websockets == 0.12.*
   - x509 == 1.7.*
 
 library:

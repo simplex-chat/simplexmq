@@ -24,16 +24,15 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
   ( -- * Transport connection class
-    Transport (..),
     TConnection (..),
+    Transport (..),
+
+    -- * Transport over TCP
+    runTransportServer,
+    runTransportClient,
 
     -- * TCP transport
     TCP (..),
-    runTCPServer,
-    runTCPClient,
-    -- putLn,
-    -- getLn,
-    trimCR,
 
     -- * SMP encrypted transport
     THandle (..),
@@ -44,6 +43,9 @@ module Simplex.Messaging.Transport
     tGetEncrypted,
     serializeTransportError,
     transportErrorP,
+
+    -- * Trim trailing CR
+    trimCR,
   )
 where
 
@@ -82,8 +84,12 @@ import UnliftIO.STM
 -- * Transport connection class
 
 class TConnection c where
-  -- | Upgrade socket to connection
-  getSocketConnection :: Socket -> IO c
+  -- | Upgrade client socket to connection (used in the server)
+  getServerConnection :: Socket -> IO c
+
+  -- | Upgrade server socket to connection (used in the client)
+  getClientConnection :: Socket -> IO c
+  getClientConnection = getServerConnection
 
   -- | Close connection
   closeConnection :: c -> IO ()
@@ -99,26 +105,17 @@ class TConnection c where
 
   -- | Send ByteString to connection terminating it with CRLF.
   cPutLn :: c -> ByteString -> IO ()
+  cPutLn c = cPut c . (<> "\r\n")
 
 data Transport c = Transport
 
--- * TCP transport
+-- * Transport over TCP
 
-newtype TCP = TCP {tcpHandle :: Handle}
-
-instance TConnection TCP where
-  getSocketConnection = fmap TCP . getSocketHandle
-  closeConnection = hClose . tcpHandle
-  cGet = B.hGet . tcpHandle
-  cPut = B.hPut . tcpHandle
-  cGetLn = getLn . tcpHandle
-  cPutLn = putLn . tcpHandle
-
--- | Run TCP server on passed port and signal when server started and stopped via passed TMVar.
+-- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
--- All accepted TCP connection handles are passed to the passed function.
-runTCPServer :: (TConnection c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
-runTCPServer started port server = do
+-- All accepted connections are passed to the passed function.
+runTransportServer :: (TConnection c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
+runTransportServer started port server = do
   clients <- newTVarIO S.empty
   E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) \sock -> forever $ do
     c <- liftIO $ acceptConnection sock
@@ -130,6 +127,8 @@ runTCPServer started port server = do
       readTVarIO clients >>= mapM_ killThread
       close sock
       void . atomically $ tryPutTMVar started False
+    acceptConnection :: TConnection c => Socket -> IO c
+    acceptConnection sock = accept sock >>= getServerConnection . fst
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
@@ -146,12 +145,9 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
       return sock
     setStarted sock = atomically (putTMVar started True) >> pure sock
 
-acceptConnection :: TConnection c => Socket -> IO c
-acceptConnection sock = accept sock >>= getSocketConnection . fst
-
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTCPClient :: TConnection c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a
-runTCPClient host port client = do
+runTransportClient :: TConnection c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a
+runTransportClient host port client = do
   c <- liftIO $ startTCPClient host port
   client c `E.finally` liftIO (closeConnection c)
 
@@ -175,7 +171,18 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      getSocketConnection sock
+      getClientConnection sock
+
+-- * TCP transport
+
+newtype TCP = TCP {tcpHandle :: Handle}
+
+instance TConnection TCP where
+  getServerConnection = fmap TCP . getSocketHandle
+  closeConnection = hClose . tcpHandle
+  cGet = B.hGet . tcpHandle
+  cPut = B.hPut . tcpHandle
+  cGetLn = fmap trimCR . B.hGetLine . tcpHandle
 
 getSocketHandle :: Socket -> IO Handle
 getSocketHandle conn = do
@@ -184,14 +191,6 @@ getSocketHandle conn = do
   hSetNewlineMode h NewlineMode {inputNL = CRLF, outputNL = CRLF}
   hSetBuffering h LineBuffering
   return h
-
--- | Send ByteString to TCP connection handle terminating it with CRLF.
-putLn :: Handle -> ByteString -> IO ()
-putLn h = B.hPut h . (<> "\r\n")
-
--- -- | Receive ByteString from TCP connection handle, allowing LF or CRLF termination.
-getLn :: Handle -> IO ByteString
-getLn h = trimCR <$> B.hGetLine h
 
 -- | Trim trailing CR from ByteString.
 trimCR :: ByteString -> ByteString
@@ -346,7 +345,8 @@ serverHandshake c (k, pk) = do
     sendHeaderAndPublicKey_1 = do
       let sKey = C.encodePubKey k
           header = ServerHeader {blockSize = transportBlockSize, keySize = B.length sKey}
-      cPut c $ binaryServerHeader header <> sKey
+      cPut c $ binaryServerHeader header
+      cPut c sKey
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString
     receiveEncryptedKeys_4 =
       liftIO (cGet c $ C.publicKeySize k) >>= \case

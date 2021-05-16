@@ -47,7 +47,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: (TConnection c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTCPClient testHost testPort $ \h ->
+  runTransportClient testHost testPort $ \h ->
     liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e

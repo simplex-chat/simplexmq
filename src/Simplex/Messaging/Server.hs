@@ -9,7 +9,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Server
@@ -73,7 +72,7 @@ runSMPServerBlocking t started cfg@ServerConfig {tcpPort} = do
     smpServer :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpServer = do
       s <- asks server
-      race_ (runTCPServer started tcpPort (runClient t)) (serverThread s)
+      race_ (runTransportServer started tcpPort (runClient t)) (serverThread s)
         `finally` withLog closeStoreLog
 
     serverThread :: MonadUnliftIO m' => Server -> m' ()

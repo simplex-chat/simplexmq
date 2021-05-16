@@ -60,7 +60,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport (TCP, THandle (..), TransportError, clientHandshake, runTCPClient)
+import Simplex.Messaging.Transport (TCP, THandle (..), TransportError, clientHandshake, runTransportClient)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.Timeout
 
@@ -134,7 +134,7 @@ getSMPClient
     thVar <- newEmptyTMVarIO
     action <-
       async $
-        runTCPClient host (fromMaybe defaultPort port) (client c thVar)
+        runTransportClient host (fromMaybe defaultPort port) (client c thVar)
           `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
     tHandle <- tcpTimeout `timeout` atomically (takeTMVar thVar)
     pure $ case tHandle of
