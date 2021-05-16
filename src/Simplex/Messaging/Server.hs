@@ -9,6 +9,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Server
@@ -65,14 +66,14 @@ runSMPServer t cfg = do
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: forall c m. (TConnection c, MonadRandom m, MonadUnliftIO m) => Transport c -> TMVar Bool -> ServerConfig -> m ()
-runSMPServerBlocking t started cfg@ServerConfig {tcpPort} = do
+runSMPServerBlocking _ started cfg@ServerConfig {tcpPort} = do
   env <- newEnv cfg
   runReaderT smpServer env
   where
     smpServer :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpServer = do
       s <- asks server
-      race_ (runTransportServer started tcpPort (runClient t)) (serverThread s)
+      race_ (runTransportServer started tcpPort $ runClient @c) (serverThread s)
         `finally` withLog closeStoreLog
 
     serverThread :: MonadUnliftIO m' => Server -> m' ()
@@ -84,8 +85,8 @@ runSMPServerBlocking t started cfg@ServerConfig {tcpPort} = do
         Nothing -> return ()
       writeTVar subscribers $ M.insert rId clnt cs
 
-runClient :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => Transport c -> c -> m ()
-runClient _ h = do
+runClient :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => c -> m ()
+runClient h = do
   keyPair <- asks serverKeyPair
   liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
     Right th -> runClientTransport th
