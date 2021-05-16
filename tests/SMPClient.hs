@@ -45,7 +45,7 @@ testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
 
-testSMPClient :: (TConnection c, MonadUnliftIO m) => (THandle c -> m a) -> m a
+testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
   runTransportClient testHost testPort $ \h ->
     liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
@@ -125,43 +125,43 @@ withSmpServerOn t port = withSmpServerThreadOn t port . const
 withSmpServer :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
 withSmpServer t = withSmpServerOn t testPort
 
-runSmpTest :: forall c m a. (TConnection c, MonadUnliftIO m, MonadRandom m) => (THandle c -> m a) -> m a
+runSmpTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => (THandle c -> m a) -> m a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
 
-runSmpTestN :: forall c m a. (TConnection c, MonadUnliftIO m, MonadRandom m) => Int -> ([THandle c] -> m a) -> m a
+runSmpTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => Int -> ([THandle c] -> m a) -> m a
 runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
   where
     run :: Int -> [THandle c] -> m a
     run 0 hs = test hs
     run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
 
-smpServerTest :: forall c. TConnection c => Transport c -> RawTransmission -> IO RawTransmission
+smpServerTest :: forall c. Transport c => TProxy c -> RawTransmission -> IO RawTransmission
 smpServerTest _ cmd = runSmpTest $ \(h :: THandle c) -> tPutRaw h cmd >> tGetRaw h
 
-smpTest :: TConnection c => Transport c -> (THandle c -> IO ()) -> Expectation
+smpTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
 smpTest _ test' = runSmpTest test' `shouldReturn` ()
 
-smpTestN :: TConnection c => Int -> ([THandle c] -> IO ()) -> Expectation
+smpTestN :: Transport c => Int -> ([THandle c] -> IO ()) -> Expectation
 smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
 
-smpTest2 :: TConnection c => Transport c -> (THandle c -> THandle c -> IO ()) -> Expectation
+smpTest2 :: Transport c => TProxy c -> (THandle c -> THandle c -> IO ()) -> Expectation
 smpTest2 _ test' = smpTestN 2 _test
   where
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpTest3 :: TConnection c => Transport c -> (THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
+smpTest3 :: Transport c => TProxy c -> (THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
 smpTest3 _ test' = smpTestN 3 _test
   where
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
-tPutRaw :: TConnection c => THandle c -> RawTransmission -> IO ()
+tPutRaw :: Transport c => THandle c -> RawTransmission -> IO ()
 tPutRaw h (sig, corrId, queueId, command) = do
   let t = B.intercalate " " [corrId, queueId, command]
   void $ tPut h (C.Signature sig, t)
 
-tGetRaw :: TConnection c => THandle c -> IO RawTransmission
+tGetRaw :: Transport c => THandle c -> IO RawTransmission
 tGetRaw h = do
   ("", (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
   pure ("", corrId, encode qId, serializeCommand cmd)

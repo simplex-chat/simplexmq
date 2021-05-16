@@ -3,7 +3,7 @@
 import AgentTests
 import ProtocolErrorTests
 import ServerTests
-import Simplex.Messaging.Transport (TCP, TConnection (..))
+import Simplex.Messaging.Transport (TCP, Transport (..))
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import Test.Hspec

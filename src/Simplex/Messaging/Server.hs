@@ -87,14 +87,14 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
         Nothing -> return ()
       writeTVar subscribers $ M.insert rId clnt cs
 
-runClient :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => Transport c -> c -> m ()
+runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
 runClient _ h = do
   keyPair <- asks serverKeyPair
   liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
     Right th -> runClientTransport th
     Left _ -> pure ()
 
-runClientTransport :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
+runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
 runClientTransport th = do
   q <- asks $ tbqSize . config
   c <- atomically $ newClient q
@@ -111,7 +111,7 @@ cancelSub = \case
   Sub {subThread = SubThread t} -> killThread t
   _ -> return ()
 
-receive :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Client -> m ()
+receive :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Client -> m ()
 receive h Client {rcvQ} = forever $ do
   (signature, (corrId, queueId, cmdOrError)) <- tGet fromClient h
   t <- case cmdOrError of
@@ -119,7 +119,7 @@ receive h Client {rcvQ} = forever $ do
     Right cmd -> verifyTransmission (signature, (corrId, queueId, cmd))
   atomically $ writeTBQueue rcvQ t
 
-send :: (TConnection c, MonadUnliftIO m) => THandle c -> Client -> m ()
+send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
 send h Client {sndQ} = forever $ do
   t <- atomically $ readTBQueue sndQ
   liftIO $ tPut h ("", serializeTransmission t)

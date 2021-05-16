@@ -21,7 +21,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog)
-import Simplex.Messaging.Transport (ATransport (..), TCP, TConnection (..))
+import Simplex.Messaging.Transport (ATransport (..), TCP, Transport (..))
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)

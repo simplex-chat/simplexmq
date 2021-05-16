@@ -25,8 +25,8 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
   ( -- * Transport connection class
-    TConnection (..),
     Transport (..),
+    TProxy (..),
     ATransport (..),
 
     -- * Transport over TCP
@@ -85,11 +85,11 @@ import UnliftIO.STM
 
 -- * Transport connection class
 
-class TConnection c where
+class Transport c where
   transport :: ATransport
-  transport = ATransport (Transport @c)
+  transport = ATransport (TProxy @c)
 
-  transportName :: Transport c -> String
+  transportName :: TProxy c -> String
 
   -- | Upgrade client socket to connection (used in the server)
   getServerConnection :: Socket -> IO c
@@ -113,16 +113,16 @@ class TConnection c where
   putLn :: c -> ByteString -> IO ()
   putLn c = cPut c . (<> "\r\n")
 
-data Transport c = Transport
+data TProxy c = TProxy
 
-data ATransport = forall c. TConnection c => ATransport (Transport c)
+data ATransport = forall c. Transport c => ATransport (TProxy c)
 
 -- * Transport over TCP
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: (TConnection c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
+runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
 runTransportServer started port server = do
   clients <- newTVarIO S.empty
   E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) \sock -> forever $ do
@@ -135,7 +135,7 @@ runTransportServer started port server = do
       readTVarIO clients >>= mapM_ killThread
       close sock
       void . atomically $ tryPutTMVar started False
-    acceptConnection :: TConnection c => Socket -> IO c
+    acceptConnection :: Transport c => Socket -> IO c
     acceptConnection sock = accept sock >>= getServerConnection . fst
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
@@ -154,12 +154,12 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (putTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: TConnection c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a
 runTransportClient host port client = do
   c <- liftIO $ startTCPClient host port
   client c `E.finally` liftIO (closeConnection c)
 
-startTCPClient :: forall c. TConnection c => HostName -> ServiceName -> IO c
+startTCPClient :: forall c. Transport c => HostName -> ServiceName -> IO c
 startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
@@ -185,7 +185,7 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
 
 newtype TCP = TCP {tcpHandle :: Handle}
 
-instance TConnection TCP where
+instance Transport TCP where
   transportName _ = "TCP"
   getServerConnection = fmap TCP . getSocketHandle
   getClientConnection = getServerConnection
@@ -226,7 +226,7 @@ smpVersionP =
   let ver = A.decimal <* A.char '.'
    in SMPVersion <$> ver <*> ver <*> ver <*> A.decimal
 
--- | The handle for SMP encrypted transport connection over TConnection .
+-- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
     sndKey :: SessionKey,
@@ -301,14 +301,14 @@ serializeTransportError = \case
   TEHandshake e -> bshow e
 
 -- | Encrypt and send block to SMP encrypted transport.
-tPutEncrypted :: TConnection c => THandle c -> ByteString -> IO (Either TransportError ())
+tPutEncrypted :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
 tPutEncrypted THandle {connection = c, sndKey, blockSize} block =
   encryptBlock sndKey (blockSize - C.authTagSize) block >>= \case
     Left _ -> pure $ Left TEEncrypt
     Right (authTag, msg) -> Right <$> cPut c (C.authTagToBS authTag <> msg)
 
 -- | Receive and decrypt block from SMP encrypted transport.
-tGetEncrypted :: TConnection c => THandle c -> IO (Either TransportError ByteString)
+tGetEncrypted :: Transport c => THandle c -> IO (Either TransportError ByteString)
 tGetEncrypted THandle {connection = c, rcvKey, blockSize} =
   cGet c blockSize >>= decryptBlock rcvKey >>= \case
     Left _ -> pure $ Left TEDecrypt
@@ -340,7 +340,7 @@ makeNextIV SessionKey {baseIV, counter} = atomically $ do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 --
 -- The numbers in function names refer to the steps in the document.
-serverHandshake :: forall c. TConnection c => c -> C.FullKeyPair -> ExceptT TransportError IO (THandle c)
+serverHandshake :: forall c. Transport c => c -> C.FullKeyPair -> ExceptT TransportError IO (THandle c)
 serverHandshake c (k, pk) = do
   liftIO sendHeaderAndPublicKey_1
   encryptedKeys <- receiveEncryptedKeys_4
@@ -374,7 +374,7 @@ serverHandshake c (k, pk) = do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 --
 -- The numbers in function names refer to the steps in the document.
-clientHandshake :: forall c. TConnection c => c -> Maybe C.KeyHash -> ExceptT TransportError IO (THandle c)
+clientHandshake :: forall c. Transport c => c -> Maybe C.KeyHash -> ExceptT TransportError IO (THandle c)
 clientHandshake c keyHash = do
   (k, blkSize) <- getHeaderAndPublicKey_1_2
   -- TODO currently client always uses the blkSize returned by the server

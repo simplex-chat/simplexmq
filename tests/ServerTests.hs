@@ -43,10 +43,10 @@ serverTests t = do
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
 
-sendRecv :: TConnection c => THandle c -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+sendRecv :: Transport c => THandle c -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
 
-signSendRecv :: TConnection c => THandle c -> C.SafePrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+signSendRecv :: Transport c => THandle c -> C.SafePrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 signSendRecv h pk (corrId, qId, cmd) = do
   let t = B.intercalate " " [corrId, encode qId, cmd]
   Right sig <- runExceptT $ C.sign pk t
@@ -309,7 +309,7 @@ testWithStoreLog at@(ATransport t) =
     logSize `shouldReturn` 1
     removeFile testStoreLogFile
   where
-    createAndSecureQueue :: TConnection c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
+    createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
     createAndSecureQueue h sPub = do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
@@ -318,7 +318,7 @@ testWithStoreLog at@(ATransport t) =
       (rId', rId) #== "same queue ID"
       pure (sId, rId, rKey)
 
-    runTest :: TConnection c => Transport c -> (THandle c -> IO ()) -> ThreadId -> Expectation
+    runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
@@ -348,7 +348,7 @@ testTiming (ATransport t) =
   where
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
     similarTime t1 t2 = abs (t1 - t2) / t1 < 0.2 `shouldBe` True
-    testSameTiming :: TConnection c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
+    testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
     testSameTiming rh sh (senderKeySize, badKeySize, n) = do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" "" (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)

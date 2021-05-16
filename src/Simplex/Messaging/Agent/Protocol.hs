@@ -102,7 +102,7 @@ import Simplex.Messaging.Protocol
     SenderPublicKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (TConnection (..), TransportError, serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 import Text.Read
@@ -539,23 +539,23 @@ serializeMsg :: ByteString -> ByteString
 serializeMsg body = bshow (B.length body) <> "\n" <> body
 
 -- | Send raw (unparsed) SMP agent protocol transmission to TCP connection.
-tPutRaw :: TConnection c => c -> ARawTransmission -> IO ()
+tPutRaw :: Transport c => c -> ARawTransmission -> IO ()
 tPutRaw h (corrId, connAlias, command) = do
   putLn h corrId
   putLn h connAlias
   putLn h command
 
 -- | Receive raw (unparsed) SMP agent protocol transmission from TCP connection.
-tGetRaw :: TConnection c => c -> IO ARawTransmission
+tGetRaw :: Transport c => c -> IO ARawTransmission
 tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
-tPut :: (TConnection c, MonadIO m) => c -> ATransmission p -> m ()
+tPut :: (Transport c, MonadIO m) => c -> ATransmission p -> m ()
 tPut h (CorrId corrId, connAlias, command) =
   liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
 
 -- | Receive client and agent transmissions from TCP connection.
-tGet :: forall c m p. (TConnection c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
+tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)

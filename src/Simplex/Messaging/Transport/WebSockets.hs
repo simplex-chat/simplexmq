@@ -9,7 +9,7 @@ import Network.Socket (Socket)
 import Network.WebSockets
 import Network.WebSockets.Stream (Stream)
 import qualified Network.WebSockets.Stream as S
-import Simplex.Messaging.Transport (TConnection (..), Transport, TransportError (..), trimCR)
+import Simplex.Messaging.Transport (TProxy, Transport (..), TransportError (..), trimCR)
 
 data WS = WS {wsStream :: Stream, wsConnection :: Connection}
 
@@ -21,8 +21,8 @@ websocketsOpts =
       connectionMessageDataSizeLimit = SizeLimit 65536
     }
 
-instance TConnection WS where
-  transportName :: Transport WS -> String
+instance Transport WS where
+  transportName :: TProxy WS -> String
   transportName _ = "WebSockets"
 
   getServerConnection :: Socket -> IO WS

@@ -16,7 +16,7 @@ import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
-import Simplex.Messaging.Transport (ATransport (..), TConnection (..), Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import System.Timeout
 import Test.Hspec
 
@@ -38,7 +38,7 @@ agentTests (ATransport t) = do
       smpAgentServerTest $ testSubscrNotification t
 
 -- | send transmission `t` to handle `h` and get response
-(#:) :: TConnection c => c -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
+(#:) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
 h #: t = tPutRaw h t >> tGet SAgent h
 
 -- | action and expected response
@@ -57,15 +57,15 @@ correctTransmission (corrId, cAlias, cmdOrErr) = case cmdOrErr of
   Left e -> error $ show e
 
 -- | receive message to handle `h` and validate that it is the expected one
-(<#) :: TConnection c => c -> ATransmission 'Agent -> Expectation
+(<#) :: Transport c => c -> ATransmission 'Agent -> Expectation
 h <# (corrId, cAlias, cmd) = tGet SAgent h `shouldReturn` (corrId, cAlias, Right cmd)
 
 -- | receive message to handle `h` and validate it using predicate `p`
-(<#=) :: TConnection c => c -> (ATransmission 'Agent -> Bool) -> Expectation
+(<#=) :: Transport c => c -> (ATransmission 'Agent -> Bool) -> Expectation
 h <#= p = tGet SAgent h >>= (`shouldSatisfy` p . correctTransmission)
 
 -- | test that nothing is delivered to handle `h` during 10ms
-(#:#) :: TConnection c => c -> String -> Expectation
+(#:#) :: Transport c => c -> String -> Expectation
 h #:# err = tryGet `shouldReturn` ()
   where
     tryGet =
@@ -76,7 +76,7 @@ h #:# err = tryGet `shouldReturn` ()
 pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG {msgBody, msgIntegrity = MsgOk}
 
-testDuplexConnection :: TConnection c => Transport c -> c -> c -> IO ()
+testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
@@ -95,7 +95,7 @@ testDuplexConnection _ alice bob = do
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
-testSubscription :: TConnection c => Transport c -> c -> c -> c -> IO ()
+testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
   ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
@@ -111,7 +111,7 @@ testSubscription _ alice1 alice2 bob = do
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
 
-testSubscrNotification :: TConnection c => Transport c -> (ThreadId, ThreadId) -> c -> IO ()
+testSubscrNotification :: Transport c => TProxy c -> (ThreadId, ThreadId) -> c -> IO ()
 testSubscrNotification _ (server, _) client = do
   client #: ("1", "conn1", "NEW") =#> \case ("1", "conn1", INV _) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
@@ -121,7 +121,7 @@ testSubscrNotification _ (server, _) client = do
 samplePublicKey :: ByteString
 samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
 
-syntaxTests :: forall c. TConnection c => Transport c -> Spec
+syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
   it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
   describe "NEW" do

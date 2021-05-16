@@ -9,7 +9,7 @@ import qualified Data.List.NonEmpty as L
 import Simplex.Messaging.Agent (runSMPAgent)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Client (smpDefaultConfig)
-import Simplex.Messaging.Transport (TCP, TConnection (..))
+import Simplex.Messaging.Transport (TCP, Transport (..))
 
 cfg :: AgentConfig
 cfg =
