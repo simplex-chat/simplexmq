@@ -55,7 +55,7 @@ testSMPClient client =
 cfg :: ServerConfig
 cfg =
   ServerConfig
-    { tcpPort = testPort,
+    { transports = undefined,
       tbqSize = 1,
       queueIdBytes = 12,
       msgIdBytes = 6,
@@ -92,18 +92,18 @@ cfg =
         \TmKzSAw7iVWwEUZR/PeiEKazqrpp9VU="
     }
 
-withSmpServerStoreLogOn :: (TConnection c, MonadUnliftIO m, MonadRandom m) => Transport c -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerStoreLogOn t port client = do
   s <- liftIO $ openReadStoreLog testStoreLogFile
   serverBracket
-    (\started -> runSMPServerBlocking t started cfg {tcpPort = port, storeLog = Just s})
+    (\started -> runSMPServerBlocking started cfg {transports = [(port, t)], storeLog = Just s})
     (pure ())
     client
 
-withSmpServerThreadOn :: (TConnection c, MonadUnliftIO m, MonadRandom m) => Transport c -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerThreadOn t port =
   serverBracket
-    (\started -> runSMPServerBlocking t started cfg {tcpPort = port})
+    (\started -> runSMPServerBlocking started cfg {transports = [(port, t)]})
     (pure ())
 
 serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
@@ -119,17 +119,17 @@ serverBracket process afterProcess f = do
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 
-withSmpServerOn :: (TConnection c, MonadUnliftIO m, MonadRandom m) => Transport c -> ServiceName -> m a -> m a
+withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> m a -> m a
 withSmpServerOn t port = withSmpServerThreadOn t port . const
 
-withSmpServer :: (TConnection c, MonadUnliftIO m, MonadRandom m) => Transport c -> m a -> m a
+withSmpServer :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
 withSmpServer t = withSmpServerOn t testPort
 
 runSmpTest :: forall c m a. (TConnection c, MonadUnliftIO m, MonadRandom m) => (THandle c -> m a) -> m a
-runSmpTest test = withSmpServer (Transport @c) $ testSMPClient test
+runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
 
 runSmpTestN :: forall c m a. (TConnection c, MonadUnliftIO m, MonadRandom m) => Int -> ([THandle c] -> m a) -> m a
-runSmpTestN nClients test = withSmpServer (Transport @c) $ run nClients []
+runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
   where
     run :: Int -> [THandle c] -> m a
     run 0 hs = test hs
@@ -138,20 +138,20 @@ runSmpTestN nClients test = withSmpServer (Transport @c) $ run nClients []
 smpServerTest :: forall c. TConnection c => Transport c -> RawTransmission -> IO RawTransmission
 smpServerTest _ cmd = runSmpTest $ \(h :: THandle c) -> tPutRaw h cmd >> tGetRaw h
 
-smpTest :: TConnection c => (THandle c -> IO ()) -> Expectation
-smpTest test' = runSmpTest test' `shouldReturn` ()
+smpTest :: TConnection c => Transport c -> (THandle c -> IO ()) -> Expectation
+smpTest _ test' = runSmpTest test' `shouldReturn` ()
 
 smpTestN :: TConnection c => Int -> ([THandle c] -> IO ()) -> Expectation
 smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
 
-smpTest2 :: TConnection c => (THandle c -> THandle c -> IO ()) -> Expectation
-smpTest2 test' = smpTestN 2 _test
+smpTest2 :: TConnection c => Transport c -> (THandle c -> THandle c -> IO ()) -> Expectation
+smpTest2 _ test' = smpTestN 2 _test
   where
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpTest3 :: TConnection c => (THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
-smpTest3 test' = smpTestN 3 _test
+smpTest3 :: TConnection c => Transport c -> (THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
+smpTest3 _ test' = smpTestN 3 _test
   where
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"

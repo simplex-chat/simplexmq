@@ -6,7 +6,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module AgentTests where
 
@@ -17,26 +16,26 @@ import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
-import Simplex.Messaging.Transport (TConnection (..), Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), TConnection (..), Transport (..))
 import System.Timeout
 import Test.Hspec
 
-agentTests :: forall c. TConnection c => Transport c -> Spec
-agentTests t = do
+agentTests :: ATransport -> Spec
+agentTests (ATransport t) = do
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" do
     it "should connect via one server and one agent" $
-      smpAgentTest2_1_1 $ testDuplexConnection @c
+      smpAgentTest2_1_1 $ testDuplexConnection t
     it "should connect via one server and 2 agents" $
-      smpAgentTest2_2_1 $ testDuplexConnection @c
+      smpAgentTest2_2_1 $ testDuplexConnection t
     it "should connect via 2 servers and 2 agents" $
-      smpAgentTest2_2_2 $ testDuplexConnection @c
+      smpAgentTest2_2_2 $ testDuplexConnection t
   describe "Connection subscriptions" do
     it "should connect via one server and one agent" $
-      smpAgentTest3_1_1 $ testSubscription @c
+      smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
-      smpAgentServerTest $ testSubscrNotification @c
+      smpAgentServerTest $ testSubscrNotification t
 
 -- | send transmission `t` to handle `h` and get response
 (#:) :: TConnection c => c -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
@@ -77,8 +76,8 @@ h #:# err = tryGet `shouldReturn` ()
 pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG {msgBody, msgIntegrity = MsgOk}
 
-testDuplexConnection :: TConnection c => c -> c -> IO ()
-testDuplexConnection alice bob = do
+testDuplexConnection :: TConnection c => Transport c -> c -> c -> IO ()
+testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
@@ -96,8 +95,8 @@ testDuplexConnection alice bob = do
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
-testSubscription :: TConnection c => c -> c -> c -> IO ()
-testSubscription alice1 alice2 bob = do
+testSubscription :: TConnection c => Transport c -> c -> c -> c -> IO ()
+testSubscription _ alice1 alice2 bob = do
   ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
@@ -112,8 +111,8 @@ testSubscription alice1 alice2 bob = do
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
 
-testSubscrNotification :: TConnection c => (ThreadId, ThreadId) -> c -> IO ()
-testSubscrNotification (server, _) client = do
+testSubscrNotification :: TConnection c => Transport c -> (ThreadId, ThreadId) -> c -> IO ()
+testSubscrNotification _ (server, _) client = do
   client #: ("1", "conn1", "NEW") =#> \case ("1", "conn1", INV _) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server

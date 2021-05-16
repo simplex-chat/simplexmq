@@ -9,7 +9,7 @@ import qualified Data.List.NonEmpty as L
 import Simplex.Messaging.Agent (runSMPAgent)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Client (smpDefaultConfig)
-import Simplex.Messaging.Transport (TCP, Transport (..))
+import Simplex.Messaging.Transport (TCP, TConnection (..))
 
 cfg :: AgentConfig
 cfg =
@@ -30,4 +30,4 @@ main :: IO ()
 main = do
   putStrLn $ "SMP agent listening on port " ++ tcpPort (cfg :: AgentConfig)
   setLogLevel LogInfo -- LogError
-  withGlobalLogging logCfg $ runSMPAgent (Transport @TCP) cfg
+  withGlobalLogging logCfg $ runSMPAgent (transport @TCP) cfg

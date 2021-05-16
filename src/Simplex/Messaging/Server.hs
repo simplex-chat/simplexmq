@@ -37,6 +37,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time.Clock
+import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
@@ -47,7 +48,6 @@ import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util
-import UnliftIO.Async
 import UnliftIO.Concurrent
 import UnliftIO.Exception
 import UnliftIO.IO
@@ -56,25 +56,28 @@ import UnliftIO.STM
 -- | Runs an SMP server using passed configuration.
 --
 -- See a full server here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs
-runSMPServer :: (TConnection c, MonadRandom m, MonadUnliftIO m) => Transport c -> ServerConfig -> m ()
-runSMPServer t cfg = do
+runSMPServer :: (MonadRandom m, MonadUnliftIO m) => ServerConfig -> m ()
+runSMPServer cfg = do
   started <- newEmptyTMVarIO
-  runSMPServerBlocking t started cfg
+  runSMPServerBlocking started cfg
 
 -- | Runs an SMP server using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPServerBlocking :: forall c m. (TConnection c, MonadRandom m, MonadUnliftIO m) => Transport c -> TMVar Bool -> ServerConfig -> m ()
-runSMPServerBlocking _ started cfg@ServerConfig {tcpPort} = do
+runSMPServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
+runSMPServerBlocking started cfg@ServerConfig {transports} = do
   env <- newEnv cfg
   runReaderT smpServer env
   where
     smpServer :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpServer = do
       s <- asks server
-      race_ (runTransportServer started tcpPort $ runClient @c) (serverThread s)
+      raceAny_ (serverThread s : map runServer transports)
         `finally` withLog closeStoreLog
+
+    runServer :: (MonadUnliftIO m', MonadReader Env m') => (ServiceName, ATransport) -> m' ()
+    runServer (tcpPort, ATransport t) = runTransportServer started tcpPort (runClient t)
 
     serverThread :: MonadUnliftIO m' => Server -> m' ()
     serverThread Server {subscribedQ, subscribers} = forever . atomically $ do
@@ -85,8 +88,8 @@ runSMPServerBlocking _ started cfg@ServerConfig {tcpPort} = do
         Nothing -> return ()
       writeTVar subscribers $ M.insert rId clnt cs
 
-runClient :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => c -> m ()
-runClient h = do
+runClient :: (TConnection c, MonadUnliftIO m, MonadReader Env m) => Transport c -> c -> m ()
+runClient _ h = do
   keyPair <- asks serverKeyPair
   liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
     Right th -> runClientTransport th

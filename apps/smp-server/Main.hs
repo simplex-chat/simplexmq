@@ -7,7 +7,7 @@
 
 module Main where
 
-import Control.Monad (unless, when)
+import Control.Monad (forM_, unless, when)
 import qualified Crypto.Store.PKCS8 as S
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
@@ -21,7 +21,8 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog)
-import Simplex.Messaging.Transport (TCP, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), TCP, TConnection (..))
+import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -30,7 +31,7 @@ import System.IO (IOMode (..), hFlush, stdout)
 cfg :: ServerConfig
 cfg =
   ServerConfig
-    { tcpPort = "5223",
+    { transports = [("5223", transport @TCP), ("80", transport @WS)],
       tbqSize = 16,
       queueIdBytes = 12,
       msgIdBytes = 6,
@@ -59,8 +60,9 @@ main = do
   storeLog <- openStoreLog ini
   pk <- readCreateKey
   B.putStrLn $ "transport key hash: " <> serverKeyHash pk
-  putStrLn $ "listening on port " <> tcpPort cfg
-  runSMPServer (Transport @TCP) cfg {serverPrivateKey = pk, storeLog}
+  forM_ (transports cfg) $ \(port, ATransport t) ->
+    putStrLn $ "listening on port " <> port <> " (" <> transportName t <> ")"
+  runSMPServer cfg {serverPrivateKey = pk, storeLog}
 
 data IniOpts = IniOpts
   { enableStoreLog :: Bool,

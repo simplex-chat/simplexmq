@@ -9,6 +9,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Transport
@@ -26,6 +27,7 @@ module Simplex.Messaging.Transport
   ( -- * Transport connection class
     TConnection (..),
     Transport (..),
+    ATransport (..),
 
     -- * Transport over TCP
     runTransportServer,
@@ -84,12 +86,16 @@ import UnliftIO.STM
 -- * Transport connection class
 
 class TConnection c where
+  transport :: ATransport
+  transport = ATransport (Transport @c)
+
+  transportName :: Transport c -> String
+
   -- | Upgrade client socket to connection (used in the server)
   getServerConnection :: Socket -> IO c
 
   -- | Upgrade server socket to connection (used in the client)
   getClientConnection :: Socket -> IO c
-  getClientConnection = getServerConnection
 
   -- | Close connection
   closeConnection :: c -> IO ()
@@ -108,6 +114,8 @@ class TConnection c where
   putLn c = cPut c . (<> "\r\n")
 
 data Transport c = Transport
+
+data ATransport = forall c. TConnection c => ATransport (Transport c)
 
 -- * Transport over TCP
 
@@ -178,7 +186,9 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
 newtype TCP = TCP {tcpHandle :: Handle}
 
 instance TConnection TCP where
+  transportName _ = "TCP"
   getServerConnection = fmap TCP . getSocketHandle
+  getClientConnection = getServerConnection
   closeConnection = hClose . tcpHandle
   cGet = B.hGet . tcpHandle
   cPut = B.hPut . tcpHandle

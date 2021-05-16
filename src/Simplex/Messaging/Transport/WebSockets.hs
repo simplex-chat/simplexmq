@@ -9,7 +9,7 @@ import Network.Socket (Socket)
 import Network.WebSockets
 import Network.WebSockets.Stream (Stream)
 import qualified Network.WebSockets.Stream as S
-import Simplex.Messaging.Transport (TConnection (..), TransportError (..), trimCR)
+import Simplex.Messaging.Transport (TConnection (..), Transport, TransportError (..), trimCR)
 
 data WS = WS {wsStream :: Stream, wsConnection :: Connection}
 
@@ -22,6 +22,9 @@ websocketsOpts =
     }
 
 instance TConnection WS where
+  transportName :: Transport WS -> String
+  transportName _ = "WebSockets"
+
   getServerConnection :: Socket -> IO WS
   getServerConnection sock = do
     s <- S.makeSocketStream sock

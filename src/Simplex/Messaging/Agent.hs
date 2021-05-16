@@ -51,7 +51,7 @@ import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (CorrId (..), MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (TConnection (..), Transport, runTransportServer)
+import Simplex.Messaging.Transport (ATransport (..), TConnection (..), Transport, runTransportServer)
 import Simplex.Messaging.Util (bshow)
 import System.Random (randomR)
 import UnliftIO.Async (race_)
@@ -61,7 +61,7 @@ import UnliftIO.STM
 -- | Runs an SMP agent as a TCP service using passed configuration.
 --
 -- See a full agent executable here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-agent/Main.hs
-runSMPAgent :: (TConnection c, MonadRandom m, MonadUnliftIO m) => Transport c -> AgentConfig -> m ()
+runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> m ()
 runSMPAgent t cfg = do
   started <- newEmptyTMVarIO
   runSMPAgentBlocking t started cfg
@@ -70,11 +70,11 @@ runSMPAgent t cfg = do
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPAgentBlocking :: forall c m. (TConnection c, MonadRandom m, MonadUnliftIO m) => Transport c -> TMVar Bool -> AgentConfig -> m ()
-runSMPAgentBlocking _ started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< newSMPAgentEnv cfg
+runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> m ()
+runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
   where
-    smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
-    smpAgent = runTransportServer started tcpPort $ \(h :: c) -> do
+    smpAgent :: forall c m'. (TConnection c, MonadUnliftIO m', MonadReader Env m') => Transport c -> m' ()
+    smpAgent _ = runTransportServer started tcpPort $ \(h :: c) -> do
       liftIO $ putLn h "Welcome to SMP v0.3.1 agent"
       c <- getSMPAgentClient
       logConnection c True
