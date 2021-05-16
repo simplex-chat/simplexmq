@@ -151,7 +151,7 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
       bind sock $ addrAddress addr
       listen sock 1024
       return sock
-    setStarted sock = atomically (putTMVar started True) >> pure sock
+    setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
 runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a

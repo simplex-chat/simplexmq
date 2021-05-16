@@ -42,7 +42,7 @@ instance Transport WS where
       sendClientRequest s = newClientConnection s "" "/" websocketsOpts []
 
   closeConnection :: WS -> IO ()
-  closeConnection c = sendClose (wsConnection c) B.empty >> S.close (wsStream c)
+  closeConnection = S.close . wsStream
 
   cGet :: WS -> Int -> IO ByteString
   cGet c n = do

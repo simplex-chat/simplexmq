@@ -151,7 +151,7 @@ cfg =
       smpCfg =
         smpDefaultConfig
           { qSize = 1,
-            defaultPort = testPort,
+            defaultTransport = (testPort, transport @TCP),
             tcpTimeout = 500_000
           }
     }
