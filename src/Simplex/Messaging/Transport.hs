@@ -101,11 +101,11 @@ class TConnection c where
   cPut :: c -> ByteString -> IO ()
 
   -- | Receive ByteString from connection, allowing LF or CRLF termination.
-  cGetLn :: c -> IO ByteString
+  getLn :: c -> IO ByteString
 
   -- | Send ByteString to connection terminating it with CRLF.
-  cPutLn :: c -> ByteString -> IO ()
-  cPutLn c = cPut c . (<> "\r\n")
+  putLn :: c -> ByteString -> IO ()
+  putLn c = cPut c . (<> "\r\n")
 
 data Transport c = Transport
 
@@ -182,7 +182,7 @@ instance TConnection TCP where
   closeConnection = hClose . tcpHandle
   cGet = B.hGet . tcpHandle
   cPut = B.hPut . tcpHandle
-  cGetLn = fmap trimCR . B.hGetLine . tcpHandle
+  getLn = fmap trimCR . B.hGetLine . tcpHandle
 
 getSocketHandle :: Socket -> IO Handle
 getSocketHandle conn = do

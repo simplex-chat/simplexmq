@@ -172,7 +172,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 testSMPAgentClientOn :: (TConnection c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
   runTransportClient agentTestHost port' $ \h -> do
-    line <- liftIO $ cGetLn h
+    line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.3.1 agent"
       then client h
       else error $ "wrong welcome message: " <> B.unpack line

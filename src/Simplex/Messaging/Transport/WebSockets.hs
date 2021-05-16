@@ -51,8 +51,8 @@ instance TConnection WS where
   cPut :: WS -> ByteString -> IO ()
   cPut = sendBinaryData . wsConnection
 
-  cGetLn :: WS -> IO ByteString
-  cGetLn c = do
+  getLn :: WS -> IO ByteString
+  getLn c = do
     s <- trimCR <$> receiveData (wsConnection c)
     if B.null s || B.last s /= '\n'
       then E.throwIO TEBadBlock

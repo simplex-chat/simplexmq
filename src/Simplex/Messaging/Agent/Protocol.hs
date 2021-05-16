@@ -540,23 +540,23 @@ serializeMsg body = bshow (B.length body) <> "\n" <> body
 
 -- | Send raw (unparsed) SMP agent protocol transmission to TCP connection.
 tPutRaw :: TConnection c => c -> ARawTransmission -> IO ()
-tPutRaw c (corrId, connAlias, command) = do
-  cPutLn c corrId
-  cPutLn c connAlias
-  cPutLn c command
+tPutRaw h (corrId, connAlias, command) = do
+  putLn h corrId
+  putLn h connAlias
+  putLn h command
 
 -- | Receive raw (unparsed) SMP agent protocol transmission from TCP connection.
 tGetRaw :: TConnection c => c -> IO ARawTransmission
-tGetRaw c = (,,) <$> cGetLn c <*> cGetLn c <*> cGetLn c
+tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
 tPut :: (TConnection c, MonadIO m) => c -> ATransmission p -> m ()
-tPut c (CorrId corrId, connAlias, command) =
-  liftIO $ tPutRaw c (corrId, connAlias, serializeCommand command)
+tPut h (CorrId corrId, connAlias, command) =
+  liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
 
 -- | Receive client and agent transmissions from TCP connection.
 tGet :: forall c m p. (TConnection c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
-tGet party c = liftIO (tGetRaw c) >>= tParseLoadBody
+tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
     tParseLoadBody t@(corrId, connAlias, command) = do
@@ -594,7 +594,7 @@ tGet party c = liftIO (tGetRaw c) >>= tParseLoadBody
         ':' : body -> return . Right $ B.pack body
         str -> case readMaybe str :: Maybe Int of
           Just size -> liftIO $ do
-            body <- cGet c size
-            s <- cGetLn c
+            body <- cGet h size
+            s <- getLn h
             return $ if B.null s then Right body else Left $ CMD SIZE
           Nothing -> return . Left $ CMD SYNTAX
