@@ -9,6 +9,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Transport
@@ -23,12 +24,17 @@
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
-  ( -- * TCP transport
-    runTCPServer,
-    runTCPClient,
-    putLn,
-    getLn,
-    trimCR,
+  ( -- * Transport connection class
+    Transport (..),
+    TProxy (..),
+    ATransport (..),
+
+    -- * Transport over TCP
+    runTransportServer,
+    runTransportClient,
+
+    -- * TCP transport
+    TCP (..),
 
     -- * SMP encrypted transport
     THandle (..),
@@ -39,6 +45,9 @@ module Simplex.Messaging.Transport
     tGetEncrypted,
     serializeTransportError,
     transportErrorP,
+
+    -- * Trim trailing CR
+    trimCR,
   )
 where
 
@@ -72,20 +81,53 @@ import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Concurrent
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
-import qualified UnliftIO.IO as IO
 import UnliftIO.STM
 
--- * TCP transport
+-- * Transport connection class
 
--- | Run TCP server on passed port and signal when server started and stopped via passed TMVar.
+class Transport c where
+  transport :: ATransport
+  transport = ATransport (TProxy @c)
+
+  transportName :: TProxy c -> String
+
+  -- | Upgrade client socket to connection (used in the server)
+  getServerConnection :: Socket -> IO c
+
+  -- | Upgrade server socket to connection (used in the client)
+  getClientConnection :: Socket -> IO c
+
+  -- | Close connection
+  closeConnection :: c -> IO ()
+
+  -- | Read fixed number of bytes from connection
+  cGet :: c -> Int -> IO ByteString
+
+  -- | Write bytes to connection
+  cPut :: c -> ByteString -> IO ()
+
+  -- | Receive ByteString from connection, allowing LF or CRLF termination.
+  getLn :: c -> IO ByteString
+
+  -- | Send ByteString to connection terminating it with CRLF.
+  putLn :: c -> ByteString -> IO ()
+  putLn c = cPut c . (<> "\r\n")
+
+data TProxy c = TProxy
+
+data ATransport = forall c. Transport c => ATransport (TProxy c)
+
+-- * Transport over TCP
+
+-- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
--- All accepted TCP connection handles are passed to the passed function.
-runTCPServer :: MonadUnliftIO m => TMVar Bool -> ServiceName -> (Handle -> m ()) -> m ()
-runTCPServer started port server = do
+-- All accepted connections are passed to the passed function.
+runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
+runTransportServer started port server = do
   clients <- newTVarIO S.empty
   E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) \sock -> forever $ do
-    h <- liftIO $ acceptTCPConn sock
-    tid <- forkFinally (server h) (const $ IO.hClose h)
+    c <- liftIO $ acceptConnection sock
+    tid <- forkFinally (server c) (const $ liftIO $ closeConnection c)
     atomically . modifyTVar clients $ S.insert tid
   where
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
@@ -93,6 +135,8 @@ runTCPServer started port server = do
       readTVarIO clients >>= mapM_ killThread
       close sock
       void . atomically $ tryPutTMVar started False
+    acceptConnection :: Transport c => Socket -> IO c
+    acceptConnection sock = accept sock >>= getServerConnection . fst
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
@@ -107,18 +151,15 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
       bind sock $ addrAddress addr
       listen sock 1024
       return sock
-    setStarted sock = atomically (putTMVar started True) >> pure sock
-
-acceptTCPConn :: Socket -> IO Handle
-acceptTCPConn sock = accept sock >>= getSocketHandle . fst
+    setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTCPClient :: MonadUnliftIO m => HostName -> ServiceName -> (Handle -> m a) -> m a
-runTCPClient host port client = do
-  h <- liftIO $ startTCPClient host port
-  client h `E.finally` IO.hClose h
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a
+runTransportClient host port client = do
+  c <- liftIO $ startTCPClient host port
+  client c `E.finally` liftIO (closeConnection c)
 
-startTCPClient :: HostName -> ServiceName -> IO Handle
+startTCPClient :: forall c. Transport c => HostName -> ServiceName -> IO c
 startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
@@ -129,16 +170,29 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       let hints = defaultHints {addrSocketType = Stream}
        in getAddrInfo (Just hints) (Just host) (Just port)
 
-    tryOpen :: IOException -> [AddrInfo] -> IO Handle
+    tryOpen :: IOException -> [AddrInfo] -> IO c
     tryOpen e [] = E.throwIO e
     tryOpen _ (addr : as) =
       E.try (open addr) >>= either (`tryOpen` as) pure
 
-    open :: AddrInfo -> IO Handle
+    open :: AddrInfo -> IO c
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      getSocketHandle sock
+      getClientConnection sock
+
+-- * TCP transport
+
+newtype TCP = TCP {tcpHandle :: Handle}
+
+instance Transport TCP where
+  transportName _ = "TCP"
+  getServerConnection = fmap TCP . getSocketHandle
+  getClientConnection = getServerConnection
+  closeConnection = hClose . tcpHandle
+  cGet = B.hGet . tcpHandle
+  cPut = B.hPut . tcpHandle
+  getLn = fmap trimCR . B.hGetLine . tcpHandle
 
 getSocketHandle :: Socket -> IO Handle
 getSocketHandle conn = do
@@ -147,14 +201,6 @@ getSocketHandle conn = do
   hSetNewlineMode h NewlineMode {inputNL = CRLF, outputNL = CRLF}
   hSetBuffering h LineBuffering
   return h
-
--- | Send ByteString to TCP connection handle terminating it with CRLF.
-putLn :: Handle -> ByteString -> IO ()
-putLn h = B.hPut h . (<> "\r\n")
-
--- | Receive ByteString from TCP connection handle, allowing LF or CRLF termination.
-getLn :: Handle -> IO ByteString
-getLn h = trimCR <$> B.hGetLine h
 
 -- | Trim trailing CR from ByteString.
 trimCR :: ByteString -> ByteString
@@ -180,9 +226,9 @@ smpVersionP =
   let ver = A.decimal <* A.char '.'
    in SMPVersion <$> ver <*> ver <*> ver <*> A.decimal
 
--- | The handle for SMP encrypted transport connection over TCP.
-data THandle = THandle
-  { handle :: Handle,
+-- | The handle for SMP encrypted transport connection over Transport .
+data THandle c = THandle
+  { connection :: c,
     sndKey :: SessionKey,
     rcvKey :: SessionKey,
     blockSize :: Int
@@ -255,16 +301,16 @@ serializeTransportError = \case
   TEHandshake e -> bshow e
 
 -- | Encrypt and send block to SMP encrypted transport.
-tPutEncrypted :: THandle -> ByteString -> IO (Either TransportError ())
-tPutEncrypted THandle {handle = h, sndKey, blockSize} block =
+tPutEncrypted :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
+tPutEncrypted THandle {connection = c, sndKey, blockSize} block =
   encryptBlock sndKey (blockSize - C.authTagSize) block >>= \case
     Left _ -> pure $ Left TEEncrypt
-    Right (authTag, msg) -> Right <$> B.hPut h (C.authTagToBS authTag <> msg)
+    Right (authTag, msg) -> Right <$> cPut c (C.authTagToBS authTag <> msg)
 
 -- | Receive and decrypt block from SMP encrypted transport.
-tGetEncrypted :: THandle -> IO (Either TransportError ByteString)
-tGetEncrypted THandle {handle = h, rcvKey, blockSize} =
-  B.hGet h blockSize >>= decryptBlock rcvKey >>= \case
+tGetEncrypted :: Transport c => THandle c -> IO (Either TransportError ByteString)
+tGetEncrypted THandle {connection = c, rcvKey, blockSize} =
+  cGet c blockSize >>= decryptBlock rcvKey >>= \case
     Left _ -> pure $ Left TEDecrypt
     Right "" -> ioe_EOF
     Right msg -> pure $ Right msg
@@ -294,14 +340,14 @@ makeNextIV SessionKey {baseIV, counter} = atomically $ do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 --
 -- The numbers in function names refer to the steps in the document.
-serverHandshake :: Handle -> C.FullKeyPair -> ExceptT TransportError IO THandle
-serverHandshake h (k, pk) = do
+serverHandshake :: forall c. Transport c => c -> C.FullKeyPair -> ExceptT TransportError IO (THandle c)
+serverHandshake c (k, pk) = do
   liftIO sendHeaderAndPublicKey_1
   encryptedKeys <- receiveEncryptedKeys_4
   -- TODO server currently ignores blockSize returned by the client
   -- this is reserved for future support of streams
   ClientHandshake {blockSize = _, sndKey, rcvKey} <- decryptParseKeys_5 encryptedKeys
-  th <- liftIO $ transportHandle h rcvKey sndKey transportBlockSize -- keys are swapped here
+  th <- liftIO $ transportHandle c rcvKey sndKey transportBlockSize -- keys are swapped here
   sendWelcome_6 th
   pure th
   where
@@ -309,17 +355,18 @@ serverHandshake h (k, pk) = do
     sendHeaderAndPublicKey_1 = do
       let sKey = C.encodePubKey k
           header = ServerHeader {blockSize = transportBlockSize, keySize = B.length sKey}
-      B.hPut h $ binaryServerHeader header <> sKey
+      cPut c $ binaryServerHeader header
+      cPut c sKey
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString
     receiveEncryptedKeys_4 =
-      liftIO (B.hGet h $ C.publicKeySize k) >>= \case
+      liftIO (cGet c $ C.publicKeySize k) >>= \case
         "" -> throwE $ TEHandshake TERMINATED
         ks -> pure ks
     decryptParseKeys_5 :: ByteString -> ExceptT TransportError IO ClientHandshake
     decryptParseKeys_5 encKeys =
       liftError (const $ TEHandshake DECRYPT) (C.decryptOAEP pk encKeys)
         >>= liftEither . parseClientHandshake
-    sendWelcome_6 :: THandle -> ExceptT TransportError IO ()
+    sendWelcome_6 :: THandle c -> ExceptT TransportError IO ()
     sendWelcome_6 th = ExceptT . tPutEncrypted th $ serializeSMPVersion currentSMPVersion <> " "
 
 -- | Client SMP encrypted transport handshake.
@@ -327,23 +374,23 @@ serverHandshake h (k, pk) = do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 --
 -- The numbers in function names refer to the steps in the document.
-clientHandshake :: Handle -> Maybe C.KeyHash -> ExceptT TransportError IO THandle
-clientHandshake h keyHash = do
+clientHandshake :: forall c. Transport c => c -> Maybe C.KeyHash -> ExceptT TransportError IO (THandle c)
+clientHandshake c keyHash = do
   (k, blkSize) <- getHeaderAndPublicKey_1_2
   -- TODO currently client always uses the blkSize returned by the server
   keys@ClientHandshake {sndKey, rcvKey} <- liftIO $ generateKeys_3 blkSize
   sendEncryptedKeys_4 k keys
-  th <- liftIO $ transportHandle h sndKey rcvKey blkSize
+  th <- liftIO $ transportHandle c sndKey rcvKey blkSize
   getWelcome_6 th >>= checkVersion
   pure th
   where
     getHeaderAndPublicKey_1_2 :: ExceptT TransportError IO (C.PublicKey, Int)
     getHeaderAndPublicKey_1_2 = do
-      header <- liftIO (B.hGet h serverHeaderSize)
+      header <- liftIO (cGet c serverHeaderSize)
       ServerHeader {blockSize, keySize} <- liftEither $ parse serverHeaderP (TEHandshake HEADER) header
       when (blockSize < transportBlockSize || blockSize > maxTransportBlockSize) $
         throwError $ TEHandshake HEADER
-      s <- liftIO $ B.hGet h keySize
+      s <- liftIO $ cGet c keySize
       maybe (pure ()) (validateKeyHash_2 s) keyHash
       key <- liftEither $ parseKey s
       pure (key, blockSize)
@@ -363,8 +410,8 @@ clientHandshake h keyHash = do
     sendEncryptedKeys_4 :: C.PublicKey -> ClientHandshake -> ExceptT TransportError IO ()
     sendEncryptedKeys_4 k keys =
       liftError (const $ TEHandshake ENCRYPT) (C.encryptOAEP k $ serializeClientHandshake keys)
-        >>= liftIO . B.hPut h
-    getWelcome_6 :: THandle -> ExceptT TransportError IO SMPVersion
+        >>= liftIO . cPut c
+    getWelcome_6 :: THandle c -> ExceptT TransportError IO SMPVersion
     getWelcome_6 th = ExceptT $ (>>= parseSMPVersion) <$> tGetEncrypted th
     parseSMPVersion :: ByteString -> Either TransportError SMPVersion
     parseSMPVersion = first (const $ TEHandshake VERSION) . A.parseOnly (smpVersionP <* A.space)
@@ -428,13 +475,13 @@ binaryRsaTransportP = binaryRsa =<< int16
 parseClientHandshake :: ByteString -> Either TransportError ClientHandshake
 parseClientHandshake = parse clientHandshakeP $ TEHandshake AES_KEYS
 
-transportHandle :: Handle -> SessionKey -> SessionKey -> Int -> IO THandle
-transportHandle h sk rk blockSize = do
+transportHandle :: c -> SessionKey -> SessionKey -> Int -> IO (THandle c)
+transportHandle c sk rk blockSize = do
   sndCounter <- newTVarIO 0
   rcvCounter <- newTVarIO 0
   pure
     THandle
-      { handle = h,
+      { connection = c,
         sndKey = sk {counter = sndCounter},
         rcvKey = rk {counter = rcvCounter},
         blockSize
