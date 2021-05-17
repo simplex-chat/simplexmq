@@ -7,6 +7,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Client
@@ -60,9 +61,9 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport (THandle (..), TransportError, clientHandshake, runTCPClient)
+import Simplex.Messaging.Transport (ATransport (..), TCP, THandle (..), TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
+import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
-import System.IO
 import System.Timeout
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
@@ -92,7 +93,7 @@ data SMPClientConfig = SMPClientConfig
   { -- | size of TBQueue to use for server commands and responses
     qSize :: Natural,
     -- | default SMP server port if port is not specified in SMPServer
-    defaultPort :: ServiceName,
+    defaultTransport :: (ServiceName, ATransport),
     -- | timeout of TCP commands (microseconds)
     tcpTimeout :: Int,
     -- | period for SMP ping commands (microseconds)
@@ -107,7 +108,7 @@ smpDefaultConfig :: SMPClientConfig
 smpDefaultConfig =
   SMPClientConfig
     { qSize = 16,
-      defaultPort = "5223",
+      defaultTransport = ("5223", transport @TCP),
       tcpTimeout = 4_000_000,
       smpPing = 30_000_000,
       smpCommandSize = 256
@@ -126,88 +127,90 @@ type Response = Either SMPClientError Cmd
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO (Either SMPClientError SMPClient)
-getSMPClient
-  smpServer@SMPServer {host, port, keyHash}
-  SMPClientConfig {qSize, defaultPort, tcpTimeout, smpPing}
-  msgQ
-  disconnected = do
-    c <- atomically mkSMPClient
-    thVar <- newEmptyTMVarIO
-    action <-
-      async $
-        runTCPClient host (fromMaybe defaultPort port) (client c thVar)
-          `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
-    tHandle <- tcpTimeout `timeout` atomically (takeTMVar thVar)
-    pure $ case tHandle of
-      Just (Right THandle {blockSize}) -> Right c {action, blockSize}
-      Just (Left e) -> Left e
-      Nothing -> Left SMPNetworkError
-    where
-      mkSMPClient :: STM SMPClient
-      mkSMPClient = do
-        connected <- newTVar False
-        clientCorrId <- newTVar 0
-        sentCommands <- newTVar M.empty
-        sndQ <- newTBQueue qSize
-        rcvQ <- newTBQueue qSize
-        return
-          SMPClient
-            { action = undefined,
-              blockSize = undefined,
-              connected,
-              smpServer,
-              tcpTimeout,
-              clientCorrId,
-              sentCommands,
-              sndQ,
-              rcvQ,
-              msgQ
-            }
+getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ disconnected =
+  atomically mkSMPClient >>= runClient useTransport
+  where
+    mkSMPClient :: STM SMPClient
+    mkSMPClient = do
+      connected <- newTVar False
+      clientCorrId <- newTVar 0
+      sentCommands <- newTVar M.empty
+      sndQ <- newTBQueue qSize
+      rcvQ <- newTBQueue qSize
+      return
+        SMPClient
+          { action = undefined,
+            blockSize = undefined,
+            connected,
+            smpServer,
+            tcpTimeout,
+            clientCorrId,
+            sentCommands,
+            sndQ,
+            rcvQ,
+            msgQ
+          }
 
-      client :: SMPClient -> TMVar (Either SMPClientError THandle) -> Handle -> IO ()
-      client c thVar h =
-        runExceptT (clientHandshake h keyHash) >>= \case
-          Right th -> clientTransport c thVar th
-          Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
+    runClient :: (ServiceName, ATransport) -> SMPClient -> IO (Either SMPClientError SMPClient)
+    runClient (port', ATransport t) c = do
+      thVar <- newEmptyTMVarIO
+      action <-
+        async $
+          runTransportClient (host smpServer) port' (client t c thVar)
+            `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
+      bSize <- tcpTimeout `timeout` atomically (takeTMVar thVar)
+      pure $ case bSize of
+        Just (Right blockSize) -> Right c {action, blockSize}
+        Just (Left e) -> Left e
+        Nothing -> Left SMPNetworkError
 
-      clientTransport :: SMPClient -> TMVar (Either SMPClientError THandle) -> THandle -> IO ()
-      clientTransport c thVar th = do
-        atomically $ do
-          writeTVar (connected c) True
-          putTMVar thVar $ Right th
-        raceAny_ [send c th, process c, receive c th, ping c]
-          `finally` disconnected
+    useTransport :: (ServiceName, ATransport)
+    useTransport = case port smpServer of
+      Nothing -> defaultTransport cfg
+      Just "80" -> ("80", transport @WS)
+      Just p -> (p, transport @TCP)
 
-      send :: SMPClient -> THandle -> IO ()
-      send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
+    client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError Int) -> c -> IO ()
+    client _ c thVar h =
+      runExceptT (clientHandshake h $ keyHash smpServer) >>= \case
+        Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
+        Right th -> do
+          atomically $ do
+            writeTVar (connected c) True
+            putTMVar thVar . Right $ blockSize (th :: THandle c)
+          raceAny_ [send c th, process c, receive c th, ping c]
+            `finally` disconnected
 
-      receive :: SMPClient -> THandle -> IO ()
-      receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
+    send :: Transport c => SMPClient -> THandle c -> IO ()
+    send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
-      ping :: SMPClient -> IO ()
-      ping c = forever $ do
-        threadDelay smpPing
-        runExceptT $ sendSMPCommand c Nothing "" (Cmd SSender PING)
+    receive :: Transport c => SMPClient -> THandle c -> IO ()
+    receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
 
-      process :: SMPClient -> IO ()
-      process SMPClient {rcvQ, sentCommands} = forever $ do
-        (_, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
-        cs <- readTVarIO sentCommands
-        case M.lookup corrId cs of
-          Nothing -> do
-            case respOrErr of
-              Right (Cmd SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
-              -- TODO send everything else to errQ and log in agent
-              _ -> return ()
-          Just Request {queueId, responseVar} -> atomically $ do
-            modifyTVar sentCommands $ M.delete corrId
-            putTMVar responseVar $
-              if queueId == qId
-                then case respOrErr of
-                  Left e -> Left $ SMPResponseError e
-                  Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
-                  Right r -> Right r
-                else Left SMPUnexpectedResponse
+    ping :: SMPClient -> IO ()
+    ping c = forever $ do
+      threadDelay smpPing
+      runExceptT $ sendSMPCommand c Nothing "" (Cmd SSender PING)
+
+    process :: SMPClient -> IO ()
+    process SMPClient {rcvQ, sentCommands} = forever $ do
+      (_, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
+      cs <- readTVarIO sentCommands
+      case M.lookup corrId cs of
+        Nothing -> do
+          case respOrErr of
+            Right (Cmd SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
+            -- TODO send everything else to errQ and log in agent
+            _ -> return ()
+        Just Request {queueId, responseVar} -> atomically $ do
+          modifyTVar sentCommands $ M.delete corrId
+          putTMVar responseVar $
+            if queueId == qId
+              then case respOrErr of
+                Left e -> Left $ SMPResponseError e
+                Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
+                Right r -> Right r
+              else Left SMPUnexpectedResponse
 
 -- | Disconnects SMP client from the server and terminates client threads.
 closeSMPClient :: SMPClient -> IO ()

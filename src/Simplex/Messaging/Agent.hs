@@ -51,9 +51,8 @@ import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (CorrId (..), MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (putLn, runTCPServer)
+import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
 import Simplex.Messaging.Util (bshow)
-import System.IO (Handle)
 import System.Random (randomR)
 import UnliftIO.Async (race_)
 import qualified UnliftIO.Exception as E
@@ -62,18 +61,20 @@ import UnliftIO.STM
 -- | Runs an SMP agent as a TCP service using passed configuration.
 --
 -- See a full agent executable here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-agent/Main.hs
-runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m ()
-runSMPAgent cfg = newEmptyTMVarIO >>= (`runSMPAgentBlocking` cfg)
+runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> m ()
+runSMPAgent t cfg = do
+  started <- newEmptyTMVarIO
+  runSMPAgentBlocking t started cfg
 
 -- | Runs an SMP agent as a TCP service using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> AgentConfig -> m ()
-runSMPAgentBlocking started cfg@AgentConfig {tcpPort} = runReaderT smpAgent =<< newSMPAgentEnv cfg
+runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> m ()
+runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
   where
-    smpAgent :: (MonadUnliftIO m', MonadReader Env m') => m' ()
-    smpAgent = runTCPServer started tcpPort $ \h -> do
+    smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
+    smpAgent _ = runTransportServer started tcpPort $ \(h :: c) -> do
       liftIO $ putLn h "Welcome to SMP v0.3.1 agent"
       c <- getSMPAgentClient
       logConnection c True
@@ -87,7 +88,7 @@ getSMPAgentClient = do
   cfg <- asks config
   atomically $ newAgentClient n cfg
 
-connectClient :: MonadUnliftIO m => Handle -> AgentClient -> m ()
+connectClient :: Transport c => MonadUnliftIO m => c -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
@@ -103,7 +104,7 @@ runSMPAgentClient c = do
   s2 <- connectSQLiteStore db
   race_ (subscriber c s1) (client c s2)
 
-receive :: forall m. MonadUnliftIO m => Handle -> AgentClient -> m ()
+receive :: forall c m. (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
 receive h c@AgentClient {rcvQ, sndQ} = forever $ do
   (corrId, cAlias, cmdOrErr) <- tGet SClient h
   case cmdOrErr of
@@ -115,7 +116,7 @@ receive h c@AgentClient {rcvQ, sndQ} = forever $ do
       logClient c "-->" t
       atomically $ writeTBQueue q t
 
-send :: MonadUnliftIO m => Handle -> AgentClient -> m ()
+send :: (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
 send h c@AgentClient {sndQ} = forever $ do
   t <- atomically $ readTBQueue sndQ
   tPut h t

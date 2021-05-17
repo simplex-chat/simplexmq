@@ -18,11 +18,12 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.Transport (ATransport)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
-  { tcpPort :: ServiceName,
+  { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,

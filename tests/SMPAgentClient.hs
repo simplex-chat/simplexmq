@@ -3,6 +3,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module SMPAgentClient where
 
@@ -28,7 +29,6 @@ import Simplex.Messaging.Transport
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
-import UnliftIO.IO
 
 agentTestHost :: HostName
 agentTestHost = "localhost"
@@ -51,44 +51,50 @@ testDB2 = "tests/tmp/smp-agent2.test.protocol.db"
 testDB3 :: String
 testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
 
-smpAgentTest :: ARawTransmission -> IO ARawTransmission
-smpAgentTest cmd = runSmpAgentTest $ \h -> tPutRaw h cmd >> tGetRaw h
+smpAgentTest :: forall c. Transport c => TProxy c -> ARawTransmission -> IO ARawTransmission
+smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> tGetRaw h
 
-runSmpAgentTest :: (MonadUnliftIO m, MonadRandom m) => (Handle -> m a) -> m a
-runSmpAgentTest test = withSmpServer . withSmpAgent $ testSMPAgentClient test
+runSmpAgentTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => (c -> m a) -> m a
+runSmpAgentTest test = withSmpServer t . withSmpAgent t $ testSMPAgentClient test
+  where
+    t = transport @c
 
-runSmpAgentServerTest :: (MonadUnliftIO m, MonadRandom m) => ((ThreadId, ThreadId) -> Handle -> m a) -> m a
+runSmpAgentServerTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => ((ThreadId, ThreadId) -> c -> m a) -> m a
 runSmpAgentServerTest test =
-  withSmpServerThreadOn testPort $
-    \server -> withSmpAgentThreadOn (agentTestPort, testPort, testDB) $
+  withSmpServerThreadOn t testPort $
+    \server -> withSmpAgentThreadOn t (agentTestPort, testPort, testDB) $
       \agent -> testSMPAgentClient $ test (server, agent)
+  where
+    t = transport @c
 
-smpAgentServerTest :: ((ThreadId, ThreadId) -> Handle -> IO ()) -> Expectation
+smpAgentServerTest :: Transport c => ((ThreadId, ThreadId) -> c -> IO ()) -> Expectation
 smpAgentServerTest test' = runSmpAgentServerTest test' `shouldReturn` ()
 
-runSmpAgentTestN :: forall m a. (MonadUnliftIO m, MonadRandom m) => [(ServiceName, ServiceName, String)] -> ([Handle] -> m a) -> m a
-runSmpAgentTestN agents test = withSmpServer $ run agents []
+runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => [(ServiceName, ServiceName, String)] -> ([c] -> m a) -> m a
+runSmpAgentTestN agents test = withSmpServer t $ run agents []
   where
-    run :: [(ServiceName, ServiceName, String)] -> [Handle] -> m a
+    run :: [(ServiceName, ServiceName, String)] -> [c] -> m a
     run [] hs = test hs
-    run (a@(p, _, _) : as) hs = withSmpAgentOn a $ testSMPAgentClientOn p $ \h -> run as (h : hs)
+    run (a@(p, _, _) : as) hs = withSmpAgentOn t a $ testSMPAgentClientOn p $ \h -> run as (h : hs)
+    t = transport @c
 
-runSmpAgentTestN_1 :: forall m a. (MonadUnliftIO m, MonadRandom m) => Int -> ([Handle] -> m a) -> m a
-runSmpAgentTestN_1 nClients test = withSmpServer . withSmpAgent $ run nClients []
+runSmpAgentTestN_1 :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => Int -> ([c] -> m a) -> m a
+runSmpAgentTestN_1 nClients test = withSmpServer t . withSmpAgent t $ run nClients []
   where
-    run :: Int -> [Handle] -> m a
+    run :: Int -> [c] -> m a
     run 0 hs = test hs
     run n hs = testSMPAgentClient $ \h -> run (n - 1) (h : hs)
+    t = transport @c
 
-smpAgentTestN :: [(ServiceName, ServiceName, String)] -> ([Handle] -> IO ()) -> Expectation
+smpAgentTestN :: Transport c => [(ServiceName, ServiceName, String)] -> ([c] -> IO ()) -> Expectation
 smpAgentTestN agents test' = runSmpAgentTestN agents test' `shouldReturn` ()
 
-smpAgentTestN_1 :: Int -> ([Handle] -> IO ()) -> Expectation
+smpAgentTestN_1 :: Transport c => Int -> ([c] -> IO ()) -> Expectation
 smpAgentTestN_1 n test' = runSmpAgentTestN_1 n test' `shouldReturn` ()
 
-smpAgentTest2_2_2 :: (Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest2_2_2 :: forall c. Transport c => (c -> c -> IO ()) -> Expectation
 smpAgentTest2_2_2 test' =
-  withSmpServerOn testPort2 $
+  withSmpServerOn (transport @c) testPort2 $
     smpAgentTestN
       [ (agentTestPort, testPort, testDB),
         (agentTestPort2, testPort2, testDB2)
@@ -98,7 +104,7 @@ smpAgentTest2_2_2 test' =
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpAgentTest2_2_1 :: (Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest2_2_1 :: Transport c => (c -> c -> IO ()) -> Expectation
 smpAgentTest2_2_1 test' =
   smpAgentTestN
     [ (agentTestPort, testPort, testDB),
@@ -109,13 +115,13 @@ smpAgentTest2_2_1 test' =
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpAgentTest2_1_1 :: (Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest2_1_1 :: Transport c => (c -> c -> IO ()) -> Expectation
 smpAgentTest2_1_1 test' = smpAgentTestN_1 2 _test
   where
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpAgentTest3 :: (Handle -> Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest3 :: Transport c => (c -> c -> c -> IO ()) -> Expectation
 smpAgentTest3 test' =
   smpAgentTestN
     [ (agentTestPort, testPort, testDB),
@@ -127,7 +133,7 @@ smpAgentTest3 test' =
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
-smpAgentTest3_1_1 :: (Handle -> Handle -> Handle -> IO ()) -> Expectation
+smpAgentTest3_1_1 :: Transport c => (c -> c -> c -> IO ()) -> Expectation
 smpAgentTest3_1_1 test' = smpAgentTestN_1 3 _test
   where
     _test [h1, h2, h3] = test' h1 h2 h3
@@ -145,31 +151,31 @@ cfg =
       smpCfg =
         smpDefaultConfig
           { qSize = 1,
-            defaultPort = testPort,
+            defaultTransport = (testPort, transport @TCP),
             tcpTimeout = 500_000
           }
     }
 
-withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn (port', smpPort', db') =
+withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn t (port', smpPort', db') =
   let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" (Just smpPort') testKeyHash]}
    in serverBracket
-        (`runSMPAgentBlocking` cfg')
+        (\started -> runSMPAgentBlocking t started cfg')
         (removeFile db')
 
-withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => (ServiceName, ServiceName, String) -> m a -> m a
-withSmpAgentOn (port', smpPort', db') = withSmpAgentThreadOn (port', smpPort', db') . const
+withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m a -> m a
+withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort', db') . const
 
-withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => m a -> m a
-withSmpAgent = withSmpAgentOn (agentTestPort, testPort, testDB)
+withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
+withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
-testSMPAgentClientOn :: MonadUnliftIO m => ServiceName -> (Handle -> m a) -> m a
+testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTCPClient agentTestHost port' $ \h -> do
+  runTransportClient agentTestHost port' $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP v0.3.1 agent"
       then client h
       else error $ "wrong welcome message: " <> B.unpack line
 
-testSMPAgentClient :: MonadUnliftIO m => (Handle -> m a) -> m a
+testSMPAgentClient :: (Transport c, MonadUnliftIO m) => (c -> m a) -> m a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort
