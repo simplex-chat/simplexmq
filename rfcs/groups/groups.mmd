@@ -26,13 +26,13 @@ sequenceDiagram
 
   note over M, B: below steps happen for each existing member M
 
-  AA ->> BA: via gidBA: G_MEM lvlAM midABM|_<br>(midABM - how A identifies member M to B,<br>lvlAM - connection level, 0 - direct, 1 - via smbdy etc.)
+  AA ->> BA: via gidBA: GM_ADD lvlAM midABM|_<br>(midABM - how A identifies member M to B,<br>lvlAM - connection level, 0 - direct, 1 - via smbdy etc.)
   
   note over BA: initiate connection idBM for direct messages and<br> internal gidBM for group messages between B and M
   
-  BA ->> AA: via gidBA: G_INV_MEM midABM|BAM idBMinv/gidBMinv<br>(midBAM - how B identifies member M to A<br>idBMinv/gidBMinv - invitations to connect for member M)
+  BA ->> AA: via gidBA: GM_INV midABM|BAM idBMinv/gidBMinv<br>(midBAM - how B identifies member M to A<br>idBMinv/gidBMinv - invitations to connect for member M)
 
-  AA ->> MA: via gidAM: G_MEM_INV lvlAB midAMB idBMinv/gidBMinv<br>(midAMB - how A identifies B to member M,<br>lvlAB - connection level, 0 - direct etc.)
+  AA ->> MA: via gidAM: GM_NEW lvlAB midAMB idBMinv/gidBMinv<br>(midAMB - how A identifies B to member M,<br>lvlAB - connection level, 0 - direct etc.)
 
   MA ->> BA: establish connection with idBM -> idMB
   MA ->> BA: establish internal connection with gidBM -> gidMB
@@ -40,13 +40,12 @@ sequenceDiagram
   MA ->> AA: via gidMA: G_CON midAMB|MAB (or G_ADD_ERR)
   MA ->> M: gidM GCON idMB
 
-  BA ->> MA: via gidBM: G_HELLO
   BA ->> AA: via gidBA: G_CON midABM|BAM (or G_ADD_ERR)
   BA ->> B: gidB GCON idBM
 
   note over A, BA: once all members were sent to B
-  AA ->> BA: via gidAB: G_DONE
-  BA ->> B: gidB GDONE
+  AA ->> BA: via gidAB: G_ALL
+  BA ->> B: gidB GJOINED
 
   note over A, AA: once all members reported connection
   AA ->> A: gidA GALL idAB
@@ -74,27 +73,23 @@ sequenceDiagram
 
   note over M, B: 4b. A removes B from group
 
-  A ->> AA: gidA GMDEL idAB
-  AA ->> BA: via gidAB: G_REMOVED
+  A ->> AA: gidA GREM idAB
+  AA ->> BA: via gidAB: G_OUT
   note over AA: remove gidAB
   AA ->> A: gidA OK
-  BA ->> B: gidB: GREMOVED idBA
-  note over BA: remove gidBA
+  BA ->> B: gidB: GOUT idBA
+  note over BA: remove gidBA and all other connections
 
   note over M, B: below steps happen for each existing member M
 
-  AA ->> MA: via gidAM: G_MDEL midAMB|MAB
-  MA ->> AA: via gidMA: G_MDELETED midAMB|MAB
-  MA ->> BA: via gidMB: G_REMOVED
+  AA ->> MA: via gidAM: G_REM midAMB|MAB
   note over MA: remove gidMB
-  MA ->> M: gidM: GMDELETED idMB
-  BA ->> B: gidB: GREMOVED idBM
-  note over BA: remove gidBM
+  MA ->> AA: via gidMA: G_REMD midAMB|MAB
+  MA ->> M: gidM: GREMD idMB
 
   note over B, BA: once all members removed B (or all left)
 
-  BA ->> B: gidB: GEMPTY
-  AA ->> A: gidA: GMDELETED idAB
+  AA ->> A: gidA: GREMD idAB
 
   note over M, B: 4c. A deletes group
   A ->> AA: gidA GDEL
