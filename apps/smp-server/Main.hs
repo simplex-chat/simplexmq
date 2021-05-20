@@ -76,14 +76,13 @@ main = do
           exitFailure
     ServerDelete -> do
       deleteServer opts
-      putStrLn "Server key, config and log deleted"
+      putStrLn "Server key, config file and store log deleted"
 
 getConfig :: ServerOpts -> ExceptT String IO ServerConfig
-getConfig ServerOpts {configFile} = do
-  fileExists configFile
+getConfig opts = do
   pk <- readKey
-  ini <- readIni configFile
-  storeLog <- liftIO $ openStoreLog ini
+  ini <- readIni $ configFile opts
+  storeLog <- liftIO $ openStoreLog opts ini
   pure serverConfig {serverPrivateKey = pk, storeLog}
 
 printConfig :: ServerConfig -> IO ()
@@ -97,7 +96,7 @@ initializeServer :: ServerOpts -> IO ServerConfig
 initializeServer opts = do
   pk <- createKey
   ini <- createIni opts
-  storeLog <- openStoreLog ini
+  storeLog <- openStoreLog opts ini
   pure serverConfig {serverPrivateKey = pk, storeLog}
 
 runServer :: ServerConfig -> IO ()
@@ -110,10 +109,11 @@ runServer cfg = do
 deleteServer :: ServerOpts -> IO ()
 deleteServer ServerOpts {configFile} = do
   ini <- runExceptT $ readIni configFile
-  deleteFileIfExists configFile
-  deleteFileIfExists keyPath
+  deleteIfExists configFile
+  deleteIfExists keyPath
+  deleteIfExists defaultStoreLogFile
   case ini of
-    Right IniOpts {storeLogFile} -> deleteFileIfExists storeLogFile
+    Right IniOpts {storeLogFile} -> deleteIfExists storeLogFile
     Left _ -> pure ()
 
 data IniOpts = IniOpts
@@ -130,7 +130,7 @@ readIni configFile = do
   pure IniOpts {enableStoreLog, storeLogFile}
 
 createIni :: ServerOpts -> IO IniOpts
-createIni ServerOpts {configFile, storeLog} = do
+createIni ServerOpts {configFile, enableStoreLog} = do
   writeFile configFile $
     "[STORE_LOG]\n\
     \# The server uses STM memory to store SMP queues and messages,\n\
@@ -139,12 +139,12 @@ createIni ServerOpts {configFile, storeLog} = do
     \# and restoring them when the server is started.\n\
     \# Log is compacted on start (deleted queues are removed).\n\
     \# The messages in the queues are not logged.\n\n"
-      <> (if storeLog then "" else "# ")
+      <> (if enableStoreLog then "" else "# ")
       <> "enable: on\n"
       <> "# file: "
       <> defaultStoreLogFile
       <> "\n"
-  pure IniOpts {enableStoreLog = storeLog, storeLogFile = defaultStoreLogFile}
+  pure IniOpts {enableStoreLog, storeLogFile = defaultStoreLogFile}
 
 keyPath :: FilePath
 keyPath = combine cfgDir "server_key"
@@ -173,8 +173,8 @@ fileExists path = do
   exists <- liftIO $ doesFileExist path
   unless exists . throwE $ "file " <> path <> " not found"
 
-deleteFileIfExists :: FilePath -> IO ()
-deleteFileIfExists path = doesFileExist keyPath >>= (`when` removeFile path)
+deleteIfExists :: FilePath -> IO ()
+deleteIfExists path = doesFileExist keyPath >>= (`when` removeFile path)
 
 confirm :: String -> IO ()
 confirm msg = do
@@ -186,9 +186,9 @@ confirm msg = do
 serverKeyHash :: C.FullPrivateKey -> B.ByteString
 serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey
 
-openStoreLog :: IniOpts -> IO (Maybe (StoreLog 'ReadMode))
-openStoreLog IniOpts {enableStoreLog, storeLogFile = f}
-  | enableStoreLog = do
+openStoreLog :: ServerOpts -> IniOpts -> IO (Maybe (StoreLog 'ReadMode))
+openStoreLog ServerOpts {enableStoreLog = l} IniOpts {enableStoreLog = l', storeLogFile = f}
+  | l || l' = do
     createDirectoryIfMissing True logDir
     Just <$> openReadStoreLog f
   | otherwise = pure Nothing
@@ -196,7 +196,7 @@ openStoreLog IniOpts {enableStoreLog, storeLogFile = f}
 data ServerOpts = ServerOpts
   { serverCommand :: ServerCommand,
     configFile :: FilePath,
-    storeLog :: Bool
+    enableStoreLog :: Bool
   }
 
 data ServerCommand = ServerInit | ServerStart | ServerDelete
