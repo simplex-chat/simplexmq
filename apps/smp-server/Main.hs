@@ -52,6 +52,9 @@ logDir = "/var/opt/simplex"
 defaultStoreLogFile :: FilePath
 defaultStoreLogFile = combine logDir "smp-server-store.log"
 
+keyPath :: FilePath
+keyPath = combine cfgDir "server_key"
+
 main :: IO ()
 main = do
   opts <- getServerOpts
@@ -146,9 +149,6 @@ createIni ServerOpts {configFile, enableStoreLog} = do
       <> "\n"
   pure IniOpts {enableStoreLog, storeLogFile = defaultStoreLogFile}
 
-keyPath :: FilePath
-keyPath = combine cfgDir "server_key"
-
 readKey :: ExceptT String IO C.FullPrivateKey
 readKey = do
   fileExists keyPath
@@ -174,7 +174,7 @@ fileExists path = do
   unless exists . throwE $ "file " <> path <> " not found"
 
 deleteIfExists :: FilePath -> IO ()
-deleteIfExists path = doesFileExist keyPath >>= (`when` removeFile path)
+deleteIfExists path = doesFileExist path >>= (`when` removeFile path)
 
 confirm :: String -> IO ()
 confirm msg = do
