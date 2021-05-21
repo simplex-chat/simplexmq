@@ -52,13 +52,15 @@ logDir = "/var/opt/simplex"
 defaultStoreLogFile :: FilePath
 defaultStoreLogFile = combine logDir "smp-server-store.log"
 
-keyPath :: FilePath
-keyPath = combine cfgDir "server_key"
+iniFile :: FilePath
+iniFile = combine cfgDir "smp-server.ini"
+
+keyFile :: FilePath
+keyFile = combine cfgDir "server_key"
 
 main :: IO ()
 main = do
   opts <- getServerOpts
-  putStrLn "SMP Server (-h for help)"
   case serverCommand opts of
     ServerInit ->
       runExceptT (getConfig opts) >>= \case
@@ -78,13 +80,13 @@ main = do
           putStrLn "Initialize server with `smp-server init` command"
           exitFailure
     ServerDelete -> do
-      deleteServer opts
+      deleteServer
       putStrLn "Server key, config file and store log deleted"
 
 getConfig :: ServerOpts -> ExceptT String IO ServerConfig
 getConfig opts = do
   pk <- readKey
-  ini <- readIni $ configFile opts
+  ini <- readIni
   storeLog <- liftIO $ openStoreLog opts ini
   pure serverConfig {serverPrivateKey = pk, storeLog}
 
@@ -109,11 +111,11 @@ runServer cfg = do
     putStrLn $ "listening on port " <> port <> " (" <> transportName t <> ")"
   runSMPServer cfg
 
-deleteServer :: ServerOpts -> IO ()
-deleteServer ServerOpts {configFile} = do
-  ini <- runExceptT $ readIni configFile
-  deleteIfExists configFile
-  deleteIfExists keyPath
+deleteServer :: IO ()
+deleteServer = do
+  ini <- runExceptT $ readIni
+  deleteIfExists iniFile
+  deleteIfExists keyFile
   deleteIfExists defaultStoreLogFile
   case ini of
     Right IniOpts {storeLogFile} -> deleteIfExists storeLogFile
@@ -124,17 +126,17 @@ data IniOpts = IniOpts
     storeLogFile :: FilePath
   }
 
-readIni :: FilePath -> ExceptT String IO IniOpts
-readIni configFile = do
-  fileExists configFile
-  ini <- ExceptT $ readIniFile configFile
+readIni :: ExceptT String IO IniOpts
+readIni = do
+  fileExists iniFile
+  ini <- ExceptT $ readIniFile iniFile
   let enableStoreLog = (== Right "on") $ lookupValue "STORE_LOG" "enable" ini
       storeLogFile = either (const defaultStoreLogFile) T.unpack $ lookupValue "STORE_LOG" "file" ini
   pure IniOpts {enableStoreLog, storeLogFile}
 
 createIni :: ServerOpts -> IO IniOpts
-createIni ServerOpts {configFile, enableStoreLog} = do
-  writeFile configFile $
+createIni ServerOpts {enableStoreLog} = do
+  writeFile iniFile $
     "[STORE_LOG]\n\
     \# The server uses STM memory to store SMP queues and messages,\n\
     \# that will be lost on restart (e.g., as with redis).\n\
@@ -151,21 +153,21 @@ createIni ServerOpts {configFile, enableStoreLog} = do
 
 readKey :: ExceptT String IO C.FullPrivateKey
 readKey = do
-  fileExists keyPath
-  liftIO (S.readKeyFile keyPath) >>= \case
+  fileExists keyFile
+  liftIO (S.readKeyFile keyFile) >>= \case
     [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.FullPrivateKey pk
     [_] -> err "not RSA key"
     [] -> err "invalid key file format"
     _ -> err "more than one key"
   where
     err :: String -> ExceptT String IO b
-    err e = throwE $ e <> ": " <> keyPath
+    err e = throwE $ e <> ": " <> keyFile
 
 createKey :: IO C.FullPrivateKey
 createKey = do
   createDirectoryIfMissing True cfgDir
   (_, pk) <- C.generateKeyPair newKeySize
-  S.writeKeyFile S.TraditionalFormat keyPath [PrivKeyRSA $ C.rsaPrivateKey pk]
+  S.writeKeyFile S.TraditionalFormat keyFile [PrivKeyRSA $ C.rsaPrivateKey pk]
   pure pk
 
 fileExists :: FilePath -> ExceptT String IO ()
@@ -195,7 +197,6 @@ openStoreLog ServerOpts {enableStoreLog = l} IniOpts {enableStoreLog = l', store
 
 data ServerOpts = ServerOpts
   { serverCommand :: ServerCommand,
-    configFile :: FilePath,
     enableStoreLog :: Bool
   }
 
@@ -209,20 +210,11 @@ serverOpts =
           <> command "start" (info (pure ServerStart) (progDesc "Start server with config file INI_FILE"))
           <> command "delete" (info (pure ServerDelete) (progDesc "Delete server key, config file and store log"))
       )
-    <*> strOption
-      ( long "config"
-          <> short 'c'
-          <> metavar "INI_FILE"
-          <> help ("config file (" <> defaultIniFile <> ")")
-          <> value defaultIniFile
-      )
     <*> switch
       ( long "store-log"
           <> short 'l'
-          <> help "enable store log (and restore SMP queues when server restarts)"
+          <> help "enable store log for SMP queues persistence"
       )
-  where
-    defaultIniFile = combine cfgDir "smp-server.ini"
 
 getServerOpts :: IO ServerOpts
 getServerOpts = customExecParser p opts
