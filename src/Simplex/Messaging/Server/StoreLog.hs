@@ -10,6 +10,7 @@ module Simplex.Messaging.Server.StoreLog
   ( StoreLog, -- constructors are not exported
     openWriteStoreLog,
     openReadStoreLog,
+    storeLogFilePath,
     closeStoreLog,
     logCreateQueue,
     logSecureQueue,
@@ -87,6 +88,11 @@ openReadStoreLog :: FilePath -> IO (StoreLog 'ReadMode)
 openReadStoreLog f = do
   doesFileExist f >>= (`unless` writeFile f "")
   ReadStoreLog f <$> openFile f ReadMode
+
+storeLogFilePath :: StoreLog a -> FilePath
+storeLogFilePath = \case
+  WriteStoreLog f _ -> f
+  ReadStoreLog f _ -> f
 
 closeStoreLog :: StoreLog a -> IO ()
 closeStoreLog = \case
