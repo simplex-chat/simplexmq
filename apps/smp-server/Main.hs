@@ -13,9 +13,11 @@ import qualified Crypto.Store.PKCS8 as S
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
-import Data.Ini (lookupValue, readIniFile)
+import Data.Ini (Ini, lookupValue, readIniFile)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.X509 (PrivKey (PrivKeyRSA))
+import Network.Socket (ServiceName)
 import Options.Applicative
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
@@ -28,15 +30,18 @@ import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, stdout)
 
+defaultServerPort :: ServiceName
+defaultServerPort = "5223"
+
 serverConfig :: ServerConfig
 serverConfig =
   ServerConfig
-    { transports = [("5223", transport @TCP), ("80", transport @WS)],
-      tbqSize = 16,
+    { tbqSize = 16,
       queueIdBytes = 12,
       msgIdBytes = 6,
-      storeLog = Nothing,
-      -- key is loaded from the file server_key in /etc/opt/simplex directory
+      -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini
+      transports = undefined,
+      storeLog = undefined,
       serverPrivateKey = undefined
     }
 
@@ -55,8 +60,8 @@ defaultStoreLogFile = combine logDir "smp-server-store.log"
 iniFile :: FilePath
 iniFile = combine cfgDir "smp-server.ini"
 
-keyFile :: FilePath
-keyFile = combine cfgDir "server_key"
+defaultKeyFile :: FilePath
+defaultKeyFile = combine cfgDir "server_key"
 
 main :: IO ()
 main = do
@@ -85,10 +90,15 @@ main = do
 
 getConfig :: ServerOpts -> ExceptT String IO ServerConfig
 getConfig opts = do
-  pk <- readKey
   ini <- readIni
+  pk <- readKey ini
   storeLog <- liftIO $ openStoreLog opts ini
-  pure serverConfig {serverPrivateKey = pk, storeLog}
+  pure $ makeConfig ini pk storeLog
+
+makeConfig :: IniOpts -> C.FullPrivateKey -> Maybe (StoreLog 'ReadMode) -> ServerConfig
+makeConfig IniOpts {serverPort, enableWebsockets} pk storeLog =
+  let transports = (serverPort, transport @TCP) : [("80", transport @WS) | enableWebsockets]
+   in serverConfig {serverPrivateKey = pk, storeLog, transports}
 
 printConfig :: ServerConfig -> IO ()
 printConfig ServerConfig {serverPrivateKey, storeLog} = do
@@ -99,10 +109,10 @@ printConfig ServerConfig {serverPrivateKey, storeLog} = do
 
 initializeServer :: ServerOpts -> IO ServerConfig
 initializeServer opts = do
-  pk <- createKey
   ini <- createIni opts
+  pk <- createKey ini
   storeLog <- openStoreLog opts ini
-  pure serverConfig {serverPrivateKey = pk, storeLog}
+  pure $ makeConfig ini pk storeLog
 
 runServer :: ServerConfig -> IO ()
 runServer cfg = do
@@ -113,17 +123,22 @@ runServer cfg = do
 
 deleteServer :: IO ()
 deleteServer = do
-  ini <- runExceptT $ readIni
+  ini <- runExceptT readIni
   deleteIfExists iniFile
-  deleteIfExists keyFile
-  deleteIfExists defaultStoreLogFile
   case ini of
-    Right IniOpts {storeLogFile} -> deleteIfExists storeLogFile
-    Left _ -> pure ()
+    Right IniOpts {storeLogFile, serverKeyFile} -> do
+      deleteIfExists storeLogFile
+      deleteIfExists serverKeyFile
+    Left _ -> do
+      deleteIfExists defaultKeyFile
+      deleteIfExists defaultStoreLogFile
 
 data IniOpts = IniOpts
   { enableStoreLog :: Bool,
-    storeLogFile :: FilePath
+    storeLogFile :: FilePath,
+    serverKeyFile :: FilePath,
+    serverPort :: ServiceName,
+    enableWebsockets :: Bool
   }
 
 readIni :: ExceptT String IO IniOpts
@@ -131,8 +146,14 @@ readIni = do
   fileExists iniFile
   ini <- ExceptT $ readIniFile iniFile
   let enableStoreLog = (== Right "on") $ lookupValue "STORE_LOG" "enable" ini
-      storeLogFile = either (const defaultStoreLogFile) T.unpack $ lookupValue "STORE_LOG" "file" ini
-  pure IniOpts {enableStoreLog, storeLogFile}
+      storeLogFile = opt defaultStoreLogFile "STORE_LOG" "file" ini
+      serverKeyFile = opt defaultKeyFile "TRANSPORT" "key_file" ini
+      serverPort = opt defaultServerPort "TRANSPORT" "port" ini
+      enableWebsockets = (== Right "on") $ lookupValue "TRANSPORT" "websockets" ini
+  pure IniOpts {enableStoreLog, storeLogFile, serverKeyFile, serverPort, enableWebsockets}
+  where
+    opt :: String -> Text -> Text -> Ini -> String
+    opt def section key ini = either (const def) T.unpack $ lookupValue section key ini
 
 createIni :: ServerOpts -> IO IniOpts
 createIni ServerOpts {enableStoreLog} = do
@@ -145,29 +166,44 @@ createIni ServerOpts {enableStoreLog} = do
     \# Log is compacted on start (deleted queues are removed).\n\
     \# The messages in the queues are not logged.\n\n"
       <> (if enableStoreLog then "" else "# ")
-      <> "enable: on\n"
-      <> "# file: "
+      <> "enable: on\n\
+         \# file: "
       <> defaultStoreLogFile
-      <> "\n"
-  pure IniOpts {enableStoreLog, storeLogFile = defaultStoreLogFile}
+      <> "\n\n\
+         \[TRANSPORT]\n\n\
+         \# key_file: "
+      <> defaultKeyFile
+      <> "\n\
+         \# port: "
+      <> defaultServerPort
+      <> "\n\
+         \websockets: on\n"
+  pure
+    IniOpts
+      { enableStoreLog,
+        storeLogFile = defaultStoreLogFile,
+        serverKeyFile = defaultKeyFile,
+        serverPort = defaultServerPort,
+        enableWebsockets = True
+      }
 
-readKey :: ExceptT String IO C.FullPrivateKey
-readKey = do
-  fileExists keyFile
-  liftIO (S.readKeyFile keyFile) >>= \case
+readKey :: IniOpts -> ExceptT String IO C.FullPrivateKey
+readKey IniOpts {serverKeyFile} = do
+  fileExists serverKeyFile
+  liftIO (S.readKeyFile serverKeyFile) >>= \case
     [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.FullPrivateKey pk
     [_] -> err "not RSA key"
     [] -> err "invalid key file format"
     _ -> err "more than one key"
   where
     err :: String -> ExceptT String IO b
-    err e = throwE $ e <> ": " <> keyFile
+    err e = throwE $ e <> ": " <> serverKeyFile
 
-createKey :: IO C.FullPrivateKey
-createKey = do
+createKey :: IniOpts -> IO C.FullPrivateKey
+createKey IniOpts {serverKeyFile} = do
   createDirectoryIfMissing True cfgDir
   (_, pk) <- C.generateKeyPair newKeySize
-  S.writeKeyFile S.TraditionalFormat keyFile [PrivKeyRSA $ C.rsaPrivateKey pk]
+  S.writeKeyFile S.TraditionalFormat serverKeyFile [PrivKeyRSA $ C.rsaPrivateKey pk]
   pure pk
 
 fileExists :: FilePath -> ExceptT String IO ()
@@ -207,8 +243,8 @@ serverOpts =
   ServerOpts
     <$> subparser
       ( command "init" (info (pure ServerInit) (progDesc "Initialize server: generate server key and ini file"))
-          <> command "start" (info (pure ServerStart) (progDesc "Start server with config file INI_FILE"))
-          <> command "delete" (info (pure ServerDelete) (progDesc "Delete server key, config file and store log"))
+          <> command "start" (info (pure ServerStart) (progDesc "Start server (ini: /etc/opt/simplex/smp-server.ini)"))
+          <> command "delete" (info (pure ServerDelete) (progDesc "Delete server key, ini file and store log"))
       )
     <*> switch
       ( long "store-log"
