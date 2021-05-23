@@ -1,3 +1,8 @@
+# 0.3.2
+
+- Support websockets
+- SMP server CLI commands
+
 # 0.3.1
 
 - Released to hackage.org
