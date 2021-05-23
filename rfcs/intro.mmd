@@ -1,0 +1,41 @@
+sequenceDiagram
+  participant A as Alice (A) - the introducer
+  participant AA as Alice's<br>agent (AA)
+  participant B as Bob (B) - introduced
+  participant BA as Bob's<br>agent (BA)
+  participant M as Mark (M) - introduced to
+  participant MA as Mark's<br>agent (MA)
+
+  note over A, AA: 1. create introduction
+  A ->> AA: idAB INEW idAM infoM<br>(idAB - conn alias A has for B,<br>idAM - for M)
+  AA ->> A: idAB OK
+
+  note over A, BA: 2. send intro to Bob
+
+  AA ->> BA: via idAB: I_NEW extIntroIdB  infoM
+  BA ->> B: idBA ICONF intIntroIdB infoM
+  B ->> BA: idBA ILET intIntroIdB
+  BA ->> B: idBA OK
+
+  note over BA: 3. create connection for  M idBM
+
+  BA ->> AA: via idBA: I_INV extIntroIdB idBMInv infoB
+
+  note over AA, M: 4. send intro to Mark
+
+  AA ->> MA: via idAM: I_NEW extIntroIdM idBMInv infoB
+
+  note over MA, B: 5. Mark connects to Bob
+
+  MA ->> M: idMA ICONF intIntroIdM infoB
+  M ->> MA: idMB? ILET intIntroIdM
+
+  MA ->> BA:  establish connection idBM -> idMB
+
+  note over A, MA: 6. notify all clients
+
+  MA ->> M: idMB ICON intIntroIdM
+  BA ->> B: idBM ICON intIntroIdB
+  MA ->> AA: via idMA I_CON extIntroIdM
+  BA ->> AA: via idBA I_CON extIntroIdB
+  AA ->> A: idAB IDONE idAM

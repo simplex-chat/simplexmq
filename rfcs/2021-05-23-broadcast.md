@@ -1,0 +1,46 @@
+# SMP agent broadcast
+
+## Problem
+
+Support agent message broadcast to multiple connections.
+
+It is done in ad-hoc way as part of [groups proposal](./2021-05-15-groups.md) - this proposal defines broadcast as a separate agent primitive to simplify group management.
+
+It can also be used for other purposes when the same message needs to be sent to multiple recipients without creating groups.
+
+## Solution
+
+A minimal protocol of additional client commands to create, manage and use broadcasts.
+
+From the point of view of the recipient this will look like a normal message, as if the sending agent executed multiple send commands (in fact, broadcast can be implemented by agent sending itself multiple SEND commands)
+
+### Commands and messages
+
+- command `bId? BNEW` - create broadcast (response is `bId OK`)
+- command `bId BADD cAlias` - add existing connection to a broadcast (response is `bId OK` or `ERR`, e.g. if bId is used)
+- command `bId BSEND msg` - broadcast message (response is multiple `cId SENT msgId` or ERR, separately for each connection)
+- message `bId BSENT msgId` - notification that the message is sent and its internal ID, same as SENT
+- command `bId BREM cAlias` - remove connection from broadcast (response is `bId OK`)
+- message `bId BEMPTY` - all connections were removed from the broadcast
+- command `bId BDEL` - delete broadcast (response is `bId OK`)
+
+## Questions
+
+1. Should broadcast IDs use the same namespace as connection IDs (and as group IDs)? Having the same namespace for all abstractions that the agent can operate on is helpful, as it can also allow implementing some queries to determine which type a given ID has.
+
+2. Given that this abstraction would be used as internal abstraction for groups (same as connections internal to the group), it might be better to implement "agent users", each with its own connection namespace. In this case agent would use itself as one of the users.
+
+3. There is a similarity of commands for connections, groups and broadcasts, they only differ on the single-letter prefix. We could do one of the following:
+  - use the same command for different object types. This feels incorrect and error prone on its own.
+  - extend transmission structure with the field defining the object type (connection, group, broadcast, etc.).
+
+In this case, the transmission would look like:
+
+```
+agentTransmission = [corrId] CRLF objectType [objectID] CRLF agentCommand
+objectType = CONN | BCAST | GROUP ; this is the additional field
+```
+
+This approach would allow reusing the existing command avoiding the unnecessary repetition.
+
+In this case, the command type could be parameterized with the list of supported agent object types, so we can ensure on the type level that only allowed commands can be constructed.
