@@ -23,6 +23,8 @@ From the point of view of the recipient this will look like a normal message, as
 - command `bId BREM cAlias` - remove connection from broadcast (response is `bId OK`)
 - message `bId BEMPTY` - all connections were removed from the broadcast
 - command `bId BDEL` - delete broadcast (response is `bId OK`)
+- command `bId BLS` - list connections in broadcast, response is `BMEM space_separated_connections`
+- message `bId BMEM space_separated_connections`
 
 ## Questions
 
