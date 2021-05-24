@@ -1,7 +1,7 @@
 #!/bin/bash
-# <UDF name="enable_store_log" label="Enable store log - enable saving SMP queues to append only log, and restoring them when the server is started." default="on" oneof="on, off" />
-# <UDF name="api_token" label="Linode API Token - enable StackScript to create tags address and hash for SMP server domain/ip address and transport key hash from inside linode. Use "hostname#hash" as SMP server address in the client. Note: minimal permissions token should have are the following: Account - read/write, Linodes - read/write" default="" />
-# <UDF name="domain_address" label="Domain address" default="" />
+# <UDF name="enable_store_log" label="Store log - persists SMP queues to append only log and restores them upon server restart." default="on" oneof="on, off" />
+# <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server domain/ip address, transport key hash and server version. Use "hostname#hash" as SMP server address in the client. Note: minimal permissions token should have are the following: Account - read/write, Linodes - read/write." default="" />
+# <UDF name="domain_address" label="If provided can be used instead of ip address." default="" />
 
 # log all stdout output to stackscript.log
 exec &> >(tee -i /var/log/stackscript.log)
@@ -10,16 +10,12 @@ set -xeo pipefail
 
 cd $HOME
 
-# request latest release info
-github_oauth_token="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"
-curl -H "Authorization: token $github_oauth_token" -s https://api.github.com/repos/simplex-chat/simplexmq/releases/latest > release.json
-
-# install jq json parser
 sudo apt-get update -y
 sudo apt-get install -y jq
 
-# download latest release
-jq '.assets[].browser_download_url | select(test("20_04"))' release.json \
+# retrieve latest release info and download smp-server executable
+curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/latest > release.json
+jq '.assets[].browser_download_url | select(test("smp-server-ubuntu-20_04-x86-64"))' release.json \
 | tr -d \" \
 | wget -qi -
 
@@ -59,7 +55,7 @@ curl -H "Content-Type: application/json" \
 # create, enable and start SMP server systemd service
 cat <<EOT >> /etc/systemd/system/smp-server.service
 [Unit]
-Description=SMP server systemd service.
+Description=SMP server systemd service
 
 [Service]
 Type=simple
