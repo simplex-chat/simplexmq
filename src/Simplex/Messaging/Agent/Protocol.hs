@@ -5,9 +5,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -25,6 +27,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent.Protocol
   ( -- * SMP agent protocol types
+    Entity (..),
     ACommand (..),
     AParty (..),
     SAParty (..),
@@ -81,9 +84,10 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.Kind (Type)
+import Data.Kind (Constraint, Type)
 import Data.String (IsString (..))
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
@@ -91,12 +95,11 @@ import Data.Type.Equality
 import Data.Typeable ()
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
-import Network.Socket
+import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
-  ( CorrId (..),
-    ErrorType,
+  ( ErrorType,
     MsgBody,
     MsgId,
     SenderPublicKey,
@@ -112,10 +115,12 @@ import UnliftIO.Exception
 type ARawTransmission = (ByteString, ByteString, ByteString)
 
 -- | Parsed SMP agent protocol transmission.
-type ATransmission p = (CorrId, ConnAlias, ACommand p)
+data ATransmission p = forall t c. EntityCommand t c => ATransmission ACorrId (Entity t) (ACommand p c)
 
 -- | SMP agent protocol transmission or transmission error.
-type ATransmissionOrError p = (CorrId, ConnAlias, Either AgentErrorType (ACommand p))
+data ATransmissionOrError p = forall t c. EntityCommand t c => ATransmissionOrError ACorrId (Entity t) (Either AgentErrorType (ACommand p c))
+
+type ACorrId = ByteString
 
 -- | SMP agent protocol participants.
 data AParty = Agent | Client
@@ -135,26 +140,95 @@ instance TestEquality SAParty where
   testEquality SClient SClient = Just Refl
   testEquality _ _ = Nothing
 
-data ACmd = forall p. ACmd (SAParty p) (ACommand p)
+-- | SMP agent protocol entity types
+data EntityTag = Conn_ | OpenConn_ | Broadcast_ | AGroup_
+
+data Entity :: EntityTag -> Type where
+  Conn :: ByteString -> Entity Conn_
+  OpenConn :: ByteString -> Entity OpenConn_
+  BroadCast :: ByteString -> Entity Broadcast_
+  AGroup :: ByteString -> Entity AGroup_
+
+deriving instance Show (Entity t)
+
+data AnEntity = forall t. AE (Entity t)
+
+data ACmd = forall (p :: AParty) (c :: ACmdTag). ACmd (SAParty p) (ACommand p c)
 
 deriving instance Show ACmd
 
+data APartyCmd (p :: AParty) = forall c. APCmd (ACommand p c)
+
+deriving instance Show (APartyCmd p)
+
+type family EntityCommand (t :: EntityTag) (c :: ACmdTag) :: Constraint where
+  EntityCommand Conn_ NEW_ = ()
+  EntityCommand Conn_ INV_ = ()
+  EntityCommand Conn_ JOIN_ = ()
+  EntityCommand Conn_ CON_ = ()
+  EntityCommand Conn_ SUB_ = ()
+  EntityCommand Conn_ SUBALL_ = ()
+  EntityCommand Conn_ END_ = ()
+  EntityCommand Conn_ SEND_ = ()
+  EntityCommand Conn_ SENT_ = ()
+  EntityCommand Conn_ MSG_ = ()
+  EntityCommand Conn_ OFF_ = ()
+  EntityCommand Conn_ DEL_ = ()
+  EntityCommand Conn_ OK_ = ()
+  EntityCommand Conn_ ERR_ = ()
+  EntityCommand OpenConn_ NEW_ = ()
+  EntityCommand Broadcast_ NEW_ = ()
+  EntityCommand AGroup_ NEW_ = ()
+  EntityCommand _ NEW_ = ()
+
+data ACmdTag
+  = NEW_
+  | INV_
+  | JOIN_
+  | CON_
+  | SUB_
+  | SUBALL_
+  | END_
+  | SEND_
+  | SENT_
+  | MSG_
+  | OFF_
+  | DEL_
+  | OK_
+  | ERR_
+
+-- data SACommand :: ACommand -> Type where
+--   NEW_ :: SACommand NEW
+--   INV_ :: SACommand INV
+--   JOIN_ :: SACommand JOIN
+--   CON_ :: SACommand CON
+--   SUB_ :: SACommand SUB
+--   SUBALL_ :: SACommand SUBALL
+--   END_ :: SACommand END
+--   SEND_ :: SACommand SEND
+--   SENT_ :: SACommand SENT
+--   MSG_ :: SACommand MSG
+--   OFF_ :: SACommand OFF
+--   DEL_ :: SACommand DEL
+--   OK_ :: SACommand OK
+--   ERR_ :: SACommand ERR
+
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
-data ACommand (p :: AParty) where
-  NEW :: ACommand Client -- response INV
-  INV :: SMPQueueInfo -> ACommand Agent
-  JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client -- response OK
-  CON :: ACommand Agent -- notification that connection is established
+data ACommand (p :: AParty) (c :: ACmdTag) where
+  NEW :: ACommand Client NEW_ -- response INV
+  INV :: SMPQueueInfo -> ACommand Agent INV_
+  JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client JOIN_ -- response OK
+  CON :: ACommand Agent CON_ -- notification that connection is established
   -- TODO currently it automatically allows whoever sends the confirmation
   -- CONF :: OtherPartyId -> ACommand Agent
   -- LET :: OtherPartyId -> ACommand Client
-  SUB :: ACommand Client
-  SUBALL :: ACommand Client -- TODO should be moved to chat protocol - hack for subscribing to all
-  END :: ACommand Agent
+  SUB :: ACommand Client SUB_
+  SUBALL :: ACommand Client SUBALL_ -- TODO should be moved to chat protocol - hack for subscribing to all
+  END :: ACommand Agent END_
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
-  SEND :: MsgBody -> ACommand Client
-  SENT :: AgentMsgId -> ACommand Agent
+  SEND :: MsgBody -> ACommand Client SEND_
+  SENT :: AgentMsgId -> ACommand Agent SENT_
   MSG ::
     { recipientMeta :: (AgentMsgId, UTCTime),
       brokerMeta :: (MsgId, UTCTime),
@@ -162,17 +236,17 @@ data ACommand (p :: AParty) where
       msgIntegrity :: MsgIntegrity,
       msgBody :: MsgBody
     } ->
-    ACommand Agent
+    ACommand Agent MSG_
   -- ACK :: AgentMsgId -> ACommand Client
   -- RCVD :: AgentMsgId -> ACommand Agent
-  OFF :: ACommand Client
-  DEL :: ACommand Client
-  OK :: ACommand Agent
-  ERR :: AgentErrorType -> ACommand Agent
+  OFF :: ACommand Client MSG_
+  DEL :: ACommand Client DEL_
+  OK :: ACommand Agent OK_
+  ERR :: AgentErrorType -> ACommand Agent ERR_
 
-deriving instance Eq (ACommand p)
+deriving instance Eq (ACommand p c)
 
-deriving instance Show (ACommand p)
+deriving instance Show (ACommand p c)
 
 -- | SMP message formats.
 data SMPMessage
@@ -427,7 +501,25 @@ instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 
--- | AMP agent command and response parser
+entityP :: Parser AnEntity
+entityP =
+  ($)
+    <$> ( "C:" $> AE . Conn
+            <|> "O:" $> AE . OpenConn
+            <|> "B:" $> AE . BroadCast
+            <|> "G:" $> AE . AGroup
+            <|> pure (AE . Conn)
+        )
+    <*> A.takeTill (== ' ')
+
+serializeEntity :: Entity t -> ByteString
+serializeEntity = \case
+  Conn s -> "C:" <> s
+  OpenConn s -> "O:" <> s
+  BroadCast s -> "B:" <> s
+  AGroup s -> "G:" <> s
+
+-- | SMP agent command and response parser
 commandP :: Parser ACmd
 commandP =
   "NEW" $> ACmd SClient NEW
@@ -474,7 +566,7 @@ parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse commandP $ CMD SYNTAX
 
 -- | Serialize SMP agent command.
-serializeCommand :: ACommand p -> ByteString
+serializeCommand :: ACommand p c -> ByteString
 serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
@@ -540,9 +632,9 @@ serializeMsg body = bshow (B.length body) <> "\n" <> body
 
 -- | Send raw (unparsed) SMP agent protocol transmission to TCP connection.
 tPutRaw :: Transport c => c -> ARawTransmission -> IO ()
-tPutRaw h (corrId, connAlias, command) = do
+tPutRaw h (corrId, entity, command) = do
   putLn h corrId
-  putLn h connAlias
+  putLn h entity
   putLn h command
 
 -- | Receive raw (unparsed) SMP agent protocol transmission from TCP connection.
@@ -551,41 +643,56 @@ tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
 tPut :: (Transport c, MonadIO m) => c -> ATransmission p -> m ()
-tPut h (CorrId corrId, connAlias, command) =
-  liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
+tPut h (ATransmission corrId ent cmd) =
+  liftIO $ tPutRaw h (corrId, serializeEntity ent, serializeCommand cmd)
 
 -- | Receive client and agent transmissions from TCP connection.
 tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
-    tParseLoadBody t@(corrId, connAlias, command) = do
-      let cmd = parseCommand command >>= fromParty >>= tConnAlias t
-      fullCmd <- either (return . Left) cmdWithMsgBody cmd
-      return (CorrId corrId, connAlias, fullCmd)
+    tParseLoadBody t@(corrId, entityStr, command) = do
+      let anEntity = fromRight (AE $ Conn entityStr) $ parseAll entityP entityStr
+          -- this operation is in either, return type is incorrect
+          cmd = parseCommand command >>= fromParty >>= tConnAlias t
+      fullCmd <- either (pure . Left) cmdWithMsgBody cmd
+      pure $ makeTransmission corrId anEntity fullCmd
 
-    fromParty :: ACmd -> Either AgentErrorType (ACommand p)
+    fromParty :: ACmd -> Either AgentErrorType (APartyCmd p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
-      Just Refl -> Right cmd
+      Just Refl -> Right $ APCmd cmd
       _ -> Left $ CMD PROHIBITED
 
-    tConnAlias :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
-    tConnAlias (_, connAlias, _) cmd = case cmd of
-      -- NEW and JOIN have optional connAlias
-      NEW -> Right cmd
-      JOIN _ _ -> Right cmd
-      -- ERROR response does not always have connAlias
-      ERR _ -> Right cmd
-      -- other responses must have connAlias
-      _
-        | B.null connAlias -> Left $ CMD NO_CONN
-        | otherwise -> Right cmd
+    tConnAlias :: ARawTransmission -> APartyCmd p -> Either AgentErrorType (APartyCmd p)
+    tConnAlias (_, entityStr, _) (APCmd cmd) =
+      APCmd <$> case cmd of
+        -- NEW and JOIN have optional entity
+        NEW -> Right cmd
+        JOIN _ _ -> Right cmd
+        -- ERROR response does not always have entity
+        ERR _ -> Right cmd
+        -- other responses must have entity
+        _
+          | B.null entityStr -> Left $ CMD NO_CONN
+          | otherwise -> Right cmd
 
-    cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
-    cmdWithMsgBody = \case
-      SEND body -> SEND <$$> getMsgBody body
-      MSG agentMsgId srvTS agentTS integrity body -> MSG agentMsgId srvTS agentTS integrity <$$> getMsgBody body
-      cmd -> return $ Right cmd
+    makeTransmission :: ACorrId -> AnEntity -> Either AgentErrorType (APartyCmd p) -> ATransmissionOrError p
+    makeTransmission corrId (AE entity) (Left e) = ATransmissionOrError @_ @_ @NEW_ corrId entity (Left e)
+    makeTransmission corrId (AE entity) (Right (APCmd cmd)) = case entity of
+      Conn _ -> case cmd of
+        NEW -> trn corrId entity $ Right cmd
+        _ -> trn @NEW_ corrId entity $ Left $ CMD PROHIBITED
+      _ -> trn @NEW_ corrId entity $ Left $ CMD PROHIBITED
+      where
+        trn :: forall c' t. EntityCommand t c' => ACorrId -> Entity t -> Either AgentErrorType (ACommand p c') -> ATransmissionOrError p
+        trn = ATransmissionOrError
+
+    cmdWithMsgBody :: APartyCmd p -> m (Either AgentErrorType (APartyCmd p))
+    cmdWithMsgBody (APCmd cmd) =
+      APCmd <$$> case cmd of
+        SEND body -> SEND <$$> getMsgBody body
+        MSG agentMsgId srvTS agentTS integrity body -> MSG agentMsgId srvTS agentTS integrity <$$> getMsgBody body
+        _ -> pure $ Right cmd
 
     -- TODO refactor with server
     getMsgBody :: MsgBody -> m (Either AgentErrorType MsgBody)

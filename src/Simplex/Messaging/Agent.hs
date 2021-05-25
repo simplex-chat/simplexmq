@@ -310,7 +310,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
           notify . ERR $ BROKER UNEXPECTED
       where
-        notify :: ACommand 'Agent -> m ()
+        notify :: APartyCmd 'Agent -> m ()
         notify msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
 
         prohibited :: m ()

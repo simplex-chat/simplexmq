@@ -118,7 +118,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
         deleteKeys ks m = S.foldr' M.delete m ks
 
     notifySub :: ConnAlias -> IO ()
-    notifySub connAlias = atomically $ writeTBQueue (sndQ c) ("", connAlias, END)
+    notifySub connAlias = atomically $ writeTBQueue (sndQ c) ("", connAlias, APartyCmd SConn END)
 
 closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
 closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient
