@@ -7,6 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Agent
@@ -49,7 +50,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore, connectSQLiteStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (CorrId (..), MsgBody, SenderPublicKey)
+import Simplex.Messaging.Protocol (MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
 import Simplex.Messaging.Util (bshow)
@@ -105,12 +106,14 @@ runSMPAgentClient c = do
   race_ (subscriber c s1) (client c s2)
 
 receive :: forall c m. (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
-receive h c@AgentClient {rcvQ, sndQ} = forever $ do
-  (corrId, cAlias, cmdOrErr) <- tGet SClient h
-  case cmdOrErr of
-    Right cmd -> write rcvQ (corrId, cAlias, cmd)
-    Left e -> write sndQ (corrId, cAlias, ERR e)
+receive h c@AgentClient {rcvQ, sndQ} = forever loop
   where
+    loop :: m ()
+    loop = do
+      ATransmissionOrError corrId entity cmdOrErr <- tGet SClient h
+      case cmdOrErr of
+        Right cmd -> write rcvQ $ ATransmission corrId entity cmd
+        Left e -> write sndQ $ ATransmission corrId entity $ ERR e
     write :: TBQueue (ATransmission p) -> ATransmission p -> m ()
     write q t = do
       logClient c "-->" t
@@ -123,15 +126,18 @@ send h c@AgentClient {sndQ} = forever $ do
   logClient c "<--" t
 
 logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> m ()
-logClient AgentClient {clientId} dir (CorrId corrId, cAlias, cmd) = do
-  logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, cAlias, B.takeWhile (/= ' ') $ serializeCommand cmd]
+logClient AgentClient {clientId} dir (ATransmission corrId entity cmd) = do
+  logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, serializeEntity entity, B.takeWhile (/= ' ') $ serializeCommand cmd]
 
-client :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
-client c@AgentClient {rcvQ, sndQ} st = forever $ do
-  t@(corrId, cAlias, _) <- atomically $ readTBQueue rcvQ
-  runExceptT (processCommand c st t) >>= \case
-    Left e -> atomically $ writeTBQueue sndQ (corrId, cAlias, ERR e)
-    Right _ -> return ()
+client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
+client c@AgentClient {rcvQ, sndQ} st = forever loop
+  where
+    loop :: m ()
+    loop = do
+      t@(ATransmission corrId entity _) <- atomically $ readTBQueue rcvQ
+      runExceptT (processCommand c st t) >>= \case
+        Left e -> atomically . writeTBQueue sndQ $ ATransmission corrId entity (ERR e)
+        Right _ -> pure ()
 
 withStore ::
   AgentMonad m =>
@@ -151,24 +157,26 @@ withStore action = do
       e -> INTERNAL $ show e
 
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
-processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
-  case cmd of
-    NEW -> createNewConnection
-    JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode
-    SUB -> subscribeConnection connAlias
-    SUBALL -> subscribeAll
-    SEND msgBody -> sendMessage msgBody
-    OFF -> suspendConnection
-    DEL -> deleteConnection
+processCommand c@AgentClient {sndQ} st (ATransmission corrId entity cmd) =
+  case entity of
+    Conn cId -> case cmd of
+      NEW -> createNewConnection cId
+      JOIN smpQueueInfo replyMode -> joinConnection cId smpQueueInfo replyMode
+      SUB -> subscribeConnection cId
+      SUBALL -> subscribeAll
+      SEND msgBody -> sendMessage cId msgBody
+      OFF -> suspendConnection cId
+      DEL -> deleteConnection cId
+    _ -> atomically . writeTBQueue sndQ . ATransmission corrId entity . ERR $ CMD ENTITY
   where
-    createNewConnection :: m ()
-    createNewConnection = do
+    createNewConnection :: ByteString -> m ()
+    createNewConnection cId = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
       srv <- getSMPServer
-      (rq, qInfo) <- newReceiveQueue c srv connAlias
+      (rq, qInfo) <- newReceiveQueue c srv cId
       withStore $ createRcvConn st rq
-      respond $ INV qInfo
+      respond (Conn cId) $ INV qInfo
 
     getSMPServer :: m SMPServer
     getSMPServer =
@@ -179,33 +187,33 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
           i <- atomically . stateTVar gen $ randomR (0, L.length servers - 1)
           pure $ servers L.!! i
 
-    joinConnection :: SMPQueueInfo -> ReplyMode -> m ()
-    joinConnection qInfo (ReplyMode replyMode) = do
+    joinConnection :: ByteString -> SMPQueueInfo -> ReplyMode -> m ()
+    joinConnection cId qInfo (ReplyMode replyMode) = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
-      (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
+      (sq, senderKey, verifyKey) <- newSendQueue qInfo cId
       withStore $ createSndConn st sq
       connectToSendQueue c st sq senderKey verifyKey
-      when (replyMode == On) $ createReplyQueue sq
+      when (replyMode == On) $ createReplyQueue cId sq
     -- TODO this response is disabled to avoid two responses in terminal client (OK + CON),
     -- respond OK
 
-    subscribeConnection :: ConnAlias -> m ()
-    subscribeConnection cAlias =
-      withStore (getConn st cAlias) >>= \case
+    subscribeConnection :: ByteString -> m ()
+    subscribeConnection cId =
+      withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
         SomeConn _ (RcvConnection _ rq) -> subscribe rq
         _ -> throwError $ CONN SIMPLEX
       where
-        subscribe rq = subscribeQueue c rq cAlias >> respond' cAlias OK
+        subscribe rq = subscribeQueue c rq cId >> respond (Conn cId) OK
 
     -- TODO remove - hack for subscribing to all; respond' and parameterization of subscribeConnection are byproduct
     subscribeAll :: m ()
     subscribeAll = withStore (getAllConnAliases st) >>= mapM_ subscribeConnection
 
-    sendMessage :: MsgBody -> m ()
-    sendMessage msgBody =
-      withStore (getConn st connAlias) >>= \case
+    sendMessage :: ByteString -> MsgBody -> m ()
+    sendMessage cId msgBody =
+      withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
         SomeConn _ (SndConnection _ sq) -> sendMsg sq
         _ -> throwError $ CONN SIMPLEX
@@ -226,35 +234,35 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
             createSndMsg st sq $
               SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = msgHash}
           sendAgentMessage c sq msgStr
-          respond $ SENT (unId internalId)
+          respond (Conn cId) $ SENT (unId internalId)
 
-    suspendConnection :: m ()
-    suspendConnection =
-      withStore (getConn st connAlias) >>= \case
+    suspendConnection :: ByteString -> m ()
+    suspendConnection cId =
+      withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> suspend rq
         SomeConn _ (RcvConnection _ rq) -> suspend rq
         _ -> throwError $ CONN SIMPLEX
       where
-        suspend rq = suspendQueue c rq >> respond OK
+        suspend rq = suspendQueue c rq >> respond (Conn cId) OK
 
-    deleteConnection :: m ()
-    deleteConnection =
-      withStore (getConn st connAlias) >>= \case
+    deleteConnection :: ByteString -> m ()
+    deleteConnection cId =
+      withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> delete rq
         SomeConn _ (RcvConnection _ rq) -> delete rq
         _ -> delConn
       where
-        delConn = withStore (deleteConn st connAlias) >> respond OK
+        delConn = withStore (deleteConn st cId) >> respond (Conn cId) OK
         delete rq = do
           deleteQueue c rq
-          removeSubscription c connAlias
+          removeSubscription c cId
           delConn
 
-    createReplyQueue :: SndQueue -> m ()
-    createReplyQueue sq = do
+    createReplyQueue :: ByteString -> SndQueue -> m ()
+    createReplyQueue cId sq = do
       srv <- getSMPServer
-      (rq, qInfo) <- newReceiveQueue c srv connAlias
-      withStore $ upgradeSndConnToDuplex st connAlias rq
+      (rq, qInfo) <- newReceiveQueue c srv cId
+      withStore $ upgradeSndConnToDuplex st cId rq
       senderTimestamp <- liftIO getCurrentTime
       sendAgentMessage c sq . serializeSMPMessage $
         SMPMessage
@@ -264,11 +272,8 @@ processCommand c@AgentClient {sndQ} st (corrId, connAlias, cmd) =
             agentMessage = REPLY qInfo
           }
 
-    respond :: ACommand 'Agent -> m ()
-    respond = respond' connAlias
-
-    respond' :: ConnAlias -> ACommand 'Agent -> m ()
-    respond' cAlias resp = atomically $ writeTBQueue sndQ (corrId, cAlias, resp)
+    respond :: EntityCommand t c => Entity t -> ACommand 'Agent c -> m ()
+    respond ent resp = atomically . writeTBQueue sndQ $ ATransmission corrId ent resp
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
 subscriber c@AgentClient {msgQ} st = forever $ do
@@ -283,7 +288,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
   withStore (getRcvConn st srv rId) >>= \case
     SomeConn SCDuplex (DuplexConnection _ rq _) -> processSMP SCDuplex rq
     SomeConn SCRcv (RcvConnection _ rq) -> processSMP SCRcv rq
-    _ -> atomically $ writeTBQueue sndQ ("", "", ERR $ CONN SIMPLEX)
+    _ -> atomically . writeTBQueue sndQ $ ATransmission "" (Conn "") (ERR $ CONN SIMPLEX)
   where
     processSMP :: SConnType c -> RcvQueue -> m ()
     processSMP cType rq@RcvQueue {connAlias, status} =
@@ -310,8 +315,8 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
           notify . ERR $ BROKER UNEXPECTED
       where
-        notify :: APartyCmd 'Agent -> m ()
-        notify msg = atomically $ writeTBQueue sndQ ("", connAlias, msg)
+        notify :: EntityCommand 'Conn_ c => ACommand 'Agent c -> m ()
+        notify msg = atomically . writeTBQueue sndQ $ ATransmission "" (Conn connAlias) msg
 
         prohibited :: m ()
         prohibited = notify . ERR $ AGENT A_PROHIBITED
