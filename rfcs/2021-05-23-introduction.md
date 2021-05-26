@@ -14,7 +14,7 @@ A protocol with commands and message envelopes to exchange the information betwe
 
 Below commands are for the scenario when A introduces B to M.
 
-- command `cIdAB INEW cIdAM infoM` - introduce connection cIdB to connection cIdM (response is `OK`)
+- command `cIdAB INTRO cIdAM infoM` - introduce connection cIdB to connection cIdM (response is `OK`)
 - message `cIdBA ICONF invId infoM` - notification to confirm introduction
 - command `cIdBM? ILET invId` - accept offer to be introduced (response is `cIdBM OK`, followed by `ICON`)
 - message `cIdBM ICON invId` - confirmation that connection is established to both introduced parties
