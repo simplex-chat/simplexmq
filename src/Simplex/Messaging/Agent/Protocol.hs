@@ -61,6 +61,7 @@ module Simplex.Messaging.Agent.Protocol
     EncryptionKey,
     DecryptionKey,
     ACorrId,
+    AgentMsgId,
 
     -- * Parse and serialize
     serializeCommand,

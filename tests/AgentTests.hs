@@ -48,7 +48,7 @@ type TestTransmissionOrError p = (ACorrId, ByteString, Either AgentErrorType (AP
 testTE :: ATransmissionOrError p -> TestTransmissionOrError p
 testTE (ATransmissionOrError corrId entity cmdOrErr) =
   (corrId,serializeEntity entity,) $ case cmdOrErr of
-    Right cmd -> Right $ Pc cmd
+    Right cmd -> Right $ APartyCmd cmd
     Left e -> Left e
 
 -- | send transmission `t` to handle `h` and get response
@@ -58,7 +58,7 @@ h #: t = tPutRaw h t >> testTE <$> tGet SAgent h
 -- | action and expected response
 -- `h #:t #> r` is the test that sends `t` to `h` and validates that the response is `r`
 (#>) :: IO (TestTransmissionOrError 'Agent) -> TestTransmission' 'Agent c -> Expectation
-action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right (Pc cmd))
+action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right (APartyCmd cmd))
 
 -- | action and predicate for the response
 -- `h #:t =#> p` is the test that sends `t` to `h` and validates the response using `p`
@@ -72,7 +72,7 @@ correctTransmission (corrId, cAlias, cmdOrErr) = case cmdOrErr of
 
 -- | receive message to handle `h` and validate that it is the expected one
 (<#) :: Transport c => c -> TestTransmission' 'Agent c' -> Expectation
-h <# (corrId, cAlias, cmd) = tGet SAgent h >>= (`shouldBe` (corrId, cAlias, Right (Pc cmd))) . testTE
+h <# (corrId, cAlias, cmd) = tGet SAgent h >>= (`shouldBe` (corrId, cAlias, Right (APartyCmd cmd))) . testTE
 
 -- | receive message to handle `h` and validate it using predicate `p`
 (<#=) :: Transport c => c -> (TestTransmission 'Agent -> Bool) -> Expectation
@@ -90,22 +90,25 @@ h #:# err = tryGet `shouldReturn` ()
 pattern Msg :: MsgBody -> APartyCmd 'Agent
 pattern Msg msgBody <- APartyCmd MSG {msgBody, msgIntegrity = MsgOk}
 
-pattern Pc :: ACommand p c -> APartyCmd p
-pattern Pc cmd = APartyCmd cmd
+pattern Sent :: AgentMsgId -> APartyCmd 'Agent
+pattern Sent msgId <- APartyCmd (SENT msgId)
+
+pattern Inv :: SMPQueueInfo -> APartyCmd 'Agent
+pattern Inv invitation <- APartyCmd (INV invitation)
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
-  ("1", "bob", Right (Pc (INV qInfo))) <- alice #: ("1", "bob", "NEW")
+  ("1", "bob", Right (Inv qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
   alice <# ("", "bob", CON)
-  alice #: ("2", "bob", "SEND :hello") =#> \case ("2", "bob", Pc (SENT 1)) -> True; _ -> False
-  alice #: ("3", "bob", "SEND :how are you?") =#> \case ("3", "bob", Pc (SENT 2)) -> True; _ -> False
+  alice #: ("2", "bob", "SEND :hello") =#> \case ("2", "bob", Sent 1) -> True; _ -> False
+  alice #: ("3", "bob", "SEND :how are you?") =#> \case ("3", "bob", Sent 2) -> True; _ -> False
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
-  bob #: ("14", "alice", "SEND 9\nhello too") =#> \case ("14", "alice", Pc (SENT 3)) -> True; _ -> False
+  bob #: ("14", "alice", "SEND 9\nhello too") =#> \case ("14", "alice", Sent 3) -> True; _ -> False
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
-  bob #: ("15", "alice", "SEND 9\nmessage 1") =#> \case ("15", "alice", Pc (SENT 4)) -> True; _ -> False
+  bob #: ("15", "alice", "SEND 9\nmessage 1") =#> \case ("15", "alice", Sent 4) -> True; _ -> False
   alice <#= \case ("", "bob", Msg "message 1") -> True; _ -> False
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", ERR (SMP AUTH))
@@ -114,23 +117,23 @@ testDuplexConnection _ alice bob = do
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
-  ("1", "bob", Right (Pc (INV qInfo))) <- alice1 #: ("1", "bob", "NEW")
+  ("1", "bob", Right (Inv qInfo)) <- alice1 #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
-  bob #: ("12", "alice", "SEND 5\nhello") =#> \case ("12", "alice", Pc (SENT _)) -> True; _ -> False
-  bob #: ("13", "alice", "SEND 11\nhello again") =#> \case ("13", "alice", Pc (SENT _)) -> True; _ -> False
+  bob #: ("12", "alice", "SEND 5\nhello") =#> \case ("12", "alice", Sent _) -> True; _ -> False
+  bob #: ("13", "alice", "SEND 11\nhello again") =#> \case ("13", "alice", Sent _) -> True; _ -> False
   alice1 <# ("", "bob", CON)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
-  bob #: ("14", "alice", "SEND 2\nhi") =#> \case ("14", "alice", Pc (SENT _)) -> True; _ -> False
+  bob #: ("14", "alice", "SEND 2\nhi") =#> \case ("14", "alice", Sent _) -> True; _ -> False
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
 
 testSubscrNotification :: Transport c => TProxy c -> (ThreadId, ThreadId) -> c -> IO ()
 testSubscrNotification _ (server, _) client = do
-  client #: ("1", "conn1", "NEW") =#> \case ("1", "conn1", Pc (INV _)) -> True; _ -> False
+  client #: ("1", "conn1", "NEW") =#> \case ("1", "conn1", Inv _) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
   client <# ("", "conn1", END)
