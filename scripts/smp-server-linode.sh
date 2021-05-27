@@ -1,17 +1,25 @@
 #!/bin/bash
 # <UDF name="enable_store_log" label="Store log - persists SMP queues to append only log and restores them upon server restart." default="on" oneof="on, off" />
 # <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server domain/ip address, transport key hash and server version. Use "hostname#hash" as SMP server address in the client. Note: minimal permissions token should have are the following: Account - read/write, Linodes - read/write." default="" />
-# <UDF name="domain_address" label="If provided can be used instead of ip address." default="" />
+# <UDF name="domain_address" label="Domain name - if provided can be used instead of ip address." default="" />
 
 # log all stdout output to stackscript.log
 exec &> >(tee -i /var/log/stackscript.log)
-# enable debugging features
-set -xeo pipefail
+# uncomment next line to enable debugging features
+# set -xeo pipefail
 
 cd $HOME
 
-sudo apt-get update -y
+sudo apt-get -y update 
+sudo apt-get -y upgrade
 sudo apt-get install -y jq
+
+# add firewall
+echo "y" | ufw enable
+# open ports
+ufw allow ssh
+ufw allow http
+ufw allow 5223
 
 # retrieve latest release info and download smp-server executable
 curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/latest > release.json
@@ -42,17 +50,19 @@ smp-server init "${init_opts[@]}" > simplex.conf
 # turn off websockets support
 sed -e '/websockets/s/^/# /g' -i /etc/opt/simplex/smp-server.ini
 
-# prepare tags
-ip_address=$(curl ifconfig.me)
-address=$([[ -z "$DOMAIN_ADDRESS" ]] && echo $ip_address || echo $DOMAIN_ADDRESS)
-hash=$(cat simplex.conf | grep hash: | cut -f2 -d":" | xargs)
-release_version=$(jq '.tag_name' release.json | tr -d \")
+if [ ! -z "$API_TOKEN" ]; then
+     # prepare tags
+     ip_address=$(curl ifconfig.me)
+     address=$([[ -z "$DOMAIN_ADDRESS" ]] && echo $ip_address || echo $DOMAIN_ADDRESS)
+     hash=$(cat simplex.conf | grep hash: | cut -f2 -d":" | xargs)
+     release_version=$(jq '.tag_name' release.json | tr -d \")
 
-# update linode's tags
-curl -H "Content-Type: application/json" \
-     -H "Authorization: Bearer $API_TOKEN" \
-     -X PUT -d "{\"tags\":[\"$address\",\"#$hash\",\"$release_version\"]}" \
-     https://api.linode.com/v4/linode/instances/$LINODE_ID
+     # update linode's tags
+     curl -H "Content-Type: application/json" \
+          -H "Authorization: Bearer $API_TOKEN" \
+          -X PUT -d "{\"tags\":[\"$address\",\"#$hash\",\"$release_version\"]}" \
+          https://api.linode.com/v4/linode/instances/$LINODE_ID
+fi
 
 # create, enable and start SMP server systemd service
 cat <<EOT >> /etc/systemd/system/smp-server.service

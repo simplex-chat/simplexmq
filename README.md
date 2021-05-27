@@ -50,11 +50,32 @@ See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for
 
 ## Using SMP server and SMP agent
 
-You can either run SMP server locally or try local SMP agent with the deployed demo server:
+You can either run your own SMP server locally or deploy one via provided Linode and DigitalOcean recipes, or try local SMP agent with the deployed demo server:
 
 `smp1.simplex.im:5223#pLdiGvm0jD1CMblnov6Edd/391OrYsShw+RgdfR0ChA=`
 
 It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI.
+
+### Deploy SMP server on Linode
+
+To deploy SMP server on [Linode](https://www.linode.com/): 
+- Create a Linode account or login with an already existing one;
+- Go to [SMP server StackScript](https://cloud.linode.com/stackscripts/837009) and choose "Deploy New Linode";
+- You can optionally configure the following parameters:
+    - [Store log](#SMP-server) flag for queue persistence on server restart;
+    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server hostname, public key hash, version);
+    - Domain name for deployed Linode [WIP].
+- Choose the region and plan according to your requirements (for regular use Shared CPU Nanonode should be sufficient);
+- Provide ssh key to be able to connect to your Linode via ssh. This step is required if you haven't provided a Linode API token, because you will need to get a public key hash from the file `/root/simplex.conf` on your linode after SMP server starts.
+- Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode;
+- Get `hostname` and `hash` either from Linode tags or connecting via ssh to your Linode depending on configuration (you may find `hash` on your Linode even if you've provided a Linode API token). Linode has a good [guide](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) about ssh if needed;
+- Great, your own SMP server is ready! Use `hostname#hash` as SMP server address in the client.
+
+Reach us out `where?` if any problems occur.
+
+### 🚧 Deploy SMP server on DigitalOcean 🚧
+
+[WIP]
 
 ## SMP server design
 
