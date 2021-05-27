@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# retrieve latest release info and download smp-server executable
 echo "downloading SMP server release $release_tag"
 curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/tags/{$release_tag} \
 | jq -r '.assets[].browser_download_url | select(test("smp-server-ubuntu-20_04-x86-64"))' \
@@ -8,12 +7,11 @@ curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/tags/{$rele
 | wget -qi -
 
 echo "preparing for SMP server initiaization on first login"
-# move smp-server executable to /opt/simplex/bin
 mkdir -p /opt/simplex/bin
 mv smp-server-ubuntu-20_04-x86-64 /opt/simplex/bin/smp-server
 chmod +x /opt/simplex/bin/smp-server
 
-# add /opt/simplex/bin to $PATH
+# add /opt/simplex/bin to PATH
 cat <<EOT >> /etc/profile.d/simplex.sh
 #!/bin/bash
 

@@ -1,13 +1,14 @@
 #!/bin/bash
 
 printf "SMP server is nearly ready\n"
-printf "Do you want to persist SMP queues to append only log?\n(enables restoring queues info upon server restart)\nprint 1/2 for yes/no\n"
+printf "Do you want to persist SMP queues to append only log?\n(enables restoring queues info upon server restart)\nprint [y/n]\n"
 init_opts=()
-select yn in "yes" "no"; do
+while true; do
+    read yn
     case $yn in
-        yes ) init_opts+=(-l); break;;
-        no ) exit;;
-        *) echo "please print 1 or 2";
+        [Yy]* ) init_opts+=(-l); break;;
+        [Nn]* ) exit;;
+        * ) echo "please print one of [y/n]";;
     esac
 done
 

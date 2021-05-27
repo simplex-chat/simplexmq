@@ -1,8 +1,7 @@
 {
   "variables": {
     "token": "{{env `DIGITALOCEAN_TOKEN`}}",
-    "image_name": "smp-server-20-04-snapshot-{{timestamp}}",
-
+    "image_name": "simplex-chat-server-snapshot",
     "application_name": "SMP server",
     "release_tag": "v0.3.2"
   },
