@@ -12,6 +12,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 -- |
@@ -99,6 +100,7 @@ import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Constraint, Type)
+import Data.Maybe (isJust)
 import Data.String (IsString (..))
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
@@ -178,9 +180,7 @@ deriving instance Show ACmd
 data APartyCmd (p :: AParty) = forall c. APartyCmd (ACommand p c)
 
 instance Eq (APartyCmd p) where
-  APartyCmd c1 == APartyCmd c2 = case testEquality c1 c2 of
-    Just Refl -> True
-    _ -> False
+  APartyCmd c1 == APartyCmd c2 = isJust $ testEquality c1 c2
 
 deriving instance Show (APartyCmd p)
 
@@ -282,32 +282,23 @@ deriving instance Show (ACommand p c)
 
 instance TestEquality (ACommand p) where
   testEquality NEW NEW = Just Refl
-  testEquality c@INV {} c'@INV {}
-    | c == c' = Just Refl
-    | otherwise = Nothing
-  testEquality c@JOIN {} c'@JOIN {}
-    | c == c' = Just Refl
-    | otherwise = Nothing
+  testEquality c@INV {} c'@INV {} = refl c c'
+  testEquality c@JOIN {} c'@JOIN {} = refl c c'
   testEquality CON CON = Just Refl
   testEquality SUB SUB = Just Refl
   testEquality SUBALL SUBALL = Just Refl
   testEquality END END = Just Refl
-  testEquality c@(SEND _) c'@(SEND _)
-    | c == c' = Just Refl
-    | otherwise = Nothing
-  testEquality c@SENT {} c'@SENT {}
-    | c == c' = Just Refl
-    | otherwise = Nothing
-  testEquality c@MSG {} c'@MSG {}
-    | c == c' = Just Refl
-    | otherwise = Nothing
+  testEquality c@SEND {} c'@SEND {} = refl c c'
+  testEquality c@SENT {} c'@SENT {} = refl c c'
+  testEquality c@MSG {} c'@MSG {} = refl c c'
   testEquality OFF OFF = Just Refl
   testEquality DEL DEL = Just Refl
   testEquality OK OK = Just Refl
-  testEquality c@ERR {} c'@ERR {}
-    | c == c' = Just Refl
-    | otherwise = Nothing
+  testEquality c@ERR {} c'@ERR {} = refl c c'
   testEquality _ _ = Nothing
+
+refl :: Eq (f a) => f a -> f a -> Maybe (a :~: a)
+refl x x' = if x == x' then Just Refl else Nothing
 
 -- | SMP message formats.
 data SMPMessage
