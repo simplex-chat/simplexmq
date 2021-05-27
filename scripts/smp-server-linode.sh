@@ -39,6 +39,8 @@ mkdir -p /var/opt/simplex
 init_opts=()
 [[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
 smp-server init "${init_opts[@]}" > simplex.conf
+# turn off websockets support
+sed -e '/websockets/s/^/# /g' -i /etc/opt/simplex/smp-server.ini
 
 # prepare tags
 ip_address=$(curl ifconfig.me)
