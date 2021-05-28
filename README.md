@@ -62,7 +62,7 @@ You can get Linode [free credits](https://www.linode.com/lp/affiliate-referral/?
 
 To deploy SMP server on [Linode](https://www.linode.com/):
 - Create a Linode account or login with an already existing one.
-- Go to [SMP server StackScript](https://cloud.linode.com/stackscripts/837009) and choose "Deploy New Linode".
+- Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".
 - You can optionally configure the following parameters:
     - [SMP Server store log](#SMP-server) flag for queue persistence on server restart (recommended).
     - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server address, public key hash, version) and adding A record to your 2nd level domain (Note: 2nd level e.g. `example.com` domain should be [created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access to "linodes" (to update linode tags - you need them), and "domains" (to add A record for the 3rd level domain, e.g. `smp`).
