@@ -1,7 +1,7 @@
 #!/bin/bash
 # <UDF name="enable_store_log" label="Store log - persists SMP queues to append only log and restores them upon server restart." default="on" oneof="on, off" />
 # <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server domain/ip address, transport key hash and server version. Use `domain#hash` or `ip#hash` as SMP server address in the client. Note: minimal permissions token should have are - read/write access to `linodes` (to update linode tags - you need them) and `domains` (to add A record for the chosen 3rd level domain)" default="" />
-# <UDF name="fqdn" label="FQDN (Fully qualified domain name) - provied third level domain name (ex: smp.example.com). If provided can be used instead of ip address." default="" />
+# <UDF name="fqdn" label="FQDN (Fully qualified domain name) - provide third level domain name (ex: smp.example.com). If provided can be used instead of ip address." default="" />
 
 # log all stdout output to stackscript.log
 exec &> >(tee -i /var/log/stackscript.log)
