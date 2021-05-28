@@ -58,6 +58,8 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 ### Deploy SMP server on Linode
 
+[![linode](./img/linode.svg width=240)](https://cloud.linode.com/stackscripts/748014)
+
 You can get Linode [free credits](https://www.linode.com/lp/affiliate-referral/?irclickid=02-QkdTEpxyLW0W0EOSREQreUkB2DtzGE2lGTE0&irgwc=1&utm_source=impact) to deploy SMP server.
 
 To deploy SMP server on [Linode](https://www.linode.com/):
