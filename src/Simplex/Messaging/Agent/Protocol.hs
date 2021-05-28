@@ -96,7 +96,6 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Constraint (Dict (..))
-import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Constraint, Type)
@@ -501,8 +500,10 @@ data CommandErrorType
     ENTITY
   | -- | command syntax is invalid
     SYNTAX
-  | -- | connection alias is required with this command
-    NO_CONN
+  | -- | cannot parse entity
+    BAD_ENTITY
+  | -- | entity ID is required with this command
+    NO_ENTITY
   | -- | message size is not correct (no terminating space)
     SIZE
   | -- | message does not fit in SMP block
@@ -562,13 +563,12 @@ entityP =
             <|> "O:" $> AE . OpenConn
             <|> "B:" $> AE . BroadCast
             <|> "G:" $> AE . AGroup
-            <|> pure (AE . Conn)
         )
     <*> A.takeTill (== ' ')
 
 serializeEntity :: Entity t -> ByteString
 serializeEntity = \case
-  Conn s -> s -- TODO change to "C:"
+  Conn s -> "C:" <> s
   OpenConn s -> "O:" <> s
   BroadCast s -> "B:" <> s
   AGroup s -> "G:" <> s
@@ -705,12 +705,13 @@ tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmis
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
-    tParseLoadBody t@(corrId, entityStr, command) = do
-      let anEntity = fromRight (AE $ Conn entityStr) $ parseAll entityP entityStr
-          -- this operation is in either, return type is incorrect
-          cmd = parseCommand command >>= fromParty >>= tConnAlias t
-      fullCmd <- either (pure . Left) cmdWithMsgBody cmd
-      pure $ makeTransmission corrId anEntity fullCmd
+    tParseLoadBody t@(corrId, entityStr, command) =
+      case parseAll entityP entityStr of
+        Left _ -> pure $ ATransmissionOrError @_ @_ @ERR_ corrId (Conn "") $ Left $ CMD BAD_ENTITY
+        Right entity -> do
+          let cmd = parseCommand command >>= fromParty >>= tConnAlias t
+          fullCmd <- either (pure . Left) cmdWithMsgBody cmd
+          pure $ makeTransmission corrId entity fullCmd
 
     fromParty :: ACmd -> Either AgentErrorType (APartyCmd p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
@@ -727,17 +728,17 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         ERR _ -> Right cmd
         -- other responses must have entity
         _
-          | B.null entityStr -> Left $ CMD NO_CONN
+          | B.null entityStr -> Left $ CMD NO_ENTITY
           | otherwise -> Right cmd
 
     makeTransmission :: ACorrId -> AnEntity -> Either AgentErrorType (APartyCmd p) -> ATransmissionOrError p
     makeTransmission corrId (AE entity) = \case
-      Left e -> err $ Left e
+      Left e -> err e
       Right (APartyCmd cmd) -> case entityCommand entity cmd of
         Just Dict -> ATransmissionOrError corrId entity $ Right cmd
-        _ -> err $ Left $ CMD ENTITY
+        _ -> err $ CMD ENTITY
       where
-        err e = ATransmissionOrError @_ @_ @NEW_ corrId entity e
+        err e = ATransmissionOrError @_ @_ @ERR_ corrId entity $ Left e
 
     cmdWithMsgBody :: APartyCmd p -> m (Either AgentErrorType (APartyCmd p))
     cmdWithMsgBody (APartyCmd cmd) =
