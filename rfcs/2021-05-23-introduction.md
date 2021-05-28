@@ -14,18 +14,18 @@ A protocol with commands and message envelopes to exchange the information betwe
 
 Below commands are for the scenario when A introduces B to M.
 
-- command `cIdAB INTRO cIdAM infoM` - introduce connection cIdB to connection cIdM (response is `OK`)
-- message `cIdBA ICONF invId infoM` - notification to confirm introduction
-- command `cIdBM? ILET invId` - accept offer to be introduced (response is `cIdBM OK`, followed by `ICON`)
-- message `cIdBM ICON invId` - confirmation that connection is established to both introduced parties
-- message `cIdAB IDONE cIdAM` - confirmation that connection is established to the introducer
+- command `C:idAB INTRO C:idAM infoM` - introduce connection cIdB to connection cIdM (response is `C:idAB OK`)
+- message `C:idBA REQ intro:invId infoM` - notification to confirm introduction
+- command `C:idBM? ACPT intro:invId` - accept offer to be introduced (response is `C:idBM OK`, followed by `C:idBM CON`)
+- message `C:idBM CON` - confirmation that connection is established to both introduced parties
+- message `C:idAB CON C:idAM` - confirmation that connection is established to the introducer
 
 ### Agent envelopes
 
-- `I_NEW extIntroIdM  infoM` - new introduction offered by introducer
-- `I_INV extIntroIdB idBMInv infoB` - invitation to join connection from B to M sent via A
-- `I_NEW extIntroIdB idBMInv infoB` - new introduction forwarded by introducer
-- `I_CON extIntroIdM` - confirmation that the connection is established sent by both introduced parties to the introducer
+- `INTRO c:extIntroIdM infoM` - new introduction offered by introducer
+- `INV c:extIntroIdB prv:idBMInv infoB` - invitation to join connection from B to M sent via A
+- `REQ c:extIntroIdB prv:idBMInv infoB` - new introduction forwarded by introducer
+- `CON c:extIntroIdM` - confirmation that the connection is established sent by both introduced parties to the introducer
 
 ## Namespace
 

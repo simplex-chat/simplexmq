@@ -7,15 +7,15 @@ sequenceDiagram
   participant MA as Mark's<br>agent (MA)
 
   note over A, AA: 1. create introduction
-  A ->> AA: idAB INEW idAM infoM<br>(idAB - conn alias A has for B,<br>idAM - for M)
-  AA ->> A: idAB OK
+  A ->> AA: C:idAB INTRO C:idAM infoM<br>(idAB - conn alias A has for B,<br>idAM - for M)
+  AA ->> A: C:idAB OK
 
   note over A, BA: 2. send intro to Bob
 
-  AA ->> BA: via idAB: I_NEW extIntroIdB  infoM
-  BA ->> B: idBA ICONF intIntroIdB infoM
-  B ->> BA: idBA ILET intIntroIdB
-  BA ->> B: idBA OK
+  AA ->> BA: via idAB: I_NEW extIntroIdB infoM
+  BA ->> B: C:idBA REQ intro:intIntroIdB infoM
+  B ->> BA: C:idBA ACPT intro:intIntroIdB
+  BA ->> B: C:idBA OK
 
   note over BA: 3. create connection for  M idBM
 
@@ -27,8 +27,8 @@ sequenceDiagram
 
   note over MA, B: 5. Mark connects to Bob
 
-  MA ->> M: idMA ICONF intIntroIdM infoB
-  M ->> MA: idMB? ILET intIntroIdM
+  MA ->> M: C:idMA REQ intro:intIntroIdM infoB
+  M ->> MA: C:idMB? ACPT intro:intIntroIdM
 
   MA ->> BA:  establish connection idBM -> idMB
 
