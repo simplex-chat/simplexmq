@@ -1,7 +1,7 @@
 #!/bin/bash
 # <UDF name="enable_store_log" label="Store log - persists SMP queues to append only log and restores them upon server restart." default="on" oneof="on, off" />
-# <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server domain/ip address, transport key hash and server version. Use "hostname#hash" as SMP server address in the client. Note: minimal permissions token should have are the following: Account - read/write, Linodes - read/write." default="" />
-# <UDF name="domain_address" label="Domain name - if provided can be used instead of ip address." default="" />
+# <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server domain/ip address, transport key hash and server version. Use `domain#hash` or `ip#hash` as SMP server address in the client. Note: minimal permissions token should have are - read/write access to `linodes` (to update linode tags - you need them) and `domains` (to add A record for the chosen 3rd level domain)" default="" />
+# <UDF name="fqdn" label="FQDN (Fully qualified domain name) - provied third level domain name (ex: smp.example.com). If provided can be used instead of ip address." default="" />
 
 # log all stdout output to stackscript.log
 exec &> >(tee -i /var/log/stackscript.log)
@@ -47,18 +47,33 @@ mkdir -p /var/opt/simplex
 init_opts=()
 [[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
 smp-server init "${init_opts[@]}" > simplex.conf
+tail -n +2 "simplex.conf" > "simplex.tmp" && mv "simplex.tmp" "simplex.conf"
 # turn off websockets support
 sed -e '/websockets/s/^/# /g' -i /etc/opt/simplex/smp-server.ini
 
 if [ ! -z "$API_TOKEN" ]; then
-     # prepare tags
      ip_address=$(curl ifconfig.me)
-     address=$([[ -z "$DOMAIN_ADDRESS" ]] && echo $ip_address || echo $DOMAIN_ADDRESS)
+     if [ ! -z "$FQDN" ]; then
+         domain_address=$(echo $FQDN | rev | cut -d "." -f 1,2 | rev)
+         # create A record if domain is created in linode account
+         domain_id=$(curl -H "Authorization: Bearer $API_TOKEN" https://api.linode.com/v4/domains \
+         | jq --arg da "$domain_address" '.data[] | select( .domain == $da ) | .id')
+         if [[ ! -z $domain_id ]]; then
+             curl -s -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer $API_TOKEN" \
+                  -X POST -d "{\"type\":\"A\",\"name\":\"$FQDN\",\"target\":\"$ip_address\"}" \
+                  https://api.linode.com/v4/domains/${domain_id}/records
+             address=$FQDN
+         else
+             address=$ip_address
+         fi
+     fi
+
      hash=$(cat simplex.conf | grep hash: | cut -f2 -d":" | xargs)
      release_version=$(jq '.tag_name' release.json | tr -d \")
 
      # update linode's tags
-     curl -H "Content-Type: application/json" \
+     curl -s -H "Content-Type: application/json" \
           -H "Authorization: Bearer $API_TOKEN" \
           -X PUT -d "{\"tags\":[\"$address\",\"#$hash\",\"$release_version\"]}" \
           https://api.linode.com/v4/linode/instances/$LINODE_ID
@@ -81,3 +96,18 @@ EOT
 chmod 644 /etc/systemd/system/smp-server.service
 sudo systemctl enable smp-server
 sudo systemctl start smp-server
+
+# create script that will on login
+cat <<EOT >> /opt/simplex/on_login.sh
+#!/bin/bash
+
+printf "\n### SMP server address: $address#$hash ###\n"
+printf "### to see SMP server status run: systemctl status smp-server ###\n"
+printf "### (to stop seeing this message delete line - bash /opt/simplex/on_login.sh - from /root/.bashrc) ###\n\n"
+
+EOT
+chmod +x /opt/simplex/on_login.sh
+echo "bash /opt/simplex/on_login.sh" >> /root/.bashrc
+
+# cleanup
+rm release.json

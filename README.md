@@ -56,22 +56,23 @@ You can either run your own SMP server locally or deploy one via provided Linode
 
 It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI.
 
-### Deploy SMP server on Linode
+### Deploy SMP server on Linode 
+You can get Linode [free credits](https://www.linode.com/lp/affiliate-referral/?irclickid=02-QkdTEpxyLW0W0EOSREQreUkB2DtzGE2lGTE0&irgwc=1&utm_source=impact) to deploy SMP server.
 
-To deploy SMP server on [Linode](https://www.linode.com/): 
+To deploy SMP server on [Linode](https://www.linode.com/):
 - Create a Linode account or login with an already existing one;
 - Go to [SMP server StackScript](https://cloud.linode.com/stackscripts/837009) and choose "Deploy New Linode";
 - You can optionally configure the following parameters:
-    - [Store log](#SMP-server) flag for queue persistence on server restart;
-    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server hostname, public key hash, version);
-    - Domain name for deployed Linode [WIP].
+    - [SMP Server store log](#SMP-server) flag for queue persistence on server restart (recommended);
+    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server address, public key hash, version) and adding A record to your 2nd level domain(Note: 2nd level e.g. `example.com` domain should be [created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access to "linodes" (to update linode tags - you need them), and "domains" (to add A record for the 3rd level domain e.g. `smp`);
+    - Domain name to use instead of Linode ip address e.g. `smp.example.com`. 
 - Choose the region and plan according to your requirements (for regular use Shared CPU Nanonode should be sufficient);
-- Provide ssh key to be able to connect to your Linode via ssh. This step is required if you haven't provided a Linode API token, because you will need to get a public key hash from the file `/root/simplex.conf` on your linode after SMP server starts.
-- Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode;
-- Get `hostname` and `hash` either from Linode tags or connecting via ssh to your Linode depending on configuration (you may find `hash` on your Linode even if you've provided a Linode API token). Linode has a good [guide](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) about ssh if needed;
-- Great, your own SMP server is ready! Use `hostname#hash` as SMP server address in the client.
+- Provide ssh key to be able to connect to your Linode via ssh. This step is required if you haven't provided a Linode API token, because you will need to login to your Linode and get a public key hash either from the welcome message or from the file `/root/simplex.conf` on your Linode after SMP server starts;
+- Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode. Linking of Linode ip address to provided domain name may take some additional time;
+- Get `hostname` and `hash` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh. Linode has a good [guide](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) about ssh if needed;
+- Great, your own SMP server is ready! Use `address#hash` as SMP server address in the client.
 
-Reach us out `where?` if any problems occur.
+Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
 ### 🚧 Deploy SMP server on DigitalOcean 🚧
 
