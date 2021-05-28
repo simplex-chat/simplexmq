@@ -53,20 +53,19 @@ sed -e '/websockets/s/^/# /g' -i /etc/opt/simplex/smp-server.ini
 
 if [ ! -z "$API_TOKEN" ]; then
      ip_address=$(curl ifconfig.me)
+     address=$ip_address
      if [ ! -z "$FQDN" ]; then
-         domain_address=$(echo $FQDN | rev | cut -d "." -f 1,2 | rev)
-         # create A record if domain is created in linode account
-         domain_id=$(curl -H "Authorization: Bearer $API_TOKEN" https://api.linode.com/v4/domains \
-         | jq --arg da "$domain_address" '.data[] | select( .domain == $da ) | .id')
-         if [[ ! -z $domain_id ]]; then
-             curl -s -H "Content-Type: application/json" \
-                  -H "Authorization: Bearer $API_TOKEN" \
-                  -X POST -d "{\"type\":\"A\",\"name\":\"$FQDN\",\"target\":\"$ip_address\"}" \
-                  https://api.linode.com/v4/domains/${domain_id}/records
-             address=$FQDN
-         else
-             address=$ip_address
-         fi
+          domain_address=$(echo $FQDN | rev | cut -d "." -f 1,2 | rev)
+          # create A record if domain is created in linode account
+          domain_id=$(curl -H "Authorization: Bearer $API_TOKEN" https://api.linode.com/v4/domains \
+          | jq --arg da "$domain_address" '.data[] | select( .domain == $da ) | .id')
+          if [[ ! -z $domain_id ]]; then
+               curl -s -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer $API_TOKEN" \
+                    -X POST -d "{\"type\":\"A\",\"name\":\"$FQDN\",\"target\":\"$ip_address\"}" \
+                    https://api.linode.com/v4/domains/${domain_id}/records
+               address=$FQDN
+          fi
      fi
 
      hash=$(cat simplex.conf | grep hash: | cut -f2 -d":" | xargs)
