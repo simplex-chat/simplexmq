@@ -56,9 +56,9 @@ You can either run your own SMP server locally or deploy using Linode or Digital
 
 It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI.
 
-### Deploy SMP server on Linode
+[<img alt="linode" src="./img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
 
-[![linode](./img/linode.svg width=240)](https://cloud.linode.com/stackscripts/748014)
+## Deploy SMP server on Linode
 
 You can get Linode [free credits](https://www.linode.com/lp/affiliate-referral/?irclickid=02-QkdTEpxyLW0W0EOSREQreUkB2DtzGE2lGTE0&irgwc=1&utm_source=impact) to deploy SMP server.
 
@@ -77,7 +77,7 @@ To deploy SMP server on [Linode](https://www.linode.com/):
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
-### 🚧 Deploy SMP server on DigitalOcean 🚧
+## 🚧 Deploy SMP server on DigitalOcean 🚧
 
 Coming soon.
 
