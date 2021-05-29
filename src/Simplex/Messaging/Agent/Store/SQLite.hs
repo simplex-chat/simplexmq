@@ -22,10 +22,11 @@ module Simplex.Messaging.Agent.Store.SQLite
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Bifunctor (first)
+import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (isPrefixOf)
@@ -41,12 +42,15 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
+import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migrations (..))
+import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Parsers (blobFieldParser)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
-import System.Exit (ExitCode (ExitFailure), exitWith)
+import System.Directory (copyFile)
+import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
+import System.IO (hFlush, stdout)
 import Text.Read (readMaybe)
 import UnliftIO.Directory (createDirectoryIfMissing)
 import qualified UnliftIO.Exception as E
@@ -66,14 +70,41 @@ createSQLiteStore dbFilePath = do
   compileOptions <- liftIO (DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
   let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
   liftIO $ case threadsafeOption of
-    Just "THREADSAFE=0" -> do
-      putStrLn "SQLite compiled with not threadsafe code, continue (y/n):"
-      s <- getLine
-      when (s /= "y") (exitWith $ ExitFailure 2)
+    Just "THREADSAFE=0" -> confirmOrExit "SQLite compiled with non-threadsafe code."
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
     _ -> return ()
-  liftIO . createSchema $ dbConn store
+  liftIO $ migrateSchema store
   return store
+
+migrateSchema :: SQLiteStore -> IO ()
+migrateSchema SQLiteStore {dbConn, dbFilePath} = do
+  Migrations.initialize dbConn
+  Migrations.get dbConn Migrations.app >>= \case
+    NoMigration -> pure ()
+    MigrateError e -> confirmOrExit $ "Database is possibly corrupted: " <> e
+    ms@MigrateDown {} -> do
+      confirmOrExit
+        "The chat database has a newer version than the app.\n\
+        \It is recommended to run a newer version of the app.\n\
+        \If you continue the database will be backed up and downgraded."
+      migrate ms
+    ms@MigrateUp {dbMigrations} -> do
+      unless (null dbMigrations) $
+        confirmOrExit "The app has a newer version that the chat database - it will be backed up and upgraded."
+      migrate ms
+  where
+    migrate :: Migrations -> IO ()
+    migrate ms = do
+      copyFile dbFilePath $ dbFilePath <> ".bak"
+      Migrations.run dbConn ms
+
+confirmOrExit :: String -> IO ()
+confirmOrExit s = do
+  putStrLn s
+  putStr "Continue (y/N): "
+  hFlush stdout
+  ok <- getLine
+  when (map toLower ok /= "y") exitFailure
 
 connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
 connectSQLiteStore dbFilePath = do
