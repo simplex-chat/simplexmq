@@ -167,8 +167,12 @@ data Entity :: EntityTag -> Type where
 
 deriving instance Show (Entity t)
 
-instance IsString (Entity Conn_) where
-  fromString = Conn . B.pack
+entityId :: Entity t -> ByteString
+entityId = \case
+  Conn bs -> bs
+  OpenConn bs -> bs
+  BroadCast bs -> bs
+  AGroup bs -> bs
 
 data AnEntity = forall t. AE (Entity t)
 
@@ -198,19 +202,14 @@ type family EntityCommand (t :: EntityTag) (c :: ACmdTag) :: Constraint where
   EntityCommand Conn_ DEL_ = ()
   EntityCommand Conn_ OK_ = ()
   EntityCommand Conn_ ERR_ = ()
-  EntityCommand OpenConn_ NEW_ = ()
-  EntityCommand Broadcast_ NEW_ = ()
-  EntityCommand AGroup_ NEW_ = ()
-  EntityCommand _ NEW_ = ()
-  EntityCommand _ OK_ = ()
   EntityCommand _ ERR_ = ()
 
 entityCommand :: Entity t -> ACommand p c -> Maybe (Dict (EntityCommand t c))
-entityCommand entity cmd = case entity of
-  Conn _ -> case cmd of
+entityCommand = \case
+  Conn _ -> \case
     NEW -> Just Dict
     INV _ -> Just Dict
-    JOIN _ _ -> Just Dict
+    JOIN {} -> Just Dict
     CON -> Just Dict
     SUB -> Just Dict
     SUBALL -> Just Dict
@@ -222,9 +221,7 @@ entityCommand entity cmd = case entity of
     DEL -> Just Dict
     OK -> Just Dict
     ERR _ -> Just Dict
-  _ -> case cmd of
-    NEW -> Just Dict
-    OK -> Just Dict
+  _ -> \case
     ERR _ -> Just Dict
     _ -> Nothing
 
@@ -705,21 +702,20 @@ tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmis
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
-    tParseLoadBody t@(corrId, entityStr, command) =
+    tParseLoadBody (corrId, entityStr, command) =
       case parseAll entityP entityStr of
         Left _ -> pure $ ATransmissionOrError @_ @_ @ERR_ corrId (Conn "") $ Left $ CMD BAD_ENTITY
         Right entity -> do
-          let cmd = parseCommand command >>= fromParty >>= tConnAlias t
-          fullCmd <- either (pure . Left) cmdWithMsgBody cmd
-          pure $ makeTransmission corrId entity fullCmd
+          let cmd = parseCommand command >>= fromParty >>= hasEntityId entity
+          makeTransmission corrId entity <$> either (pure . Left) cmdWithMsgBody cmd
 
     fromParty :: ACmd -> Either AgentErrorType (APartyCmd p)
     fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
       Just Refl -> Right $ APartyCmd cmd
       _ -> Left $ CMD PROHIBITED
 
-    tConnAlias :: ARawTransmission -> APartyCmd p -> Either AgentErrorType (APartyCmd p)
-    tConnAlias (_, entityStr, _) (APartyCmd cmd) =
+    hasEntityId :: AnEntity -> APartyCmd p -> Either AgentErrorType (APartyCmd p)
+    hasEntityId (AE entity) (APartyCmd cmd) =
       APartyCmd <$> case cmd of
         -- NEW and JOIN have optional entity
         NEW -> Right cmd
@@ -728,7 +724,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         ERR _ -> Right cmd
         -- other responses must have entity
         _
-          | B.null entityStr -> Left $ CMD NO_ENTITY
+          | B.null (entityId entity) -> Left $ CMD NO_ENTITY
           | otherwise -> Right cmd
 
     makeTransmission :: ACorrId -> AnEntity -> Either AgentErrorType (APartyCmd p) -> ATransmissionOrError p
