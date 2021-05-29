@@ -163,8 +163,6 @@ data Entity :: EntityTag -> Type where
   BroadCast :: ByteString -> Entity Broadcast_
   AGroup :: ByteString -> Entity AGroup_
 
--- deriving instance Eq (Entity t)
-
 deriving instance Show (Entity t)
 
 entityId :: Entity t -> ByteString
