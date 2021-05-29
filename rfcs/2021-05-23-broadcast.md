@@ -17,14 +17,14 @@ From the point of view of the recipient this will look like a normal message, as
 ### Commands and messages
 
 - command `B:bId? NEW` - create broadcast (response is `B:bId OK`, or `ERR` if broadcast already exists)
-- command `B:bId ADD cAlias` - add existing connection to a broadcast (response is `B:bId OK` or `ERR`, e.g. if connection already added or does not exist)
+- command `B:bId ADD C:cId` - add existing connection to a broadcast (response is `B:bId OK` or `ERR`, e.g. if connection already added or does not exist)
 - command `B:bId SEND msg` - broadcast message (response is multiple `C:cId SENT msgId` or ERR, separately for each connection)
-- message `t:bId SENT msgId` - notification that the message is sent to a specific or all recipients (`t` can be "C" or "B")
-- command `B:bId REM cAlias` - remove connection from broadcast (response is `B:bId OK` or `ERR`)
+- message `B:bId SENT [C:bId] msgId` - notification that the message is sent to a specific or all recipients
+- command `B:bId REM C:cId` - remove connection from broadcast (response is `B:bId OK` or `ERR`)
 - message `B:bId EMPTY` - all connections were removed from the broadcast
 - command `B:bId DEL` - delete broadcast (response is `B:bId OK`)
 - command `B:bId LS` - list connections in broadcast, response is `MEM space_separated_connections`
-- message `B:bId MEM space_separated_connections`
+- message `B:bId MS space_separated_connections`
 
 ## Questions
 

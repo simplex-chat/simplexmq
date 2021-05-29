@@ -37,9 +37,9 @@ A initiates connection, B accepts
 - command `B:id? NEW` - create broadcast (response is `B:id OK`)
 - command `B:id SEND msg` - broadcast message (response is multiple `C:id SENT msgId` or ERR, separately for each connection, followed by `B:id SENT msgId` once sent to all)
 - message `B:id SENT msgId` - notification that the message is sent and its internal ID, same as SENT
-- command `B:id ADD cAlias` - add existing connection to a broadcast (response is `B:id OK` or `ERR`, e.g. if bId is used)
-- command `B:id REM cAlias` - remove connection from the broadcast (response is `REMD`)
-- message `B:id REMD cAlias` - connection removed from the broadcast
+- command `B:id ADD cId` - add existing connection to a broadcast (response is `B:id OK` or `ERR`, e.g. if bId is used)
+- command `B:id REM cId` - remove connection from the broadcast (response is `REMD`)
+- message `B:id REMD cId` - connection removed from the broadcast
 - message `B:id EMPTY` - all connections were removed from the broadcast
 - command `B:id DEL` - delete broadcast (response is `B:id OK`)
 - command `B:id LS` - list connections in broadcast, response is `B:id MEM space_separated_connections`
@@ -84,32 +84,32 @@ A initiates connection, B accepts
 
 - command `G:gId? NEW` - create group (response is `G:gId OK`)
 - command `C:cId INTRO G:gId gInfo` - add existing connection to a group
-- message `C:cAlias REQ g:invID gInfo` - invitation to join the group
+- message `C:cId REQ g:invID gInfo` - invitation to join the group
 - command `G:gId? ACPT g:invId` - accept invitation (response is `G gId OK`)
-- message `G:gId CON cAlias` - 2 connections created with some group member (both for group and direct messages)
-- message `G:gId MEM [cAlias]` - connection created with all group members for a given member or current client
+- message `G:gId CON C:cId` - 2 connections created with some group member (both for group and direct messages)
+- message `G:gId MEM [C:cId]` - connection created with all group members for a given member or current client
 - command `G:gId SEND msg` - send message to group
 - message `G:gId SENT msgId` - notification that the message is sent and its internal ID, same as SENT
-- message `G:gId MSG C:cAlias msgId msgdata` - received group message from cAlias, msgdata is the same set of parameters as in `MSG`
+- message `G:gId MSG C:cId msgId msgdata` - received group message from cId, msgdata is the same set of parameters as in `MSG`
 - command `G:gId ACK msgId` - acknowledge message reception by the client
-- message `G:gId RCVD t:cAlias msgId status` - message delivery notification
+- message `G:gId RCVD t:cId msgId status` - message delivery notification
 - command `G:gId LEAVE` - leave the group
-- message `G:gId LEFT [cAlias]` - connection cAlias left the group
-- command `G:gId REM cAlias` - remove group member (response is `gId OK`, followed by `GREMD` notification)
-- message `G:gId REMD cAlias [cAlias]` - member removed
-- message `G:gId OUT cAlias` - you are removed (see question below - should it be just a sequence of GLEFT?)
+- message `G:gId LEFT [C:cId]` - connection cId left the group
+- command `G:gId REM C:cId` - remove group member (response is `gId OK`, followed by `GREMD` notification)
+- message `G:gId REMD C:cId [C:cId]` - member removed
+- message `G:gId OUT C:cId` - you are removed (see question below - should it be just a sequence of GLEFT?)
 - message `G:gId EMPTY` - all members left the group and it is now empty
 - command `G:gId DEL` - delete the group (response is `gId OK`)
-- message `G:gId DELD [cAlias]` - group deleted
+- message `G:gId DELD [C:cId]` - group deleted
 
 ## Agent message envelopes syntax
 
-- `GROUP mid g:inv gInfo` - invitation to join the group
-- `MEM mid` - confirmation that member connected to all members
+- `GROUP C:mid G:inv gInfo` - invitation to join the group
+- `MEM C:mid` - confirmation that member connected to all members
 - `LEFT` - notification that member left the group
 - `OUT` - you are removed from the group
-- `REM mid` - remove member mid from the group
-- `REMD mid` - confirmation that member is removed
+- `REM C:mid` - remove member mid from the group
+- `REMD C:mid` - confirmation that member is removed
 - `DEL` - group is deleted
 - `DELD` - confirmation that group is deleted
 
@@ -124,6 +124,7 @@ A initiates connection, B accepts
 | message | `t:id REQ invId info` | ✓ | ✓ | - | ✓ |
 | command | `t:id? ACPT invId`    | ✓ | - | - | ✓ |
 | message | `t:id CON [C:id]`     | ✓ | - | - | ✓ |
+| message | `t:id MEM [C:id]`     | - | - | - | ✓ |
 | command | `t:id SUB`            | ✓ | ✓ | - | ✓ |
 | message | `t:id END`            | ✓ | ✓ | - | ✓ |
 | command | `t:id OFF`            | ✓ | ✓ | - | - |
@@ -140,6 +141,6 @@ A initiates connection, B accepts
 | message | `t:id EMPTY`          | - | - | ✓ | ✓ |
 | message | `G:id OUT C:id`       | - | - | - | ✓ |
 | command | `t:id LS`             | - | - | ✓ | ✓ |
-| message | `t:id MEM cIds`       | - | - | ✓ | ✓ |
+| message | `t:id MS cIds`        | - | - | ✓ | ✓ |
 | command | `G:id LEAVE`          | - | - | - | ✓ |
 | message | `G:id LEFT [C:id]`    | - | - | - | ✓ |
