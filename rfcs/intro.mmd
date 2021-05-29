@@ -12,30 +12,31 @@ sequenceDiagram
 
   note over A, BA: 2. send intro to Bob
 
-  AA ->> BA: via idAB: I_NEW extIntroIdB infoM
-  BA ->> B: C:idBA REQ intro:intIntroIdB infoM
-  B ->> BA: C:idBA ACPT intro:intIntroIdB
-  BA ->> B: C:idBA OK
+  AA ->> BA: via idAB: INTRO C:extIntroIdM infoM
+  BA ->> B: C:idBA REQ C:intIntroIdM infoM
+  B ->> BA: C:idBM? ACPT C:intIntroIdM
+  BA ->> B: C:idBM OK
 
   note over BA: 3. create connection for  M idBM
 
-  BA ->> AA: via idBA: I_INV extIntroIdB idBMInv infoB
+  BA ->> AA: via idBA: INV C:extIntroIdM invBM infoB
 
   note over AA, M: 4. send intro to Mark
 
-  AA ->> MA: via idAM: I_NEW extIntroIdM idBMInv infoB
+  AA ->> MA: via idAM: REQ C:extIntroIdB invBM infoB
 
   note over MA, B: 5. Mark connects to Bob
 
-  MA ->> M: C:idMA REQ intro:intIntroIdM infoB
-  M ->> MA: C:idMB? ACPT intro:intIntroIdM
+  MA ->> M: C:idMA REQ C:intIntroIdB infoB
+  M ->> MA: C:idMB? ACPT C:intIntroIdB
+  MA ->> M: C:idMB OK
 
   MA ->> BA:  establish connection idBM -> idMB
 
   note over A, MA: 6. notify all clients
 
-  MA ->> M: idMB ICON intIntroIdM
-  BA ->> B: idBM ICON intIntroIdB
-  MA ->> AA: via idMA I_CON extIntroIdM
-  BA ->> AA: via idBA I_CON extIntroIdB
-  AA ->> A: idAB IDONE idAM
+  MA ->> M: C:idMB CON
+  MA ->> AA: via idMA: CON C:extIntroIdB
+  BA ->> B: C:idBM CON
+  BA ->> AA: via idBA: CON C:extIntroIdB
+  AA ->> A: C:idAB CON C:idAM

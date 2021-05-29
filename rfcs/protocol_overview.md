@@ -38,7 +38,8 @@ A initiates connection, B accepts
 - command `B:id SEND msg` - broadcast message (response is multiple `C:id SENT msgId` or ERR, separately for each connection, followed by `B:id SENT msgId` once sent to all)
 - message `B:id SENT msgId` - notification that the message is sent and its internal ID, same as SENT
 - command `B:id ADD cAlias` - add existing connection to a broadcast (response is `B:id OK` or `ERR`, e.g. if bId is used)
-- command `B:id REM cAlias` - remove connection from broadcast (response is `B:id OK`)
+- command `B:id REM cAlias` - remove connection from the broadcast (response is `REMD`)
+- message `B:id REMD cAlias` - connection removed from the broadcast
 - message `B:id EMPTY` - all connections were removed from the broadcast
 - command `B:id DEL` - delete broadcast (response is `B:id OK`)
 - command `B:id LS` - list connections in broadcast, response is `B:id MEM space_separated_connections`
@@ -65,17 +66,17 @@ A initiates connection, B accepts
 ### Commands
 
 - command `C:idAB INTRO C:idAM infoM` - introduce connection cIdB to connection cIdM (response is `OK`)
-- message `C:idBA REQ c:invId infoM` - notification to confirm introduction
-- command `C:idBM? ACPT c:invId` - accept offer to be introduced (response is `cIdBM OK`, followed by `ICON`)
+- message `C:idBA REQ C:invId infoM` - notification to confirm introduction
+- command `C:idBM? ACPT C:invId` - accept offer to be introduced (response is `cIdBM OK`, followed by `ICON`)
 - message `C:idBM CON` - confirmation that connection is established to both introduced parties
-- message `C:idAB CON cIdAM` - confirmation that connection is established to the introducer
+- message `C:idAB CON C:idAM` - confirmation that connection is established to the introducer
 
 ### Envelopes
 
-- `INTRO c:extIntroIdM infoM` - new introduction offered by introducer
-- `INV c:extIntroIdB prv:idBMInv infoB` - invitation to join connection from B to M sent via A (can be pub:)
-- `REQ c:extIntroIdB prv:idBMInv infoB` - new introduction forwarded by introducer
-- `CON c:extIntroIdM` - confirmation that the connection is established sent by both introduced parties to the introducer
+- `INTRO C:extIntroIdM infoM` - new introduction offered by introducer
+- `INV C:extIntroIdB prv:invBM infoB` - invitation to join connection from B to M sent via A (can be pub:)
+- `REQ C:extIntroIdB prv:invBM infoB` - new introduction forwarded by introducer
+- `CON C:extIntroIdM` - confirmation that the connection is established sent by both introduced parties to the introducer
 
 ## Groups
 
