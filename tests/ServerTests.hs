@@ -28,25 +28,25 @@ import Test.Hspec
 rsaKeySize :: Int
 rsaKeySize = 2048 `div` 8
 
-serverTests :: Spec
-serverTests = do
-  describe "SMP syntax" syntaxTests
+serverTests :: ATransport -> Spec
+serverTests t = do
+  describe "SMP syntax" $ syntaxTests t
   describe "SMP queues" do
-    describe "NEW and KEY commands, SEND messages" testCreateSecure
-    describe "NEW, OFF and DEL commands, SEND messages" testCreateDelete
+    describe "NEW and KEY commands, SEND messages" $ testCreateSecure t
+    describe "NEW, OFF and DEL commands, SEND messages" $ testCreateDelete t
   describe "SMP messages" do
-    describe "duplex communication over 2 SMP connections" testDuplex
-    describe "switch subscription to another SMP queue" testSwitchSub
-  describe "Store log" testWithStoreLog
-  describe "Timing of AUTH error" testTiming
+    describe "duplex communication over 2 SMP connections" $ testDuplex t
+    describe "switch subscription to another SMP queue" $ testSwitchSub t
+  describe "Store log" $ testWithStoreLog t
+  describe "Timing of AUTH error" $ testTiming t
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
 
-sendRecv :: THandle -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+sendRecv :: Transport c => THandle c -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
 
-signSendRecv :: THandle -> C.SafePrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+signSendRecv :: Transport c => THandle c -> C.SafePrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 signSendRecv h pk (corrId, qId, cmd) = do
   let t = B.intercalate " " [corrId, encode qId, cmd]
   Right sig <- runExceptT $ C.sign pk t
@@ -56,16 +56,13 @@ signSendRecv h pk (corrId, qId, cmd) = do
 cmdSEND :: ByteString -> ByteString
 cmdSEND msg = serializeCommand (Cmd SSender . SEND $ msg)
 
-(>#>) :: RawTransmission -> RawTransmission -> Expectation
-command >#> response = smpServerTest command `shouldReturn` response
-
 (#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion
 (actual, expected) #== message = assertEqual message expected actual
 
-testCreateSecure :: Spec
-testCreateSecure =
+testCreateSecure :: ATransport -> Spec
+testCreateSecure (ATransport t) =
   it "should create (NEW) and secure (KEY) queue" $
-    smpTest \h -> do
+    smpTest t $ \h -> do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" rId1 (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
@@ -114,10 +111,10 @@ testCreateSecure =
       Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, "SEND 5 hello ")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-testCreateDelete :: Spec
-testCreateDelete =
+testCreateDelete :: ATransport -> Spec
+testCreateDelete (ATransport t) =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
-    smpTest2 \rh sh -> do
+    smpTest2 t $ \rh sh -> do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" rId1 (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
@@ -182,10 +179,10 @@ testCreateDelete =
       Resp "cdab" _ err10 <- signSendRecv rh rKey ("cdab", rId, "SUB")
       (err10, ERR AUTH) #== "rejects SUB when deleted"
 
-testDuplex :: Spec
-testDuplex =
+testDuplex :: ATransport -> Spec
+testDuplex (ATransport t) =
   it "should create 2 simplex connections and exchange messages" $
-    smpTest2 \alice bob -> do
+    smpTest2 t $ \alice bob -> do
       (arPub, arKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" _ (IDS aRcv aSnd) <- signSendRecv alice arKey ("abcd", "", "NEW " <> C.serializePubKey arPub)
       -- aSnd ID is passed to Bob out-of-band
@@ -232,10 +229,10 @@ testDuplex =
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, "ACK")
       (msg5, "how are you bob") #== "message received from alice"
 
-testSwitchSub :: Spec
-testSwitchSub =
+testSwitchSub :: ATransport -> Spec
+testSwitchSub (ATransport t) =
   it "should create simplex connections and switch subscription to another TCP connection" $
-    smpTest3 \rh1 rh2 sh -> do
+    smpTest3 t $ \rh1 rh2 sh -> do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" _ (IDS rId sId) <- signSendRecv rh1 rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND 5 test1 ")
@@ -270,15 +267,15 @@ testSwitchSub =
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
-testWithStoreLog :: Spec
-testWithStoreLog =
+testWithStoreLog :: ATransport -> Spec
+testWithStoreLog at@(ATransport t) =
   it "should store simplex queues to log and restore them after server restart" $ do
     (sPub1, sKey1) <- C.generateKeyPair rsaKeySize
     (sPub2, sKey2) <- C.generateKeyPair rsaKeySize
     senderId1 <- newTVarIO ""
     senderId2 <- newTVarIO ""
 
-    withSmpServerStoreLogOn testPort . runTest $ \h -> do
+    withSmpServerStoreLogOn at testPort . runTest t $ \h -> do
       (sId1, _, _) <- createAndSecureQueue h sPub1
       atomically $ writeTVar senderId1 sId1
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
@@ -294,13 +291,13 @@ testWithStoreLog =
 
     logSize `shouldReturn` 5
 
-    withSmpServerThreadOn testPort . runTest $ \h -> do
+    withSmpServerThreadOn at testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
       -- fails if store log is disabled
       Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
       pure ()
 
-    withSmpServerStoreLogOn testPort . runTest $ \h -> do
+    withSmpServerStoreLogOn at testPort . runTest t $ \h -> do
       -- this queue is restored
       sId1 <- readTVarIO senderId1
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
@@ -312,7 +309,7 @@ testWithStoreLog =
     logSize `shouldReturn` 1
     removeFile testStoreLogFile
   where
-    createAndSecureQueue :: THandle -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
+    createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
     createAndSecureQueue h sPub = do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
@@ -321,8 +318,8 @@ testWithStoreLog =
       (rId', rId) #== "same queue ID"
       pure (sId, rId, rKey)
 
-    runTest :: (THandle -> IO ()) -> ThreadId -> Expectation
-    runTest test' server = do
+    runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
+    runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
@@ -332,10 +329,10 @@ testWithStoreLog =
         Right l -> pure l
         Left (_ :: SomeException) -> logSize
 
-testTiming :: Spec
-testTiming =
+testTiming :: ATransport -> Spec
+testTiming (ATransport t) =
   it "should have similar time for auth error, whether queue exists or not, for all key sizes" $
-    smpTest2 \rh sh ->
+    smpTest2 t $ \rh sh ->
       mapM_
         (testSameTiming rh sh)
         [ (128, 128, 100),
@@ -351,7 +348,7 @@ testTiming =
   where
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
     similarTime t1 t2 = abs (t1 - t2) / t1 < 0.2 `shouldBe` True
-    testSameTiming :: THandle -> THandle -> (Int, Int, Int) -> Expectation
+    testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
     testSameTiming rh sh (senderKeySize, badKeySize, n) = do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
       Resp "abcd" "" (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
@@ -377,8 +374,8 @@ samplePubKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad
 sampleSig :: ByteString
 sampleSig = "\128\207*\159eq\220i!\"\157\161\130\184\226\246\232_\\\170`\180\160\230sI\154\197\211\252\SUB\246\206ELL\t9K\ESC\196?\128\215%\222\148\NAK;9\155f\164\217e\242\156\CAN9\253\r\170\174'w\211\228?\205)\215\150\255\247z\DC115\DC1{\bn\145\rKD,K\230\202d8\233\167|7y\t_S\EM\248\EOT\216\172\167d\181\224)\137\ACKo\197j#c\217\243\228.\167\228\205\144\vr\134"
 
-syntaxTests :: Spec
-syntaxTests = do
+syntaxTests :: ATransport -> Spec
+syntaxTests (ATransport t) = do
   it "unknown command" $ ("", "abcd", "1234", "HELLO") >#> ("", "abcd", "1234", "ERR CMD SYNTAX")
   describe "NEW" do
     it "no parameters" $ (sampleSig, "bcda", "", "NEW") >#> ("", "bcda", "", "ERR CMD SYNTAX")
@@ -414,3 +411,5 @@ syntaxTests = do
       it "wrong terminator" $ (sampleSig, "bcda", "12345678", cmd <> "=") >#> ("", "bcda", "12345678", "ERR CMD SYNTAX")
       it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", "ERR CMD NO_AUTH")
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", "ERR CMD NO_AUTH")
+    (>#>) :: RawTransmission -> RawTransmission -> Expectation
+    command >#> response = smpServerTest t command `shouldReturn` response
