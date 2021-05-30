@@ -156,26 +156,37 @@ withStore action = do
       e -> INTERNAL $ show e
 
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
-processCommand c@AgentClient {sndQ} st (ATransmission corrId entity cmd) =
-  case entity of
-    Conn cId -> case cmd of
-      NEW -> createNewConnection cId
-      JOIN smpQueueInfo replyMode -> joinConnection cId smpQueueInfo replyMode
-      SUB -> subscribeConnection cId
-      SUBALL -> subscribeAll
-      SEND msgBody -> sendMessage cId msgBody
-      OFF -> suspendConnection cId
-      DEL -> deleteConnection cId
-    _ -> atomically . writeTBQueue sndQ . ATransmission corrId entity . ERR $ CMD ENTITY
+processCommand c st (ATransmission corrId entity cmd) = process c st corrId entity cmd
   where
-    createNewConnection :: ByteString -> m ()
-    createNewConnection cId = do
+    process = case entity of
+      Conn _ -> processConnCommand
+      Broadcast _ -> processBroadcastCommand
+      _ -> unsupportedEntity
+
+unsupportedEntity :: AgentMonad m => AgentClient -> SQLiteStore -> ACorrId -> Entity t -> ACommand 'Client c -> m ()
+unsupportedEntity c _ corrId entity _ =
+  atomically . writeTBQueue (sndQ c) . ATransmission corrId entity . ERR $ CMD ENTITY
+
+processConnCommand :: forall c m. (AgentMonad m, EntityCommand 'Conn_ c) => AgentClient -> SQLiteStore -> ACorrId -> Entity 'Conn_ -> ACommand 'Client c -> m ()
+processConnCommand c@AgentClient {sndQ} st corrId conn = \case
+  NEW -> createNewConnection conn
+  JOIN smpQueueInfo replyMode -> joinConnection conn smpQueueInfo replyMode
+  SUB -> subscribeConnection conn
+  SUBALL -> subscribeAll
+  SEND msgBody -> sendMessage conn msgBody
+  OFF -> suspendConnection conn
+  DEL -> deleteConnection conn
+  -- TODO make this pattern match unnecessary
+  _ -> atomically . writeTBQueue sndQ . ATransmission corrId conn . ERR $ CMD ENTITY
+  where
+    createNewConnection :: Entity 'Conn_ -> m ()
+    createNewConnection (Conn cId) = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
       srv <- getSMPServer
       (rq, qInfo) <- newReceiveQueue c srv cId
       withStore $ createRcvConn st rq
-      respond (Conn cId) $ INV qInfo
+      respond conn $ INV qInfo
 
     getSMPServer :: m SMPServer
     getSMPServer =
@@ -186,8 +197,8 @@ processCommand c@AgentClient {sndQ} st (ATransmission corrId entity cmd) =
           i <- atomically . stateTVar gen $ randomR (0, L.length servers - 1)
           pure $ servers L.!! i
 
-    joinConnection :: ByteString -> SMPQueueInfo -> ReplyMode -> m ()
-    joinConnection cId qInfo (ReplyMode replyMode) = do
+    joinConnection :: Entity 'Conn_ -> SMPQueueInfo -> ReplyMode -> m ()
+    joinConnection (Conn cId) qInfo (ReplyMode replyMode) = do
       -- TODO create connection alias if not passed
       -- make connAlias Maybe?
       (sq, senderKey, verifyKey) <- newSendQueue qInfo cId
@@ -197,8 +208,8 @@ processCommand c@AgentClient {sndQ} st (ATransmission corrId entity cmd) =
     -- TODO this response is disabled to avoid two responses in terminal client (OK + CON),
     -- respond OK
 
-    subscribeConnection :: ByteString -> m ()
-    subscribeConnection cId =
+    subscribeConnection :: Entity 'Conn_ -> m ()
+    subscribeConnection (Conn cId) =
       withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
         SomeConn _ (RcvConnection _ rq) -> subscribe rq
@@ -208,10 +219,10 @@ processCommand c@AgentClient {sndQ} st (ATransmission corrId entity cmd) =
 
     -- TODO remove - hack for subscribing to all; respond' and parameterization of subscribeConnection are byproduct
     subscribeAll :: m ()
-    subscribeAll = withStore (getAllConnAliases st) >>= mapM_ subscribeConnection
+    subscribeAll = withStore (getAllConnAliases st) >>= mapM_ (subscribeConnection . Conn)
 
-    sendMessage :: ByteString -> MsgBody -> m ()
-    sendMessage cId msgBody =
+    sendMessage :: Entity 'Conn_ -> MsgBody -> m ()
+    sendMessage (Conn cId) msgBody =
       withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
         SomeConn _ (SndConnection _ sq) -> sendMsg sq
@@ -235,8 +246,8 @@ processCommand c@AgentClient {sndQ} st (ATransmission corrId entity cmd) =
           sendAgentMessage c sq msgStr
           respond (Conn cId) $ SENT (unId internalId)
 
-    suspendConnection :: ByteString -> m ()
-    suspendConnection cId =
+    suspendConnection :: Entity 'Conn_ -> m ()
+    suspendConnection (Conn cId) =
       withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> suspend rq
         SomeConn _ (RcvConnection _ rq) -> suspend rq
@@ -244,8 +255,8 @@ processCommand c@AgentClient {sndQ} st (ATransmission corrId entity cmd) =
       where
         suspend rq = suspendQueue c rq >> respond (Conn cId) OK
 
-    deleteConnection :: ByteString -> m ()
-    deleteConnection cId =
+    deleteConnection :: Entity 'Conn_ -> m ()
+    deleteConnection (Conn cId) =
       withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> delete rq
         SomeConn _ (RcvConnection _ rq) -> delete rq
@@ -271,8 +282,30 @@ processCommand c@AgentClient {sndQ} st (ATransmission corrId entity cmd) =
             agentMessage = REPLY qInfo
           }
 
-    respond :: EntityCommand t c => Entity t -> ACommand 'Agent c -> m ()
+    respond :: EntityCommand t c' => Entity t -> ACommand 'Agent c' -> m ()
     respond ent resp = atomically . writeTBQueue sndQ $ ATransmission corrId ent resp
+
+processBroadcastCommand ::
+  forall c m. (AgentMonad m, EntityCommand 'Broadcast_ c) => AgentClient -> SQLiteStore -> ACorrId -> Entity 'Broadcast_ -> ACommand 'Client c -> m ()
+processBroadcastCommand c@AgentClient {sndQ} st corrId bcast = \case
+  NEW -> createNewBroadcast bcast
+  ADD conn -> addConnection bcast conn
+  REM conn -> removeConnection bcast conn
+  LS -> listConnections bcast
+  -- TODO make this pattern match unnecessary
+  _ -> atomically . writeTBQueue sndQ . ATransmission corrId bcast . ERR $ CMD ENTITY
+  where
+    createNewBroadcast :: Entity 'Broadcast_ -> m ()
+    createNewBroadcast (Broadcast bId) = pure ()
+
+    addConnection :: Entity 'Broadcast_ -> Entity 'Conn_ -> m ()
+    addConnection (Broadcast bId) (Conn cId) = pure ()
+
+    removeConnection :: Entity 'Broadcast_ -> Entity 'Conn_ -> m ()
+    removeConnection (Broadcast bId) (Conn cId) = pure ()
+
+    listConnections :: Entity 'Broadcast_ -> m ()
+    listConnections (Broadcast bId) = pure ()
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
 subscriber c@AgentClient {msgQ} st = forever $ do

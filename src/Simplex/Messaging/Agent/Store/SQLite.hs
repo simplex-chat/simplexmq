@@ -204,7 +204,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueStatus SQLiteStore {dbConn} RcvQueue {rcvId, server = SMPServer {host, port}} status =
-    -- ? throw error if queue doesn't exist?
+    -- ? throw error if queue does not exist?
     liftIO $
       DB.executeNamed
         dbConn
@@ -217,7 +217,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
   setRcvQueueActive SQLiteStore {dbConn} RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
-    -- ? throw error if queue doesn't exist?
+    -- ? throw error if queue does not exist?
     liftIO $
       DB.executeNamed
         dbConn
@@ -235,7 +235,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
   setSndQueueStatus SQLiteStore {dbConn} SndQueue {sndId, server = SMPServer {host, port}} status =
-    -- ? throw error if queue doesn't exist?
+    -- ? throw error if queue does not exist?
     liftIO $
       DB.executeNamed
         dbConn
