@@ -151,8 +151,10 @@ withStore action = do
     handleInternal e = throwError . SEInternal $ bshow e
     storeError :: StoreError -> AgentErrorType
     storeError = \case
-      SEConnNotFound -> CONN UNKNOWN
+      SEConnNotFound -> CONN NOT_FOUND
       SEConnDuplicate -> CONN DUPLICATE
+      SEBcastNotFound -> BCAST B_NOT_FOUND
+      SEBcastDuplicate -> BCAST B_DUPLICATE
       e -> INTERNAL $ show e
 
 processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ATransmission 'Client -> m ()
@@ -165,19 +167,18 @@ processCommand c st (ATransmission corrId entity cmd) = process c st corrId enti
 
 unsupportedEntity :: AgentMonad m => AgentClient -> SQLiteStore -> ACorrId -> Entity t -> ACommand 'Client c -> m ()
 unsupportedEntity c _ corrId entity _ =
-  atomically . writeTBQueue (sndQ c) . ATransmission corrId entity . ERR $ CMD ENTITY
+  atomically . writeTBQueue (sndQ c) . ATransmission corrId entity . ERR $ CMD UNSUPPORTED
 
-processConnCommand :: forall c m. (AgentMonad m, EntityCommand 'Conn_ c) => AgentClient -> SQLiteStore -> ACorrId -> Entity 'Conn_ -> ACommand 'Client c -> m ()
+processConnCommand ::
+  forall c m. (AgentMonad m, EntityCommand 'Conn_ c) => AgentClient -> SQLiteStore -> ACorrId -> Entity 'Conn_ -> ACommand 'Client c -> m ()
 processConnCommand c@AgentClient {sndQ} st corrId conn = \case
   NEW -> createNewConnection conn
   JOIN smpQueueInfo replyMode -> joinConnection conn smpQueueInfo replyMode
   SUB -> subscribeConnection conn
   SUBALL -> subscribeAll
-  SEND msgBody -> sendMessage conn msgBody
+  SEND msgBody -> sendMessage c st corrId conn msgBody
   OFF -> suspendConnection conn
   DEL -> deleteConnection conn
-  -- TODO make this pattern match unnecessary
-  _ -> atomically . writeTBQueue sndQ . ATransmission corrId conn . ERR $ CMD ENTITY
   where
     createNewConnection :: Entity 'Conn_ -> m ()
     createNewConnection (Conn cId) = do
@@ -206,45 +207,20 @@ processConnCommand c@AgentClient {sndQ} st corrId conn = \case
       connectToSendQueue c st sq senderKey verifyKey
       when (replyMode == On) $ createReplyQueue cId sq
     -- TODO this response is disabled to avoid two responses in terminal client (OK + CON),
-    -- respond OK
+    -- respond conn OK
 
     subscribeConnection :: Entity 'Conn_ -> m ()
-    subscribeConnection (Conn cId) =
+    subscribeConnection conn'@(Conn cId) =
       withStore (getConn st cId) >>= \case
         SomeConn _ (DuplexConnection _ rq _) -> subscribe rq
         SomeConn _ (RcvConnection _ rq) -> subscribe rq
         _ -> throwError $ CONN SIMPLEX
       where
-        subscribe rq = subscribeQueue c rq cId >> respond (Conn cId) OK
+        subscribe rq = subscribeQueue c rq cId >> respond conn' OK
 
     -- TODO remove - hack for subscribing to all; respond' and parameterization of subscribeConnection are byproduct
     subscribeAll :: m ()
     subscribeAll = withStore (getAllConnAliases st) >>= mapM_ (subscribeConnection . Conn)
-
-    sendMessage :: Entity 'Conn_ -> MsgBody -> m ()
-    sendMessage (Conn cId) msgBody =
-      withStore (getConn st cId) >>= \case
-        SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
-        SomeConn _ (SndConnection _ sq) -> sendMsg sq
-        _ -> throwError $ CONN SIMPLEX
-      where
-        sendMsg sq = do
-          internalTs <- liftIO getCurrentTime
-          (internalId, internalSndId, previousMsgHash) <- withStore $ updateSndIds st sq
-          let msgStr =
-                serializeSMPMessage
-                  SMPMessage
-                    { senderMsgId = unSndId internalSndId,
-                      senderTimestamp = internalTs,
-                      previousMsgHash,
-                      agentMessage = A_MSG msgBody
-                    }
-              msgHash = C.sha256Hash msgStr
-          withStore $
-            createSndMsg st sq $
-              SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = msgHash}
-          sendAgentMessage c sq msgStr
-          respond (Conn cId) $ SENT (unId internalId)
 
     suspendConnection :: Entity 'Conn_ -> m ()
     suspendConnection (Conn cId) =
@@ -253,7 +229,7 @@ processConnCommand c@AgentClient {sndQ} st corrId conn = \case
         SomeConn _ (RcvConnection _ rq) -> suspend rq
         _ -> throwError $ CONN SIMPLEX
       where
-        suspend rq = suspendQueue c rq >> respond (Conn cId) OK
+        suspend rq = suspendQueue c rq >> respond conn OK
 
     deleteConnection :: Entity 'Conn_ -> m ()
     deleteConnection (Conn cId) =
@@ -262,7 +238,7 @@ processConnCommand c@AgentClient {sndQ} st corrId conn = \case
         SomeConn _ (RcvConnection _ rq) -> delete rq
         _ -> delConn
       where
-        delConn = withStore (deleteConn st cId) >> respond (Conn cId) OK
+        delConn = withStore (deleteConn st cId) >> respond conn OK
         delete rq = do
           deleteQueue c rq
           removeSubscription c cId
@@ -285,27 +261,50 @@ processConnCommand c@AgentClient {sndQ} st corrId conn = \case
     respond :: EntityCommand t c' => Entity t -> ACommand 'Agent c' -> m ()
     respond ent resp = atomically . writeTBQueue sndQ $ ATransmission corrId ent resp
 
+sendMessage :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> ACorrId -> Entity 'Conn_ -> MsgBody -> m ()
+sendMessage c st corrId (Conn cId) msgBody =
+  withStore (getConn st cId) >>= \case
+    SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
+    SomeConn _ (SndConnection _ sq) -> sendMsg sq
+    _ -> throwError $ CONN SIMPLEX
+  where
+    sendMsg :: SndQueue -> m ()
+    sendMsg sq = do
+      internalTs <- liftIO getCurrentTime
+      (internalId, internalSndId, previousMsgHash) <- withStore $ updateSndIds st sq
+      let msgStr =
+            serializeSMPMessage
+              SMPMessage
+                { senderMsgId = unSndId internalSndId,
+                  senderTimestamp = internalTs,
+                  previousMsgHash,
+                  agentMessage = A_MSG msgBody
+                }
+          msgHash = C.sha256Hash msgStr
+      withStore $
+        createSndMsg st sq $
+          SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = msgHash}
+      sendAgentMessage c sq msgStr
+      atomically . writeTBQueue (sndQ c) $ ATransmission corrId (Conn cId) $ SENT (unId internalId)
+
 processBroadcastCommand ::
   forall c m. (AgentMonad m, EntityCommand 'Broadcast_ c) => AgentClient -> SQLiteStore -> ACorrId -> Entity 'Broadcast_ -> ACommand 'Client c -> m ()
-processBroadcastCommand c@AgentClient {sndQ} st corrId bcast = \case
-  NEW -> createNewBroadcast bcast
-  ADD conn -> addConnection bcast conn
-  REM conn -> removeConnection bcast conn
-  LS -> listConnections bcast
-  -- TODO make this pattern match unnecessary
-  _ -> atomically . writeTBQueue sndQ . ATransmission corrId bcast . ERR $ CMD ENTITY
+processBroadcastCommand c st corrId bcast@(Broadcast bId) = \case
+  NEW -> withStore (createBcast st bId) >> ok
+  ADD (Conn cId) -> withStore (addBcastConn st bId cId) >> ok
+  REM (Conn cId) -> withStore (removeBcastConn st bId cId) >> ok
+  LS -> withStore (getBcast st bId) >>= respond bcast . MS . map Conn
+  SEND msgBody -> withStore (getBcast st bId) >>= mapM_ (sendMsg msgBody) >> respond bcast (SENT 0)
+  DEL -> withStore (deleteBcast st bId) >> ok
   where
-    createNewBroadcast :: Entity 'Broadcast_ -> m ()
-    createNewBroadcast (Broadcast bId) = pure ()
+    sendMsg :: MsgBody -> ConnAlias -> m ()
+    sendMsg msgBody cId = sendMessage c st corrId (Conn cId) msgBody
 
-    addConnection :: Entity 'Broadcast_ -> Entity 'Conn_ -> m ()
-    addConnection (Broadcast bId) (Conn cId) = pure ()
+    ok :: m ()
+    ok = respond bcast OK
 
-    removeConnection :: Entity 'Broadcast_ -> Entity 'Conn_ -> m ()
-    removeConnection (Broadcast bId) (Conn cId) = pure ()
-
-    listConnections :: Entity 'Broadcast_ -> m ()
-    listConnections (Broadcast bId) = pure ()
+    respond :: EntityCommand t c' => Entity t -> ACommand 'Agent c' -> m ()
+    respond ent resp = atomically . writeTBQueue (sndQ c) $ ATransmission corrId ent resp
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
 subscriber c@AgentClient {msgQ} st = forever $ do

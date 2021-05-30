@@ -36,6 +36,7 @@ module Simplex.Messaging.Agent.Protocol
     EntityCommand,
     entityCommand,
     ACommand (..),
+    ACmdTag (..),
     AParty (..),
     APartyCmd (..),
     SAParty (..),
@@ -46,6 +47,7 @@ module Simplex.Messaging.Agent.Protocol
     AgentErrorType (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
+    BroadcastErrorType (..),
     BrokerErrorType (..),
     SMPAgentError (..),
     ATransmission (..),
@@ -160,10 +162,10 @@ instance TestEquality SAParty where
 data EntityTag = Conn_ | OpenConn_ | Broadcast_ | AGroup_
 
 data Entity :: EntityTag -> Type where
-  Conn :: ByteString -> Entity Conn_
-  OpenConn :: ByteString -> Entity OpenConn_
-  Broadcast :: ByteString -> Entity Broadcast_
-  AGroup :: ByteString -> Entity AGroup_
+  Conn :: {fromConn :: ByteString} -> Entity Conn_
+  OpenConn :: {fromOpenConn :: ByteString} -> Entity OpenConn_
+  Broadcast :: {fromBroadcast :: ByteString} -> Entity Broadcast_
+  AGroup :: {fromAGroup :: ByteString} -> Entity AGroup_
 
 deriving instance Eq (Entity t)
 
@@ -216,7 +218,7 @@ type family EntityCommand (t :: EntityTag) (c :: ACmdTag) :: Constraint where
   EntityCommand Broadcast_ ERR_ = ()
   EntityCommand _ ERR_ = ()
   EntityCommand t c =
-    TypeError (Text "Entity " :<>: ShowType t :<>: Text " does not support command " :<>: ShowType c)
+    (Int ~ Bool, TypeError (Text "Entity " :<>: ShowType t :<>: Text " does not support command " :<>: ShowType c))
 
 entityCommand :: Entity t -> ACommand p c -> Maybe (Dict (EntityCommand t c))
 entityCommand = \case
@@ -518,6 +520,8 @@ data AgentErrorType
     CMD CommandErrorType
   | -- | connection errors
     CONN ConnectionErrorType
+  | -- | broadcast errors
+    BCAST BroadcastErrorType
   | -- | SMP protocol errors forwarded to agent clients
     SMP ErrorType
   | -- | SMP server errors
@@ -533,7 +537,7 @@ data CommandErrorType
   = -- | command is prohibited in this context
     PROHIBITED
   | -- | command is not supported by this entity
-    ENTITY
+    UNSUPPORTED
   | -- | command syntax is invalid
     SYNTAX
   | -- | cannot parse entity
@@ -549,11 +553,19 @@ data CommandErrorType
 -- | Connection error.
 data ConnectionErrorType
   = -- | connection alias is not in the database
-    UNKNOWN
+    NOT_FOUND
   | -- | connection alias already exists
     DUPLICATE
   | -- | connection is simplex, but operation requires another queue
     SIMPLEX
+  deriving (Eq, Generic, Read, Show, Exception)
+
+-- | Broadcast error
+data BroadcastErrorType
+  = -- | broadcast ID is not in the database
+    B_NOT_FOUND
+  | -- | broadcast ID already exists
+    B_DUPLICATE
   deriving (Eq, Generic, Read, Show, Exception)
 
 -- | SMP server errors.
@@ -587,6 +599,8 @@ instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 instance Arbitrary CommandErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary ConnectionErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary BroadcastErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
 
@@ -718,6 +732,7 @@ serializeMsgIntegrity = \case
 agentErrorTypeP :: Parser AgentErrorType
 agentErrorTypeP =
   "SMP " *> (SMP <$> SMP.errorTypeP)
+    <|> "BCAST " *> (BCAST <$> bcastErrorP)
     <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> SMP.errorTypeP)
     <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
     <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
@@ -727,9 +742,18 @@ agentErrorTypeP =
 serializeAgentError :: AgentErrorType -> ByteString
 serializeAgentError = \case
   SMP e -> "SMP " <> SMP.serializeErrorType e
+  BCAST e -> "BCAST " <> serializeBcastError e
   BROKER (RESPONSE e) -> "BROKER RESPONSE " <> SMP.serializeErrorType e
   BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
   e -> bshow e
+
+bcastErrorP :: Parser BroadcastErrorType
+bcastErrorP = "NOT_FOUND" $> B_NOT_FOUND <|> "DUPLICATE" $> B_DUPLICATE
+
+serializeBcastError :: BroadcastErrorType -> ByteString
+serializeBcastError = \case
+  B_NOT_FOUND -> "NOT_FOUND"
+  B_DUPLICATE -> "DUPLICATE"
 
 serializeMsg :: ByteString -> ByteString
 serializeMsg body = bshow (B.length body) <> "\n" <> body
@@ -785,7 +809,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       Left e -> err e
       Right (APartyCmd cmd) -> case entityCommand entity cmd of
         Just Dict -> ATransmissionOrError corrId entity $ Right cmd
-        _ -> err $ CMD ENTITY
+        _ -> err $ CMD UNSUPPORTED
       where
         err e = ATransmissionOrError @_ @_ @ERR_ corrId entity $ Left e
 

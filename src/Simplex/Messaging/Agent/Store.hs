@@ -51,6 +51,13 @@ class Monad m => MonadAgentStore s m where
 
   getMsg :: s -> ConnAlias -> InternalId -> m Msg
 
+  -- Broadcasts
+  createBcast :: s -> BroadcastId -> m ()
+  addBcastConn :: s -> BroadcastId -> ConnAlias -> m ()
+  removeBcastConn :: s -> BroadcastId -> ConnAlias -> m ()
+  deleteBcast :: s -> BroadcastId -> m ()
+  getBcast :: s -> BroadcastId -> m [ConnAlias]
+
 -- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
@@ -171,6 +178,10 @@ data SndMsgData = SndMsgData
     internalHash :: MsgHash
   }
 
+-- * Broadcast types
+
+type BroadcastId = ByteString
+
 -- * Message types
 
 -- | A message in either direction that is stored by the agent.
@@ -283,6 +294,10 @@ data StoreError
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
     SEBadConnType ConnType
+  | -- | Broadcast ID not found
+    SEBcastNotFound
+  | -- | Broadcast ID already used.
+    SEBcastDuplicate
   | -- | Currently not used. The intention was to pass current expected queue status in methods,
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.
