@@ -83,7 +83,7 @@ migrationsToRun appMigrations dbMigrations = toRun appMigrations dbMigrations
   where
     toRun [] [] = NoMigration
     toRun appMs [] = MigrateUp {use = appMs, dbMigrations}
-    toRun [] dbMs = MigrateDown dbMs
+    toRun [] dbMs = MigrateDown $ reverse dbMs
     toRun (a : as) (d : ds)
       | name a == name d = toRun as ds
       | otherwise = MigrateError "incompatible database migrations"
