@@ -14,7 +14,7 @@ where
 
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
-import Database.SQLite.Simple (Connection, NamedParam (..), Query (..))
+import Database.SQLite.Simple (Connection, Only (..), Query (..))
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
@@ -41,14 +41,11 @@ run conn migrations =
     runUp SchemaMigration {name, down, up} = do
       ts <- getCurrentTime
       execSQL up
-      DB.executeNamed
-        conn
-        "INSERT INTO migrations (name, down, ts) VALUES (:name, :down, :ts);"
-        [":name" := name, ":down" := fromQuery down, ":ts" := ts]
+      DB.execute conn "INSERT INTO migrations (name, down, ts) VALUES (?, ?, ?);" (name, fromQuery down, ts)
     runDown :: SchemaMigration -> IO ()
     runDown SchemaMigration {name, down} = do
       execSQL down
-      DB.executeNamed conn "DELETE FROM migrations WHERE name = :name;" [":name" := name]
+      DB.execute conn "DELETE FROM migrations WHERE name = ?;" (Only name)
     execSQL :: Query -> IO ()
     execSQL q = DB.connectionHandle conn `SQLite3.exec` fromQuery q
 
