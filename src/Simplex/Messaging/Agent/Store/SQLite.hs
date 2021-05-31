@@ -42,12 +42,11 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migrations (..))
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Parsers (blobFieldParser)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
-import System.Directory (copyFile)
+import System.Directory (copyFile, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
@@ -59,7 +58,8 @@ import qualified UnliftIO.Exception as E
 
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
-    dbConn :: DB.Connection
+    dbConn :: DB.Connection,
+    dbNew :: Bool
   }
 
 createSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
@@ -77,25 +77,15 @@ createSQLiteStore dbFilePath = do
   return store
 
 migrateSchema :: SQLiteStore -> IO ()
-migrateSchema SQLiteStore {dbConn, dbFilePath} = do
+migrateSchema SQLiteStore {dbConn, dbFilePath, dbNew} = do
   Migrations.initialize dbConn
   Migrations.get dbConn Migrations.app >>= \case
-    NoMigration -> pure ()
-    MigrateError e -> confirmOrExit $ "Database is possibly corrupted: " <> e
-    ms@MigrateDown {} -> do
-      confirmOrExit
-        "The chat database has a newer version than the app.\n\
-        \It is recommended to run a newer version of the app.\n\
-        \If you continue the database will be backed up and downgraded."
-      migrate ms
-    ms@MigrateUp {dbMigrations} -> do
-      unless (null dbMigrations) $
-        confirmOrExit "The app has a newer version that the chat database - it will be backed up and upgraded."
-      migrate ms
-  where
-    migrate :: Migrations -> IO ()
-    migrate ms = do
-      copyFile dbFilePath $ dbFilePath <> ".bak"
+    Left e -> confirmOrExit $ "Database error: " <> e
+    Right [] -> pure ()
+    Right ms -> do
+      unless dbNew $ do
+        confirmOrExit "The app has a newer version that the database - it will be backed up and upgraded."
+        copyFile dbFilePath $ dbFilePath <> ".bak"
       Migrations.run dbConn ms
 
 confirmOrExit :: String -> IO ()
@@ -107,16 +97,16 @@ confirmOrExit s = do
   when (map toLower ok /= "y") exitFailure
 
 connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
-connectSQLiteStore dbFilePath = do
-  dbConn <- liftIO $ DB.open dbFilePath
-  liftIO $
-    DB.execute_
-      dbConn
-      [sql|
-        PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
-      |]
-  return SQLiteStore {dbFilePath, dbConn}
+connectSQLiteStore dbFilePath = liftIO $ do
+  dbNew <- not <$> doesFileExist dbFilePath
+  dbConn <- DB.open dbFilePath
+  DB.execute_
+    dbConn
+    [sql|
+      PRAGMA foreign_keys = ON;
+      PRAGMA journal_mode = WAL;
+    |]
+  pure SQLiteStore {dbFilePath, dbConn, dbNew}
 
 checkDuplicate :: (MonadUnliftIO m, MonadError StoreError m) => IO () -> m ()
 checkDuplicate action = liftIOEither $ first handleError <$> E.try action

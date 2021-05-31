@@ -1,53 +1,55 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Migrations
-  ( Migrations (..),
-    app,
+  ( app,
     initialize,
     get,
     run,
   )
 where
 
+import Control.Monad (forM_)
+import Data.FileEmbed (embedDir, makeRelativeToProject)
+import Data.Function (on)
+import Data.List (intercalate, sortBy)
 import Data.Text (Text)
+import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock (getCurrentTime)
-import Database.SQLite.Simple (Connection, Only (..), Query (..))
+import Database.SQLite.Simple (Connection, Only (..))
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
-import Simplex.Messaging.Agent.Store.SQLite.Migrations.M_20210101_initial (m_20210101_initial)
-import Simplex.Messaging.Agent.Store.SQLite.Migrations.Types (SchemaMigration (..))
+import System.FilePath (takeBaseName, takeExtension)
+
+data SchemaMigration = SchemaMigration {name :: String, up :: Text}
+  deriving (Show)
 
 -- | The list of migrations in ascending order by date
 app :: [SchemaMigration]
 app =
-  [ m_20210101_initial
-  ]
-
-get :: Connection -> [SchemaMigration] -> IO Migrations
-get conn migrations = migrationsToRun migrations <$> getDbMigrations conn
-
-run :: Connection -> Migrations -> IO ()
-run conn migrations =
-  DB.withImmediateTransaction conn $ case migrations of
-    MigrateUp ms _ -> mapM_ runUp ms
-    MigrateDown ms -> mapM_ runDown ms
-    _ -> pure ()
+  sortBy (compare `on` name) . map migration . filter sqlFile $
+    $(makeRelativeToProject "migrations" >>= embedDir)
   where
-    runUp :: SchemaMigration -> IO ()
-    runUp SchemaMigration {name, down, up} = do
-      ts <- getCurrentTime
-      execSQL up
-      DB.execute conn "INSERT INTO migrations (name, down, ts) VALUES (?, ?, ?);" (name, fromQuery down, ts)
-    runDown :: SchemaMigration -> IO ()
-    runDown SchemaMigration {name, down} = do
-      execSQL down
-      DB.execute conn "DELETE FROM migrations WHERE name = ?;" (Only name)
-    execSQL :: Query -> IO ()
-    execSQL q = DB.connectionHandle conn `SQLite3.exec` fromQuery q
+    sqlFile (file, _) = takeExtension file == ".sql"
+    migration (file, qStr) = SchemaMigration {name = takeBaseName file, up = decodeUtf8 qStr}
+
+get :: Connection -> [SchemaMigration] -> IO (Either String [SchemaMigration])
+get conn migrations =
+  migrationsToRun migrations . map fromOnly
+    <$> DB.query_ conn "SELECT name FROM migrations ORDER BY name ASC;"
+
+run :: Connection -> [SchemaMigration] -> IO ()
+run conn ms = DB.withImmediateTransaction conn . forM_ ms $
+  \SchemaMigration {name, up} -> insert name >> execSQL up
+  where
+    insert name = DB.execute conn "INSERT INTO migrations (name, ts) VALUES (?, ?);" . (name,) =<< getCurrentTime
+    execSQL = SQLite3.exec $ DB.connectionHandle conn
 
 initialize :: Connection -> IO ()
 initialize conn =
@@ -56,31 +58,14 @@ initialize conn =
     [sql|
       CREATE TABLE IF NOT EXISTS migrations (
         name TEXT NOT NULL,
-        down TEXT NOT NULL,
         ts TEXT NOT NULL,
         PRIMARY KEY (name)
       );
     |]
 
-getDbMigrations :: Connection -> IO [SchemaMigration]
-getDbMigrations conn =
-  map migration <$> DB.query_ conn "SELECT name, down FROM migrations ORDER BY name ASC;"
-  where
-    migration :: (String, Text) -> SchemaMigration
-    migration (name, down) = SchemaMigration {name, up = "", down = Query down}
-
-data Migrations
-  = NoMigration
-  | MigrateDown [SchemaMigration]
-  | MigrateUp {use :: [SchemaMigration], dbMigrations :: [SchemaMigration]}
-  | MigrateError String
-
-migrationsToRun :: [SchemaMigration] -> [SchemaMigration] -> Migrations
-migrationsToRun appMigrations dbMigrations = toRun appMigrations dbMigrations
-  where
-    toRun [] [] = NoMigration
-    toRun appMs [] = MigrateUp {use = appMs, dbMigrations}
-    toRun [] dbMs = MigrateDown $ reverse dbMs
-    toRun (a : as) (d : ds)
-      | name a == name d = toRun as ds
-      | otherwise = MigrateError "incompatible database migrations"
+migrationsToRun :: [SchemaMigration] -> [String] -> Either String [SchemaMigration]
+migrationsToRun appMs [] = Right appMs
+migrationsToRun [] dbMs = Left $ "database version is newer than the app: " <> intercalate ", " dbMs
+migrationsToRun (a : as) (d : ds)
+  | name a == d = migrationsToRun as ds
+  | otherwise = Left $ "different migration in the app/database: " <> name a <> " / " <> d

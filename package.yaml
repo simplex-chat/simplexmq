@@ -35,6 +35,7 @@ dependencies:
   - cryptonite == 0.27.*
   - direct-sqlite == 2.3.*
   - directory == 1.3.*
+  - file-embed == 0.0.14.*
   - filepath == 1.4.*
   - generic-random == 1.3.*
   - iso8601-time == 0.1.*
