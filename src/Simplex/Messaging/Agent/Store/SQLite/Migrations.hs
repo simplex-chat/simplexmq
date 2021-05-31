@@ -27,26 +27,26 @@ import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
 import System.FilePath (takeBaseName, takeExtension)
 
-data SchemaMigration = SchemaMigration {name :: String, up :: Text}
+data Migration = Migration {name :: String, up :: Text}
   deriving (Show)
 
 -- | The list of migrations in ascending order by date
-app :: [SchemaMigration]
+app :: [Migration]
 app =
   sortBy (compare `on` name) . map migration . filter sqlFile $
     $(makeRelativeToProject "migrations" >>= embedDir)
   where
     sqlFile (file, _) = takeExtension file == ".sql"
-    migration (file, qStr) = SchemaMigration {name = takeBaseName file, up = decodeUtf8 qStr}
+    migration (file, qStr) = Migration {name = takeBaseName file, up = decodeUtf8 qStr}
 
-get :: Connection -> [SchemaMigration] -> IO (Either String [SchemaMigration])
+get :: Connection -> [Migration] -> IO (Either String [Migration])
 get conn migrations =
   migrationsToRun migrations . map fromOnly
     <$> DB.query_ conn "SELECT name FROM migrations ORDER BY name ASC;"
 
-run :: Connection -> [SchemaMigration] -> IO ()
+run :: Connection -> [Migration] -> IO ()
 run conn ms = DB.withImmediateTransaction conn . forM_ ms $
-  \SchemaMigration {name, up} -> insert name >> execSQL up
+  \Migration {name, up} -> insert name >> execSQL up
   where
     insert name = DB.execute conn "INSERT INTO migrations (name, ts) VALUES (?, ?);" . (name,) =<< getCurrentTime
     execSQL = SQLite3.exec $ DB.connectionHandle conn
@@ -63,7 +63,7 @@ initialize conn =
       );
     |]
 
-migrationsToRun :: [SchemaMigration] -> [String] -> Either String [SchemaMigration]
+migrationsToRun :: [Migration] -> [String] -> Either String [Migration]
 migrationsToRun appMs [] = Right appMs
 migrationsToRun [] dbMs = Left $ "database version is newer than the app: " <> intercalate ", " dbMs
 migrationsToRun (a : as) (d : ds)
