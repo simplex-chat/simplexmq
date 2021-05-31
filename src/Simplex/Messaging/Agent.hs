@@ -153,6 +153,8 @@ withStore action = do
     storeError = \case
       SEConnNotFound -> CONN NOT_FOUND
       SEConnDuplicate -> CONN DUPLICATE
+      SEBadConnType CRcv -> CONN SIMPLEX
+      SEBadConnType CSnd -> CONN SIMPLEX
       SEBcastNotFound -> BCAST B_NOT_FOUND
       SEBcastDuplicate -> BCAST B_DUPLICATE
       e -> INTERNAL $ show e
