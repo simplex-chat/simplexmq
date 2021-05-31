@@ -4,5 +4,5 @@
 apt-get -y update
 apt-get -y upgrade
 
-# install needed packages
+# packages needed for smp-server init-start.sh
 apt-get install -y jq

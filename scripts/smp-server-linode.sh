@@ -21,6 +21,11 @@ ufw allow ssh
 ufw allow http
 ufw allow 5223
 
+# prepare folders
+mkdir -p /opt/simplex/bin
+mkdir -p /etc/opt/simplex
+mkdir -p /var/opt/simplex
+
 # retrieve latest release info and download smp-server executable
 curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/latest > release.json
 jq '.assets[].browser_download_url | select(test("smp-server-ubuntu-20_04-x86-64"))' release.json \
@@ -28,7 +33,6 @@ jq '.assets[].browser_download_url | select(test("smp-server-ubuntu-20_04-x86-64
 | wget -qi -
 
 # move smp-server executable to /opt/simplex/bin
-mkdir -p /opt/simplex/bin
 mv smp-server-ubuntu-20_04-x86-64 /opt/simplex/bin/smp-server
 chmod +x /opt/simplex/bin/smp-server
 
@@ -42,8 +46,6 @@ EOT
 source /etc/profile.d/simplex.sh
 
 # initialize SMP server
-mkdir -p /etc/opt/simplex
-mkdir -p /var/opt/simplex
 init_opts=()
 [[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
 smp-server init "${init_opts[@]}" > simplex.conf
@@ -51,12 +53,12 @@ tail -n +2 "simplex.conf" > "simplex.tmp" && mv "simplex.tmp" "simplex.conf"
 # turn off websockets support
 sed -e '/websockets/s/^/# /g' -i /etc/opt/simplex/smp-server.ini
 
+# create A record and update linode's tags
 if [ ! -z "$API_TOKEN" ]; then
      ip_address=$(curl ifconfig.me)
      address=$ip_address
      if [ ! -z "$FQDN" ]; then
           domain_address=$(echo $FQDN | rev | cut -d "." -f 1,2 | rev)
-          # create A record if domain is created in linode account
           domain_id=$(curl -H "Authorization: Bearer $API_TOKEN" https://api.linode.com/v4/domains \
           | jq --arg da "$domain_address" '.data[] | select( .domain == $da ) | .id')
           if [[ ! -z $domain_id ]]; then
@@ -71,7 +73,6 @@ if [ ! -z "$API_TOKEN" ]; then
      hash=$(cat simplex.conf | grep hash: | cut -f2 -d":" | xargs)
      release_version=$(jq '.tag_name' release.json | tr -d \")
 
-     # update linode's tags
      curl -s -H "Content-Type: application/json" \
           -H "Authorization: Bearer $API_TOKEN" \
           -X PUT -d "{\"tags\":[\"$address\",\"#$hash\",\"$release_version\"]}" \
@@ -96,7 +97,7 @@ chmod 644 /etc/systemd/system/smp-server.service
 sudo systemctl enable smp-server
 sudo systemctl start smp-server
 
-# create script that will on login
+# create script that will run on login
 cat <<EOT >> /opt/simplex/on_login.sh
 #!/bin/bash
 

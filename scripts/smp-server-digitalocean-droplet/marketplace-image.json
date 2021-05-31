@@ -1,7 +1,7 @@
 {
   "variables": {
     "token": "{{env `DIGITALOCEAN_TOKEN`}}",
-    "image_name": "simplex-chat-server-snapshot",
+    "image_name": "smp-server-snapshot",
     "application_name": "SMP server",
     "release_tag": "v0.3.2"
   },
@@ -21,13 +21,11 @@
     {
       "type": "shell",
       "inline": [
-        "cloud-init status --wait"
+        "cloud-init status --wait",
+        "mkdir -p /opt/simplex/bin",
+        "mkdir -p /etc/opt/simplex",
+        "mkdir -p /var/opt/simplex"
       ]
-    },
-    {
-      "type": "file",
-      "source": "files/etc/",
-      "destination": "/etc/"
     },
     {
       "type": "file",
@@ -43,7 +41,7 @@
       "scripts": [
         "scripts/01-packages.sh",
         "scripts/02-firewall.sh",
-        "scripts/03-prep.sh",
+        "scripts/03-init-start.sh",
         "scripts/90-cleanup.sh",
         "scripts/99-img-check.sh"
       ]
