@@ -100,8 +100,8 @@ logConnection c connected =
 runSMPAgentClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 runSMPAgentClient c = do
   db <- asks $ dbFile . config
-  s1 <- connectSQLiteStore db
-  s2 <- connectSQLiteStore db
+  s1 <- liftIO $ connectSQLiteStore db
+  s2 <- liftIO $ connectSQLiteStore db
   race_ (subscriber c s1) (client c s2)
 
 receive :: forall c m. (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()

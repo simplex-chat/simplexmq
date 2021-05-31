@@ -46,12 +46,11 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Parsers (blobFieldParser)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
-import System.Directory (copyFile, doesFileExist)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
 import Text.Read (readMaybe)
-import UnliftIO.Directory (createDirectoryIfMissing)
 import qualified UnliftIO.Exception as E
 
 -- * SQLite Store implementation
@@ -62,19 +61,19 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-createSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
+createSQLiteStore :: FilePath -> IO SQLiteStore
 createSQLiteStore dbFilePath = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   store <- connectSQLiteStore dbFilePath
-  compileOptions <- liftIO (DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
+  compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
   let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
-  liftIO $ case threadsafeOption of
+  case threadsafeOption of
     Just "THREADSAFE=0" -> confirmOrExit "SQLite compiled with non-threadsafe code."
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
     _ -> return ()
-  liftIO $ migrateSchema store
-  return store
+  migrateSchema store
+  pure store
 
 migrateSchema :: SQLiteStore -> IO ()
 migrateSchema SQLiteStore {dbConn, dbFilePath, dbNew} = do
@@ -96,8 +95,8 @@ confirmOrExit s = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
-connectSQLiteStore dbFilePath = liftIO $ do
+connectSQLiteStore :: FilePath -> IO SQLiteStore
+connectSQLiteStore dbFilePath = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConn <- DB.open dbFilePath
   DB.execute_
