@@ -22,10 +22,11 @@ module Simplex.Messaging.Agent.Store.SQLite
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Bifunctor (first)
+import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (isPrefixOf)
@@ -41,51 +42,70 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Schema (createSchema)
+import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Parsers (blobFieldParser)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
-import System.Exit (ExitCode (ExitFailure), exitWith)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
+import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
+import System.IO (hFlush, stdout)
 import Text.Read (readMaybe)
-import UnliftIO.Directory (createDirectoryIfMissing)
 import qualified UnliftIO.Exception as E
 
 -- * SQLite Store implementation
 
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
-    dbConn :: DB.Connection
+    dbConn :: DB.Connection,
+    dbNew :: Bool
   }
 
-createSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
+createSQLiteStore :: FilePath -> IO SQLiteStore
 createSQLiteStore dbFilePath = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   store <- connectSQLiteStore dbFilePath
-  compileOptions <- liftIO (DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]])
+  compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
   let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
-  liftIO $ case threadsafeOption of
-    Just "THREADSAFE=0" -> do
-      putStrLn "SQLite compiled with not threadsafe code, continue (y/n):"
-      s <- getLine
-      when (s /= "y") (exitWith $ ExitFailure 2)
+  case threadsafeOption of
+    Just "THREADSAFE=0" -> confirmOrExit "SQLite compiled with non-threadsafe code."
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
     _ -> return ()
-  liftIO . createSchema $ dbConn store
-  return store
+  migrateSchema store
+  pure store
 
-connectSQLiteStore :: MonadUnliftIO m => FilePath -> m SQLiteStore
+migrateSchema :: SQLiteStore -> IO ()
+migrateSchema SQLiteStore {dbConn, dbFilePath, dbNew} = do
+  Migrations.initialize dbConn
+  Migrations.get dbConn Migrations.app >>= \case
+    Left e -> confirmOrExit $ "Database error: " <> e
+    Right [] -> pure ()
+    Right ms -> do
+      unless dbNew $ do
+        confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
+        copyFile dbFilePath $ dbFilePath <> ".bak"
+      Migrations.run dbConn ms
+
+confirmOrExit :: String -> IO ()
+confirmOrExit s = do
+  putStrLn s
+  putStr "Continue (y/N): "
+  hFlush stdout
+  ok <- getLine
+  when (map toLower ok /= "y") exitFailure
+
+connectSQLiteStore :: FilePath -> IO SQLiteStore
 connectSQLiteStore dbFilePath = do
-  dbConn <- liftIO $ DB.open dbFilePath
-  liftIO $
-    DB.execute_
-      dbConn
-      [sql|
-        PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
-      |]
-  return SQLiteStore {dbFilePath, dbConn}
+  dbNew <- not <$> doesFileExist dbFilePath
+  dbConn <- DB.open dbFilePath
+  DB.execute_
+    dbConn
+    [sql|
+      PRAGMA foreign_keys = ON;
+      PRAGMA journal_mode = WAL;
+    |]
+  pure SQLiteStore {dbFilePath, dbConn, dbNew}
 
 checkDuplicate :: (MonadUnliftIO m, MonadError StoreError m) => IO () -> m ()
 checkDuplicate action = liftIOEither $ first handleError <$> E.try action
