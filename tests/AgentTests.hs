@@ -38,6 +38,9 @@ agentTests (ATransport t) = do
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
+  describe "Broadcast" do
+    it "should create broadcast and send messages" $
+      smpAgentTest3 $ testBroadcast t
 
 type TestTransmission p = (ACorrId, ByteString, APartyCmd p)
 
@@ -137,6 +140,50 @@ testSubscrNotification _ (server, _) client = do
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
   client <# ("", "C:conn1", END)
+
+testBroadcast :: forall c. Transport c => TProxy c -> c -> c -> c -> IO ()
+testBroadcast _ alice bob tom = do
+  -- establish connections
+  (alice, "alice") `connect` (bob, "bob")
+  (alice, "alice") `connect` (tom, "tom")
+  -- create and set up broadcast
+  alice #: ("1", "B:team", "NEW") #> ("1", "B:team", OK)
+  alice #: ("2", "B:team", "ADD C:bob") #> ("2", "B:team", OK)
+  alice #: ("3", "B:team", "ADD C:tom") #> ("3", "B:team", OK)
+  -- commands with errors
+  alice #: ("e1", "B:team", "NEW") #> ("e1", "B:team", ERR $ BCAST B_DUPLICATE)
+  alice #: ("e2", "B:group", "ADD C:bob") #> ("e2", "B:group", ERR $ BCAST B_NOT_FOUND)
+  alice #: ("e3", "B:team", "ADD C:unknown") #> ("e3", "B:team", ERR $ CONN NOT_FOUND)
+  alice #: ("e4", "B:team", "ADD C:bob") #> ("e4", "B:team", ERR $ CONN DUPLICATE)
+  -- send message
+  alice #: ("4", "B:team", "SEND 5\nhello") #> ("4", "C:bob", SENT 1)
+  alice <# ("4", "C:tom", SENT 1)
+  alice <# ("4", "B:team", SENT 0)
+  bob <#= \case ("", "C:alice", Msg "hello") -> True; _ -> False
+  tom <#= \case ("", "C:alice", Msg "hello") -> True; _ -> False
+  -- remove one connection
+  alice #: ("5", "B:team", "REM C:tom") #> ("5", "B:team", OK)
+  alice #: ("6", "B:team", "SEND 11\nhello again") #> ("6", "C:bob", SENT 2)
+  alice <# ("6", "B:team", SENT 0)
+  bob <#= \case ("", "C:alice", Msg "hello again") -> True; _ -> False
+  tom #:# "nothing delivered to tom"
+  -- commands with errors
+  alice #: ("e5", "B:group", "REM C:bob") #> ("e5", "B:group", ERR $ BCAST B_NOT_FOUND)
+  alice #: ("e6", "B:team", "REM C:unknown") #> ("e6", "B:team", ERR $ CONN NOT_FOUND)
+  alice #: ("e7", "B:team", "REM C:tom") #> ("e7", "B:team", ERR $ CONN NOT_FOUND)
+  -- delete broadcast
+  alice #: ("7", "B:team", "DEL") #> ("7", "B:team", OK)
+  alice #: ("8", "B:team", "SEND 11\ntry sending") #> ("8", "B:team", ERR $ BCAST B_NOT_FOUND)
+  -- commands with errors
+  alice #: ("9", "B:team", "DEL") #> ("9", "B:team", ERR $ BCAST B_NOT_FOUND)
+  alice #: ("10", "B:group", "DEL") #> ("10", "B:group", ERR $ BCAST B_NOT_FOUND)
+  where
+    connect :: (c, ByteString) -> (c, ByteString) -> IO ()
+    connect (h1, name1) (h2, name2) = do
+      ("1", _, Right (Inv qInfo)) <- h1 #: ("1", "C:" <> name2, "NEW")
+      let qInfo' = serializeSmpQueueInfo qInfo
+      h2 #: ("2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
+      h1 <#= \case ("", c2, APartyCmd CON) -> c2 == "C:" <> name2; _ -> False
 
 samplePublicKey :: ByteString
 samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
