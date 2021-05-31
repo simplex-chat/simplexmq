@@ -84,7 +84,7 @@ migrateSchema SQLiteStore {dbConn, dbFilePath, dbNew} = do
     Right [] -> pure ()
     Right ms -> do
       unless dbNew $ do
-        confirmOrExit "The app has a newer version that the database - it will be backed up and upgraded."
+        confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
         copyFile dbFilePath $ dbFilePath <> ".bak"
       Migrations.run dbConn ms
 
