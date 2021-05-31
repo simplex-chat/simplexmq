@@ -175,14 +175,14 @@ testBroadcast _ alice bob tom = do
   alice #: ("7", "B:team", "DEL") #> ("7", "B:team", OK)
   alice #: ("8", "B:team", "SEND 11\ntry sending") #> ("8", "B:team", ERR $ BCAST B_NOT_FOUND)
   -- commands with errors
-  alice #: ("9", "B:team", "DEL") #> ("9", "B:team", ERR $ BCAST B_NOT_FOUND)
-  alice #: ("10", "B:group", "DEL") #> ("10", "B:group", ERR $ BCAST B_NOT_FOUND)
+  alice #: ("e8", "B:team", "DEL") #> ("e8", "B:team", ERR $ BCAST B_NOT_FOUND)
+  alice #: ("e9", "B:group", "DEL") #> ("e9", "B:group", ERR $ BCAST B_NOT_FOUND)
   where
     connect :: (c, ByteString) -> (c, ByteString) -> IO ()
     connect (h1, name1) (h2, name2) = do
-      ("1", _, Right (Inv qInfo)) <- h1 #: ("1", "C:" <> name2, "NEW")
+      ("c1", _, Right (Inv qInfo)) <- h1 #: ("c1", "C:" <> name2, "NEW")
       let qInfo' = serializeSmpQueueInfo qInfo
-      h2 #: ("2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
+      h2 #: ("c2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
       h1 <#= \case ("", c2, APartyCmd CON) -> c2 == "C:" <> name2; _ -> False
 
 samplePublicKey :: ByteString
