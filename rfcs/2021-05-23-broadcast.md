@@ -4,7 +4,7 @@
 
 Support agent message broadcast to multiple connections.
 
-It is done in ad-hoc way as part of the previous [groups proposal](./2021-05-15-groups.md) - this proposal defines broadcast as a separate agent primitive to simplify group management.
+It is done in ad-hoc way as part of the previous [groups proposal](./2021-05-23-groups2.md) - this proposal defines broadcast as a separate agent primitive to simplify group management.
 
 It can also be used for other purposes when the same message needs to be sent to multiple recipients without creating groups.
 
@@ -18,12 +18,12 @@ From the point of view of the recipient this will look like a normal message, as
 
 - command `B:bId? NEW` - create broadcast (response is `B:bId OK`, or `ERR` if broadcast already exists)
 - command `B:bId ADD C:cId` - add existing connection to a broadcast (response is `B:bId OK` or `ERR`, e.g. if connection already added or does not exist)
-- command `B:bId SEND msg` - broadcast message (response is multiple `C:cId SENT msgId` or ERR, separately for each connection)
+- command `B:bId SEND msg` - broadcast message (response is multiple `B:cId SENT [C:bId] msgId` or ERR, separately for each connection and then for the broadcast)
 - message `B:bId SENT [C:bId] msgId` - notification that the message is sent to a specific or all recipients
 - command `B:bId REM C:cId` - remove connection from broadcast (response is `B:bId OK` or `ERR`)
 - message `B:bId EMPTY` - all connections were removed from the broadcast
-- command `B:bId DEL` - delete broadcast (response is `B:bId OK`)
-- command `B:bId LS` - list connections in broadcast, response is `MEM space_separated_connections`
+- command `B:bId DEL` - delete broadcast (response is `B:bId OK` and when the last connection is removed an additional `B:bId EMPTY` is sent)
+- command `B:bId LS` - list connections in broadcast, response is `B:Id MS space_separated_connections`
 - message `B:bId MS space_separated_connections`
 
 ## Questions
