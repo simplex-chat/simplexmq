@@ -15,7 +15,7 @@ cfg :: AgentConfig
 cfg =
   AgentConfig
     { tcpPort = "5224",
-      smpServers = L.fromList ["localhost:5223#KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="],
+      smpServers = L.fromList ["localhost:5223#bU0K+bRg24xWW//lS0umO1Zdw/SXqpJNtm1/RrPLViE="],
       rsaKeySize = 2048 `div` 8,
       connIdBytes = 12,
       tbqSize = 16,

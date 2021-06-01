@@ -70,7 +70,7 @@ jobs:
       - name: Build & test
         id: build_test
         run: |
-          stack build --test
+          stack build --test --force-dirty
           echo "::set-output name=LOCAL_INSTALL_ROOT::$(stack path --local-install-root)"
 
       - name: Upload binaries to release
