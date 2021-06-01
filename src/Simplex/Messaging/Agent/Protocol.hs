@@ -171,6 +171,13 @@ deriving instance Eq (Entity t)
 
 deriving instance Show (Entity t)
 
+instance TestEquality Entity where
+  testEquality (Conn c) (Conn c') = refl c c'
+  testEquality (OpenConn c) (OpenConn c') = refl c c'
+  testEquality (Broadcast c) (Broadcast c') = refl c c'
+  testEquality (AGroup c) (AGroup c') = refl c c'
+  testEquality _ _ = Nothing
+
 entityId :: Entity t -> ByteString
 entityId = \case
   Conn bs -> bs
@@ -195,6 +202,9 @@ type family EntityCommand (t :: EntityTag) (c :: ACmdTag) :: Constraint where
   EntityCommand Conn_ NEW_ = ()
   EntityCommand Conn_ INV_ = ()
   EntityCommand Conn_ JOIN_ = ()
+  EntityCommand Conn_ INTRO_ = ()
+  EntityCommand Conn_ REQ_ = ()
+  EntityCommand Conn_ ACPT_ = ()
   EntityCommand Conn_ CON_ = ()
   EntityCommand Conn_ SUB_ = ()
   EntityCommand Conn_ SUBALL_ = ()
@@ -226,6 +236,9 @@ entityCommand = \case
     NEW -> Just Dict
     INV _ -> Just Dict
     JOIN {} -> Just Dict
+    INTRO {} -> Just Dict
+    REQ {} -> Just Dict
+    ACPT {} -> Just Dict
     CON -> Just Dict
     SUB -> Just Dict
     SUBALL -> Just Dict
@@ -258,6 +271,9 @@ data ACmdTag
   = NEW_
   | INV_
   | JOIN_
+  | INTRO_
+  | REQ_
+  | ACPT_
   | CON_
   | SUB_
   | SUBALL_
@@ -274,11 +290,29 @@ data ACmdTag
   | OK_
   | ERR_
 
+type family Introduction (t :: EntityTag) :: Constraint where
+  Introduction Conn_ = ()
+  Introduction OpenConn_ = ()
+  Introduction AGroup_ = ()
+  Introduction t = (Int ~ Bool, TypeError (Text "Entity " :<>: ShowType t :<>: Text " cannot be INTRO'd to"))
+
+data IntroEntity = forall t. Introduction t => IE (Entity t)
+
+instance Eq IntroEntity where
+  IE e1 == IE e2 = isJust $ testEquality e1 e2
+
+deriving instance Show IntroEntity
+
+type EntityInfo = ByteString
+
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) (c :: ACmdTag) where
   NEW :: ACommand Client NEW_ -- response INV
   INV :: SMPQueueInfo -> ACommand Agent INV_
   JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client JOIN_ -- response OK
+  INTRO :: IntroEntity -> EntityInfo -> ACommand Client INTRO_
+  REQ :: IntroEntity -> EntityInfo -> ACommand Agent INTRO_
+  ACPT :: IntroEntity -> ACommand Client ACPT_
   CON :: ACommand Agent CON_ -- notification that connection is established
   -- TODO currently it automatically allows whoever sends the confirmation
   -- CONF :: OtherPartyId -> ACommand Agent
@@ -334,7 +368,7 @@ instance TestEquality (ACommand p) where
   testEquality c@ERR {} c'@ERR {} = refl c c'
   testEquality _ _ = Nothing
 
-refl :: Eq (f a) => f a -> f a -> Maybe (a :~: a)
+refl :: Eq a => a -> a -> Maybe (t :~: t)
 refl x x' = if x == x' then Just Refl else Nothing
 
 -- | SMP message formats.
@@ -619,6 +653,15 @@ anEntityP =
 entityConnP :: Parser (Entity Conn_)
 entityConnP = "C:" *> (Conn <$> A.takeTill (== ' '))
 
+introEntityP :: Parser IntroEntity
+introEntityP =
+  ($)
+    <$> ( "C:" $> IE . Conn
+            <|> "O:" $> IE . OpenConn
+            <|> "G:" $> IE . AGroup
+        )
+    <*> A.takeTill (== ' ')
+
 serializeEntity :: Entity t -> ByteString
 serializeEntity = \case
   Conn s -> "C:" <> s
@@ -632,6 +675,9 @@ commandP =
   "NEW" $> ACmd SClient NEW
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
+    <|> "INTRO " *> introCmd
+    <|> "REQ " *> reqCmd
+    <|> "ACPT " *> acptCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "SUBALL" $> ACmd SClient SUBALL -- TODO remove - hack for subscribing to all
     <|> "END" $> ACmd SAgent END
@@ -650,6 +696,9 @@ commandP =
   where
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
+    introCmd = ACmd SClient <$> (INTRO <$> introEntityP <* A.space <*> A.takeByteString)
+    reqCmd = ACmd SAgent <$> (REQ <$> introEntityP <* A.space <*> A.takeByteString)
+    acptCmd = ACmd SClient . ACPT <$> introEntityP
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
     addCmd = ACmd SClient . ADD <$> entityConnP
@@ -685,6 +734,9 @@ serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
+  INTRO (IE entity) eInfo -> "INTRO " <> intro entity eInfo
+  REQ (IE entity) eInfo -> "REQ " <> intro entity eInfo
+  ACPT (IE entity) -> "ACPT " <> serializeEntity entity
   SUB -> "SUB"
   SUBALL -> "SUBALL" -- TODO remove - hack for subscribing to all
   END -> "END"
@@ -715,6 +767,8 @@ serializeCommand = \case
       ReplyMode On -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
+    intro :: Entity t -> ByteString -> ByteString
+    intro entity eInfo = serializeEntity entity <> " " <> serializeMsg eInfo
 
 -- | Serialize message integrity validation result.
 serializeMsgIntegrity :: MsgIntegrity -> ByteString

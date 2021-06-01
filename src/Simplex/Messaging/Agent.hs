@@ -176,6 +176,8 @@ processConnCommand ::
 processConnCommand c@AgentClient {sndQ} st corrId conn = \case
   NEW -> createNewConnection conn
   JOIN smpQueueInfo replyMode -> joinConnection conn smpQueueInfo replyMode
+  INTRO {} -> respond conn $ ERR $ CMD UNSUPPORTED
+  ACPT {} -> respond conn $ ERR $ CMD UNSUPPORTED
   SUB -> subscribeConnection conn
   SUBALL -> subscribeAll
   SEND msgBody -> sendMessage c st corrId conn msgBody
