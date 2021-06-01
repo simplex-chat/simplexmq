@@ -62,7 +62,8 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 You can get Linode [free credits](https://www.linode.com/lp/affiliate-referral/?irclickid=02-QkdTEpxyLW0W0EOSREQreUkB2DtzGE2lGTE0&irgwc=1&utm_source=impact) to deploy SMP server.
 
-To deploy SMP server on [Linode](https://www.linode.com/):
+Deployment on [Linode](https://www.linode.com/) is performed via StackScripts, which serve as recipes for Linode instances, also called Linodes. To deploy SMP server on Linode:
+
 - Create a Linode account or login with an already existing one.
 - Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".
 - You can optionally configure the following parameters:
@@ -70,16 +71,27 @@ To deploy SMP server on [Linode](https://www.linode.com/):
     - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server address, public key hash, version) and adding A record to your 2nd level domain (Note: 2nd level e.g. `example.com` domain should be [created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access to "linodes" (to update linode tags - you need them), and "domains" (to add A record for the 3rd level domain, e.g. `smp`).
     - Domain name to use instead of Linode ip address, e.g. `smp.example.com`.
 - Choose the region and plan according to your requirements (for regular use Shared CPU Nanode should be sufficient).
-- Provide ssh key to be able to connect to your Linode via ssh. This step is required if you haven't provided a Linode API token, because you will need to login to your Linode and get a public key hash either from the welcome message or from the file `/root/simplex.conf` on your Linode after SMP server starts.
+- Provide ssh key to be able to connect to your Linode via ssh. This step is required if you haven't provided a Linode API token, because you will need to login to your Linode and get a public key hash either from the welcome message or from the file `/etc/opt/simplex/pub_key_hash` on your Linode after SMP server starts.
 - Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode. Connecting Linode IP address to provided domain name may take some additional time.
 - Get `hostname` and `hash` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh. Linode has a good [guide](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) about ssh.
 - Great, your own SMP server is ready! Use `address#hash` as SMP server address in the client.
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
-## 🚧 Deploy SMP server on DigitalOcean 🚧
+[<img alt="digitalocean" src="./img/digitalocean.svg" align="right" width="200">](TODO)
 
-Coming soon.
+## Deploy SMP server on DigitalOcean
+
+[DigitalOcean](https://cloud.digitalocean.com) operates on the concept of Droplets. Droplet is a unit of deployment instantiated based on a Snapshot. You can deploy SMP server using provided [Snapshot](TODO):
+
+- Create a DigitalOcean account or login with an already existing one.
+- [Create Droplet](https://cloud.digitalocean.com/droplets/new?size=s-1vcpu-1gb&region=fra1).
+- Choose the region and plan according to your requirements (cheapest Regular plan should be sufficient).
+- Provide [ssh key](https://www.digitalocean.com/community/tutorials/how-to-set-up-ssh-keys-2) and confirm Droplet creation. 
+- Ssh to created Droplet (`ssh root@<droplet_ip_address>`) to get SMP server public key hash - either from the welcome message or from `/etc/opt/simplex/pub_key_hash`. DigitalOcean has a good guide on [how to login to Droplet via ssh](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
+- Great, your own SMP server is ready! Use `ip_address#hash` as SMP server address in the client.
+
+Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
 ## SMP server design
 
