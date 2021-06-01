@@ -743,7 +743,7 @@ bcastExists_ :: DB.Connection -> BroadcastId -> IO Bool
 bcastExists_ dbConn bId = not . null <$> queryBcast
   where
     queryBcast :: IO [Only BroadcastId]
-    queryBcast = DB.query dbConn "SELECT broadcast_id FROM broadcasts WHERE broadcast_id = ?" (Only bId)
+    queryBcast = DB.query dbConn "SELECT broadcast_id FROM broadcasts WHERE broadcast_id = ?;" (Only bId)
 
 bcastConnExists_ :: DB.Connection -> BroadcastId -> ConnAlias -> IO Bool
 bcastConnExists_ dbConn bId connAlias = not . null <$> queryBcastConn
@@ -755,6 +755,6 @@ bcastConnExists_ dbConn bId connAlias = not . null <$> queryBcastConn
         [sql|
           SELECT broadcast_id, conn_alias
           FROM broadcast_connections
-          WHERE broadcast_id = ? AND conn_alias = ?
+          WHERE broadcast_id = ? AND conn_alias = ?;
         |]
         (bId, connAlias)
