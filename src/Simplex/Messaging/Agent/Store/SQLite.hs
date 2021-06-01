@@ -107,12 +107,12 @@ connectSQLiteStore dbFilePath = do
     |]
   pure SQLiteStore {dbFilePath, dbConn, dbNew}
 
-checkDuplicate :: (MonadUnliftIO m, MonadError StoreError m) => IO () -> m ()
-checkDuplicate action = liftIOEither $ first handleError <$> E.try action
+checkConstraint :: StoreError -> IO () -> IO (Either StoreError ())
+checkConstraint err action = first handleError <$> E.try action
   where
     handleError :: SQLError -> StoreError
     handleError e
-      | DB.sqlError e == DB.ErrorConstraint = SEConnDuplicate
+      | DB.sqlError e == DB.ErrorConstraint = err
       | otherwise = SEInternal $ bshow e
 
 withTransaction :: forall a. DB.Connection -> IO a -> IO a
@@ -130,19 +130,21 @@ withTransaction db a = loop 100 100_000
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> RcvQueue -> m ()
   createRcvConn SQLiteStore {dbConn} q@RcvQueue {server} =
-    checkDuplicate $
-      withTransaction dbConn $ do
-        upsertServer_ dbConn server
-        insertRcvQueue_ dbConn q
-        insertRcvConnection_ dbConn q
+    liftIOEither $
+      checkConstraint SEConnDuplicate $
+        withTransaction dbConn $ do
+          upsertServer_ dbConn server
+          insertRcvQueue_ dbConn q
+          insertRcvConnection_ dbConn q
 
   createSndConn :: SQLiteStore -> SndQueue -> m ()
   createSndConn SQLiteStore {dbConn} q@SndQueue {server} =
-    checkDuplicate $
-      withTransaction dbConn $ do
-        upsertServer_ dbConn server
-        insertSndQueue_ dbConn q
-        insertSndConnection_ dbConn q
+    liftIOEither $
+      checkConstraint SEConnDuplicate $
+        withTransaction dbConn $ do
+          upsertServer_ dbConn server
+          insertSndQueue_ dbConn q
+          insertSndConnection_ dbConn q
 
   getConn :: SQLiteStore -> ConnAlias -> m SomeConn
   getConn SQLiteStore {dbConn} connAlias =
@@ -182,7 +184,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   upgradeRcvConnToDuplex SQLiteStore {dbConn} connAlias sq@SndQueue {server} =
     liftIOEither . withTransaction dbConn $
       getConn_ dbConn connAlias >>= \case
-        Right (SomeConn SCRcv (RcvConnection _ _)) -> do
+        Right (SomeConn _ RcvConnection {}) -> do
           upsertServer_ dbConn server
           insertSndQueue_ dbConn sq
           updateConnWithSndQueue_ dbConn connAlias sq
@@ -194,7 +196,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   upgradeSndConnToDuplex SQLiteStore {dbConn} connAlias rq@RcvQueue {server} =
     liftIOEither . withTransaction dbConn $
       getConn_ dbConn connAlias >>= \case
-        Right (SomeConn SCSnd (SndConnection _ _)) -> do
+        Right (SomeConn _ SndConnection {}) -> do
           upsertServer_ dbConn server
           insertRcvQueue_ dbConn rq
           updateConnWithRcvQueue_ dbConn connAlias rq
@@ -204,7 +206,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueStatus SQLiteStore {dbConn} RcvQueue {rcvId, server = SMPServer {host, port}} status =
-    -- ? throw error if queue doesn't exist?
+    -- ? throw error if queue does not exist?
     liftIO $
       DB.executeNamed
         dbConn
@@ -217,7 +219,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
   setRcvQueueActive SQLiteStore {dbConn} RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
-    -- ? throw error if queue doesn't exist?
+    -- ? throw error if queue does not exist?
     liftIO $
       DB.executeNamed
         dbConn
@@ -235,7 +237,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
   setSndQueueStatus SQLiteStore {dbConn} SndQueue {sndId, server = SMPServer {host, port}} status =
-    -- ? throw error if queue doesn't exist?
+    -- ? throw error if queue does not exist?
     liftIO $
       DB.executeNamed
         dbConn
@@ -280,6 +282,48 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getMsg :: SQLiteStore -> ConnAlias -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
+
+  createBcast :: SQLiteStore -> BroadcastId -> m ()
+  createBcast SQLiteStore {dbConn} bId =
+    liftIOEither $
+      checkConstraint SEBcastDuplicate $
+        DB.execute dbConn "INSERT INTO broadcasts (broadcast_id) VALUES (?);" (Only bId)
+
+  addBcastConn :: SQLiteStore -> BroadcastId -> ConnAlias -> m ()
+  addBcastConn SQLiteStore {dbConn} bId connAlias =
+    liftIOEither . checkBroadcast dbConn bId $
+      getConn_ dbConn connAlias >>= \case
+        Left _ -> pure $ Left SEConnNotFound
+        Right (SomeConn _ RcvConnection {}) -> pure . Left $ SEBadConnType CRcv
+        Right _ ->
+          checkConstraint SEConnDuplicate $
+            DB.execute
+              dbConn
+              "INSERT INTO broadcast_connections (broadcast_id, conn_alias) VALUES (?, ?);"
+              (bId, connAlias)
+
+  removeBcastConn :: SQLiteStore -> BroadcastId -> ConnAlias -> m ()
+  removeBcastConn SQLiteStore {dbConn} bId connAlias =
+    liftIOEither . checkBroadcast dbConn bId $
+      bcastConnExists_ dbConn bId connAlias >>= \case
+        False -> pure $ Left SEConnNotFound
+        _ ->
+          Right
+            <$> DB.execute
+              dbConn
+              "DELETE FROM broadcast_connections WHERE broadcast_id = ? AND conn_alias = ?;"
+              (bId, connAlias)
+
+  deleteBcast :: SQLiteStore -> BroadcastId -> m ()
+  deleteBcast SQLiteStore {dbConn} bId =
+    liftIOEither . checkBroadcast dbConn bId $
+      Right <$> DB.execute dbConn "DELETE FROM broadcasts WHERE broadcast_id = ?;" (Only bId)
+
+  getBcast :: SQLiteStore -> BroadcastId -> m [ConnAlias]
+  getBcast SQLiteStore {dbConn} bId =
+    liftIOEither . checkBroadcast dbConn bId $
+      Right . map fromOnly
+        <$> DB.query dbConn "SELECT conn_alias FROM broadcast_connections WHERE broadcast_id = ?;" (Only bId)
 
 -- * Auxiliary helpers
 
@@ -686,3 +730,31 @@ updateHashSnd_ dbConn connAlias SndMsgData {..} =
       ":conn_alias" := connAlias,
       ":last_internal_snd_msg_id" := internalSndId
     ]
+
+-- * Broadcast helpers
+
+checkBroadcast :: DB.Connection -> BroadcastId -> IO (Either StoreError a) -> IO (Either StoreError a)
+checkBroadcast dbConn bId action =
+  withTransaction dbConn $ do
+    ok <- bcastExists_ dbConn bId
+    if ok then action else pure $ Left SEBcastNotFound
+
+bcastExists_ :: DB.Connection -> BroadcastId -> IO Bool
+bcastExists_ dbConn bId = not . null <$> queryBcast
+  where
+    queryBcast :: IO [Only BroadcastId]
+    queryBcast = DB.query dbConn "SELECT broadcast_id FROM broadcasts WHERE broadcast_id = ?;" (Only bId)
+
+bcastConnExists_ :: DB.Connection -> BroadcastId -> ConnAlias -> IO Bool
+bcastConnExists_ dbConn bId connAlias = not . null <$> queryBcastConn
+  where
+    queryBcastConn :: IO [(BroadcastId, ConnAlias)]
+    queryBcastConn =
+      DB.query
+        dbConn
+        [sql|
+          SELECT broadcast_id, conn_alias
+          FROM broadcast_connections
+          WHERE broadcast_id = ? AND conn_alias = ?;
+        |]
+        (bId, connAlias)
