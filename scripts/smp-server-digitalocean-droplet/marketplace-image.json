@@ -22,9 +22,7 @@
       "type": "shell",
       "inline": [
         "cloud-init status --wait",
-        "mkdir -p /opt/simplex/bin",
-        "mkdir -p /etc/opt/simplex",
-        "mkdir -p /var/opt/simplex"
+        "mkdir -p /opt/simplex"
       ]
     },
     {
