@@ -37,7 +37,7 @@ data Env = Env
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv config = do
   idsDrg <- newTVarIO =<< drgNew
-  _ <- createSQLiteStore $ dbFile config
+  _ <- liftIO $ createSQLiteStore $ dbFile config
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   return Env {config, idsDrg, clientCounter, reservedMsgSize, randomServer}
