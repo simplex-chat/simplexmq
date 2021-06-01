@@ -33,6 +33,7 @@ module Simplex.Messaging.Agent.Protocol
     Entity (..),
     EntityTag (..),
     AnEntity (..),
+    IntroEntity (..),
     EntityCommand,
     entityCommand,
     ACommand (..),
@@ -400,6 +401,14 @@ data AMessage where
   REPLY :: SMPQueueInfo -> AMessage
   -- | agent envelope for the client message
   A_MSG :: MsgBody -> AMessage
+  -- | agent message for introduction
+  A_INTRO :: IntroEntity -> EntityInfo -> AMessage
+  -- | agent envelope for the sent invitation
+  A_INV :: Entity Conn_ -> SMPQueueInfo -> EntityInfo -> AMessage
+  -- | agent envelope for the forwarded invitation
+  A_REQ :: Entity Conn_ -> SMPQueueInfo -> EntityInfo -> AMessage
+  -- | agent message for intro/group request
+  A_CON :: Entity Conn_ -> AMessage
   deriving (Show)
 
 -- | Parse SMP message.
@@ -442,12 +451,22 @@ agentMessageP =
   "HELLO " *> hello
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
+    <|> "INTRO " *> a_intro
+    <|> "INV " *> a_inv
+    <|> "REQ " *> a_req
+    <|> "CON " *> a_con
   where
     hello = HELLO <$> C.pubKeyP <*> ackMode
     reply = REPLY <$> smpQueueInfoP
-    a_msg = do
+    a_msg = A_MSG <$> binaryBody
+    a_intro = A_INTRO <$> introEntityP <* A.space <*> binaryBody
+    a_inv = invP A_INV
+    a_req = invP A_REQ
+    a_con = A_CON <$> entityConnP
+    invP f = f <$> entityConnP <* A.space <*> smpQueueInfoP <* A.space <*> binaryBody
+    binaryBody = do
       size :: Int <- A.decimal <* A.endOfLine
-      A_MSG <$> A.take size <* A.endOfLine
+      A.take size <* A.endOfLine
     ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
 -- | SMP queue information parser.
@@ -468,6 +487,13 @@ serializeAgentMessage = \case
   HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
   A_MSG body -> "MSG " <> serializeMsg body <> "\n"
+  A_INTRO (IE entity) eInfo -> "INTRO " <> serializeIntro entity eInfo
+  A_INV conn qInfo eInfo -> "INV " <> serializeInv conn qInfo eInfo
+  A_REQ conn qInfo eInfo -> "REQ " <> serializeInv conn qInfo eInfo
+  A_CON conn -> "CON " <> serializeEntity conn
+  where
+    serializeInv conn qInfo eInfo =
+      B.intercalate " " [serializeEntity conn, serializeSmpQueueInfo qInfo, serializeMsg eInfo] <> "\n"
 
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
@@ -734,8 +760,8 @@ serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
-  INTRO (IE entity) eInfo -> "INTRO " <> intro entity eInfo
-  REQ (IE entity) eInfo -> "REQ " <> intro entity eInfo
+  INTRO (IE entity) eInfo -> "INTRO " <> serializeIntro entity eInfo
+  REQ (IE entity) eInfo -> "REQ " <> serializeIntro entity eInfo
   ACPT (IE entity) -> "ACPT " <> serializeEntity entity
   SUB -> "SUB"
   SUBALL -> "SUBALL" -- TODO remove - hack for subscribing to all
@@ -767,8 +793,9 @@ serializeCommand = \case
       ReplyMode On -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
-    intro :: Entity t -> ByteString -> ByteString
-    intro entity eInfo = serializeEntity entity <> " " <> serializeMsg eInfo
+
+serializeIntro :: Entity t -> ByteString -> ByteString
+serializeIntro entity eInfo = serializeEntity entity <> " " <> serializeMsg eInfo
 
 -- | Serialize message integrity validation result.
 serializeMsgIntegrity :: MsgIntegrity -> ByteString

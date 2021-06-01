@@ -340,6 +340,10 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
                 HELLO verifyKey _ -> helloMsg verifyKey msgBody
                 REPLY qInfo -> replyMsg qInfo
                 A_MSG body -> agentClientMsg previousMsgHash (senderMsgId, senderTimestamp) (srvMsgId, srvTs) body msgHash
+                A_INTRO (IE _entity) _eInfo -> prohibited
+                A_INV _conn _qInfo _eInfo -> prohibited
+                A_REQ _conn _qInfo _eInfo -> prohibited
+                A_CON _conn -> prohibited
           sendAck c rq
           return ()
         SMP.END -> do
