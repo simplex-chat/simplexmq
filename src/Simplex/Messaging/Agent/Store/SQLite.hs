@@ -22,10 +22,13 @@ module Simplex.Messaging.Agent.Store.SQLite
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.STM (TVar, atomically, stateTVar)
 import Control.Monad (unless, when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Bifunctor (first)
+import Data.ByteString (ByteString)
 import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
@@ -758,3 +761,18 @@ bcastConnExists_ dbConn bId connAlias = not . null <$> queryBcastConn
           WHERE broadcast_id = ? AND conn_alias = ?;
         |]
         (bId, connAlias)
+
+-- create record with a random ID
+
+createWithRandomId :: TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
+createWithRandomId gVar create = tryCreate 3
+  where
+    tryCreate :: Int -> IO (Either StoreError ByteString)
+    tryCreate 0 = pure $ Left SEUniqueID
+    tryCreate n = do
+      id' :: ByteString <- atomically . stateTVar gVar $ randomBytesGenerate 12
+      E.try (create id') >>= \case
+        Right _ -> pure $ Right id'
+        Left e
+          | DB.sqlError e == DB.ErrorConstraint -> tryCreate (n - 1)
+          | otherwise -> pure . Left . SEInternal $ bshow e

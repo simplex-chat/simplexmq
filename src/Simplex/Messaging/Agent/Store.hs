@@ -287,6 +287,8 @@ type InternalTs = UTCTime
 data StoreError
   = -- | IO exceptions in store actions.
     SEInternal ByteString
+  | -- | failed to generate unique random ID
+    SEUniqueID
   | -- | Connection alias not found (or both queues absent).
     SEConnNotFound
   | -- | Connection alias already used.
