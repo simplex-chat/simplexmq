@@ -9,7 +9,9 @@
 
 module Simplex.Messaging.Agent.Store where
 
+import Control.Concurrent.STM (TVar)
 import Control.Exception (Exception)
+import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -57,6 +59,17 @@ class Monad m => MonadAgentStore s m where
   removeBcastConn :: s -> BroadcastId -> ConnAlias -> m ()
   deleteBcast :: s -> BroadcastId -> m ()
   getBcast :: s -> BroadcastId -> m [ConnAlias]
+
+  -- Introductions
+  createIntro :: s -> TVar ChaChaDRG -> NewIntroduction -> m IntroId
+  getIntro :: s -> IntroId -> m Introduction
+  addIntroInvitation :: s -> IntroId -> EntityInfo -> SMPQueueInfo -> m ()
+  setIntroToStatus :: s -> IntroId -> IntroStatus -> m ()
+  setIntroReStatus :: s -> IntroId -> IntroStatus -> m ()
+  createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
+  getInvitation :: s -> InvitationId -> m Invitation
+  addInvitationConn :: s -> InvitationId -> ConnAlias -> m ()
+  setInvitationStatus :: s -> InvitationId -> InvitationStatus -> m ()
 
 -- * Queue types
 
@@ -280,6 +293,49 @@ data MsgBase = MsgBase
 newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
 
 type InternalTs = UTCTime
+
+-- * Introduction types
+
+data NewIntroduction = NewIntroduction
+  { toConn :: ConnAlias,
+    reConn :: ConnAlias,
+    reInfo :: ByteString
+  }
+
+data Introduction = Introduction
+  { introId :: IntroId,
+    toConn :: ConnAlias,
+    toInfo :: Maybe ByteString,
+    toStatus :: IntroStatus,
+    reConn :: ConnAlias,
+    reInfo :: ByteString,
+    reStatus :: IntroStatus,
+    qInfo :: SMPQueueInfo
+  }
+
+data IntroStatus = IntroNew | IntroInv | IntroCon
+
+type IntroId = ByteString
+
+data NewInvitation = NewInvitation
+  { viaConn :: ConnAlias,
+    externalIntroId :: IntroId,
+    entityInfo :: EntityInfo,
+    qInfo :: Maybe SMPQueueInfo
+  }
+
+data Invitation = Invitation
+  { viaConn :: ConnAlias,
+    externalIntroId :: IntroId,
+    entityInfo :: EntityInfo,
+    qInfo :: Maybe SMPQueueInfo,
+    conn :: Maybe ConnAlias,
+    status :: InvitationStatus
+  }
+
+data InvitationStatus = InvNew | InvAcpt | InvCon
+
+type InvitationId = ByteString
 
 -- * Store errors
 

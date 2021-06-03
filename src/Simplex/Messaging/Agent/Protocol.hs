@@ -34,6 +34,7 @@ module Simplex.Messaging.Agent.Protocol
     EntityTag (..),
     AnEntity (..),
     IntroEntity (..),
+    EntityInfo,
     EntityCommand,
     entityCommand,
     ACommand (..),
