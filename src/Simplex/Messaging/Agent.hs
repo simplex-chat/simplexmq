@@ -3,7 +3,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -485,8 +484,8 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
         conMsg :: Entity 'Conn_ -> m ()
         conMsg (Conn introId) = do
           logServer "<--" c srv rId "MSG <CON>"
-          Introduction {toConn, toStatus, reConn, reStatus} <- withStore $ getIntro st introId
-          if
+          withStore (getIntro st introId) >>= \case
+            Introduction {toConn, toStatus, reConn, reStatus}
               | toConn == connAlias && toStatus == IntroInv -> do
                 withStore $ setIntroToStatus st introId IntroCon
                 sendConMsg toConn reConn reStatus
