@@ -208,6 +208,7 @@ type family EntityCommand (t :: EntityTag) (c :: ACmdTag) :: Constraint where
   EntityCommand Conn_ REQ_ = ()
   EntityCommand Conn_ ACPT_ = ()
   EntityCommand Conn_ CON_ = ()
+  EntityCommand Conn_ ICON_ = ()
   EntityCommand Conn_ SUB_ = ()
   EntityCommand Conn_ SUBALL_ = ()
   EntityCommand Conn_ END_ = ()
@@ -242,6 +243,7 @@ entityCommand = \case
     REQ {} -> Just Dict
     ACPT {} -> Just Dict
     CON -> Just Dict
+    ICON {} -> Just Dict
     SUB -> Just Dict
     SUBALL -> Just Dict
     END -> Just Dict
@@ -277,6 +279,7 @@ data ACmdTag
   | REQ_
   | ACPT_
   | CON_
+  | ICON_
   | SUB_
   | SUBALL_
   | END_
@@ -316,9 +319,7 @@ data ACommand (p :: AParty) (c :: ACmdTag) where
   REQ :: IntroEntity -> EntityInfo -> ACommand Agent INTRO_
   ACPT :: IntroEntity -> EntityInfo -> ACommand Client ACPT_
   CON :: ACommand Agent CON_ -- notification that connection is established
-  -- TODO currently it automatically allows whoever sends the confirmation
-  -- CONF :: OtherPartyId -> ACommand Agent
-  -- LET :: OtherPartyId -> ACommand Client
+  ICON :: IntroEntity -> ACommand Agent ICON_
   SUB :: ACommand Client SUB_
   SUBALL :: ACommand Client SUBALL_ -- TODO should be moved to chat protocol - hack for subscribing to all
   END :: ACommand Agent END_
@@ -354,6 +355,7 @@ instance TestEquality (ACommand p) where
   testEquality c@INV {} c'@INV {} = refl c c'
   testEquality c@JOIN {} c'@JOIN {} = refl c c'
   testEquality CON CON = Just Refl
+  testEquality c@ICON {} c'@ICON {} = refl c c'
   testEquality SUB SUB = Just Refl
   testEquality SUBALL SUBALL = Just Refl
   testEquality END END = Just Refl
@@ -718,6 +720,7 @@ commandP =
     <|> "LS" $> ACmd SClient LS
     <|> "MS " *> membersResp
     <|> "ERR " *> agentError
+    <|> "ICON " *> iconMsg
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
@@ -731,6 +734,7 @@ commandP =
     addCmd = ACmd SClient . ADD <$> entityConnP
     removeCmd = ACmd SClient . REM <$> entityConnP
     membersResp = ACmd SAgent . MS <$> (entityConnP `A.sepBy'` A.char ' ')
+    iconMsg = ACmd SAgent . ICON <$> introEntityP
     message = do
       msgIntegrity <- msgIntegrityP <* A.space
       recipientMeta <- "R=" *> partyMeta A.decimal
@@ -786,6 +790,7 @@ serializeCommand = \case
   LS -> "LS"
   MS cs -> "MS " <> B.intercalate " " (map serializeEntity cs)
   CON -> "CON"
+  ICON (IE entity) -> "ICON " <> serializeEntity entity
   ERR e -> "ERR " <> serializeAgentError e
   OK -> "OK"
   where

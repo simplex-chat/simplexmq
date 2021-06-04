@@ -484,6 +484,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
 
         conMsg :: Entity 'Conn_ -> m ()
         conMsg (Conn introId) = do
+          logServer "<--" c srv rId "MSG <CON>"
           Introduction {toConn, toStatus, reConn, reStatus} <- withStore $ getIntro st introId
           if
               | toConn == connAlias && toStatus == IntroInv -> do
@@ -495,10 +496,9 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               | otherwise -> prohibited
           where
             sendConMsg :: ConnAlias -> ConnAlias -> IntroStatus -> m ()
-            -- TODO this notification should include connection ID _reConn
-            sendConMsg toConn _reConn IntroCon =
-              atomically . writeTBQueue sndQ $ ATransmission "" (Conn toConn) CON
-            sendConMsg _ _ _ = pure ()
+            sendConMsg toConn reConn = \case
+              IntroCon -> atomically . writeTBQueue sndQ $ ATransmission "" (Conn toConn) $ ICON $ IE (Conn reConn)
+              _ -> pure ()
 
         agentClientMsg :: PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
         agentClientMsg receivedPrevMsgHash senderMeta brokerMeta msgBody msgHash = do
