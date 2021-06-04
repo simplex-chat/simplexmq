@@ -232,7 +232,7 @@ processConnCommand c@AgentClient {sndQ} st corrId conn@(Conn connId) = \case
         withStore (getConn st connId) >>= \case
           SomeConn _ (DuplexConnection _ _ sq) ->
             withStore (getInvitation st invId) >>= \case
-              Invitation {qInfo = mbQInfo, externalIntroId, status = InvNew} -> case mbQInfo of
+              Invitation {qInfo, externalIntroId, status = InvNew} -> case qInfo of
                 Nothing -> do
                   (conn', INV qInfo') <- createNewConnection
                   withStore $ addInvitationConn st invId $ fromConn conn'
