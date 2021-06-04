@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -239,6 +240,8 @@ processConnCommand c@AgentClient {sndQ} st corrId conn@(Conn connId) = \case
                   sendControlMessage c sq $ A_INV (Conn externalIntroId) qInfo' eInfo
                   respond conn' OK
                 Just qInfo' -> do
+                  -- TODO when connection is established and CON is about to be sent,
+                  -- the agent has to also send A_CON message if the connection is in the result of the invitation
                   conn' <- joinConnection qInfo' (ReplyMode On)
                   withStore $ addInvitationConn st invId $ fromConn conn'
                   respond conn' OK
@@ -377,10 +380,10 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
                 HELLO verifyKey _ -> helloMsg verifyKey msgBody
                 REPLY qInfo -> replyMsg qInfo
                 A_MSG body -> agentClientMsg previousMsgHash (senderMsgId, senderTimestamp) (srvMsgId, srvTs) body msgHash
-                A_INTRO (IE _entity) _eInfo -> prohibited
-                A_INV _conn _qInfo _eInfo -> prohibited
-                A_REQ _conn _qInfo _eInfo -> prohibited
-                A_CON _conn -> prohibited
+                A_INTRO entity eInfo -> introMsg entity eInfo
+                A_INV conn qInfo cInfo -> invMsg conn qInfo cInfo
+                A_REQ conn qInfo cInfo -> reqMsg conn qInfo cInfo
+                A_CON conn -> conMsg conn
           sendAck c rq
           return ()
         SMP.END -> do
@@ -419,7 +422,7 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               void $ verifyMessage (Just verifyKey) msgBody
               withStore $ setRcvQueueActive st rq verifyKey
               case cType of
-                SCDuplex -> notify CON
+                SCDuplex -> connected
                 _ -> pure ()
 
         replyMsg :: SMPQueueInfo -> m ()
@@ -430,8 +433,72 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               (sq, senderKey, verifyKey) <- newSendQueue qInfo connAlias
               withStore $ upgradeRcvConnToDuplex st connAlias sq
               connectToSendQueue c st sq senderKey verifyKey
-              notify CON
+              connected
             _ -> prohibited
+
+        connected :: m ()
+        connected = do
+          notify CON
+        -- withStore (getConnInvitation st connAlias) >>= \case
+        --   Just (Invitation {externalIntroId}, DuplexConnection _ _ sq) ->
+        --     sendControlMessage c sq $ A_CON (Conn externalIntroId)
+        --   _ -> pure ()
+
+        introMsg :: IntroEntity -> EntityInfo -> m ()
+        introMsg (IE entity) entityInfo = do
+          logServer "<--" c srv rId "MSG <INTRO>"
+          case (cType, entity) of
+            (SCDuplex, intro@Conn {}) -> createInv intro Nothing entityInfo
+            _ -> prohibited
+
+        invMsg :: Entity 'Conn_ -> SMPQueueInfo -> EntityInfo -> m ()
+        invMsg (Conn introId) qInfo toInfo = do
+          logServer "<--" c srv rId "MSG <INV>"
+          case cType of
+            SCDuplex ->
+              withStore (getIntro st introId) >>= \case
+                Introduction {toConn, toStatus = IntroNew, reConn, reStatus = IntroNew}
+                  | toConn /= connAlias -> prohibited
+                  | otherwise -> do
+                    withStore (addIntroInvitation st introId toInfo qInfo >> getConn st reConn) >>= \case
+                      SomeConn _ (DuplexConnection _ _ sq) -> do
+                        sendControlMessage c sq $ A_REQ (Conn introId) qInfo toInfo
+                        withStore $ setIntroReStatus st introId IntroInv
+                      _ -> prohibited
+                _ -> prohibited
+            _ -> prohibited
+
+        reqMsg :: Entity 'Conn_ -> SMPQueueInfo -> EntityInfo -> m ()
+        reqMsg intro qInfo connInfo = do
+          logServer "<--" c srv rId "MSG <REQ>"
+          case cType of
+            SCDuplex -> createInv intro (Just qInfo) connInfo
+            _ -> prohibited
+
+        createInv :: Entity 'Conn_ -> Maybe SMPQueueInfo -> EntityInfo -> m ()
+        createInv (Conn externalIntroId) qInfo entityInfo = do
+          g <- asks idsDrg
+          let newInv = NewInvitation {viaConn = connAlias, externalIntroId, entityInfo, qInfo}
+          invId <- withStore $ createInvitation st g newInv
+          notify $ REQ (IE (Conn invId)) entityInfo
+
+        conMsg :: Entity 'Conn_ -> m ()
+        conMsg (Conn introId) = do
+          Introduction {toConn, toStatus, reConn, reStatus} <- withStore $ getIntro st introId
+          if
+              | toConn == connAlias && toStatus == IntroInv -> do
+                withStore $ setIntroToStatus st introId IntroCon
+                sendConMsg toConn reConn reStatus
+              | reConn == connAlias && reStatus == IntroInv -> do
+                withStore $ setIntroReStatus st introId IntroCon
+                sendConMsg toConn reConn toStatus
+              | otherwise -> prohibited
+          where
+            sendConMsg :: ConnAlias -> ConnAlias -> IntroStatus -> m ()
+            -- TODO this notification should include connection ID _reConn
+            sendConMsg toConn _reConn IntroCon =
+              atomically . writeTBQueue sndQ $ ATransmission "" (Conn toConn) CON
+            sendConMsg _ _ _ = pure ()
 
         agentClientMsg :: PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
         agentClientMsg receivedPrevMsgHash senderMeta brokerMeta msgBody msgHash = do

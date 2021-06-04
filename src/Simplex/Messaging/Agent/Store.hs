@@ -69,6 +69,7 @@ class Monad m => MonadAgentStore s m where
   createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   getInvitation :: s -> InvitationId -> m Invitation
   addInvitationConn :: s -> InvitationId -> ConnAlias -> m ()
+  getConnInvitation :: s -> ConnAlias -> m (Maybe (Invitation, Connection CDuplex))
   setInvitationStatus :: s -> InvitationId -> InvitationStatus -> m ()
 
 -- * Queue types
@@ -314,6 +315,7 @@ data Introduction = Introduction
   }
 
 data IntroStatus = IntroNew | IntroInv | IntroCon
+  deriving (Eq)
 
 type IntroId = ByteString
 
