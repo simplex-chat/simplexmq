@@ -334,6 +334,7 @@ data Invitation = Invitation
   }
 
 data InvitationStatus = InvNew | InvAcpt | InvCon
+  deriving (Eq)
 
 type InvitationId = ByteString
 

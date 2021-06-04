@@ -314,7 +314,7 @@ data ACommand (p :: AParty) (c :: ACmdTag) where
   JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client JOIN_ -- response OK
   INTRO :: IntroEntity -> EntityInfo -> ACommand Client INTRO_
   REQ :: IntroEntity -> EntityInfo -> ACommand Agent INTRO_
-  ACPT :: IntroEntity -> ACommand Client ACPT_
+  ACPT :: IntroEntity -> EntityInfo -> ACommand Client ACPT_
   CON :: ACommand Agent CON_ -- notification that connection is established
   -- TODO currently it automatically allows whoever sends the confirmation
   -- CONF :: OtherPartyId -> ACommand Agent
@@ -723,9 +723,9 @@ commandP =
   where
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
-    introCmd = ACmd SClient <$> (INTRO <$> introEntityP <* A.space <*> A.takeByteString)
-    reqCmd = ACmd SAgent <$> (REQ <$> introEntityP <* A.space <*> A.takeByteString)
-    acptCmd = ACmd SClient . ACPT <$> introEntityP
+    introCmd = ACmd SClient <$> introP INTRO
+    reqCmd = ACmd SAgent <$> introP REQ
+    acptCmd = ACmd SClient <$> introP ACPT
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
     addCmd = ACmd SClient . ADD <$> entityConnP
@@ -738,6 +738,7 @@ commandP =
       senderMeta <- "S=" *> partyMeta A.decimal
       msgBody <- A.takeByteString
       return $ ACmd SAgent MSG {recipientMeta, brokerMeta, senderMeta, msgIntegrity, msgBody}
+    introP f = f <$> introEntityP <* A.space <*> A.takeByteString
     replyMode = ReplyMode <$> (" NO_REPLY" $> Off <|> pure On)
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
@@ -763,7 +764,7 @@ serializeCommand = \case
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
   INTRO (IE entity) eInfo -> "INTRO " <> serializeIntro entity eInfo
   REQ (IE entity) eInfo -> "REQ " <> serializeIntro entity eInfo
-  ACPT (IE entity) -> "ACPT " <> serializeEntity entity
+  ACPT (IE entity) eInfo -> "ACPT " <> serializeIntro entity eInfo
   SUB -> "SUB"
   SUBALL -> "SUBALL" -- TODO remove - hack for subscribing to all
   END -> "END"
