@@ -175,7 +175,7 @@ processConnCommand ::
   forall c m. (AgentMonad m, EntityCommand 'Conn_ c) => AgentClient -> SQLiteStore -> ACorrId -> Entity 'Conn_ -> ACommand 'Client c -> m ()
 processConnCommand c@AgentClient {sndQ} st corrId conn@(Conn connId) = \case
   NEW -> createNewConnection >>= uncurry respond
-  JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode >>= (`respond` OK)
+  JOIN smpQueueInfo replyMode -> joinConnection smpQueueInfo replyMode >> pure () -- >>= (`respond` OK)
   INTRO reEntity reInfo -> makeIntroduction reEntity reInfo
   ACPT inv eInfo -> acceptInvitation inv eInfo
   SUB -> subscribeConnection conn
