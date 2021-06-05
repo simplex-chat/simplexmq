@@ -27,12 +27,15 @@ agentTests (ATransport t) = do
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" do
-    it "should connect via one server and one agent" $
+    it "should connect via one server and one agent" $ do
       smpAgentTest2_1_1 $ testDuplexConnection t
-    it "should connect via one server and 2 agents" $
+      smpAgentTest2_1_1 $ testDuplexConnRandomIds t
+    it "should connect via one server and 2 agents" $ do
       smpAgentTest2_2_1 $ testDuplexConnection t
-    it "should connect via 2 servers and 2 agents" $
+      smpAgentTest2_2_1 $ testDuplexConnRandomIds t
+    it "should connect via 2 servers and 2 agents" $ do
       smpAgentTest2_2_2 $ testDuplexConnection t
+      smpAgentTest2_2_2 $ testDuplexConnRandomIds t
   describe "Connection subscriptions" do
     it "should connect via one server and one agent" $
       smpAgentTest3_1_1 $ testSubscription t
@@ -93,9 +96,6 @@ h #:# err = tryGet `shouldReturn` ()
 pattern Msg :: MsgBody -> APartyCmd 'Agent
 pattern Msg msgBody <- APartyCmd MSG {msgBody, msgIntegrity = MsgOk}
 
-pattern Sent :: AgentMsgId -> APartyCmd 'Agent
-pattern Sent msgId <- APartyCmd (SENT msgId)
-
 pattern Inv :: SMPQueueInfo -> APartyCmd 'Agent
 pattern Inv invitation <- APartyCmd (INV invitation)
 
@@ -105,17 +105,36 @@ testDuplexConnection _ alice bob = do
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "C:alice", "JOIN " <> qInfo') #> ("", "C:alice", CON)
   alice <# ("", "C:bob", CON)
-  alice #: ("2", "C:bob", "SEND :hello") =#> \case ("2", "C:bob", Sent 1) -> True; _ -> False
-  alice #: ("3", "C:bob", "SEND :how are you?") =#> \case ("3", "C:bob", Sent 2) -> True; _ -> False
+  alice #: ("2", "C:bob", "SEND :hello") #> ("2", "C:bob", SENT 1)
+  alice #: ("3", "C:bob", "SEND :how are you?") #> ("3", "C:bob", SENT 2)
   bob <#= \case ("", "C:alice", Msg "hello") -> True; _ -> False
   bob <#= \case ("", "C:alice", Msg "how are you?") -> True; _ -> False
-  bob #: ("14", "C:alice", "SEND 9\nhello too") =#> \case ("14", "C:alice", Sent 3) -> True; _ -> False
+  bob #: ("14", "C:alice", "SEND 9\nhello too") #> ("14", "C:alice", SENT 3)
   alice <#= \case ("", "C:bob", Msg "hello too") -> True; _ -> False
-  bob #: ("15", "C:alice", "SEND 9\nmessage 1") =#> \case ("15", "C:alice", Sent 4) -> True; _ -> False
+  bob #: ("15", "C:alice", "SEND 9\nmessage 1") #> ("15", "C:alice", SENT 4)
   alice <#= \case ("", "C:bob", Msg "message 1") -> True; _ -> False
   alice #: ("5", "C:bob", "OFF") #> ("5", "C:bob", OK)
   bob #: ("17", "C:alice", "SEND 9\nmessage 3") #> ("17", "C:alice", ERR (SMP AUTH))
   alice #: ("6", "C:bob", "DEL") #> ("6", "C:bob", OK)
+  alice #:# "nothing else should be delivered to alice"
+
+testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
+testDuplexConnRandomIds _ alice bob = do
+  ("1", bobConn, Right (Inv qInfo)) <- alice #: ("1", "C:", "NEW")
+  let qInfo' = serializeSmpQueueInfo qInfo
+  ("", aliceConn, Right (APartyCmd CON)) <- bob #: ("11", "C:", "JOIN " <> qInfo')
+  alice <# ("", bobConn, CON)
+  alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, SENT 1)
+  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, SENT 2)
+  bob <#= \case ("", c, Msg "hello") -> c == aliceConn; _ -> False
+  bob <#= \case ("", c, Msg "how are you?") -> c == aliceConn; _ -> False
+  bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, SENT 3)
+  alice <#= \case ("", c, Msg "hello too") -> c == bobConn; _ -> False
+  bob #: ("15", aliceConn, "SEND 9\nmessage 1") #> ("15", aliceConn, SENT 4)
+  alice <#= \case ("", c, Msg "message 1") -> c == bobConn; _ -> False
+  alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
+  bob #: ("17", aliceConn, "SEND 9\nmessage 3") #> ("17", aliceConn, ERR (SMP AUTH))
+  alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
@@ -123,14 +142,14 @@ testSubscription _ alice1 alice2 bob = do
   ("1", "C:bob", Right (Inv qInfo)) <- alice1 #: ("1", "C:bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "C:alice", "JOIN " <> qInfo') #> ("", "C:alice", CON)
-  bob #: ("12", "C:alice", "SEND 5\nhello") =#> \case ("12", "C:alice", Sent _) -> True; _ -> False
-  bob #: ("13", "C:alice", "SEND 11\nhello again") =#> \case ("13", "C:alice", Sent _) -> True; _ -> False
+  bob #: ("12", "C:alice", "SEND 5\nhello") #> ("12", "C:alice", SENT 1)
+  bob #: ("13", "C:alice", "SEND 11\nhello again") #> ("13", "C:alice", SENT 2)
   alice1 <# ("", "C:bob", CON)
   alice1 <#= \case ("", "C:bob", Msg "hello") -> True; _ -> False
   alice1 <#= \case ("", "C:bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "C:bob", "SUB") #> ("21", "C:bob", OK)
   alice1 <# ("", "C:bob", END)
-  bob #: ("14", "C:alice", "SEND 2\nhi") =#> \case ("14", "C:alice", Sent _) -> True; _ -> False
+  bob #: ("14", "C:alice", "SEND 2\nhi") #> ("14", "C:alice", SENT 3)
   alice2 <#= \case ("", "C:bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
 
