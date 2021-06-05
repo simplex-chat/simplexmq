@@ -527,41 +527,40 @@ getConnData_ dbConn connId =
 
 getRcvQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
 getRcvQueueByConnAlias_ dbConn connId =
-  DB.query
-    dbConn
-    [sql|
-      SELECT
-        s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key,
-        q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
-      FROM rcv_queues q
-      INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-      WHERE q.conn_alias = ?;
-    |]
-    (Only connId)
-    >>= \case
-      [(keyHash, host, port, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] -> do
-        let srv = SMPServer host (deserializePort_ port) keyHash
-        return . Just $ RcvQueue srv rcvId rcvPrivateKey sndId sndKey decryptKey verifyKey status
-      _ -> return Nothing
+  rcvQueue
+    <$> DB.query
+      dbConn
+      [sql|
+        SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key,
+          q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
+        FROM rcv_queues q
+        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+        WHERE q.conn_alias = ?;
+      |]
+      (Only connId)
+  where
+    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] =
+      let srv = SMPServer host (deserializePort_ port) keyHash
+       in Just $ RcvQueue srv rcvId rcvPrivateKey sndId sndKey decryptKey verifyKey status
+    rcvQueue _ = Nothing
 
 getSndQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnAlias_ dbConn connId =
-  DB.query
-    dbConn
-    [sql|
-      SELECT
-        s.key_hash, q.host, q.port, q.snd_id,
-        q.snd_private_key, q.encrypt_key, q.sign_key, q.status
-      FROM snd_queues q
-      INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-      WHERE q.conn_alias = ?;
-    |]
-    (Only connId)
-    >>= \case
-      [(keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] -> do
-        let srv = SMPServer host (deserializePort_ port) keyHash
-        return . Just $ SndQueue srv sndId sndPrivateKey encryptKey signKey status
-      _ -> return Nothing
+  sndQueue
+    <$> DB.query
+      dbConn
+      [sql|
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.encrypt_key, q.sign_key, q.status
+        FROM snd_queues q
+        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+        WHERE q.conn_alias = ?;
+      |]
+      (Only connId)
+  where
+    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] =
+      let srv = SMPServer host (deserializePort_ port) keyHash
+       in Just $ SndQueue srv sndId sndPrivateKey encryptKey signKey status
+    sndQueue _ = Nothing
 
 -- * upgradeRcvConnToDuplex helpers
 
