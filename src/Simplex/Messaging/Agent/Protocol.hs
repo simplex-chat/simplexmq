@@ -55,7 +55,7 @@ module Simplex.Messaging.Agent.Protocol
     ATransmission (..),
     ATransmissionOrError (..),
     ARawTransmission,
-    ConnAlias,
+    ConnId,
     ReplyMode (..),
     AckMode (..),
     OnOff (..),
@@ -520,7 +520,7 @@ instance IsString SMPServer where
   fromString = parseString . parseAll $ smpServerP
 
 -- | SMP agent connection alias.
-type ConnAlias = ByteString
+type ConnId = ByteString
 
 -- | Connection modes.
 data OnOff = On | Off deriving (Eq, Show, Read)

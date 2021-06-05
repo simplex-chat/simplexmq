@@ -32,33 +32,33 @@ import qualified Simplex.Messaging.Protocol as SMP
 -- | Store class type. Defines store access methods for implementations.
 class Monad m => MonadAgentStore s m where
   -- Queue and Connection management
-  createRcvConn :: s -> RcvQueue -> m ()
-  createSndConn :: s -> SndQueue -> m ()
-  getConn :: s -> ConnAlias -> m SomeConn
-  getAllConnAliases :: s -> m [ConnAlias] -- TODO remove - hack for subscribing to all
+  createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> m ConnId
+  createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
+  getConn :: s -> ConnId -> m SomeConn
+  getAllConnAliases :: s -> m [ConnId] -- TODO remove - hack for subscribing to all
   getRcvConn :: s -> SMPServer -> SMP.RecipientId -> m SomeConn
-  deleteConn :: s -> ConnAlias -> m ()
-  upgradeRcvConnToDuplex :: s -> ConnAlias -> SndQueue -> m ()
-  upgradeSndConnToDuplex :: s -> ConnAlias -> RcvQueue -> m ()
+  deleteConn :: s -> ConnId -> m ()
+  upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
+  upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Msg management
-  updateRcvIds :: s -> RcvQueue -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
-  createRcvMsg :: s -> RcvQueue -> RcvMsgData -> m ()
+  updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+  createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
 
-  updateSndIds :: s -> SndQueue -> m (InternalId, InternalSndId, PrevSndMsgHash)
-  createSndMsg :: s -> SndQueue -> SndMsgData -> m ()
+  updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
+  createSndMsg :: s -> ConnId -> SndMsgData -> m ()
 
-  getMsg :: s -> ConnAlias -> InternalId -> m Msg
+  getMsg :: s -> ConnId -> InternalId -> m Msg
 
   -- Broadcasts
   createBcast :: s -> BroadcastId -> m ()
-  addBcastConn :: s -> BroadcastId -> ConnAlias -> m ()
-  removeBcastConn :: s -> BroadcastId -> ConnAlias -> m ()
+  addBcastConn :: s -> BroadcastId -> ConnId -> m ()
+  removeBcastConn :: s -> BroadcastId -> ConnId -> m ()
   deleteBcast :: s -> BroadcastId -> m ()
-  getBcast :: s -> BroadcastId -> m [ConnAlias]
+  getBcast :: s -> BroadcastId -> m [ConnId]
 
   -- Introductions
   createIntro :: s -> TVar ChaChaDRG -> NewIntroduction -> m IntroId
@@ -68,8 +68,8 @@ class Monad m => MonadAgentStore s m where
   setIntroReStatus :: s -> IntroId -> IntroStatus -> m ()
   createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   getInvitation :: s -> InvitationId -> m Invitation
-  addInvitationConn :: s -> InvitationId -> ConnAlias -> m ()
-  getConnInvitation :: s -> ConnAlias -> m (Maybe (Invitation, Connection CDuplex))
+  addInvitationConn :: s -> InvitationId -> ConnId -> m ()
+  getConnInvitation :: s -> ConnId -> m (Maybe (Invitation, Connection CDuplex))
   setInvitationStatus :: s -> InvitationId -> InvitationStatus -> m ()
 
 -- * Queue types
@@ -78,7 +78,6 @@ class Monad m => MonadAgentStore s m where
 data RcvQueue = RcvQueue
   { server :: SMPServer,
     rcvId :: SMP.RecipientId,
-    connAlias :: ConnAlias,
     rcvPrivateKey :: RecipientPrivateKey,
     sndId :: Maybe SMP.SenderId,
     sndKey :: Maybe SenderPublicKey,
@@ -92,7 +91,6 @@ data RcvQueue = RcvQueue
 data SndQueue = SndQueue
   { server :: SMPServer,
     sndId :: SMP.SenderId,
-    connAlias :: ConnAlias,
     sndPrivateKey :: SenderPrivateKey,
     encryptKey :: EncryptionKey,
     signKey :: SignatureKey,
@@ -116,9 +114,9 @@ data ConnType = CRcv | CSnd | CDuplex deriving (Eq, Show)
 -- - DuplexConnection is a connection that has both receive and send queues set up,
 --   typically created by upgrading a receive or a send connection with a missing queue.
 data Connection (d :: ConnType) where
-  RcvConnection :: ConnAlias -> RcvQueue -> Connection CRcv
-  SndConnection :: ConnAlias -> SndQueue -> Connection CSnd
-  DuplexConnection :: ConnAlias -> RcvQueue -> SndQueue -> Connection CDuplex
+  RcvConnection :: ConnData -> RcvQueue -> Connection CRcv
+  SndConnection :: ConnData -> SndQueue -> Connection CSnd
+  DuplexConnection :: ConnData -> RcvQueue -> SndQueue -> Connection CDuplex
 
 deriving instance Eq (Connection d)
 
@@ -154,6 +152,9 @@ instance Eq SomeConn where
     _ -> False
 
 deriving instance Show SomeConn
+
+data ConnData = ConnData {connId :: ConnId, viaInv :: Maybe InvitationId, connLevel :: Int}
+  deriving (Eq, Show)
 
 -- * Message integrity validation types
 
@@ -277,7 +278,7 @@ type DeliveredTs = UTCTime
 
 -- | Base message data independent of direction.
 data MsgBase = MsgBase
-  { connAlias :: ConnAlias,
+  { connAlias :: ConnId,
     -- | Monotonically increasing id of a message per connection, internal to the agent.
     -- Internal Id preserves ordering between both received and sent messages, and is needed
     -- to track the order of the conversation (which can be different for the sender / receiver)
@@ -298,17 +299,17 @@ type InternalTs = UTCTime
 -- * Introduction types
 
 data NewIntroduction = NewIntroduction
-  { toConn :: ConnAlias,
-    reConn :: ConnAlias,
+  { toConn :: ConnId,
+    reConn :: ConnId,
     reInfo :: ByteString
   }
 
 data Introduction = Introduction
   { introId :: IntroId,
-    toConn :: ConnAlias,
+    toConn :: ConnId,
     toInfo :: Maybe ByteString,
     toStatus :: IntroStatus,
-    reConn :: ConnAlias,
+    reConn :: ConnId,
     reInfo :: ByteString,
     reStatus :: IntroStatus,
     qInfo :: SMPQueueInfo
@@ -320,18 +321,18 @@ data IntroStatus = IntroNew | IntroInv | IntroCon
 type IntroId = ByteString
 
 data NewInvitation = NewInvitation
-  { viaConn :: ConnAlias,
+  { viaConn :: ConnId,
     externalIntroId :: IntroId,
     entityInfo :: EntityInfo,
     qInfo :: Maybe SMPQueueInfo
   }
 
 data Invitation = Invitation
-  { viaConn :: ConnAlias,
+  { viaConn :: ConnId,
     externalIntroId :: IntroId,
     entityInfo :: EntityInfo,
     qInfo :: Maybe SMPQueueInfo,
-    conn :: Maybe ConnAlias,
+    conn :: Maybe ConnId,
     status :: InvitationStatus
   }
 

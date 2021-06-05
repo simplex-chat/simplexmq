@@ -15,6 +15,7 @@ module Simplex.Messaging.Agent.Client
     closeSMPServerClients,
     newReceiveQueue,
     subscribeQueue,
+    addSubscription,
     sendConfirmation,
     sendHello,
     secureQueue,
@@ -61,8 +62,8 @@ data AgentClient = AgentClient
     sndQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue SMPServerTransmission,
     smpClients :: TVar (Map SMPServer SMPClient),
-    subscrSrvrs :: TVar (Map SMPServer (Set ConnAlias)),
-    subscrConns :: TVar (Map ConnAlias SMPServer),
+    subscrSrvrs :: TVar (Map SMPServer (Set ConnId)),
+    subscrConns :: TVar (Map ConnId SMPServer),
     clientId :: Int
   }
 
@@ -106,7 +107,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       removeSubs >>= mapM_ (mapM_ notifySub)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-    removeSubs :: IO (Maybe (Set ConnAlias))
+    removeSubs :: IO (Maybe (Set ConnId))
     removeSubs = atomically $ do
       modifyTVar smpClients $ M.delete srv
       cs <- M.lookup srv <$> readTVar (subscrSrvrs c)
@@ -117,7 +118,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
         deleteKeys :: Ord k => Set k -> Map k a -> Map k a
         deleteKeys ks m = S.foldr' M.delete m ks
 
-    notifySub :: ConnAlias -> IO ()
+    notifySub :: ConnId -> IO ()
     notifySub connAlias = atomically . writeTBQueue (sndQ c) $ ATransmission "" (Conn connAlias) END
 
 closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
@@ -158,8 +159,8 @@ smpClientError = \case
   SMPTransportError e -> BROKER $ TRANSPORT e
   e -> INTERNAL $ show e
 
-newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> ConnAlias -> m (RcvQueue, SMPQueueInfo)
-newReceiveQueue c srv connAlias = do
+newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
+newReceiveQueue c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
   logServer "-->" c srv "" "NEW"
@@ -170,7 +171,6 @@ newReceiveQueue c srv connAlias = do
         RcvQueue
           { server = srv,
             rcvId,
-            connAlias,
             rcvPrivateKey,
             sndId = Just sId,
             sndKey = Nothing,
@@ -178,25 +178,24 @@ newReceiveQueue c srv connAlias = do
             verifyKey = Nothing,
             status = New
           }
-  addSubscription c rq connAlias
   return (rq, SMPQueueInfo srv sId encryptKey)
 
-subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnAlias -> m ()
+subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connAlias = do
   withLogSMP c server rcvId "SUB" $ \smp ->
     subscribeSMPQueue smp rcvPrivateKey rcvId
   addSubscription c rq connAlias
 
-addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnAlias -> m ()
+addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c RcvQueue {server} connAlias = atomically $ do
   modifyTVar (subscrConns c) $ M.insert connAlias server
   modifyTVar (subscrSrvrs c) $ M.alter (Just . addSub) server
   where
-    addSub :: Maybe (Set ConnAlias) -> Set ConnAlias
+    addSub :: Maybe (Set ConnId) -> Set ConnId
     addSub (Just cs) = S.insert connAlias cs
     addSub _ = S.singleton connAlias
 
-removeSubscription :: AgentMonad m => AgentClient -> ConnAlias -> m ()
+removeSubscription :: AgentMonad m => AgentClient -> ConnId -> m ()
 removeSubscription AgentClient {subscrConns, subscrSrvrs} connAlias = atomically $ do
   cs <- readTVar subscrConns
   writeTVar subscrConns $ M.delete connAlias cs
@@ -204,7 +203,7 @@ removeSubscription AgentClient {subscrConns, subscrSrvrs} connAlias = atomically
     (modifyTVar subscrSrvrs . M.alter (>>= delSub))
     (M.lookup connAlias cs)
   where
-    delSub :: Set ConnAlias -> Maybe (Set ConnAlias)
+    delSub :: Set ConnId -> Maybe (Set ConnId)
     delSub cs =
       let cs' = S.delete connAlias cs
        in if S.null cs' then Nothing else Just cs'
