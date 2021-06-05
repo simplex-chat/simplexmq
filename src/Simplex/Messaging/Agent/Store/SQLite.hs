@@ -521,9 +521,11 @@ getConn_ dbConn connId =
 
 getConnData_ :: DB.Connection -> ConnId -> IO (Maybe ConnData)
 getConnData_ dbConn connId =
-  DB.query dbConn "SELECT via_inv, conn_level FROM connections WHERE conn_alias = ?;" (Only connId) >>= \case
-    [(viaInv, connLevel)] -> pure $ Just ConnData {connId, viaInv, connLevel}
-    _ -> pure Nothing
+  connData
+    <$> DB.query dbConn "SELECT via_inv, conn_level FROM connections WHERE conn_alias = ?;" (Only connId)
+  where
+    connData [(viaInv, connLevel)] = Just ConnData {connId, viaInv, connLevel}
+    connData _ = Nothing
 
 getRcvQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
 getRcvQueueByConnAlias_ dbConn connId =
