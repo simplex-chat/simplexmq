@@ -3,7 +3,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -15,6 +17,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.Text (Text)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -312,11 +315,24 @@ data Introduction = Introduction
     reConn :: ConnId,
     reInfo :: ByteString,
     reStatus :: IntroStatus,
-    qInfo :: SMPQueueInfo
+    qInfo :: Maybe SMPQueueInfo
   }
 
 data IntroStatus = IntroNew | IntroInv | IntroCon
   deriving (Eq)
+
+serializeIntroStatus :: IntroStatus -> Text
+serializeIntroStatus = \case
+  IntroNew -> ""
+  IntroInv -> "INV"
+  IntroCon -> "CON"
+
+introStatusT :: Text -> Maybe IntroStatus
+introStatusT = \case
+  "" -> Just IntroNew
+  "INV" -> Just IntroInv
+  "CON" -> Just IntroCon
+  _ -> Nothing
 
 type IntroId = ByteString
 
@@ -328,16 +344,30 @@ data NewInvitation = NewInvitation
   }
 
 data Invitation = Invitation
-  { viaConn :: ConnId,
+  { invId :: InvitationId,
+    viaConn :: ConnId,
     externalIntroId :: IntroId,
     entityInfo :: EntityInfo,
     qInfo :: Maybe SMPQueueInfo,
-    conn :: Maybe ConnId,
+    connId :: Maybe ConnId,
     status :: InvitationStatus
   }
 
 data InvitationStatus = InvNew | InvAcpt | InvCon
   deriving (Eq)
+
+serializeInvStatus :: InvitationStatus -> Text
+serializeInvStatus = \case
+  InvNew -> ""
+  InvAcpt -> "INV"
+  InvCon -> "CON"
+
+invStatusT :: Text -> Maybe InvitationStatus
+invStatusT = \case
+  "" -> Just InvNew
+  "ACPT" -> Just InvAcpt
+  "CON" -> Just InvCon
+  _ -> Nothing
 
 type InvitationId = ByteString
 
@@ -360,6 +390,10 @@ data StoreError
     SEBcastNotFound
   | -- | Broadcast ID already used.
     SEBcastDuplicate
+  | -- | Introduction ID not found.
+    SEIntroNotFound
+  | -- | Invitation ID not found.
+    SEInvitationNotFound
   | -- | Currently not used. The intention was to pass current expected queue status in methods,
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.

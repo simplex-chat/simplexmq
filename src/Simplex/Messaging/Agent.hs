@@ -438,10 +438,11 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
         connected :: m ()
         connected = do
           notify CON
-        -- withStore (getConnInvitation st connId) >>= \case
-        --   Just (Invitation {externalIntroId}, DuplexConnection _ _ sq) ->
-        --     sendControlMessage c sq $ A_CON (Conn externalIntroId)
-        --   _ -> pure ()
+          withStore (getConnInvitation st connId) >>= \case
+            Just (Invitation {invId, externalIntroId}, DuplexConnection _ _ sq) -> do
+              withStore $ setInvitationStatus st invId InvCon
+              sendControlMessage c sq $ A_CON (Conn externalIntroId)
+            _ -> pure ()
 
         introMsg :: IntroEntity -> EntityInfo -> m ()
         introMsg (IE entity) entityInfo = do
@@ -495,9 +496,9 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
               | otherwise -> prohibited
           where
             sendConMsg :: ConnId -> ConnId -> IntroStatus -> m ()
-            sendConMsg toConn reConn = \case
-              IntroCon -> atomically . writeTBQueue sndQ $ ATransmission "" (Conn toConn) $ ICON $ IE (Conn reConn)
-              _ -> pure ()
+            sendConMsg toConn reConn IntroCon =
+              atomically . writeTBQueue sndQ $ ATransmission "" (Conn toConn) $ ICON $ IE (Conn reConn)
+            sendConMsg _ _ _ = pure ()
 
         agentClientMsg :: PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
         agentClientMsg receivedPrevMsgHash senderMeta brokerMeta msgBody msgHash = do

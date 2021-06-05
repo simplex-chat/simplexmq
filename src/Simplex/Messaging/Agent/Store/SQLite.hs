@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -11,6 +12,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -29,11 +31,10 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
 import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
-import Data.Text (isPrefixOf)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, field)
@@ -70,8 +71,8 @@ createSQLiteStore dbFilePath = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   store <- connectSQLiteStore dbFilePath
-  compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
-  let threadsafeOption = find (isPrefixOf "THREADSAFE=") (concat compileOptions)
+  compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[Text]]
+  let threadsafeOption = find (T.isPrefixOf "THREADSAFE=") (concat compileOptions)
   case threadsafeOption of
     Just "THREADSAFE=0" -> confirmOrExit "SQLite compiled with non-threadsafe code."
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
@@ -342,6 +343,133 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       Right . map fromOnly
         <$> DB.query dbConn "SELECT conn_alias FROM broadcast_connections WHERE broadcast_id = ?;" (Only bId)
 
+  createIntro :: SQLiteStore -> TVar ChaChaDRG -> NewIntroduction -> m IntroId
+  createIntro SQLiteStore {dbConn} gVar NewIntroduction {toConn, reConn, reInfo} =
+    liftIOEither . createWithRandomId gVar $ \introId ->
+      DB.execute
+        dbConn
+        [sql|
+          INSERT INTO conn_intros
+          (intro_id, to_conn, re_conn, re_info) VALUES (?, ?, ?, ?);
+        |]
+        (introId, toConn, reConn, reInfo)
+
+  getIntro :: SQLiteStore -> IntroId -> m Introduction
+  getIntro SQLiteStore {dbConn} introId =
+    liftIOEither $
+      intro
+        <$> DB.query
+          dbConn
+          [sql|
+            SELECT to_conn, to_info, to_status, re_conn, re_info, re_status, queue_info
+            FROM conn_intros
+            WHERE intro_id = ?;
+          |]
+          (Only introId)
+    where
+      intro [(toConn, toInfo, toStatus, reConn, reInfo, reStatus, qInfo)] =
+        Right $ Introduction {introId, toConn, toInfo, toStatus, reConn, reInfo, reStatus, qInfo}
+      intro _ = Left SEIntroNotFound
+
+  addIntroInvitation :: SQLiteStore -> IntroId -> EntityInfo -> SMPQueueInfo -> m ()
+  addIntroInvitation SQLiteStore {dbConn} introId toInfo qInfo =
+    liftIO $
+      DB.executeNamed
+        dbConn
+        [sql|
+          UPDATE conn_intros
+          SET to_info = :to_info,
+              queue_info = :queue_info,
+              to_status = :to_status
+          WHERE intro_id = :intro_id;
+        |]
+        [ ":to_info" := toInfo,
+          ":queue_info" := Just qInfo,
+          ":to_status" := IntroInv,
+          ":intro_id" := introId
+        ]
+
+  setIntroToStatus :: SQLiteStore -> IntroId -> IntroStatus -> m ()
+  setIntroToStatus SQLiteStore {dbConn} introId toStatus =
+    liftIO $
+      DB.execute
+        dbConn
+        "UPDATE conn_intros SET to_status = ? WHERE intro_id = ?;"
+        (toStatus, introId)
+
+  setIntroReStatus :: SQLiteStore -> IntroId -> IntroStatus -> m ()
+  setIntroReStatus SQLiteStore {dbConn} introId reStatus =
+    liftIO $
+      DB.execute
+        dbConn
+        "UPDATE conn_intros SET re_status = ? WHERE intro_id = ?;"
+        (reStatus, introId)
+
+  createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
+  createInvitation SQLiteStore {dbConn} gVar NewInvitation {viaConn, externalIntroId, entityInfo, qInfo} =
+    liftIOEither . createWithRandomId gVar $ \invId ->
+      DB.execute
+        dbConn
+        [sql|
+          INSERT INTO conn_invitations
+          (inv_id, via_conn, external_intro_id, conn_info, queue_info)
+          VALUES (?, ?, ?, ?, ?);
+        |]
+        (invId, viaConn, externalIntroId, entityInfo, qInfo)
+
+  getInvitation :: SQLiteStore -> InvitationId -> m Invitation
+  getInvitation SQLiteStore {dbConn} invId =
+    liftIOEither $
+      invitation
+        <$> DB.query
+          dbConn
+          [sql|
+            SELECT via_conn, external_intro_id, conn_info, queue_info, conn_id, status
+            FROM conn_invitations
+            WHERE inv_id = ?;
+          |]
+          (Only invId)
+    where
+      invitation [(viaConn, externalIntroId, entityInfo, qInfo, connId, status)] =
+        Right $ Invitation {invId, viaConn, externalIntroId, entityInfo, qInfo, connId, status}
+      invitation _ = Left SEInvitationNotFound
+
+  addInvitationConn :: SQLiteStore -> InvitationId -> ConnId -> m ()
+  addInvitationConn SQLiteStore {dbConn} invId connId =
+    liftIO $
+      DB.execute
+        dbConn
+        "UPDATE conn_invitations SET conn_id = ?, status = ? WHERE inv_id = ?;"
+        (connId, InvAcpt, invId)
+
+  getConnInvitation :: SQLiteStore -> ConnId -> m (Maybe (Invitation, Connection 'CDuplex))
+  getConnInvitation SQLiteStore {dbConn} cId =
+    liftIO . withTransaction dbConn $
+      getConn_ dbConn cId >>= \case
+        Right (SomeConn SCDuplex conn) ->
+          fmap (,conn) . invitation
+            <$> DB.query
+              dbConn
+              [sql|
+                SELECT inv_id, via_conn, external_intro_id, conn_info, queue_info, conn_id, status
+                FROM conn_invitations
+                WHERE conn_id = ?;
+              |]
+              (Only cId)
+        _ -> pure Nothing
+    where
+      invitation [(invId, viaConn, externalIntroId, entityInfo, qInfo, connId, status)] =
+        Just $ Invitation {invId, viaConn, externalIntroId, entityInfo, qInfo, connId, status}
+      invitation _ = Nothing
+
+  setInvitationStatus :: SQLiteStore -> InvitationId -> InvitationStatus -> m ()
+  setInvitationStatus SQLiteStore {dbConn} invId status =
+    liftIO $
+      DB.execute
+        dbConn
+        "UPDATE conn_invitations SET status = ? WHERE inv_id = ?;"
+        (status, invId)
+
 -- * Auxiliary helpers
 
 -- ? replace with ToField? - it's easy to forget to use this
@@ -354,7 +482,7 @@ deserializePort_ port = Just port
 
 instance ToField QueueStatus where toField = toField . show
 
-instance FromField QueueStatus where fromField = fromFieldToReadable_
+instance FromField QueueStatus where fromField = fromTextField_ $ readMaybe . T.unpack
 
 instance ToField InternalRcvId where toField (InternalRcvId x) = toField x
 
@@ -376,13 +504,24 @@ instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
 
 instance FromField MsgIntegrity where fromField = blobFieldParser msgIntegrityP
 
-fromFieldToReadable_ :: forall a. (Read a, E.Typeable a) => Field -> Ok a
-fromFieldToReadable_ = \case
+instance ToField IntroStatus where toField = toField . serializeIntroStatus
+
+instance FromField IntroStatus where fromField = fromTextField_ introStatusT
+
+instance ToField InvitationStatus where toField = toField . serializeInvStatus
+
+instance FromField InvitationStatus where fromField = fromTextField_ invStatusT
+
+instance ToField SMPQueueInfo where toField = toField . serializeSmpQueueInfo
+
+instance FromField SMPQueueInfo where fromField = blobFieldParser smpQueueInfoP
+
+fromTextField_ :: (E.Typeable a) => (Text -> Maybe a) -> Field -> Ok a
+fromTextField_ fromText = \case
   f@(Field (SQLText t) _) ->
-    let str = T.unpack t
-     in case readMaybe str of
-          Just x -> Ok x
-          _ -> returnError ConversionFailed f ("invalid string: " <> str)
+    case fromText t of
+      Just x -> Ok x
+      _ -> returnError ConversionFailed f ("invalid text: " <> T.unpack t)
   f -> returnError ConversionFailed f "expecting SQLText column type"
 
 {- ORMOLU_DISABLE -}
