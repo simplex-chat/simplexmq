@@ -465,8 +465,8 @@ agentMessageP =
     a_intro = A_INTRO <$> introEntityP <* A.space <*> binaryBody
     a_inv = invP A_INV
     a_req = invP A_REQ
-    a_con = A_CON <$> entityConnP
-    invP f = f <$> entityConnP <* A.space <*> smpQueueInfoP <* A.space <*> binaryBody
+    a_con = A_CON <$> connEntityP
+    invP f = f <$> connEntityP <* A.space <*> smpQueueInfoP <* A.space <*> binaryBody
     binaryBody = do
       size :: Int <- A.decimal <* A.endOfLine
       A.take size <* A.endOfLine
@@ -490,7 +490,7 @@ serializeAgentMessage = \case
   HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
   A_MSG body -> "MSG " <> serializeMsg body <> "\n"
-  A_INTRO (IE entity) eInfo -> "INTRO " <> serializeIntro entity eInfo
+  A_INTRO (IE entity) eInfo -> "INTRO " <> serializeIntro entity eInfo <> "\n"
   A_INV conn qInfo eInfo -> "INV " <> serializeInv conn qInfo eInfo
   A_REQ conn qInfo eInfo -> "REQ " <> serializeInv conn qInfo eInfo
   A_CON conn -> "CON " <> serializeEntity conn
@@ -679,8 +679,8 @@ anEntityP =
         )
     <*> A.takeTill (== ' ')
 
-entityConnP :: Parser (Entity Conn_)
-entityConnP = "C:" *> (Conn <$> A.takeTill (== ' '))
+connEntityP :: Parser (Entity Conn_)
+connEntityP = "C:" *> (Conn <$> A.takeTill (== ' '))
 
 introEntityP :: Parser IntroEntity
 introEntityP =
@@ -731,9 +731,9 @@ commandP =
     acptCmd = ACmd SClient <$> introP ACPT
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
-    addCmd = ACmd SClient . ADD <$> entityConnP
-    removeCmd = ACmd SClient . REM <$> entityConnP
-    membersResp = ACmd SAgent . MS <$> (entityConnP `A.sepBy'` A.char ' ')
+    addCmd = ACmd SClient . ADD <$> connEntityP
+    removeCmd = ACmd SClient . REM <$> connEntityP
+    membersResp = ACmd SAgent . MS <$> (connEntityP `A.sepBy'` A.char ' ')
     iconMsg = ACmd SAgent . ICON <$> introEntityP
     message = do
       msgIntegrity <- msgIntegrityP <* A.space
@@ -906,6 +906,9 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       APartyCmd <$$> case cmd of
         SEND body -> SEND <$$> getMsgBody body
         MSG agentMsgId srvTS agentTS integrity body -> MSG agentMsgId srvTS agentTS integrity <$$> getMsgBody body
+        INTRO entity eInfo -> INTRO entity <$$> getMsgBody eInfo
+        REQ entity eInfo -> REQ entity <$$> getMsgBody eInfo
+        ACPT entity eInfo -> ACPT entity <$$> getMsgBody eInfo
         _ -> pure $ Right cmd
 
     -- TODO refactor with server

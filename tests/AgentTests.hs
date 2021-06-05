@@ -17,6 +17,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.Store (InvitationId)
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import System.Timeout
@@ -44,6 +45,9 @@ agentTests (ATransport t) = do
   describe "Broadcast" do
     it "should create broadcast and send messages" $
       smpAgentTest3 $ testBroadcast t
+  describe "Introduction" do
+    it "should send and accept introduction" $
+      smpAgentTest3 $ testIntroduction t
 
 type TestTransmission p = (ACorrId, ByteString, APartyCmd p)
 
@@ -98,6 +102,9 @@ pattern Msg msgBody <- APartyCmd MSG {msgBody, msgIntegrity = MsgOk}
 
 pattern Inv :: SMPQueueInfo -> APartyCmd 'Agent
 pattern Inv invitation <- APartyCmd (INV invitation)
+
+pattern Req :: InvitationId -> EntityInfo -> Either AgentErrorType (APartyCmd 'Agent)
+pattern Req invId eInfo <- Right (APartyCmd (REQ (IE (Conn invId)) eInfo))
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
@@ -196,13 +203,36 @@ testBroadcast _ alice bob tom = do
   -- commands with errors
   alice #: ("e8", "B:team", "DEL") #> ("e8", "B:team", ERR $ BCAST B_NOT_FOUND)
   alice #: ("e9", "B:group", "DEL") #> ("e9", "B:group", ERR $ BCAST B_NOT_FOUND)
-  where
-    connect :: (c, ByteString) -> (c, ByteString) -> IO ()
-    connect (h1, name1) (h2, name2) = do
-      ("c1", _, Right (Inv qInfo)) <- h1 #: ("c1", "C:" <> name2, "NEW")
-      let qInfo' = serializeSmpQueueInfo qInfo
-      h2 #: ("c2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
-      h1 <#= \case ("", c2, APartyCmd CON) -> c2 == "C:" <> name2; _ -> False
+
+connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
+connect (h1, name1) (h2, name2) = do
+  ("c1", _, Right (Inv qInfo)) <- h1 #: ("c1", "C:" <> name2, "NEW")
+  let qInfo' = serializeSmpQueueInfo qInfo
+  h2 #: ("c2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
+  h1 <#= \case ("", c2, APartyCmd CON) -> c2 == "C:" <> name2; _ -> False
+
+testIntroduction :: forall c. Transport c => TProxy c -> c -> c -> c -> IO ()
+testIntroduction _ alice bob tom = do
+  -- establish connections
+  (alice, "alice") `connect` (bob, "bob")
+  (alice, "alice") `connect` (tom, "tom")
+  -- send introduction of tom to bob
+  alice #: ("1", "C:bob", "INTRO C:tom 8\nmeet tom") #> ("1", "C:bob", OK)
+  ("", "C:alice", Req invId1 "meet tom") <- testTE <$> tGet SAgent bob
+  bob #: ("2", "C:tom_via_alice", "ACPT C:" <> invId1 <> " 7\nI'm bob") #> ("2", "C:tom_via_alice", OK)
+  ("", "C:alice", Req invId2 "I'm bob") <- testTE <$> tGet SAgent tom
+  -- TODO info "tom here" is not used, either JOIN command also should have eInfo parameter
+  -- or this should be another command, not ACPT
+  tom #: ("3", "C:bob_via_alice", "ACPT C:" <> invId2 <> " 8\ntom here") #> ("3", "C:bob_via_alice", OK)
+  tom <# ("", "C:bob_via_alice", CON)
+  bob <# ("", "C:tom_via_alice", CON)
+  -- alice <# ("", "C:bob", ICON (IE (Conn "tom")))
+  -- putStrLn "here 4"
+  -- they can message each other now
+  tom #: ("4", "C:bob_via_alice", "SEND :hello") #> ("4", "C:bob_via_alice", SENT 1)
+  bob <#= \case ("", "C:tom_via_alice", Msg "hello") -> True; _ -> False
+  bob #: ("5", "C:tom_via_alice", "SEND 9\nhello too") #> ("5", "C:tom_via_alice", SENT 2)
+  tom <#= \case ("", "C:bob_via_alice", Msg "hello too") -> True; _ -> False
 
 samplePublicKey :: ByteString
 samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"

@@ -147,6 +147,8 @@ withStore action = do
     Right c -> return c
     Left e -> throwError $ storeError e
   where
+    -- TODO when parsing exception happens in store, the agent hangs;
+    -- changing SQLError to SomeException does not help
     handleInternal :: (MonadError StoreError m') => SQLError -> m' a
     handleInternal e = throwError . SEInternal $ bshow e
     storeError :: StoreError -> AgentErrorType
@@ -230,10 +232,10 @@ processConnCommand c@AgentClient {sndQ} st corrId conn@(Conn connId) = \case
     acceptInvitation :: IntroEntity -> EntityInfo -> m ()
     acceptInvitation (IE invEntity) eInfo = case invEntity of
       Conn invId -> do
-        withStore (getConn st connId) >>= \case
-          SomeConn _ (DuplexConnection ConnData {connLevel} _ sq) ->
-            withStore (getInvitation st invId) >>= \case
-              Invitation {qInfo, externalIntroId, status = InvNew} -> case qInfo of
+        withStore (getInvitation st invId) >>= \case
+          Invitation {viaConn, qInfo, externalIntroId, status = InvNew} ->
+            withStore (getConn st viaConn) >>= \case
+              SomeConn _ (DuplexConnection ConnData {connLevel} _ sq) -> case qInfo of
                 Nothing -> do
                   (conn', INV qInfo') <- createNewConnection (Just invId) (connLevel + 1)
                   withStore $ addInvitationConn st invId $ fromConn conn'
@@ -243,8 +245,8 @@ processConnCommand c@AgentClient {sndQ} st corrId conn@(Conn connId) = \case
                   conn' <- joinConnection qInfo' (ReplyMode On) (Just invId) (connLevel + 1)
                   withStore $ addInvitationConn st invId $ fromConn conn'
                   respond conn' OK
-              _ -> throwError $ CMD PROHIBITED
-          _ -> throwError $ CONN SIMPLEX
+              _ -> throwError $ CONN SIMPLEX
+          _ -> throwError $ CMD PROHIBITED
       _ -> throwError $ CMD UNSUPPORTED
 
     subscribeConnection :: Entity 'Conn_ -> m ()
@@ -371,10 +373,10 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
           -- TODO deduplicate with previously received
           msg <- decryptAndVerify rq msgBody
           let msgHash = C.sha256Hash msg
-          agentMsg <- liftEither $ parseSMPMessage msg
-          case agentMsg of
-            SMPConfirmation senderKey -> smpConfirmation senderKey
-            SMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
+          case parseSMPMessage msg of
+            Left e -> notify $ ERR e
+            Right (SMPConfirmation senderKey) -> smpConfirmation senderKey
+            Right SMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
               case agentMessage of
                 HELLO verifyKey _ -> helloMsg verifyKey msgBody
                 REPLY qInfo -> replyMsg qInfo
@@ -437,12 +439,12 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
 
         connected :: m ()
         connected = do
-          notify CON
           withStore (getConnInvitation st connId) >>= \case
             Just (Invitation {invId, externalIntroId}, DuplexConnection _ _ sq) -> do
               withStore $ setInvitationStatus st invId InvCon
               sendControlMessage c sq $ A_CON (Conn externalIntroId)
             _ -> pure ()
+          notify CON
 
         introMsg :: IntroEntity -> EntityInfo -> m ()
         introMsg (IE entity) entityInfo = do
@@ -485,6 +487,8 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
         conMsg :: Entity 'Conn_ -> m ()
         conMsg (Conn introId) = do
           logServer "<--" c srv rId "MSG <CON>"
+          liftIO $ putStrLn "conMsg"
+          liftIO $ print connId
           withStore (getIntro st introId) >>= \case
             Introduction {toConn, toStatus, reConn, reStatus}
               | toConn == connId && toStatus == IntroInv -> do

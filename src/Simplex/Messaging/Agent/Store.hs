@@ -352,14 +352,15 @@ data Invitation = Invitation
     connId :: Maybe ConnId,
     status :: InvitationStatus
   }
+  deriving (Show)
 
 data InvitationStatus = InvNew | InvAcpt | InvCon
-  deriving (Eq)
+  deriving (Eq, Show)
 
 serializeInvStatus :: InvitationStatus -> Text
 serializeInvStatus = \case
   InvNew -> ""
-  InvAcpt -> "INV"
+  InvAcpt -> "ACPT"
   InvCon -> "CON"
 
 invStatusT :: Text -> Maybe InvitationStatus

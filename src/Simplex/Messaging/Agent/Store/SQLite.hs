@@ -25,12 +25,13 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (TVar, atomically, stateTVar)
-import Control.Monad (unless, when)
+import Control.Monad (join, unless, when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
+import Data.ByteString.Base64 (encode)
 import Data.Char (toLower)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
@@ -445,22 +446,24 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getConnInvitation :: SQLiteStore -> ConnId -> m (Maybe (Invitation, Connection 'CDuplex))
   getConnInvitation SQLiteStore {dbConn} cId =
     liftIO . withTransaction dbConn $
-      getConn_ dbConn cId >>= \case
-        Right (SomeConn SCDuplex conn) ->
-          fmap (,conn) . invitation
-            <$> DB.query
-              dbConn
-              [sql|
-                SELECT inv_id, via_conn, external_intro_id, conn_info, queue_info, conn_id, status
-                FROM conn_invitations
-                WHERE conn_id = ?;
-              |]
-              (Only cId)
-        _ -> pure Nothing
+      DB.query
+        dbConn
+        [sql|
+          SELECT inv_id, via_conn, external_intro_id, conn_info, queue_info, status
+          FROM conn_invitations
+          WHERE conn_id = ?;
+        |]
+        (Only cId)
+        >>= fmap join . traverse getViaConn . invitation
     where
-      invitation [(invId, viaConn, externalIntroId, entityInfo, qInfo, connId, status)] =
-        Just $ Invitation {invId, viaConn, externalIntroId, entityInfo, qInfo, connId, status}
+      invitation [(invId, viaConn, externalIntroId, entityInfo, qInfo, status)] =
+        Just $ Invitation {invId, viaConn, externalIntroId, entityInfo, qInfo, connId = Just cId, status}
       invitation _ = Nothing
+      getViaConn :: Invitation -> IO (Maybe (Invitation, Connection 'CDuplex))
+      getViaConn inv@Invitation {viaConn} = fmap (inv,) . duplexConn <$> getConn_ dbConn viaConn
+      duplexConn :: Either StoreError SomeConn -> Maybe (Connection 'CDuplex)
+      duplexConn (Right (SomeConn SCDuplex conn)) = Just conn
+      duplexConn _ = Nothing
 
   setInvitationStatus :: SQLiteStore -> InvitationId -> InvitationStatus -> m ()
   setInvitationStatus SQLiteStore {dbConn} invId status =
@@ -947,7 +950,7 @@ getUniqueRandomId gVar get = tryGet 3
     tryGet :: Int -> IO (Either StoreError ByteString)
     tryGet 0 = pure $ Left SEUniqueID
     tryGet n = do
-      id' :: ByteString <- atomically . stateTVar gVar $ randomBytesGenerate 12
+      id' <- randomId gVar 12
       get id' >>= \case
         Nothing -> pure $ Right id'
         Just _ -> tryGet (n - 1)
@@ -958,9 +961,12 @@ createWithRandomId gVar create = tryCreate 3
     tryCreate :: Int -> IO (Either StoreError ByteString)
     tryCreate 0 = pure $ Left SEUniqueID
     tryCreate n = do
-      id' :: ByteString <- atomically . stateTVar gVar $ randomBytesGenerate 12
+      id' <- randomId gVar 12
       E.try (create id') >>= \case
         Right _ -> pure $ Right id'
         Left e
           | DB.sqlError e == DB.ErrorConstraint -> tryCreate (n - 1)
           | otherwise -> pure . Left . SEInternal $ bshow e
+
+randomId :: TVar ChaChaDRG -> Int -> IO ByteString
+randomId gVar n = encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
