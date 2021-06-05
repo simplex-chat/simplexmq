@@ -137,27 +137,31 @@ withTransaction db a = loop 100 100_000
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> m ConnId
   createRcvConn SQLiteStore {dbConn} gVar cData q@RcvQueue {server} =
-    liftIOEither $
-      checkConstraint' SEConnDuplicate $ do
-        withTransaction dbConn $ do
-          upsertServer_ dbConn server
-          getConnId_ dbConn gVar cData >>= \case
-            Right connId -> do
-              insertRcvQueue_ dbConn connId q
-              insertRcvConnection_ dbConn gVar cData {connId} q
-            e -> pure e
+    -- TODO if schema has to be restarted, this function can be refactored
+    -- to create connection first using createWithRandomId
+    liftIOEither . checkConstraint' SEConnDuplicate . withTransaction dbConn $
+      getConnId_ dbConn gVar cData >>= traverse create
+    where
+      create :: ConnId -> IO ConnId
+      create connId = do
+        upsertServer_ dbConn server
+        insertRcvQueue_ dbConn connId q
+        insertRcvConnection_ dbConn cData {connId} q
+        pure connId
 
   createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   createSndConn SQLiteStore {dbConn} gVar cData q@SndQueue {server} =
-    liftIOEither $
-      checkConstraint' SEConnDuplicate $
-        withTransaction dbConn $ do
-          upsertServer_ dbConn server
-          getConnId_ dbConn gVar cData >>= \case
-            Right connId -> do
-              insertSndQueue_ dbConn connId q
-              insertSndConnection_ dbConn gVar cData {connId} q
-            e -> pure e
+    -- TODO if schema has to be restarted, this function can be refactored
+    -- to create connection first using createWithRandomId
+    liftIOEither . checkConstraint' SEConnDuplicate . withTransaction dbConn $
+      getConnId_ dbConn gVar cData >>= traverse create
+    where
+      create :: ConnId -> IO ConnId
+      create connId = do
+        upsertServer_ dbConn server
+        insertSndQueue_ dbConn connId q
+        insertSndConnection_ dbConn cData {connId} q
+        pure connId
 
   getConn :: SQLiteStore -> ConnId -> m SomeConn
   getConn SQLiteStore {dbConn} connId =
@@ -433,27 +437,27 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":status" := status
     ]
 
-insertRcvConnection_ :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> IO (Either StoreError ConnId)
-insertRcvConnection_ dbConn gVar ConnData {connId} RcvQueue {server, rcvId} = do
+insertRcvConnection_ :: DB.Connection -> ConnData -> RcvQueue -> IO ()
+insertRcvConnection_ dbConn ConnData {connId, viaInv, connLevel} RcvQueue {server, rcvId} = do
   let port_ = serializePort_ $ port server
-  if B.null connId
-    then createWithRandomId gVar $ insertConn port_
-    else insertConn port_ connId >> pure (Right connId)
-  where
-    insertConn :: ServiceName -> ConnId -> IO ()
-    insertConn port_ cId =
-      DB.executeNamed
-        dbConn
-        [sql|
-          INSERT INTO connections
-            ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
-              last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
-              last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
-          VALUES
-            (:conn_alias,:rcv_host,:rcv_port,:rcv_id,     NULL,     NULL,   NULL,
-              0, 0, 0, 0, x'', x'');
-        |]
-        [":conn_alias" := cId, ":rcv_host" := host server, ":rcv_port" := port_, ":rcv_id" := rcvId]
+  DB.executeNamed
+    dbConn
+    [sql|
+      INSERT INTO connections
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, via_inv, conn_level,
+          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
+          last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
+      VALUES
+        (:conn_alias, :rcv_host, :rcv_port, :rcv_id, NULL, NULL, NULL, :via_inv, :conn_level,
+          0, 0, 0, 0, x'', x'');
+    |]
+    [ ":conn_alias" := connId,
+      ":rcv_host" := host server,
+      ":rcv_port" := port_,
+      ":rcv_id" := rcvId,
+      ":via_inv" := viaInv,
+      ":conn_level" := connLevel
+    ]
 
 -- * createSndConn helpers
 
@@ -478,27 +482,27 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
       ":status" := status
     ]
 
-insertSndConnection_ :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
-insertSndConnection_ dbConn gVar ConnData {connId} SndQueue {server, sndId} = do
+insertSndConnection_ :: DB.Connection -> ConnData -> SndQueue -> IO ()
+insertSndConnection_ dbConn ConnData {connId, viaInv, connLevel} SndQueue {server, sndId} = do
   let port_ = serializePort_ $ port server
-  if B.null connId
-    then createWithRandomId gVar $ insertConn port_
-    else insertConn port_ connId >> pure (Right connId)
-  where
-    insertConn :: ServiceName -> ConnId -> IO ()
-    insertConn port_ cId =
-      DB.executeNamed
-        dbConn
-        [sql|
-        INSERT INTO connections
-          ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id,
-            last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
-            last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
-        VALUES
-          (:conn_alias,     NULL,     NULL,   NULL,:snd_host,:snd_port,:snd_id,
-            0, 0, 0, 0, x'', x'');
-      |]
-        [":conn_alias" := cId, ":snd_host" := host server, ":snd_port" := port_, ":snd_id" := sndId]
+  DB.executeNamed
+    dbConn
+    [sql|
+      INSERT INTO connections
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, via_inv, conn_level,
+          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
+          last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
+      VALUES
+        (:conn_alias, NULL, NULL, NULL, :snd_host, :snd_port, :snd_id, :via_inv, :conn_level,
+          0, 0, 0, 0, x'', x'');
+    |]
+    [ ":conn_alias" := connId,
+      ":snd_host" := host server,
+      ":snd_port" := port_,
+      ":snd_id" := sndId,
+      ":via_inv" := viaInv,
+      ":conn_level" := connLevel
+    ]
 
 -- * getConn helpers
 
@@ -765,7 +769,7 @@ updateHashSnd_ dbConn connId SndMsgData {..} =
 
 -- * Broadcast helpers
 
-checkBroadcast :: Show a => DB.Connection -> BroadcastId -> IO (Either StoreError a) -> IO (Either StoreError a)
+checkBroadcast :: DB.Connection -> BroadcastId -> IO (Either StoreError a) -> IO (Either StoreError a)
 checkBroadcast dbConn bId action =
   withTransaction dbConn $ do
     ok <- bcastExists_ dbConn bId
