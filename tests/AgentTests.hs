@@ -29,14 +29,17 @@ agentTests (ATransport t) = do
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" do
-    it "should connect via one server and one agent" $ do
+    it "should connect via one server and one agent" $
       smpAgentTest2_1_1 $ testDuplexConnection t
+    it "should connect via one server and one agent (random IDs)" $
       smpAgentTest2_1_1 $ testDuplexConnRandomIds t
-    it "should connect via one server and 2 agents" $ do
+    it "should connect via one server and 2 agents" $
       smpAgentTest2_2_1 $ testDuplexConnection t
+    it "should connect via one server and 2 agents (random IDs)" $
       smpAgentTest2_2_1 $ testDuplexConnRandomIds t
-    it "should connect via 2 servers and 2 agents" $ do
+    it "should connect via 2 servers and 2 agents" $
       smpAgentTest2_2_2 $ testDuplexConnection t
+    it "should connect via 2 servers and 2 agents (random IDs)" $
       smpAgentTest2_2_2 $ testDuplexConnRandomIds t
   describe "Connection subscriptions" do
     it "should connect via one server and one agent" $
@@ -47,8 +50,10 @@ agentTests (ATransport t) = do
     it "should create broadcast and send messages" $
       smpAgentTest3 $ testBroadcast t
   describe "Introduction" do
-    fit "should send and accept introduction" $
+    it "should send and accept introduction" $
       smpAgentTest3 $ testIntroduction t
+    it "should send and accept introduction (random IDs)" $
+      smpAgentTest3 $ testIntroductionRandomIds t
 
 type TestTransmission p = (ACorrId, ByteString, APartyCmd p)
 
@@ -209,13 +214,6 @@ testBroadcast _ alice bob tom = do
   alice #: ("e8", "B:team", "DEL") #> ("e8", "B:team", ERR $ BCAST B_NOT_FOUND)
   alice #: ("e9", "B:group", "DEL") #> ("e9", "B:group", ERR $ BCAST B_NOT_FOUND)
 
-connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
-connect (h1, name1) (h2, name2) = do
-  ("c1", _, Inv qInfo) <- h1 #: ("c1", "C:" <> name2, "NEW")
-  let qInfo' = serializeSmpQueueInfo qInfo
-  h2 #: ("c2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
-  h1 <#= \case ("", c2, APartyCmd CON) -> c2 == "C:" <> name2; _ -> False
-
 testIntroduction :: forall c. Transport c => TProxy c -> c -> c -> c -> IO ()
 testIntroduction _ alice bob tom = do
   -- establish connections
@@ -237,6 +235,45 @@ testIntroduction _ alice bob tom = do
   bob <#= \case ("", "C:tom_via_alice", Msg "hello") -> True; _ -> False
   bob #: ("5", "C:tom_via_alice", "SEND 9\nhello too") #> ("5", "C:tom_via_alice", SENT 2)
   tom <#= \case ("", "C:bob_via_alice", Msg "hello too") -> True; _ -> False
+
+testIntroductionRandomIds :: forall c. Transport c => TProxy c -> c -> c -> c -> IO ()
+testIntroductionRandomIds _ alice bob tom = do
+  -- establish connections
+  (aliceB, bobA) <- alice `connect'` bob
+  (aliceT, tomA) <- alice `connect'` tom
+  -- send introduction of tom to bob
+  alice #: ("1", bobA, "INTRO " <> tomA <> " 8\nmeet tom") #> ("1", bobA, OK)
+  ("", aliceB', Req invId1 "meet tom") <- (bob <#:)
+  aliceB' `shouldBe` aliceB
+  ("2", tomB, Right (APartyCmd OK)) <- bob #: ("2", "C:", "ACPT C:" <> invId1 <> " 7\nI'm bob")
+  ("", aliceT', Req invId2 "I'm bob") <- (tom <#:)
+  aliceT' `shouldBe` aliceT
+  -- TODO info "tom here" is not used, either JOIN command also should have eInfo parameter
+  -- or this should be another command, not ACPT
+  ("3", bobT, Right (APartyCmd OK)) <- tom #: ("3", "C:", "ACPT C:" <> invId2 <> " 8\ntom here")
+  tom <# ("", bobT, CON)
+  bob <# ("", tomB, CON)
+  alice <# ("", bobA, ICON . IE . Conn $ B.drop 2 tomA)
+  -- they can message each other now
+  tom #: ("4", bobT, "SEND :hello") =#> \case ("4", c, APartyCmd (SENT 1)) -> c == bobT; _ -> False
+  bob <#= \case ("", c, Msg "hello") -> c == tomB; _ -> False
+  bob #: ("5", tomB, "SEND 9\nhello too") =#> \case ("5", c, APartyCmd (SENT 2)) -> c == tomB; _ -> False
+  tom <#= \case ("", c, Msg "hello too") -> c == bobT; _ -> False
+
+connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
+connect (h1, name1) (h2, name2) = do
+  ("c1", _, Inv qInfo) <- h1 #: ("c1", "C:" <> name2, "NEW")
+  let qInfo' = serializeSmpQueueInfo qInfo
+  h2 #: ("c2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
+  h1 <#= \case ("", c2, APartyCmd CON) -> c2 == "C:" <> name2; _ -> False
+
+connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
+connect' h1 h2 = do
+  ("c1", conn2, Inv qInfo) <- h1 #: ("c1", "C:", "NEW")
+  let qInfo' = serializeSmpQueueInfo qInfo
+  ("", conn1, Right (APartyCmd CON)) <- h2 #: ("c2", "C:", "JOIN " <> qInfo')
+  h1 <#= \case ("", c2, APartyCmd CON) -> c2 == conn2; _ -> False
+  pure (conn1, conn2)
 
 samplePublicKey :: ByteString
 samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"

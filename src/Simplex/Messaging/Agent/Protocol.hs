@@ -882,9 +882,10 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     hasEntityId :: AnEntity -> APartyCmd p -> Either AgentErrorType (APartyCmd p)
     hasEntityId (AE entity) (APartyCmd cmd) =
       APartyCmd <$> case cmd of
-        -- NEW and JOIN have optional entity
+        -- NEW, JOIN and ACPT have optional entity
         NEW -> Right cmd
-        JOIN _ _ -> Right cmd
+        JOIN {} -> Right cmd
+        ACPT {} -> Right cmd
         -- ERROR response does not always have entity
         ERR _ -> Right cmd
         -- other responses must have entity
