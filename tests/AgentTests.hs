@@ -5,6 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE PostfixOperators #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -46,7 +47,7 @@ agentTests (ATransport t) = do
     it "should create broadcast and send messages" $
       smpAgentTest3 $ testBroadcast t
   describe "Introduction" do
-    it "should send and accept introduction" $
+    fit "should send and accept introduction" $
       smpAgentTest3 $ testIntroduction t
 
 type TestTransmission p = (ACorrId, ByteString, APartyCmd p)
@@ -61,9 +62,13 @@ testTE (ATransmissionOrError corrId entity cmdOrErr) =
     Right cmd -> Right $ APartyCmd cmd
     Left e -> Left e
 
+-- | receive message to handle `h`
+(<#:) :: Transport c => c -> IO (TestTransmissionOrError 'Agent)
+(<#:) h = testTE <$> tGet SAgent h
+
 -- | send transmission `t` to handle `h` and get response
 (#:) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (TestTransmissionOrError 'Agent)
-h #: t = tPutRaw h t >> testTE <$> tGet SAgent h
+h #: t = tPutRaw h t >> (h <#:)
 
 -- | action and expected response
 -- `h #:t #> r` is the test that sends `t` to `h` and validates that the response is `r`
@@ -82,11 +87,11 @@ correctTransmission (corrId, cAlias, cmdOrErr) = case cmdOrErr of
 
 -- | receive message to handle `h` and validate that it is the expected one
 (<#) :: Transport c => c -> TestTransmission' 'Agent c' -> Expectation
-h <# (corrId, cAlias, cmd) = tGet SAgent h >>= (`shouldBe` (corrId, cAlias, Right (APartyCmd cmd))) . testTE
+h <# (corrId, cAlias, cmd) = (h <#:) >>= (`shouldBe` (corrId, cAlias, Right (APartyCmd cmd)))
 
 -- | receive message to handle `h` and validate it using predicate `p`
 (<#=) :: Transport c => c -> (TestTransmission 'Agent -> Bool) -> Expectation
-h <#= p = tGet SAgent h >>= (`shouldSatisfy` p . correctTransmission . testTE)
+h <#= p = (h <#:) >>= (`shouldSatisfy` p . correctTransmission)
 
 -- | test that nothing is delivered to handle `h` during 10ms
 (#:#) :: Transport c => c -> String -> Expectation
@@ -100,15 +105,15 @@ h #:# err = tryGet `shouldReturn` ()
 pattern Msg :: MsgBody -> APartyCmd 'Agent
 pattern Msg msgBody <- APartyCmd MSG {msgBody, msgIntegrity = MsgOk}
 
-pattern Inv :: SMPQueueInfo -> APartyCmd 'Agent
-pattern Inv invitation <- APartyCmd (INV invitation)
+pattern Inv :: SMPQueueInfo -> Either AgentErrorType (APartyCmd 'Agent)
+pattern Inv invitation <- Right (APartyCmd (INV invitation))
 
 pattern Req :: InvitationId -> EntityInfo -> Either AgentErrorType (APartyCmd 'Agent)
 pattern Req invId eInfo <- Right (APartyCmd (REQ (IE (Conn invId)) eInfo))
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
-  ("1", "C:bob", Right (Inv qInfo)) <- alice #: ("1", "C:bob", "NEW")
+  ("1", "C:bob", Inv qInfo) <- alice #: ("1", "C:bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "C:alice", "JOIN " <> qInfo') #> ("", "C:alice", CON)
   alice <# ("", "C:bob", CON)
@@ -127,7 +132,7 @@ testDuplexConnection _ alice bob = do
 
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
-  ("1", bobConn, Right (Inv qInfo)) <- alice #: ("1", "C:", "NEW")
+  ("1", bobConn, Inv qInfo) <- alice #: ("1", "C:", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   ("", aliceConn, Right (APartyCmd CON)) <- bob #: ("11", "C:", "JOIN " <> qInfo')
   alice <# ("", bobConn, CON)
@@ -146,7 +151,7 @@ testDuplexConnRandomIds _ alice bob = do
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
-  ("1", "C:bob", Right (Inv qInfo)) <- alice1 #: ("1", "C:bob", "NEW")
+  ("1", "C:bob", Inv qInfo) <- alice1 #: ("1", "C:bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "C:alice", "JOIN " <> qInfo') #> ("", "C:alice", CON)
   bob #: ("12", "C:alice", "SEND 5\nhello") #> ("12", "C:alice", SENT 1)
@@ -162,7 +167,7 @@ testSubscription _ alice1 alice2 bob = do
 
 testSubscrNotification :: Transport c => TProxy c -> (ThreadId, ThreadId) -> c -> IO ()
 testSubscrNotification _ (server, _) client = do
-  client #: ("1", "C:conn1", "NEW") =#> \case ("1", "C:conn1", Inv _) -> True; _ -> False
+  client #: ("1", "C:conn1", "NEW") =#> \case ("1", "C:conn1", APartyCmd INV {}) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
   client <# ("", "C:conn1", END)
@@ -206,7 +211,7 @@ testBroadcast _ alice bob tom = do
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
-  ("c1", _, Right (Inv qInfo)) <- h1 #: ("c1", "C:" <> name2, "NEW")
+  ("c1", _, Inv qInfo) <- h1 #: ("c1", "C:" <> name2, "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   h2 #: ("c2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
   h1 <#= \case ("", c2, APartyCmd CON) -> c2 == "C:" <> name2; _ -> False
@@ -218,16 +223,15 @@ testIntroduction _ alice bob tom = do
   (alice, "alice") `connect` (tom, "tom")
   -- send introduction of tom to bob
   alice #: ("1", "C:bob", "INTRO C:tom 8\nmeet tom") #> ("1", "C:bob", OK)
-  ("", "C:alice", Req invId1 "meet tom") <- testTE <$> tGet SAgent bob
+  ("", "C:alice", Req invId1 "meet tom") <- (bob <#:)
   bob #: ("2", "C:tom_via_alice", "ACPT C:" <> invId1 <> " 7\nI'm bob") #> ("2", "C:tom_via_alice", OK)
-  ("", "C:alice", Req invId2 "I'm bob") <- testTE <$> tGet SAgent tom
+  ("", "C:alice", Req invId2 "I'm bob") <- (tom <#:)
   -- TODO info "tom here" is not used, either JOIN command also should have eInfo parameter
   -- or this should be another command, not ACPT
   tom #: ("3", "C:bob_via_alice", "ACPT C:" <> invId2 <> " 8\ntom here") #> ("3", "C:bob_via_alice", OK)
   tom <# ("", "C:bob_via_alice", CON)
   bob <# ("", "C:tom_via_alice", CON)
-  -- alice <# ("", "C:bob", ICON (IE (Conn "tom")))
-  -- putStrLn "here 4"
+  alice <# ("", "C:bob", ICON (IE (Conn "tom")))
   -- they can message each other now
   tom #: ("4", "C:bob_via_alice", "SEND :hello") #> ("4", "C:bob_via_alice", SENT 1)
   bob <#= \case ("", "C:tom_via_alice", Msg "hello") -> True; _ -> False

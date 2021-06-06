@@ -677,10 +677,10 @@ anEntityP =
             <|> "B:" $> AE . Broadcast
             <|> "G:" $> AE . AGroup
         )
-    <*> A.takeTill (== ' ')
+    <*> A.takeTill wordEnd
 
 connEntityP :: Parser (Entity Conn_)
-connEntityP = "C:" *> (Conn <$> A.takeTill (== ' '))
+connEntityP = "C:" *> (Conn <$> A.takeTill wordEnd)
 
 introEntityP :: Parser IntroEntity
 introEntityP =
@@ -689,7 +689,7 @@ introEntityP =
             <|> "O:" $> IE . OpenConn
             <|> "G:" $> IE . AGroup
         )
-    <*> A.takeTill (== ' ')
+    <*> A.takeTill wordEnd
 
 serializeEntity :: Entity t -> ByteString
 serializeEntity = \case

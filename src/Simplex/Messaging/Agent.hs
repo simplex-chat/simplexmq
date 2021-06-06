@@ -487,8 +487,6 @@ processSMPTransmission c@AgentClient {sndQ} st (srv, rId, cmd) = do
         conMsg :: Entity 'Conn_ -> m ()
         conMsg (Conn introId) = do
           logServer "<--" c srv rId "MSG <CON>"
-          liftIO $ putStrLn "conMsg"
-          liftIO $ print connId
           withStore (getIntro st introId) >>= \case
             Introduction {toConn, toStatus, reConn, reStatus}
               | toConn == connId && toStatus == IntroInv -> do
