@@ -57,7 +57,7 @@ class Monad m => MonadAgentStore s m where
   getMsg :: s -> ConnId -> InternalId -> m Msg
 
   -- Broadcasts
-  createBcast :: s -> BroadcastId -> m ()
+  createBcast :: s -> TVar ChaChaDRG -> BroadcastId -> m BroadcastId
   addBcastConn :: s -> BroadcastId -> ConnId -> m ()
   removeBcastConn :: s -> BroadcastId -> ConnId -> m ()
   deleteBcast :: s -> BroadcastId -> m ()

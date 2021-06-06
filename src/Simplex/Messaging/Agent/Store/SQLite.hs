@@ -33,6 +33,7 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 (encode)
 import Data.Char (toLower)
+import Data.Functor (($>))
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -302,11 +303,12 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
 
-  createBcast :: SQLiteStore -> BroadcastId -> m ()
-  createBcast SQLiteStore {dbConn} bId =
-    liftIOEither $
-      checkConstraint SEBcastDuplicate $
-        DB.execute dbConn "INSERT INTO broadcasts (broadcast_id) VALUES (?);" (Only bId)
+  createBcast :: SQLiteStore -> TVar ChaChaDRG -> BroadcastId -> m BroadcastId
+  createBcast SQLiteStore {dbConn} gVar bcastId = liftIOEither $ case bcastId of
+    "" -> createWithRandomId gVar create
+    bId -> checkConstraint SEBcastDuplicate $ create bId $> bId
+    where
+      create bId = DB.execute dbConn "INSERT INTO broadcasts (broadcast_id) VALUES (?);" (Only bId)
 
   addBcastConn :: SQLiteStore -> BroadcastId -> ConnId -> m ()
   addBcastConn SQLiteStore {dbConn} bId connId =

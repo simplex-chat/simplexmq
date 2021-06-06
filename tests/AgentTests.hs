@@ -49,6 +49,8 @@ agentTests (ATransport t) = do
   describe "Broadcast" do
     it "should create broadcast and send messages" $
       smpAgentTest3 $ testBroadcast t
+    it "should create broadcast and send messages (random IDs)" $
+      smpAgentTest3 $ testBroadcastRandomIds t
   describe "Introduction" do
     it "should send and accept introduction" $
       smpAgentTest3 $ testIntroduction t
@@ -106,6 +108,9 @@ h #:# err = tryGet `shouldReturn` ()
       10000 `timeout` tGet SAgent h >>= \case
         Just _ -> error err
         _ -> return ()
+
+pattern Sent :: AgentMsgId -> APartyCmd 'Agent
+pattern Sent msgId <- APartyCmd (SENT msgId)
 
 pattern Msg :: MsgBody -> APartyCmd 'Agent
 pattern Msg msgBody <- APartyCmd MSG {msgBody, msgIntegrity = MsgOk}
@@ -192,8 +197,8 @@ testBroadcast _ alice bob tom = do
   alice #: ("e3", "B:team", "ADD C:unknown") #> ("e3", "B:team", ERR $ CONN NOT_FOUND)
   alice #: ("e4", "B:team", "ADD C:bob") #> ("e4", "B:team", ERR $ CONN DUPLICATE)
   -- send message
-  alice #: ("4", "B:team", "SEND 5\nhello") #> ("4", "C:bob", SENT 1)
-  alice <# ("4", "C:tom", SENT 1)
+  alice #: ("4", "B:team", "SEND 5\nhello") =#> \case ("4", c, Sent 1) -> c == "C:bob" || c == "C:tom"; _ -> False
+  alice <#= \case ("4", c, Sent 1) -> c == "C:bob" || c == "C:tom"; _ -> False
   alice <# ("4", "B:team", SENT 0)
   bob <#= \case ("", "C:alice", Msg "hello") -> True; _ -> False
   tom <#= \case ("", "C:alice", Msg "hello") -> True; _ -> False
@@ -212,6 +217,43 @@ testBroadcast _ alice bob tom = do
   alice #: ("8", "B:team", "SEND 11\ntry sending") #> ("8", "B:team", ERR $ BCAST B_NOT_FOUND)
   -- commands with errors
   alice #: ("e8", "B:team", "DEL") #> ("e8", "B:team", ERR $ BCAST B_NOT_FOUND)
+  alice #: ("e9", "B:group", "DEL") #> ("e9", "B:group", ERR $ BCAST B_NOT_FOUND)
+
+testBroadcastRandomIds :: forall c. Transport c => TProxy c -> c -> c -> c -> IO ()
+testBroadcastRandomIds _ alice bob tom = do
+  -- establish connections
+  (aliceB, bobA) <- alice `connect'` bob
+  (aliceT, tomA) <- alice `connect'` tom
+  -- create and set up broadcast
+  ("1", team, Right (APartyCmd OK)) <- alice #: ("1", "B:", "NEW")
+  alice #: ("2", team, "ADD " <> bobA) #> ("2", team, OK)
+  alice #: ("3", team, "ADD " <> tomA) #> ("3", team, OK)
+  -- commands with errors
+  alice #: ("e1", team, "NEW") #> ("e1", team, ERR $ BCAST B_DUPLICATE)
+  alice #: ("e2", "B:group", "ADD " <> bobA) #> ("e2", "B:group", ERR $ BCAST B_NOT_FOUND)
+  alice #: ("e3", team, "ADD C:unknown") #> ("e3", team, ERR $ CONN NOT_FOUND)
+  alice #: ("e4", team, "ADD " <> bobA) #> ("e4", team, ERR $ CONN DUPLICATE)
+  -- send message
+  alice #: ("4", team, "SEND 5\nhello") =#> \case ("4", c, Sent 1) -> c == bobA || c == tomA; _ -> False
+  alice <#= \case ("4", c, Sent 1) -> c == bobA || c == tomA; _ -> False
+  alice <# ("4", team, SENT 0)
+  bob <#= \case ("", c, Msg "hello") -> c == aliceB; _ -> False
+  tom <#= \case ("", c, Msg "hello") -> c == aliceT; _ -> False
+  -- remove one connection
+  alice #: ("5", team, "REM " <> tomA) #> ("5", team, OK)
+  alice #: ("6", team, "SEND 11\nhello again") #> ("6", bobA, SENT 2)
+  alice <# ("6", team, SENT 0)
+  bob <#= \case ("", c, Msg "hello again") -> c == aliceB; _ -> False
+  tom #:# "nothing delivered to tom"
+  -- commands with errors
+  alice #: ("e5", "B:group", "REM " <> bobA) #> ("e5", "B:group", ERR $ BCAST B_NOT_FOUND)
+  alice #: ("e6", team, "REM C:unknown") #> ("e6", team, ERR $ CONN NOT_FOUND)
+  alice #: ("e7", team, "REM " <> tomA) #> ("e7", team, ERR $ CONN NOT_FOUND)
+  -- delete broadcast
+  alice #: ("7", team, "DEL") #> ("7", team, OK)
+  alice #: ("8", team, "SEND 11\ntry sending") #> ("8", team, ERR $ BCAST B_NOT_FOUND)
+  -- commands with errors
+  alice #: ("e8", team, "DEL") #> ("e8", team, ERR $ BCAST B_NOT_FOUND)
   alice #: ("e9", "B:group", "DEL") #> ("e9", "B:group", ERR $ BCAST B_NOT_FOUND)
 
 testIntroduction :: forall c. Transport c => TProxy c -> c -> c -> c -> IO ()
@@ -255,24 +297,24 @@ testIntroductionRandomIds _ alice bob tom = do
   bob <# ("", tomB, CON)
   alice <# ("", bobA, ICON . IE . Conn $ B.drop 2 tomA)
   -- they can message each other now
-  tom #: ("4", bobT, "SEND :hello") =#> \case ("4", c, APartyCmd (SENT 1)) -> c == bobT; _ -> False
+  tom #: ("4", bobT, "SEND :hello") #> ("4", bobT, SENT 1)
   bob <#= \case ("", c, Msg "hello") -> c == tomB; _ -> False
-  bob #: ("5", tomB, "SEND 9\nhello too") =#> \case ("5", c, APartyCmd (SENT 2)) -> c == tomB; _ -> False
+  bob #: ("5", tomB, "SEND 9\nhello too") #> ("5", tomB, SENT 2)
   tom <#= \case ("", c, Msg "hello too") -> c == bobT; _ -> False
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Inv qInfo) <- h1 #: ("c1", "C:" <> name2, "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  h2 #: ("c2", "C:" <> name1, "JOIN " <> qInfo') =#> \case ("", c1, APartyCmd CON) -> c1 == "C:" <> name1; _ -> False
-  h1 <#= \case ("", c2, APartyCmd CON) -> c2 == "C:" <> name2; _ -> False
+  h2 #: ("c2", "C:" <> name1, "JOIN " <> qInfo') #> ("", "C:" <> name1, CON)
+  h1 <# ("", "C:" <> name2, CON)
 
 connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 connect' h1 h2 = do
   ("c1", conn2, Inv qInfo) <- h1 #: ("c1", "C:", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   ("", conn1, Right (APartyCmd CON)) <- h2 #: ("c2", "C:", "JOIN " <> qInfo')
-  h1 <#= \case ("", c2, APartyCmd CON) -> c2 == conn2; _ -> False
+  h1 <# ("", conn2, CON)
   pure (conn1, conn2)
 
 samplePublicKey :: ByteString

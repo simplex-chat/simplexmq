@@ -335,13 +335,19 @@ sendClientMessage c st corrId (Conn cId) msgBody =
 processBroadcastCommand ::
   forall c m. (AgentMonad m, EntityCommand 'Broadcast_ c) => AgentClient -> SQLiteStore -> ACorrId -> Entity 'Broadcast_ -> ACommand 'Client c -> m ()
 processBroadcastCommand c st corrId bcast@(Broadcast bId) = \case
-  NEW -> withStore (createBcast st bId) >> ok
+  NEW -> createNewBroadcast
   ADD (Conn cId) -> withStore (addBcastConn st bId cId) >> ok
   REM (Conn cId) -> withStore (removeBcastConn st bId cId) >> ok
   LS -> withStore (getBcast st bId) >>= respond bcast . MS . map Conn
   SEND msgBody -> withStore (getBcast st bId) >>= mapM_ (sendMsg msgBody) >> respond bcast (SENT 0)
   DEL -> withStore (deleteBcast st bId) >> ok
   where
+    createNewBroadcast :: m ()
+    createNewBroadcast = do
+      g <- asks idsDrg
+      bId' <- withStore $ createBcast st g bId
+      respond (Broadcast bId') OK
+
     sendMsg :: MsgBody -> ConnId -> m ()
     sendMsg msgBody cId = sendClientMessage c st corrId (Conn cId) msgBody
 
