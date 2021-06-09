@@ -171,8 +171,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIOEither . withTransaction dbConn $
       getConn_ dbConn connId
 
-  getAllConnAliases :: SQLiteStore -> m [ConnId]
-  getAllConnAliases SQLiteStore {dbConn} =
+  getAllConnIds :: SQLiteStore -> m [ConnId]
+  getAllConnIds SQLiteStore {dbConn} =
     liftIO $ do
       r <- DB.query_ dbConn "SELECT conn_alias FROM connections;" :: IO [[ConnId]]
       return (concat r)
@@ -320,7 +320,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           checkConstraint SEConnDuplicate $
             DB.execute
               dbConn
-              "INSERT INTO broadcast_connections (broadcast_id, conn_alias) VALUES (?, ?);"
+              [sql|
+                INSERT INTO broadcast_connections
+                  (broadcast_id, conn_alias) VALUES (?, ?);
+              |]
               (bId, connId)
 
   removeBcastConn :: SQLiteStore -> BroadcastId -> ConnId -> m ()
@@ -332,7 +335,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           Right
             <$> DB.execute
               dbConn
-              "DELETE FROM broadcast_connections WHERE broadcast_id = ? AND conn_alias = ?;"
+              [sql|
+                DELETE FROM broadcast_connections
+                WHERE broadcast_id = ? AND conn_alias = ?;
+              |]
               (bId, connId)
 
   deleteBcast :: SQLiteStore -> BroadcastId -> m ()
@@ -397,7 +403,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       DB.execute
         dbConn
-        "UPDATE conn_intros SET to_status = ? WHERE intro_id = ?;"
+        [sql|
+          UPDATE conn_intros
+          SET to_status = ?
+          WHERE intro_id = ?;
+        |]
         (toStatus, introId)
 
   setIntroReStatus :: SQLiteStore -> IntroId -> IntroStatus -> m ()
@@ -405,7 +415,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       DB.execute
         dbConn
-        "UPDATE conn_intros SET re_status = ? WHERE intro_id = ?;"
+        [sql|
+          UPDATE conn_intros
+          SET re_status = ?
+          WHERE intro_id = ?;
+        |]
         (reStatus, introId)
 
   createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
@@ -415,8 +429,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         dbConn
         [sql|
           INSERT INTO conn_invitations
-          (inv_id, via_conn, external_intro_id, conn_info, queue_info)
-          VALUES (?, ?, ?, ?, ?);
+          (inv_id, via_conn, external_intro_id, conn_info, queue_info) VALUES (?, ?, ?, ?, ?);
         |]
         (invId, viaConn, externalIntroId, entityInfo, qInfo)
 
@@ -440,10 +453,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   addInvitationConn :: SQLiteStore -> InvitationId -> ConnId -> m ()
   addInvitationConn SQLiteStore {dbConn} invId connId =
     liftIO $
-      DB.execute
+      DB.executeNamed
         dbConn
-        "UPDATE conn_invitations SET conn_id = ?, status = ? WHERE inv_id = ?;"
-        (connId, InvAcpt, invId)
+        [sql|
+          UPDATE conn_invitations
+          SET conn_id = :conn_id, status = :status
+          WHERE inv_id = :inv_id;
+        |]
+        [":conn_id" := connId, ":status" := InvAcpt, ":inv_id" := invId]
 
   getConnInvitation :: SQLiteStore -> ConnId -> m (Maybe (Invitation, Connection 'CDuplex))
   getConnInvitation SQLiteStore {dbConn} cId =
@@ -472,7 +489,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO $
       DB.execute
         dbConn
-        "UPDATE conn_invitations SET status = ? WHERE inv_id = ?;"
+        [sql|
+          UPDATE conn_invitations
+          SET status = ? WHERE inv_id = ?;
+        |]
         (status, invId)
 
 -- * Auxiliary helpers
@@ -588,12 +608,9 @@ insertRcvConnection_ dbConn ConnData {connId, viaInv, connLevel} RcvQueue {serve
     dbConn
     [sql|
       INSERT INTO connections
-        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, via_inv, conn_level,
-          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
-          last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, via_inv, conn_level, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
       VALUES
-        (:conn_alias, :rcv_host, :rcv_port, :rcv_id, NULL, NULL, NULL, :via_inv, :conn_level,
-          0, 0, 0, 0, x'', x'');
+        (:conn_alias,:rcv_host,:rcv_port,:rcv_id, NULL,     NULL,     NULL,  :via_inv,:conn_level, 0, 0, 0, 0, x'', x'');
     |]
     [ ":conn_alias" := connId,
       ":rcv_host" := host server,
@@ -633,12 +650,9 @@ insertSndConnection_ dbConn ConnData {connId, viaInv, connLevel} SndQueue {serve
     dbConn
     [sql|
       INSERT INTO connections
-        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, via_inv, conn_level,
-          last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id,
-          last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, via_inv, conn_level, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
       VALUES
-        (:conn_alias, NULL, NULL, NULL, :snd_host, :snd_port, :snd_id, :via_inv, :conn_level,
-          0, 0, 0, 0, x'', x'');
+        (:conn_alias, NULL,     NULL,     NULL,  :snd_host,:snd_port,:snd_id,:via_inv,:conn_level, 0, 0, 0, 0, x'', x'');
     |]
     [ ":conn_alias" := connId,
       ":snd_host" := host server,

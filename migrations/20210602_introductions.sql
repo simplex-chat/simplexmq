@@ -1,9 +1,9 @@
 CREATE TABLE conn_intros (
   intro_id BLOB NOT NULL PRIMARY KEY,
-  to_conn BLOB NOT NULL REFERENCES connections (conn_alias) ON DELETE SET NULL,
+  to_conn BLOB NOT NULL REFERENCES connections (conn_alias) ON DELETE CASCADE,
   to_info BLOB, -- info about "to" connection sent to "re" connection
   to_status TEXT NOT NULL DEFAULT '', -- '', INV, CON
-  re_conn BLOB NOT NULL REFERENCES connections (conn_alias) ON DELETE SET NULL,
+  re_conn BLOB NOT NULL REFERENCES connections (conn_alias) ON DELETE CASCADE,
   re_info BLOB NOT NULL, -- info about "re" connection sent to "to" connection
   re_status TEXT NOT NULL DEFAULT '', -- '', INV, CON
   queue_info BLOB

@@ -260,7 +260,7 @@ processConnCommand c@AgentClient {sndQ} st corrId conn@(Conn connId) = \case
 
     -- TODO remove - hack for subscribing to all; respond' and parameterization of subscribeConnection are byproduct
     subscribeAll :: m ()
-    subscribeAll = withStore (getAllConnAliases st) >>= mapM_ (subscribeConnection . Conn)
+    subscribeAll = withStore (getAllConnIds st) >>= mapM_ (subscribeConnection . Conn)
 
     suspendConnection :: Entity 'Conn_ -> m ()
     suspendConnection (Conn cId) =

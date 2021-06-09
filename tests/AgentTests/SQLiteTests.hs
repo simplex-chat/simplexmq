@@ -81,7 +81,7 @@ storeTests = do
           testCreateSndConn
           testCreateSndConnRandomID
           testCreateSndConnDuplicate
-        describe "getAllConnAliases" testGetAllConnAliases
+        describe "getAllConnIds" testGetAllConnIds
         describe "getRcvConn" testGetRcvConn
         describe "deleteConn" do
           testDeleteRcvConn
@@ -146,7 +146,6 @@ rcvQueue1 =
   RcvQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       rcvId = "1234",
-      -- connAlias = "conn1",
       rcvPrivateKey = C.safePrivateKey (1, 2, 3),
       sndId = Just "2345",
       sndKey = Nothing,
@@ -160,7 +159,6 @@ sndQueue1 =
   SndQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
-      -- connAlias = "conn1",
       sndPrivateKey = C.safePrivateKey (1, 2, 3),
       encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
       signKey = C.safePrivateKey (1, 2, 3),
@@ -233,13 +231,13 @@ testCreateSndConnDuplicate =
     createSndConn store g cData1 sndQueue1
       `throwsError` SEConnDuplicate
 
-testGetAllConnAliases :: SpecWith SQLiteStore
-testGetAllConnAliases =
+testGetAllConnIds :: SpecWith SQLiteStore
+testGetAllConnIds =
   it "should get all conn aliases" $ \store -> do
     g <- newTVarIO =<< drgNew
     _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
     _ <- runExceptT $ createSndConn store g cData1 {connId = "conn2"} sndQueue1
-    getAllConnAliases store
+    getAllConnIds store
       `returnsResult` ["conn1" :: ConnId, "conn2" :: ConnId]
 
 testGetRcvConn :: SpecWith SQLiteStore
