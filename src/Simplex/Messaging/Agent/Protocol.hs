@@ -33,6 +33,8 @@ module Simplex.Messaging.Agent.Protocol
     Entity (..),
     EntityTag (..),
     AnEntity (..),
+    IntroEntity (..),
+    EntityInfo,
     EntityCommand,
     entityCommand,
     ACommand (..),
@@ -53,7 +55,7 @@ module Simplex.Messaging.Agent.Protocol
     ATransmission (..),
     ATransmissionOrError (..),
     ARawTransmission,
-    ConnAlias,
+    ConnId,
     ReplyMode (..),
     AckMode (..),
     OnOff (..),
@@ -171,6 +173,13 @@ deriving instance Eq (Entity t)
 
 deriving instance Show (Entity t)
 
+instance TestEquality Entity where
+  testEquality (Conn c) (Conn c') = refl c c'
+  testEquality (OpenConn c) (OpenConn c') = refl c c'
+  testEquality (Broadcast c) (Broadcast c') = refl c c'
+  testEquality (AGroup c) (AGroup c') = refl c c'
+  testEquality _ _ = Nothing
+
 entityId :: Entity t -> ByteString
 entityId = \case
   Conn bs -> bs
@@ -195,7 +204,11 @@ type family EntityCommand (t :: EntityTag) (c :: ACmdTag) :: Constraint where
   EntityCommand Conn_ NEW_ = ()
   EntityCommand Conn_ INV_ = ()
   EntityCommand Conn_ JOIN_ = ()
+  EntityCommand Conn_ INTRO_ = ()
+  EntityCommand Conn_ REQ_ = ()
+  EntityCommand Conn_ ACPT_ = ()
   EntityCommand Conn_ CON_ = ()
+  EntityCommand Conn_ ICON_ = ()
   EntityCommand Conn_ SUB_ = ()
   EntityCommand Conn_ SUBALL_ = ()
   EntityCommand Conn_ END_ = ()
@@ -226,7 +239,11 @@ entityCommand = \case
     NEW -> Just Dict
     INV _ -> Just Dict
     JOIN {} -> Just Dict
+    INTRO {} -> Just Dict
+    REQ {} -> Just Dict
+    ACPT {} -> Just Dict
     CON -> Just Dict
+    ICON {} -> Just Dict
     SUB -> Just Dict
     SUBALL -> Just Dict
     END -> Just Dict
@@ -258,7 +275,11 @@ data ACmdTag
   = NEW_
   | INV_
   | JOIN_
+  | INTRO_
+  | REQ_
+  | ACPT_
   | CON_
+  | ICON_
   | SUB_
   | SUBALL_
   | END_
@@ -274,15 +295,31 @@ data ACmdTag
   | OK_
   | ERR_
 
+type family Introduction (t :: EntityTag) :: Constraint where
+  Introduction Conn_ = ()
+  Introduction OpenConn_ = ()
+  Introduction AGroup_ = ()
+  Introduction t = (Int ~ Bool, TypeError (Text "Entity " :<>: ShowType t :<>: Text " cannot be INTRO'd to"))
+
+data IntroEntity = forall t. Introduction t => IE (Entity t)
+
+instance Eq IntroEntity where
+  IE e1 == IE e2 = isJust $ testEquality e1 e2
+
+deriving instance Show IntroEntity
+
+type EntityInfo = ByteString
+
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) (c :: ACmdTag) where
   NEW :: ACommand Client NEW_ -- response INV
   INV :: SMPQueueInfo -> ACommand Agent INV_
   JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client JOIN_ -- response OK
+  INTRO :: IntroEntity -> EntityInfo -> ACommand Client INTRO_
+  REQ :: IntroEntity -> EntityInfo -> ACommand Agent INTRO_
+  ACPT :: IntroEntity -> EntityInfo -> ACommand Client ACPT_
   CON :: ACommand Agent CON_ -- notification that connection is established
-  -- TODO currently it automatically allows whoever sends the confirmation
-  -- CONF :: OtherPartyId -> ACommand Agent
-  -- LET :: OtherPartyId -> ACommand Client
+  ICON :: IntroEntity -> ACommand Agent ICON_
   SUB :: ACommand Client SUB_
   SUBALL :: ACommand Client SUBALL_ -- TODO should be moved to chat protocol - hack for subscribing to all
   END :: ACommand Agent END_
@@ -318,6 +355,7 @@ instance TestEquality (ACommand p) where
   testEquality c@INV {} c'@INV {} = refl c c'
   testEquality c@JOIN {} c'@JOIN {} = refl c c'
   testEquality CON CON = Just Refl
+  testEquality c@ICON {} c'@ICON {} = refl c c'
   testEquality SUB SUB = Just Refl
   testEquality SUBALL SUBALL = Just Refl
   testEquality END END = Just Refl
@@ -334,7 +372,7 @@ instance TestEquality (ACommand p) where
   testEquality c@ERR {} c'@ERR {} = refl c c'
   testEquality _ _ = Nothing
 
-refl :: Eq (f a) => f a -> f a -> Maybe (a :~: a)
+refl :: Eq a => a -> a -> Maybe (t :~: t)
 refl x x' = if x == x' then Just Refl else Nothing
 
 -- | SMP message formats.
@@ -366,6 +404,14 @@ data AMessage where
   REPLY :: SMPQueueInfo -> AMessage
   -- | agent envelope for the client message
   A_MSG :: MsgBody -> AMessage
+  -- | agent message for introduction
+  A_INTRO :: IntroEntity -> EntityInfo -> AMessage
+  -- | agent envelope for the sent invitation
+  A_INV :: Entity Conn_ -> SMPQueueInfo -> EntityInfo -> AMessage
+  -- | agent envelope for the forwarded invitation
+  A_REQ :: Entity Conn_ -> SMPQueueInfo -> EntityInfo -> AMessage
+  -- | agent message for intro/group request
+  A_CON :: Entity Conn_ -> AMessage
   deriving (Show)
 
 -- | Parse SMP message.
@@ -408,12 +454,22 @@ agentMessageP =
   "HELLO " *> hello
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
+    <|> "INTRO " *> a_intro
+    <|> "INV " *> a_inv
+    <|> "REQ " *> a_req
+    <|> "CON " *> a_con
   where
     hello = HELLO <$> C.pubKeyP <*> ackMode
     reply = REPLY <$> smpQueueInfoP
-    a_msg = do
+    a_msg = A_MSG <$> binaryBody
+    a_intro = A_INTRO <$> introEntityP <* A.space <*> binaryBody
+    a_inv = invP A_INV
+    a_req = invP A_REQ
+    a_con = A_CON <$> connEntityP
+    invP f = f <$> connEntityP <* A.space <*> smpQueueInfoP <* A.space <*> binaryBody
+    binaryBody = do
       size :: Int <- A.decimal <* A.endOfLine
-      A_MSG <$> A.take size <* A.endOfLine
+      A.take size <* A.endOfLine
     ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
 -- | SMP queue information parser.
@@ -434,6 +490,13 @@ serializeAgentMessage = \case
   HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
   A_MSG body -> "MSG " <> serializeMsg body <> "\n"
+  A_INTRO (IE entity) eInfo -> "INTRO " <> serializeIntro entity eInfo <> "\n"
+  A_INV conn qInfo eInfo -> "INV " <> serializeInv conn qInfo eInfo
+  A_REQ conn qInfo eInfo -> "REQ " <> serializeInv conn qInfo eInfo
+  A_CON conn -> "CON " <> serializeEntity conn
+  where
+    serializeInv conn qInfo eInfo =
+      B.intercalate " " [serializeEntity conn, serializeSmpQueueInfo qInfo, serializeMsg eInfo] <> "\n"
 
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
@@ -457,7 +520,7 @@ instance IsString SMPServer where
   fromString = parseString . parseAll $ smpServerP
 
 -- | SMP agent connection alias.
-type ConnAlias = ByteString
+type ConnId = ByteString
 
 -- | Connection modes.
 data OnOff = On | Off deriving (Eq, Show, Read)
@@ -614,10 +677,19 @@ anEntityP =
             <|> "B:" $> AE . Broadcast
             <|> "G:" $> AE . AGroup
         )
-    <*> A.takeTill (== ' ')
+    <*> A.takeTill wordEnd
 
-entityConnP :: Parser (Entity Conn_)
-entityConnP = "C:" *> (Conn <$> A.takeTill (== ' '))
+connEntityP :: Parser (Entity Conn_)
+connEntityP = "C:" *> (Conn <$> A.takeTill wordEnd)
+
+introEntityP :: Parser IntroEntity
+introEntityP =
+  ($)
+    <$> ( "C:" $> IE . Conn
+            <|> "O:" $> IE . OpenConn
+            <|> "G:" $> IE . AGroup
+        )
+    <*> A.takeTill wordEnd
 
 serializeEntity :: Entity t -> ByteString
 serializeEntity = \case
@@ -632,6 +704,9 @@ commandP =
   "NEW" $> ACmd SClient NEW
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
+    <|> "INTRO " *> introCmd
+    <|> "REQ " *> reqCmd
+    <|> "ACPT " *> acptCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "SUBALL" $> ACmd SClient SUBALL -- TODO remove - hack for subscribing to all
     <|> "END" $> ACmd SAgent END
@@ -645,16 +720,21 @@ commandP =
     <|> "LS" $> ACmd SClient LS
     <|> "MS " *> membersResp
     <|> "ERR " *> agentError
+    <|> "ICON " *> iconMsg
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
+    introCmd = ACmd SClient <$> introP INTRO
+    reqCmd = ACmd SAgent <$> introP REQ
+    acptCmd = ACmd SClient <$> introP ACPT
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
-    addCmd = ACmd SClient . ADD <$> entityConnP
-    removeCmd = ACmd SClient . REM <$> entityConnP
-    membersResp = ACmd SAgent . MS <$> (entityConnP `A.sepBy'` A.char ' ')
+    addCmd = ACmd SClient . ADD <$> connEntityP
+    removeCmd = ACmd SClient . REM <$> connEntityP
+    membersResp = ACmd SAgent . MS <$> (connEntityP `A.sepBy'` A.char ' ')
+    iconMsg = ACmd SAgent . ICON <$> introEntityP
     message = do
       msgIntegrity <- msgIntegrityP <* A.space
       recipientMeta <- "R=" *> partyMeta A.decimal
@@ -662,6 +742,7 @@ commandP =
       senderMeta <- "S=" *> partyMeta A.decimal
       msgBody <- A.takeByteString
       return $ ACmd SAgent MSG {recipientMeta, brokerMeta, senderMeta, msgIntegrity, msgBody}
+    introP f = f <$> introEntityP <* A.space <*> A.takeByteString
     replyMode = ReplyMode <$> (" NO_REPLY" $> Off <|> pure On)
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
@@ -685,6 +766,9 @@ serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
+  INTRO (IE entity) eInfo -> "INTRO " <> serializeIntro entity eInfo
+  REQ (IE entity) eInfo -> "REQ " <> serializeIntro entity eInfo
+  ACPT (IE entity) eInfo -> "ACPT " <> serializeIntro entity eInfo
   SUB -> "SUB"
   SUBALL -> "SUBALL" -- TODO remove - hack for subscribing to all
   END -> "END"
@@ -706,6 +790,7 @@ serializeCommand = \case
   LS -> "LS"
   MS cs -> "MS " <> B.intercalate " " (map serializeEntity cs)
   CON -> "CON"
+  ICON (IE entity) -> "ICON " <> serializeEntity entity
   ERR e -> "ERR " <> serializeAgentError e
   OK -> "OK"
   where
@@ -715,6 +800,9 @@ serializeCommand = \case
       ReplyMode On -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
+
+serializeIntro :: Entity t -> ByteString -> ByteString
+serializeIntro entity eInfo = serializeEntity entity <> " " <> serializeMsg eInfo
 
 -- | Serialize message integrity validation result.
 serializeMsgIntegrity :: MsgIntegrity -> ByteString
@@ -794,9 +882,10 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     hasEntityId :: AnEntity -> APartyCmd p -> Either AgentErrorType (APartyCmd p)
     hasEntityId (AE entity) (APartyCmd cmd) =
       APartyCmd <$> case cmd of
-        -- NEW and JOIN have optional entity
+        -- NEW, JOIN and ACPT have optional entity
         NEW -> Right cmd
-        JOIN _ _ -> Right cmd
+        JOIN {} -> Right cmd
+        ACPT {} -> Right cmd
         -- ERROR response does not always have entity
         ERR _ -> Right cmd
         -- other responses must have entity
@@ -818,6 +907,9 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       APartyCmd <$$> case cmd of
         SEND body -> SEND <$$> getMsgBody body
         MSG agentMsgId srvTS agentTS integrity body -> MSG agentMsgId srvTS agentTS integrity <$$> getMsgBody body
+        INTRO entity eInfo -> INTRO entity <$$> getMsgBody eInfo
+        REQ entity eInfo -> REQ entity <$$> getMsgBody eInfo
+        ACPT entity eInfo -> ACPT entity <$$> getMsgBody eInfo
         _ -> pure $ Right cmd
 
     -- TODO refactor with server

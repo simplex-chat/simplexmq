@@ -30,7 +30,7 @@ base64StringP = do
   pure $ str <> pad
 
 tsISO8601P :: Parser UTCTime
-tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
+tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill wordEnd
 
 parse :: Parser a -> e -> (ByteString -> Either e a)
 parse parser err = first (const err) . parseAll parser
@@ -42,13 +42,16 @@ parseRead :: Read a => Parser ByteString -> Parser a
 parseRead = (>>= maybe (fail "cannot read") pure . readMaybe . B.unpack)
 
 parseRead1 :: Read a => Parser a
-parseRead1 = parseRead $ A.takeTill (== ' ')
+parseRead1 = parseRead $ A.takeTill wordEnd
 
 parseRead2 :: Read a => Parser a
 parseRead2 = parseRead $ do
-  w1 <- A.takeTill (== ' ') <* A.char ' '
-  w2 <- A.takeTill (== ' ')
+  w1 <- A.takeTill wordEnd <* A.char ' '
+  w2 <- A.takeTill wordEnd
   pure $ w1 <> " " <> w2
+
+wordEnd :: Char -> Bool
+wordEnd c = c == ' ' || c == '\n'
 
 parseString :: (ByteString -> Either String a) -> (String -> a)
 parseString p = either error id . p . B.pack
