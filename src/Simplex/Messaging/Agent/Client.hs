@@ -119,7 +119,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
         deleteKeys ks m = S.foldr' M.delete m ks
 
     notifySub :: ConnId -> IO ()
-    notifySub connAlias = atomically . writeTBQueue (sndQ c) $ ATransmission "" (Conn connAlias) END
+    notifySub connId = atomically $ writeTBQueue (sndQ c) ("", connId, END)
 
 closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
 closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient
@@ -181,31 +181,31 @@ newReceiveQueue c srv = do
   return (rq, SMPQueueInfo srv sId encryptKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
-subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connAlias = do
+subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
   withLogSMP c server rcvId "SUB" $ \smp ->
     subscribeSMPQueue smp rcvPrivateKey rcvId
-  addSubscription c rq connAlias
+  addSubscription c rq connId
 
 addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
-addSubscription c RcvQueue {server} connAlias = atomically $ do
-  modifyTVar (subscrConns c) $ M.insert connAlias server
+addSubscription c RcvQueue {server} connId = atomically $ do
+  modifyTVar (subscrConns c) $ M.insert connId server
   modifyTVar (subscrSrvrs c) $ M.alter (Just . addSub) server
   where
     addSub :: Maybe (Set ConnId) -> Set ConnId
-    addSub (Just cs) = S.insert connAlias cs
-    addSub _ = S.singleton connAlias
+    addSub (Just cs) = S.insert connId cs
+    addSub _ = S.singleton connId
 
 removeSubscription :: AgentMonad m => AgentClient -> ConnId -> m ()
-removeSubscription AgentClient {subscrConns, subscrSrvrs} connAlias = atomically $ do
+removeSubscription AgentClient {subscrConns, subscrSrvrs} connId = atomically $ do
   cs <- readTVar subscrConns
-  writeTVar subscrConns $ M.delete connAlias cs
+  writeTVar subscrConns $ M.delete connId cs
   mapM_
     (modifyTVar subscrSrvrs . M.alter (>>= delSub))
-    (M.lookup connAlias cs)
+    (M.lookup connId cs)
   where
     delSub :: Set ConnId -> Maybe (Set ConnId)
     delSub cs =
-      let cs' = S.delete connAlias cs
+      let cs' = S.delete connId cs
        in if S.null cs' then Nothing else Just cs'
 
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()

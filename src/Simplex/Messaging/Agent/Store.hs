@@ -56,17 +56,10 @@ class Monad m => MonadAgentStore s m where
 
   getMsg :: s -> ConnId -> InternalId -> m Msg
 
-  -- Broadcasts
-  createBcast :: s -> TVar ChaChaDRG -> BroadcastId -> m BroadcastId
-  addBcastConn :: s -> BroadcastId -> ConnId -> m ()
-  removeBcastConn :: s -> BroadcastId -> ConnId -> m ()
-  deleteBcast :: s -> BroadcastId -> m ()
-  getBcast :: s -> BroadcastId -> m [ConnId]
-
   -- Introductions
   createIntro :: s -> TVar ChaChaDRG -> NewIntroduction -> m IntroId
   getIntro :: s -> IntroId -> m Introduction
-  addIntroInvitation :: s -> IntroId -> EntityInfo -> SMPQueueInfo -> m ()
+  addIntroInvitation :: s -> IntroId -> ConnInfo -> SMPQueueInfo -> m ()
   setIntroToStatus :: s -> IntroId -> IntroStatus -> m ()
   setIntroReStatus :: s -> IntroId -> IntroStatus -> m ()
   createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
@@ -334,12 +327,10 @@ introStatusT = \case
   "CON" -> Just IntroCon
   _ -> Nothing
 
-type IntroId = ByteString
-
 data NewInvitation = NewInvitation
   { viaConn :: ConnId,
     externalIntroId :: IntroId,
-    entityInfo :: EntityInfo,
+    connInfo :: ConnInfo,
     qInfo :: Maybe SMPQueueInfo
   }
 
@@ -347,7 +338,7 @@ data Invitation = Invitation
   { invId :: InvitationId,
     viaConn :: ConnId,
     externalIntroId :: IntroId,
-    entityInfo :: EntityInfo,
+    connInfo :: ConnInfo,
     qInfo :: Maybe SMPQueueInfo,
     connId :: Maybe ConnId,
     status :: InvitationStatus
@@ -370,8 +361,6 @@ invStatusT = \case
   "CON" -> Just InvCon
   _ -> Nothing
 
-type InvitationId = ByteString
-
 -- * Store errors
 
 -- | Agent store error.
@@ -387,10 +376,6 @@ data StoreError
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
     SEBadConnType ConnType
-  | -- | Broadcast ID not found.
-    SEBcastNotFound
-  | -- | Broadcast ID already used.
-    SEBcastDuplicate
   | -- | Introduction ID not found.
     SEIntroNotFound
   | -- | Invitation ID not found.
