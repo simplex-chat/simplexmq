@@ -48,6 +48,7 @@ import Data.Time.Clock
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
@@ -59,26 +60,30 @@ import UnliftIO.STM
 
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission 'Client),
-    sndQ :: TBQueue (ATransmission 'Agent),
+    subQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue SMPServerTransmission,
     smpClients :: TVar (Map SMPServer SMPClient),
     subscrSrvrs :: TVar (Map SMPServer (Set ConnId)),
     subscrConns :: TVar (Map ConnId SMPServer),
-    clientId :: Int
+    clientId :: Int,
+    store :: SQLiteStore,
+    agentEnv :: Env
   }
 
-newAgentClient :: TVar Int -> AgentConfig -> STM AgentClient
-newAgentClient cc AgentConfig {tbqSize} = do
-  rcvQ <- newTBQueue tbqSize
-  sndQ <- newTBQueue tbqSize
-  msgQ <- newTBQueue tbqSize
+newAgentClient :: SQLiteStore -> Env -> STM AgentClient
+newAgentClient store agentEnv = do
+  let qSize = tbqSize $ config agentEnv
+  rcvQ <- newTBQueue qSize
+  subQ <- newTBQueue qSize
+  msgQ <- newTBQueue qSize
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
-  clientId <- (+ 1) <$> readTVar cc
-  writeTVar cc clientId
-  return AgentClient {rcvQ, sndQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId}
+  clientId <- (+ 1) <$> readTVar (clientCounter agentEnv)
+  writeTVar (clientCounter agentEnv) clientId
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId, store, agentEnv}
 
+-- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
@@ -119,7 +124,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
         deleteKeys ks m = S.foldr' M.delete m ks
 
     notifySub :: ConnId -> IO ()
-    notifySub connId = atomically $ writeTBQueue (sndQ c) ("", connId, END)
+    notifySub connId = atomically $ writeTBQueue (subQ c) ("", connId, END)
 
 closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
 closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient

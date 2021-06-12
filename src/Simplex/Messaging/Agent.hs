@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -23,13 +24,34 @@
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent
-  ( runSMPAgent,
+  ( -- * SMP agent over TCP
+    runSMPAgent,
     runSMPAgentBlocking,
+
+    -- * queue-based SMP agent
     getAgentClient,
     runAgentClient,
-    getSMPAgent,
+
+    -- * SMP agent functional API
+    AgentMonad,
+    AgentErrorMonad,
+    getSMPAgentClient,
     createConnection,
-    execAgentCommand,
+    joinConnection,
+    sendIntroduction,
+    acceptInvitation,
+    subscribeConnection,
+    sendMessage,
+    suspendConnection,
+    deleteConnection,
+    createConnection',
+    joinConnection',
+    sendIntroduction',
+    acceptInvitation',
+    subscribeConnection',
+    sendMessage',
+    suspendConnection',
+    deleteConnection',
   )
 where
 
@@ -86,51 +108,74 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
       c <- getAgentClient
       logConnection c True
       race_ (connectClient h c) (runAgentClient c)
-        `E.finally` (closeSMPServerClients c >> logConnection c False)
+        `E.finally` disconnectServers c
 
-data SMPAgent = SMPAgent
-  { action :: Async (),
-    agentClient :: AgentClient,
-    agentStore :: SQLiteStore,
-    subQ :: TBQueue (ConnId, ACommand 'Agent)
-  }
-
-class AgentSubscriber q where
-  publish :: q -> ConnId -> ACommand 'Agent -> STM ()
-
-instance AgentSubscriber (TBQueue (ConnId, ACommand 'Agent)) where
-  publish q connId msg = writeTBQueue q (connId, msg)
-
-instance AgentSubscriber (TBQueue (ATransmission 'Agent)) where
-  publish q connId msg = writeTBQueue q ("", connId, msg)
-
--- | Creates an SMP agent instance
-getSMPAgent :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m SMPAgent
-getSMPAgent cfg = do
-  env <- newSMPAgentEnv cfg
-  runReaderT runAgent env
+-- | Creates an SMP agent client instance
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m (Async (), AgentClient)
+getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
-    runAgent :: (MonadUnliftIO m', MonadReader Env m') => m' SMPAgent
     runAgent = do
       c <- getAgentClient
-      (s1, s2) <- agentDB
-      subQ <- newTBQueueIO $ tbqSize cfg
-      action <- async $ subscriber c subQ s1
-      pure SMPAgent {action, agentClient = c, agentStore = s2, subQ}
+      st <- agentDB
+      action <- async $ subscriber c st `E.finally` disconnectServers c
+      pure (action, c)
 
-createConnection :: AgentMonad m => SMPAgent -> m (ConnId, SMPQueueInfo)
-createConnection SMPAgent {agentClient = c, agentStore = st} = newConnection c st "" Nothing 0
+disconnectServers :: MonadUnliftIO m => AgentClient -> m ()
+disconnectServers c = closeSMPServerClients c >> logConnection c False
 
--- | execute any SMP agent command
-execAgentCommand :: AgentMonad m => SMPAgent -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
-execAgentCommand SMPAgent {agentClient = c, agentStore = st} = processCommand c st
+-- |
+type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
+
+-- | Create SMP agent connection (NEW command) in Reader monad
+createConnection' :: AgentMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
+createConnection' c = newConn c "" Nothing 0
+
+-- | Create SMP agent connection (NEW command)
+createConnection :: AgentErrorMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
+createConnection c = createConnection' c `runReaderT` agentEnv c
+
+-- | Join SMP agent connection (JOIN command) in Reader monad
+joinConnection' :: AgentMonad m => AgentClient -> SMPQueueInfo -> m ConnId
+joinConnection' c qInfo = joinConn c "" qInfo (ReplyMode On) Nothing 0
+
+-- | Join SMP agent connection (JOIN command)
+joinConnection :: AgentErrorMonad m => AgentClient -> SMPQueueInfo -> m ConnId
+joinConnection c qInfo = joinConnection' c qInfo `runReaderT` agentEnv c
+
+-- | Accept invitation (ACPT command) in Reader monad
+acceptInvitation' :: AgentMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
+acceptInvitation' c = acceptInv c ""
+
+-- | Accept invitation (ACPT command)
+acceptInvitation :: AgentErrorMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
+acceptInvitation c invId cInfo = acceptInvitation c invId cInfo `runReaderT` agentEnv c
+
+-- | Send introduction of the second connection the first (INTRO command)
+sendIntroduction :: AgentErrorMonad m => AgentClient -> ConnId -> ConnId -> ConnInfo -> m ()
+sendIntroduction c toConn reConn reInfo = sendIntroduction' c toConn reConn reInfo `runReaderT` agentEnv c
+
+-- | Subscribe to receive connection messages (SUB command)
+subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+subscribeConnection c connId = subscribeConnection' c connId `runReaderT` agentEnv c
+
+-- | Send message to the connection (SEND command)
+sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
+sendMessage c connId msgBody = sendMessage' c connId msgBody `runReaderT` agentEnv c
+
+-- | Suspend SMP agent connection (OFF command)
+suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+suspendConnection c connId = suspendConnection' c connId `runReaderT` agentEnv c
+
+-- | Delete SMP agent connection (DEL command)
+deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+deleteConnection c connId = deleteConnection' c connId `runReaderT` agentEnv c
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
 getAgentClient = do
-  n <- asks clientCounter
-  cfg <- asks config
-  atomically $ newAgentClient n cfg
+  store <- agentDB
+  env <- ask
+  atomically $ newAgentClient store env
 
 connectClient :: Transport c => MonadUnliftIO m => c -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
@@ -143,20 +188,20 @@ logConnection c connected =
 -- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
 runAgentClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 runAgentClient c = do
-  (s1, s2) <- agentDB
-  race_ (subscriber c (sndQ c) s1) (client c s2)
+  st <- agentDB
+  race_ (subscriber c st) (client c)
 
-agentDB :: (MonadUnliftIO m, MonadReader Env m) => m (SQLiteStore, SQLiteStore)
+agentDB :: (MonadUnliftIO m, MonadReader Env m) => m SQLiteStore
 agentDB = do
   db <- asks $ dbFile . config
-  liftIO $ (,) <$> connectSQLiteStore db <*> connectSQLiteStore db
+  liftIO $ connectSQLiteStore db
 
 receive :: forall c m. (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
-receive h c@AgentClient {rcvQ, sndQ} = forever $ do
+receive h c@AgentClient {rcvQ, subQ} = forever $ do
   (corrId, connId, cmdOrErr) <- tGet SClient h
   case cmdOrErr of
     Right cmd -> write rcvQ (corrId, connId, cmd)
-    Left e -> write sndQ (corrId, connId, ERR e)
+    Left e -> write subQ (corrId, connId, ERR e)
   where
     write :: TBQueue (ATransmission p) -> ATransmission p -> m ()
     write q t = do
@@ -164,8 +209,8 @@ receive h c@AgentClient {rcvQ, sndQ} = forever $ do
       atomically $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
-send h c@AgentClient {sndQ} = forever $ do
-  t <- atomically $ readTBQueue sndQ
+send h c@AgentClient {subQ} = forever $ do
+  t <- atomically $ readTBQueue subQ
   tPut h t
   logClient c "<--" t
 
@@ -173,11 +218,11 @@ logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> 
 logClient AgentClient {clientId} dir (corrId, connId, cmd) = do
   logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, B.takeWhile (/= ' ') $ serializeCommand cmd]
 
-client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
-client c@AgentClient {rcvQ, sndQ} st = forever $ do
+client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+client c@AgentClient {rcvQ, subQ} = forever $ do
   (corrId, connId, cmd) <- atomically $ readTBQueue rcvQ
-  runExceptT (processCommand c st (connId, cmd))
-    >>= atomically . writeTBQueue sndQ . \case
+  runExceptT (processCommand c (connId, cmd))
+    >>= atomically . writeTBQueue subQ . \case
       Left e -> (corrId, connId, ERR e)
       Right (connId', resp) -> (corrId, connId', resp)
 
@@ -202,126 +247,20 @@ withStore action = do
       SEBadConnType CSnd -> CONN SIMPLEX
       e -> INTERNAL $ show e
 
-processCommand :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
-processCommand c st (connId, cmd) = case cmd of
-  NEW -> second INV <$> newConnection c st connId Nothing 0
-  JOIN smpQueueInfo replyMode -> (,OK) <$> joinConnection smpQueueInfo replyMode Nothing 0
-  INTRO reConnId reInfo -> makeIntroduction reConnId reInfo $> (connId, OK)
-  ACPT invId connInfo -> (,OK) <$> acceptInvitation invId connInfo
-  SUB -> subscribeConnection $> (connId, OK)
-  SEND msgBody -> (connId,) . SENT . unId <$> sendMessage msgBody
-  OFF -> suspendConnection $> (connId, OK)
-  DEL -> deleteConnection $> (connId, OK)
-  where
-    -- getSMPServer :: m SMPServer
-    -- getSMPServer =
-    --   asks (smpServers . config) >>= \case
-    --     srv :| [] -> pure srv
-    --     servers -> do
-    --       gen <- asks randomServer
-    --       i <- atomically . stateTVar gen $ randomR (0, L.length servers - 1)
-    --       pure $ servers L.!! i
+-- | execute any SMP agent command
+processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
+processCommand c (connId, cmd) = case cmd of
+  NEW -> second INV <$> newConn c connId Nothing 0
+  JOIN smpQueueInfo replyMode -> (,OK) <$> joinConn c connId smpQueueInfo replyMode Nothing 0
+  INTRO reConnId reInfo -> sendIntroduction' c connId reConnId reInfo $> (connId, OK)
+  ACPT invId connInfo -> (,OK) <$> acceptInv c connId invId connInfo
+  SUB -> subscribeConnection' c connId $> (connId, OK)
+  SEND msgBody -> (connId,) . SENT . unId <$> sendMessage' c connId msgBody
+  OFF -> suspendConnection' c connId $> (connId, OK)
+  DEL -> deleteConnection' c connId $> (connId, OK)
 
-    joinConnection :: SMPQueueInfo -> ReplyMode -> Maybe InvitationId -> Int -> m ConnId
-    joinConnection qInfo (ReplyMode replyMode) viaInv connLevel = do
-      (sq, senderKey, verifyKey) <- newSendQueue qInfo
-      g <- asks idsDrg
-      let cData = ConnData {connId, viaInv, connLevel}
-      connId' <- withStore $ createSndConn st g cData sq
-      connectToSendQueue c st sq senderKey verifyKey
-      when (replyMode == On) $ createReplyQueue connId' sq
-      pure connId'
-
-    makeIntroduction :: IntroId -> ConnInfo -> m ()
-    makeIntroduction reConn reInfo =
-      withStore ((,) <$> getConn st connId <*> getConn st reConn) >>= \case
-        (SomeConn _ (DuplexConnection _ _ sq), SomeConn _ DuplexConnection {}) -> do
-          g <- asks idsDrg
-          introId <- withStore $ createIntro st g NewIntroduction {toConn = connId, reConn, reInfo}
-          sendControlMessage c sq $ A_INTRO introId reInfo
-        _ -> throwError $ CONN SIMPLEX
-
-    acceptInvitation :: InvitationId -> ConnInfo -> m ConnId
-    acceptInvitation invId connInfo =
-      withStore (getInvitation st invId) >>= \case
-        Invitation {viaConn, qInfo, externalIntroId, status = InvNew} ->
-          withStore (getConn st viaConn) >>= \case
-            SomeConn _ (DuplexConnection ConnData {connLevel} _ sq) -> case qInfo of
-              Nothing -> do
-                (connId', qInfo') <- newConnection c st connId (Just invId) (connLevel + 1)
-                withStore $ addInvitationConn st invId connId'
-                sendControlMessage c sq $ A_INV externalIntroId qInfo' connInfo
-                pure connId'
-              Just qInfo' -> do
-                connId' <- joinConnection qInfo' (ReplyMode On) (Just invId) (connLevel + 1)
-                withStore $ addInvitationConn st invId connId'
-                pure connId'
-            _ -> throwError $ CONN SIMPLEX
-        _ -> throwError $ CMD PROHIBITED
-
-    subscribeConnection :: m ()
-    subscribeConnection =
-      withStore (getConn st connId) >>= \case
-        SomeConn _ (DuplexConnection _ rq _) -> subscribeQueue c rq connId
-        SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
-        _ -> throwError $ CONN SIMPLEX
-
-    sendMessage :: MsgBody -> m InternalId
-    sendMessage msgBody =
-      withStore (getConn st connId) >>= \case
-        SomeConn _ (DuplexConnection _ _ sq) -> sendMsg sq
-        SomeConn _ (SndConnection _ sq) -> sendMsg sq
-        _ -> throwError $ CONN SIMPLEX
-      where
-        sendMsg :: SndQueue -> m InternalId
-        sendMsg sq = do
-          internalTs <- liftIO getCurrentTime
-          (internalId, internalSndId, previousMsgHash) <- withStore $ updateSndIds st connId
-          let msgStr =
-                serializeSMPMessage
-                  SMPMessage
-                    { senderMsgId = unSndId internalSndId,
-                      senderTimestamp = internalTs,
-                      previousMsgHash,
-                      agentMessage = A_MSG msgBody
-                    }
-              msgHash = C.sha256Hash msgStr
-          withStore $
-            createSndMsg st connId $
-              SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = msgHash}
-          sendAgentMessage c sq msgStr
-          pure internalId
-
-    suspendConnection :: m ()
-    suspendConnection =
-      withStore (getConn st connId) >>= \case
-        SomeConn _ (DuplexConnection _ rq _) -> suspendQueue c rq
-        SomeConn _ (RcvConnection _ rq) -> suspendQueue c rq
-        _ -> throwError $ CONN SIMPLEX
-
-    deleteConnection :: m ()
-    deleteConnection =
-      withStore (getConn st connId) >>= \case
-        SomeConn _ (DuplexConnection _ rq _) -> delete rq
-        SomeConn _ (RcvConnection _ rq) -> delete rq
-        _ -> withStore (deleteConn st connId)
-      where
-        delete :: RcvQueue -> m ()
-        delete rq = do
-          deleteQueue c rq
-          removeSubscription c connId
-          withStore (deleteConn st connId)
-
-    createReplyQueue :: ConnId -> SndQueue -> m ()
-    createReplyQueue cId sq = do
-      srv <- getSMPServer
-      (rq, qInfo) <- newReceiveQueue c srv
-      addSubscription c rq cId
-      withStore $ upgradeSndConnToDuplex st cId rq
-      sendControlMessage c sq $ REPLY qInfo
-
-newConnection :: AgentMonad m => AgentClient -> SQLiteStore -> ConnId -> Maybe InvitationId -> Int -> m (ConnId, SMPQueueInfo)
-newConnection c st connId viaInv connLevel = do
+newConn :: AgentMonad m => AgentClient -> ConnId -> Maybe InvitationId -> Int -> m (ConnId, SMPQueueInfo)
+newConn c connId viaInv connLevel = do
   srv <- getSMPServer
   (rq, qInfo) <- newReceiveQueue c srv
   g <- asks idsDrg
@@ -329,6 +268,118 @@ newConnection c st connId viaInv connLevel = do
   connId' <- withStore $ createRcvConn st g cData rq
   addSubscription c rq connId'
   pure (connId', qInfo)
+  where
+    st = store c
+
+joinConn :: forall m. AgentMonad m => AgentClient -> ConnId -> SMPQueueInfo -> ReplyMode -> Maybe InvitationId -> Int -> m ConnId
+joinConn c connId qInfo (ReplyMode replyMode) viaInv connLevel = do
+  (sq, senderKey, verifyKey) <- newSendQueue qInfo
+  g <- asks idsDrg
+  let cData = ConnData {connId, viaInv, connLevel}
+  connId' <- withStore $ createSndConn st g cData sq
+  connectToSendQueue c sq senderKey verifyKey
+  when (replyMode == On) $ createReplyQueue connId' sq
+  pure connId'
+  where
+    st = store c
+    createReplyQueue :: ConnId -> SndQueue -> m ()
+    createReplyQueue cId sq = do
+      srv <- getSMPServer
+      (rq, qInfo') <- newReceiveQueue c srv
+      addSubscription c rq cId
+      withStore $ upgradeSndConnToDuplex st cId rq
+      sendControlMessage c sq $ REPLY qInfo'
+
+-- | Send introduction of the second connection the first (INTRO command) in Reader monad
+sendIntroduction' :: AgentMonad m => AgentClient -> ConnId -> ConnId -> ConnInfo -> m ()
+sendIntroduction' c toConn reConn reInfo =
+  withStore ((,) <$> getConn st toConn <*> getConn st reConn) >>= \case
+    (SomeConn _ (DuplexConnection _ _ sq), SomeConn _ DuplexConnection {}) -> do
+      g <- asks idsDrg
+      introId <- withStore $ createIntro st g NewIntroduction {toConn, reConn, reInfo}
+      sendControlMessage c sq $ A_INTRO introId reInfo
+    _ -> throwError $ CONN SIMPLEX
+  where
+    st = store c
+
+acceptInv :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> ConnInfo -> m ConnId
+acceptInv c connId invId connInfo =
+  withStore (getInvitation st invId) >>= \case
+    Invitation {viaConn, qInfo, externalIntroId, status = InvNew} ->
+      withStore (getConn st viaConn) >>= \case
+        SomeConn _ (DuplexConnection ConnData {connLevel} _ sq) -> case qInfo of
+          Nothing -> do
+            (connId', qInfo') <- newConn c connId (Just invId) (connLevel + 1)
+            withStore $ addInvitationConn st invId connId'
+            sendControlMessage c sq $ A_INV externalIntroId qInfo' connInfo
+            pure connId'
+          Just qInfo' -> do
+            connId' <- joinConn c connId qInfo' (ReplyMode On) (Just invId) (connLevel + 1)
+            withStore $ addInvitationConn st invId connId'
+            pure connId'
+        _ -> throwError $ CONN SIMPLEX
+    _ -> throwError $ CMD PROHIBITED
+  where
+    st = store c
+
+-- | Subscribe to receive connection messages (SUB command) in Reader monad
+subscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
+subscribeConnection' c connId =
+  withStore (getConn (store c) connId) >>= \case
+    SomeConn _ (DuplexConnection _ rq _) -> subscribeQueue c rq connId
+    SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
+    _ -> throwError $ CONN SIMPLEX
+
+-- | Send message to the connection (SEND command) in Reader monad
+sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
+sendMessage' c connId msgBody =
+  withStore (getConn st connId) >>= \case
+    SomeConn _ (DuplexConnection _ _ sq) -> sendMsg_ sq
+    SomeConn _ (SndConnection _ sq) -> sendMsg_ sq
+    _ -> throwError $ CONN SIMPLEX
+  where
+    st = store c
+    sendMsg_ :: SndQueue -> m InternalId
+    sendMsg_ sq = do
+      internalTs <- liftIO getCurrentTime
+      (internalId, internalSndId, previousMsgHash) <- withStore $ updateSndIds st connId
+      let msgStr =
+            serializeSMPMessage
+              SMPMessage
+                { senderMsgId = unSndId internalSndId,
+                  senderTimestamp = internalTs,
+                  previousMsgHash,
+                  agentMessage = A_MSG msgBody
+                }
+          msgHash = C.sha256Hash msgStr
+      withStore $
+        createSndMsg st connId $
+          SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = msgHash}
+      sendAgentMessage c sq msgStr
+      pure internalId
+
+-- | Suspend SMP agent connection (OFF command) in Reader monad
+suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
+suspendConnection' c connId =
+  withStore (getConn (store c) connId) >>= \case
+    SomeConn _ (DuplexConnection _ rq _) -> suspendQueue c rq
+    SomeConn _ (RcvConnection _ rq) -> suspendQueue c rq
+    _ -> throwError $ CONN SIMPLEX
+
+-- | Delete SMP agent connection (DEL command) in Reader monad
+deleteConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+deleteConnection' c connId =
+  withStore (getConn st connId) >>= \case
+    SomeConn _ (DuplexConnection _ rq _) -> delete rq
+    SomeConn _ (RcvConnection _ rq) -> delete rq
+    _ -> withStore (deleteConn st connId)
+  where
+    st = store c
+    delete :: RcvQueue -> m ()
+    delete rq = do
+      deleteQueue c rq
+      removeSubscription c connId
+      withStore (deleteConn st connId)
 
 getSMPServer :: AgentMonad m => m SMPServer
 getSMPServer =
@@ -350,19 +401,19 @@ sendControlMessage c sq agentMessage = do
         agentMessage
       }
 
-subscriber :: (MonadUnliftIO m, MonadReader Env m, AgentSubscriber q) => AgentClient -> q -> SQLiteStore -> m ()
-subscriber c@AgentClient {msgQ} subQ st = forever $ do
+subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> SQLiteStore -> m ()
+subscriber c@AgentClient {msgQ} st = forever $ do
   t <- atomically $ readTBQueue msgQ
-  runExceptT (processSMPTransmission c subQ st t) >>= \case
+  runExceptT (processSMPTransmission c st t) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-processSMPTransmission :: forall m q. (AgentMonad m, AgentSubscriber q) => AgentClient -> q -> SQLiteStore -> SMPServerTransmission -> m ()
-processSMPTransmission c subQ st (srv, rId, cmd) = do
+processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SQLiteStore -> SMPServerTransmission -> m ()
+processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
   withStore (getRcvConn st srv rId) >>= \case
     SomeConn SCDuplex (DuplexConnection cData rq _) -> processSMP SCDuplex cData rq
     SomeConn SCRcv (RcvConnection cData rq) -> processSMP SCRcv cData rq
-    _ -> atomically $ publish subQ "" (ERR $ CONN NOT_FOUND)
+    _ -> atomically $ writeTBQueue subQ ("", "", ERR $ CONN NOT_FOUND)
   where
     processSMP :: SConnType c -> ConnData -> RcvQueue -> m ()
     processSMP cType ConnData {connId} rq@RcvQueue {status} =
@@ -394,7 +445,7 @@ processSMPTransmission c subQ st (srv, rId, cmd) = do
           notify . ERR $ BROKER UNEXPECTED
       where
         notify :: ACommand 'Agent -> m ()
-        notify msg = atomically $ publish subQ connId msg
+        notify msg = atomically $ writeTBQueue subQ ("", connId, msg)
 
         prohibited :: m ()
         prohibited = notify . ERR $ AGENT A_PROHIBITED
@@ -431,7 +482,7 @@ processSMPTransmission c subQ st (srv, rId, cmd) = do
             SCRcv -> do
               (sq, senderKey, verifyKey) <- newSendQueue qInfo
               withStore $ upgradeRcvConnToDuplex st connId sq
-              connectToSendQueue c st sq senderKey verifyKey
+              connectToSendQueue c sq senderKey verifyKey
               connected
             _ -> prohibited
 
@@ -496,7 +547,7 @@ processSMPTransmission c subQ st (srv, rId, cmd) = do
               | otherwise -> prohibited
           where
             sendConMsg :: ConnId -> ConnId -> m ()
-            sendConMsg toConn reConn = atomically $ publish subQ toConn (ICON reConn)
+            sendConMsg toConn reConn = atomically $ writeTBQueue subQ ("", toConn, ICON reConn)
 
         agentClientMsg :: PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
         agentClientMsg receivedPrevMsgHash senderMeta brokerMeta msgBody msgHash = do
@@ -538,12 +589,14 @@ processSMPTransmission c subQ st (srv, rId, cmd) = do
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-connectToSendQueue :: AgentMonad m => AgentClient -> SQLiteStore -> SndQueue -> SenderPublicKey -> VerificationKey -> m ()
-connectToSendQueue c st sq senderKey verifyKey = do
+connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> m ()
+connectToSendQueue c sq senderKey verifyKey = do
   sendConfirmation c sq senderKey
   withStore $ setSndQueueStatus st sq Confirmed
   sendHello c sq verifyKey
   withStore $ setSndQueueStatus st sq Active
+  where
+    st = store c
 
 newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, VerificationKey)
