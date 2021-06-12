@@ -29,11 +29,9 @@ import Control.Monad (join, unless, when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
-import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 (encode)
 import Data.Char (toLower)
-import Data.Functor (($>))
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -114,11 +112,8 @@ connectSQLiteStore dbFilePath = do
     |]
   pure SQLiteStore {dbFilePath, dbConn, dbNew}
 
-checkConstraint :: StoreError -> IO a -> IO (Either StoreError a)
-checkConstraint err action = first (handleSQLError err) <$> E.try action
-
-checkConstraint' :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
-checkConstraint' err action = action `E.catch` (pure . Left . handleSQLError err)
+checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
+checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
 
 handleSQLError :: StoreError -> SQLError -> StoreError
 handleSQLError err e
@@ -142,7 +137,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   createRcvConn SQLiteStore {dbConn} gVar cData q@RcvQueue {server} =
     -- TODO if schema has to be restarted, this function can be refactored
     -- to create connection first using createWithRandomId
-    liftIOEither . checkConstraint' SEConnDuplicate . withTransaction dbConn $
+    liftIOEither . checkConstraint SEConnDuplicate . withTransaction dbConn $
       getConnId_ dbConn gVar cData >>= traverse create
     where
       create :: ConnId -> IO ConnId
@@ -156,7 +151,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   createSndConn SQLiteStore {dbConn} gVar cData q@SndQueue {server} =
     -- TODO if schema has to be restarted, this function can be refactored
     -- to create connection first using createWithRandomId
-    liftIOEither . checkConstraint' SEConnDuplicate . withTransaction dbConn $
+    liftIOEither . checkConstraint SEConnDuplicate . withTransaction dbConn $
       getConnId_ dbConn gVar cData >>= traverse create
     where
       create :: ConnId -> IO ConnId
@@ -303,55 +298,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
 
-  createBcast :: SQLiteStore -> TVar ChaChaDRG -> BroadcastId -> m BroadcastId
-  createBcast SQLiteStore {dbConn} gVar bcastId = liftIOEither $ case bcastId of
-    "" -> createWithRandomId gVar create
-    bId -> checkConstraint SEBcastDuplicate $ create bId $> bId
-    where
-      create bId = DB.execute dbConn "INSERT INTO broadcasts (broadcast_id) VALUES (?);" (Only bId)
-
-  addBcastConn :: SQLiteStore -> BroadcastId -> ConnId -> m ()
-  addBcastConn SQLiteStore {dbConn} bId connId =
-    liftIOEither . checkBroadcast dbConn bId $
-      getConn_ dbConn connId >>= \case
-        Left _ -> pure $ Left SEConnNotFound
-        Right (SomeConn _ RcvConnection {}) -> pure . Left $ SEBadConnType CRcv
-        Right _ ->
-          checkConstraint SEConnDuplicate $
-            DB.execute
-              dbConn
-              [sql|
-                INSERT INTO broadcast_connections
-                  (broadcast_id, conn_alias) VALUES (?, ?);
-              |]
-              (bId, connId)
-
-  removeBcastConn :: SQLiteStore -> BroadcastId -> ConnId -> m ()
-  removeBcastConn SQLiteStore {dbConn} bId connId =
-    liftIOEither . checkBroadcast dbConn bId $
-      bcastConnExists_ dbConn bId connId >>= \case
-        False -> pure $ Left SEConnNotFound
-        _ ->
-          Right
-            <$> DB.execute
-              dbConn
-              [sql|
-                DELETE FROM broadcast_connections
-                WHERE broadcast_id = ? AND conn_alias = ?;
-              |]
-              (bId, connId)
-
-  deleteBcast :: SQLiteStore -> BroadcastId -> m ()
-  deleteBcast SQLiteStore {dbConn} bId =
-    liftIOEither . checkBroadcast dbConn bId $
-      Right <$> DB.execute dbConn "DELETE FROM broadcasts WHERE broadcast_id = ?;" (Only bId)
-
-  getBcast :: SQLiteStore -> BroadcastId -> m [ConnId]
-  getBcast SQLiteStore {dbConn} bId =
-    liftIOEither . checkBroadcast dbConn bId $
-      Right . map fromOnly
-        <$> DB.query dbConn "SELECT conn_alias FROM broadcast_connections WHERE broadcast_id = ?;" (Only bId)
-
   createIntro :: SQLiteStore -> TVar ChaChaDRG -> NewIntroduction -> m IntroId
   createIntro SQLiteStore {dbConn} gVar NewIntroduction {toConn, reConn, reInfo} =
     liftIOEither . createWithRandomId gVar $ \introId ->
@@ -380,7 +326,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         Right $ Introduction {introId, toConn, toInfo, toStatus, reConn, reInfo, reStatus, qInfo}
       intro _ = Left SEIntroNotFound
 
-  addIntroInvitation :: SQLiteStore -> IntroId -> EntityInfo -> SMPQueueInfo -> m ()
+  addIntroInvitation :: SQLiteStore -> IntroId -> ConnInfo -> SMPQueueInfo -> m ()
   addIntroInvitation SQLiteStore {dbConn} introId toInfo qInfo =
     liftIO $
       DB.executeNamed
@@ -423,7 +369,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         (reStatus, introId)
 
   createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
-  createInvitation SQLiteStore {dbConn} gVar NewInvitation {viaConn, externalIntroId, entityInfo, qInfo} =
+  createInvitation SQLiteStore {dbConn} gVar NewInvitation {viaConn, externalIntroId, connInfo, qInfo} =
     liftIOEither . createWithRandomId gVar $ \invId ->
       DB.execute
         dbConn
@@ -431,7 +377,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           INSERT INTO conn_invitations
           (inv_id, via_conn, external_intro_id, conn_info, queue_info) VALUES (?, ?, ?, ?, ?);
         |]
-        (invId, viaConn, externalIntroId, entityInfo, qInfo)
+        (invId, viaConn, externalIntroId, connInfo, qInfo)
 
   getInvitation :: SQLiteStore -> InvitationId -> m Invitation
   getInvitation SQLiteStore {dbConn} invId =
@@ -446,8 +392,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           |]
           (Only invId)
     where
-      invitation [(viaConn, externalIntroId, entityInfo, qInfo, connId, status)] =
-        Right $ Invitation {invId, viaConn, externalIntroId, entityInfo, qInfo, connId, status}
+      invitation [(viaConn, externalIntroId, connInfo, qInfo, connId, status)] =
+        Right $ Invitation {invId, viaConn, externalIntroId, connInfo, qInfo, connId, status}
       invitation _ = Left SEInvitationNotFound
 
   addInvitationConn :: SQLiteStore -> InvitationId -> ConnId -> m ()
@@ -475,8 +421,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         (Only cId)
         >>= fmap join . traverse getViaConn . invitation
     where
-      invitation [(invId, viaConn, externalIntroId, entityInfo, qInfo, status)] =
-        Just $ Invitation {invId, viaConn, externalIntroId, entityInfo, qInfo, connId = Just cId, status}
+      invitation [(invId, viaConn, externalIntroId, connInfo, qInfo, status)] =
+        Just $ Invitation {invId, viaConn, externalIntroId, connInfo, qInfo, connId = Just cId, status}
       invitation _ = Nothing
       getViaConn :: Invitation -> IO (Maybe (Invitation, Connection 'CDuplex))
       getViaConn inv@Invitation {viaConn} = fmap (inv,) . duplexConn <$> getConn_ dbConn viaConn
@@ -925,34 +871,6 @@ updateHashSnd_ dbConn connId SndMsgData {..} =
       ":conn_alias" := connId,
       ":last_internal_snd_msg_id" := internalSndId
     ]
-
--- * Broadcast helpers
-
-checkBroadcast :: DB.Connection -> BroadcastId -> IO (Either StoreError a) -> IO (Either StoreError a)
-checkBroadcast dbConn bId action =
-  withTransaction dbConn $ do
-    ok <- bcastExists_ dbConn bId
-    if ok then action else pure $ Left SEBcastNotFound
-
-bcastExists_ :: DB.Connection -> BroadcastId -> IO Bool
-bcastExists_ dbConn bId = not . null <$> queryBcast
-  where
-    queryBcast :: IO [Only BroadcastId]
-    queryBcast = DB.query dbConn "SELECT broadcast_id FROM broadcasts WHERE broadcast_id = ?;" (Only bId)
-
-bcastConnExists_ :: DB.Connection -> BroadcastId -> ConnId -> IO Bool
-bcastConnExists_ dbConn bId connId = not . null <$> queryBcastConn
-  where
-    queryBcastConn :: IO [(BroadcastId, ConnId)]
-    queryBcastConn =
-      DB.query
-        dbConn
-        [sql|
-          SELECT broadcast_id, conn_alias
-          FROM broadcast_connections
-          WHERE broadcast_id = ? AND conn_alias = ?;
-        |]
-        (bId, connId)
 
 -- create record with a random ID
 
