@@ -546,7 +546,7 @@ serializeCommand = \case
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
-  ICON introId -> "ICON " <> introId
+  ICON connId -> "ICON " <> connId
   ERR e -> "ERR " <> serializeAgentError e
   OK -> "OK"
   where
