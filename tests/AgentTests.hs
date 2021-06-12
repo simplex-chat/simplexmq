@@ -103,7 +103,8 @@ testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
+  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", OK)
+  bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
   alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", SENT 1)
   alice #: ("3", "bob", "SEND :how are you?") #> ("3", "bob", SENT 2)
@@ -122,7 +123,8 @@ testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV qInfo)) <- alice #: ("1", "", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  ("", aliceConn, Right CON) <- bob #: ("11", "", "JOIN " <> qInfo')
+  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> qInfo')
+  bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
   alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, SENT 1)
   alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, SENT 2)
@@ -139,12 +141,9 @@ testDuplexConnRandomIds _ alice bob = do
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
-  ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW")
-  let qInfo' = serializeSmpQueueInfo qInfo
-  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
+  (alice1, "alice") `connect` (bob, "bob")
   bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", SENT 1)
   bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", SENT 2)
-  alice1 <# ("", "bob", CON)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
@@ -210,14 +209,16 @@ connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV qInfo)) <- h1 #: ("c1", name2, "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  h2 #: ("c2", name1, "JOIN " <> qInfo') #> ("", name1, CON)
+  h2 #: ("c2", name1, "JOIN " <> qInfo') #> ("c2", name1, OK)
+  h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
 
 connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 connect' h1 h2 = do
   ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  ("", conn1, Right CON) <- h2 #: ("c2", "", "JOIN " <> qInfo')
+  ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo')
+  h2 <# ("", conn1, CON)
   h1 <# ("", conn2, CON)
   pure (conn1, conn2)
 

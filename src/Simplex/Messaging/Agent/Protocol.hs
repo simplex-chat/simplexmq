@@ -161,7 +161,6 @@ data ACommand (p :: AParty) where
   CON :: ACommand Agent -- notification that connection is established
   ICON :: ConnId -> ACommand Agent
   SUB :: ACommand Client
-  SUBALL :: ACommand Client -- TODO should be moved to chat protocol - hack for subscribing to all
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
@@ -478,7 +477,6 @@ commandP =
     <|> "REQ " *> reqCmd
     <|> "ACPT " *> acptCmd
     <|> "SUB" $> ACmd SClient SUB
-    <|> "SUBALL" $> ACmd SClient SUBALL -- TODO remove - hack for subscribing to all
     <|> "END" $> ACmd SAgent END
     <|> "SEND " *> sendCmd
     <|> "SENT " *> sentResp
@@ -533,7 +531,6 @@ serializeCommand = \case
   REQ invId cInfo -> "REQ " <> invId <> " " <> serializeMsg cInfo
   ACPT invId cInfo -> "ACPT " <> invId <> " " <> serializeMsg cInfo
   SUB -> "SUB"
-  SUBALL -> "SUBALL" -- TODO remove - hack for subscribing to all
   END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   SENT mId -> "SENT " <> bshow mId
