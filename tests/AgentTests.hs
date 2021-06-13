@@ -8,19 +8,28 @@
 {-# LANGUAGE PostfixOperators #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests where
 
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
+import Control.Monad.Except (catchError, runExceptT)
+import Control.Monad.IO.Unlift
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
+import SMPClient (withSmpServer)
+import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent.Client
+import Simplex.Messaging.Agent.Env.SQLite (dbFile)
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.Store (InternalId (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import System.Timeout
 import Test.Hspec
+import UnliftIO.STM
 
 agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
@@ -39,6 +48,8 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_2 $ testDuplexConnection t
     it "should connect via 2 servers and 2 agents (random IDs)" $
       smpAgentTest2_2_2 $ testDuplexConnRandomIds t
+    it "should connect via one server using SMP agent clients" $
+      withSmpServer (ATransport t) testAgentClient
   describe "Connection subscriptions" do
     it "should connect via one server and one agent" $
       smpAgentTest3_1_1 $ testSubscription t
@@ -75,7 +86,7 @@ correctTransmission (corrId, cAlias, cmdOrErr) = case cmdOrErr of
 
 -- | receive message to handle `h` and validate that it is the expected one
 (<#) :: Transport c => c -> ATransmission 'Agent -> Expectation
-h <# (corrId, cAlias, cmd) = (h <#:) >>= (`shouldBe` (corrId, cAlias, Right cmd))
+h <# (corrId, cAlias, cmd) = (h <#:) `shouldReturn` (corrId, cAlias, Right cmd)
 
 -- | receive message to handle `h` and validate it using predicate `p`
 (<#=) :: Transport c => c -> (ATransmission 'Agent -> Bool) -> Expectation
@@ -93,17 +104,12 @@ h #:# err = tryGet `shouldReturn` ()
 pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG {msgBody, msgIntegrity = MsgOk}
 
--- pattern Inv :: SMPQueueInfo -> Either AgentErrorType (ACommand 'Agent)
--- pattern Inv invitation <- Right (INV invitation)
-
--- pattern Req :: InvitationId -> ConnInfo -> Either AgentErrorType (ACommand 'Agent)
--- pattern Req invId cInfo <- Right (REQ invId cInfo)
-
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
+  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", OK)
+  bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
   alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", SENT 1)
   alice #: ("3", "bob", "SEND :how are you?") #> ("3", "bob", SENT 2)
@@ -118,11 +124,48 @@ testDuplexConnection _ alice bob = do
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
+testAgentClient :: IO ()
+testAgentClient = do
+  (_, alice) <- getSMPAgentClient cfg
+  (_, bob) <- getSMPAgentClient cfg {dbFile = testDB2}
+  Right () <- runExceptT $ do
+    (bobId, qInfo) <- createConnection alice
+    aliceId <- joinConnection bob qInfo
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, CON)
+    InternalId 1 <- sendMessage alice bobId "hello"
+    InternalId 2 <- sendMessage alice bobId "how are you?"
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    InternalId 3 <- sendMessage bob aliceId "hello too"
+    InternalId 4 <- sendMessage bob aliceId "message 1"
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
+    suspendConnection alice bobId
+    InternalId 0 <- sendMessage bob aliceId "message 2" `catchError` \(SMP AUTH) -> pure $ InternalId 0
+    deleteConnection alice bobId
+    liftIO $ noMessages alice "nothing else should be delivered to alice"
+  pure ()
+  where
+    (##>) :: MonadIO m => m (ATransmission 'Agent) -> ATransmission 'Agent -> m ()
+    a ##> t = a >>= \t' -> liftIO (t' `shouldBe` t)
+    (=##>) :: MonadIO m => m (ATransmission 'Agent) -> (ATransmission 'Agent -> Bool) -> m ()
+    a =##> p = a >>= \t -> liftIO (t `shouldSatisfy` p)
+    noMessages :: AgentClient -> String -> Expectation
+    noMessages c err = tryGet `shouldReturn` ()
+      where
+        tryGet =
+          10000 `timeout` get c >>= \case
+            Just _ -> error err
+            _ -> return ()
+    get c = atomically (readTBQueue $ subQ c)
+
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV qInfo)) <- alice #: ("1", "", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  ("", aliceConn, Right CON) <- bob #: ("11", "", "JOIN " <> qInfo')
+  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> qInfo')
+  bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
   alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, SENT 1)
   alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, SENT 2)
@@ -139,12 +182,9 @@ testDuplexConnRandomIds _ alice bob = do
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
-  ("1", "bob", Right (INV qInfo)) <- alice1 #: ("1", "bob", "NEW")
-  let qInfo' = serializeSmpQueueInfo qInfo
-  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("", "alice", CON)
+  (alice1, "alice") `connect` (bob, "bob")
   bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", SENT 1)
   bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", SENT 2)
-  alice1 <# ("", "bob", CON)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
@@ -210,14 +250,16 @@ connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV qInfo)) <- h1 #: ("c1", name2, "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  h2 #: ("c2", name1, "JOIN " <> qInfo') #> ("", name1, CON)
+  h2 #: ("c2", name1, "JOIN " <> qInfo') #> ("c2", name1, OK)
+  h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
 
 connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 connect' h1 h2 = do
   ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  ("", conn1, Right CON) <- h2 #: ("c2", "", "JOIN " <> qInfo')
+  ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo')
+  h2 <# ("", conn1, CON)
   h1 <# ("", conn2, CON)
   pure (conn1, conn2)
 

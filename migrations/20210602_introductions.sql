@@ -18,10 +18,10 @@ CREATE TABLE conn_invitations (
   conn_id BLOB REFERENCES connections (conn_alias) -- created connection
     ON DELETE CASCADE
     DEFERRABLE INITIALLY DEFERRED,
-  status TEXT DEFAULT '' -- '', 'ACPT', 'CON'
+  status TEXT NOT NULL DEFAULT '' -- '', 'ACPT', 'CON'
 ) WITHOUT ROWID;
 
 ALTER TABLE connections
   ADD via_inv BLOB REFERENCES conn_invitations (inv_id) ON DELETE RESTRICT;
 ALTER TABLE connections
-  ADD conn_level INTEGER DEFAULT 0;
+  ADD conn_level INTEGER NOT NULL DEFAULT 0;

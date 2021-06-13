@@ -53,9 +53,10 @@ import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe
+import Data.Maybe (fromMaybe)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
@@ -64,7 +65,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport (ATransport (..), TCP, THandle (..), TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
-import System.Timeout
+import System.Timeout (timeout)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
 --
@@ -195,22 +196,27 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ dis
     process :: SMPClient -> IO ()
     process SMPClient {rcvQ, sentCommands} = forever $ do
       (_, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
-      cs <- readTVarIO sentCommands
-      case M.lookup corrId cs of
-        Nothing -> do
-          case respOrErr of
-            Right (Cmd SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
-            -- TODO send everything else to errQ and log in agent
-            _ -> return ()
-        Just Request {queueId, responseVar} -> atomically $ do
-          modifyTVar sentCommands $ M.delete corrId
-          putTMVar responseVar $
-            if queueId == qId
-              then case respOrErr of
-                Left e -> Left $ SMPResponseError e
-                Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
-                Right r -> Right r
-              else Left SMPUnexpectedResponse
+      if B.null $ bs corrId
+        then sendMsg qId respOrErr
+        else do
+          cs <- readTVarIO sentCommands
+          case M.lookup corrId cs of
+            Nothing -> sendMsg qId respOrErr
+            Just Request {queueId, responseVar} -> atomically $ do
+              modifyTVar sentCommands $ M.delete corrId
+              putTMVar responseVar $
+                if queueId == qId
+                  then case respOrErr of
+                    Left e -> Left $ SMPResponseError e
+                    Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
+                    Right r -> Right r
+                  else Left SMPUnexpectedResponse
+
+    sendMsg :: QueueId -> Either ErrorType Cmd -> IO ()
+    sendMsg qId = \case
+      Right (Cmd SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
+      -- TODO send everything else to errQ and log in agent
+      _ -> return ()
 
 -- | Disconnects SMP client from the server and terminates client threads.
 closeSMPClient :: SMPClient -> IO ()
