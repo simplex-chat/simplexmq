@@ -31,6 +31,7 @@ module Simplex.Messaging.Agent.Client
   )
 where
 
+import Control.Concurrent.Async (Async)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
@@ -68,7 +69,8 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Map ConnId SMPServer),
     clientId :: Int,
     store :: SQLiteStore,
-    agentEnv :: Env
+    agentEnv :: Env,
+    smpSubscriber :: Async ()
   }
 
 newAgentClient :: SQLiteStore -> Env -> STM AgentClient
@@ -81,7 +83,7 @@ newAgentClient store agentEnv = do
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId, store, agentEnv}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId, store, agentEnv, smpSubscriber = undefined}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)

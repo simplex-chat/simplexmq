@@ -33,6 +33,7 @@ module Simplex.Messaging.Agent
     runAgentClient,
 
     -- * SMP agent functional API
+    AgentClient (..),
     AgentMonad,
     AgentErrorMonad,
     getSMPAgentClient,
@@ -83,7 +84,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
 import Simplex.Messaging.Util (bshow)
 import System.Random (randomR)
-import UnliftIO.Async (Async, async, race_)
+import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -111,14 +112,14 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
         `E.finally` disconnectServers c
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m (Async (), AgentClient)
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
 getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient
       st <- agentDB
       action <- async $ subscriber c st `E.finally` disconnectServers c
-      pure (action, c)
+      pure c {smpSubscriber = action}
 
 disconnectServers :: MonadUnliftIO m => AgentClient -> m ()
 disconnectServers c = closeSMPServerClients c >> logConnection c False
