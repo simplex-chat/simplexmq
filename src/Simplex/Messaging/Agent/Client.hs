@@ -31,6 +31,7 @@ module Simplex.Messaging.Agent.Client
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -79,8 +80,7 @@ newAgentClient store agentEnv = do
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
-  clientId <- (+ 1) <$> readTVar (clientCounter agentEnv)
-  writeTVar (clientCounter agentEnv) clientId
+  clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId, store, agentEnv}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
