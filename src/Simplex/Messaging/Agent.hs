@@ -515,6 +515,7 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
                   (sq, senderKey, verifyKey) <- newSendQueue qInfo
                   withStore $ upgradeRcvConnToDuplex st connId sq
                   connectToSendQueue c sq senderKey verifyKey info
+                  withStore $ removeConfirmation st connId
                   connected
                 _ -> prohibited -- TODO separate error type?
             _ -> prohibited

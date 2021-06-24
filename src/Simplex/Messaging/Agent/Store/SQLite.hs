@@ -269,8 +269,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getConfirmation :: SQLiteStore -> ConfirmationId -> m Confirmation
   getConfirmation SQLiteStore {dbConn} confirmationId = throwError SENotImplemented
 
+  getConfirmationByConnId :: SQLiteStore -> ConnId -> m Confirmation
+  getConfirmationByConnId SQLiteStore {dbConn} connId = throwError SENotImplemented
+
   saveOwnInfoToConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m ()
   saveOwnInfoToConfirmation SQLiteStore {dbConn} confirmationId ownConnInfo = throwError SENotImplemented
+
+  removeConfirmation :: SQLiteStore -> ConnId -> m ()
+  removeConfirmation SQLiteStore {dbConn} connId = throwError SENotImplemented
 
   updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   updateRcvIds SQLiteStore {dbConn} connId =

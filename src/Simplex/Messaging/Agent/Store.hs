@@ -52,6 +52,7 @@ class Monad m => MonadAgentStore s m where
   getConfirmation :: s -> ConfirmationId -> m Confirmation
   getConfirmationByConnId :: s -> ConnId -> m Confirmation
   saveOwnInfoToConfirmation :: s -> ConfirmationId -> ConnInfo -> m ()
+  removeConfirmation :: s -> ConnId -> m ()
 
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
