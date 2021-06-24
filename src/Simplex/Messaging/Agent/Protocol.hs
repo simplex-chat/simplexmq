@@ -239,8 +239,6 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
     smpMessageP = A.endOfLine *> smpClientMessageP <|> smpConfirmationP
 
     smpConfirmationP :: Parser SMPMessage
-    -- smpConfirmationP = SMPConfirmation <$> ("KEY " *> C.pubKeyP <* A.endOfLine)
-    -- smpConfirmationP = "KEY " *> (SMPConfirmation <$> C.pubKeyP  <* A.endOfLine <* A.endOfLine <*> A.takeTill (== '\n'))  -- * 1
     smpConfirmationP = "KEY " *> (SMPConfirmation <$> C.pubKeyP <* A.endOfLine <* A.endOfLine <*> binaryBodyP <* A.endOfLine)
 
     smpClientMessageP :: Parser SMPMessage
@@ -256,7 +254,6 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
 -- | Serialize SMP message.
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
-  -- SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializePubKey sKey) "" cInfo  -- * 1
   SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializePubKey sKey) "" (serializeMsg cInfo) <> "\n"
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
     let header = messageHeader senderMsgId senderTimestamp previousMsgHash
