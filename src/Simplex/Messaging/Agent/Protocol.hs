@@ -45,9 +45,9 @@ module Simplex.Messaging.Agent.Protocol
     ATransmissionOrError,
     ARawTransmission,
     ConnId,
+    ConfirmationId,
     IntroId,
     InvitationId,
-    ReplyMode (..),
     AckMode (..),
     OnOff (..),
     MsgIntegrity (..),
@@ -154,7 +154,9 @@ type ConnInfo = ByteString
 data ACommand (p :: AParty) where
   NEW :: ACommand Client -- response INV
   INV :: SMPQueueInfo -> ACommand Agent
-  JOIN :: SMPQueueInfo -> ReplyMode -> ACommand Client -- response OK
+  JOIN :: SMPQueueInfo -> ConnInfo -> ACommand Client -- response OK
+  CNFRM :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   INTRO :: ConnId -> ConnInfo -> ACommand Client
   REQ :: InvitationId -> ConnInfo -> ACommand Agent
   ACPT :: InvitationId -> ConnInfo -> ACommand Client
@@ -189,7 +191,12 @@ deriving instance Show (ACommand p)
 data SMPMessage
   = -- | SMP confirmation
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message SMP protocol>)
-    SMPConfirmation SenderPublicKey
+    SMPConfirmation
+      { -- | sender's public key to use for authentication of sender's commands at the recepient's server
+        senderKey :: SenderPublicKey,
+        -- | sender's information to be associated with the connection, e.g. sender's profile information
+        cInfo :: ConnInfo
+      }
   | -- | Agent message header and envelope for client messages
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents SMP agent protocol>)
     SMPMessage
@@ -229,12 +236,12 @@ parseSMPMessage :: ByteString -> Either AgentErrorType SMPMessage
 parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
   where
     smpMessageP :: Parser SMPMessage
-    smpMessageP =
-      smpConfirmationP <* A.endOfLine
-        <|> A.endOfLine *> smpClientMessageP
+    smpMessageP = A.endOfLine *> smpClientMessageP <|> smpConfirmationP
 
     smpConfirmationP :: Parser SMPMessage
-    smpConfirmationP = SMPConfirmation <$> ("KEY " *> C.pubKeyP <* A.endOfLine)
+    -- smpConfirmationP = SMPConfirmation <$> ("KEY " *> C.pubKeyP <* A.endOfLine)
+    -- smpConfirmationP = "KEY " *> (SMPConfirmation <$> C.pubKeyP  <* A.endOfLine <* A.endOfLine <*> A.takeTill (== '\n'))  -- * 1
+    smpConfirmationP = "KEY " *> (SMPConfirmation <$> C.pubKeyP <* A.endOfLine <* A.endOfLine <*> binaryBodyP <* A.endOfLine)
 
     smpClientMessageP :: Parser SMPMessage
     smpClientMessageP =
@@ -249,7 +256,8 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
 -- | Serialize SMP message.
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
-  SMPConfirmation sKey -> smpMessage ("KEY " <> C.serializePubKey sKey) "" ""
+  -- SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializePubKey sKey) "" cInfo  -- * 1
+  SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializePubKey sKey) "" (serializeMsg cInfo) <> "\n"
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
     let header = messageHeader senderMsgId senderTimestamp previousMsgHash
         body = serializeAgentMessage agentMessage
@@ -271,15 +279,12 @@ agentMessageP =
   where
     hello = HELLO <$> C.pubKeyP <*> ackMode
     reply = REPLY <$> smpQueueInfoP
-    a_msg = A_MSG <$> binaryBody
-    a_intro = A_INTRO <$> A.takeTill (== ' ') <* A.space <*> binaryBody
+    a_msg = A_MSG <$> binaryBodyP <* A.endOfLine
+    a_intro = A_INTRO <$> A.takeTill (== ' ') <* A.space <*> binaryBodyP <* A.endOfLine
     a_inv = invP A_INV
     a_req = invP A_REQ
     a_con = A_CON <$> A.takeTill wordEnd
-    invP f = f <$> A.takeTill (== ' ') <* A.space <*> smpQueueInfoP <* A.space <*> binaryBody
-    binaryBody = do
-      size :: Int <- A.decimal <* A.endOfLine
-      A.take size <* A.endOfLine
+    invP f = f <$> A.takeTill (== ' ') <* A.space <*> smpQueueInfoP <* A.space <*> binaryBodyP <* A.endOfLine
     ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
 -- | SMP queue information parser.
@@ -332,6 +337,8 @@ instance IsString SMPServer where
 -- | SMP agent connection alias.
 type ConnId = ByteString
 
+type ConfirmationId = ByteString
+
 type IntroId = ByteString
 
 type InvitationId = ByteString
@@ -347,9 +354,6 @@ newtype AckMode = AckMode OnOff deriving (Eq, Show)
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
 data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
   deriving (Eq, Show)
-
--- | Connection reply mode (used in JOIN command).
-newtype ReplyMode = ReplyMode OnOff deriving (Eq, Show)
 
 -- | Public key used to E2E encrypt SMP messages.
 type EncryptionKey = C.PublicKey
@@ -473,6 +477,8 @@ commandP =
   "NEW" $> ACmd SClient NEW
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
+    <|> "CNFRM " *> cnfrmCmd
+    <|> "LET " *> letCmd
     <|> "INTRO " *> introCmd
     <|> "REQ " *> reqCmd
     <|> "ACPT " *> acptCmd
@@ -489,7 +495,9 @@ commandP =
     <|> "OK" $> ACmd SAgent OK
   where
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
-    joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <*> replyMode)
+    joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <* A.space <*> binaryBodyP)
+    cnfrmCmd = ACmd SAgent <$> (CNFRM <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     introCmd = ACmd SClient <$> introP INTRO
     reqCmd = ACmd SAgent <$> introP REQ
     acptCmd = ACmd SClient <$> introP ACPT
@@ -504,7 +512,6 @@ commandP =
       msgBody <- A.takeByteString
       return $ ACmd SAgent MSG {recipientMeta, brokerMeta, senderMeta, msgIntegrity, msgBody}
     introP f = f <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
-    replyMode = ReplyMode <$> (" NO_REPLY" $> Off <|> pure On)
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
@@ -526,7 +533,9 @@ serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
-  JOIN qInfo rMode -> "JOIN " <> serializeSmpQueueInfo qInfo <> replyMode rMode
+  JOIN qInfo cInfo -> "JOIN " <> serializeSmpQueueInfo qInfo <> " " <> serializeMsg cInfo
+  CNFRM confirmationId cInfo -> "CNFRM " <> confirmationId <> " " <> serializeMsg cInfo
+  LET confirmationId cInfo -> "LET " <> confirmationId <> " " <> serializeMsg cInfo
   INTRO connId cInfo -> "INTRO " <> connId <> " " <> serializeMsg cInfo
   REQ invId cInfo -> "REQ " <> invId <> " " <> serializeMsg cInfo
   ACPT invId cInfo -> "ACPT " <> invId <> " " <> serializeMsg cInfo
@@ -550,10 +559,6 @@ serializeCommand = \case
   ERR e -> "ERR " <> serializeAgentError e
   OK -> "OK"
   where
-    replyMode :: ReplyMode -> ByteString
-    replyMode = \case
-      ReplyMode Off -> " NO_REPLY"
-      ReplyMode On -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
 
@@ -585,6 +590,11 @@ serializeAgentError = \case
   BROKER (RESPONSE e) -> "BROKER RESPONSE " <> SMP.serializeErrorType e
   BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
   e -> bshow e
+
+binaryBodyP :: Parser ByteString
+binaryBodyP = do
+  size :: Int <- A.decimal <* A.endOfLine
+  A.take size
 
 serializeMsg :: ByteString -> ByteString
 serializeMsg body = bshow (B.length body) <> "\n" <> body

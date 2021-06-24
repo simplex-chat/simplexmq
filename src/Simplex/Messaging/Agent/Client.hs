@@ -223,14 +223,14 @@ showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} senderKey =
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> ConnInfo -> m ()
+sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation smp
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: SMPClient -> m MsgBody
-    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey
+    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =

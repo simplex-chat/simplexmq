@@ -47,13 +47,17 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
+  -- Confirmations
+  createConfirmation :: s -> TVar ChaChaDRG -> ConfirmationData -> m ConfirmationId
+  getConfirmation :: s -> ConfirmationId -> m Confirmation
+  getConfirmationByConnId :: s -> ConnId -> m Confirmation
+  saveOwnInfoToConfirmation :: s -> ConfirmationId -> ConnInfo -> m ()
+
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
-
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
-
   getMsg :: s -> ConnId -> InternalId -> m Msg
 
   -- Introductions
@@ -151,6 +155,22 @@ deriving instance Show SomeConn
 
 data ConnData = ConnData {connId :: ConnId, viaInv :: Maybe InvitationId, connLevel :: Int}
   deriving (Eq, Show)
+
+-- * Confirmation types
+
+data ConfirmationData = ConfirmationData
+  { connId :: ConnId,
+    senderKey :: SenderPublicKey,
+    senderConnInfo :: ConnInfo
+  }
+
+data Confirmation = Confirmation
+  { confirmationId :: ConfirmationId,
+    connId :: ConnId,
+    senderKey :: SenderPublicKey,
+    senderConnInfo :: ConnInfo,
+    ownConnInfo :: Maybe ConnInfo
+  }
 
 -- * Message integrity validation types
 

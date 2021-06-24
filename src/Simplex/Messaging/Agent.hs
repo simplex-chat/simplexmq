@@ -135,12 +135,12 @@ createConnection :: AgentErrorMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
 createConnection c = createConnection' c `runReaderT` agentEnv c
 
 -- | Join SMP agent connection (JOIN command) in Reader monad
-joinConnection' :: AgentMonad m => AgentClient -> SMPQueueInfo -> m ConnId
-joinConnection' c qInfo = joinConn c "" qInfo (ReplyMode On) Nothing 0
+joinConnection' :: AgentMonad m => AgentClient -> SMPQueueInfo -> ConnInfo -> m ConnId
+joinConnection' c qInfo cInfo = joinConn c "" qInfo cInfo Nothing 0
 
 -- | Join SMP agent connection (JOIN command)
-joinConnection :: AgentErrorMonad m => AgentClient -> SMPQueueInfo -> m ConnId
-joinConnection c qInfo = joinConnection' c qInfo `runReaderT` agentEnv c
+joinConnection :: AgentErrorMonad m => AgentClient -> SMPQueueInfo -> ConnInfo -> m ConnId
+joinConnection c qInfo cInfo = joinConnection' c qInfo cInfo `runReaderT` agentEnv c
 
 -- | Accept invitation (ACPT command) in Reader monad
 acceptInvitation' :: AgentMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
@@ -251,7 +251,8 @@ withStore action = do
 processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
 processCommand c (connId, cmd) = case cmd of
   NEW -> second INV <$> newConn c connId Nothing 0
-  JOIN smpQueueInfo replyMode -> (,OK) <$> joinConn c connId smpQueueInfo replyMode Nothing 0
+  JOIN smpQueueInfo connInfo -> (,OK) <$> joinConn c connId smpQueueInfo connInfo Nothing 0
+  LET confirmationId ownConnInfo -> (,OK) <$> letConfirmation c connId confirmationId ownConnInfo
   INTRO reConnId reInfo -> sendIntroduction' c connId reConnId reInfo $> (connId, OK)
   ACPT invId connInfo -> (,OK) <$> acceptInv c connId invId connInfo
   SUB -> subscribeConnection' c connId $> (connId, OK)
@@ -271,14 +272,14 @@ newConn c connId viaInv connLevel = do
   where
     st = store c
 
-joinConn :: forall m. AgentMonad m => AgentClient -> ConnId -> SMPQueueInfo -> ReplyMode -> Maybe InvitationId -> Int -> m ConnId
-joinConn c connId qInfo (ReplyMode replyMode) viaInv connLevel = do
+joinConn :: forall m. AgentMonad m => AgentClient -> ConnId -> SMPQueueInfo -> ConnInfo -> Maybe InvitationId -> Int -> m ConnId
+joinConn c connId qInfo cInfo viaInv connLevel = do
   (sq, senderKey, verifyKey) <- newSendQueue qInfo
   g <- asks idsDrg
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ createSndConn st g cData sq
-  connectToSendQueue c sq senderKey verifyKey
-  when (replyMode == On) $ createReplyQueue connId' sq
+  connectToSendQueue c sq senderKey verifyKey cInfo
+  createReplyQueue connId' sq
   pure connId'
   where
     st = store c
@@ -289,6 +290,30 @@ joinConn c connId qInfo (ReplyMode replyMode) viaInv connLevel = do
       addSubscription c rq cId
       withStore $ upgradeSndConnToDuplex st cId rq
       sendControlMessage c sq $ REPLY qInfo'
+
+letConfirmation :: forall m. AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ConnId
+letConfirmation c connId confirmationId ownConnInfo =
+  withStore (getConn st connId) >>= \case
+    SomeConn SCDuplex (DuplexConnection _ rq _) -> processConfirmation' rq
+    SomeConn SCRcv (RcvConnection _ rq) -> processConfirmation' rq
+    _ -> throwError $ CONN SIMPLEX
+  where
+    st = store c
+    processConfirmation' :: RcvQueue -> m ConnId
+    processConfirmation' rq = do
+      withStore $ saveOwnInfoToConfirmation st confirmationId ownConnInfo
+      confirmation <- withStore $ getConfirmation st confirmationId
+      let sndKey = senderKey (confirmation :: Confirmation)
+      processConfirmation c rq sndKey
+      pure connId
+
+processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
+processConfirmation c rq sndKey = do
+  withStore $ setRcvQueueStatus st rq Confirmed
+  secureQueue c rq sndKey
+  withStore $ setRcvQueueStatus st rq Secured
+  where
+    st = store c
 
 -- | Send introduction of the second connection the first (INTRO command) in Reader monad
 sendIntroduction' :: AgentMonad m => AgentClient -> ConnId -> ConnId -> ConnInfo -> m ()
@@ -314,7 +339,8 @@ acceptInv c connId invId connInfo =
             sendControlMessage c sq $ A_INV externalIntroId qInfo' connInfo
             pure connId'
           Just qInfo' -> do
-            connId' <- joinConn c connId qInfo' (ReplyMode On) (Just invId) (connLevel + 1)
+            -- TODO remove invitations from protocol
+            connId' <- joinConn c connId qInfo' "dummyConnInfo" (Just invId) (connLevel + 1)
             withStore $ addInvitationConn st invId connId'
             pure connId'
         _ -> throwError $ CONN SIMPLEX
@@ -424,7 +450,7 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
           let msgHash = C.sha256Hash msg
           case parseSMPMessage msg of
             Left e -> notify $ ERR e
-            Right (SMPConfirmation senderKey) -> smpConfirmation senderKey
+            Right (SMPConfirmation senderKey cInfo) -> smpConfirmation senderKey cInfo
             Right SMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
               case agentMessage of
                 HELLO verifyKey _ -> helloMsg verifyKey msgBody
@@ -450,17 +476,18 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
         prohibited :: m ()
         prohibited = notify . ERR $ AGENT A_PROHIBITED
 
-        smpConfirmation :: SenderPublicKey -> m ()
-        smpConfirmation senderKey = do
+        smpConfirmation :: SenderPublicKey -> ConnInfo -> m ()
+        smpConfirmation senderKey cInfo = do
           logServer "<--" c srv rId "MSG <KEY>"
           case status of
-            New -> do
-              -- TODO currently it automatically allows whoever sends the confirmation
-              -- TODO create invitation and send REQ
-              withStore $ setRcvQueueStatus st rq Confirmed
-              -- TODO update sender key in the store?
-              secureQueue c rq senderKey
-              withStore $ setRcvQueueStatus st rq Secured
+            New -> case cType of
+              SCRcv -> do
+                g <- asks idsDrg
+                let newConfirmation = ConfirmationData {connId, senderKey, senderConnInfo = cInfo}
+                confirmationId <- withStore $ createConfirmation st g newConfirmation
+                notify $ CNFRM confirmationId cInfo
+              SCDuplex -> processConfirmation c rq senderKey
+              _ -> prohibited
             _ -> prohibited
 
         helloMsg :: SenderPublicKey -> ByteString -> m ()
@@ -480,10 +507,16 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
           logServer "<--" c srv rId "MSG <REPLY>"
           case cType of
             SCRcv -> do
-              (sq, senderKey, verifyKey) <- newSendQueue qInfo
-              withStore $ upgradeRcvConnToDuplex st connId sq
-              connectToSendQueue c sq senderKey verifyKey
-              connected
+              confirmation <- withStore $ getConfirmationByConnId st connId
+              -- TODO refactor
+              let ocInfo = ownConnInfo (confirmation :: Confirmation)
+              case ocInfo of
+                Just info -> do
+                  (sq, senderKey, verifyKey) <- newSendQueue qInfo
+                  withStore $ upgradeRcvConnToDuplex st connId sq
+                  connectToSendQueue c sq senderKey verifyKey info
+                  connected
+                _ -> prohibited -- TODO separate error type?
             _ -> prohibited
 
         connected :: m ()
@@ -589,10 +622,11 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> m ()
-connectToSendQueue c sq senderKey verifyKey = do
-  sendConfirmation c sq senderKey
+connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> m ()
+connectToSendQueue c sq senderKey verifyKey cInfo = do
+  sendConfirmation c sq senderKey cInfo
   withStore $ setSndQueueStatus st sq Confirmed
+  -- TODO spawn HELLO thread
   sendHello c sq verifyKey
   withStore $ setSndQueueStatus st sq Active
   where

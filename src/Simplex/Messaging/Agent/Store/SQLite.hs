@@ -263,6 +263,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
+  createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> ConfirmationData -> m ConfirmationId
+  createConfirmation SQLiteStore {dbConn} gVar confirmationData = throwError SENotImplemented
+
+  getConfirmation :: SQLiteStore -> ConfirmationId -> m Confirmation
+  getConfirmation SQLiteStore {dbConn} confirmationId = throwError SENotImplemented
+
+  saveOwnInfoToConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m ()
+  saveOwnInfoToConfirmation SQLiteStore {dbConn} confirmationId ownConnInfo = throwError SENotImplemented
+
   updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   updateRcvIds SQLiteStore {dbConn} connId =
     liftIO . withTransaction dbConn $ do
