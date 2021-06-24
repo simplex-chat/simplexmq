@@ -30,6 +30,7 @@ data AgentConfig = AgentConfig
 
 data Env = Env
   { config :: AgentConfig,
+    store' :: SQLiteStore,
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     reservedMsgSize :: Int,
@@ -39,10 +40,10 @@ data Env = Env
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv cfg = do
   idsDrg <- newTVarIO =<< drgNew
-  _ <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
+  store' <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  return Env {config = cfg, idsDrg, clientCounter, reservedMsgSize, randomServer}
+  return Env {config = cfg, store', idsDrg, clientCounter, reservedMsgSize, randomServer}
   where
     -- 1st rsaKeySize is used by the RSA signature in each command,
     -- 2nd - by encrypted message body header
