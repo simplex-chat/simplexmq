@@ -47,6 +47,7 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Parsers (blobFieldParser)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -66,8 +67,8 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> IO SQLiteStore
-createSQLiteStore dbFilePath = do
+createSQLiteStore :: FilePath -> [Migration] -> IO SQLiteStore
+createSQLiteStore dbFilePath migrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   store <- connectSQLiteStore dbFilePath
@@ -77,13 +78,13 @@ createSQLiteStore dbFilePath = do
     Just "THREADSAFE=0" -> confirmOrExit "SQLite compiled with non-threadsafe code."
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
     _ -> return ()
-  migrateSchema store
+  migrateSchema store migrations
   pure store
 
-migrateSchema :: SQLiteStore -> IO ()
-migrateSchema SQLiteStore {dbConn, dbFilePath, dbNew} = do
+migrateSchema :: SQLiteStore -> [Migration] -> IO ()
+migrateSchema SQLiteStore {dbConn, dbFilePath, dbNew} migrations = do
   Migrations.initialize dbConn
-  Migrations.get dbConn Migrations.app >>= \case
+  Migrations.get dbConn migrations >>= \case
     Left e -> confirmOrExit $ "Database error: " <> e
     Right [] -> pure ()
     Right ms -> do

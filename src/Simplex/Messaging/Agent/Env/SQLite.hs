@@ -12,6 +12,7 @@ import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
@@ -37,7 +38,7 @@ data Env = Env
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv config = do
   idsDrg <- newTVarIO =<< drgNew
-  _ <- liftIO $ createSQLiteStore $ dbFile config
+  _ <- liftIO $ createSQLiteStore (dbFile config) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   return Env {config, idsDrg, clientCounter, reservedMsgSize, randomServer}

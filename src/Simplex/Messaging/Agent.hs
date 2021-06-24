@@ -33,6 +33,7 @@ module Simplex.Messaging.Agent
     runAgentClient,
 
     -- * SMP agent functional API
+    AgentClient (..),
     AgentMonad,
     AgentErrorMonad,
     getSMPAgentClient,
@@ -64,9 +65,11 @@ import Crypto.Random (MonadRandom)
 import Data.Bifunctor (second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
@@ -83,7 +86,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
 import Simplex.Messaging.Util (bshow)
 import System.Random (randomR)
-import UnliftIO.Async (Async, async, race_)
+import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -111,14 +114,14 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
         `E.finally` disconnectServers c
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m (Async (), AgentClient)
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
 getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient
       st <- agentDB
       action <- async $ subscriber c st `E.finally` disconnectServers c
-      pure (action, c)
+      pure c {smpSubscriber = action}
 
 disconnectServers :: MonadUnliftIO m => AgentClient -> m ()
 disconnectServers c = closeSMPServerClients c >> logConnection c False
@@ -127,20 +130,20 @@ disconnectServers c = closeSMPServerClients c >> logConnection c False
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command) in Reader monad
-createConnection' :: AgentMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
-createConnection' c = newConn c "" Nothing 0
+createConnection' :: AgentMonad m => AgentClient -> Maybe ConnId -> m (ConnId, SMPQueueInfo)
+createConnection' c connId = newConn c (fromMaybe "" connId) Nothing 0
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: AgentErrorMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
-createConnection c = createConnection' c `runReaderT` agentEnv c
+createConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> m (ConnId, SMPQueueInfo)
+createConnection c = (`runReaderT` agentEnv c) . createConnection' c
 
 -- | Join SMP agent connection (JOIN command) in Reader monad
-joinConnection' :: AgentMonad m => AgentClient -> SMPQueueInfo -> m ConnId
-joinConnection' c qInfo = joinConn c "" qInfo (ReplyMode On) Nothing 0
+joinConnection' :: AgentMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> m ConnId
+joinConnection' c connId qInfo = joinConn c (fromMaybe "" connId) qInfo (ReplyMode On) Nothing 0
 
 -- | Join SMP agent connection (JOIN command)
-joinConnection :: AgentErrorMonad m => AgentClient -> SMPQueueInfo -> m ConnId
-joinConnection c qInfo = joinConnection' c qInfo `runReaderT` agentEnv c
+joinConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> m ConnId
+joinConnection c = (`runReaderT` agentEnv c) .: joinConnection' c
 
 -- | Accept invitation (ACPT command) in Reader monad
 acceptInvitation' :: AgentMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
@@ -148,27 +151,27 @@ acceptInvitation' c = acceptInv c ""
 
 -- | Accept invitation (ACPT command)
 acceptInvitation :: AgentErrorMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
-acceptInvitation c invId cInfo = acceptInvitation c invId cInfo `runReaderT` agentEnv c
+acceptInvitation c = (`runReaderT` agentEnv c) .: acceptInvitation c
 
 -- | Send introduction of the second connection the first (INTRO command)
 sendIntroduction :: AgentErrorMonad m => AgentClient -> ConnId -> ConnId -> ConnInfo -> m ()
-sendIntroduction c toConn reConn reInfo = sendIntroduction' c toConn reConn reInfo `runReaderT` agentEnv c
+sendIntroduction c = (`runReaderT` agentEnv c) .:. sendIntroduction' c
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-subscribeConnection c connId = subscribeConnection' c connId `runReaderT` agentEnv c
+subscribeConnection c = (`runReaderT` agentEnv c) . subscribeConnection' c
 
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
-sendMessage c connId msgBody = sendMessage' c connId msgBody `runReaderT` agentEnv c
+sendMessage c = (`runReaderT` agentEnv c) .: sendMessage' c
 
 -- | Suspend SMP agent connection (OFF command)
 suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-suspendConnection c connId = suspendConnection' c connId `runReaderT` agentEnv c
+suspendConnection c = (`runReaderT` agentEnv c) . suspendConnection' c
 
 -- | Delete SMP agent connection (DEL command)
 deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-deleteConnection c connId = deleteConnection' c connId `runReaderT` agentEnv c
+deleteConnection c = (`runReaderT` agentEnv c) . deleteConnection' c
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient

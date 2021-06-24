@@ -24,6 +24,7 @@ import SMPClient (testKeyHash)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import System.Random (Random (randomIO))
 import Test.Hspec
@@ -49,7 +50,7 @@ createStore = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  createSQLiteStore $ testDB <> show r
+  createSQLiteStore (testDB <> show r) Migrations.app
 
 removeStore :: SQLiteStore -> IO ()
 removeStore store = do
