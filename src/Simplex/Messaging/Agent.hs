@@ -196,8 +196,8 @@ runAgentClient c = do
 
 agentDB :: (MonadUnliftIO m, MonadReader Env m) => m SQLiteStore
 agentDB = do
-  db <- asks $ dbFile . config
-  liftIO $ connectSQLiteStore db
+  cfg <- asks config
+  liftIO $ connectSQLiteStore (dbFile cfg) (dbPoolSize cfg)
 
 receive :: forall c m. (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
 receive h c@AgentClient {rcvQ, subQ} = forever $ do
