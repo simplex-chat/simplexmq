@@ -48,11 +48,11 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Confirmations
-  createConfirmation :: s -> TVar ChaChaDRG -> ConfirmationData -> m ConfirmationId
+  createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   getConfirmation :: s -> ConfirmationId -> m Confirmation
-  getConfirmationByConnId :: s -> ConnId -> m Confirmation
-  saveOwnInfoToConfirmation :: s -> ConfirmationId -> ConnInfo -> m ()
-  removeConfirmation :: s -> ConnId -> m ()
+  approveConfirmation :: s -> ConfirmationId -> ConnInfo -> m ()
+  getApprovedConfirmation :: s -> ConnId -> m Confirmation
+  removeApprovedConfirmation :: s -> ConnId -> m ()
 
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
@@ -159,7 +159,7 @@ data ConnData = ConnData {connId :: ConnId, viaInv :: Maybe InvitationId, connLe
 
 -- * Confirmation types
 
-data ConfirmationData = ConfirmationData
+data NewConfirmation = NewConfirmation
   { connId :: ConnId,
     senderKey :: SenderPublicKey,
     senderConnInfo :: ConnInfo
@@ -397,6 +397,8 @@ data StoreError
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
     SEBadConnType ConnType
+  | -- | Confirmation ID not found.
+    SEConfirmationNotFound
   | -- | Introduction ID not found.
     SEIntroNotFound
   | -- | Invitation ID not found.

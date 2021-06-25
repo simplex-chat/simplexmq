@@ -301,7 +301,7 @@ letConfirmation c connId confirmationId ownConnInfo =
     st = store c
     processConfirmation' :: RcvQueue -> m ConnId
     processConfirmation' rq = do
-      withStore $ saveOwnInfoToConfirmation st confirmationId ownConnInfo
+      withStore $ approveConfirmation st confirmationId ownConnInfo
       confirmation <- withStore $ getConfirmation st confirmationId
       let sndKey = senderKey (confirmation :: Confirmation)
       processConfirmation c rq sndKey
@@ -483,7 +483,7 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
             New -> case cType of
               SCRcv -> do
                 g <- asks idsDrg
-                let newConfirmation = ConfirmationData {connId, senderKey, senderConnInfo = cInfo}
+                let newConfirmation = NewConfirmation {connId, senderKey, senderConnInfo = cInfo}
                 confirmationId <- withStore $ createConfirmation st g newConfirmation
                 notify $ CNFRM confirmationId cInfo
               SCDuplex -> processConfirmation c rq senderKey
@@ -507,7 +507,7 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
           logServer "<--" c srv rId "MSG <REPLY>"
           case cType of
             SCRcv -> do
-              confirmation <- withStore $ getConfirmationByConnId st connId
+              confirmation <- withStore $ getApprovedConfirmation st connId
               -- TODO refactor
               let ocInfo = ownConnInfo (confirmation :: Confirmation)
               case ocInfo of
@@ -515,7 +515,7 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
                   (sq, senderKey, verifyKey) <- newSendQueue qInfo
                   withStore $ upgradeRcvConnToDuplex st connId sq
                   connectToSendQueue c sq senderKey verifyKey info
-                  withStore $ removeConfirmation st connId
+                  withStore $ removeApprovedConfirmation st connId
                   connected
                 _ -> prohibited -- TODO separate error type?
             _ -> prohibited

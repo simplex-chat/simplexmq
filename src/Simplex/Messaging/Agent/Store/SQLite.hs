@@ -263,20 +263,76 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
-  createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> ConfirmationData -> m ConfirmationId
-  createConfirmation SQLiteStore {dbConn} gVar confirmationData = throwError SENotImplemented
+  createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
+  createConfirmation SQLiteStore {dbConn} gVar NewConfirmation {connId, senderKey, senderConnInfo} =
+    liftIOEither . createWithRandomId gVar $ \confirmationId ->
+      DB.execute
+        dbConn
+        [sql|
+          INSERT INTO conn_confirmations
+          (confirmation_id, conn_alias, sender_key, sender_conn_info, approved) VALUES (?, ?, ?, ?, 0);
+        |]
+        (confirmationId, connId, senderKey, senderConnInfo)
 
   getConfirmation :: SQLiteStore -> ConfirmationId -> m Confirmation
-  getConfirmation SQLiteStore {dbConn} confirmationId = throwError SENotImplemented
+  getConfirmation SQLiteStore {dbConn} confirmationId =
+    liftIOEither $
+      confirmation
+        <$> DB.query
+          dbConn
+          [sql|
+            SELECT conn_alias, sender_key, sender_conn_info, own_conn_info
+            FROM conn_confirmations
+            WHERE confirmation_id = ?;
+          |]
+          (Only confirmationId)
+    where
+      confirmation [(connId, senderKey, senderConnInfo, ownConnInfo)] =
+        Right $ Confirmation {confirmationId, connId, senderKey, senderConnInfo, ownConnInfo}
+      confirmation _ = Left SEConfirmationNotFound
 
-  getConfirmationByConnId :: SQLiteStore -> ConnId -> m Confirmation
-  getConfirmationByConnId SQLiteStore {dbConn} connId = throwError SENotImplemented
+  approveConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m ()
+  approveConfirmation SQLiteStore {dbConn} confirmationId ownConnInfo =
+    liftIO $
+      DB.executeNamed
+        dbConn
+        [sql|
+          UPDATE conn_confirmations
+          SET approved = 1,
+              own_conn_info = :own_conn_info
+          WHERE confirmation_id = :confirmation_id;
+        |]
+        [ ":own_conn_info" := ownConnInfo,
+          ":confirmation_id" := confirmationId
+        ]
 
-  saveOwnInfoToConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m ()
-  saveOwnInfoToConfirmation SQLiteStore {dbConn} confirmationId ownConnInfo = throwError SENotImplemented
+  getApprovedConfirmation :: SQLiteStore -> ConnId -> m Confirmation
+  getApprovedConfirmation SQLiteStore {dbConn} connId =
+    liftIOEither $
+      confirmation
+        <$> DB.query
+          dbConn
+          [sql|
+            SELECT confirmation_id, sender_key, sender_conn_info, own_conn_info
+            FROM conn_confirmations
+            WHERE conn_alias = ? AND approved = 1;
+          |]
+          (Only connId)
+    where
+      confirmation [(confirmationId, senderKey, senderConnInfo, ownConnInfo)] =
+        Right $ Confirmation {confirmationId, connId, senderKey, senderConnInfo, ownConnInfo}
+      confirmation _ = Left SEConfirmationNotFound
 
-  removeConfirmation :: SQLiteStore -> ConnId -> m ()
-  removeConfirmation SQLiteStore {dbConn} connId = throwError SENotImplemented
+  removeApprovedConfirmation :: SQLiteStore -> ConnId -> m ()
+  removeApprovedConfirmation SQLiteStore {dbConn} connId =
+    liftIO $
+      DB.executeNamed
+        dbConn
+        [sql|
+          DELETE FROM conn_confirmations
+          WHERE conn_alias = :conn_alias AND approved = 1;
+        |]
+        [":conn_alias" := connId]
 
   updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   updateRcvIds SQLiteStore {dbConn} connId =
