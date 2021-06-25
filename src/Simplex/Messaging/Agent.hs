@@ -508,13 +508,11 @@ processSMPTransmission c@AgentClient {subQ} st (srv, rId, cmd) = do
           case cType of
             SCRcv -> do
               confirmation <- withStore $ getApprovedConfirmation st connId
-              -- TODO refactor
-              let ocInfo = ownConnInfo (confirmation :: Confirmation)
-              case ocInfo of
-                Just info -> do
+              case ownConnInfo (confirmation :: Confirmation) of
+                Just ownCInfo -> do
                   (sq, senderKey, verifyKey) <- newSendQueue qInfo
                   withStore $ upgradeRcvConnToDuplex st connId sq
-                  connectToSendQueue c sq senderKey verifyKey info
+                  connectToSendQueue c sq senderKey verifyKey ownCInfo
                   withStore $ removeApprovedConfirmation st connId
                   connected
                 _ -> prohibited -- TODO separate error type?
