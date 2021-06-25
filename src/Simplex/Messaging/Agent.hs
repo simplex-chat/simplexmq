@@ -6,6 +6,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -84,6 +85,7 @@ import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), run
 import Simplex.Messaging.Util (bshow)
 import System.Random (randomR)
 import UnliftIO.Async (Async, async, race_)
+import UnliftIO.Concurrent (forkIO)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -625,11 +627,16 @@ connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey
 connectToSendQueue c sq senderKey verifyKey cInfo = do
   sendConfirmation c sq senderKey cInfo
   withStore $ setSndQueueStatus st sq Confirmed
-  -- TODO spawn HELLO thread
-  sendHello c sq verifyKey
-  withStore $ setSndQueueStatus st sq Active
+  -- TODO return thread id to kill on client stop
+  _t <- forkIO $ activateQueue c sq verifyKey
+  pure ()
   where
     st = store c
+
+activateQueue :: AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
+activateQueue c@AgentClient {store} sq verifyKey = do
+  sendHello c sq verifyKey 100_000
+  withStore $ setSndQueueStatus store sq Active
 
 newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, VerificationKey)

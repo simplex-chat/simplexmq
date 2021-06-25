@@ -232,11 +232,11 @@ sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
     mkConfirmation :: SMPClient -> m MsgBody
     mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
-sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =
+sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> Int -> m ()
+sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey initialDelay =
   withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
     msg <- mkHello smp $ AckMode On
-    liftSMP $ send 8 100000 msg smp
+    liftSMP $ send initialDelay msg smp
   where
     mkHello :: SMPClient -> AckMode -> m ByteString
     mkHello smp ackMode = do
@@ -249,13 +249,12 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =
             agentMessage = HELLO verifyKey ackMode
           }
 
-    send :: Int -> Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
-    send 0 _ _ _ = throwE $ SMPServerError AUTH
-    send retry delay msg smp =
+    send :: Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
+    send delay msg smp =
       sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
         SMPServerError AUTH -> do
           threadDelay delay
-          send (retry - 1) (delay * 3 `div` 2) msg smp
+          send (delay * 3 `div` 2) msg smp
         e -> throwE e
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
