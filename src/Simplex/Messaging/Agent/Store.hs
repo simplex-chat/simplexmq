@@ -397,7 +397,7 @@ data StoreError
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
     SEBadConnType ConnType
-  | -- | Confirmation ID not found.
+  | -- | Confirmation not found.
     SEConfirmationNotFound
   | -- | Introduction ID not found.
     SEIntroNotFound
