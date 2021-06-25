@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -8,7 +9,7 @@
 module AgentTests.SQLiteTests (storeTests) where
 
 import Control.Concurrent.Async (concurrently_)
-import Control.Concurrent.STM (newTVarIO)
+import Control.Concurrent.STM
 import Control.Monad (replicateM_)
 import Control.Monad.Except (ExceptT, runExceptT)
 import qualified Crypto.PubKey.RSA as R
@@ -42,7 +43,7 @@ withStore2 = before connect2 . after (removeStore . fst)
     connect2 :: IO (SQLiteStore, SQLiteStore)
     connect2 = do
       s1 <- createStore
-      s2 <- connectSQLiteStore $ dbFilePath s1
+      s2 <- connectSQLiteStore (dbFilePath s1) 4
       pure (s1, s2)
 
 createStore :: IO SQLiteStore
@@ -50,12 +51,15 @@ createStore = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  createSQLiteStore (testDB <> show r) Migrations.app
+  createSQLiteStore (testDB <> show r) 4 Migrations.app
 
 removeStore :: SQLiteStore -> IO ()
 removeStore store = do
-  DB.close $ dbConn store
+  close store
   removeFile $ dbFilePath store
+  where
+    close :: SQLiteStore -> IO ()
+    close st = mapM_ DB.close =<< atomically (flushTBQueue $ dbConnPool st)
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r
@@ -122,13 +126,16 @@ testConcurrentWrites =
 
 testCompiledThreadsafe :: SpecWith SQLiteStore
 testCompiledThreadsafe =
-  it "compiled sqlite library should be threadsafe" $ \store -> do
-    compileOptions <- DB.query_ (dbConn store) "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
+  it "compiled sqlite library should be threadsafe" . withStoreConnection $ \db -> do
+    compileOptions <- DB.query_ db "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
     compileOptions `shouldNotContain` [["THREADSAFE=0"]]
+
+withStoreConnection :: (DB.Connection -> IO a) -> SQLiteStore -> IO a
+withStoreConnection = flip withConnection
 
 testForeignKeysEnabled :: SpecWith SQLiteStore
 testForeignKeysEnabled =
-  it "foreign keys should be enabled" $ \store -> do
+  it "foreign keys should be enabled" . withStoreConnection $ \db -> do
     let inconsistentQuery =
           [sql|
             INSERT INTO connections
@@ -136,7 +143,7 @@ testForeignKeysEnabled =
             VALUES
               ("conn1", "smp.simplex.im", "5223", "1234", "smp.simplex.im", "5223", "2345");
           |]
-    DB.execute_ (dbConn store) inconsistentQuery
+    DB.execute_ db inconsistentQuery
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
 cData1 :: ConnData

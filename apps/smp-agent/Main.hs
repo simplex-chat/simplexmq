@@ -20,6 +20,7 @@ cfg =
       connIdBytes = 12,
       tbqSize = 16,
       dbFile = "smp-agent.db",
+      dbPoolSize = 4,
       smpCfg = smpDefaultConfig
     }
 
