@@ -184,7 +184,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getAllConnIds :: SQLiteStore -> m [ConnId]
   getAllConnIds st =
-    liftIO . withConnection st $ \db -> do
+    liftIO . withConnection st $ \db ->
       concat <$> (DB.query_ db "SELECT conn_alias FROM connections;" :: IO [[ConnId]])
 
   getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
@@ -277,6 +277,24 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE host = :host AND port = :port AND snd_id = :snd_id;
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
+
+  getConfirmedSndQueues :: SQLiteStore -> m [SndQueue]
+  getConfirmedSndQueues st =
+    liftIO . withConnection st $ \db ->
+      sndQueues
+        <$> DB.query_
+          db
+          [sql|
+            SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.encrypt_key, q.sign_key, q.status
+            FROM snd_queues q
+            INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+            WHERE q.status = 'Confirmed';
+          |]
+    where
+      sndQueues [(keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] =
+        let srv = SMPServer host (deserializePort_ port) keyHash
+         in [SndQueue srv sndId sndPrivateKey encryptKey signKey status]
+      sndQueues _ = []
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderKey, senderConnInfo} =

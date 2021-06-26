@@ -46,6 +46,7 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
+  getConfirmedSndQueues :: s -> m [SndQueue] -- send queues with Confirmed status - pending activation
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
