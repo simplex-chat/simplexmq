@@ -7,7 +7,8 @@
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Migrations
-  ( app,
+  ( Migration (..),
+    app,
     initialize,
     get,
     run,

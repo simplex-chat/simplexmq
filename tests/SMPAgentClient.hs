@@ -148,6 +148,7 @@ cfg =
       connIdBytes = 12,
       tbqSize = 1,
       dbFile = testDB,
+      dbPoolSize = 4,
       smpCfg =
         smpDefaultConfig
           { qSize = 1,

@@ -32,6 +32,7 @@ module Simplex.Messaging.Agent.Client
   )
 where
 
+import Control.Concurrent.Async (Async)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
@@ -50,7 +51,6 @@ import Data.Time.Clock
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
@@ -68,12 +68,12 @@ data AgentClient = AgentClient
     subscrSrvrs :: TVar (Map SMPServer (Set ConnId)),
     subscrConns :: TVar (Map ConnId SMPServer),
     clientId :: Int,
-    store :: SQLiteStore,
-    agentEnv :: Env
+    agentEnv :: Env,
+    smpSubscriber :: Async ()
   }
 
-newAgentClient :: SQLiteStore -> Env -> STM AgentClient
-newAgentClient store agentEnv = do
+newAgentClient :: Env -> STM AgentClient
+newAgentClient agentEnv = do
   let qSize = tbqSize $ config agentEnv
   rcvQ <- newTBQueue qSize
   subQ <- newTBQueue qSize
@@ -82,7 +82,7 @@ newAgentClient store agentEnv = do
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId, store, agentEnv}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId, agentEnv, smpSubscriber = undefined}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)

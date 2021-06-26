@@ -21,7 +21,6 @@ import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
 import SMPClient (withSmpServer)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite (dbFile)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store (InternalId (..))
@@ -126,11 +125,11 @@ testDuplexConnection _ alice bob = do
 
 testAgentClient :: IO ()
 testAgentClient = do
-  (_, alice) <- getSMPAgentClient cfg
-  (_, bob) <- getSMPAgentClient cfg {dbFile = testDB2}
+  alice <- getSMPAgentClient cfg
+  bob <- getSMPAgentClient cfg {dbFile = testDB2}
   Right () <- runExceptT $ do
-    (bobId, qInfo) <- createConnection alice
-    aliceId <- joinConnection bob qInfo
+    (bobId, qInfo) <- createConnection alice Nothing
+    aliceId <- joinConnection bob Nothing qInfo
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     InternalId 1 <- sendMessage alice bobId "hello"
