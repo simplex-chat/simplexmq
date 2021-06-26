@@ -6,7 +6,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -628,14 +627,14 @@ connectToSendQueue c sq senderKey verifyKey cInfo = do
   sendConfirmation c sq senderKey cInfo
   withStore $ setSndQueueStatus st sq Confirmed
   -- TODO return thread id to kill on client stop
-  _t <- forkIO $ activateQueue c sq verifyKey
+  _t <- forkIO $ activateQueue c sq verifyKey 5 600
   pure ()
   where
     st = store c
 
-activateQueue :: AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
-activateQueue c@AgentClient {store} sq verifyKey = do
-  sendHello c sq verifyKey 100_000
+activateQueue :: AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> Int -> Int -> m ()
+activateQueue c@AgentClient {store} sq verifyKey initialDelaySec increaseDelayAfterSec = do
+  sendHello c sq verifyKey initialDelaySec increaseDelayAfterSec
   withStore $ setSndQueueStatus store sq Active
 
 newSendQueue ::
