@@ -39,6 +39,7 @@ module Simplex.Messaging.Agent
     getSMPAgentClient,
     createConnection,
     joinConnection,
+    letConfirmation,
     sendIntroduction,
     acceptInvitation,
     subscribeConnection,
@@ -47,6 +48,7 @@ module Simplex.Messaging.Agent
     deleteConnection,
     createConnection',
     joinConnection',
+    letConfirmation',
     sendIntroduction',
     acceptInvitation',
     subscribeConnection',
@@ -145,13 +147,21 @@ joinConnection' c connId qInfo cInfo = joinConn c (fromMaybe "" connId) qInfo cI
 joinConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> ConnInfo -> m ConnId
 joinConnection c = (`runReaderT` agentEnv c) .:. joinConnection' c
 
+-- | Approve confirmation (LET command) in Reader monad
+letConfirmation' :: AgentMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
+letConfirmation' c = letConf c ""
+
+-- | Approve confirmation (LET command)
+letConfirmation :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
+letConfirmation c = (`runReaderT` agentEnv c) .: letConfirmation' c
+
 -- | Accept invitation (ACPT command) in Reader monad
 acceptInvitation' :: AgentMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
 acceptInvitation' c = acceptInv c ""
 
 -- | Accept invitation (ACPT command)
 acceptInvitation :: AgentErrorMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
-acceptInvitation c = (`runReaderT` agentEnv c) .: acceptInvitation c
+acceptInvitation c = (`runReaderT` agentEnv c) .: acceptInvitation' c
 
 -- | Send introduction of the second connection the first (INTRO command)
 sendIntroduction :: AgentErrorMonad m => AgentClient -> ConnId -> ConnId -> ConnInfo -> m ()
@@ -246,7 +256,7 @@ processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Cl
 processCommand c (connId, cmd) = case cmd of
   NEW -> second INV <$> newConn c connId Nothing 0
   JOIN smpQueueInfo connInfo -> (,OK) <$> joinConn c connId smpQueueInfo connInfo Nothing 0
-  LET confirmationId ownConnInfo -> (,OK) <$> letConfirmation c connId confirmationId ownConnInfo
+  LET confirmationId ownConnInfo -> (,OK) <$> letConf c connId confirmationId ownConnInfo
   INTRO reConnId reInfo -> sendIntroduction' c connId reConnId reInfo $> (connId, OK)
   ACPT invId connInfo -> (,OK) <$> acceptInv c connId invId connInfo
   SUB -> subscribeConnection' c connId $> (connId, OK)
@@ -282,8 +292,8 @@ joinConn c connId qInfo cInfo viaInv connLevel = do
       withStore $ \st -> upgradeSndConnToDuplex st cId rq
       sendControlMessage c sq $ REPLY qInfo'
 
-letConfirmation :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ConnId
-letConfirmation c connId confirmationId ownConnInfo =
+letConf :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ConnId
+letConf c connId confirmationId ownConnInfo =
   withStore (`getConn` connId) >>= \case
     SomeConn SCDuplex (DuplexConnection _ rq _) -> processConfirmation' rq
     SomeConn SCRcv (RcvConnection _ rq) -> processConfirmation' rq
