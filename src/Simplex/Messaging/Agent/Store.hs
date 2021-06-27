@@ -38,6 +38,7 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> m ConnId
   createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   getConn :: s -> ConnId -> m SomeConn
+  getAllConns :: s -> m [SomeConn]
   getAllConnIds :: s -> m [ConnId] -- TODO remove - hack for subscribing to all
   getRcvConn :: s -> SMPServer -> SMP.RecipientId -> m SomeConn
   deleteConn :: s -> ConnId -> m ()
@@ -46,7 +47,6 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
-  getConfirmedSndQueues :: s -> m [SndQueue] -- send queues with Confirmed status - pending activation
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId

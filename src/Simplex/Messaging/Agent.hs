@@ -113,7 +113,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
       liftIO $ putLn h "Welcome to SMP v0.3.2 agent"
       c <- getAgentClient
       logConnection c True
-      sndQueuesPendingActivation <- withStore $ \st -> getConfirmedSndQueues st -- TODO
+      allConns <- withStore $ \st -> getAllConns st -- TODO
       race_ (connectClient h c) (runAgentClient c)
         `E.finally` disconnectServers c
 
