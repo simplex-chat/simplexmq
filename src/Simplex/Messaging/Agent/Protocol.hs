@@ -155,7 +155,7 @@ data ACommand (p :: AParty) where
   NEW :: ACommand Client -- response INV
   INV :: SMPQueueInfo -> ACommand Agent
   JOIN :: SMPQueueInfo -> ConnInfo -> ACommand Client -- response OK
-  CNFRM :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  CONF :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
   LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   INTRO :: ConnId -> ConnInfo -> ACommand Client
   REQ :: InvitationId -> ConnInfo -> ACommand Agent
@@ -474,7 +474,7 @@ commandP =
   "NEW" $> ACmd SClient NEW
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
-    <|> "CNFRM " *> cnfrmCmd
+    <|> "CONF " *> confCmd
     <|> "LET " *> letCmd
     <|> "INTRO " *> introCmd
     <|> "REQ " *> reqCmd
@@ -493,7 +493,7 @@ commandP =
   where
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <* A.space <*> binaryBodyP)
-    cnfrmCmd = ACmd SAgent <$> (CNFRM <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    confCmd = ACmd SAgent <$> (CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     introCmd = ACmd SClient <$> introP INTRO
     reqCmd = ACmd SAgent <$> introP REQ
@@ -531,7 +531,7 @@ serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo cInfo -> "JOIN " <> serializeSmpQueueInfo qInfo <> " " <> serializeMsg cInfo
-  CNFRM confirmationId cInfo -> "CNFRM " <> confirmationId <> " " <> serializeMsg cInfo
+  CONF confirmationId cInfo -> "CONF " <> confirmationId <> " " <> serializeMsg cInfo
   LET confirmationId cInfo -> "LET " <> confirmationId <> " " <> serializeMsg cInfo
   INTRO connId cInfo -> "INTRO " <> connId <> " " <> serializeMsg cInfo
   REQ invId cInfo -> "REQ " <> invId <> " " <> serializeMsg cInfo
