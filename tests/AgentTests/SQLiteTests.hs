@@ -27,7 +27,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
-import System.Random (Random (randomIO))
+import System.Random
 import Test.Hspec
 import UnliftIO.Directory (removeFile)
 
