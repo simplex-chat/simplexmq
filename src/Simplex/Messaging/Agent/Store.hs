@@ -170,15 +170,11 @@ type PrevSndMsgHash = MsgHash
 -- * Message data containers - used on Msg creation to reduce number of parameters
 
 data RcvMsgData = RcvMsgData
-  { internalId :: InternalId,
-    internalRcvId :: InternalRcvId,
-    internalTs :: InternalTs,
-    senderMeta :: (ExternalSndId, ExternalSndTs),
-    brokerMeta :: (BrokerId, BrokerTs),
+  { msgMeta :: MsgMeta,
     msgBody :: MsgBody,
+    internalRcvId :: InternalRcvId,
     internalHash :: MsgHash,
-    externalPrevSndHash :: MsgHash,
-    msgIntegrity :: MsgIntegrity
+    externalPrevSndHash :: MsgHash
   }
 
 data SndMsgData = SndMsgData

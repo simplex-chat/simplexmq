@@ -32,6 +32,7 @@ module Simplex.Messaging.Agent.Protocol
     ACommand (..),
     AParty (..),
     SAParty (..),
+    MsgMeta (..),
     SMPMessage (..),
     AMessage (..),
     SMPServer (..),
@@ -166,14 +167,7 @@ data ACommand (p :: AParty) where
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
   SEND :: MsgBody -> ACommand Client
   SENT :: AgentMsgId -> ACommand Agent
-  MSG ::
-    { recipientMeta :: (AgentMsgId, UTCTime),
-      brokerMeta :: (MsgId, UTCTime),
-      senderMeta :: (AgentMsgId, UTCTime),
-      msgIntegrity :: MsgIntegrity,
-      msgBody :: MsgBody
-    } ->
-    ACommand Agent
+  MSG :: MsgMeta -> MsgBody -> ACommand Agent
   -- ACK :: AgentMsgId -> ACommand Client
   -- RCVD :: AgentMsgId -> ACommand Agent
   OFF :: ACommand Client
@@ -184,6 +178,15 @@ data ACommand (p :: AParty) where
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
+
+-- | Agent message metadata sent to the client
+data MsgMeta = MsgMeta
+  { integrity :: MsgIntegrity,
+    recipient :: (AgentMsgId, UTCTime),
+    broker :: (MsgId, UTCTime),
+    sender :: (AgentMsgId, UTCTime)
+  }
+  deriving (Eq, Show)
 
 -- | SMP message formats.
 data SMPMessage
@@ -496,16 +499,16 @@ commandP =
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
     iconMsg = ACmd SAgent . ICON <$> A.takeTill wordEnd
-    message = do
-      msgIntegrity <- msgIntegrityP <* A.space
-      recipientMeta <- "R=" *> partyMeta A.decimal
-      brokerMeta <- "B=" *> partyMeta base64P
-      senderMeta <- "S=" *> partyMeta A.decimal
-      msgBody <- A.takeByteString
-      return $ ACmd SAgent MSG {recipientMeta, brokerMeta, senderMeta, msgIntegrity, msgBody}
+    message = ACmd SAgent <$> (MSG <$> msgMetaP <* A.space <*> A.takeByteString)
+    msgMetaP = do
+      integrity <- msgIntegrityP
+      recipient <- " R=" *> partyMeta A.decimal
+      broker <- " B=" *> partyMeta base64P
+      sender <- " S=" *> partyMeta A.decimal
+      pure MsgMeta {integrity, recipient, broker, sender}
     introP f = f <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     replyMode = ReplyMode <$> (" NO_REPLY" $> Off <|> pure On)
-    partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P <* A.space
+    partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
 -- | Message integrity validation result parser.
@@ -534,15 +537,8 @@ serializeCommand = \case
   END -> "END"
   SEND msgBody -> "SEND " <> serializeMsg msgBody
   SENT mId -> "SENT " <> bshow mId
-  MSG {recipientMeta = (rmId, rTs), brokerMeta = (bmId, bTs), senderMeta = (smId, sTs), msgIntegrity, msgBody} ->
-    B.unwords
-      [ "MSG",
-        serializeMsgIntegrity msgIntegrity,
-        "R=" <> bshow rmId <> "," <> showTs rTs,
-        "B=" <> encode bmId <> "," <> showTs bTs,
-        "S=" <> bshow smId <> "," <> showTs sTs,
-        serializeMsg msgBody
-      ]
+  MSG msgMeta msgBody ->
+    "MSG " <> serializeMsgMeta msgMeta <> " " <> serializeMsg msgBody
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
@@ -556,6 +552,14 @@ serializeCommand = \case
       ReplyMode On -> ""
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
+    serializeMsgMeta :: MsgMeta -> ByteString
+    serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sender = (smId, sTs)} =
+      B.unwords
+        [ serializeMsgIntegrity integrity,
+          "R=" <> bshow rmId <> "," <> showTs rTs,
+          "B=" <> encode bmId <> "," <> showTs bTs,
+          "S=" <> bshow smId <> "," <> showTs sTs
+        ]
 
 -- | Serialize message integrity validation result.
 serializeMsgIntegrity :: MsgIntegrity -> ByteString
@@ -636,7 +640,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
     cmdWithMsgBody = \case
       SEND body -> SEND <$$> getMsgBody body
-      MSG agentMsgId srvTS agentTS integrity body -> MSG agentMsgId srvTS agentTS integrity <$$> getMsgBody body
+      MSG msgMeta body -> MSG msgMeta <$$> getMsgBody body
       INTRO introId cInfo -> INTRO introId <$$> getMsgBody cInfo
       REQ introId cInfo -> REQ introId <$$> getMsgBody cInfo
       ACPT introId cInfo -> ACPT introId <$$> getMsgBody cInfo
