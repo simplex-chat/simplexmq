@@ -279,7 +279,7 @@ joinConn c connId qInfo cInfo viaInv connLevel = do
   g <- asks idsDrg
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createSndConn st g cData sq
-  let onActivationCallback = createReplyQueue c connId' sq
+  let onActivationCallback = removeActivation c connId >> createReplyQueue c connId' sq
   connectToSendQueue c sq senderKey verifyKey cInfo connId' onActivationCallback
   pure connId'
 
@@ -303,6 +303,7 @@ letConf c connId confirmationId ownConnInfo =
       confirmation <- withStore $ \st -> getConfirmation st confirmationId
       let sndKey = senderKey (confirmation :: Confirmation)
       processConfirmation c rq sndKey
+      withStore $ \st -> removeApprovedConfirmation st connId
       pure connId
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
@@ -502,11 +503,9 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 Just ownCInfo -> do
                   (sq, senderKey, verifyKey) <- newSendQueue qInfo
                   withStore $ \st -> upgradeRcvConnToDuplex st connId sq
-                  let onActivationCallback = pure ()
+                  -- TODO do this in LET?
+                  let onActivationCallback = removeActivation c connId >> connected
                   connectToSendQueue c sq senderKey verifyKey ownCInfo connId onActivationCallback
-                  withStore $ \st -> removeApprovedConfirmation st connId
-                  removeActivation c connId
-                  connected
                 _ -> prohibited -- TODO separate error type?
             _ -> prohibited
 
