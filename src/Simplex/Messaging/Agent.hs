@@ -503,7 +503,6 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 Just ownCInfo -> do
                   (sq, senderKey, verifyKey) <- newSendQueue qInfo
                   withStore $ \st -> upgradeRcvConnToDuplex st connId sq
-                  -- TODO do this in LET?
                   let onActivationCallback = removeActivation c connId >> connected
                   connectToSendQueue c sq senderKey verifyKey ownCInfo connId onActivationCallback
                 _ -> prohibited -- TODO separate error type?
