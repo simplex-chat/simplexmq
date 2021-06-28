@@ -281,8 +281,16 @@ joinConn c connId qInfo cInfo viaInv connLevel = do
   g <- asks idsDrg
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createSndConn st g cData sq
-  connectToSendQueue c connId' CSnd sq senderKey verifyKey cInfo
+  connectToSendQueue c sq senderKey verifyKey cInfo $ createReplyQueue c connId' sq
   pure connId'
+
+createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
+createReplyQueue c cId sq = do
+  srv <- getSMPServer
+  (rq, qInfo') <- newReceiveQueue c srv
+  addSubscription c rq cId
+  withStore $ \st -> upgradeSndConnToDuplex st cId rq
+  sendControlMessage c sq $ REPLY qInfo'
 
 letConf :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ConnId
 letConf c connId confirmationId ownConnInfo =
@@ -495,7 +503,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 Just ownCInfo -> do
                   (sq, senderKey, verifyKey) <- newSendQueue qInfo
                   withStore $ \st -> upgradeRcvConnToDuplex st connId sq
-                  connectToSendQueue c connId CDuplex sq senderKey verifyKey ownCInfo
+                  connectToSendQueue c sq senderKey verifyKey ownCInfo $ pure ()
                   withStore $ \st -> removeApprovedConfirmation st connId
                   connected
                 _ -> prohibited -- TODO separate error type?
@@ -604,33 +612,19 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-connectToSendQueue :: AgentMonad m => AgentClient -> ConnId -> ConnType -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> m ()
-connectToSendQueue c cId cType sq senderKey verifyKey cInfo = do
+connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> m () -> m ()
+connectToSendQueue c sq senderKey verifyKey cInfo runAfterActivation = do
   sendConfirmation c sq senderKey cInfo
   withStore $ \st -> setSndQueueStatus st sq Confirmed
   -- TODO return thread id to kill on client stop
-  _t <- forkIO $ activateQueue c cId cType sq verifyKey 1 60
+  _t <- forkIO $ activateQueue c sq verifyKey 1 60 runAfterActivation
   pure ()
 
-activateQueue :: AgentMonad m => AgentClient -> ConnId -> ConnType -> SndQueue -> VerificationKey -> Int -> Int -> m ()
-activateQueue c connId cType sndQ verifyKey initialDelaySec increaseDelayAfterSec =
-  case cType of
-    CSnd -> do
-      sendHello c sndQ verifyKey initialDelaySec increaseDelayAfterSec
-      withStore $ \st -> setSndQueueStatus st sndQ Active
-      createReplyQueue connId sndQ
-    CDuplex -> do
-      sendHello c sndQ verifyKey initialDelaySec increaseDelayAfterSec
-      withStore $ \st -> setSndQueueStatus st sndQ Active
-    _ -> throwError $ CMD PROHIBITED
-  where
-    createReplyQueue :: AgentMonad m => ConnId -> SndQueue -> m ()
-    createReplyQueue cId sq = do
-      srv <- getSMPServer
-      (rq, qInfo') <- newReceiveQueue c srv
-      addSubscription c rq cId
-      withStore $ \st -> upgradeSndConnToDuplex st cId rq
-      sendControlMessage c sq $ REPLY qInfo'
+activateQueue :: AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> Int -> Int -> m () -> m ()
+activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec runAfterActivation = do
+  sendHello c sndQ verifyKey initialDelaySec increaseDelayAfterSec
+  withStore $ \st -> setSndQueueStatus st sndQ Active
+  runAfterActivation
 
 newSendQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, VerificationKey)
