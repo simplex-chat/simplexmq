@@ -182,13 +182,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIOEither . withTransaction st $ \db ->
       getConn_ db connId
 
-  -- TODO
   getAllConns :: SQLiteStore -> m [SomeConn]
   getAllConns st =
-    liftIO . withTransaction st $ \db -> do
-      let connIds = liftIO $ concat <$> (DB.query_ db "SELECT conn_alias FROM connections;" :: IO [[ConnId]])
-      let res = map (liftIOEither . getConn_ db) connIds
-      res
+    liftIOEither . withTransaction st $ \db -> do
+      connIds <- concat <$> (DB.query_ db "SELECT conn_alias FROM connections;" :: IO [[ConnId]])
+      sequence <$> mapM (getConn_ db) connIds
 
   getAllConnIds :: SQLiteStore -> m [ConnId]
   getAllConnIds st =

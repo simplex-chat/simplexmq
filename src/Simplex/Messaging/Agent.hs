@@ -113,7 +113,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
       liftIO $ putLn h "Welcome to SMP v0.3.2 agent"
       c <- getAgentClient
       logConnection c True
-      allConns <- withStore $ \st -> getAllConns st -- TODO
+      allConns <- runExceptT $ withStore getAllConns -- TODO
       race_ (connectClient h c) (runAgentClient c)
         `E.finally` disconnectServers c
 
@@ -605,15 +605,12 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
 connectToSendQueue :: AgentMonad m => AgentClient -> ConnId -> ConnType -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> m ()
-connectToSendQueue c cId cType sq senderKey verifyKey cInfo =
-  case cType of
-    CRcv -> throwError $ CMD PROHIBITED
-    _ -> do
-      sendConfirmation c sq senderKey cInfo
-      withStore $ \st -> setSndQueueStatus st sq Confirmed
-      -- TODO return thread id to kill on client stop
-      _t <- forkIO $ activateQueue c cId cType sq verifyKey 5 600
-      pure ()
+connectToSendQueue c cId cType sq senderKey verifyKey cInfo = do
+  sendConfirmation c sq senderKey cInfo
+  withStore $ \st -> setSndQueueStatus st sq Confirmed
+  -- TODO return thread id to kill on client stop
+  _t <- forkIO $ activateQueue c cId cType sq verifyKey 1 60
+  pure ()
 
 activateQueue :: AgentMonad m => AgentClient -> ConnId -> ConnType -> SndQueue -> VerificationKey -> Int -> Int -> m ()
 activateQueue c connId cType sndQ verifyKey initialDelaySec increaseDelayAfterSec =

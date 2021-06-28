@@ -257,7 +257,7 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey initialDelaySec
           threadDelay delay
           let newDelay =
                 if elapsedTime > (increaseDelayAfterSec * 1_000_000)
-                  then min (delay * 3 `div` 2) (30 * 60 * 1_000_000)
+                  then min (delay * 3 `div` 2) (10 * 60 * 1_000_000)
                   else delay
           send (elapsedTime + delay) newDelay msg smp
         e -> throwE e
