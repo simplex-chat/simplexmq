@@ -13,7 +13,7 @@ module Simplex.Messaging.Agent.Client
     newAgentClient,
     AgentMonad,
     getSMPServerClient,
-    closeSMPServerClients,
+    cleanupAgentClient,
     newReceiveQueue,
     subscribeQueue,
     addSubscription,
@@ -29,10 +29,12 @@ module Simplex.Messaging.Agent.Client
     logServer,
     removeSubscription,
     cryptoError,
+    addActivation,
+    removeActivation,
   )
 where
 
-import Control.Concurrent.Async (Async)
+import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
@@ -67,6 +69,7 @@ data AgentClient = AgentClient
     smpClients :: TVar (Map SMPServer SMPClient),
     subscrSrvrs :: TVar (Map SMPServer (Set ConnId)),
     subscrConns :: TVar (Map ConnId SMPServer),
+    pendingActivations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
     clientId :: Int,
     agentEnv :: Env,
     smpSubscriber :: Async ()
@@ -81,8 +84,9 @@ newAgentClient agentEnv = do
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
+  pendingActivations <- newTVar M.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId, agentEnv, smpSubscriber = undefined}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, pendingActivations, clientId, agentEnv, smpSubscriber = undefined}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -127,8 +131,16 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     notifySub :: ConnId -> IO ()
     notifySub connId = atomically $ writeTBQueue (subQ c) ("", connId, END)
 
+cleanupAgentClient :: MonadUnliftIO m => AgentClient -> m ()
+cleanupAgentClient c = do
+  closeSMPServerClients c
+  cancelActivations c
+
 closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
 closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient
+
+cancelActivations :: MonadUnliftIO m => AgentClient -> m ()
+cancelActivations c = liftIO $ readTVarIO (pendingActivations c) >>= mapM_ uninterruptibleCancel
 
 withSMP_ :: forall a m. AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> m a) -> m a
 withSMP_ c srv action =
@@ -213,6 +225,16 @@ removeSubscription AgentClient {subscrConns, subscrSrvrs} connId = atomically $ 
     delSub cs =
       let cs' = S.delete connId cs
        in if S.null cs' then Nothing else Just cs'
+
+addActivation :: MonadUnliftIO m => AgentClient -> ConnId -> Async () -> m ()
+addActivation c connId a =
+  atomically $
+    modifyTVar (pendingActivations c) $ M.insert connId a
+
+removeActivation :: MonadUnliftIO m => AgentClient -> ConnId -> m ()
+removeActivation c connId =
+  atomically $
+    modifyTVar (pendingActivations c) $ M.delete connId
 
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =

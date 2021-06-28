@@ -89,7 +89,6 @@ import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), run
 import Simplex.Messaging.Util (bshow)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
-import UnliftIO.Concurrent (forkIO)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -113,9 +112,8 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
       liftIO $ putLn h "Welcome to SMP v0.3.2 agent"
       c <- getAgentClient
       logConnection c True
-      allConns <- runExceptT $ withStore getAllConns -- TODO
       race_ (connectClient h c) (runAgentClient c)
-        `E.finally` disconnectServers c
+        `E.finally` disconnectAgentClient c
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
@@ -123,11 +121,11 @@ getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient
-      action <- async $ subscriber c `E.finally` disconnectServers c
+      action <- async $ subscriber c `E.finally` disconnectAgentClient c
       pure c {smpSubscriber = action}
 
-disconnectServers :: MonadUnliftIO m => AgentClient -> m ()
-disconnectServers c = closeSMPServerClients c >> logConnection c False
+disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
+disconnectAgentClient c = cleanupAgentClient c >> logConnection c False
 
 -- |
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
@@ -281,7 +279,8 @@ joinConn c connId qInfo cInfo viaInv connLevel = do
   g <- asks idsDrg
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createSndConn st g cData sq
-  connectToSendQueue c sq senderKey verifyKey cInfo $ createReplyQueue c connId' sq
+  let onActivationCallback = createReplyQueue c connId' sq
+  connectToSendQueue c sq senderKey verifyKey cInfo connId' onActivationCallback
   pure connId'
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
@@ -503,8 +502,10 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 Just ownCInfo -> do
                   (sq, senderKey, verifyKey) <- newSendQueue qInfo
                   withStore $ \st -> upgradeRcvConnToDuplex st connId sq
-                  connectToSendQueue c sq senderKey verifyKey ownCInfo $ pure ()
+                  let onActivationCallback = pure ()
+                  connectToSendQueue c sq senderKey verifyKey ownCInfo connId onActivationCallback
                   withStore $ \st -> removeApprovedConfirmation st connId
+                  removeActivation c connId
                   connected
                 _ -> prohibited -- TODO separate error type?
             _ -> prohibited
@@ -612,13 +613,12 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> m () -> m ()
-connectToSendQueue c sq senderKey verifyKey cInfo runAfterActivation = do
+connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> ConnId -> m () -> m ()
+connectToSendQueue c sq senderKey verifyKey cInfo cId runAfterActivation = do
   sendConfirmation c sq senderKey cInfo
   withStore $ \st -> setSndQueueStatus st sq Confirmed
-  -- TODO return thread id to kill on client stop
-  _t <- forkIO $ activateQueue c sq verifyKey 1 60 runAfterActivation
-  pure ()
+  a <- async $ activateQueue c sq verifyKey 1 60 runAfterActivation
+  addActivation c cId a
 
 activateQueue :: AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> Int -> Int -> m () -> m ()
 activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec runAfterActivation = do
