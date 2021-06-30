@@ -402,21 +402,24 @@ ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
 mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> BrokerId -> MsgHash -> RcvMsgData
 mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
   RcvMsgData
-    { internalId,
-      internalRcvId,
-      internalTs = ts,
-      senderMeta = (externalSndId, ts),
-      brokerMeta = (brokerId, ts),
+    { internalRcvId,
+      msgMeta =
+        MsgMeta
+          { integrity = MsgOk,
+            recipient = (unId internalId, ts),
+            sender = (externalSndId, ts),
+            broker = (brokerId, ts)
+          },
       msgBody = hw,
       internalHash,
-      externalPrevSndHash = "hash_from_sender",
-      msgIntegrity = MsgOk
+      externalPrevSndHash = "hash_from_sender"
     }
 
 testCreateRcvMsg' :: SQLiteStore -> PrevExternalSndId -> PrevRcvMsgHash -> ConnId -> RcvMsgData -> Expectation
 testCreateRcvMsg' st expectedPrevSndId expectedPrevHash connId rcvMsgData@RcvMsgData {..} = do
+  let MsgMeta {recipient = (internalId, _)} = msgMeta
   updateRcvIds st connId
-    `returnsResult` (internalId, internalRcvId, expectedPrevSndId, expectedPrevHash)
+    `returnsResult` (InternalId internalId, internalRcvId, expectedPrevSndId, expectedPrevHash)
   createRcvMsg st connId rcvMsgData
     `returnsResult` ()
 

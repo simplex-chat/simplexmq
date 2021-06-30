@@ -534,34 +534,18 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
             sendConMsg toConn reConn = atomically $ writeTBQueue subQ ("", toConn, ICON reConn)
 
         agentClientMsg :: PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
-        agentClientMsg receivedPrevMsgHash senderMeta brokerMeta msgBody msgHash = do
+        agentClientMsg externalPrevSndHash sender broker msgBody internalHash = do
           logServer "<--" c srv rId "MSG <MSG>"
           case status of
             Active -> do
               internalTs <- liftIO getCurrentTime
               (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore (`updateRcvIds` connId)
-              let msgIntegrity = checkMsgIntegrity prevExtSndId (fst senderMeta) prevRcvMsgHash receivedPrevMsgHash
-              withStore $ \st ->
-                createRcvMsg st connId $
-                  RcvMsgData
-                    { internalId,
-                      internalRcvId,
-                      internalTs,
-                      senderMeta,
-                      brokerMeta,
-                      msgBody,
-                      internalHash = msgHash,
-                      externalPrevSndHash = receivedPrevMsgHash,
-                      msgIntegrity
-                    }
-              notify
-                MSG
-                  { recipientMeta = (unId internalId, internalTs),
-                    senderMeta,
-                    brokerMeta,
-                    msgBody,
-                    msgIntegrity
-                  }
+              let integrity = checkMsgIntegrity prevExtSndId (fst sender) prevRcvMsgHash externalPrevSndHash
+                  recipient = (unId internalId, internalTs)
+                  msgMeta = MsgMeta {integrity, recipient, sender, broker}
+                  rcvMsg = RcvMsgData {msgMeta, msgBody, internalRcvId, internalHash, externalPrevSndHash}
+              withStore $ \st -> createRcvMsg st connId rcvMsg
+              notify $ MSG msgMeta msgBody
             _ -> prohibited
 
         checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity

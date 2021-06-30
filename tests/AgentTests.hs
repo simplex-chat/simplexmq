@@ -101,7 +101,7 @@ h #:# err = tryGet `shouldReturn` ()
         _ -> return ()
 
 pattern Msg :: MsgBody -> ACommand 'Agent
-pattern Msg msgBody <- MSG {msgBody, msgIntegrity = MsgOk}
+pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
