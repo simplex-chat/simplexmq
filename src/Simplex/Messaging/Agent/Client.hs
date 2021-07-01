@@ -14,7 +14,7 @@ module Simplex.Messaging.Agent.Client
     AgentMonad,
     getSMPServerClient,
     cleanupAgentClient,
-    newReceiveQueue,
+    newRcvQueue,
     subscribeQueue,
     addSubscription,
     sendConfirmation,
@@ -177,8 +177,8 @@ smpClientError = \case
   SMPTransportError e -> BROKER $ TRANSPORT e
   e -> INTERNAL $ show e
 
-newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
-newReceiveQueue c srv = do
+newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
+newRcvQueue c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
   logServer "-->" c srv "" "NEW"

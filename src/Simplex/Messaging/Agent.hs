@@ -190,8 +190,8 @@ connectClient :: Transport c => MonadUnliftIO m => c -> AgentClient -> m ()
 connectClient h c = race_ (send h c) (receive h c)
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
-logConnection c connected =
-  let event = if connected then "connected to" else "disconnected from"
+logConnection c connected' =
+  let event = if connected' then "connected to" else "disconnected from"
    in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
 
 -- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
@@ -266,7 +266,7 @@ processCommand c (connId, cmd) = case cmd of
 newConn :: AgentMonad m => AgentClient -> ConnId -> Maybe InvitationId -> Int -> m (ConnId, SMPQueueInfo)
 newConn c connId viaInv connLevel = do
   srv <- getSMPServer
-  (rq, qInfo) <- newReceiveQueue c srv
+  (rq, qInfo) <- newRcvQueue c srv
   g <- asks idsDrg
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createRcvConn st g cData rq
@@ -275,22 +275,24 @@ newConn c connId viaInv connLevel = do
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> SMPQueueInfo -> ConnInfo -> Maybe InvitationId -> Int -> m ConnId
 joinConn c connId qInfo cInfo viaInv connLevel = do
-  (sq, senderKey, verifyKey) <- newSendQueue qInfo
+  (sq, senderKey, verifyKey) <- newSndQueue qInfo
   g <- asks idsDrg
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createSndConn st g cData sq
-  connectToSndQueueJoining c connId' sq senderKey verifyKey cInfo
+  confirmQueue c sq senderKey cInfo
+  activateQueueJoining c connId' sq verifyKey 1 60
   pure connId'
 
-connectToSndQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> m ()
-connectToSndQueueJoining c connId sndQ senderKey verifyKey cInfo = do
+activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m ()
+activateQueueJoining c connId sndQ verifyKey initialDelaySec increaseDelayAfterSec = do
   let onActivationCallback = removeActivation c connId >> createReplyQueue connId sndQ
-  connectToSndQueue c sndQ senderKey verifyKey cInfo connId onActivationCallback
+  a <- async $ activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec onActivationCallback
+  addActivation c connId a
   where
     createReplyQueue :: ConnId -> SndQueue -> m ()
     createReplyQueue cId sq = do
       srv <- getSMPServer
-      (rq, qInfo') <- newReceiveQueue c srv
+      (rq, qInfo') <- newRcvQueue c srv
       addSubscription c rq cId
       withStore $ \st -> upgradeSndConnToDuplex st cId rq
       sendControlMessage c sq $ REPLY qInfo'
@@ -351,15 +353,14 @@ subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq sq) -> case status (sq :: SndQueue) of
       Confirmed -> do
-        connectToSndQueueInitiating c connId sq senderKey verifyKey ownCInfo -- TODO
+        activateQueueInitiating c connId sq verifyKey 5 0 -- TODO
         subscribeQueue c rq connId
       Active -> subscribeQueue c rq connId
       _ -> throwError $ CONN BAD_QUEUE_STATUS
     SomeConn _ (SndConnection _ sq) -> case status (sq :: SndQueue) of
       Confirmed -> do
-        connectToSndQueueJoining c connId sq senderKey verifyKey cInfo -- TODO
-        subscribeQueue c rq connId
-      Active -> subscribeQueue c rq connId
+        activateQueueJoining c connId sq verifyKey 5 0 -- TODO
+      Active -> throwError $ CONN SIMPLEX
       _ -> throwError $ CONN BAD_QUEUE_STATUS
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
 
@@ -512,9 +513,10 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               confirmation <- withStore $ \st -> getApprovedConfirmation st connId
               case ownConnInfo (confirmation :: Confirmation) of
                 Just ownCInfo -> do
-                  (sq, senderKey, verifyKey) <- newSendQueue qInfo
+                  (sq, senderKey, verifyKey) <- newSndQueue qInfo
                   withStore $ \st -> upgradeRcvConnToDuplex st connId sq
-                  connectToSndQueueInitiating c connId sq senderKey verifyKey ownCInfo
+                  confirmQueue c sq senderKey ownCInfo
+                  activateQueueInitiating c connId sq verifyKey 1 60
                 _ -> prohibited -- TODO separate error type?
             _ -> prohibited
 
@@ -614,17 +616,16 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-connectToSndQueueInitiating :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> m ()
-connectToSndQueueInitiating c connId sndQ senderKey verifyKey cInfo = do
-  let onActivationCallback = removeActivation c connId >> connected c connId
-  connectToSndQueue c sndQ senderKey verifyKey cInfo connId onActivationCallback
-
-connectToSndQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> ConnInfo -> ConnId -> m () -> m ()
-connectToSndQueue c sq senderKey verifyKey cInfo cId runAfterActivation = do
+confirmQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> ConnInfo -> m ()
+confirmQueue c sq senderKey cInfo = do
   sendConfirmation c sq senderKey cInfo
   withStore $ \st -> setSndQueueStatus st sq Confirmed
-  a <- async $ activateQueue c sq verifyKey 1 60 runAfterActivation
-  addActivation c cId a
+
+activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m ()
+activateQueueInitiating c connId sndQ verifyKey initialDelaySec increaseDelayAfterSec = do
+  let onActivationCallback = removeActivation c connId >> connected c connId
+  a <- async $ activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec onActivationCallback
+  addActivation c connId a
 
 activateQueue :: AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> Int -> Int -> m () -> m ()
 activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec runAfterActivation = do
@@ -644,9 +645,9 @@ connected c connId = do
 notify :: AgentMonad m => AgentClient -> ConnId -> ACommand 'Agent -> m ()
 notify c connId msg = atomically $ writeTBQueue (subQ c) ("", connId, msg)
 
-newSendQueue ::
+newSndQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, VerificationKey)
-newSendQueue (SMPQueueInfo smpServer senderId encryptKey) = do
+newSndQueue (SMPQueueInfo smpServer senderId encryptKey) = do
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size
   (verifyKey, signKey) <- liftIO $ C.generateKeyPair size
