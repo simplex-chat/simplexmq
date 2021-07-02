@@ -11,3 +11,5 @@ CREATE TABLE conn_confirmations (
     REFERENCES connections (conn_alias)
     ON DELETE CASCADE
 ) WITHOUT ROWID;
+
+ALTER TABLE rcv_queues DROP COLUMN snd_key;

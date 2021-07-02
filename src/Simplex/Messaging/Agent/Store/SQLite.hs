@@ -620,9 +620,9 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_alias, rcv_private_key, snd_id, snd_key, decrypt_key, verify_key, status)
+        ( host, port, rcv_id, conn_alias, rcv_private_key, snd_id, decrypt_key, verify_key, status)
       VALUES
-        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:snd_key,:decrypt_key,:verify_key,:status);
+        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:snd_id,:decrypt_key,:verify_key,:status);
     |]
     [ ":host" := host server,
       ":port" := port_,
@@ -630,7 +630,6 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":conn_alias" := connId,
       ":rcv_private_key" := rcvPrivateKey,
       ":snd_id" := sndId,
-      ":snd_key" := sndKey,
       ":decrypt_key" := decryptKey,
       ":verify_key" := verifyKey,
       ":status" := status
@@ -727,16 +726,16 @@ getRcvQueueByConnAlias_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key,
-          q.snd_id, q.snd_key, q.decrypt_key, q.verify_key, q.status
+          q.snd_id, q.decrypt_key, q.verify_key, q.status
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, sndId, sndKey, decryptKey, verifyKey, status)] =
+    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, sndId, decryptKey, verifyKey, status)] =
       let srv = SMPServer host (deserializePort_ port) keyHash
-       in Just $ RcvQueue srv rcvId rcvPrivateKey sndId sndKey decryptKey verifyKey status
+       in Just $ RcvQueue srv rcvId rcvPrivateKey sndId decryptKey verifyKey status
     rcvQueue _ = Nothing
 
 getSndQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)

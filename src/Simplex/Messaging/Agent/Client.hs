@@ -191,7 +191,6 @@ newRcvQueue c srv = do
             rcvId,
             rcvPrivateKey,
             sndId = Just sId,
-            sndKey = Nothing,
             decryptKey,
             verifyKey = Nothing,
             status = New

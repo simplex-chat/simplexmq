@@ -81,7 +81,6 @@ data RcvQueue = RcvQueue
     rcvId :: SMP.RecipientId,
     rcvPrivateKey :: RecipientPrivateKey,
     sndId :: Maybe SMP.SenderId,
-    sndKey :: Maybe SenderPublicKey,
     decryptKey :: DecryptionKey,
     verifyKey :: Maybe VerificationKey,
     status :: QueueStatus
