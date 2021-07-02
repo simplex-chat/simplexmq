@@ -69,7 +69,6 @@ import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
@@ -129,20 +128,20 @@ disconnectServers c = closeSMPServerClients c >> logConnection c False
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command) in Reader monad
-createConnection' :: AgentMonad m => AgentClient -> Maybe ConnId -> m (ConnId, SMPQueueInfo)
-createConnection' c connId = newConn c (fromMaybe "" connId) Nothing 0
+createConnection' :: AgentMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
+createConnection' c = newConn c "" Nothing 0
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> m (ConnId, SMPQueueInfo)
-createConnection c = (`runReaderT` agentEnv c) . createConnection' c
+createConnection :: AgentErrorMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
+createConnection c = (`runReaderT` agentEnv c) $ createConnection' c
 
 -- | Join SMP agent connection (JOIN command) in Reader monad
-joinConnection' :: AgentMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> m ConnId
-joinConnection' c connId qInfo = joinConn c (fromMaybe "" connId) qInfo (ReplyMode On) Nothing 0
+joinConnection' :: AgentMonad m => AgentClient -> SMPQueueInfo -> m ConnId
+joinConnection' c qInfo = joinConn c "" qInfo (ReplyMode On) Nothing 0
 
 -- | Join SMP agent connection (JOIN command)
-joinConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> m ConnId
-joinConnection c = (`runReaderT` agentEnv c) .: joinConnection' c
+joinConnection :: AgentErrorMonad m => AgentClient -> SMPQueueInfo -> m ConnId
+joinConnection c = (`runReaderT` agentEnv c) . joinConnection' c
 
 -- | Accept invitation (ACPT command) in Reader monad
 acceptInvitation' :: AgentMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
@@ -223,7 +222,7 @@ withStore ::
   (forall m'. (MonadUnliftIO m', MonadError StoreError m') => SQLiteStore -> m' a) ->
   m a
 withStore action = do
-  st <- asks store'
+  st <- asks store
   runExceptT (action st `E.catch` handleInternal) >>= \case
     Right c -> return c
     Left e -> throwError $ storeError e
