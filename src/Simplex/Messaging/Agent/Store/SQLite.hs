@@ -278,6 +278,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
+  updateSignatureKey :: SQLiteStore -> SndQueue -> SignatureKey -> m ()
+  updateSignatureKey st sndQ signatureKey = throwError SENotImplemented
+
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderKey, senderConnInfo} =
     liftIOEither . withConnection st $ \db ->

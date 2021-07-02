@@ -359,7 +359,7 @@ type EncryptionKey = C.PublicKey
 type DecryptionKey = C.SafePrivateKey
 
 -- | Private key used to sign SMP commands
-type SignatureKey = C.SafePrivateKey
+type SignatureKey = C.APrivateKey
 
 -- | Public key used by SMP server to authorize (verify) SMP commands.
 type VerificationKey = C.PublicKey
@@ -432,6 +432,8 @@ data ConnectionErrorType
     SIMPLEX
   | -- | queue status is prohibited in this context
     BAD_QUEUE_STATUS
+  | -- | no public key stored for queue activation
+    NO_PUBLIC_KEY
   deriving (Eq, Generic, Read, Show, Exception)
 
 -- | SMP server errors.

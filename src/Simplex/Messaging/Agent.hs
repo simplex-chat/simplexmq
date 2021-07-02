@@ -285,7 +285,7 @@ joinConn c connId qInfo cInfo viaInv connLevel = do
 
 activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m ()
 activateQueueJoining c connId sndQ verifyKey initialDelaySec increaseDelayAfterSec = do
-  let onActivationCallback = removeActivation c connId >> createReplyQueue connId sndQ
+  let onActivationCallback = removeActivation c connId >> cleanupSignatureKey sndQ >> createReplyQueue connId sndQ
   a <- async $ activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec onActivationCallback
   addActivation c connId a
   where
@@ -353,13 +353,21 @@ subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq sq) -> case status (sq :: SndQueue) of
       Confirmed -> do
-        activateQueueInitiating c connId sq verifyKey 5 0 -- TODO
-        subscribeQueue c rq connId
+        let verifyKey = C.publicKey $ sndPrivateKey sq
+        case verifyKey of
+          Nothing -> throwError $ CONN NO_PUBLIC_KEY
+          Just vk -> do
+            activateQueueInitiating c connId sq vk 5 0
+            subscribeQueue c rq connId
       Active -> subscribeQueue c rq connId
       _ -> throwError $ CONN BAD_QUEUE_STATUS
     SomeConn _ (SndConnection _ sq) -> case status (sq :: SndQueue) of
       Confirmed -> do
-        activateQueueJoining c connId sq verifyKey 5 0 -- TODO
+        let verifyKey = C.publicKey $ sndPrivateKey sq
+        case verifyKey of
+          Nothing -> throwError $ CONN NO_PUBLIC_KEY
+          Just vk -> do
+            activateQueueJoining c connId sq vk 5 0
       Active -> throwError $ CONN SIMPLEX
       _ -> throwError $ CONN BAD_QUEUE_STATUS
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
@@ -623,7 +631,7 @@ confirmQueue c sq senderKey cInfo = do
 
 activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m ()
 activateQueueInitiating c connId sndQ verifyKey initialDelaySec increaseDelayAfterSec = do
-  let onActivationCallback = removeActivation c connId >> connected c connId
+  let onActivationCallback = removeActivation c connId >> cleanupSignatureKey sndQ >> connected c connId
   a <- async $ activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec onActivationCallback
   addActivation c connId a
 
@@ -632,6 +640,11 @@ activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec runAfterAct
   sendHello c sndQ verifyKey initialDelaySec increaseDelayAfterSec
   withStore $ \st -> setSndQueueStatus st sndQ Active
   runAfterActivation
+
+cleanupSignatureKey :: AgentMonad m => SndQueue -> m ()
+cleanupSignatureKey sndQ = do
+  let safeSignatureKey = C.removePublicKey $ sndPrivateKey sndQ
+  withStore $ \st -> updateSignatureKey st sndQ safeSignatureKey
 
 connected :: AgentMonad m => AgentClient -> ConnId -> m ()
 connected c connId = do
