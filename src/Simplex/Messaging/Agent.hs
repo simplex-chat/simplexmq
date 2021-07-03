@@ -643,7 +643,7 @@ activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec runAfterAct
 
 cleanupSignatureKey :: AgentMonad m => SndQueue -> m ()
 cleanupSignatureKey sndQ = do
-  let safeSignatureKey = C.removePublicKey $ sndPrivateKey sndQ
+  let safeSignatureKey = C.removePublicKey $ signKey sndQ
   withStore $ \st -> updateSignatureKey st sndQ safeSignatureKey
 
 connected :: AgentMonad m => AgentClient -> ConnId -> m ()
