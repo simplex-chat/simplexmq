@@ -309,7 +309,7 @@ letConf c connId confirmationId ownConnInfo =
       confirmation <- withStore $ \st -> getConfirmation st confirmationId
       let sndKey = senderKey (confirmation :: Confirmation)
       processConfirmation c rq sndKey
-      withStore $ \st -> removeApprovedConfirmation st connId
+      withStore $ \st -> removeApprovedConfirmation st connId -- TODO remove all
       pure connId
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
@@ -353,6 +353,8 @@ subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq sq) -> case status (sq :: SndQueue) of
       Confirmed -> do
+        -- TODO secure, update status and do same as in Secured
+      Secured -> do
         let verifyKey = C.publicKey $ sndPrivateKey sq
         case verifyKey of
           Nothing -> throwError $ CONN NO_PUBLIC_KEY
