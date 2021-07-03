@@ -256,7 +256,7 @@ processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Cl
 processCommand c (connId, cmd) = case cmd of
   NEW -> second INV <$> newConn c connId Nothing 0
   JOIN smpQueueInfo connInfo -> (,OK) <$> joinConn c connId smpQueueInfo connInfo Nothing 0
-  LET confirmationId ownConnInfo -> (,OK) <$> letConf c connId confirmationId ownConnInfo
+  LET confId ownConnInfo -> (,OK) <$> letConf c connId confId ownConnInfo
   INTRO reConnId reInfo -> sendIntroduction' c connId reConnId reInfo $> (connId, OK)
   ACPT invId connInfo -> (,OK) <$> acceptInv c connId invId connInfo
   SUB -> subscribeConnection' c connId $> (connId, OK)
@@ -316,17 +316,14 @@ activateQueueJoining c connId sq verifyKey retryInterval =
       sendControlMessage c sq $ REPLY qInfo'
 
 letConf :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ConnId
-letConf c connId confirmationId ownConnInfo =
+letConf c connId confId ownConnInfo =
   withStore (`getConn` connId) >>= \case
-    SomeConn SCRcv (RcvConnection _ rq) -> processConfirmation' rq
-    _ -> throwError $ CMD PROHIBITED
-  where
-    processConfirmation' :: AgentMonad m => RcvQueue -> m ConnId
-    processConfirmation' rq = do
-      AcceptedConfirmation {senderKey} <- withStore $ \st -> acceptConfirmation st confirmationId ownConnInfo
+    SomeConn SCRcv (RcvConnection _ rq) -> do
+      AcceptedConfirmation {senderKey} <- withStore $ \st -> acceptConfirmation st confId ownConnInfo
       processConfirmation c rq senderKey
       withStore (`removeConfirmations` connId)
       pure connId
+    _ -> throwError $ CMD PROHIBITED
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
 processConfirmation c rq sndKey = do
@@ -517,9 +514,11 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               SCRcv -> do
                 g <- asks idsDrg
                 let newConfirmation = NewConfirmation {connId, senderKey, senderConnInfo = cInfo}
-                confirmationId <- withStore $ \st -> createConfirmation st g newConfirmation
-                notify $ CONF confirmationId cInfo
-              SCDuplex -> processConfirmation c rq senderKey
+                confId <- withStore $ \st -> createConfirmation st g newConfirmation
+                notify $ CONF confId cInfo
+              SCDuplex -> do
+                notify $ INFO cInfo
+                processConfirmation c rq senderKey
               _ -> prohibited
             _ -> prohibited
 
