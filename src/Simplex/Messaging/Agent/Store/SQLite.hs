@@ -278,8 +278,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
-  updateSignatureKey :: SQLiteStore -> SndQueue -> SignatureKey -> m ()
-  updateSignatureKey st SndQueue {sndId, server = SMPServer {host, port}} signatureKey =
+  updateSignKey :: SQLiteStore -> SndQueue -> SignatureKey -> m ()
+  updateSignKey st SndQueue {sndId, server = SMPServer {host, port}} signatureKey =
     liftIO . withConnection st $ \db ->
       DB.executeNamed
         db

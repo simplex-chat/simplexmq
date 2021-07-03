@@ -650,7 +650,7 @@ activateQueue c connId sq verifyKey retryInterval afterActivation =
     removeVerificationKey :: m ()
     removeVerificationKey =
       let safeSignKey = C.removePublicKey $ signKey sq
-       in withStore $ \st -> updateSignatureKey st sq safeSignKey
+       in withStore $ \st -> updateSignKey st sq safeSignKey
 
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = do
