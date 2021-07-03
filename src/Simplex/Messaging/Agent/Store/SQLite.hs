@@ -825,7 +825,8 @@ updateLastIdsRcv_ dbConn connId newInternalId newInternalRcvId =
 -- * createRcvMsg helpers
 
 insertRcvMsgBase_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-insertRcvMsgBase_ dbConn connId RcvMsgData {..} = do
+insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgBody, internalRcvId} = do
+  let MsgMeta {recipient = (internalId, internalTs)} = msgMeta
   DB.executeNamed
     dbConn
     [sql|
@@ -842,7 +843,8 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {..} = do
     ]
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-insertRcvMsgDetails_ dbConn connId RcvMsgData {..} =
+insertRcvMsgDetails_ dbConn connId RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash} = do
+  let MsgMeta {integrity, recipient, sender, broker} = msgMeta
   DB.executeNamed
     dbConn
     [sql|
@@ -857,19 +859,19 @@ insertRcvMsgDetails_ dbConn connId RcvMsgData {..} =
     |]
     [ ":conn_alias" := connId,
       ":internal_rcv_id" := internalRcvId,
-      ":internal_id" := internalId,
-      ":external_snd_id" := fst senderMeta,
-      ":external_snd_ts" := snd senderMeta,
-      ":broker_id" := fst brokerMeta,
-      ":broker_ts" := snd brokerMeta,
+      ":internal_id" := fst recipient,
+      ":external_snd_id" := fst sender,
+      ":external_snd_ts" := snd sender,
+      ":broker_id" := fst broker,
+      ":broker_ts" := snd broker,
       ":rcv_status" := Received,
       ":internal_hash" := internalHash,
       ":external_prev_snd_hash" := externalPrevSndHash,
-      ":integrity" := msgIntegrity
+      ":integrity" := integrity
     ]
 
 updateHashRcv_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-updateHashRcv_ dbConn connId RcvMsgData {..} =
+updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =
   DB.executeNamed
     dbConn
     -- last_internal_rcv_msg_id equality check prevents race condition in case next id was reserved
@@ -880,7 +882,7 @@ updateHashRcv_ dbConn connId RcvMsgData {..} =
       WHERE conn_alias = :conn_alias
         AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
-    [ ":last_external_snd_msg_id" := fst senderMeta,
+    [ ":last_external_snd_msg_id" := fst (sender msgMeta),
       ":last_rcv_msg_hash" := internalHash,
       ":conn_alias" := connId,
       ":last_internal_rcv_msg_id" := internalRcvId
