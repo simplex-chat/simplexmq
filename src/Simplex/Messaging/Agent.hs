@@ -348,31 +348,32 @@ acceptInv c connId invId connInfo =
     _ -> throwError $ CMD PROHIBITED
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
-subscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
+subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq sq) -> case status (sq :: SndQueue) of
-      Confirmed -> do
-        -- TODO secure, update status and do same as in Secured
-      Secured -> do
-        let verifyKey = C.publicKey $ sndPrivateKey sq
-        case verifyKey of
-          Nothing -> throwError $ CONN NO_PUBLIC_KEY
-          Just vk -> do
-            activateQueueInitiating c connId sq vk 5 0
-            subscribeQueue c rq connId
+      Confirmed -> withVerifyKey sq $ \sndKey -> do
+        secureQueue c rq sndKey
+        withStore $ \st -> setRcvQueueStatus st rq Secured
+        activateSecuredQueue rq sq sndKey
+      Secured -> withVerifyKey sq $ activateSecuredQueue rq sq
       Active -> subscribeQueue c rq connId
-      _ -> throwError $ CONN BAD_QUEUE_STATUS
+      _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (SndConnection _ sq) -> case status (sq :: SndQueue) of
-      Confirmed -> do
-        let verifyKey = C.publicKey $ sndPrivateKey sq
-        case verifyKey of
-          Nothing -> throwError $ CONN NO_PUBLIC_KEY
-          Just vk -> do
-            activateQueueJoining c connId sq vk 5 0
+      Confirmed -> withVerifyKey sq $ \sndKey ->
+        activateQueueJoining c connId sq sndKey 5 0
       Active -> throwError $ CONN SIMPLEX
-      _ -> throwError $ CONN BAD_QUEUE_STATUS
+      _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
+  where
+    withVerifyKey :: SndQueue -> (C.PublicKey -> m ()) -> m ()
+    withVerifyKey sq action =
+      let err = throwError $ INTERNAL "missing send queue public key"
+       in maybe err action $ C.publicKey $ sndPrivateKey sq
+    activateSecuredQueue :: RcvQueue -> SndQueue -> C.PublicKey -> m ()
+    activateSecuredQueue rq sq sndKey = do
+      activateQueueInitiating c connId sq sndKey 5 0
+      subscribeQueue c rq connId
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
