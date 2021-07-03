@@ -140,6 +140,7 @@ class PrivateKey k where
   -- extracts public key from private key
   publicKey :: k -> Maybe PublicKey
 
+-- | Remove public key exponent from APrivateKey.
 removePublicKey :: APrivateKey -> APrivateKey
 removePublicKey (APrivateKey R.PrivateKey {private_pub = k, private_d}) =
   APrivateKey $ unPrivateKey (safePrivateKey (R.public_size k, R.public_n k, private_d) :: SafePrivateKey)
