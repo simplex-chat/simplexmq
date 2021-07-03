@@ -298,7 +298,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           db
           [sql|
             INSERT INTO conn_confirmations
-            (confirmation_id, conn_alias, sender_key, sender_conn_info, approved) VALUES (?, ?, ?, ?, 0);
+            (confirmation_id, conn_alias, sender_key, sender_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
           |]
           (confirmationId, connId, senderKey, senderConnInfo)
 
@@ -309,7 +309,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         db
         [sql|
           UPDATE conn_confirmations
-          SET approved = 1,
+          SET accepted = 1,
               own_conn_info = :own_conn_info
           WHERE confirmation_id = :confirmation_id;
         |]
@@ -339,7 +339,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           [sql|
             SELECT confirmation_id, sender_key, sender_conn_info, own_conn_info
             FROM conn_confirmations
-            WHERE conn_alias = ? AND approved = 1;
+            WHERE conn_alias = ? AND accepted = 1;
           |]
           (Only connId)
     where
