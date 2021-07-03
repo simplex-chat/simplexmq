@@ -369,7 +369,7 @@ subscribeConnection' c connId =
     withVerifyKey :: SndQueue -> (C.PublicKey -> m ()) -> m ()
     withVerifyKey sq action =
       let err = throwError $ INTERNAL "missing send queue public key"
-       in maybe err action $ C.publicKey $ sndPrivateKey sq
+       in maybe err action . C.publicKey $ sndPrivateKey sq
     activateSecuredQueue :: RcvQueue -> SndQueue -> C.PublicKey -> m ()
     activateSecuredQueue rq sq sndKey = do
       activateQueueInitiating c connId sq sndKey 5 0

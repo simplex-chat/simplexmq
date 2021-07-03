@@ -430,10 +430,6 @@ data ConnectionErrorType
     DUPLICATE
   | -- | connection is simplex, but operation requires another queue
     SIMPLEX
-  | -- | queue status is prohibited in this context
-    BAD_QUEUE_STATUS
-  | -- | no public key stored for queue activation
-    NO_PUBLIC_KEY
   deriving (Eq, Generic, Read, Show, Exception)
 
 -- | SMP server errors.
