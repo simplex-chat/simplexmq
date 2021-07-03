@@ -161,6 +161,7 @@ data ACommand (p :: AParty) where
   INTRO :: ConnId -> ConnInfo -> ACommand Client
   REQ :: InvitationId -> ConnInfo -> ACommand Agent
   ACPT :: InvitationId -> ConnInfo -> ACommand Client
+  INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   ICON :: ConnId -> ACommand Agent
   SUB :: ACommand Client
@@ -257,7 +258,7 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
 -- | Serialize SMP message.
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
-  SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializePubKey sKey) "" (serializeMsg cInfo) <> "\n"
+  SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializePubKey sKey) "" (serializeBinary cInfo) <> "\n"
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
     let header = messageHeader senderMsgId senderTimestamp previousMsgHash
         body = serializeAgentMessage agentMessage
@@ -304,14 +305,14 @@ serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
   HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
-  A_MSG body -> "MSG " <> serializeMsg body <> "\n"
-  A_INTRO introId cInfo -> "INTRO " <> introId <> " " <> serializeMsg cInfo <> "\n"
+  A_MSG body -> "MSG " <> serializeBinary body <> "\n"
+  A_INTRO introId cInfo -> "INTRO " <> introId <> " " <> serializeBinary cInfo <> "\n"
   A_INV introId qInfo cInfo -> "INV " <> serializeInv introId qInfo cInfo
   A_REQ introId qInfo cInfo -> "REQ " <> serializeInv introId qInfo cInfo
   A_CON introId -> "CON " <> introId
   where
     serializeInv introId qInfo cInfo =
-      B.intercalate " " [introId, serializeSmpQueueInfo qInfo, serializeMsg cInfo] <> "\n"
+      B.intercalate " " [introId, serializeSmpQueueInfo qInfo, serializeBinary cInfo] <> "\n"
 
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
@@ -482,6 +483,7 @@ commandP =
     <|> "INTRO " *> introCmd
     <|> "REQ " *> reqCmd
     <|> "ACPT " *> acptCmd
+    <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
     <|> "SEND " *> sendCmd
@@ -495,12 +497,13 @@ commandP =
     <|> "OK" $> ACmd SAgent OK
   where
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
-    joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <* A.space <*> binaryBodyP)
+    joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <* A.space <*> A.takeByteString)
     confCmd = ACmd SAgent <$> (CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     introCmd = ACmd SClient <$> introP INTRO
     reqCmd = ACmd SAgent <$> introP REQ
     acptCmd = ACmd SClient <$> introP ACPT
+    infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
     iconMsg = ACmd SAgent . ICON <$> A.takeTill wordEnd
@@ -533,18 +536,19 @@ serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
-  JOIN qInfo cInfo -> "JOIN " <> serializeSmpQueueInfo qInfo <> " " <> serializeMsg cInfo
-  CONF confirmationId cInfo -> "CONF " <> confirmationId <> " " <> serializeMsg cInfo
-  LET confirmationId cInfo -> "LET " <> confirmationId <> " " <> serializeMsg cInfo
-  INTRO connId cInfo -> "INTRO " <> connId <> " " <> serializeMsg cInfo
-  REQ invId cInfo -> "REQ " <> invId <> " " <> serializeMsg cInfo
-  ACPT invId cInfo -> "ACPT " <> invId <> " " <> serializeMsg cInfo
+  JOIN qInfo cInfo -> "JOIN " <> serializeSmpQueueInfo qInfo <> " " <> serializeBinary cInfo
+  CONF confId cInfo -> "CONF " <> confId <> " " <> serializeBinary cInfo
+  LET confId cInfo -> "LET " <> confId <> " " <> serializeBinary cInfo
+  INTRO connId cInfo -> "INTRO " <> connId <> " " <> serializeBinary cInfo
+  REQ invId cInfo -> "REQ " <> invId <> " " <> serializeBinary cInfo
+  ACPT invId cInfo -> "ACPT " <> invId <> " " <> serializeBinary cInfo
+  INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
-  SEND msgBody -> "SEND " <> serializeMsg msgBody
+  SEND msgBody -> "SEND " <> serializeBinary msgBody
   SENT mId -> "SENT " <> bshow mId
   MSG msgMeta msgBody ->
-    "MSG " <> serializeMsgMeta msgMeta <> " " <> serializeMsg msgBody
+    "MSG " <> serializeMsgMeta msgMeta <> " " <> serializeBinary msgBody
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
@@ -597,8 +601,8 @@ binaryBodyP = do
   size :: Int <- A.decimal <* A.endOfLine
   A.take size
 
-serializeMsg :: ByteString -> ByteString
-serializeMsg body = bshow (B.length body) <> "\n" <> body
+serializeBinary :: ByteString -> ByteString
+serializeBinary body = bshow (B.length body) <> "\n" <> body
 
 -- | Send raw (unparsed) SMP agent protocol transmission to TCP connection.
 tPutRaw :: Transport c => c -> ARawTransmission -> IO ()
@@ -646,17 +650,20 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
 
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
     cmdWithMsgBody = \case
-      SEND body -> SEND <$$> getMsgBody body
-      MSG msgMeta body -> MSG msgMeta <$$> getMsgBody body
-      INTRO introId cInfo -> INTRO introId <$$> getMsgBody cInfo
-      REQ introId cInfo -> REQ introId <$$> getMsgBody cInfo
-      ACPT introId cInfo -> ACPT introId <$$> getMsgBody cInfo
+      SEND body -> SEND <$$> getBody body
+      MSG msgMeta body -> MSG msgMeta <$$> getBody body
+      INTRO introId cInfo -> INTRO introId <$$> getBody cInfo
+      REQ introId cInfo -> REQ introId <$$> getBody cInfo
+      ACPT introId cInfo -> ACPT introId <$$> getBody cInfo
+      JOIN qInfo cInfo -> JOIN qInfo <$$> getBody cInfo
+      CONF confId cInfo -> CONF confId <$$> getBody cInfo
+      LET confId cInfo -> LET confId <$$> getBody cInfo
       cmd -> pure $ Right cmd
 
     -- TODO refactor with server
-    getMsgBody :: MsgBody -> m (Either AgentErrorType MsgBody)
-    getMsgBody msgBody =
-      case B.unpack msgBody of
+    getBody :: ByteString -> m (Either AgentErrorType ByteString)
+    getBody binary =
+      case B.unpack binary of
         ':' : body -> return . Right $ B.pack body
         str -> case readMaybe str :: Maybe Int of
           Just size -> liftIO $ do
