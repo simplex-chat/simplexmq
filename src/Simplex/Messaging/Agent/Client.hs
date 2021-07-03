@@ -4,7 +4,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -18,6 +17,7 @@ module Simplex.Messaging.Agent.Client
     subscribeQueue,
     addSubscription,
     sendConfirmation,
+    RetryInterval (..),
     sendHello,
     secureQueue,
     sendAgentMessage,
@@ -254,11 +254,17 @@ sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
     mkConfirmation :: SMPClient -> m MsgBody
     mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> Int -> Int -> m ()
-sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey initialDelaySec increaseDelayAfterSec =
+data RetryInterval = RetryInterval
+  { initialInterval :: Int,
+    increaseAfter :: Int,
+    maxInterval :: Int
+  }
+
+sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey RetryInterval {initialInterval, increaseAfter, maxInterval} =
   withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
     msg <- mkHello smp $ AckMode On
-    liftSMP $ send 0 (initialDelaySec * 1_000_000) msg smp
+    liftSMP $ send 0 initialInterval msg smp
   where
     mkHello :: SMPClient -> AckMode -> m ByteString
     mkHello smp ackMode = do
@@ -277,9 +283,9 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey initialDelaySec
         SMPServerError AUTH -> do
           threadDelay delay
           let newDelay =
-                if elapsedTime > (increaseDelayAfterSec * 1_000_000)
-                  then min (delay * 3 `div` 2) (10 * 60 * 1_000_000)
-                  else delay
+                if elapsedTime < increaseAfter || delay == maxInterval
+                  then delay
+                  else min (delay * 3 `div` 2) maxInterval
           send (elapsedTime + delay) newDelay msg smp
         e -> throwE e
 

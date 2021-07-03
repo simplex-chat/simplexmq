@@ -6,6 +6,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -273,6 +274,25 @@ newConn c connId viaInv connLevel = do
   addSubscription c rq connId'
   pure (connId', qInfo)
 
+minute :: Int
+minute = 60_000_000
+
+onlineInterval :: RetryInterval
+onlineInterval =
+  RetryInterval
+    { initialInterval = 1_000_000,
+      increaseAfter = minute,
+      maxInterval = 10 * minute
+    }
+
+resumeInterval :: RetryInterval
+resumeInterval =
+  RetryInterval
+    { initialInterval = 5_000_000,
+      increaseAfter = 0,
+      maxInterval = 10 * minute
+    }
+
 joinConn :: AgentMonad m => AgentClient -> ConnId -> SMPQueueInfo -> ConnInfo -> Maybe InvitationId -> Int -> m ConnId
 joinConn c connId qInfo cInfo viaInv connLevel = do
   (sq, senderKey, verifyKey) <- newSndQueue qInfo
@@ -280,12 +300,12 @@ joinConn c connId qInfo cInfo viaInv connLevel = do
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createSndConn st g cData sq
   confirmQueue c sq senderKey cInfo
-  activateQueueJoining c connId' sq verifyKey 1 60
+  activateQueueJoining c connId' sq verifyKey onlineInterval
   pure connId'
 
-activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m ()
-activateQueueJoining c connId sq verifyKey initialDelaySec increaseDelayAfterSec =
-  activateQueue c connId sq verifyKey initialDelaySec increaseDelayAfterSec createReplyQueue
+activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+activateQueueJoining c connId sq verifyKey retryInterval =
+  activateQueue c connId sq verifyKey retryInterval createReplyQueue
   where
     createReplyQueue :: m ()
     createReplyQueue = do
@@ -359,7 +379,7 @@ subscribeConnection' c connId =
       _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (SndConnection _ sq) -> case status (sq :: SndQueue) of
       Confirmed -> withVerifyKey sq $ \sndKey ->
-        activateQueueJoining c connId sq sndKey 5 0
+        activateQueueJoining c connId sq sndKey resumeInterval
       Active -> throwError $ CONN SIMPLEX
       _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
@@ -370,7 +390,7 @@ subscribeConnection' c connId =
        in maybe err action . C.publicKey $ sndPrivateKey sq
     activateSecuredQueue :: RcvQueue -> SndQueue -> C.PublicKey -> m ()
     activateSecuredQueue rq sq sndKey = do
-      activateQueueInitiating c connId sq sndKey 5 0
+      activateQueueInitiating c connId sq sndKey resumeInterval
       subscribeQueue c rq connId
 
 -- | Send message to the connection (SEND command) in Reader monad
@@ -528,7 +548,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                   (sq, senderKey, verifyKey) <- newSndQueue qInfo
                   withStore $ \st -> upgradeRcvConnToDuplex st connId sq
                   confirmQueue c sq senderKey ownCInfo
-                  activateQueueInitiating c connId sq verifyKey 1 60
+                  activateQueueInitiating c connId sq verifyKey onlineInterval
                 _ -> prohibited -- TODO separate error type?
             _ -> prohibited
 
@@ -631,19 +651,19 @@ confirmQueue c sq senderKey cInfo = do
   sendConfirmation c sq senderKey cInfo
   withStore $ \st -> setSndQueueStatus st sq Confirmed
 
-activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m ()
-activateQueueInitiating c connId sq verifyKey initialDelaySec increaseDelayAfterSec =
-  activateQueue c connId sq verifyKey initialDelaySec increaseDelayAfterSec $ notifyConnected c connId
+activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+activateQueueInitiating c connId sq verifyKey retryInterval =
+  activateQueue c connId sq verifyKey retryInterval $ notifyConnected c connId
 
-activateQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m () -> m ()
-activateQueue c connId sq verifyKey initialDelaySec increaseDelayAfterSec afterActivation =
+activateQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m () -> m ()
+activateQueue c connId sq verifyKey retryInterval afterActivation =
   getActivation c connId >>= \case
     Nothing -> async runActivation >>= addActivation c connId
     Just _ -> pure ()
   where
     runActivation :: m ()
     runActivation = do
-      sendHello c sq verifyKey initialDelaySec increaseDelayAfterSec
+      sendHello c sq verifyKey retryInterval
       withStore $ \st -> setSndQueueStatus st sq Active
       removeActivation c connId
       removeVerificationKey
