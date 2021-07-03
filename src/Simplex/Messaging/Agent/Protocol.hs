@@ -195,7 +195,7 @@ data SMPMessage
       { -- | sender's public key to use for authentication of sender's commands at the recepient's server
         senderKey :: SenderPublicKey,
         -- | sender's information to be associated with the connection, e.g. sender's profile information
-        cInfo :: ConnInfo
+        connInfo :: ConnInfo
       }
   | -- | Agent message header and envelope for client messages
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents SMP agent protocol>)
