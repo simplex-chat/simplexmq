@@ -21,6 +21,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     createSQLiteStore,
     connectSQLiteStore,
     withConnection,
+    withTransaction,
+    fromTextField_,
   )
 where
 

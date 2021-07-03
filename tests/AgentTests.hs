@@ -2,7 +2,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PostfixOperators #-}
@@ -131,8 +130,8 @@ testAgentClient = do
   alice <- getSMPAgentClient cfg
   bob <- getSMPAgentClient cfg {dbFile = testDB2}
   Right () <- runExceptT $ do
-    (bobId, qInfo) <- createConnection alice Nothing
-    aliceId <- joinConnection bob Nothing qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice
+    aliceId <- joinConnection bob qInfo "bob's connInfo"
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
