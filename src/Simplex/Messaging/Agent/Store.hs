@@ -46,14 +46,19 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
+  updateSignKey :: s -> SndQueue -> SignatureKey -> m ()
+
+  -- Confirmations
+  createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
+  acceptConfirmation :: s -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
+  getAcceptedConfirmation :: s -> ConnId -> m AcceptedConfirmation
+  removeConfirmations :: s -> ConnId -> m ()
 
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
-
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
-
   getMsg :: s -> ConnId -> InternalId -> m Msg
 
   -- Introductions
@@ -76,7 +81,6 @@ data RcvQueue = RcvQueue
     rcvId :: SMP.RecipientId,
     rcvPrivateKey :: RecipientPrivateKey,
     sndId :: Maybe SMP.SenderId,
-    sndKey :: Maybe SenderPublicKey,
     decryptKey :: DecryptionKey,
     verifyKey :: Maybe VerificationKey,
     status :: QueueStatus
@@ -151,6 +155,22 @@ deriving instance Show SomeConn
 
 data ConnData = ConnData {connId :: ConnId, viaInv :: Maybe InvitationId, connLevel :: Int}
   deriving (Eq, Show)
+
+-- * Confirmation types
+
+data NewConfirmation = NewConfirmation
+  { connId :: ConnId,
+    senderKey :: SenderPublicKey,
+    senderConnInfo :: ConnInfo
+  }
+
+data AcceptedConfirmation = AcceptedConfirmation
+  { confirmationId :: ConfirmationId,
+    connId :: ConnId,
+    senderKey :: SenderPublicKey,
+    senderConnInfo :: ConnInfo,
+    ownConnInfo :: ConnInfo
+  }
 
 -- * Message integrity validation types
 
@@ -372,6 +392,8 @@ data StoreError
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
     SEBadConnType ConnType
+  | -- | Confirmation not found.
+    SEConfirmationNotFound
   | -- | Introduction ID not found.
     SEIntroNotFound
   | -- | Invitation ID not found.

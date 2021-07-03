@@ -222,7 +222,7 @@ confirm msg = do
   when (map toLower ok /= "y") exitFailure
 
 serverKeyHash :: C.FullPrivateKey -> B.ByteString
-serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey
+serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey'
 
 openStoreLog :: ServerOpts -> IniOpts -> IO (Maybe (StoreLog 'ReadMode))
 openStoreLog ServerOpts {enableStoreLog = l} IniOpts {enableStoreLog = l', storeLogFile = f}
