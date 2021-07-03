@@ -147,13 +147,9 @@ joinConnection' c connId qInfo cInfo = joinConn c (fromMaybe "" connId) qInfo cI
 joinConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> ConnInfo -> m ConnId
 joinConnection c = (`runReaderT` agentEnv c) .:. joinConnection' c
 
--- | Approve confirmation (LET command) in Reader monad
-allowConnection' :: AgentMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
-allowConnection' c = letConf c ""
-
 -- | Approve confirmation (LET command)
-allowConnection :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
-allowConnection c = (`runReaderT` agentEnv c) .: allowConnection' c
+allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnection c = (`runReaderT` agentEnv c) .:. allowConnection' c
 
 -- | Accept invitation (ACPT command) in Reader monad
 acceptInvitation' :: AgentMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
@@ -256,7 +252,7 @@ processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Cl
 processCommand c (connId, cmd) = case cmd of
   NEW -> second INV <$> newConn c connId Nothing 0
   JOIN smpQueueInfo connInfo -> (,OK) <$> joinConn c connId smpQueueInfo connInfo Nothing 0
-  LET confId ownConnInfo -> (,OK) <$> letConf c connId confId ownConnInfo
+  LET confId ownConnInfo -> allowConnection' c connId confId ownConnInfo $> (connId, OK)
   INTRO reConnId reInfo -> sendIntroduction' c connId reConnId reInfo $> (connId, OK)
   ACPT invId connInfo -> (,OK) <$> acceptInv c connId invId connInfo
   SUB -> subscribeConnection' c connId $> (connId, OK)
@@ -315,14 +311,13 @@ activateQueueJoining c connId sq verifyKey retryInterval =
       withStore $ \st -> upgradeSndConnToDuplex st connId rq
       sendControlMessage c sq $ REPLY qInfo'
 
-letConf :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ConnId
-letConf c connId confId ownConnInfo =
+-- | Approve confirmation (LET command) in Reader monad
+allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnection' c connId confId ownConnInfo =
   withStore (`getConn` connId) >>= \case
     SomeConn SCRcv (RcvConnection _ rq) -> do
       AcceptedConfirmation {senderKey} <- withStore $ \st -> acceptConfirmation st confId ownConnInfo
       processConfirmation c rq senderKey
-      withStore (`removeConfirmations` connId)
-      pure connId
     _ -> throwError $ CMD PROHIBITED
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
@@ -543,6 +538,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               (sq, senderKey, verifyKey) <- newSndQueue qInfo
               withStore $ \st -> upgradeRcvConnToDuplex st connId sq
               confirmQueue c sq senderKey ownConnInfo
+              withStore (`removeConfirmations` connId)
               activateQueueInitiating c connId sq verifyKey onlineInterval
             _ -> prohibited
 

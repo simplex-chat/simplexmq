@@ -658,6 +658,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       JOIN qInfo cInfo -> JOIN qInfo <$$> getBody cInfo
       CONF confId cInfo -> CONF confId <$$> getBody cInfo
       LET confId cInfo -> LET confId <$$> getBody cInfo
+      INFO cInfo -> INFO <$$> getBody cInfo
       cmd -> pure $ Right cmd
 
     -- TODO refactor with server
