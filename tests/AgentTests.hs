@@ -219,11 +219,12 @@ testIntroduction _ alice bob tom = do
   ("", "alice", Right (REQ invId1 "meet tom")) <- (bob <#:)
   bob #: ("2", "tom_via_alice", "ACPT " <> invId1 <> " 7\nI'm bob") #> ("2", "tom_via_alice", OK)
   ("", "alice", Right (REQ invId2 "I'm bob")) <- (tom <#:)
-  -- TODO info "tom here" is not used, either JOIN command also should have eInfo parameter
-  -- or this should be another command, not ACPT
   tom #: ("3", "bob_via_alice", "ACPT " <> invId2 <> " 8\ntom here") #> ("3", "bob_via_alice", OK)
-  tom <# ("", "bob_via_alice", CON)
+  ("", "tom_via_alice", Right (CONF confId "tom here")) <- (bob <#:)
+  bob #: ("3.1", "tom_via_alice", "LET " <> confId <> " 7\nI'm bob") #> ("3.1", "tom_via_alice", OK)
   bob <# ("", "tom_via_alice", CON)
+  tom <# ("", "bob_via_alice", INFO "I'm bob")
+  tom <# ("", "bob_via_alice", CON)
   alice <# ("", "bob", ICON "tom")
   -- they can message each other now
   tom #: ("4", "bob_via_alice", "SEND :hello") #> ("4", "bob_via_alice", SENT 1)
@@ -240,14 +241,16 @@ testIntroductionRandomIds _ alice bob tom = do
   alice #: ("1", bobA, "INTRO " <> tomA <> " 8\nmeet tom") #> ("1", bobA, OK)
   ("", aliceB', Right (REQ invId1 "meet tom")) <- (bob <#:)
   aliceB' `shouldBe` aliceB
-  ("2", tomB, Right OK) <- bob #: ("2", "C:", "ACPT " <> invId1 <> " 7\nI'm bob")
+  ("2", tomB, Right OK) <- bob #: ("2", "", "ACPT " <> invId1 <> " 7\nI'm bob")
   ("", aliceT', Right (REQ invId2 "I'm bob")) <- (tom <#:)
   aliceT' `shouldBe` aliceT
-  -- TODO info "tom here" is not used, either JOIN command also should have eInfo parameter
-  -- or this should be another command, not ACPT
   ("3", bobT, Right OK) <- tom #: ("3", "", "ACPT " <> invId2 <> " 8\ntom here")
-  tom <# ("", bobT, CON)
+  ("", tomB', Right (CONF confId "tom here")) <- (bob <#:)
+  tomB' `shouldBe` tomB
+  bob #: ("3.1", tomB, "LET " <> confId <> " 7\nI'm bob") =#> \case ("3.1", c, OK) -> c == tomB; _ -> False
   bob <# ("", tomB, CON)
+  tom <# ("", bobT, INFO "I'm bob")
+  tom <# ("", bobT, CON)
   alice <# ("", bobA, ICON tomA)
   -- they can message each other now
   tom #: ("4", bobT, "SEND :hello") #> ("4", bobT, SENT 1)

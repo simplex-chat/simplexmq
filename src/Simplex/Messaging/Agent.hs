@@ -349,7 +349,7 @@ acceptInv c connId invId connInfo =
             pure connId'
           Just qInfo' -> do
             -- TODO remove invitations from protocol
-            connId' <- joinConn c connId qInfo' "dummyConnInfo" (Just invId) (connLevel + 1)
+            connId' <- joinConn c connId qInfo' connInfo (Just invId) (connLevel + 1)
             withStore $ \st -> addInvitationConn st invId connId'
             pure connId'
         _ -> throwError $ CONN SIMPLEX
