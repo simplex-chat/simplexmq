@@ -40,7 +40,7 @@ module Simplex.Messaging.Agent
     getSMPAgentClient,
     createConnection,
     joinConnection,
-    letConfirmation,
+    allowConnection,
     sendIntroduction,
     acceptInvitation,
     subscribeConnection,
@@ -49,7 +49,7 @@ module Simplex.Messaging.Agent
     deleteConnection,
     createConnection',
     joinConnection',
-    letConfirmation',
+    allowConnection',
     sendIntroduction',
     acceptInvitation',
     subscribeConnection',
@@ -148,12 +148,12 @@ joinConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> SMPQueueIn
 joinConnection c = (`runReaderT` agentEnv c) .:. joinConnection' c
 
 -- | Approve confirmation (LET command) in Reader monad
-letConfirmation' :: AgentMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
-letConfirmation' c = letConf c ""
+allowConnection' :: AgentMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
+allowConnection' c = letConf c ""
 
 -- | Approve confirmation (LET command)
-letConfirmation :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
-letConfirmation c = (`runReaderT` agentEnv c) .: letConfirmation' c
+allowConnection :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
+allowConnection c = (`runReaderT` agentEnv c) .: allowConnection' c
 
 -- | Accept invitation (ACPT command) in Reader monad
 acceptInvitation' :: AgentMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
@@ -323,11 +323,9 @@ letConf c connId confirmationId ownConnInfo =
   where
     processConfirmation' :: AgentMonad m => RcvQueue -> m ConnId
     processConfirmation' rq = do
-      withStore $ \st -> approveConfirmation st confirmationId ownConnInfo
-      confirmation <- withStore $ \st -> getConfirmation st confirmationId
-      let sndKey = senderKey (confirmation :: Confirmation)
-      processConfirmation c rq sndKey
-      withStore $ \st -> removeApprovedConfirmation st connId -- TODO remove all
+      AcceptedConfirmation {senderKey} <- withStore $ \st -> acceptConfirmation st confirmationId ownConnInfo
+      processConfirmation c rq senderKey
+      withStore (`removeConfirmations` connId)
       pure connId
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
@@ -542,14 +540,11 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           logServer "<--" c srv rId "MSG <REPLY>"
           case cType of
             SCRcv -> do
-              confirmation <- withStore $ \st -> getApprovedConfirmation st connId
-              case ownConnInfo (confirmation :: Confirmation) of
-                Just ownCInfo -> do
-                  (sq, senderKey, verifyKey) <- newSndQueue qInfo
-                  withStore $ \st -> upgradeRcvConnToDuplex st connId sq
-                  confirmQueue c sq senderKey ownCInfo
-                  activateQueueInitiating c connId sq verifyKey onlineInterval
-                _ -> prohibited -- TODO separate error type?
+              AcceptedConfirmation {ownConnInfo} <- withStore (`getAcceptedConfirmation` connId)
+              (sq, senderKey, verifyKey) <- newSndQueue qInfo
+              withStore $ \st -> upgradeRcvConnToDuplex st connId sq
+              confirmQueue c sq senderKey ownConnInfo
+              activateQueueInitiating c connId sq verifyKey onlineInterval
             _ -> prohibited
 
         introMsg :: IntroId -> ConnInfo -> m ()

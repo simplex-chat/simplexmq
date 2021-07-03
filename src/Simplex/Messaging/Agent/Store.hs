@@ -50,10 +50,9 @@ class Monad m => MonadAgentStore s m where
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  getConfirmation :: s -> ConfirmationId -> m Confirmation
-  approveConfirmation :: s -> ConfirmationId -> ConnInfo -> m ()
-  getApprovedConfirmation :: s -> ConnId -> m Confirmation
-  removeApprovedConfirmation :: s -> ConnId -> m ()
+  acceptConfirmation :: s -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
+  getAcceptedConfirmation :: s -> ConnId -> m AcceptedConfirmation
+  removeConfirmations :: s -> ConnId -> m ()
 
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
@@ -165,12 +164,12 @@ data NewConfirmation = NewConfirmation
     senderConnInfo :: ConnInfo
   }
 
-data Confirmation = Confirmation
+data AcceptedConfirmation = AcceptedConfirmation
   { confirmationId :: ConfirmationId,
     connId :: ConnId,
     senderKey :: SenderPublicKey,
     senderConnInfo :: ConnInfo,
-    ownConnInfo :: Maybe ConnInfo
+    ownConnInfo :: ConnInfo
   }
 
 -- * Message integrity validation types

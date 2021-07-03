@@ -292,7 +292,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderKey, senderConnInfo} =
-    liftIOEither . withConnection st $ \db ->
+    liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \confirmationId ->
         DB.execute
           db
@@ -302,26 +302,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           |]
           (confirmationId, connId, senderKey, senderConnInfo)
 
-  getConfirmation :: SQLiteStore -> ConfirmationId -> m Confirmation
-  getConfirmation st confirmationId =
-    liftIOEither . withConnection st $ \db ->
-      confirmation
-        <$> DB.query
-          db
-          [sql|
-            SELECT conn_alias, sender_key, sender_conn_info, own_conn_info
-            FROM conn_confirmations
-            WHERE confirmation_id = ?;
-          |]
-          (Only confirmationId)
-    where
-      confirmation [(connId, senderKey, senderConnInfo, ownConnInfo)] =
-        Right $ Confirmation {confirmationId, connId, senderKey, senderConnInfo, ownConnInfo}
-      confirmation _ = Left SEConfirmationNotFound
-
-  approveConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m ()
-  approveConfirmation st confirmationId ownConnInfo =
-    liftIO . withConnection st $ \db ->
+  acceptConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
+  acceptConfirmation st confirmationId ownConnInfo =
+    liftIOEither . withTransaction st $ \db -> do
       DB.executeNamed
         db
         [sql|
@@ -333,9 +316,22 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [ ":own_conn_info" := ownConnInfo,
           ":confirmation_id" := confirmationId
         ]
+      confirmation
+        <$> DB.query
+          db
+          [sql|
+            SELECT conn_alias, sender_key, sender_conn_info
+            FROM conn_confirmations
+            WHERE confirmation_id = ?;
+          |]
+          (Only confirmationId)
+    where
+      confirmation [(connId, senderKey, senderConnInfo)] =
+        Right $ AcceptedConfirmation {confirmationId, connId, senderKey, senderConnInfo, ownConnInfo}
+      confirmation _ = Left SEConfirmationNotFound
 
-  getApprovedConfirmation :: SQLiteStore -> ConnId -> m Confirmation
-  getApprovedConfirmation st connId =
+  getAcceptedConfirmation :: SQLiteStore -> ConnId -> m AcceptedConfirmation
+  getAcceptedConfirmation st connId =
     liftIOEither . withConnection st $ \db ->
       confirmation
         <$> DB.query
@@ -348,17 +344,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           (Only connId)
     where
       confirmation [(confirmationId, senderKey, senderConnInfo, ownConnInfo)] =
-        Right $ Confirmation {confirmationId, connId, senderKey, senderConnInfo, ownConnInfo}
+        Right $ AcceptedConfirmation {confirmationId, connId, senderKey, senderConnInfo, ownConnInfo}
       confirmation _ = Left SEConfirmationNotFound
 
-  removeApprovedConfirmation :: SQLiteStore -> ConnId -> m ()
-  removeApprovedConfirmation st connId =
+  removeConfirmations :: SQLiteStore -> ConnId -> m ()
+  removeConfirmations st connId =
     liftIO . withConnection st $ \db ->
       DB.executeNamed
         db
         [sql|
           DELETE FROM conn_confirmations
-          WHERE conn_alias = :conn_alias AND approved = 1;
+          WHERE conn_alias = :conn_alias;
         |]
         [":conn_alias" := connId]
 
