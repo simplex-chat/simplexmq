@@ -125,7 +125,7 @@ getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
       pure c {smpSubscriber = action}
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
-disconnectAgentClient c = cleanupAgentClient c >> logConnection c False
+disconnectAgentClient c = closeAgentClient c >> logConnection c False
 
 -- |
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
@@ -284,17 +284,15 @@ joinConn c connId qInfo cInfo viaInv connLevel = do
   pure connId'
 
 activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m ()
-activateQueueJoining c connId sndQ verifyKey initialDelaySec increaseDelayAfterSec = do
-  let onActivationCallback = removeActivation c connId >> cleanupSignatureKey sndQ >> createReplyQueue connId sndQ
-  a <- async $ activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec onActivationCallback
-  addActivation c connId a
+activateQueueJoining c connId sq verifyKey initialDelaySec increaseDelayAfterSec =
+  activateQueue c connId sq verifyKey initialDelaySec increaseDelayAfterSec createReplyQueue
   where
-    createReplyQueue :: ConnId -> SndQueue -> m ()
-    createReplyQueue cId sq = do
+    createReplyQueue :: m ()
+    createReplyQueue = do
       srv <- getSMPServer
       (rq, qInfo') <- newRcvQueue c srv
-      addSubscription c rq cId
-      withStore $ \st -> upgradeSndConnToDuplex st cId rq
+      addSubscription c rq connId
+      withStore $ \st -> upgradeSndConnToDuplex st connId rq
       sendControlMessage c sq $ REPLY qInfo'
 
 letConf :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ConnId
@@ -634,21 +632,26 @@ confirmQueue c sq senderKey cInfo = do
   withStore $ \st -> setSndQueueStatus st sq Confirmed
 
 activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m ()
-activateQueueInitiating c connId sndQ verifyKey initialDelaySec increaseDelayAfterSec = do
-  let onActivationCallback = removeActivation c connId >> cleanupSignatureKey sndQ >> notifyConnected c connId
-  a <- async $ activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec onActivationCallback
-  addActivation c connId a
+activateQueueInitiating c connId sq verifyKey initialDelaySec increaseDelayAfterSec =
+  activateQueue c connId sq verifyKey initialDelaySec increaseDelayAfterSec $ notifyConnected c connId
 
-activateQueue :: AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> Int -> Int -> m () -> m ()
-activateQueue c sndQ verifyKey initialDelaySec increaseDelayAfterSec runAfterActivation = do
-  sendHello c sndQ verifyKey initialDelaySec increaseDelayAfterSec
-  withStore $ \st -> setSndQueueStatus st sndQ Active
-  runAfterActivation
-
-cleanupSignatureKey :: AgentMonad m => SndQueue -> m ()
-cleanupSignatureKey sndQ = do
-  let safeSignatureKey = C.removePublicKey $ signKey sndQ
-  withStore $ \st -> updateSignatureKey st sndQ safeSignatureKey
+activateQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> Int -> Int -> m () -> m ()
+activateQueue c connId sq verifyKey initialDelaySec increaseDelayAfterSec afterActivation =
+  getActivation c connId >>= \case
+    Nothing -> async runActivation >>= addActivation c connId
+    Just _ -> pure ()
+  where
+    runActivation :: m ()
+    runActivation = do
+      sendHello c sq verifyKey initialDelaySec increaseDelayAfterSec
+      withStore $ \st -> setSndQueueStatus st sq Active
+      removeActivation c connId
+      removeVerificationKey
+      afterActivation
+    removeVerificationKey :: m ()
+    removeVerificationKey =
+      let safeSignKey = C.removePublicKey $ signKey sq
+       in withStore $ \st -> updateSignatureKey st sq safeSignKey
 
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = do
