@@ -21,9 +21,9 @@
 module Simplex.Messaging.Crypto
   ( -- * RSA keys
     PrivateKey (rsaPrivateKey, publicKey),
-    SafePrivateKey, -- constructor is not exported
+    SafePrivateKey (..), -- constructor is not exported
     FullPrivateKey (..),
-    APrivateKey,
+    APrivateKey (..),
     PublicKey (..),
     SafeKeyPair,
     FullKeyPair,

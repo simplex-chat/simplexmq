@@ -168,7 +168,7 @@ sndQueue1 =
       sndId = "3456",
       sndPrivateKey = C.safePrivateKey (1, 2, 3),
       encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-      signKey = C.safePrivateKey (1, 2, 3),
+      signKey = C.APrivateKey $ C.unPrivateKey (C.safePrivateKey (1, 2, 3) :: C.SafePrivateKey),
       status = New
     }
 
@@ -308,7 +308,7 @@ testUpgradeRcvConnToDuplex =
               sndId = "2345",
               sndPrivateKey = C.safePrivateKey (1, 2, 3),
               encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-              signKey = C.safePrivateKey (1, 2, 3),
+              signKey = C.APrivateKey $ C.unPrivateKey (C.safePrivateKey (1, 2, 3) :: C.SafePrivateKey),
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue

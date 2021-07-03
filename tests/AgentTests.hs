@@ -129,7 +129,7 @@ testAgentClient = do
   bob <- getSMPAgentClient cfg {dbFile = testDB2}
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice Nothing
-    aliceId <- joinConnection bob Nothing qInfo
+    aliceId <- joinConnection bob Nothing qInfo "alice_conn"
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     InternalId 1 <- sendMessage alice bobId "hello"
