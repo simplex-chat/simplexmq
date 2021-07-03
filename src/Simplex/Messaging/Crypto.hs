@@ -20,18 +20,20 @@
 -- <https://hackage.haskell.org/package/cryptonite cryptonite package>.
 module Simplex.Messaging.Crypto
   ( -- * RSA keys
-    PrivateKey (rsaPrivateKey),
-    SafePrivateKey, -- constructor is not exported
+    PrivateKey (rsaPrivateKey, publicKey),
+    SafePrivateKey (..), -- constructor is not exported
     FullPrivateKey (..),
+    APrivateKey (..),
     PublicKey (..),
     SafeKeyPair,
     FullKeyPair,
     KeyHash (..),
     generateKeyPair,
-    publicKey,
+    publicKey',
     publicKeySize,
     validKeySize,
     safePrivateKey,
+    removePublicKey,
 
     -- * E2E hybrid encryption scheme
     encrypt,
@@ -121,6 +123,9 @@ newtype SafePrivateKey = SafePrivateKey {unPrivateKey :: R.PrivateKey} deriving 
 -- | A newtype of 'Crypto.PubKey.RSA.PrivateKey' (with PublicKey inside).
 newtype FullPrivateKey = FullPrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
 
+-- | A newtype of 'Crypto.PubKey.RSA.PrivateKey' (PublicKey may be inside).
+newtype APrivateKey = APrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
+
 -- | Type-class used for both private key types: SafePrivateKey and FullPrivateKey.
 class PrivateKey k where
   -- unwraps 'Crypto.PubKey.RSA.PrivateKey'
@@ -132,16 +137,36 @@ class PrivateKey k where
   -- smart constructor removing public key from SafePrivateKey but keeping it in FullPrivateKey
   mkPrivateKey :: R.PrivateKey -> k
 
+  -- extracts public key from private key
+  publicKey :: k -> Maybe PublicKey
+
+-- | Remove public key exponent from APrivateKey.
+removePublicKey :: APrivateKey -> APrivateKey
+removePublicKey (APrivateKey R.PrivateKey {private_pub = k, private_d}) =
+  APrivateKey $ unPrivateKey (safePrivateKey (R.public_size k, R.public_n k, private_d) :: SafePrivateKey)
+
 instance PrivateKey SafePrivateKey where
   rsaPrivateKey = unPrivateKey
   _privateKey = SafePrivateKey
   mkPrivateKey R.PrivateKey {private_pub = k, private_d} =
     safePrivateKey (R.public_size k, R.public_n k, private_d)
+  publicKey _ = Nothing
 
 instance PrivateKey FullPrivateKey where
   rsaPrivateKey = unPrivateKey
   _privateKey = FullPrivateKey
   mkPrivateKey = FullPrivateKey
+  publicKey = Just . PublicKey . R.private_pub . rsaPrivateKey
+
+instance PrivateKey APrivateKey where
+  rsaPrivateKey = unPrivateKey
+  _privateKey = APrivateKey
+  mkPrivateKey = APrivateKey
+  publicKey pk =
+    let k = R.private_pub $ rsaPrivateKey pk
+     in if R.public_e k == 0
+          then Nothing
+          else Just $ PublicKey k
 
 instance IsString FullPrivateKey where
   fromString = parseString (decode >=> decodePrivKey)
@@ -151,9 +176,13 @@ instance IsString PublicKey where
 
 instance ToField SafePrivateKey where toField = toField . encodePrivKey
 
+instance ToField APrivateKey where toField = toField . encodePrivKey
+
 instance ToField PublicKey where toField = toField . encodePubKey
 
 instance FromField SafePrivateKey where fromField = blobFieldParser binaryPrivKeyP
+
+instance FromField APrivateKey where fromField = blobFieldParser binaryPrivKeyP
 
 instance FromField PublicKey where fromField = blobFieldParser binaryPubKeyP
 
@@ -217,8 +246,8 @@ generateKeyPair size = loop
 privateKeySize :: PrivateKey k => k -> Int
 privateKeySize = R.public_size . R.private_pub . rsaPrivateKey
 
-publicKey :: FullPrivateKey -> PublicKey
-publicKey = PublicKey . R.private_pub . rsaPrivateKey
+publicKey' :: FullPrivateKey -> PublicKey
+publicKey' = PublicKey . R.private_pub . rsaPrivateKey
 
 publicKeySize :: PublicKey -> Int
 publicKeySize = R.public_size . rsaPublicKey

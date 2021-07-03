@@ -12,11 +12,12 @@ module Simplex.Messaging.Agent.Client
     newAgentClient,
     AgentMonad,
     getSMPServerClient,
-    closeSMPServerClients,
-    newReceiveQueue,
+    closeAgentClient,
+    newRcvQueue,
     subscribeQueue,
     addSubscription,
     sendConfirmation,
+    RetryInterval (..),
     sendHello,
     secureQueue,
     sendAgentMessage,
@@ -28,10 +29,13 @@ module Simplex.Messaging.Agent.Client
     logServer,
     removeSubscription,
     cryptoError,
+    addActivation,
+    getActivation,
+    removeActivation,
   )
 where
 
-import Control.Concurrent.Async (Async)
+import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
@@ -66,6 +70,7 @@ data AgentClient = AgentClient
     smpClients :: TVar (Map SMPServer SMPClient),
     subscrSrvrs :: TVar (Map SMPServer (Set ConnId)),
     subscrConns :: TVar (Map ConnId SMPServer),
+    activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
     clientId :: Int,
     agentEnv :: Env,
     smpSubscriber :: Async ()
@@ -80,8 +85,9 @@ newAgentClient agentEnv = do
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
+  activations <- newTVar M.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, clientId, agentEnv, smpSubscriber = undefined}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, clientId, agentEnv, smpSubscriber = undefined}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -126,8 +132,16 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     notifySub :: ConnId -> IO ()
     notifySub connId = atomically $ writeTBQueue (subQ c) ("", connId, END)
 
-closeSMPServerClients :: MonadUnliftIO m => AgentClient -> m ()
-closeSMPServerClients c = liftIO $ readTVarIO (smpClients c) >>= mapM_ closeSMPClient
+closeAgentClient :: MonadUnliftIO m => AgentClient -> m ()
+closeAgentClient c = liftIO $ do
+  closeSMPServerClients c
+  cancelActivations c
+
+closeSMPServerClients :: AgentClient -> IO ()
+closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ closeSMPClient
+
+cancelActivations :: AgentClient -> IO ()
+cancelActivations c = readTVarIO (activations c) >>= mapM_ uninterruptibleCancel
 
 withSMP_ :: forall a m. AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> m a) -> m a
 withSMP_ c srv action =
@@ -164,8 +178,8 @@ smpClientError = \case
   SMPTransportError e -> BROKER $ TRANSPORT e
   e -> INTERNAL $ show e
 
-newReceiveQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
-newReceiveQueue c srv = do
+newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
+newRcvQueue c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
   logServer "-->" c srv "" "NEW"
@@ -178,7 +192,6 @@ newReceiveQueue c srv = do
             rcvId,
             rcvPrivateKey,
             sndId = Just sId,
-            sndKey = Nothing,
             decryptKey,
             verifyKey = Nothing,
             status = New
@@ -213,6 +226,15 @@ removeSubscription AgentClient {subscrConns, subscrSrvrs} connId = atomically $ 
       let cs' = S.delete connId cs
        in if S.null cs' then Nothing else Just cs'
 
+addActivation :: MonadUnliftIO m => AgentClient -> ConnId -> Async () -> m ()
+addActivation c connId a = atomically . modifyTVar (activations c) $ M.insert connId a
+
+getActivation :: MonadUnliftIO m => AgentClient -> ConnId -> m (Maybe (Async ()))
+getActivation c connId = M.lookup connId <$> readTVarIO (activations c)
+
+removeActivation :: MonadUnliftIO m => AgentClient -> ConnId -> m ()
+removeActivation c connId = atomically . modifyTVar (activations c) $ M.delete connId
+
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
@@ -223,20 +245,26 @@ showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} senderKey =
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> ConnInfo -> m ()
+sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation smp
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: SMPClient -> m MsgBody
-    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey
+    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> m ()
-sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =
+data RetryInterval = RetryInterval
+  { initialInterval :: Int,
+    increaseAfter :: Int,
+    maxInterval :: Int
+  }
+
+sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey RetryInterval {initialInterval, increaseAfter, maxInterval} =
   withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
     msg <- mkHello smp $ AckMode On
-    liftSMP $ send 8 100000 msg smp
+    liftSMP $ send 0 initialInterval msg smp
   where
     mkHello :: SMPClient -> AckMode -> m ByteString
     mkHello smp ackMode = do
@@ -250,12 +278,15 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey =
           }
 
     send :: Int -> Int -> ByteString -> SMPClient -> ExceptT SMPClientError IO ()
-    send 0 _ _ _ = throwE $ SMPServerError AUTH
-    send retry delay msg smp =
+    send elapsedTime delay msg smp =
       sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
         SMPServerError AUTH -> do
           threadDelay delay
-          send (retry - 1) (delay * 3 `div` 2) msg smp
+          let newDelay =
+                if elapsedTime < increaseAfter || delay == maxInterval
+                  then delay
+                  else min (delay * 3 `div` 2) maxInterval
+          send (elapsedTime + delay) newDelay msg smp
         e -> throwE e
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()

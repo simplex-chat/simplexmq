@@ -107,11 +107,14 @@ testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  bob #: ("11", "alice", "JOIN " <> qInfo') #> ("11", "alice", OK)
+  bob #: ("11", "alice", "JOIN " <> qInfo' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
+  ("", "bob", Right (CONF confId "bob's connInfo")) <- (alice <#:)
+  alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
-  alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", SENT 1)
-  alice #: ("3", "bob", "SEND :how are you?") #> ("3", "bob", SENT 2)
+  alice #: ("3", "bob", "SEND :hello") #> ("3", "bob", SENT 1)
+  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", SENT 2)
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
   bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", SENT 3)
@@ -129,8 +132,11 @@ testAgentClient = do
   bob <- getSMPAgentClient cfg {dbFile = testDB2}
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice Nothing
-    aliceId <- joinConnection bob Nothing qInfo
+    aliceId <- joinConnection bob Nothing qInfo "bob's connInfo"
+    ("", _, CONF confId "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     InternalId 1 <- sendMessage alice bobId "hello"
     InternalId 2 <- sendMessage alice bobId "how are you?"
@@ -163,7 +169,11 @@ testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV qInfo)) <- alice #: ("1", "", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> qInfo')
+  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> qInfo' <> " 14\nbob's connInfo")
+  ("", bobConn', Right (CONF confId "bob's connInfo")) <- (alice <#:)
+  bobConn' `shouldBe` bobConn
+  alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
+  bob <# ("", aliceConn, INFO "alice's connInfo")
   bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
   alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, SENT 1)
@@ -209,11 +219,12 @@ testIntroduction _ alice bob tom = do
   ("", "alice", Right (REQ invId1 "meet tom")) <- (bob <#:)
   bob #: ("2", "tom_via_alice", "ACPT " <> invId1 <> " 7\nI'm bob") #> ("2", "tom_via_alice", OK)
   ("", "alice", Right (REQ invId2 "I'm bob")) <- (tom <#:)
-  -- TODO info "tom here" is not used, either JOIN command also should have eInfo parameter
-  -- or this should be another command, not ACPT
   tom #: ("3", "bob_via_alice", "ACPT " <> invId2 <> " 8\ntom here") #> ("3", "bob_via_alice", OK)
-  tom <# ("", "bob_via_alice", CON)
+  ("", "tom_via_alice", Right (CONF confId "tom here")) <- (bob <#:)
+  bob #: ("3.1", "tom_via_alice", "LET " <> confId <> " 7\nI'm bob") #> ("3.1", "tom_via_alice", OK)
   bob <# ("", "tom_via_alice", CON)
+  tom <# ("", "bob_via_alice", INFO "I'm bob")
+  tom <# ("", "bob_via_alice", CON)
   alice <# ("", "bob", ICON "tom")
   -- they can message each other now
   tom #: ("4", "bob_via_alice", "SEND :hello") #> ("4", "bob_via_alice", SENT 1)
@@ -230,14 +241,16 @@ testIntroductionRandomIds _ alice bob tom = do
   alice #: ("1", bobA, "INTRO " <> tomA <> " 8\nmeet tom") #> ("1", bobA, OK)
   ("", aliceB', Right (REQ invId1 "meet tom")) <- (bob <#:)
   aliceB' `shouldBe` aliceB
-  ("2", tomB, Right OK) <- bob #: ("2", "C:", "ACPT " <> invId1 <> " 7\nI'm bob")
+  ("2", tomB, Right OK) <- bob #: ("2", "", "ACPT " <> invId1 <> " 7\nI'm bob")
   ("", aliceT', Right (REQ invId2 "I'm bob")) <- (tom <#:)
   aliceT' `shouldBe` aliceT
-  -- TODO info "tom here" is not used, either JOIN command also should have eInfo parameter
-  -- or this should be another command, not ACPT
   ("3", bobT, Right OK) <- tom #: ("3", "", "ACPT " <> invId2 <> " 8\ntom here")
-  tom <# ("", bobT, CON)
+  ("", tomB', Right (CONF confId "tom here")) <- (bob <#:)
+  tomB' `shouldBe` tomB
+  bob #: ("3.1", tomB, "LET " <> confId <> " 7\nI'm bob") =#> \case ("3.1", c, OK) -> c == tomB; _ -> False
   bob <# ("", tomB, CON)
+  tom <# ("", bobT, INFO "I'm bob")
+  tom <# ("", bobT, CON)
   alice <# ("", bobA, ICON tomA)
   -- they can message each other now
   tom #: ("4", bobT, "SEND :hello") #> ("4", bobT, SENT 1)
@@ -249,7 +262,10 @@ connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV qInfo)) <- h1 #: ("c1", name2, "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  h2 #: ("c2", name1, "JOIN " <> qInfo') #> ("c2", name1, OK)
+  h2 #: ("c2", name1, "JOIN " <> qInfo' <> " 5\ninfo2") #> ("c2", name1, OK)
+  ("", _, Right (CONF connId "info2")) <- (h1 <#:)
+  h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
+  h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
 
@@ -257,7 +273,10 @@ connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 connect' h1 h2 = do
   ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
-  ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo')
+  ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo' <> " 5\ninfo2")
+  ("", _, Right (CONF connId "info2")) <- (h1 <#:)
+  h1 #: ("c3", conn2, "LET " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
+  h2 <# ("", conn1, INFO "info1")
   h2 <# ("", conn1, CON)
   h1 <# ("", conn2, CON)
   pure (conn1, conn2)
@@ -281,7 +300,7 @@ syntaxTests t = do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
-        ("311", "a", "JOIN smp::localhost:5000::1234::" <> samplePublicKey) >#> ("311", "a", "ERR SMP AUTH")
+        ("311", "a", "JOIN smp::localhost:5000::1234::" <> samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")

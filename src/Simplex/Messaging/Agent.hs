@@ -6,6 +6,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -39,6 +40,7 @@ module Simplex.Messaging.Agent
     getSMPAgentClient,
     createConnection,
     joinConnection,
+    allowConnection,
     sendIntroduction,
     acceptInvitation,
     subscribeConnection,
@@ -47,6 +49,7 @@ module Simplex.Messaging.Agent
     deleteConnection,
     createConnection',
     joinConnection',
+    allowConnection',
     sendIntroduction',
     acceptInvitation',
     subscribeConnection',
@@ -111,7 +114,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
       c <- getAgentClient
       logConnection c True
       race_ (connectClient h c) (runAgentClient c)
-        `E.finally` disconnectServers c
+        `E.finally` disconnectAgentClient c
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
@@ -119,11 +122,11 @@ getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient
-      action <- async $ subscriber c `E.finally` disconnectServers c
+      action <- async $ subscriber c `E.finally` disconnectAgentClient c
       pure c {smpSubscriber = action}
 
-disconnectServers :: MonadUnliftIO m => AgentClient -> m ()
-disconnectServers c = closeSMPServerClients c >> logConnection c False
+disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
+disconnectAgentClient c = closeAgentClient c >> logConnection c False
 
 -- |
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
@@ -137,12 +140,16 @@ createConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> m (ConnI
 createConnection c = (`runReaderT` agentEnv c) . createConnection' c
 
 -- | Join SMP agent connection (JOIN command) in Reader monad
-joinConnection' :: AgentMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> m ConnId
-joinConnection' c connId qInfo = joinConn c (fromMaybe "" connId) qInfo (ReplyMode On) Nothing 0
+joinConnection' :: AgentMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> ConnInfo -> m ConnId
+joinConnection' c connId qInfo cInfo = joinConn c (fromMaybe "" connId) qInfo cInfo Nothing 0
 
 -- | Join SMP agent connection (JOIN command)
-joinConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> m ConnId
-joinConnection c = (`runReaderT` agentEnv c) .: joinConnection' c
+joinConnection :: AgentErrorMonad m => AgentClient -> Maybe ConnId -> SMPQueueInfo -> ConnInfo -> m ConnId
+joinConnection c = (`runReaderT` agentEnv c) .:. joinConnection' c
+
+-- | Approve confirmation (LET command)
+allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnection c = (`runReaderT` agentEnv c) .:. allowConnection' c
 
 -- | Accept invitation (ACPT command) in Reader monad
 acceptInvitation' :: AgentMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
@@ -150,7 +157,7 @@ acceptInvitation' c = acceptInv c ""
 
 -- | Accept invitation (ACPT command)
 acceptInvitation :: AgentErrorMonad m => AgentClient -> InvitationId -> ConnInfo -> m ConnId
-acceptInvitation c = (`runReaderT` agentEnv c) .: acceptInvitation c
+acceptInvitation c = (`runReaderT` agentEnv c) .: acceptInvitation' c
 
 -- | Send introduction of the second connection the first (INTRO command)
 sendIntroduction :: AgentErrorMonad m => AgentClient -> ConnId -> ConnId -> ConnInfo -> m ()
@@ -244,7 +251,8 @@ withStore action = do
 processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
 processCommand c (connId, cmd) = case cmd of
   NEW -> second INV <$> newConn c connId Nothing 0
-  JOIN smpQueueInfo replyMode -> (,OK) <$> joinConn c connId smpQueueInfo replyMode Nothing 0
+  JOIN smpQueueInfo connInfo -> (,OK) <$> joinConn c connId smpQueueInfo connInfo Nothing 0
+  LET confId ownConnInfo -> allowConnection' c connId confId ownConnInfo $> (connId, OK)
   INTRO reConnId reInfo -> sendIntroduction' c connId reConnId reInfo $> (connId, OK)
   ACPT invId connInfo -> (,OK) <$> acceptInv c connId invId connInfo
   SUB -> subscribeConnection' c connId $> (connId, OK)
@@ -255,30 +263,68 @@ processCommand c (connId, cmd) = case cmd of
 newConn :: AgentMonad m => AgentClient -> ConnId -> Maybe InvitationId -> Int -> m (ConnId, SMPQueueInfo)
 newConn c connId viaInv connLevel = do
   srv <- getSMPServer
-  (rq, qInfo) <- newReceiveQueue c srv
+  (rq, qInfo) <- newRcvQueue c srv
   g <- asks idsDrg
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createRcvConn st g cData rq
   addSubscription c rq connId'
   pure (connId', qInfo)
 
-joinConn :: forall m. AgentMonad m => AgentClient -> ConnId -> SMPQueueInfo -> ReplyMode -> Maybe InvitationId -> Int -> m ConnId
-joinConn c connId qInfo (ReplyMode replyMode) viaInv connLevel = do
-  (sq, senderKey, verifyKey) <- newSendQueue qInfo
+minute :: Int
+minute = 60_000_000
+
+onlineInterval :: RetryInterval
+onlineInterval =
+  RetryInterval
+    { initialInterval = 1_000_000,
+      increaseAfter = minute,
+      maxInterval = 10 * minute
+    }
+
+resumeInterval :: RetryInterval
+resumeInterval =
+  RetryInterval
+    { initialInterval = 5_000_000,
+      increaseAfter = 0,
+      maxInterval = 10 * minute
+    }
+
+joinConn :: AgentMonad m => AgentClient -> ConnId -> SMPQueueInfo -> ConnInfo -> Maybe InvitationId -> Int -> m ConnId
+joinConn c connId qInfo cInfo viaInv connLevel = do
+  (sq, senderKey, verifyKey) <- newSndQueue qInfo
   g <- asks idsDrg
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createSndConn st g cData sq
-  connectToSendQueue c sq senderKey verifyKey
-  when (replyMode == On) $ createReplyQueue connId' sq
+  confirmQueue c sq senderKey cInfo
+  activateQueueJoining c connId' sq verifyKey onlineInterval
   pure connId'
+
+activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+activateQueueJoining c connId sq verifyKey retryInterval =
+  activateQueue c connId sq verifyKey retryInterval createReplyQueue
   where
-    createReplyQueue :: ConnId -> SndQueue -> m ()
-    createReplyQueue cId sq = do
+    createReplyQueue :: m ()
+    createReplyQueue = do
       srv <- getSMPServer
-      (rq, qInfo') <- newReceiveQueue c srv
-      addSubscription c rq cId
-      withStore $ \st -> upgradeSndConnToDuplex st cId rq
+      (rq, qInfo') <- newRcvQueue c srv
+      addSubscription c rq connId
+      withStore $ \st -> upgradeSndConnToDuplex st connId rq
       sendControlMessage c sq $ REPLY qInfo'
+
+-- | Approve confirmation (LET command) in Reader monad
+allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnection' c connId confId ownConnInfo =
+  withStore (`getConn` connId) >>= \case
+    SomeConn SCRcv (RcvConnection _ rq) -> do
+      AcceptedConfirmation {senderKey} <- withStore $ \st -> acceptConfirmation st confId ownConnInfo
+      processConfirmation c rq senderKey
+    _ -> throwError $ CMD PROHIBITED
+
+processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
+processConfirmation c rq sndKey = do
+  withStore $ \st -> setRcvQueueStatus st rq Confirmed
+  secureQueue c rq sndKey
+  withStore $ \st -> setRcvQueueStatus st rq Secured
 
 -- | Send introduction of the second connection the first (INTRO command) in Reader monad
 sendIntroduction' :: AgentMonad m => AgentClient -> ConnId -> ConnId -> ConnInfo -> m ()
@@ -302,19 +348,40 @@ acceptInv c connId invId connInfo =
             sendControlMessage c sq $ A_INV externalIntroId qInfo' connInfo
             pure connId'
           Just qInfo' -> do
-            connId' <- joinConn c connId qInfo' (ReplyMode On) (Just invId) (connLevel + 1)
+            -- TODO remove invitations from protocol
+            connId' <- joinConn c connId qInfo' connInfo (Just invId) (connLevel + 1)
             withStore $ \st -> addInvitationConn st invId connId'
             pure connId'
         _ -> throwError $ CONN SIMPLEX
     _ -> throwError $ CMD PROHIBITED
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
-subscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
+subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq _) -> subscribeQueue c rq connId
+    SomeConn _ (DuplexConnection _ rq sq) -> case status (sq :: SndQueue) of
+      Confirmed -> withVerifyKey sq $ \sndKey -> do
+        secureQueue c rq sndKey
+        withStore $ \st -> setRcvQueueStatus st rq Secured
+        activateSecuredQueue rq sq sndKey
+      Secured -> withVerifyKey sq $ activateSecuredQueue rq sq
+      Active -> subscribeQueue c rq connId
+      _ -> throwError $ INTERNAL "unexpected queue status"
+    SomeConn _ (SndConnection _ sq) -> case status (sq :: SndQueue) of
+      Confirmed -> withVerifyKey sq $ \sndKey ->
+        activateQueueJoining c connId sq sndKey resumeInterval
+      Active -> throwError $ CONN SIMPLEX
+      _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
-    _ -> throwError $ CONN SIMPLEX
+  where
+    withVerifyKey :: SndQueue -> (C.PublicKey -> m ()) -> m ()
+    withVerifyKey sq action =
+      let err = throwError $ INTERNAL "missing send queue public key"
+       in maybe err action . C.publicKey $ sndPrivateKey sq
+    activateSecuredQueue :: RcvQueue -> SndQueue -> C.PublicKey -> m ()
+    activateSecuredQueue rq sq sndKey = do
+      activateQueueInitiating c connId sq sndKey resumeInterval
+      subscribeQueue c rq connId
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
@@ -408,7 +475,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           let msgHash = C.sha256Hash msg
           case parseSMPMessage msg of
             Left e -> notify $ ERR e
-            Right (SMPConfirmation senderKey) -> smpConfirmation senderKey
+            Right (SMPConfirmation senderKey cInfo) -> smpConfirmation senderKey cInfo
             Right SMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
               case agentMessage of
                 HELLO verifyKey _ -> helloMsg verifyKey msgBody
@@ -434,17 +501,20 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         prohibited :: m ()
         prohibited = notify . ERR $ AGENT A_PROHIBITED
 
-        smpConfirmation :: SenderPublicKey -> m ()
-        smpConfirmation senderKey = do
+        smpConfirmation :: SenderPublicKey -> ConnInfo -> m ()
+        smpConfirmation senderKey cInfo = do
           logServer "<--" c srv rId "MSG <KEY>"
           case status of
-            New -> do
-              -- TODO currently it automatically allows whoever sends the confirmation
-              -- TODO create invitation and send REQ
-              withStore $ \st -> setRcvQueueStatus st rq Confirmed
-              -- TODO update sender key in the store?
-              secureQueue c rq senderKey
-              withStore $ \st -> setRcvQueueStatus st rq Secured
+            New -> case cType of
+              SCRcv -> do
+                g <- asks idsDrg
+                let newConfirmation = NewConfirmation {connId, senderKey, senderConnInfo = cInfo}
+                confId <- withStore $ \st -> createConfirmation st g newConfirmation
+                notify $ CONF confId cInfo
+              SCDuplex -> do
+                notify $ INFO cInfo
+                processConfirmation c rq senderKey
+              _ -> prohibited
             _ -> prohibited
 
         helloMsg :: SenderPublicKey -> ByteString -> m ()
@@ -456,7 +526,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               void $ verifyMessage (Just verifyKey) msgBody
               withStore $ \st -> setRcvQueueActive st rq verifyKey
               case cType of
-                SCDuplex -> connected
+                SCDuplex -> notifyConnected c connId
                 _ -> pure ()
 
         replyMsg :: SMPQueueInfo -> m ()
@@ -464,20 +534,13 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           logServer "<--" c srv rId "MSG <REPLY>"
           case cType of
             SCRcv -> do
-              (sq, senderKey, verifyKey) <- newSendQueue qInfo
+              AcceptedConfirmation {ownConnInfo} <- withStore (`getAcceptedConfirmation` connId)
+              (sq, senderKey, verifyKey) <- newSndQueue qInfo
               withStore $ \st -> upgradeRcvConnToDuplex st connId sq
-              connectToSendQueue c sq senderKey verifyKey
-              connected
+              confirmQueue c sq senderKey ownConnInfo
+              withStore (`removeConfirmations` connId)
+              activateQueueInitiating c connId sq verifyKey onlineInterval
             _ -> prohibited
-
-        connected :: m ()
-        connected = do
-          withStore (`getConnInvitation` connId) >>= \case
-            Just (Invitation {invId, externalIntroId}, DuplexConnection _ _ sq) -> do
-              withStore $ \st -> setInvitationStatus st invId InvCon
-              sendControlMessage c sq $ A_CON externalIntroId
-            _ -> pure ()
-          notify CON
 
         introMsg :: IntroId -> ConnInfo -> m ()
         introMsg introId reInfo = do
@@ -557,16 +620,45 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-connectToSendQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> VerificationKey -> m ()
-connectToSendQueue c sq senderKey verifyKey = do
-  sendConfirmation c sq senderKey
+confirmQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> ConnInfo -> m ()
+confirmQueue c sq senderKey cInfo = do
+  sendConfirmation c sq senderKey cInfo
   withStore $ \st -> setSndQueueStatus st sq Confirmed
-  sendHello c sq verifyKey
-  withStore $ \st -> setSndQueueStatus st sq Active
 
-newSendQueue ::
+activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+activateQueueInitiating c connId sq verifyKey retryInterval =
+  activateQueue c connId sq verifyKey retryInterval $ notifyConnected c connId
+
+activateQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m () -> m ()
+activateQueue c connId sq verifyKey retryInterval afterActivation =
+  getActivation c connId >>= \case
+    Nothing -> async runActivation >>= addActivation c connId
+    Just _ -> pure ()
+  where
+    runActivation :: m ()
+    runActivation = do
+      sendHello c sq verifyKey retryInterval
+      withStore $ \st -> setSndQueueStatus st sq Active
+      removeActivation c connId
+      removeVerificationKey
+      afterActivation
+    removeVerificationKey :: m ()
+    removeVerificationKey =
+      let safeSignKey = C.removePublicKey $ signKey sq
+       in withStore $ \st -> updateSignKey st sq safeSignKey
+
+notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
+notifyConnected c connId = do
+  withStore (`getConnInvitation` connId) >>= \case
+    Just (Invitation {invId, externalIntroId}, DuplexConnection _ _ sq) -> do
+      withStore $ \st -> setInvitationStatus st invId InvCon
+      sendControlMessage c sq $ A_CON externalIntroId
+    _ -> pure ()
+  atomically $ writeTBQueue (subQ c) ("", connId, CON)
+
+newSndQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, VerificationKey)
-newSendQueue (SMPQueueInfo smpServer senderId encryptKey) = do
+newSndQueue (SMPQueueInfo smpServer senderId encryptKey) = do
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size
   (verifyKey, signKey) <- liftIO $ C.generateKeyPair size
