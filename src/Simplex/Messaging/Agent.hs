@@ -38,6 +38,7 @@ module Simplex.Messaging.Agent
     AgentMonad,
     AgentErrorMonad,
     getSMPAgentClient,
+    disconnectAgentClient, -- used in tests
     createConnection,
     joinConnection,
     allowConnection,
@@ -359,27 +360,28 @@ subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq sq) -> case status (sq :: SndQueue) of
-      Confirmed -> withVerifyKey sq $ \sndKey -> do
-        secureQueue c rq sndKey
-        withStore $ \st -> setRcvQueueStatus st rq Secured
-        activateSecuredQueue rq sq sndKey
+      -- TODO temporarily store sndPrivateKey with public key
+      -- Confirmed -> withVerifyKey sq $ \verifyKey -> do
+      --   secureQueue c rq sndKey
+      --   withStore $ \st -> setRcvQueueStatus st rq Secured
+      --   activateSecuredQueue rq sq verifyKey
       Secured -> withVerifyKey sq $ activateSecuredQueue rq sq
       Active -> subscribeQueue c rq connId
       _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (SndConnection _ sq) -> case status (sq :: SndQueue) of
-      Confirmed -> withVerifyKey sq $ \sndKey ->
-        activateQueueJoining c connId sq sndKey resumeInterval
+      Confirmed -> withVerifyKey sq $ \verifyKey ->
+        activateQueueJoining c connId sq verifyKey resumeInterval
       Active -> throwError $ CONN SIMPLEX
       _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
   where
     withVerifyKey :: SndQueue -> (C.PublicKey -> m ()) -> m ()
     withVerifyKey sq action =
-      let err = throwError $ INTERNAL "missing send queue public key"
-       in maybe err action . C.publicKey $ sndPrivateKey sq
+      let err = throwError $ INTERNAL "missing signing key public counterpart"
+       in maybe err action . C.publicKey $ signKey sq
     activateSecuredQueue :: RcvQueue -> SndQueue -> C.PublicKey -> m ()
-    activateSecuredQueue rq sq sndKey = do
-      activateQueueInitiating c connId sq sndKey resumeInterval
+    activateSecuredQueue rq sq verifyKey = do
+      activateQueueInitiating c connId sq verifyKey resumeInterval
       subscribeQueue c rq connId
 
 -- | Send message to the connection (SEND command) in Reader monad
