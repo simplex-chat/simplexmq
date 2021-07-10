@@ -360,11 +360,11 @@ subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq sq) -> case status (sq :: SndQueue) of
-      -- TODO temporarily store sndPrivateKey with public key
-      -- Confirmed -> withVerifyKey sq $ \verifyKey -> do
-      --   secureQueue c rq sndKey
-      --   withStore $ \st -> setRcvQueueStatus st rq Secured
-      --   activateSecuredQueue rq sq verifyKey
+      Confirmed -> withVerifyKey sq $ \verifyKey -> do
+        conf <- withStore (`getAcceptedConfirmation` connId)
+        secureQueue c rq $ senderKey (conf :: AcceptedConfirmation)
+        withStore $ \st -> setRcvQueueStatus st rq Secured
+        activateSecuredQueue rq sq verifyKey
       Secured -> withVerifyKey sq $ activateSecuredQueue rq sq
       Active -> subscribeQueue c rq connId
       _ -> throwError $ INTERNAL "unexpected queue status"
