@@ -1,21 +1,18 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests (functionalAPITests) where
 
-import Control.Concurrent
 import Control.Monad.Except (ExceptT, catchError, runExceptT)
 import Control.Monad.IO.Unlift
 import SMPAgentClient
 import SMPClient (withSmpServer)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, dbFile)
+import Simplex.Messaging.Agent.Env.SQLite (dbFile)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store (InternalId (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
@@ -41,7 +38,7 @@ functionalAPITests t = do
   describe "Establishing duplex connection" $
     it "should connect via one server using SMP agent clients" $
       withSmpServer t testAgentClient
-  describe "Establishing connection asynchronously" do
+  describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
     it "should connect with joining client going offline before its queue activation" $
@@ -90,11 +87,12 @@ testAsyncInitiatingOffline :: IO ()
 testAsyncInitiatingOffline = do
   alice <- getSMPAgentClient cfg
   bob <- getSMPAgentClient cfg {dbFile = testDB2}
-  Right () <- runExceptT do
+  Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice
     disconnectAgentClient alice
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    alice' <- waitAndComeOnline 3 cfg bobId
+    alice' <- liftIO $ getSMPAgentClient cfg
+    subscribeConnection alice' bobId
     ("", _, CONF confId "bob's connInfo") <- get alice'
     allowConnection alice' bobId confId "alice's connInfo"
     get alice' ##> ("", bobId, CON)
@@ -107,13 +105,14 @@ testAsyncJoiningOfflineBeforeActivation :: IO ()
 testAsyncJoiningOfflineBeforeActivation = do
   alice <- getSMPAgentClient cfg
   bob <- getSMPAgentClient cfg {dbFile = testDB2}
-  Right () <- runExceptT do
+  Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     disconnectAgentClient bob
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
-    bob' <- waitAndComeOnline 3 cfg {dbFile = testDB2} aliceId
+    bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
+    subscribeConnection bob' aliceId
     get alice ##> ("", bobId, CON)
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
     get bob' ##> ("", aliceId, CON)
@@ -127,27 +126,22 @@ testAsyncBothOffline :: IO ()
 testAsyncBothOffline = do
   alice <- getSMPAgentClient cfg
   bob <- getSMPAgentClient cfg {dbFile = testDB2}
-  Right () <- runExceptT do
+  Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice
     disconnectAgentClient alice
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     disconnectAgentClient bob
-    alice' <- waitAndComeOnline 2 cfg bobId
+    alice' <- liftIO $ getSMPAgentClient cfg
+    subscribeConnection alice' bobId
     ("", _, CONF confId "bob's connInfo") <- get alice'
     allowConnection alice' bobId confId "alice's connInfo"
-    bob' <- waitAndComeOnline 1 cfg {dbFile = testDB2} aliceId
+    bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
+    subscribeConnection bob' aliceId
     get alice' ##> ("", bobId, CON)
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
     get bob' ##> ("", aliceId, CON)
     exchangeGreetings alice' bobId bob' aliceId
   pure ()
-
-waitAndComeOnline :: Int -> AgentConfig -> ConnId -> ExceptT AgentErrorType IO AgentClient
-waitAndComeOnline delaySec agentCfg connId = do
-  liftIO $ threadDelay $ delaySec * 1_000_000
-  c <- liftIO $ getSMPAgentClient agentCfg
-  subscribeConnection c connId
-  pure c
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings alice bobId bob aliceId = do
