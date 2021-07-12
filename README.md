@@ -78,6 +78,21 @@ Deployment on [Linode](https://www.linode.com/) is performed via StackScripts, w
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
+[<img alt="linode" src="./img/digitalocean.png" align="right" width="300">](https://marketplace.digitalocean.com/apps/simplex-server)
+
+## Deploy SMP server on DigitalOcean
+
+You can deploy SMP server using [SimpleX Server 1-click app](https://marketplace.digitalocean.com/apps/simplex-server) from DigitalOcean marketplace:
+
+- Create a DigitalOcean account or login with an already existing one.
+- Click 'Create SimpleX server Droplet' button.
+- Choose the region and plan according to your requirements (cheapest Regular plan should be sufficient).
+- Provide ssh key and confirm Droplet creation. 
+- SSH to created Droplet (`ssh root@<droplet_ip_address>`) to get SMP server public key hash - either from the welcome message or from `/etc/opt/simplex/pub_key_hash`. DigitalOcean has a good guide on [how to login to Droplet via ssh](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
+- Great, your own SMP server is ready! Use `ip_address#hash` as SMP server address in the client.
+
+Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
+
 ## SMP server design
 
 ![SMP server design](https://raw.githubusercontent.com/simplex-chat/simplexmq/master/design/server.svg)
