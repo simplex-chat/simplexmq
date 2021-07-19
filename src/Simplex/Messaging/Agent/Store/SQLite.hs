@@ -206,7 +206,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   deleteConn :: SQLiteStore -> ConnId -> m ()
   deleteConn st connId =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         "DELETE FROM connections WHERE conn_alias = :conn_alias;"
@@ -239,7 +239,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueStatus st RcvQueue {rcvId, server = SMPServer {host, port}} status =
     -- ? throw error if queue does not exist?
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         [sql|
@@ -252,7 +252,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
   setRcvQueueActive st RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
     -- ? throw error if queue does not exist?
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         [sql|
@@ -270,7 +270,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
   setSndQueueStatus st SndQueue {sndId, server = SMPServer {host, port}} status =
     -- ? throw error if queue does not exist?
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         [sql|
@@ -282,7 +282,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   updateSignKey :: SQLiteStore -> SndQueue -> SignatureKey -> m ()
   updateSignKey st SndQueue {sndId, server = SMPServer {host, port}} signatureKey =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         [sql|
@@ -351,7 +351,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   removeConfirmations :: SQLiteStore -> ConnId -> m ()
   removeConfirmations st connId =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         [sql|
@@ -397,7 +397,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   createIntro :: SQLiteStore -> TVar ChaChaDRG -> NewIntroduction -> m IntroId
   createIntro st gVar NewIntroduction {toConn, reConn, reInfo} =
-    liftIOEither . withConnection st $ \db ->
+    liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \introId ->
         DB.execute
           db
@@ -426,7 +426,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   addIntroInvitation :: SQLiteStore -> IntroId -> ConnInfo -> SMPQueueInfo -> m ()
   addIntroInvitation st introId toInfo qInfo =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         [sql|
@@ -444,7 +444,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setIntroToStatus :: SQLiteStore -> IntroId -> IntroStatus -> m ()
   setIntroToStatus st introId toStatus =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.execute
         db
         [sql|
@@ -456,7 +456,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setIntroReStatus :: SQLiteStore -> IntroId -> IntroStatus -> m ()
   setIntroReStatus st introId reStatus =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.execute
         db
         [sql|
@@ -468,7 +468,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   createInvitation st gVar NewInvitation {viaConn, externalIntroId, connInfo, qInfo} =
-    liftIOEither . withConnection st $ \db ->
+    liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \invId ->
         DB.execute
           db
@@ -497,7 +497,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   addInvitationConn :: SQLiteStore -> InvitationId -> ConnId -> m ()
   addInvitationConn st invId connId =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         [sql|
@@ -531,7 +531,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   setInvitationStatus :: SQLiteStore -> InvitationId -> InvitationStatus -> m ()
   setInvitationStatus st invId status =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       DB.execute
         db
         [sql|
