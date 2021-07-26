@@ -285,7 +285,7 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey RetryInterval {
           let newDelay =
                 if elapsedTime < increaseAfter || delay == maxInterval
                   then delay
-                  else min (delay * 3 `div` 2) maxInterval
+                  else min (delay * 20 `div` 19) maxInterval
           send (elapsedTime + delay) newDelay msg smp
         e -> throwE e
 

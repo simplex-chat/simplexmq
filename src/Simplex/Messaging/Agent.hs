@@ -270,21 +270,24 @@ newConn c connId viaInv connLevel = do
   addSubscription c rq connId'
   pure (connId', qInfo)
 
+sec :: Int
+sec = 1_000_000
+
 minute :: Int
-minute = 60_000_000
+minute = 60 * sec
 
 onlineInterval :: RetryInterval
 onlineInterval =
   RetryInterval
-    { initialInterval = 1_000_000,
-      increaseAfter = minute,
+    { initialInterval = sec `div` 10,
+      increaseAfter = 2 * sec,
       maxInterval = 10 * minute
     }
 
 resumeInterval :: RetryInterval
 resumeInterval =
   RetryInterval
-    { initialInterval = 5_000_000,
+    { initialInterval = 5 * sec,
       increaseAfter = 0,
       maxInterval = 10 * minute
     }
