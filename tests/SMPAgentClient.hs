@@ -141,20 +141,18 @@ smpAgentTest3_1_1 test' = smpAgentTestN_1 3 _test
 
 cfg :: AgentConfig
 cfg =
-  AgentConfig
+  defaultAgentConfig
     { tcpPort = agentTestPort,
       smpServers = L.fromList ["localhost:5000#KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="],
-      rsaKeySize = 2048 `div` 8,
-      connIdBytes = 12,
       tbqSize = 1,
       dbFile = testDB,
-      dbPoolSize = 4,
       smpCfg =
         smpDefaultConfig
           { qSize = 1,
             defaultTransport = (testPort, transport @TCP),
             tcpTimeout = 500_000
-          }
+          },
+      retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000}
     }
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
