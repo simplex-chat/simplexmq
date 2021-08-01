@@ -3,9 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -17,7 +15,6 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
-import Data.Text (Text)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -60,18 +57,6 @@ class Monad m => MonadAgentStore s m where
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
   getMsg :: s -> ConnId -> InternalId -> m Msg
-
-  -- Introductions
-  createIntro :: s -> TVar ChaChaDRG -> NewIntroduction -> m IntroId
-  getIntro :: s -> IntroId -> m Introduction
-  addIntroInvitation :: s -> IntroId -> ConnInfo -> SMPQueueInfo -> m ()
-  setIntroToStatus :: s -> IntroId -> IntroStatus -> m ()
-  setIntroReStatus :: s -> IntroId -> IntroStatus -> m ()
-  createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
-  getInvitation :: s -> InvitationId -> m Invitation
-  addInvitationConn :: s -> InvitationId -> ConnId -> m ()
-  getConnInvitation :: s -> ConnId -> m (Maybe (Invitation, Connection CDuplex))
-  setInvitationStatus :: s -> InvitationId -> InvitationStatus -> m ()
 
 -- * Queue types
 
@@ -153,7 +138,7 @@ instance Eq SomeConn where
 
 deriving instance Show SomeConn
 
-data ConnData = ConnData {connId :: ConnId, viaInv :: Maybe InvitationId, connLevel :: Int}
+newtype ConnData = ConnData {connId :: ConnId}
   deriving (Eq, Show)
 
 -- * Confirmation types
@@ -308,75 +293,6 @@ newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
 
 type InternalTs = UTCTime
 
--- * Introduction types
-
-data NewIntroduction = NewIntroduction
-  { toConn :: ConnId,
-    reConn :: ConnId,
-    reInfo :: ByteString
-  }
-
-data Introduction = Introduction
-  { introId :: IntroId,
-    toConn :: ConnId,
-    toInfo :: Maybe ByteString,
-    toStatus :: IntroStatus,
-    reConn :: ConnId,
-    reInfo :: ByteString,
-    reStatus :: IntroStatus,
-    qInfo :: Maybe SMPQueueInfo
-  }
-
-data IntroStatus = IntroNew | IntroInv | IntroCon
-  deriving (Eq)
-
-serializeIntroStatus :: IntroStatus -> Text
-serializeIntroStatus = \case
-  IntroNew -> ""
-  IntroInv -> "INV"
-  IntroCon -> "CON"
-
-introStatusT :: Text -> Maybe IntroStatus
-introStatusT = \case
-  "" -> Just IntroNew
-  "INV" -> Just IntroInv
-  "CON" -> Just IntroCon
-  _ -> Nothing
-
-data NewInvitation = NewInvitation
-  { viaConn :: ConnId,
-    externalIntroId :: IntroId,
-    connInfo :: ConnInfo,
-    qInfo :: Maybe SMPQueueInfo
-  }
-
-data Invitation = Invitation
-  { invId :: InvitationId,
-    viaConn :: ConnId,
-    externalIntroId :: IntroId,
-    connInfo :: ConnInfo,
-    qInfo :: Maybe SMPQueueInfo,
-    connId :: Maybe ConnId,
-    status :: InvitationStatus
-  }
-  deriving (Show)
-
-data InvitationStatus = InvNew | InvAcpt | InvCon
-  deriving (Eq, Show)
-
-serializeInvStatus :: InvitationStatus -> Text
-serializeInvStatus = \case
-  InvNew -> ""
-  InvAcpt -> "ACPT"
-  InvCon -> "CON"
-
-invStatusT :: Text -> Maybe InvitationStatus
-invStatusT = \case
-  "" -> Just InvNew
-  "ACPT" -> Just InvAcpt
-  "CON" -> Just InvCon
-  _ -> Nothing
-
 -- * Store errors
 
 -- | Agent store error.
@@ -394,10 +310,6 @@ data StoreError
     SEBadConnType ConnType
   | -- | Confirmation not found.
     SEConfirmationNotFound
-  | -- | Introduction ID not found.
-    SEIntroNotFound
-  | -- | Invitation ID not found.
-    SEInvitationNotFound
   | -- | Currently not used. The intention was to pass current expected queue status in methods,
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.

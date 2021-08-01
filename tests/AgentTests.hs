@@ -45,11 +45,6 @@ agentTests (ATransport t) = do
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
-  describe "Introduction" do
-    it "should send and accept introduction" $
-      smpAgentTest3 $ testIntroduction t
-    it "should send and accept introduction (random IDs)" $
-      smpAgentTest3 $ testIntroductionRandomIds t
 
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
@@ -160,55 +155,6 @@ testSubscrNotification _ (server, _) client = do
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
   client <# ("", "conn1", END)
-
-testIntroduction :: forall c. Transport c => TProxy c -> c -> c -> c -> IO ()
-testIntroduction _ alice bob tom = do
-  -- establish connections
-  (alice, "alice") `connect` (bob, "bob")
-  (alice, "alice") `connect` (tom, "tom")
-  -- send introduction of tom to bob
-  alice #: ("1", "bob", "INTRO tom 8\nmeet tom") #> ("1", "bob", OK)
-  ("", "alice", Right (REQ invId1 "meet tom")) <- (bob <#:)
-  bob #: ("2", "tom_via_alice", "ACPT " <> invId1 <> " 7\nI'm bob") #> ("2", "tom_via_alice", OK)
-  ("", "alice", Right (REQ invId2 "I'm bob")) <- (tom <#:)
-  tom #: ("3", "bob_via_alice", "ACPT " <> invId2 <> " 8\ntom here") #> ("3", "bob_via_alice", OK)
-  ("", "tom_via_alice", Right (CONF confId "tom here")) <- (bob <#:)
-  bob #: ("3.1", "tom_via_alice", "LET " <> confId <> " 7\nI'm bob") #> ("3.1", "tom_via_alice", OK)
-  bob <# ("", "tom_via_alice", CON)
-  tom <# ("", "bob_via_alice", INFO "I'm bob")
-  tom <# ("", "bob_via_alice", CON)
-  alice <# ("", "bob", ICON "tom")
-  -- they can message each other now
-  tom #: ("4", "bob_via_alice", "SEND :hello") #> ("4", "bob_via_alice", SENT 1)
-  bob <#= \case ("", "tom_via_alice", Msg "hello") -> True; _ -> False
-  bob #: ("5", "tom_via_alice", "SEND 9\nhello too") #> ("5", "tom_via_alice", SENT 2)
-  tom <#= \case ("", "bob_via_alice", Msg "hello too") -> True; _ -> False
-
-testIntroductionRandomIds :: forall c. Transport c => TProxy c -> c -> c -> c -> IO ()
-testIntroductionRandomIds _ alice bob tom = do
-  -- establish connections
-  (aliceB, bobA) <- alice `connect'` bob
-  (aliceT, tomA) <- alice `connect'` tom
-  -- send introduction of tom to bob
-  alice #: ("1", bobA, "INTRO " <> tomA <> " 8\nmeet tom") #> ("1", bobA, OK)
-  ("", aliceB', Right (REQ invId1 "meet tom")) <- (bob <#:)
-  aliceB' `shouldBe` aliceB
-  ("2", tomB, Right OK) <- bob #: ("2", "", "ACPT " <> invId1 <> " 7\nI'm bob")
-  ("", aliceT', Right (REQ invId2 "I'm bob")) <- (tom <#:)
-  aliceT' `shouldBe` aliceT
-  ("3", bobT, Right OK) <- tom #: ("3", "", "ACPT " <> invId2 <> " 8\ntom here")
-  ("", tomB', Right (CONF confId "tom here")) <- (bob <#:)
-  tomB' `shouldBe` tomB
-  bob #: ("3.1", tomB, "LET " <> confId <> " 7\nI'm bob") =#> \case ("3.1", c, OK) -> c == tomB; _ -> False
-  bob <# ("", tomB, CON)
-  tom <# ("", bobT, INFO "I'm bob")
-  tom <# ("", bobT, CON)
-  alice <# ("", bobA, ICON tomA)
-  -- they can message each other now
-  tom #: ("4", bobT, "SEND :hello") #> ("4", bobT, SENT 1)
-  bob <#= \case ("", c, Msg "hello") -> c == tomB; _ -> False
-  bob #: ("5", tomB, "SEND 9\nhello too") #> ("5", tomB, SENT 2)
-  tom <#= \case ("", c, Msg "hello too") -> c == bobT; _ -> False
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do

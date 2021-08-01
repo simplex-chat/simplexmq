@@ -29,7 +29,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
-import Control.Monad (join, replicateM_, unless, when)
+import Control.Monad (replicateM_, unless, when)
 import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
@@ -395,151 +395,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
 
-  createIntro :: SQLiteStore -> TVar ChaChaDRG -> NewIntroduction -> m IntroId
-  createIntro st gVar NewIntroduction {toConn, reConn, reInfo} =
-    liftIOEither . withTransaction st $ \db ->
-      createWithRandomId gVar $ \introId ->
-        DB.execute
-          db
-          [sql|
-            INSERT INTO conn_intros
-            (intro_id, to_conn, re_conn, re_info) VALUES (?, ?, ?, ?);
-          |]
-          (introId, toConn, reConn, reInfo)
-
-  getIntro :: SQLiteStore -> IntroId -> m Introduction
-  getIntro st introId =
-    liftIOEither . withConnection st $ \db ->
-      intro
-        <$> DB.query
-          db
-          [sql|
-            SELECT to_conn, to_info, to_status, re_conn, re_info, re_status, queue_info
-            FROM conn_intros
-            WHERE intro_id = ?;
-          |]
-          (Only introId)
-    where
-      intro [(toConn, toInfo, toStatus, reConn, reInfo, reStatus, qInfo)] =
-        Right $ Introduction {introId, toConn, toInfo, toStatus, reConn, reInfo, reStatus, qInfo}
-      intro _ = Left SEIntroNotFound
-
-  addIntroInvitation :: SQLiteStore -> IntroId -> ConnInfo -> SMPQueueInfo -> m ()
-  addIntroInvitation st introId toInfo qInfo =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE conn_intros
-          SET to_info = :to_info,
-              queue_info = :queue_info,
-              to_status = :to_status
-          WHERE intro_id = :intro_id;
-        |]
-        [ ":to_info" := toInfo,
-          ":queue_info" := Just qInfo,
-          ":to_status" := IntroInv,
-          ":intro_id" := introId
-        ]
-
-  setIntroToStatus :: SQLiteStore -> IntroId -> IntroStatus -> m ()
-  setIntroToStatus st introId toStatus =
-    liftIO . withTransaction st $ \db ->
-      DB.execute
-        db
-        [sql|
-          UPDATE conn_intros
-          SET to_status = ?
-          WHERE intro_id = ?;
-        |]
-        (toStatus, introId)
-
-  setIntroReStatus :: SQLiteStore -> IntroId -> IntroStatus -> m ()
-  setIntroReStatus st introId reStatus =
-    liftIO . withTransaction st $ \db ->
-      DB.execute
-        db
-        [sql|
-          UPDATE conn_intros
-          SET re_status = ?
-          WHERE intro_id = ?;
-        |]
-        (reStatus, introId)
-
-  createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
-  createInvitation st gVar NewInvitation {viaConn, externalIntroId, connInfo, qInfo} =
-    liftIOEither . withTransaction st $ \db ->
-      createWithRandomId gVar $ \invId ->
-        DB.execute
-          db
-          [sql|
-            INSERT INTO conn_invitations
-            (inv_id, via_conn, external_intro_id, conn_info, queue_info) VALUES (?, ?, ?, ?, ?);
-          |]
-          (invId, viaConn, externalIntroId, connInfo, qInfo)
-
-  getInvitation :: SQLiteStore -> InvitationId -> m Invitation
-  getInvitation st invId =
-    liftIOEither . withConnection st $ \db ->
-      invitation
-        <$> DB.query
-          db
-          [sql|
-            SELECT via_conn, external_intro_id, conn_info, queue_info, conn_id, status
-            FROM conn_invitations
-            WHERE inv_id = ?;
-          |]
-          (Only invId)
-    where
-      invitation [(viaConn, externalIntroId, connInfo, qInfo, connId, status)] =
-        Right $ Invitation {invId, viaConn, externalIntroId, connInfo, qInfo, connId, status}
-      invitation _ = Left SEInvitationNotFound
-
-  addInvitationConn :: SQLiteStore -> InvitationId -> ConnId -> m ()
-  addInvitationConn st invId connId =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE conn_invitations
-          SET conn_id = :conn_id, status = :status
-          WHERE inv_id = :inv_id;
-        |]
-        [":conn_id" := connId, ":status" := InvAcpt, ":inv_id" := invId]
-
-  getConnInvitation :: SQLiteStore -> ConnId -> m (Maybe (Invitation, Connection 'CDuplex))
-  getConnInvitation st cId =
-    liftIO . withTransaction st $ \db ->
-      DB.query
-        db
-        [sql|
-          SELECT inv_id, via_conn, external_intro_id, conn_info, queue_info, status
-          FROM conn_invitations
-          WHERE conn_id = ?;
-        |]
-        (Only cId)
-        >>= fmap join . traverse (getViaConn db) . invitation
-    where
-      invitation [(invId, viaConn, externalIntroId, connInfo, qInfo, status)] =
-        Just $ Invitation {invId, viaConn, externalIntroId, connInfo, qInfo, connId = Just cId, status}
-      invitation _ = Nothing
-      getViaConn :: DB.Connection -> Invitation -> IO (Maybe (Invitation, Connection 'CDuplex))
-      getViaConn db inv@Invitation {viaConn} = fmap (inv,) . duplexConn <$> getConn_ db viaConn
-      duplexConn :: Either StoreError SomeConn -> Maybe (Connection 'CDuplex)
-      duplexConn (Right (SomeConn SCDuplex conn)) = Just conn
-      duplexConn _ = Nothing
-
-  setInvitationStatus :: SQLiteStore -> InvitationId -> InvitationStatus -> m ()
-  setInvitationStatus st invId status =
-    liftIO . withTransaction st $ \db ->
-      DB.execute
-        db
-        [sql|
-          UPDATE conn_invitations
-          SET status = ? WHERE inv_id = ?;
-        |]
-        (status, invId)
-
 -- * Auxiliary helpers
 
 -- ? replace with ToField? - it's easy to forget to use this
@@ -573,14 +428,6 @@ instance ToField SndMsgStatus where toField = toField . show
 instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
 
 instance FromField MsgIntegrity where fromField = blobFieldParser msgIntegrityP
-
-instance ToField IntroStatus where toField = toField . serializeIntroStatus
-
-instance FromField IntroStatus where fromField = fromTextField_ introStatusT
-
-instance ToField InvitationStatus where toField = toField . serializeInvStatus
-
-instance FromField InvitationStatus where fromField = fromTextField_ invStatusT
 
 instance ToField SMPQueueInfo where toField = toField . serializeSmpQueueInfo
 
@@ -646,22 +493,20 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     ]
 
 insertRcvConnection_ :: DB.Connection -> ConnData -> RcvQueue -> IO ()
-insertRcvConnection_ dbConn ConnData {connId, viaInv, connLevel} RcvQueue {server, rcvId} = do
+insertRcvConnection_ dbConn ConnData {connId} RcvQueue {server, rcvId} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO connections
-        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, via_inv, conn_level, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
       VALUES
-        (:conn_alias,:rcv_host,:rcv_port,:rcv_id, NULL,     NULL,     NULL,  :via_inv,:conn_level, 0, 0, 0, 0, x'', x'');
+        (:conn_alias,:rcv_host,:rcv_port,:rcv_id, NULL,     NULL,     NULL, 0, 0, 0, 0, x'', x'');
     |]
     [ ":conn_alias" := connId,
       ":rcv_host" := host server,
       ":rcv_port" := port_,
-      ":rcv_id" := rcvId,
-      ":via_inv" := viaInv,
-      ":conn_level" := connLevel
+      ":rcv_id" := rcvId
     ]
 
 -- * createSndConn helpers
@@ -688,22 +533,20 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     ]
 
 insertSndConnection_ :: DB.Connection -> ConnData -> SndQueue -> IO ()
-insertSndConnection_ dbConn ConnData {connId, viaInv, connLevel} SndQueue {server, sndId} = do
+insertSndConnection_ dbConn ConnData {connId} SndQueue {server, sndId} = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO connections
-        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, via_inv, conn_level, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
       VALUES
-        (:conn_alias, NULL,     NULL,     NULL,  :snd_host,:snd_port,:snd_id,:via_inv,:conn_level, 0, 0, 0, 0, x'', x'');
+        (:conn_alias, NULL,     NULL,     NULL,  :snd_host,:snd_port,:snd_id, 0, 0, 0, 0, x'', x'');
     |]
     [ ":conn_alias" := connId,
       ":snd_host" := host server,
       ":snd_port" := port_,
-      ":snd_id" := sndId,
-      ":via_inv" := viaInv,
-      ":conn_level" := connLevel
+      ":snd_id" := sndId
     ]
 
 -- * getConn helpers
@@ -722,11 +565,11 @@ getConn_ dbConn connId =
         _ -> Left SEConnNotFound
 
 getConnData_ :: DB.Connection -> ConnId -> IO (Maybe ConnData)
-getConnData_ dbConn connId =
+getConnData_ dbConn connId' =
   connData
-    <$> DB.query dbConn "SELECT via_inv, conn_level FROM connections WHERE conn_alias = ?;" (Only connId)
+    <$> DB.query dbConn "SELECT conn_alias FROM connections WHERE conn_alias = ?;" (Only connId')
   where
-    connData [(viaInv, connLevel)] = Just ConnData {connId, viaInv, connLevel}
+    connData [Only connId] = Just ConnData {connId}
     connData _ = Nothing
 
 getRcvQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
