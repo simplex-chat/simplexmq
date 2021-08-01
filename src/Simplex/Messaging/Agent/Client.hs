@@ -254,12 +254,6 @@ sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
     mkConfirmation :: SMPClient -> m MsgBody
     mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
 
-data RetryInterval = RetryInterval
-  { initialInterval :: Int,
-    increaseAfter :: Int,
-    maxInterval :: Int
-  }
-
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> RetryInterval -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey RetryInterval {initialInterval, increaseAfter, maxInterval} =
   withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
@@ -285,7 +279,7 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey RetryInterval {
           let newDelay =
                 if elapsedTime < increaseAfter || delay == maxInterval
                   then delay
-                  else min (delay * 20 `div` 19) maxInterval
+                  else min (delay * 3 `div` 2) maxInterval
           send (elapsedTime + delay) newDelay msg smp
         e -> throwE e
 

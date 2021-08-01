@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Env.SQLite where
@@ -25,8 +26,37 @@ data AgentConfig = AgentConfig
     tbqSize :: Natural,
     dbFile :: FilePath,
     dbPoolSize :: Int,
-    smpCfg :: SMPClientConfig
+    smpCfg :: SMPClientConfig,
+    retryInterval :: RetryInterval
   }
+
+minute :: Int
+minute = 60_000_000
+
+data RetryInterval = RetryInterval
+  { initialInterval :: Int,
+    increaseAfter :: Int,
+    maxInterval :: Int
+  }
+
+defaultAgentConfig :: AgentConfig
+defaultAgentConfig =
+  AgentConfig
+    { tcpPort = "5224",
+      smpServers = undefined,
+      rsaKeySize = 2048 `div` 8,
+      connIdBytes = 12,
+      tbqSize = 16,
+      dbFile = "smp-agent.db",
+      dbPoolSize = 4,
+      smpCfg = smpDefaultConfig,
+      retryInterval =
+        RetryInterval
+          { initialInterval = 1_000_000,
+            increaseAfter = minute,
+            maxInterval = 10 * minute
+          }
+    }
 
 data Env = Env
   { config :: AgentConfig,

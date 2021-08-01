@@ -270,36 +270,15 @@ newConn c connId viaInv connLevel = do
   addSubscription c rq connId'
   pure (connId', qInfo)
 
-sec :: Int
-sec = 1_000_000
-
-minute :: Int
-minute = 60 * sec
-
-onlineInterval :: RetryInterval
-onlineInterval =
-  RetryInterval
-    { initialInterval = sec `div` 10,
-      increaseAfter = 2 * sec,
-      maxInterval = 10 * minute
-    }
-
-resumeInterval :: RetryInterval
-resumeInterval =
-  RetryInterval
-    { initialInterval = 5 * sec,
-      increaseAfter = 0,
-      maxInterval = 10 * minute
-    }
-
 joinConn :: AgentMonad m => AgentClient -> ConnId -> SMPQueueInfo -> ConnInfo -> Maybe InvitationId -> Int -> m ConnId
 joinConn c connId qInfo cInfo viaInv connLevel = do
   (sq, senderKey, verifyKey) <- newSndQueue qInfo
   g <- asks idsDrg
+  cfg <- asks config
   let cData = ConnData {connId, viaInv, connLevel}
   connId' <- withStore $ \st -> createSndConn st g cData sq
   confirmQueue c sq senderKey cInfo
-  activateQueueJoining c connId' sq verifyKey onlineInterval
+  activateQueueJoining c connId' sq verifyKey $ retryInterval cfg
   pure connId'
 
 activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
@@ -373,7 +352,7 @@ subscribeConnection' c connId =
       _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (SndConnection _ sq) -> case status (sq :: SndQueue) of
       Confirmed -> withVerifyKey sq $ \verifyKey ->
-        activateQueueJoining c connId sq verifyKey resumeInterval
+        activateQueueJoining c connId sq verifyKey =<< resumeInterval
       Active -> throwError $ CONN SIMPLEX
       _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
@@ -384,8 +363,12 @@ subscribeConnection' c connId =
        in maybe err action . C.publicKey $ signKey sq
     activateSecuredQueue :: RcvQueue -> SndQueue -> C.PublicKey -> m ()
     activateSecuredQueue rq sq verifyKey = do
-      activateQueueInitiating c connId sq verifyKey resumeInterval
+      activateQueueInitiating c connId sq verifyKey =<< resumeInterval
       subscribeQueue c rq connId
+    resumeInterval :: m RetryInterval
+    resumeInterval = do
+      r <- asks $ retryInterval . config
+      pure r {initialInterval = 5_000_000}
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
@@ -543,7 +526,8 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               withStore $ \st -> upgradeRcvConnToDuplex st connId sq
               confirmQueue c sq senderKey ownConnInfo
               withStore (`removeConfirmations` connId)
-              activateQueueInitiating c connId sq verifyKey onlineInterval
+              cfg <- asks config
+              activateQueueInitiating c connId sq verifyKey $ retryInterval cfg
             _ -> prohibited
 
         introMsg :: IntroId -> ConnInfo -> m ()
