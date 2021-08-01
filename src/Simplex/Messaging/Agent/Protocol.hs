@@ -156,8 +156,8 @@ data ACommand (p :: AParty) where
   NEW :: ACommand Client -- response INV
   INV :: SMPQueueInfo -> ACommand Agent
   JOIN :: SMPQueueInfo -> ConnInfo -> ACommand Client -- response OK
-  CONF :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  REQ :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  ACPT :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
@@ -450,8 +450,8 @@ commandP =
   "NEW" $> ACmd SClient NEW
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
-    <|> "CONF " *> confCmd
-    <|> "LET " *> letCmd
+    <|> "REQ " *> reqCmd
+    <|> "ACPT " *> acptCmd
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
@@ -466,8 +466,8 @@ commandP =
   where
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <* A.space <*> A.takeByteString)
-    confCmd = ACmd SAgent <$> (CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
-    letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    reqCmd = ACmd SAgent <$> (REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    acptCmd = ACmd SClient <$> (ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
@@ -500,8 +500,8 @@ serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo cInfo -> "JOIN " <> serializeSmpQueueInfo qInfo <> " " <> serializeBinary cInfo
-  CONF confId cInfo -> "CONF " <> confId <> " " <> serializeBinary cInfo
-  LET confId cInfo -> "LET " <> confId <> " " <> serializeBinary cInfo
+  REQ confId cInfo -> "REQ " <> confId <> " " <> serializeBinary cInfo
+  ACPT confId cInfo -> "ACPT " <> confId <> " " <> serializeBinary cInfo
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
@@ -611,8 +611,8 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       SEND body -> SEND <$$> getBody body
       MSG msgMeta body -> MSG msgMeta <$$> getBody body
       JOIN qInfo cInfo -> JOIN qInfo <$$> getBody cInfo
-      CONF confId cInfo -> CONF confId <$$> getBody cInfo
-      LET confId cInfo -> LET confId <$$> getBody cInfo
+      REQ confId cInfo -> REQ confId <$$> getBody cInfo
+      ACPT confId cInfo -> ACPT confId <$$> getBody cInfo
       INFO cInfo -> INFO <$$> getBody cInfo
       cmd -> pure $ Right cmd
 

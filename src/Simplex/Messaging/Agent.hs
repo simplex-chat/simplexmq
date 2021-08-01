@@ -41,7 +41,7 @@ module Simplex.Messaging.Agent
     disconnectAgentClient, -- used in tests
     createConnection,
     joinConnection,
-    allowConnection,
+    acceptConnection,
     subscribeConnection,
     sendMessage,
     suspendConnection,
@@ -129,8 +129,8 @@ joinConnection :: AgentErrorMonad m => AgentClient -> SMPQueueInfo -> ConnInfo -
 joinConnection c = (`runReaderT` agentEnv c) .: joinConn c ""
 
 -- | Approve confirmation (LET command)
-allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-allowConnection c = (`runReaderT` agentEnv c) .:. allowConnection' c
+acceptConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+acceptConnection c = (`runReaderT` agentEnv c) .:. acceptConnection' c
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
@@ -221,7 +221,7 @@ processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Cl
 processCommand c (connId, cmd) = case cmd of
   NEW -> second INV <$> newConn c connId
   JOIN smpQueueInfo connInfo -> (,OK) <$> joinConn c connId smpQueueInfo connInfo
-  LET confId ownConnInfo -> allowConnection' c connId confId ownConnInfo $> (connId, OK)
+  ACPT confId ownConnInfo -> acceptConnection' c connId confId ownConnInfo $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgBody -> (connId,) . SENT . unId <$> sendMessage' c connId msgBody
   OFF -> suspendConnection' c connId $> (connId, OK)
@@ -261,8 +261,8 @@ activateQueueJoining c connId sq verifyKey retryInterval =
       sendControlMessage c sq $ REPLY qInfo'
 
 -- | Approve confirmation (LET command) in Reader monad
-allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-allowConnection' c connId confId ownConnInfo =
+acceptConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+acceptConnection' c connId confId ownConnInfo =
   withStore (`getConn` connId) >>= \case
     SomeConn SCRcv (RcvConnection _ rq) -> do
       AcceptedConfirmation {senderKey} <- withStore $ \st -> acceptConfirmation st confId ownConnInfo
@@ -431,7 +431,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 g <- asks idsDrg
                 let newConfirmation = NewConfirmation {connId, senderKey, senderConnInfo = cInfo}
                 confId <- withStore $ \st -> createConfirmation st g newConfirmation
-                notify $ CONF confId cInfo
+                notify $ REQ confId cInfo
               SCDuplex -> do
                 notify $ INFO cInfo
                 processConfirmation c rq senderKey

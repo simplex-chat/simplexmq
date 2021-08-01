@@ -94,8 +94,8 @@ testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   bob #: ("11", "alice", "JOIN " <> qInfo' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "bob", Right (CONF confId "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  ("", "bob", Right (REQ confId "bob's connInfo")) <- (alice <#:)
+  alice #: ("2", "bob", "ACPT " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
@@ -117,9 +117,9 @@ testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV qInfo)) <- alice #: ("1", "", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> qInfo' <> " 14\nbob's connInfo")
-  ("", bobConn', Right (CONF confId "bob's connInfo")) <- (alice <#:)
+  ("", bobConn', Right (REQ confId "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
-  alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
+  alice #: ("2", bobConn, "ACPT " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
   bob <# ("", aliceConn, INFO "alice's connInfo")
   bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
@@ -161,8 +161,8 @@ connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV qInfo)) <- h1 #: ("c1", name2, "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   h2 #: ("c2", name1, "JOIN " <> qInfo' <> " 5\ninfo2") #> ("c2", name1, OK)
-  ("", _, Right (CONF connId "info2")) <- (h1 <#:)
-  h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
+  ("", _, Right (REQ connId "info2")) <- (h1 <#:)
+  h1 #: ("c3", name2, "ACPT " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
   h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
@@ -172,8 +172,8 @@ connect' h1 h2 = do
   ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
   let qInfo' = serializeSmpQueueInfo qInfo
   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo' <> " 5\ninfo2")
-  ("", _, Right (CONF connId "info2")) <- (h1 <#:)
-  h1 #: ("c3", conn2, "LET " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
+  ("", _, Right (REQ connId "info2")) <- (h1 <#:)
+  h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
   h2 <# ("", conn1, INFO "info1")
   h2 <# ("", conn1, CON)
   h1 <# ("", conn2, CON)
