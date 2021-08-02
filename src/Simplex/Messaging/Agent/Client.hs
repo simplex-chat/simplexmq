@@ -73,7 +73,8 @@ data AgentClient = AgentClient
     activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
     clientId :: Int,
     agentEnv :: Env,
-    smpSubscriber :: Async ()
+    smpSubscriber :: Async (),
+    lock :: TMVar ()
   }
 
 newAgentClient :: Env -> STM AgentClient
@@ -87,7 +88,8 @@ newAgentClient agentEnv = do
   subscrConns <- newTVar M.empty
   activations <- newTVar M.empty
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, clientId, agentEnv, smpSubscriber = undefined}
+  lock <- newTMVar ()
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)

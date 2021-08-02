@@ -186,10 +186,16 @@ logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> 
 logClient AgentClient {clientId} dir (corrId, connId, cmd) = do
   logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, B.takeWhile (/= ' ') $ serializeCommand cmd]
 
+withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
+withAgentLock AgentClient {lock} =
+  E.bracket_
+    (void . atomically $ takeTMVar lock)
+    (atomically $ putTMVar lock ())
+
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 client c@AgentClient {rcvQ, subQ} = forever $ do
   (corrId, connId, cmd) <- atomically $ readTBQueue rcvQ
-  runExceptT (processCommand c (connId, cmd))
+  withAgentLock c (runExceptT $ processCommand c (connId, cmd))
     >>= atomically . writeTBQueue subQ . \case
       Left e -> (corrId, connId, ERR e)
       Right (connId', resp) -> (corrId, connId', resp)
@@ -380,7 +386,7 @@ sendControlMessage c sq agentMessage = do
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
-  runExceptT (processSMPTransmission c t) >>= \case
+  withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
 
@@ -467,17 +473,14 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         agentClientMsg :: PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
         agentClientMsg externalPrevSndHash sender broker msgBody internalHash = do
           logServer "<--" c srv rId "MSG <MSG>"
-          case status of
-            Active -> do
-              internalTs <- liftIO getCurrentTime
-              (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore (`updateRcvIds` connId)
-              let integrity = checkMsgIntegrity prevExtSndId (fst sender) prevRcvMsgHash externalPrevSndHash
-                  recipient = (unId internalId, internalTs)
-                  msgMeta = MsgMeta {integrity, recipient, sender, broker}
-                  rcvMsg = RcvMsgData {msgMeta, msgBody, internalRcvId, internalHash, externalPrevSndHash}
-              withStore $ \st -> createRcvMsg st connId rcvMsg
-              notify $ MSG msgMeta msgBody
-            _ -> prohibited
+          internalTs <- liftIO getCurrentTime
+          (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore (`updateRcvIds` connId)
+          let integrity = checkMsgIntegrity prevExtSndId (fst sender) prevRcvMsgHash externalPrevSndHash
+              recipient = (unId internalId, internalTs)
+              msgMeta = MsgMeta {integrity, recipient, sender, broker}
+              rcvMsg = RcvMsgData {msgMeta, msgBody, internalRcvId, internalHash, externalPrevSndHash}
+          withStore $ \st -> createRcvMsg st connId rcvMsg
+          notify $ MSG msgMeta msgBody
 
         checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
         checkMsgIntegrity prevExtSndId extSndId internalPrevMsgHash receivedPrevMsgHash
