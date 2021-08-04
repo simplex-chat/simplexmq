@@ -121,7 +121,7 @@ connectSQLiteStore dbFilePath poolSize = do
 connectDB :: FilePath -> IO DB.Connection
 connectDB path = do
   dbConn <- DB.open path
-  DB.execute_ dbConn "PRAGMA foreign_keys = ON; PRAGMA journal_mode = TRUNCATE;"
+  DB.execute_ dbConn "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;"
   pure dbConn
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
@@ -186,7 +186,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getAllConnIds :: SQLiteStore -> m [ConnId]
   getAllConnIds st =
-    liftIO . withConnection st $ \db ->
+    liftIO . withTransaction st $ \db ->
       concat <$> (DB.query_ db "SELECT conn_alias FROM connections;" :: IO [[ConnId]])
 
   getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
@@ -334,7 +334,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getAcceptedConfirmation :: SQLiteStore -> ConnId -> m AcceptedConfirmation
   getAcceptedConfirmation st connId =
-    liftIOEither . withConnection st $ \db ->
+    liftIOEither . withTransaction st $ \db ->
       confirmation
         <$> DB.query
           db

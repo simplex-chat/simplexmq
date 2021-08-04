@@ -122,31 +122,34 @@ type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
-createConnection c = (`runReaderT` agentEnv c) $ newConn c ""
+createConnection c = withAgentClient c $ newConn c ""
 
 -- | Join SMP agent connection (JOIN command)
 joinConnection :: AgentErrorMonad m => AgentClient -> SMPQueueInfo -> ConnInfo -> m ConnId
-joinConnection c = (`runReaderT` agentEnv c) .: joinConn c ""
+joinConnection c = withAgentClient c .: joinConn c ""
 
 -- | Approve confirmation (LET command)
 acceptConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-acceptConnection c = (`runReaderT` agentEnv c) .:. acceptConnection' c
+acceptConnection c = withAgentClient c .:. acceptConnection' c
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-subscribeConnection c = (`runReaderT` agentEnv c) . subscribeConnection' c
+subscribeConnection c = withAgentClient c . subscribeConnection' c
 
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
-sendMessage c = (`runReaderT` agentEnv c) .: sendMessage' c
+sendMessage c = withAgentClient c .: sendMessage' c
 
 -- | Suspend SMP agent connection (OFF command)
 suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-suspendConnection c = (`runReaderT` agentEnv c) . suspendConnection' c
+suspendConnection c = withAgentClient c . suspendConnection' c
 
 -- | Delete SMP agent connection (DEL command)
 deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-deleteConnection c = (`runReaderT` agentEnv c) . deleteConnection' c
+deleteConnection c = withAgentClient c . deleteConnection' c
+
+withAgentClient :: AgentErrorMonad m => AgentClient -> ReaderT Env m a -> m a
+withAgentClient c = withAgentLock c . (`runReaderT` agentEnv c)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
