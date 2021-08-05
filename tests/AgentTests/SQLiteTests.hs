@@ -147,7 +147,7 @@ testForeignKeysEnabled =
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
 
 cData1 :: ConnData
-cData1 = ConnData {connId = "conn1", viaInv = Nothing, connLevel = 1}
+cData1 = ConnData {connId = "conn1"}
 
 rcvQueue1 :: RcvQueue
 rcvQueue1 =

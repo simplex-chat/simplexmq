@@ -156,14 +156,10 @@ data ACommand (p :: AParty) where
   NEW :: ACommand Client -- response INV
   INV :: SMPQueueInfo -> ACommand Agent
   JOIN :: SMPQueueInfo -> ConnInfo -> ACommand Client -- response OK
-  CONF :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
-  INTRO :: ConnId -> ConnInfo -> ACommand Client
-  REQ :: InvitationId -> ConnInfo -> ACommand Agent
-  ACPT :: InvitationId -> ConnInfo -> ACommand Client
+  REQ :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  ACPT :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
-  ICON :: ConnId -> ACommand Agent
   SUB :: ACommand Client
   END :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
@@ -225,14 +221,6 @@ data AMessage where
   REPLY :: SMPQueueInfo -> AMessage
   -- | agent envelope for the client message
   A_MSG :: MsgBody -> AMessage
-  -- | agent message for introduction
-  A_INTRO :: IntroId -> ConnInfo -> AMessage
-  -- | agent envelope for the sent invitation
-  A_INV :: IntroId -> SMPQueueInfo -> ConnInfo -> AMessage
-  -- | agent envelope for the forwarded invitation
-  A_REQ :: IntroId -> SMPQueueInfo -> ConnInfo -> AMessage
-  -- | agent message for intro/group request
-  A_CON :: IntroId -> AMessage
   deriving (Show)
 
 -- | Parse SMP message.
@@ -273,19 +261,10 @@ agentMessageP =
   "HELLO " *> hello
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
-    <|> "INTRO " *> a_intro
-    <|> "INV " *> a_inv
-    <|> "REQ " *> a_req
-    <|> "CON " *> a_con
   where
     hello = HELLO <$> C.pubKeyP <*> ackMode
     reply = REPLY <$> smpQueueInfoP
     a_msg = A_MSG <$> binaryBodyP <* A.endOfLine
-    a_intro = A_INTRO <$> A.takeTill (== ' ') <* A.space <*> binaryBodyP <* A.endOfLine
-    a_inv = invP A_INV
-    a_req = invP A_REQ
-    a_con = A_CON <$> A.takeTill wordEnd
-    invP f = f <$> A.takeTill (== ' ') <* A.space <*> smpQueueInfoP <* A.space <*> binaryBodyP <* A.endOfLine
     ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
 -- | SMP queue information parser.
@@ -306,13 +285,6 @@ serializeAgentMessage = \case
   HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY qInfo -> "REPLY " <> serializeSmpQueueInfo qInfo
   A_MSG body -> "MSG " <> serializeBinary body <> "\n"
-  A_INTRO introId cInfo -> "INTRO " <> introId <> " " <> serializeBinary cInfo <> "\n"
-  A_INV introId qInfo cInfo -> "INV " <> serializeInv introId qInfo cInfo
-  A_REQ introId qInfo cInfo -> "REQ " <> serializeInv introId qInfo cInfo
-  A_CON introId -> "CON " <> introId
-  where
-    serializeInv introId qInfo cInfo =
-      B.intercalate " " [introId, serializeSmpQueueInfo qInfo, serializeBinary cInfo] <> "\n"
 
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSmpQueueInfo :: SMPQueueInfo -> ByteString
@@ -478,9 +450,6 @@ commandP =
   "NEW" $> ACmd SClient NEW
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
-    <|> "CONF " *> confCmd
-    <|> "LET " *> letCmd
-    <|> "INTRO " *> introCmd
     <|> "REQ " *> reqCmd
     <|> "ACPT " *> acptCmd
     <|> "INFO " *> infoCmd
@@ -492,21 +461,16 @@ commandP =
     <|> "OFF" $> ACmd SClient OFF
     <|> "DEL" $> ACmd SClient DEL
     <|> "ERR " *> agentError
-    <|> "ICON " *> iconMsg
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
     invResp = ACmd SAgent . INV <$> smpQueueInfoP
     joinCmd = ACmd SClient <$> (JOIN <$> smpQueueInfoP <* A.space <*> A.takeByteString)
-    confCmd = ACmd SAgent <$> (CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
-    letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
-    introCmd = ACmd SClient <$> introP INTRO
-    reqCmd = ACmd SAgent <$> introP REQ
-    acptCmd = ACmd SClient <$> introP ACPT
+    reqCmd = ACmd SAgent <$> (REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    acptCmd = ACmd SClient <$> (ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     sentResp = ACmd SAgent . SENT <$> A.decimal
-    iconMsg = ACmd SAgent . ICON <$> A.takeTill wordEnd
     message = ACmd SAgent <$> (MSG <$> msgMetaP <* A.space <*> A.takeByteString)
     msgMetaP = do
       integrity <- msgIntegrityP
@@ -514,7 +478,6 @@ commandP =
       broker <- " B=" *> partyMeta base64P
       sender <- " S=" *> partyMeta A.decimal
       pure MsgMeta {integrity, recipient, broker, sender}
-    introP f = f <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
@@ -537,11 +500,8 @@ serializeCommand = \case
   NEW -> "NEW"
   INV qInfo -> "INV " <> serializeSmpQueueInfo qInfo
   JOIN qInfo cInfo -> "JOIN " <> serializeSmpQueueInfo qInfo <> " " <> serializeBinary cInfo
-  CONF confId cInfo -> "CONF " <> confId <> " " <> serializeBinary cInfo
-  LET confId cInfo -> "LET " <> confId <> " " <> serializeBinary cInfo
-  INTRO connId cInfo -> "INTRO " <> connId <> " " <> serializeBinary cInfo
-  REQ invId cInfo -> "REQ " <> invId <> " " <> serializeBinary cInfo
-  ACPT invId cInfo -> "ACPT " <> invId <> " " <> serializeBinary cInfo
+  REQ confId cInfo -> "REQ " <> confId <> " " <> serializeBinary cInfo
+  ACPT confId cInfo -> "ACPT " <> confId <> " " <> serializeBinary cInfo
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
@@ -552,7 +512,6 @@ serializeCommand = \case
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
-  ICON connId -> "ICON " <> connId
   ERR e -> "ERR " <> serializeAgentError e
   OK -> "OK"
   where
@@ -640,7 +599,6 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       -- NEW, JOIN and ACPT have optional connId
       NEW -> Right cmd
       JOIN {} -> Right cmd
-      ACPT {} -> Right cmd
       -- ERROR response does not always have connId
       ERR _ -> Right cmd
       -- other responses must have connId
@@ -652,12 +610,9 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody = \case
       SEND body -> SEND <$$> getBody body
       MSG msgMeta body -> MSG msgMeta <$$> getBody body
-      INTRO introId cInfo -> INTRO introId <$$> getBody cInfo
-      REQ introId cInfo -> REQ introId <$$> getBody cInfo
-      ACPT introId cInfo -> ACPT introId <$$> getBody cInfo
       JOIN qInfo cInfo -> JOIN qInfo <$$> getBody cInfo
-      CONF confId cInfo -> CONF confId <$$> getBody cInfo
-      LET confId cInfo -> LET confId <$$> getBody cInfo
+      REQ confId cInfo -> REQ confId <$$> getBody cInfo
+      ACPT confId cInfo -> ACPT confId <$$> getBody cInfo
       INFO cInfo -> INFO <$$> getBody cInfo
       cmd -> pure $ Right cmd
 

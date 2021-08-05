@@ -56,8 +56,8 @@ testAgentClient = do
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
-    allowConnection alice bobId confId "alice's connInfo"
+    ("", _, REQ confId "bob's connInfo") <- get alice
+    acceptConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -93,8 +93,8 @@ testAsyncInitiatingOffline = do
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     alice' <- liftIO $ getSMPAgentClient cfg
     subscribeConnection alice' bobId
-    ("", _, CONF confId "bob's connInfo") <- get alice'
-    allowConnection alice' bobId confId "alice's connInfo"
+    ("", _, REQ confId "bob's connInfo") <- get alice'
+    acceptConnection alice' bobId confId "alice's connInfo"
     get alice' ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -109,8 +109,8 @@ testAsyncJoiningOfflineBeforeActivation = do
     (bobId, qInfo) <- createConnection alice
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     disconnectAgentClient bob
-    ("", _, CONF confId "bob's connInfo") <- get alice
-    allowConnection alice bobId confId "alice's connInfo"
+    ("", _, REQ confId "bob's connInfo") <- get alice
+    acceptConnection alice bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
     subscribeConnection bob' aliceId
     get alice ##> ("", bobId, CON)
@@ -133,8 +133,8 @@ testAsyncBothOffline = do
     disconnectAgentClient bob
     alice' <- liftIO $ getSMPAgentClient cfg
     subscribeConnection alice' bobId
-    ("", _, CONF confId "bob's connInfo") <- get alice'
-    allowConnection alice' bobId confId "alice's connInfo"
+    ("", _, REQ confId "bob's connInfo") <- get alice'
+    acceptConnection alice' bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
     subscribeConnection bob' aliceId
     get alice' ##> ("", bobId, CON)
