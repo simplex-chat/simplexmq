@@ -264,9 +264,9 @@ data SndMsg = SndMsg
 newtype InternalSndId = InternalSndId {unSndId :: Int64} deriving (Eq, Show)
 
 data SndMsgStatus
-  = Created
-  | Sent
-  | Delivered
+  = SndMsgCreated
+  | SndMsgSent
+  | SndMsgDelivered
   deriving (Eq, Show)
 
 type SentTs = UTCTime

@@ -189,12 +189,6 @@ logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> 
 logClient AgentClient {clientId} dir (corrId, connId, cmd) = do
   logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, B.takeWhile (/= ' ') $ serializeCommand cmd]
 
-withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
-withAgentLock AgentClient {lock} =
-  E.bracket_
-    (void . atomically $ takeTMVar lock)
-    (atomically $ putTMVar lock ())
-
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 client c@AgentClient {rcvQ, subQ} = forever $ do
   (corrId, connId, cmd) <- atomically $ readTBQueue rcvQ
