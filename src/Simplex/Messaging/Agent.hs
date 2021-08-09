@@ -62,6 +62,8 @@ import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
+import Data.Maybe (isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
@@ -69,6 +71,7 @@ import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
@@ -226,7 +229,7 @@ processCommand c (connId, cmd) = case cmd of
   JOIN smpQueueInfo connInfo -> (,OK) <$> joinConn c connId smpQueueInfo connInfo
   ACPT confId ownConnInfo -> acceptConnection' c connId confId ownConnInfo $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
-  SEND msgBody -> (connId,) . SENT . unId <$> sendMessage' c connId msgBody
+  SEND msgBody -> (connId,) . MID . unId <$> sendMessage' c connId msgBody
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
 
@@ -315,28 +318,80 @@ subscribeConnection' c connId =
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
 sendMessage' c connId msgBody =
   withStore (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ _ sq) -> sendMsg_ sq
-    SomeConn _ (SndConnection _ sq) -> sendMsg_ sq
+    SomeConn _ (DuplexConnection _ _ sq) -> enqueueMessage sq
+    SomeConn _ (SndConnection _ sq) -> enqueueMessage sq
     _ -> throwError $ CONN SIMPLEX
   where
-    sendMsg_ :: SndQueue -> m InternalId
-    sendMsg_ sq = do
-      internalTs <- liftIO getCurrentTime
-      (internalId, internalSndId, previousMsgHash) <- withStore (`updateSndIds` connId)
-      let msgStr =
-            serializeSMPMessage
-              SMPMessage
-                { senderMsgId = unSndId internalSndId,
-                  senderTimestamp = internalTs,
-                  previousMsgHash,
-                  agentMessage = A_MSG msgBody
-                }
-          msgHash = C.sha256Hash msgStr
-      withStore $ \st ->
-        createSndMsg st connId $
-          SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = msgHash}
-      sendAgentMessage c sq msgStr
-      pure internalId
+    enqueueMessage :: SndQueue -> m InternalId
+    enqueueMessage SndQueue {server} = do
+      (msgId, _) <- storeSentMsg
+      mq <- atomically $ queueDelivery msgId
+      checkDelivery mq
+      pure msgId
+      where
+        storeSentMsg :: m (InternalId, ByteString)
+        storeSentMsg = do
+          internalTs <- liftIO getCurrentTime
+          withStore $ \st -> do
+            (internalId, internalSndId, previousMsgHash) <- updateSndIds st connId
+            let msgStr =
+                  serializeSMPMessage
+                    SMPMessage
+                      { senderMsgId = unSndId internalSndId,
+                        senderTimestamp = internalTs,
+                        previousMsgHash,
+                        agentMessage = A_MSG msgBody
+                      }
+                msgData = SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = C.sha256Hash msgStr, previousMsgHash}
+            createSndMsg st connId msgData
+            pure (internalId, msgStr)
+        queueDelivery :: InternalId -> STM (TQueue PendingMsg)
+        queueDelivery msgId = do
+          mq <- maybe newMsgQueue pure . M.lookup server =<< readTVar (msgQueues c)
+          writeTQueue mq PendingMsg {connId, msgId}
+          pure mq
+        newMsgQueue :: STM (TQueue PendingMsg)
+        newMsgQueue = do
+          mq <- newTQueue
+          modifyTVar (msgQueues c) $ M.insert server mq
+          pure mq
+        checkDelivery :: TQueue PendingMsg -> m ()
+        checkDelivery mq = do
+          ds <- readTVarIO $ msgDeliveries c
+          when (isNothing $ M.lookup server ds) $ do
+            a <- async $ runDelivery c mq
+            atomically . modifyTVar (msgDeliveries c) $ M.insert server a
+
+runDelivery :: forall m. AgentMonad m => AgentClient -> TQueue PendingMsg -> m ()
+runDelivery c@AgentClient {subQ} mq = do
+  ri <- asks $ reconnectInterval . config
+  forever $ do
+    PendingMsg {connId, msgId} <- atomically $ readTQueue mq
+    let mId = unId msgId
+    r <- withStore $ \st ->
+      (Right <$> getSndMsgData st connId msgId)
+        `E.catch` \(e :: E.SomeException) -> pure $ Left e
+    case r of
+      Left e -> notify connId $ MERR mId (INTERNAL $ show e)
+      Right (sq, SndMsgData {msgBody, internalTs, internalSndId, previousMsgHash}) -> do
+        let msgStr =
+              serializeSMPMessage
+                SMPMessage
+                  { senderMsgId = unSndId internalSndId,
+                    senderTimestamp = internalTs,
+                    previousMsgHash,
+                    agentMessage = A_MSG msgBody
+                  }
+        withRetryInterval ri $ \loop -> do
+          sendAgentMessage c sq msgStr
+            `catchError` \case
+              e@SMP {} -> notify connId $ MERR mId e
+              _ -> loop
+          notify connId $ SENT mId
+          withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
+  where
+    notify :: ConnId -> ACommand 'Agent -> m ()
+    notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()

@@ -169,6 +169,7 @@ data ACommand (p :: AParty) where
   SEND :: MsgBody -> ACommand Client
   MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
+  MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
   MSG :: MsgMeta -> MsgBody -> ACommand Agent
   -- ACK :: AgentMsgId -> ACommand Client
   -- RCVD :: AgentMsgId -> ACommand Agent
@@ -463,6 +464,7 @@ commandP =
     <|> "SEND " *> sendCmd
     <|> "MID " *> msgIdResp
     <|> "SENT " *> sentResp
+    <|> "MERR " *> msgErrResp
     <|> "MSG " *> message
     <|> "OFF" $> ACmd SClient OFF
     <|> "DEL" $> ACmd SClient DEL
@@ -478,6 +480,7 @@ commandP =
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
+    msgErrResp = ACmd SAgent <$> (MERR <$> A.decimal <* A.space <*> agentErrorTypeP)
     message = ACmd SAgent <$> (MSG <$> msgMetaP <* A.space <*> A.takeByteString)
     msgMetaP = do
       integrity <- msgIntegrityP
@@ -517,6 +520,7 @@ serializeCommand = \case
   SEND msgBody -> "SEND " <> serializeBinary msgBody
   MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
+  MERR mId e -> "MERR " <> bshow mId <> " " <> serializeAgentError e
   MSG msgMeta msgBody ->
     "MSG " <> serializeMsgMeta msgMeta <> " " <> serializeBinary msgBody
   OFF -> "OFF"

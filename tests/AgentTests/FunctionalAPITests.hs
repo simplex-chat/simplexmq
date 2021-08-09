@@ -7,7 +7,7 @@
 
 module AgentTests.FunctionalAPITests (functionalAPITests) where
 
-import Control.Monad.Except (ExceptT, catchError, runExceptT)
+import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
 import SMPAgentClient
 import SMPClient (withSmpServer)
@@ -62,15 +62,20 @@ testAgentClient = do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     InternalId 1 <- sendMessage alice bobId "hello"
+    get alice ##> ("", bobId, SENT 1)
     InternalId 2 <- sendMessage alice bobId "how are you?"
+    get alice ##> ("", bobId, SENT 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
     InternalId 3 <- sendMessage bob aliceId "hello too"
+    get bob ##> ("", aliceId, SENT 3)
     InternalId 4 <- sendMessage bob aliceId "message 1"
+    get bob ##> ("", aliceId, SENT 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     suspendConnection alice bobId
-    InternalId 0 <- sendMessage bob aliceId "message 2" `catchError` \(SMP AUTH) -> pure $ InternalId 0
+    InternalId 5 <- sendMessage bob aliceId "message 2"
+    get bob ##> ("", aliceId, MERR 5 (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   pure ()
@@ -146,6 +151,8 @@ testAsyncBothOffline = do
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings alice bobId bob aliceId = do
   InternalId 1 <- sendMessage alice bobId "hello"
+  get alice ##> ("", bobId, SENT 1)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   InternalId 2 <- sendMessage bob aliceId "hello too"
+  get bob ##> ("", aliceId, SENT 2)
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False

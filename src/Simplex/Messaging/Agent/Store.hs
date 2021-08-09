@@ -56,6 +56,8 @@ class Monad m => MonadAgentStore s m where
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
+  updateSndMsgStatus :: s -> ConnId -> InternalId -> SndMsgStatus -> m ()
+  getSndMsgData :: s -> ConnId -> InternalId -> m (SndQueue, SndMsgData)
   getMsg :: s -> ConnId -> InternalId -> m Msg
 
 -- * Queue types
@@ -187,7 +189,8 @@ data SndMsgData = SndMsgData
     internalSndId :: InternalSndId,
     internalTs :: InternalTs,
     msgBody :: MsgBody,
-    internalHash :: MsgHash
+    internalHash :: MsgHash,
+    previousMsgHash :: MsgHash
   }
 
 -- * Broadcast types
@@ -310,6 +313,8 @@ data StoreError
     SEBadConnType ConnType
   | -- | Confirmation not found.
     SEConfirmationNotFound
+  | -- | Message not found
+    SEMsgNotFound
   | -- | Currently not used. The intention was to pass current expected queue status in methods,
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.

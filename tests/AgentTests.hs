@@ -100,16 +100,21 @@ testDuplexConnection _ alice bob = do
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
-  alice #: ("3", "bob", "SEND :hello") #> ("3", "bob", SENT 1)
-  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", SENT 2)
+  alice #: ("3", "bob", "SEND :hello") #> ("3", "bob", MID 1)
+  alice <# ("", "bob", SENT 1)
+  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", MID 2)
+  alice <# ("", "bob", SENT 2)
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
-  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", SENT 3)
+  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 3)
+  bob <# ("", "alice", SENT 3)
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
-  bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", SENT 4)
+  bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", MID 4)
+  bob <# ("", "alice", SENT 4)
   alice <#= \case ("", "bob", Msg "message 1") -> True; _ -> False
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
-  bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", ERR (SMP AUTH))
+  bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", MID 5)
+  bob <# ("", "alice", MERR 5 (SMP AUTH))
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
@@ -124,29 +129,37 @@ testDuplexConnRandomIds _ alice bob = do
   bob <# ("", aliceConn, INFO "alice's connInfo")
   bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
-  alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, SENT 1)
-  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, SENT 2)
+  alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, MID 1)
+  alice <# ("", bobConn, SENT 1)
+  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, MID 2)
+  alice <# ("", bobConn, SENT 2)
   bob <#= \case ("", c, Msg "hello") -> c == aliceConn; _ -> False
   bob <#= \case ("", c, Msg "how are you?") -> c == aliceConn; _ -> False
-  bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, SENT 3)
+  bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, MID 3)
+  bob <# ("", aliceConn, SENT 3)
   alice <#= \case ("", c, Msg "hello too") -> c == bobConn; _ -> False
-  bob #: ("15", aliceConn, "SEND 9\nmessage 1") #> ("15", aliceConn, SENT 4)
+  bob #: ("15", aliceConn, "SEND 9\nmessage 1") #> ("15", aliceConn, MID 4)
+  bob <# ("", aliceConn, SENT 4)
   alice <#= \case ("", c, Msg "message 1") -> c == bobConn; _ -> False
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
-  bob #: ("17", aliceConn, "SEND 9\nmessage 3") #> ("17", aliceConn, ERR (SMP AUTH))
+  bob #: ("17", aliceConn, "SEND 9\nmessage 3") #> ("17", aliceConn, MID 5)
+  bob <# ("", aliceConn, MERR 5 (SMP AUTH))
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
   (alice1, "alice") `connect` (bob, "bob")
-  bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", SENT 1)
-  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", SENT 2)
+  bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", MID 1)
+  bob <# ("", "alice", SENT 1)
+  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", MID 2)
+  bob <# ("", "alice", SENT 2)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
-  bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", SENT 3)
+  bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", MID 3)
+  bob <# ("", "alice", SENT 3)
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
 
