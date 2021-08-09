@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 576ad28116836a490d6974cd6322169dd38b5df984c16fe296387427b5bef3d5
+-- hash: 5169db4a4922766c79f08cbdb91d4c765520372273ab432569eba25a253a8dbb
 
 name:           simplexmq
 version:        0.3.2
@@ -35,6 +35,7 @@ library
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
       Simplex.Messaging.Agent.Protocol
+      Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Migrations

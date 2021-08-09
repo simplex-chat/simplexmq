@@ -162,9 +162,12 @@ data ACommand (p :: AParty) where
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
   END :: ACommand Agent
+  DOWN :: ACommand Agent
+  UP :: ACommand Agent
   -- QST :: QueueDirection -> ACommand Client
   -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
   SEND :: MsgBody -> ACommand Client
+  MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
   MSG :: MsgMeta -> MsgBody -> ACommand Agent
   -- ACK :: AgentMsgId -> ACommand Client
@@ -455,7 +458,10 @@ commandP =
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
+    <|> "DOWN" $> ACmd SAgent DOWN
+    <|> "UP" $> ACmd SAgent UP
     <|> "SEND " *> sendCmd
+    <|> "MID " *> msgIdResp
     <|> "SENT " *> sentResp
     <|> "MSG " *> message
     <|> "OFF" $> ACmd SClient OFF
@@ -470,6 +476,7 @@ commandP =
     acptCmd = ACmd SClient <$> (ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
+    msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
     message = ACmd SAgent <$> (MSG <$> msgMetaP <* A.space <*> A.takeByteString)
     msgMetaP = do
@@ -505,7 +512,10 @@ serializeCommand = \case
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
+  DOWN -> "DOWN"
+  UP -> "UP"
   SEND msgBody -> "SEND " <> serializeBinary msgBody
+  MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
   MSG msgMeta msgBody ->
     "MSG " <> serializeMsgMeta msgMeta <> " " <> serializeBinary msgBody

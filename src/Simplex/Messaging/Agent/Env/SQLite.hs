@@ -12,6 +12,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
+import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
@@ -27,17 +28,12 @@ data AgentConfig = AgentConfig
     dbFile :: FilePath,
     dbPoolSize :: Int,
     smpCfg :: SMPClientConfig,
-    retryInterval :: RetryInterval
+    retryInterval :: RetryInterval,
+    reconnectInterval :: RetryInterval
   }
 
 minute :: Int
 minute = 60_000_000
-
-data RetryInterval = RetryInterval
-  { initialInterval :: Int,
-    increaseAfter :: Int,
-    maxInterval :: Int
-  }
 
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
@@ -55,6 +51,12 @@ defaultAgentConfig =
           { initialInterval = 1_000_000,
             increaseAfter = minute,
             maxInterval = 10 * minute
+          },
+      reconnectInterval =
+        RetryInterval
+          { initialInterval = 1_000_000,
+            increaseAfter = 10_000_000,
+            maxInterval = 10_000_000
           }
     }
 

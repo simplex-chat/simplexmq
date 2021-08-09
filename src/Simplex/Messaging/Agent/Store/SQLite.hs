@@ -795,7 +795,7 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
     [ ":conn_alias" := connId,
       ":internal_snd_id" := internalSndId,
       ":internal_id" := internalId,
-      ":snd_status" := Created,
+      ":snd_status" := SndMsgCreated,
       ":internal_hash" := internalHash
     ]
 

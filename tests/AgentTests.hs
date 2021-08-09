@@ -16,6 +16,7 @@ import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
+import SMPClient (withSmpServer)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
@@ -150,11 +151,13 @@ testSubscription _ alice1 alice2 bob = do
   alice1 #:# "nothing else should be delivered to alice1"
 
 testSubscrNotification :: Transport c => TProxy c -> (ThreadId, ThreadId) -> c -> IO ()
-testSubscrNotification _ (server, _) client = do
+testSubscrNotification t (server, _) client = do
   client #: ("1", "conn1", "NEW") =#> \case ("1", "conn1", INV {}) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
-  client <# ("", "conn1", END)
+  client <# ("", "conn1", DOWN)
+  withSmpServer (ATransport t) $
+    client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
