@@ -431,6 +431,12 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
       sndQueue = maybe (Left SEConnNotFound) Right
 
+  getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
+  getPendingMsgs st connId =
+    liftIO . withTransaction st $ \db ->
+      map fromOnly
+        <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ? AND snd_status = ?" (connId, SndMsgCreated)
+
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
 

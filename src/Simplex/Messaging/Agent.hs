@@ -63,7 +63,7 @@ import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
@@ -285,22 +285,32 @@ processConfirmation c rq sndKey = do
 subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq sq) -> case status (sq :: SndQueue) of
-      Confirmed -> withVerifyKey sq $ \verifyKey -> do
-        conf <- withStore (`getAcceptedConfirmation` connId)
-        secureQueue c rq $ senderKey (conf :: AcceptedConfirmation)
-        withStore $ \st -> setRcvQueueStatus st rq Secured
-        activateSecuredQueue rq sq verifyKey
-      Secured -> withVerifyKey sq $ activateSecuredQueue rq sq
-      Active -> subscribeQueue c rq connId
-      _ -> throwError $ INTERNAL "unexpected queue status"
-    SomeConn _ (SndConnection _ sq) -> case status (sq :: SndQueue) of
-      Confirmed -> withVerifyKey sq $ \verifyKey ->
-        activateQueueJoining c connId sq verifyKey =<< resumeInterval
-      Active -> throwError $ CONN SIMPLEX
-      _ -> throwError $ INTERNAL "unexpected queue status"
+    SomeConn _ (DuplexConnection _ rq sq) -> do
+      resumeDelivery
+      case status (sq :: SndQueue) of
+        Confirmed -> withVerifyKey sq $ \verifyKey -> do
+          conf <- withStore (`getAcceptedConfirmation` connId)
+          secureQueue c rq $ senderKey (conf :: AcceptedConfirmation)
+          withStore $ \st -> setRcvQueueStatus st rq Secured
+          activateSecuredQueue rq sq verifyKey
+        Secured -> withVerifyKey sq $ activateSecuredQueue rq sq
+        Active -> subscribeQueue c rq connId
+        _ -> throwError $ INTERNAL "unexpected queue status"
+    SomeConn _ (SndConnection _ sq) -> do
+      resumeDelivery
+      case status (sq :: SndQueue) of
+        Confirmed -> withVerifyKey sq $ \verifyKey ->
+          activateQueueJoining c connId sq verifyKey =<< resumeInterval
+        Active -> throwError $ CONN SIMPLEX
+        _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
   where
+    resumeDelivery :: m ()
+    resumeDelivery = do
+      wasDelivering <- resumeMsgDelivery c connId
+      unless wasDelivering $ do
+        msgIds <- withStore (`getPendingMsgs` connId)
+        queuePendingMsgs c connId msgIds
     withVerifyKey :: SndQueue -> (C.PublicKey -> m ()) -> m ()
     withVerifyKey sq action =
       let err = throwError $ INTERNAL "missing signing key public counterpart"
@@ -318,15 +328,19 @@ subscribeConnection' c connId =
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
 sendMessage' c connId msgBody =
   withStore (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ _ sq) -> enqueueMessage sq
-    SomeConn _ (SndConnection _ sq) -> enqueueMessage sq
+    SomeConn _ DuplexConnection {} -> enqueueMessage
+    SomeConn _ SndConnection {} -> enqueueMessage
     _ -> throwError $ CONN SIMPLEX
   where
-    enqueueMessage :: SndQueue -> m InternalId
-    enqueueMessage SndQueue {server} = do
+    enqueueMessage :: m InternalId
+    enqueueMessage = do
       (msgId, _) <- storeSentMsg
-      mq <- atomically $ queueDelivery msgId
-      checkDelivery mq
+      wasDelivering <- resumeMsgDelivery c connId
+      msgIds <-
+        if wasDelivering
+          then pure [msgId]
+          else withStore (`getPendingMsgs` connId)
+      queuePendingMsgs c connId msgIds
       pure msgId
       where
         storeSentMsg :: m (InternalId, ByteString)
@@ -345,34 +359,40 @@ sendMessage' c connId msgBody =
                 msgData = SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = C.sha256Hash msgStr, previousMsgHash}
             createSndMsg st connId msgData
             pure (internalId, msgStr)
-        queueDelivery :: InternalId -> STM (TQueue PendingMsg)
-        queueDelivery msgId = do
-          mq <- maybe newMsgQueue pure . M.lookup server =<< readTVar (msgQueues c)
-          writeTQueue mq PendingMsg {connId, msgId}
-          pure mq
-        newMsgQueue :: STM (TQueue PendingMsg)
-        newMsgQueue = do
-          mq <- newTQueue
-          modifyTVar (msgQueues c) $ M.insert server mq
-          pure mq
-        checkDelivery :: TQueue PendingMsg -> m ()
-        checkDelivery mq = do
-          ds <- readTVarIO $ msgDeliveries c
-          when (isNothing $ M.lookup server ds) $ do
-            a <- async $ runDelivery c mq
-            atomically . modifyTVar (msgDeliveries c) $ M.insert server a
 
-runDelivery :: forall m. AgentMonad m => AgentClient -> TQueue PendingMsg -> m ()
-runDelivery c@AgentClient {subQ} mq = do
+resumeMsgDelivery :: AgentMonad m => AgentClient -> ConnId -> m Bool
+resumeMsgDelivery c connId = do
+  isDelivering <- isJust . M.lookup connId <$> readTVarIO (connMsgDeliveries c)
+  unless isDelivering $
+    async (runMsgDelivery c connId)
+      >>= atomically . modifyTVar (connMsgDeliveries c) . M.insert connId
+  pure isDelivering
+
+queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> [InternalId] -> m ()
+queuePendingMsgs c connId pending =
+  atomically $ getPendingMsgQ c connId >>= forM_ pending . writeTQueue
+
+getPendingMsgQ :: AgentClient -> ConnId -> STM (TQueue InternalId)
+getPendingMsgQ c connId = maybe newMsgQueue pure . M.lookup connId =<< readTVar (connMsgQueues c)
+  where
+    newMsgQueue :: STM (TQueue InternalId)
+    newMsgQueue = do
+      mq <- newTQueue
+      modifyTVar (connMsgQueues c) $ M.insert connId mq
+      pure mq
+
+runMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+runMsgDelivery c@AgentClient {subQ} connId = do
+  mq <- atomically $ getPendingMsgQ c connId
   ri <- asks $ reconnectInterval . config
   forever $ do
-    PendingMsg {connId, msgId} <- atomically $ readTQueue mq
+    msgId <- atomically $ readTQueue mq
     let mId = unId msgId
     r <- withStore $ \st ->
       (Right <$> getSndMsgData st connId msgId)
         `E.catch` \(e :: E.SomeException) -> pure $ Left e
     case r of
-      Left e -> notify connId $ MERR mId (INTERNAL $ show e)
+      Left e -> notify $ MERR mId (INTERNAL $ show e)
       Right (sq, SndMsgData {msgBody, internalTs, internalSndId, previousMsgHash}) -> do
         let msgStr =
               serializeSMPMessage
@@ -385,13 +405,13 @@ runDelivery c@AgentClient {subQ} mq = do
         withRetryInterval ri $ \loop -> do
           sendAgentMessage c sq msgStr
             `catchError` \case
-              e@SMP {} -> notify connId $ MERR mId e
+              e@SMP {} -> notify $ MERR mId e
               _ -> loop
-          notify connId $ SENT mId
+          notify $ SENT mId
           withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
   where
-    notify :: ConnId -> ACommand 'Agent -> m ()
-    notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
+    notify :: ACommand 'Agent -> m ()
+    notify cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()

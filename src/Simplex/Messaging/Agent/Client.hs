@@ -9,7 +9,6 @@
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
-    PendingMsg (..),
     newAgentClient,
     AgentMonad,
     withAgentLock,
@@ -73,8 +72,8 @@ data AgentClient = AgentClient
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     subscrConns :: TVar (Map ConnId SMPServer),
     activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
-    msgQueues :: TVar (Map SMPServer (TQueue PendingMsg)),
-    msgDeliveries :: TVar (Map SMPServer (Async ())),
+    connMsgQueues :: TVar (Map ConnId (TQueue InternalId)),
+    connMsgDeliveries :: TVar (Map ConnId (Async ())),
     reconnections :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
@@ -82,10 +81,13 @@ data AgentClient = AgentClient
     lock :: TMVar ()
   }
 
-data PendingMsg = PendingMsg
+data PendingMsg' = PendingMsg'
   { connId :: ConnId,
-    msgId :: InternalId
+    msgId :: InternalId,
+    sndQueue :: SndQueue,
+    msgStr :: ByteString
   }
+  deriving (Show)
 
 newAgentClient :: Env -> STM AgentClient
 newAgentClient agentEnv = do
@@ -97,12 +99,12 @@ newAgentClient agentEnv = do
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
   activations <- newTVar M.empty
-  msgQueues <- newTVar M.empty
-  msgDeliveries <- newTVar M.empty
+  connMsgQueues <- newTVar M.empty
+  connMsgDeliveries <- newTVar M.empty
   reconnections <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, msgQueues, msgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgQueues, connMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -178,7 +180,7 @@ closeAgentClient c = liftIO $ do
   closeSMPServerClients c
   cancelActions $ activations c
   cancelActions $ reconnections c
-  cancelActions $ msgDeliveries c
+  cancelActions $ connMsgDeliveries c
 
 closeSMPServerClients :: AgentClient -> IO ()
 closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ closeSMPClient

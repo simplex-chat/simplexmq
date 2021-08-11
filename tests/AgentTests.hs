@@ -16,10 +16,11 @@ import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
-import SMPClient (withSmpServer)
+import SMPClient (testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
+import System.Directory (removeFile)
 import System.Timeout
 import Test.Hspec
 
@@ -46,6 +47,9 @@ agentTests (ATransport t) = do
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
+  describe "Message delivery" do
+    it "should deliver messages after losing server connection and re-connecting" $
+      smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
 
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
@@ -172,6 +176,29 @@ testSubscrNotification t (server, _) client = do
   withSmpServer (ATransport t) $
     client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
 
+testMsgDeliveryServerRestart :: Transport c => TProxy c -> c -> c -> IO ()
+testMsgDeliveryServerRestart t alice bob = do
+  withServer $ do
+    connect (alice, "alice") (bob, "bob")
+    bob #: ("1", "alice", "SEND 5\nhello") #> ("1", "alice", MID 1)
+    bob <# ("", "alice", SENT 1)
+    alice <#= \case ("", "bob", Msg "hello") -> True; _ -> False
+    alice #:# "nothing else delivered before the server is killed"
+
+  alice <# ("", "bob", DOWN)
+  bob #: ("2", "alice", "SEND 11\nhello again") #> ("2", "alice", MID 2)
+  bob #:# "nothing else delivered before the server is restarted"
+  alice #:# "nothing else delivered before the server is restarted"
+
+  withServer $ do
+    bob <# ("", "alice", SENT 2)
+    alice <# ("", "bob", UP)
+    alice <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+
+  removeFile testStoreLogFile
+  where
+    withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV qInfo)) <- h1 #: ("c1", name2, "NEW")
@@ -183,17 +210,17 @@ connect (h1, name1) (h2, name2) = do
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
 
-connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
-connect' h1 h2 = do
-  ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
-  let qInfo' = serializeSmpQueueInfo qInfo
-  ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo' <> " 5\ninfo2")
-  ("", _, Right (REQ connId "info2")) <- (h1 <#:)
-  h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
-  h2 <# ("", conn1, INFO "info1")
-  h2 <# ("", conn1, CON)
-  h1 <# ("", conn2, CON)
-  pure (conn1, conn2)
+-- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
+-- connect' h1 h2 = do
+--   ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
+--   let qInfo' = serializeSmpQueueInfo qInfo
+--   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo' <> " 5\ninfo2")
+--   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
+--   h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
+--   h2 <# ("", conn1, INFO "info1")
+--   h2 <# ("", conn1, CON)
+--   h1 <# ("", conn2, CON)
+--   pure (conn1, conn2)
 
 samplePublicKey :: ByteString
 samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"

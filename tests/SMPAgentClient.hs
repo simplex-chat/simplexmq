@@ -96,11 +96,15 @@ smpAgentTestN_1 n test' = runSmpAgentTestN_1 n test' `shouldReturn` ()
 smpAgentTest2_2_2 :: forall c. Transport c => (c -> c -> IO ()) -> Expectation
 smpAgentTest2_2_2 test' =
   withSmpServerOn (transport @c) testPort2 $
-    smpAgentTestN
-      [ (agentTestPort, testPort, testDB),
-        (agentTestPort2, testPort2, testDB2)
-      ]
-      _test
+    smpAgentTest2_2_2_needs_server test'
+
+smpAgentTest2_2_2_needs_server :: forall c. Transport c => (c -> c -> IO ()) -> Expectation
+smpAgentTest2_2_2_needs_server test' =
+  smpAgentTestN
+    [ (agentTestPort, testPort, testDB),
+      (agentTestPort2, testPort2, testDB2)
+    ]
+    _test
   where
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
