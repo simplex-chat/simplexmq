@@ -72,22 +72,16 @@ data AgentClient = AgentClient
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     subscrConns :: TVar (Map ConnId SMPServer),
     activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
-    connMsgQueues :: TVar (Map ConnId (TQueue InternalId)),
+    connMsgQueues :: TVar (Map ConnId (TQueue PendingMsg)),
     connMsgDeliveries :: TVar (Map ConnId (Async ())),
+    srvMsgQueues :: TVar (Map SMPServer (TQueue PendingMsg)),
+    srvMsgDeliveries :: TVar (Map SMPServer (Async ())),
     reconnections :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
     smpSubscriber :: Async (),
     lock :: TMVar ()
   }
-
-data PendingMsg' = PendingMsg'
-  { connId :: ConnId,
-    msgId :: InternalId,
-    sndQueue :: SndQueue,
-    msgStr :: ByteString
-  }
-  deriving (Show)
 
 newAgentClient :: Env -> STM AgentClient
 newAgentClient agentEnv = do
@@ -101,10 +95,12 @@ newAgentClient agentEnv = do
   activations <- newTVar M.empty
   connMsgQueues <- newTVar M.empty
   connMsgDeliveries <- newTVar M.empty
+  srvMsgQueues <- newTVar M.empty
+  srvMsgDeliveries <- newTVar M.empty
   reconnections <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgQueues, connMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgQueues, connMsgDeliveries, srvMsgQueues, srvMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -181,6 +177,7 @@ closeAgentClient c = liftIO $ do
   cancelActions $ activations c
   cancelActions $ reconnections c
   cancelActions $ connMsgDeliveries c
+  cancelActions $ srvMsgDeliveries c
 
 closeSMPServerClients :: AgentClient -> IO ()
 closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ closeSMPClient

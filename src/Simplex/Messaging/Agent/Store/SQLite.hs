@@ -52,6 +52,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Parsers (blobFieldParser)
+import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -405,8 +406,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           ":snd_status" := msgStatus
         ]
 
-  getSndMsgData :: SQLiteStore -> ConnId -> InternalId -> m (SndQueue, SndMsgData)
-  getSndMsgData st connId msgId =
+  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (SndQueue, MsgBody)
+  getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
       sq <- ExceptT $ sndQueue <$> getSndQueueByConnAlias_ db connId
       msgBody <-
@@ -415,8 +416,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             <$> DB.query
               db
               [sql|
-                SELECT m.msg_body, m.internal_id, m.internal_ts,
-                  s.internal_snd_id, s.internal_hash, s.previous_msg_hash
+                SELECT m.msg_body
                 FROM messages m
                 JOIN snd_messages s ON s.conn_alias = m.conn_alias AND s.internal_id = m.internal_id
                 WHERE m.conn_alias = ? AND m.internal_id = ?
@@ -424,17 +424,16 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
               (connId, msgId)
       pure (sq, msgBody)
     where
-      sndMsgData :: [(SMP.MsgBody, InternalId, InternalTs, InternalSndId, MsgHash, MsgHash)] -> Either StoreError SndMsgData
-      sndMsgData [(msgBody, internalId, internalTs, internalSndId, internalHash, previousMsgHash)] =
-        Right SndMsgData {msgBody, internalId, internalTs, internalSndId, internalHash, previousMsgHash}
+      sndMsgData :: [Only MsgBody] -> Either StoreError MsgBody
+      sndMsgData [Only msgBody] = Right msgBody
       sndMsgData _ = Left SEMsgNotFound
       sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
       sndQueue = maybe (Left SEConnNotFound) Right
 
-  getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
+  getPendingMsgs :: SQLiteStore -> ConnId -> m [PendingMsg]
   getPendingMsgs st connId =
     liftIO . withTransaction st $ \db ->
-      map fromOnly
+      map (PendingMsg connId . fromOnly)
         <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ? AND snd_status = ?" (connId, SndMsgCreated)
 
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
