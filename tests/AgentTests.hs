@@ -219,7 +219,11 @@ testMsgDeliveryAgentRestart t bob = do
   withAgent $ \alice -> do
     withServer $ do
       tPutRaw alice ("3", "bob", "SUB")
-      alice <#= \case (corrId, "bob", cmd) -> (corrId == "3" && cmd == OK) || (corrId == "" && cmd == SENT 2); _ -> False
+      alice <#= \case
+        (corrId, "bob", cmd) ->
+          (corrId == "3" && cmd == OK)
+            || (corrId == "" && cmd == SENT 2)
+        _ -> False
       bob <# ("", "alice", UP)
       bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
 
