@@ -16,7 +16,7 @@ import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
-import SMPClient (testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
+import SMPClient (testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
@@ -50,6 +50,8 @@ agentTests (ATransport t) = do
   describe "Message delivery" do
     it "should deliver messages after losing server connection and re-connecting" $
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
+    it "should deliver pending messages after agent restarting" $
+      smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
 
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
@@ -180,9 +182,9 @@ testMsgDeliveryServerRestart :: Transport c => TProxy c -> c -> c -> IO ()
 testMsgDeliveryServerRestart t alice bob = do
   withServer $ do
     connect (alice, "alice") (bob, "bob")
-    bob #: ("1", "alice", "SEND 5\nhello") #> ("1", "alice", MID 1)
+    bob #: ("1", "alice", "SEND 2\nhi") #> ("1", "alice", MID 1)
     bob <# ("", "alice", SENT 1)
-    alice <#= \case ("", "bob", Msg "hello") -> True; _ -> False
+    alice <#= \case ("", "bob", Msg "hi") -> True; _ -> False
     alice #:# "nothing else delivered before the server is killed"
 
   alice <# ("", "bob", DOWN)
@@ -198,6 +200,34 @@ testMsgDeliveryServerRestart t alice bob = do
   removeFile testStoreLogFile
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+
+testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
+testMsgDeliveryAgentRestart t bob = do
+  withAgent $ \alice -> do
+    withServer $ do
+      connect (bob, "bob") (alice, "alice")
+      alice #: ("1", "bob", "SEND 5\nhello") #> ("1", "bob", MID 1)
+      alice <# ("", "bob", SENT 1)
+      bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+      bob #:# "nothing else delivered before the server is down"
+
+    bob <# ("", "alice", DOWN)
+    alice #: ("2", "bob", "SEND 11\nhello again") #> ("2", "bob", MID 2)
+    alice #:# "nothing else delivered before the server is restarted"
+    bob #:# "nothing else delivered before the server is restarted"
+
+  withAgent $ \alice -> do
+    withServer $ do
+      alice #: ("3", "bob", "SUB") #> ("3", "bob", OK)
+      alice <# ("", "bob", SENT 2)
+      bob <# ("", "alice", UP)
+      bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
+
+  removeFile testStoreLogFile
+  removeFile testDB
+  where
+    withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+    withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
