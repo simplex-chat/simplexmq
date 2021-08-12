@@ -29,8 +29,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
-import Control.Monad (replicateM_, unless, when)
-import Control.Monad.Except (MonadError (throwError), MonadIO (liftIO))
+import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.ByteString (ByteString)
@@ -40,7 +39,6 @@ import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, field)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
@@ -54,6 +52,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Parsers (blobFieldParser)
+import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -392,6 +391,51 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       insertSndMsgDetails_ db connId sndMsgData
       updateHashSnd_ db connId sndMsgData
 
+  updateSndMsgStatus :: SQLiteStore -> ConnId -> InternalId -> SndMsgStatus -> m ()
+  updateSndMsgStatus st connId msgId msgStatus =
+    liftIO . withTransaction st $ \db ->
+      DB.executeNamed
+        db
+        [sql|
+          UPDATE snd_messages
+          SET snd_status = :snd_status
+          WHERE conn_alias = :conn_alias AND internal_id = :internal_id
+        |]
+        [ ":conn_alias" := connId,
+          ":internal_id" := msgId,
+          ":snd_status" := msgStatus
+        ]
+
+  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (SndQueue, MsgBody)
+  getPendingMsgData st connId msgId =
+    liftIOEither . withTransaction st $ \db -> runExceptT $ do
+      sq <- ExceptT $ sndQueue <$> getSndQueueByConnAlias_ db connId
+      msgBody <-
+        ExceptT $
+          sndMsgData
+            <$> DB.query
+              db
+              [sql|
+                SELECT m.msg_body
+                FROM messages m
+                JOIN snd_messages s ON s.conn_alias = m.conn_alias AND s.internal_id = m.internal_id
+                WHERE m.conn_alias = ? AND m.internal_id = ?
+              |]
+              (connId, msgId)
+      pure (sq, msgBody)
+    where
+      sndMsgData :: [Only MsgBody] -> Either StoreError MsgBody
+      sndMsgData [Only msgBody] = Right msgBody
+      sndMsgData _ = Left SEMsgNotFound
+      sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
+      sndQueue = maybe (Left SEConnNotFound) Right
+
+  getPendingMsgs :: SQLiteStore -> ConnId -> m [PendingMsg]
+  getPendingMsgs st connId =
+    liftIO . withTransaction st $ \db ->
+      map (PendingMsg connId . fromOnly)
+        <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ? AND snd_status = ?" (connId, SndMsgCreated)
+
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
   getMsg _st _connAlias _id = throwError SENotImplemented
 
@@ -676,15 +720,15 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgBody, internalRcvId} = d
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, body)
+        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, body, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:body);
+        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,   '', :msg_body);
     |]
     [ ":conn_alias" := connId,
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_rcv_id" := internalRcvId,
-      ":body" := decodeUtf8 msgBody
+      ":msg_body" := msgBody
     ]
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
@@ -771,15 +815,15 @@ insertSndMsgBase_ dbConn connId SndMsgData {..} = do
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, body)
+        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, body, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,            NULL,:internal_snd_id,:body);
+        (:conn_alias,:internal_id,:internal_ts,            NULL,:internal_snd_id,   '',:msg_body);
     |]
     [ ":conn_alias" := connId,
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_snd_id" := internalSndId,
-      ":body" := decodeUtf8 msgBody
+      ":msg_body" := msgBody
     ]
 
 insertSndMsgDetails_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()
@@ -788,15 +832,16 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts, internal_hash)
+        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts, internal_hash, previous_msg_hash)
       VALUES
-        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL,:internal_hash);
+        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL,:internal_hash,:previous_msg_hash);
     |]
     [ ":conn_alias" := connId,
       ":internal_snd_id" := internalSndId,
       ":internal_id" := internalId,
       ":snd_status" := SndMsgCreated,
-      ":internal_hash" := internalHash
+      ":internal_hash" := internalHash,
+      ":previous_msg_hash" := previousMsgHash
     ]
 
 updateHashSnd_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()

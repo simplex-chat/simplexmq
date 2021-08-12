@@ -96,11 +96,15 @@ smpAgentTestN_1 n test' = runSmpAgentTestN_1 n test' `shouldReturn` ()
 smpAgentTest2_2_2 :: forall c. Transport c => (c -> c -> IO ()) -> Expectation
 smpAgentTest2_2_2 test' =
   withSmpServerOn (transport @c) testPort2 $
-    smpAgentTestN
-      [ (agentTestPort, testPort, testDB),
-        (agentTestPort2, testPort2, testDB2)
-      ]
-      _test
+    smpAgentTest2_2_2_needs_server test'
+
+smpAgentTest2_2_2_needs_server :: forall c. Transport c => (c -> c -> IO ()) -> Expectation
+smpAgentTest2_2_2_needs_server test' =
+  smpAgentTestN
+    [ (agentTestPort, testPort, testDB),
+      (agentTestPort2, testPort2, testDB2)
+    ]
+    _test
   where
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
@@ -140,6 +144,15 @@ smpAgentTest3_1_1 test' = smpAgentTestN_1 3 _test
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
+smpAgentTest1_1_1 :: forall c. Transport c => (c -> IO ()) -> Expectation
+smpAgentTest1_1_1 test' =
+  smpAgentTestN
+    [(agentTestPort2, testPort2, testDB2)]
+    _test
+  where
+    _test [h] = test' h
+    _test _ = error "expected 1 handle"
+
 cfg :: AgentConfig
 cfg =
   defaultAgentConfig
@@ -156,12 +169,15 @@ cfg =
       retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000}
     }
 
-withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn t (port', smpPort', db') =
+withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
   let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" (Just smpPort') testKeyHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg')
-        (removeFile db')
+        afterProcess
+
+withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile db'
 
 withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m a -> m a
 withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort', db') . const

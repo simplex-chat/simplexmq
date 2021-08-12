@@ -16,10 +16,11 @@ import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import SMPAgentClient
-import SMPClient (withSmpServer)
+import SMPClient (testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
+import System.Directory (removeFile)
 import System.Timeout
 import Test.Hspec
 
@@ -46,6 +47,11 @@ agentTests (ATransport t) = do
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
+  describe "Message delivery" do
+    it "should deliver messages after losing server connection and re-connecting" $
+      smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
+    it "should deliver pending messages after agent restarting" $
+      smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
 
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
@@ -100,16 +106,21 @@ testDuplexConnection _ alice bob = do
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
-  alice #: ("3", "bob", "SEND :hello") #> ("3", "bob", SENT 1)
-  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", SENT 2)
+  alice #: ("3", "bob", "SEND :hello") #> ("3", "bob", MID 1)
+  alice <# ("", "bob", SENT 1)
+  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", MID 2)
+  alice <# ("", "bob", SENT 2)
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
-  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", SENT 3)
+  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 3)
+  bob <# ("", "alice", SENT 3)
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
-  bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", SENT 4)
+  bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", MID 4)
+  bob <# ("", "alice", SENT 4)
   alice <#= \case ("", "bob", Msg "message 1") -> True; _ -> False
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
-  bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", ERR (SMP AUTH))
+  bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", MID 5)
+  bob <# ("", "alice", MERR 5 (SMP AUTH))
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
@@ -124,29 +135,37 @@ testDuplexConnRandomIds _ alice bob = do
   bob <# ("", aliceConn, INFO "alice's connInfo")
   bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
-  alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, SENT 1)
-  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, SENT 2)
+  alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, MID 1)
+  alice <# ("", bobConn, SENT 1)
+  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, MID 2)
+  alice <# ("", bobConn, SENT 2)
   bob <#= \case ("", c, Msg "hello") -> c == aliceConn; _ -> False
   bob <#= \case ("", c, Msg "how are you?") -> c == aliceConn; _ -> False
-  bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, SENT 3)
+  bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, MID 3)
+  bob <# ("", aliceConn, SENT 3)
   alice <#= \case ("", c, Msg "hello too") -> c == bobConn; _ -> False
-  bob #: ("15", aliceConn, "SEND 9\nmessage 1") #> ("15", aliceConn, SENT 4)
+  bob #: ("15", aliceConn, "SEND 9\nmessage 1") #> ("15", aliceConn, MID 4)
+  bob <# ("", aliceConn, SENT 4)
   alice <#= \case ("", c, Msg "message 1") -> c == bobConn; _ -> False
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
-  bob #: ("17", aliceConn, "SEND 9\nmessage 3") #> ("17", aliceConn, ERR (SMP AUTH))
+  bob #: ("17", aliceConn, "SEND 9\nmessage 3") #> ("17", aliceConn, MID 5)
+  bob <# ("", aliceConn, MERR 5 (SMP AUTH))
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
   (alice1, "alice") `connect` (bob, "bob")
-  bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", SENT 1)
-  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", SENT 2)
+  bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", MID 1)
+  bob <# ("", "alice", SENT 1)
+  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", MID 2)
+  bob <# ("", "alice", SENT 2)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
-  bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", SENT 3)
+  bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", MID 3)
+  bob <# ("", "alice", SENT 3)
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice1 #:# "nothing else should be delivered to alice1"
 
@@ -159,6 +178,61 @@ testSubscrNotification t (server, _) client = do
   withSmpServer (ATransport t) $
     client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
 
+testMsgDeliveryServerRestart :: Transport c => TProxy c -> c -> c -> IO ()
+testMsgDeliveryServerRestart t alice bob = do
+  withServer $ do
+    connect (alice, "alice") (bob, "bob")
+    bob #: ("1", "alice", "SEND 2\nhi") #> ("1", "alice", MID 1)
+    bob <# ("", "alice", SENT 1)
+    alice <#= \case ("", "bob", Msg "hi") -> True; _ -> False
+    alice #:# "nothing else delivered before the server is killed"
+
+  alice <# ("", "bob", DOWN)
+  bob #: ("2", "alice", "SEND 11\nhello again") #> ("2", "alice", MID 2)
+  bob #:# "nothing else delivered before the server is restarted"
+  alice #:# "nothing else delivered before the server is restarted"
+
+  withServer $ do
+    bob <# ("", "alice", SENT 2)
+    alice <# ("", "bob", UP)
+    alice <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+
+  removeFile testStoreLogFile
+  where
+    withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+
+testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
+testMsgDeliveryAgentRestart t bob = do
+  withAgent $ \alice -> do
+    withServer $ do
+      connect (bob, "bob") (alice, "alice")
+      alice #: ("1", "bob", "SEND 5\nhello") #> ("1", "bob", MID 1)
+      alice <# ("", "bob", SENT 1)
+      bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+      bob #:# "nothing else delivered before the server is down"
+
+    bob <# ("", "alice", DOWN)
+    alice #: ("2", "bob", "SEND 11\nhello again") #> ("2", "bob", MID 2)
+    alice #:# "nothing else delivered before the server is restarted"
+    bob #:# "nothing else delivered before the server is restarted"
+
+  withAgent $ \alice -> do
+    withServer $ do
+      tPutRaw alice ("3", "bob", "SUB")
+      alice <#= \case
+        (corrId, "bob", cmd) ->
+          (corrId == "3" && cmd == OK)
+            || (corrId == "" && cmd == SENT 2)
+        _ -> False
+      bob <# ("", "alice", UP)
+      bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
+
+  removeFile testStoreLogFile
+  removeFile testDB
+  where
+    withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+    withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort
+
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV qInfo)) <- h1 #: ("c1", name2, "NEW")
@@ -170,17 +244,17 @@ connect (h1, name1) (h2, name2) = do
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
 
-connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
-connect' h1 h2 = do
-  ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
-  let qInfo' = serializeSmpQueueInfo qInfo
-  ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo' <> " 5\ninfo2")
-  ("", _, Right (REQ connId "info2")) <- (h1 <#:)
-  h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
-  h2 <# ("", conn1, INFO "info1")
-  h2 <# ("", conn1, CON)
-  h1 <# ("", conn2, CON)
-  pure (conn1, conn2)
+-- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
+-- connect' h1 h2 = do
+--   ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
+--   let qInfo' = serializeSmpQueueInfo qInfo
+--   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo' <> " 5\ninfo2")
+--   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
+--   h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
+--   h2 <# ("", conn1, INFO "info1")
+--   h2 <# ("", conn1, CON)
+--   h1 <# ("", conn2, CON)
+--   pure (conn1, conn2)
 
 samplePublicKey :: ByteString
 samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
