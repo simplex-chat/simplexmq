@@ -256,6 +256,7 @@ validKeySize :: Int -> Bool
 validKeySize = \case
   128 -> True
   256 -> True
+  384 -> True
   512 -> True
   _ -> False
 
