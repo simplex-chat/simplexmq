@@ -32,6 +32,7 @@ module Simplex.Messaging.Agent.Protocol
     ACommand (..),
     AParty (..),
     SAParty (..),
+    MsgHash,
     MsgMeta (..),
     SMPMessage (..),
     AMessage (..),
@@ -182,6 +183,8 @@ deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
 
+type MsgHash = ByteString
+
 -- | Agent message metadata sent to the client
 data MsgMeta = MsgMeta
   { integrity :: MsgIntegrity,
@@ -209,7 +212,7 @@ data SMPMessage
         -- | timestamp from the sending agent
         senderTimestamp :: SenderTimestamp,
         -- | digest of the previous message
-        previousMsgHash :: ByteString,
+        previousMsgHash :: MsgHash,
         -- | messages sent between agents once queue is secured
         agentMessage :: AMessage
       }

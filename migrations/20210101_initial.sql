@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS messages(
   internal_ts TEXT NOT NULL,
   internal_rcv_id INTEGER,
   internal_snd_id INTEGER,
-  body TEXT NOT NULL,
+  body TEXT NOT NULL,  -- deprecated
   PRIMARY KEY (conn_alias, internal_id),
   FOREIGN KEY (conn_alias)
     REFERENCES connections (conn_alias)
