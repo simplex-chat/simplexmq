@@ -37,6 +37,7 @@ serverConfig :: ServerConfig
 serverConfig =
   ServerConfig
     { tbqSize = 16,
+      msgQueueQuota = 256,
       queueIdBytes = 12,
       msgIdBytes = 6,
       -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini

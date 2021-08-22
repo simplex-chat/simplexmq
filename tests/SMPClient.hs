@@ -57,6 +57,7 @@ cfg =
   ServerConfig
     { transports = undefined,
       tbqSize = 1,
+      msgQueueQuota = 4,
       queueIdBytes = 12,
       msgIdBytes = 6,
       storeLog = Nothing,

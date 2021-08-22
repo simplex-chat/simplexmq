@@ -3,6 +3,7 @@
 module Simplex.Messaging.Server.MsgStore where
 
 import Data.Time.Clock
+import Numeric.Natural
 import Simplex.Messaging.Protocol (Encoded, MsgBody, RecipientId)
 
 data Message = Message
@@ -12,10 +13,11 @@ data Message = Message
   }
 
 class MonadMsgStore s q m | s -> q where
-  getMsgQueue :: s -> RecipientId -> m q
+  getMsgQueue :: s -> RecipientId -> Natural -> m q
   delMsgQueue :: s -> RecipientId -> m ()
 
 class MonadMsgQueue q m where
+  isFull :: q -> m Bool
   writeMsg :: q -> Message -> m () -- non blocking
   tryPeekMsg :: q -> m (Maybe Message) -- non blocking
   peekMsg :: q -> m Message -- blocking

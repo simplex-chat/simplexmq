@@ -296,16 +296,19 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
               QueueActive -> do
                 ms <- asks msgStore
                 msg <- mkMessage
+                quota <- asks $ msgQueueQuota . config
                 atomically $ do
-                  q <- getMsgQueue ms (recipientId qr)
-                  writeMsg q msg
-                  return ok
+                  q <- getMsgQueue ms (recipientId qr) quota
+                  isFull q >>= \case
+                    False -> writeMsg q msg $> ok
+                    True -> pure $ err QUOTA
 
         deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> Sub -> m Transmission
         deliverMessage tryPeek rId = \case
           Sub {subThread = NoSub} -> do
             ms <- asks msgStore
-            q <- atomically $ getMsgQueue ms rId
+            quota <- asks $ msgQueueQuota . config
+            q <- atomically $ getMsgQueue ms rId quota
             atomically (tryPeek q) >>= \case
               Nothing -> forkSub q $> ok
               Just msg -> atomically setDelivered $> mkResp corrId rId (msgCmd msg)
