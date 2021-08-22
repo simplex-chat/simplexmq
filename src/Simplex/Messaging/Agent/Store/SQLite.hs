@@ -722,7 +722,7 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgBody, internalRcvId} = d
       INSERT INTO messages
         ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, body, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,   '', :msg_body);
+        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,   '',:msg_body);
     |]
     [ ":conn_alias" := connId,
       ":internal_id" := internalId,

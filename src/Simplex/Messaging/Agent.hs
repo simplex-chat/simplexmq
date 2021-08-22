@@ -9,6 +9,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -357,7 +358,8 @@ sendMessage' c connId msg =
                         previousMsgHash,
                         agentMessage = A_MSG msg
                       }
-                msgData = SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash = C.sha256Hash msgBody, previousMsgHash}
+                internalHash = C.sha256Hash msgBody
+                msgData = SndMsgData {..}
             createSndMsg st connId msgData
             pure internalId
 
@@ -555,7 +557,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           let integrity = checkMsgIntegrity prevExtSndId (fst sender) prevRcvMsgHash externalPrevSndHash
               recipient = (unId internalId, internalTs)
               msgMeta = MsgMeta {integrity, recipient, sender, broker}
-              rcvMsg = RcvMsgData {msgMeta, msgBody, internalRcvId, internalHash, externalPrevSndHash}
+              rcvMsg = RcvMsgData {..}
           withStore $ \st -> createRcvMsg st connId rcvMsg
           notify $ MSG msgMeta msgBody
 

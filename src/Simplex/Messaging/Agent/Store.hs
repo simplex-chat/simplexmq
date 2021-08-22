@@ -162,8 +162,6 @@ data AcceptedConfirmation = AcceptedConfirmation
 
 -- * Message integrity validation types
 
-type MsgHash = ByteString
-
 -- | Corresponds to `last_external_snd_msg_id` in `connections` table
 type PrevExternalSndId = Int64
 
