@@ -14,7 +14,6 @@ import SMPClient (withSmpServer)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (dbFile)
 import Simplex.Messaging.Agent.Protocol
-import Simplex.Messaging.Agent.Store (InternalId (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..))
 import System.Timeout
@@ -61,20 +60,20 @@ testAgentClient = do
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
-    InternalId 1 <- sendMessage alice bobId "hello"
+    1 <- sendMessage alice bobId "hello"
     get alice ##> ("", bobId, SENT 1)
-    InternalId 2 <- sendMessage alice bobId "how are you?"
+    2 <- sendMessage alice bobId "how are you?"
     get alice ##> ("", bobId, SENT 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
-    InternalId 3 <- sendMessage bob aliceId "hello too"
+    3 <- sendMessage bob aliceId "hello too"
     get bob ##> ("", aliceId, SENT 3)
-    InternalId 4 <- sendMessage bob aliceId "message 1"
+    4 <- sendMessage bob aliceId "message 1"
     get bob ##> ("", aliceId, SENT 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     suspendConnection alice bobId
-    InternalId 5 <- sendMessage bob aliceId "message 2"
+    5 <- sendMessage bob aliceId "message 2"
     get bob ##> ("", aliceId, MERR 5 (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -150,9 +149,9 @@ testAsyncBothOffline = do
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings alice bobId bob aliceId = do
-  InternalId 1 <- sendMessage alice bobId "hello"
+  1 <- sendMessage alice bobId "hello"
   get alice ##> ("", bobId, SENT 1)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-  InternalId 2 <- sendMessage bob aliceId "hello too"
+  2 <- sendMessage bob aliceId "hello too"
   get bob ##> ("", aliceId, SENT 2)
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
