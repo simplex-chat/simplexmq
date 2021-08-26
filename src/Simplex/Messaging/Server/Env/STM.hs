@@ -25,6 +25,7 @@ import UnliftIO.STM
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
+    msgQueueQuota :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),

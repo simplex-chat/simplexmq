@@ -8,11 +8,12 @@ module Simplex.Messaging.Server.MsgStore.STM where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Numeric.Natural
 import Simplex.Messaging.Protocol (RecipientId)
 import Simplex.Messaging.Server.MsgStore
 import UnliftIO.STM
 
-newtype MsgQueue = MsgQueue {msgQueue :: TQueue Message}
+newtype MsgQueue = MsgQueue {msgQueue :: TBQueue Message}
 
 newtype MsgStoreData = MsgStoreData {messages :: Map RecipientId MsgQueue}
 
@@ -22,13 +23,13 @@ newMsgStore :: STM STMMsgStore
 newMsgStore = newTVar $ MsgStoreData M.empty
 
 instance MonadMsgStore STMMsgStore MsgQueue STM where
-  getMsgQueue :: STMMsgStore -> RecipientId -> STM MsgQueue
-  getMsgQueue store rId = do
+  getMsgQueue :: STMMsgStore -> RecipientId -> Natural -> STM MsgQueue
+  getMsgQueue store rId quota = do
     m <- messages <$> readTVar store
     maybe (newQ m) return $ M.lookup rId m
     where
       newQ m' = do
-        q <- MsgQueue <$> newTQueue
+        q <- MsgQueue <$> newTBQueue quota
         writeTVar store . MsgStoreData $ M.insert rId q m'
         return q
 
@@ -37,15 +38,18 @@ instance MonadMsgStore STMMsgStore MsgQueue STM where
     modifyTVar store $ MsgStoreData . M.delete rId . messages
 
 instance MonadMsgQueue MsgQueue STM where
+  isFull :: MsgQueue -> STM Bool
+  isFull = isFullTBQueue . msgQueue
+
   writeMsg :: MsgQueue -> Message -> STM ()
-  writeMsg = writeTQueue . msgQueue
+  writeMsg = writeTBQueue . msgQueue
 
   tryPeekMsg :: MsgQueue -> STM (Maybe Message)
-  tryPeekMsg = tryPeekTQueue . msgQueue
+  tryPeekMsg = tryPeekTBQueue . msgQueue
 
   peekMsg :: MsgQueue -> STM Message
-  peekMsg = peekTQueue . msgQueue
+  peekMsg = peekTBQueue . msgQueue
 
   -- atomic delete (== read) last and peek next message if available
   tryDelPeekMsg :: MsgQueue -> STM (Maybe Message)
-  tryDelPeekMsg (MsgQueue q) = tryReadTQueue q >> tryPeekTQueue q
+  tryDelPeekMsg (MsgQueue q) = tryReadTBQueue q >> tryPeekTBQueue q

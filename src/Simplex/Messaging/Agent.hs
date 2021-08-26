@@ -412,6 +412,7 @@ runSrvMsgDelivery c@AgentClient {subQ} srv = do
         withRetryInterval ri $ \loop -> do
           sendAgentMessage c sq msgBody
             `catchError` \case
+              SMP SMP.QUOTA -> loop
               e@SMP {} -> notify connId $ MERR mId e
               _ -> loop
           notify connId $ SENT mId

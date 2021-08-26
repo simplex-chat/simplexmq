@@ -192,6 +192,8 @@ data ErrorType
     CMD CommandError
   | -- | command authorization error - bad signature or non-existing SMP queue
     AUTH
+  | -- | SMP queue capacity is exceeded on the server
+    QUOTA
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
   | -- | internal server error
