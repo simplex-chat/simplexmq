@@ -142,7 +142,7 @@ subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection c = withAgentClient c . subscribeConnection' c
 
 -- | Send message to the connection (SEND command)
-sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
+sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId
 sendMessage c = withAgentClient c .: sendMessage' c
 
 -- | Suspend SMP agent connection (OFF command)
@@ -231,7 +231,7 @@ processCommand c (connId, cmd) = case cmd of
   JOIN smpQueueInfo connInfo -> (,OK) <$> joinConn c connId smpQueueInfo connInfo
   ACPT confId ownConnInfo -> acceptConnection' c connId confId ownConnInfo $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
-  SEND msgBody -> (connId,) . MID . unId <$> sendMessage' c connId msgBody
+  SEND msgBody -> (connId,) . MID <$> sendMessage' c connId msgBody
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
 
@@ -327,14 +327,14 @@ subscribeConnection' c connId =
       pure r {initialInterval = 5_000_000}
 
 -- | Send message to the connection (SEND command) in Reader monad
-sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m InternalId
+sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId
 sendMessage' c connId msg =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ _ sq) -> enqueueMessage sq
     SomeConn _ (SndConnection _ sq) -> enqueueMessage sq
     _ -> throwError $ CONN SIMPLEX
   where
-    enqueueMessage :: SndQueue -> m InternalId
+    enqueueMessage :: SndQueue -> m AgentMsgId
     enqueueMessage SndQueue {server} = do
       msgId <- storeSentMsg
       wasDelivering <- resumeMsgDelivery c connId server
@@ -343,7 +343,7 @@ sendMessage' c connId msg =
           then pure [PendingMsg {connId, msgId}]
           else withStore (`getPendingMsgs` connId)
       queuePendingMsgs c connId pending
-      pure msgId
+      pure $ unId msgId
       where
         storeSentMsg :: m InternalId
         storeSentMsg = do
