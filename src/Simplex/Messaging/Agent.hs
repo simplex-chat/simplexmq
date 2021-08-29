@@ -408,7 +408,7 @@ runSrvMsgDelivery c@AgentClient {subQ} srv = do
         notify connId $ MERR mId (INTERNAL $ show e)
       Right (sq, msgBody) -> do
         withRetryInterval ri $ \loop -> do
-          tryAction (sendAgentMessage c sq msgBody) >>= \case
+          tryError (sendAgentMessage c sq msgBody) >>= \case
             Left e -> case e of
               SMP SMP.QUOTA -> loop
               SMP {} -> notify connId $ MERR mId e
@@ -418,7 +418,7 @@ runSrvMsgDelivery c@AgentClient {subQ} srv = do
               notify connId $ SENT mId
               withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
   where
-    tryAction action = (Right <$> action) `catchError` (pure . Left)
+    tryError action = (Right <$> action) `catchError` (pure . Left)
     notify :: ConnId -> ACommand 'Agent -> m ()
     notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
 
