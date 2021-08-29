@@ -427,7 +427,7 @@ binaryRsaTransport :: Int
 binaryRsaTransport = 0
 
 transportBlockSize :: Int
-transportBlockSize = 4096
+transportBlockSize = 8192
 
 maxTransportBlockSize :: Int
 maxTransportBlockSize = 65536

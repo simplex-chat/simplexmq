@@ -403,21 +403,22 @@ runSrvMsgDelivery c@AgentClient {subQ} srv = do
   forever $ do
     PendingMsg {connId, msgId} <- atomically $ readTQueue mq
     let mId = unId msgId
-    r <- withStore $ \st ->
-      (Right <$> getPendingMsgData st connId msgId)
-        `E.catch` \(e :: E.SomeException) -> pure $ Left e
-    case r of
-      Left e -> notify connId $ MERR mId (INTERNAL $ show e)
+    withStore (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
+      Left (e :: E.SomeException) ->
+        notify connId $ MERR mId (INTERNAL $ show e)
       Right (sq, msgBody) -> do
         withRetryInterval ri $ \loop -> do
-          sendAgentMessage c sq msgBody
-            `catchError` \case
+          tryError (sendAgentMessage c sq msgBody) >>= \case
+            Left e -> case e of
               SMP SMP.QUOTA -> loop
-              e@SMP {} -> notify connId $ MERR mId e
+              SMP {} -> notify connId $ MERR mId e
+              CMD {} -> notify connId $ MERR mId e
               _ -> loop
-          notify connId $ SENT mId
-          withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
+            Right () -> do
+              notify connId $ SENT mId
+              withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
   where
+    tryError action = (Right <$> action) `catchError` (pure . Left)
     notify :: ConnId -> ACommand 'Agent -> m ()
     notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
 
