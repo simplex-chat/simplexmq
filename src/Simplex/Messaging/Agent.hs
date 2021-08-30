@@ -40,6 +40,7 @@ module Simplex.Messaging.Agent
     AgentErrorMonad,
     getSMPAgentClient,
     disconnectAgentClient, -- used in tests
+    withAgentLock,
     createConnection,
     joinConnection,
     acceptConnection,
@@ -127,34 +128,37 @@ type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> m (ConnId, SMPQueueInfo)
-createConnection c = withAgentClient c $ newConn c ""
+createConnection c = withAgentEnv c $ newConn c ""
 
 -- | Join SMP agent connection (JOIN command)
 joinConnection :: AgentErrorMonad m => AgentClient -> SMPQueueInfo -> ConnInfo -> m ConnId
-joinConnection c = withAgentClient c .: joinConn c ""
+joinConnection c = withAgentEnv c .: joinConn c ""
 
 -- | Approve confirmation (LET command)
 acceptConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-acceptConnection c = withAgentClient c .:. acceptConnection' c
+acceptConnection c = withAgentEnv c .:. acceptConnection' c
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-subscribeConnection c = withAgentClient c . subscribeConnection' c
+subscribeConnection c = withAgentEnv c . subscribeConnection' c
 
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId
-sendMessage c = withAgentClient c .: sendMessage' c
+sendMessage c = withAgentEnv c .: sendMessage' c
 
 -- | Suspend SMP agent connection (OFF command)
 suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-suspendConnection c = withAgentClient c . suspendConnection' c
+suspendConnection c = withAgentEnv c . suspendConnection' c
 
 -- | Delete SMP agent connection (DEL command)
 deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-deleteConnection c = withAgentClient c . deleteConnection' c
+deleteConnection c = withAgentEnv c . deleteConnection' c
 
-withAgentClient :: AgentErrorMonad m => AgentClient -> ReaderT Env m a -> m a
-withAgentClient c = withAgentLock c . (`runReaderT` agentEnv c)
+withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
+withAgentEnv c = (`runReaderT` agentEnv c)
+
+-- withAgentClient :: AgentErrorMonad m => AgentClient -> ReaderT Env m a -> m a
+-- withAgentClient c = withAgentLock c . withAgentEnv c
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
