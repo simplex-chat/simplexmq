@@ -172,7 +172,7 @@ data ACommand (p :: AParty) where
   SENT :: AgentMsgId -> ACommand Agent
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
   MSG :: MsgMeta -> MsgBody -> ACommand Agent
-  -- ACK :: AgentMsgId -> ACommand Client
+  ACK :: AgentMsgId -> ACommand Client
   -- RCVD :: AgentMsgId -> ACommand Agent
   OFF :: ACommand Client
   DEL :: ACommand Client
@@ -469,6 +469,7 @@ commandP =
     <|> "SENT " *> sentResp
     <|> "MERR " *> msgErrResp
     <|> "MSG " *> message
+    <|> "ACK " *> ackCmd
     <|> "OFF" $> ACmd SClient OFF
     <|> "DEL" $> ACmd SClient DEL
     <|> "ERR " *> agentError
@@ -485,6 +486,7 @@ commandP =
     sentResp = ACmd SAgent . SENT <$> A.decimal
     msgErrResp = ACmd SAgent <$> (MERR <$> A.decimal <* A.space <*> agentErrorTypeP)
     message = ACmd SAgent <$> (MSG <$> msgMetaP <* A.space <*> A.takeByteString)
+    ackCmd = ACmd SClient . ACK <$> A.decimal
     msgMetaP = do
       integrity <- msgIntegrityP
       recipient <- " R=" *> partyMeta A.decimal
@@ -526,6 +528,7 @@ serializeCommand = \case
   MERR mId e -> "MERR " <> bshow mId <> " " <> serializeAgentError e
   MSG msgMeta msgBody ->
     "MSG " <> serializeMsgMeta msgMeta <> " " <> serializeBinary msgBody
+  ACK mId -> "ACK " <> bshow mId
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"

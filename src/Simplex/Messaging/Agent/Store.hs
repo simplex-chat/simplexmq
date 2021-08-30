@@ -60,6 +60,8 @@ class Monad m => MonadAgentStore s m where
   getPendingMsgData :: s -> ConnId -> InternalId -> m (SndQueue, MsgBody)
   getPendingMsgs :: s -> ConnId -> m [PendingMsg]
   getMsg :: s -> ConnId -> InternalId -> m Msg
+  checkRcvMsg :: s -> ConnId -> InternalId -> m ()
+  updateRcvMsgAck :: s -> ConnId -> InternalId -> m ()
 
 -- * Queue types
 

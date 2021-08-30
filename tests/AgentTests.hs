@@ -111,13 +111,17 @@ testDuplexConnection _ alice bob = do
   alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", MID 2)
   alice <# ("", "bob", SENT 2)
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+  bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
+  bob #: ("13", "alice", "ACK 2") #> ("13", "alice", OK)
   bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 3)
   bob <# ("", "alice", SENT 3)
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
+  alice #: ("3a", "bob", "ACK 3") #> ("3a", "bob", OK)
   bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", MID 4)
   bob <# ("", "alice", SENT 4)
   alice <#= \case ("", "bob", Msg "message 1") -> True; _ -> False
+  alice #: ("4a", "bob", "ACK 4") #> ("4a", "bob", OK)
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", MID 5)
   bob <# ("", "alice", MERR 5 (SMP AUTH))
@@ -140,13 +144,17 @@ testDuplexConnRandomIds _ alice bob = do
   alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, MID 2)
   alice <# ("", bobConn, SENT 2)
   bob <#= \case ("", c, Msg "hello") -> c == aliceConn; _ -> False
+  bob #: ("12", aliceConn, "ACK 1") #> ("12", aliceConn, OK)
   bob <#= \case ("", c, Msg "how are you?") -> c == aliceConn; _ -> False
+  bob #: ("13", aliceConn, "ACK 2") #> ("13", aliceConn, OK)
   bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, MID 3)
   bob <# ("", aliceConn, SENT 3)
   alice <#= \case ("", c, Msg "hello too") -> c == bobConn; _ -> False
+  alice #: ("3a", bobConn, "ACK 3") #> ("3a", bobConn, OK)
   bob #: ("15", aliceConn, "SEND 9\nmessage 1") #> ("15", aliceConn, MID 4)
   bob <# ("", aliceConn, SENT 4)
   alice <#= \case ("", c, Msg "message 1") -> c == bobConn; _ -> False
+  alice #: ("4a", bobConn, "ACK 4") #> ("4a", bobConn, OK)
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
   bob #: ("17", aliceConn, "SEND 9\nmessage 3") #> ("17", aliceConn, MID 5)
   bob <# ("", aliceConn, MERR 5 (SMP AUTH))
@@ -161,12 +169,15 @@ testSubscription _ alice1 alice2 bob = do
   bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", MID 2)
   bob <# ("", "alice", SENT 2)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
+  alice1 #: ("1", "bob", "ACK 1") #> ("1", "bob", OK)
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+  alice1 #: ("2", "bob", "ACK 2") #> ("2", "bob", OK)
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
   bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", MID 3)
   bob <# ("", "alice", SENT 3)
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
+  alice2 #: ("22", "bob", "ACK 3") #> ("22", "bob", OK)
   alice1 #:# "nothing else should be delivered to alice1"
 
 testSubscrNotification :: Transport c => TProxy c -> (ThreadId, ThreadId) -> c -> IO ()
@@ -185,6 +196,7 @@ testMsgDeliveryServerRestart t alice bob = do
     bob #: ("1", "alice", "SEND 2\nhi") #> ("1", "alice", MID 1)
     bob <# ("", "alice", SENT 1)
     alice <#= \case ("", "bob", Msg "hi") -> True; _ -> False
+    alice #: ("11", "bob", "ACK 1") #> ("11", "bob", OK)
     alice #:# "nothing else delivered before the server is killed"
 
   alice <# ("", "bob", DOWN)
@@ -196,6 +208,7 @@ testMsgDeliveryServerRestart t alice bob = do
     bob <# ("", "alice", SENT 2)
     alice <# ("", "bob", UP)
     alice <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
+    alice #: ("12", "bob", "ACK 2") #> ("12", "bob", OK)
 
   removeFile testStoreLogFile
   where
@@ -209,6 +222,7 @@ testMsgDeliveryAgentRestart t bob = do
       alice #: ("1", "bob", "SEND 5\nhello") #> ("1", "bob", MID 1)
       alice <# ("", "bob", SENT 1)
       bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+      bob #: ("11", "alice", "ACK 1") #> ("11", "alice", OK)
       bob #:# "nothing else delivered before the server is down"
 
     bob <# ("", "alice", DOWN)
@@ -226,6 +240,7 @@ testMsgDeliveryAgentRestart t bob = do
         _ -> False
       bob <# ("", "alice", UP)
       bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
+      bob #: ("12", "alice", "ACK 2") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
   removeFile testDB

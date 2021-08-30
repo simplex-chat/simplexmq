@@ -46,6 +46,7 @@ module Simplex.Messaging.Agent
     acceptConnection,
     subscribeConnection,
     sendMessage,
+    ackMessage,
     suspendConnection,
     deleteConnection,
   )
@@ -146,6 +147,9 @@ subscribeConnection c = withAgentEnv c . subscribeConnection' c
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId
 sendMessage c = withAgentEnv c .: sendMessage' c
 
+ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
+ackMessage c = withAgentEnv c .: ackMessage' c
+
 -- | Suspend SMP agent connection (OFF command)
 suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 suspendConnection c = withAgentEnv c . suspendConnection' c
@@ -236,6 +240,7 @@ processCommand c (connId, cmd) = case cmd of
   ACPT confId ownConnInfo -> acceptConnection' c connId confId ownConnInfo $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgBody -> (connId,) . MID <$> sendMessage' c connId msgBody
+  ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
 
@@ -426,6 +431,20 @@ runSrvMsgDelivery c@AgentClient {subQ} srv = do
     notify :: ConnId -> ACommand 'Agent -> m ()
     notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
 
+ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
+ackMessage' c connId msgId = do
+  withStore (`getConn` connId) >>= \case
+    SomeConn _ (DuplexConnection _ rq _) -> ack rq
+    SomeConn _ (RcvConnection _ rq) -> ack rq
+    _ -> throwError $ CONN SIMPLEX
+  where
+    ack :: RcvQueue -> m ()
+    ack rq = do
+      let mId = InternalId msgId
+      withStore $ \st -> checkRcvMsg st connId mId
+      sendAck c rq
+      withStore $ \st -> updateRcvMsgAck st connId mId
+
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 suspendConnection' c connId =
@@ -491,14 +510,12 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           let msgHash = C.sha256Hash msg
           case parseSMPMessage msg of
             Left e -> notify $ ERR e
-            Right (SMPConfirmation senderKey cInfo) -> smpConfirmation senderKey cInfo
+            Right (SMPConfirmation senderKey cInfo) -> smpConfirmation senderKey cInfo >> sendAck c rq
             Right SMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
               case agentMessage of
-                HELLO verifyKey _ -> helloMsg verifyKey msgBody
-                REPLY qInfo -> replyMsg qInfo
+                HELLO verifyKey _ -> helloMsg verifyKey msgBody >> sendAck c rq
+                REPLY qInfo -> replyMsg qInfo >> sendAck c rq
                 A_MSG body -> agentClientMsg previousMsgHash (senderMsgId, senderTimestamp) (srvMsgId, srvTs) body msgHash
-          sendAck c rq
-          return ()
         SMP.END -> do
           removeSubscription c connId
           logServer "<--" c srv rId "END"

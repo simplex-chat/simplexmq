@@ -65,13 +65,17 @@ testAgentClient = do
     2 <- sendMessage alice bobId "how are you?"
     get alice ##> ("", bobId, SENT 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId 1
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    ackMessage bob aliceId 2
     3 <- sendMessage bob aliceId "hello too"
     get bob ##> ("", aliceId, SENT 3)
     4 <- sendMessage bob aliceId "message 1"
     get bob ##> ("", aliceId, SENT 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessage alice bobId 3
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
+    ackMessage alice bobId 4
     suspendConnection alice bobId
     5 <- sendMessage bob aliceId "message 2"
     get bob ##> ("", aliceId, MERR 5 (SMP AUTH))
@@ -152,6 +156,8 @@ exchangeGreetings alice bobId bob aliceId = do
   1 <- sendMessage alice bobId "hello"
   get alice ##> ("", bobId, SENT 1)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+  ackMessage bob aliceId 1
   2 <- sendMessage bob aliceId "hello too"
   get bob ##> ("", aliceId, SENT 2)
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+  ackMessage alice bobId 2
