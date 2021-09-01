@@ -437,7 +437,35 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ? AND snd_status = ?" (connId, SndMsgCreated)
 
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
-  getMsg _st _connAlias _id = throwError SENotImplemented
+  getMsg _st _connId _id = throwError SENotImplemented
+
+  checkRcvMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
+  checkRcvMsg st connId msgId =
+    liftIOEither . withTransaction st $ \db ->
+      hasMsg
+        <$> DB.query
+          db
+          [sql|
+            SELECT conn_alias, internal_id
+            FROM rcv_messages
+            WHERE conn_alias = ? AND internal_id = ?
+          |]
+          (connId, msgId)
+    where
+      hasMsg :: [(ConnId, InternalId)] -> Either StoreError ()
+      hasMsg r = if null r then Left SEMsgNotFound else Right ()
+
+  updateRcvMsgAck :: SQLiteStore -> ConnId -> InternalId -> m ()
+  updateRcvMsgAck st connId msgId =
+    liftIO . withTransaction st $ \db -> do
+      DB.execute
+        db
+        [sql|
+          UPDATE rcv_messages
+          SET rcv_status = ?, ack_brocker_ts = datetime('now')
+          WHERE conn_alias = ? AND internal_id = ?
+        |]
+        (AcknowledgedToBroker, connId, msgId)
 
 -- * Auxiliary helpers
 
