@@ -16,9 +16,10 @@
   - [Client commands and server responses](#client-commands-and-server-responses)
     - [NEW command and INV response](#new-command-and-inv-response)
     - [JOIN command](#join-command)
-    - [CON notification](#con-notification)
+    - [REQ notification and ACPT command](#req-notification-and-acpt-command)
+    - [INFO and CON notifications](#info-and-con-notifications)
     - [SUB command](#sub-command)
-    - [SEND command and SENT response](#send-command-and-sent-response)
+    - [SEND command and MID, SENT and MERR responses](#send-command-and-mid-sent-and-merr-responses)
     - [MSG notification](#msg-notification)
     - [END notification](#end-notification)
     - [OFF command](#off-command)
@@ -78,13 +79,17 @@ The procedure of establishing a duplex connection is explained on the example of
 4. Bob sends `JOIN` command with the invitation as a parameter to agent B to accept the connection.
 5. Establishing Alice's SMP queue (with SMP protocol commands):
   - Agent B sends unauthenticated message to SMP queue with ephemeral key that will be used to authenticate commands to the queue, as described in SMP protocol.
-  - Agent A receives the KEY and secures the queue.
+  - Agent A receives the KEY and Bob's info.
+  - Agent A notifies Alice sending REQ notification with Bob's info.
+  - Alice accepts connection request with ACPT command.
+  - Agent A secures the queue.
   - Agent B tries sending authenticated SMP SEND command with agent `HELLO` message until it succeeds. Once it succeeds, Bob's agent "knows" the queue is secured.
 6. Agent B creates a new SMP queue on the server.
 7. Establish Bob's SMP queue:
   - Agent B sends `REPLY` message with the invitation to this 2nd queue to Alice's agent (via the 1st queue).
-  - Agent A having received this `REPLY` message sends unauthenticated message to SMP queue with Alice agent's ephemeral key that will be used to authenticate commands to the queue, as described in SMP protocol.
-  - Bob's agent receives the key and secures the queue.
+  - Agent A having received this `REPLY` message sends unauthenticated message to SMP queue with Alice agent's ephemeral key that will be used to authenticate commands to the queue, as described in SMP protocol, and Alice's info.
+  - Bob's agent receives the key and Alice's information and secures the queue.
+  - Bob's agent sends the notification `INFO` with Alice's information to Bob.
   - Alice's agent keeps sending `HELLO` message until it succeeds.
 8. Agents A and B notify Alice and Bob that connection is established.
   - Once sending `HELLO` succeeds, Alice's agent sends to Alice `CON` notification that confirms that now both parties can communicate.
@@ -193,12 +198,24 @@ cId = encoded
 cName = 1*(ALPHA / DIGIT / "_" / "-")
 
 agentCommand = (userCmd / agentMsg) CRLF
-userCmd = newCmd / joinCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
-agentMsg = invitation / connected / unsubscribed / message / sent / received / ok / error
+userCmd = newCmd / joinCmd / acceptCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
+agentMsg = invitation / connRequest / connInfo / connected / unsubscribed / connDown / connUp / messageId / sent / messageError / message / received / ok / error
 
 newCmd = %s"NEW" [SP %s"NO_ACK"] ; response is `invitation` or `error`
+; NO_ACK parameter currently not supported
 
 invitation = %s"INV" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
+
+connRequest = %s"REQ" SP confirmationId SP msgBody
+; msgBody here is any binary information identifying connection request
+
+confirmationId = 1*DIGIT
+
+acceptCmd = %s"ACPT SP confirmationId SP msgBody
+; msgBody here is any binary information identifying connecting party
+
+connInfo = %s"INFO" SP msgBody
+; msgBody here is any binary information identifying connecting party
 
 connected = %s"CON"
 
@@ -207,6 +224,12 @@ subscribeCmd = %s"SUB" ; response is `ok` or `error`
 unsubscribed = %s"END"
 ; when another agent (or another client of the same agent)
 ; subscribes to the same SMP queue on the server
+
+connDown = %s"DOWN"
+; lost connection (e.g. because of Internet connectivity or server is down)
+
+connUp = %s"UP"
+; restored connection
 
 joinCmd = %s"JOIN" SP <queueInfo> [SP %s"NO_REPLY"] [SP %s"NO_ACK"]
 ; `queueInfo` is the same as in out-of-band message, see SMP protocol
@@ -225,7 +248,11 @@ binaryMsg = size CRLF msgBody CRLF ; the last CRLF is in addition to CRLF in the
 size = 1*DIGIT ; size in bytes
 msgBody = *OCTET ; any content of specified size - safe for binary
 
+messageId = %s"MID" SP agentMsgId
+
 sent = %s"SENT" SP agentMsgId
+
+messageError = %s"MERR" SP agentMsgId SP <errorType>
 
 message = %s"MSG" SP msgIntegrity SP recipientMeta SP brokerMeta SP senderMeta SP binaryMsg
 recipientMeta = %s"R=" agentMsgId "," agentTimestamp ; receiving agent message metadata 
@@ -247,7 +274,6 @@ missingToMsgId = agentMsgId
 previousMsgId = agentMsgId
 
 acknowledgeCmd = %s"ACK" SP agentMsgId ; ID assigned by receiving agent (in MSG "R")
-; currently not implemented
 
 received = %s"RCVD" SP agentMsgId ; ID assigned by sending agent (in SENT response)
 ; currently not implemented
@@ -261,27 +287,41 @@ error = %s"ERR" SP <errorType>
 
 #### NEW command and INV response
 
-`NEW` command is used to create a connection and an invitation to be sent out-of-band to another protocol user. It should be used by the client of the agent that initiates creating a duplex connection.
+`NEW` command is used to create a connection and an invitation to be sent out-of-band to another protocol user (the accepting party). It should be used by the client of the agent that initiates creating a duplex connection (the initiating party).
 
-`INV` response is sent by the agent to the client.
+`INV` response is sent by the agent to the client of the initiating party.
 
 #### JOIN command
 
-It is used to create a connection and accept the invitation received out-of-band. It should be used by the client of the agent that accepts the connection.
+It is used by to create a connection and accept the invitation received out-of-band. It should be used by the client of the agent that accepts the connection (the joining party).
 
-#### CON notification
+#### REQ notification and ACPT command
 
-It is sent by both agents managing duplex connection to their clients once the connection is established and ready to accept client messages.
+When the accepting party uses `JOIN` command, the initiating party will receive `REQ` notification with some numeric identifier and an additional binary information, that can be used to identify the joining party or for any other purpose.
+
+To continue with the connection the initiating party should use `ACPT` command.
+
+#### INFO and CON notifications
+
+After the initiating party proceeds with the connection using `ACPT` command, the joining party will receive `INFO` notification that can be used to identify the joining party or for any other purpose.
+
+Once the connection is established and ready to accept client messages, both agents will send `CON` notification to their clients.
 
 #### SUB command
 
 This command can be used by the client to resume receiving messages from the connection that was created in another TCP/client session. Agent response to this command can be `OK` or `ERR` in case connection does not exist (or can only be used to send connections - e.g. when the reply queue was not created).
 
-#### SEND command and SENT response
+#### SEND command and MID, SENT and MERR responses
 
-`SEND` command is used to the client to send messages
+`SEND` command is used by the client to send messages.
 
-`SENT` response is sent by the agent to confirm that the message was delivered to the SMP server. Message ID in this response is the sequential message number that includes both sent and received messages in the connection.
+`MID` notification with the message ID (the sequential message number that includes both sent and received messages in the connection) is sent to the client to confirm that the message is accepted by the agent, before it is sent to the SMP server.
+
+`SENT` response is sent by the agent to confirm that the message was delivered to the SMP server. This notification contains the same message ID as `MID` notification. `SENT` notification, depending on network availability, can be sent at any time later, potentially in the next client session.
+
+In case of the failure to send the message for any other reason than network connection or message queue quota - e.g. authentication error (`ERR AUTH`) or syntax error (`ERR CMD error`), the agent will send to the client `MERR` notification with the message ID, and this message delivery will no longer be attempted.
+
+In case of client disconnecting from the agent, the pending messages will not be sent until the client re-connects to the agent and subscribes to the connection that has pending messages.
 
 #### MSG notification
 
@@ -293,6 +333,12 @@ It is sent by the agent to the client when agent receives the message from the S
 #### END notification
 
 It is sent by the agent to the client when agent receives SMP protocol `END` notification from SMP server. It indicates that another agent has subscribed to the same SMP queue on the server and the server terminated the subscription of the current agent.
+
+#### DOWN and UP notifications
+
+These notifications are sent when server or network connection is, respectively, `DOWN` or back `UP`.
+
+All the subscriptions made in the current client session will be automatically resumed when `UP` notification is received.
 
 #### OFF command
 
