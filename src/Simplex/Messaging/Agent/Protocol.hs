@@ -283,7 +283,7 @@ smpQueueInfoP =
 smpServerP :: Parser SMPServer
 smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
   where
-    server = B.unpack <$> A.takeWhile1 (A.notInClass ":# ")
+    server = B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
     kHash = C.KeyHash <$> (A.char '#' *> base64P)
 
