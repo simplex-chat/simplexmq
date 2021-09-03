@@ -90,7 +90,8 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
 runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
 runClient _ h = do
   keyPair <- asks serverKeyPair
-  liftIO (runExceptT $ serverHandshake h keyPair) >>= \case
+  ServerConfig {blockSize} <- asks config
+  liftIO (runExceptT $ serverHandshake h blockSize keyPair) >>= \case
     Right th -> runClientTransport th
     Left _ -> pure ()
 

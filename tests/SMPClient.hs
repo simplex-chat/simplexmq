@@ -39,6 +39,9 @@ testPort2 = "5001"
 testKeyHashStr :: B.ByteString
 testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 
+testBlockSize :: Maybe Int
+testBlockSize = Just 8192
+
 testKeyHash :: Maybe C.KeyHash
 testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 
@@ -48,7 +51,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
   runTransportClient testHost testPort $ \h ->
-    liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
+    liftIO (runExceptT $ clientHandshake h testBlockSize testKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -61,6 +64,7 @@ cfg =
       queueIdBytes = 12,
       msgIdBytes = 6,
       storeLog = Nothing,
+      blockSize = 8192,
       serverPrivateKey =
         -- full RSA private key (only for tests)
         "MIIFIwIBAAKCAQEArZyrri/NAwt5buvYjwu+B/MQeJUszDBpRgVqNddlI9kNwDXu\
