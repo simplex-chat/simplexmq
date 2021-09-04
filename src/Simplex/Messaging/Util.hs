@@ -50,3 +50,6 @@ liftError f = liftEitherError f . runExceptT
 
 liftEitherError :: (MonadIO m, MonadError e' m) => (e -> e') -> IO (Either e a) -> m a
 liftEitherError f a = liftIOEither (first f <$> a)
+
+tryError :: MonadError e m => m a -> m (Either e a)
+tryError action = (Right <$> action) `catchError` (pure . Left)

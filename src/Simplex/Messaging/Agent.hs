@@ -83,7 +83,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
-import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Util (bshow, tryError)
 import System.Random (randomR)
 import UnliftIO.Async (Async, async, race_)
 import qualified UnliftIO.Exception as E
@@ -427,7 +427,6 @@ runSrvMsgDelivery c@AgentClient {subQ} srv = do
               notify connId $ SENT mId
               withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
   where
-    tryError action = (Right <$> action) `catchError` (pure . Left)
     notify :: ConnId -> ACommand 'Agent -> m ()
     notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
 
