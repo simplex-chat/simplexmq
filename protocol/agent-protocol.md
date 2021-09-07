@@ -74,12 +74,12 @@ SMP agent protocol has 3 main parts:
 The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection comprised of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP servers (which could be the same server). It is shown on the diagram above and has these steps:
 
 1. Alice requests the new connection from the SMP agent A using `NEW` command.
-2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md)) and responds to Alice with the invitation that contains queue information and the encryption key Bob's agent B should use. The invitation format is described in [Connection invitation](#connection-invitation).
+2. Agent A creates an SMP connection on the server (using [SMP protocol](./simplex-messaging.md)) and responds to Alice with the invitation that contains queue information and the encryption key Bob's agent B should use. The invitation format is described in [Connection invitation](#connection-invitation).
 3. Alice sends the invitation to Bob via any secure channel they have (out-of-band message).
 4. Bob sends `JOIN` command with the invitation as a parameter to agent B to accept the connection.
-5. Establishing Alice's SMP queue (with SMP protocol commands):
-  - Agent B sends unauthenticated message to SMP queue with ephemeral key that will be used to authenticate commands to the queue, as described in SMP protocol.
-  - Agent A receives the KEY and Bob's info.
+5. Establishing Alice's SMP connection (with SMP protocol commands):
+  - Agent B sends an "SMP confirmation" to the SMP queue specified in the invitation - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info.
+  - Agent A receives the SMP confirmation containing Bob's key and info.
   - Agent A notifies Alice sending REQ notification with Bob's info.
   - Alice accepts connection request with ACPT command.
   - Agent A secures the queue.
@@ -87,7 +87,7 @@ The procedure of establishing a duplex connection is explained on the example of
 6. Agent B creates a new SMP queue on the server.
 7. Establish Bob's SMP queue:
   - Agent B sends `REPLY` message with the invitation to this 2nd queue to Alice's agent (via the 1st queue).
-  - Agent A having received this `REPLY` message sends unauthenticated message to SMP queue with Alice agent's ephemeral key that will be used to authenticate commands to the queue, as described in SMP protocol, and Alice's info.
+  - Agent A, having received this `REPLY` message, sends unauthenticated message to SMP queue with Alice agent's ephemeral key that will be used to authenticate Alice's commands to the queue, as described in SMP protocol, and Alice's info.
   - Bob's agent receives the key and Alice's information and secures the queue.
   - Bob's agent sends the notification `INFO` with Alice's information to Bob.
   - Alice's agent keeps sending `HELLO` message until it succeeds.
@@ -211,7 +211,7 @@ connRequest = %s"REQ" SP confirmationId SP msgBody
 
 confirmationId = 1*DIGIT
 
-acceptCmd = %s"ACPT SP confirmationId SP msgBody
+acceptCmd = %s"ACPT" SP confirmationId SP msgBody
 ; msgBody here is any binary information identifying connecting party
 
 connInfo = %s"INFO" SP msgBody
@@ -260,10 +260,10 @@ brokerMeta = %s"B=" brokerMsgId "," brokerTimestamp ; broker (server) message me
 senderMeta = %s"S=" agentMsgId "," agentTimestamp ; sending agent message metadata 
 brokerMsgId = encoded
 brokerTimestamp = <date-time>
-msgIntegrity = ok / messageError
+msgIntegrity = ok / msgIntegrityError
 
-messageError = %s"ERR" SP messageErrorType
-messageErrorType = skippedMsgErr / badMsgIdErr / badHashErr
+msgIntegrityError = %s"ERR" SP msgIntegrityErrorType
+msgIntegrityErrorType = skippedMsgErr / badMsgIdErr / badHashErr
 
 skippedMsgErr = %s"NO_ID" SP missingFromMsgId SP missingToMsgId
 badMsgIdErr = %s"ID" SP previousMsgId ; ID is lower than the previous
@@ -287,23 +287,23 @@ error = %s"ERR" SP <errorType>
 
 #### NEW command and INV response
 
-`NEW` command is used to create a connection and an invitation to be sent out-of-band to another protocol user (the accepting party). It should be used by the client of the agent that initiates creating a duplex connection (the initiating party).
+`NEW` command is used to create a connection and an invitation to be sent out-of-band to another protocol user (the joining party). It should be used by the client of the agent that initiates creating a duplex connection (the initiating party).
 
 `INV` response is sent by the agent to the client of the initiating party.
 
 #### JOIN command
 
-It is used by to create a connection and accept the invitation received out-of-band. It should be used by the client of the agent that accepts the connection (the joining party).
+It is used to create a connection and accept the invitation received out-of-band. It should be used by the client of the agent that accepts the connection (the joining party).
 
 #### REQ notification and ACPT command
 
-When the accepting party uses `JOIN` command, the initiating party will receive `REQ` notification with some numeric identifier and an additional binary information, that can be used to identify the joining party or for any other purpose.
+When the joining party uses `JOIN` command, the initiating party will receive `REQ` notification with some numeric identifier and an additional binary information, that can be used to identify the joining party or for any other purpose.
 
 To continue with the connection the initiating party should use `ACPT` command.
 
 #### INFO and CON notifications
 
-After the initiating party proceeds with the connection using `ACPT` command, the joining party will receive `INFO` notification that can be used to identify the joining party or for any other purpose.
+After the initiating party proceeds with the connection using `ACPT` command, the joining party will receive `INFO` notification that can be used to identify the initiating party or for any other purpose.
 
 Once the connection is established and ready to accept client messages, both agents will send `CON` notification to their clients.
 
