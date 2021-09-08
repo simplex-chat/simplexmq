@@ -25,9 +25,11 @@ import UnliftIO.STM
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
+    msgQueueQuota :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
+    blockSize :: Int,
     serverPrivateKey :: C.FullPrivateKey
     -- serverId :: ByteString
   }
@@ -86,7 +88,7 @@ newEnv config = do
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
   let pk = serverPrivateKey config
-      serverKeyPair = (C.publicKey pk, pk)
+      serverKeyPair = (C.publicKey' pk, pk)
   return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s'}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)

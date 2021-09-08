@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Env.SQLite where
@@ -11,7 +12,9 @@ import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
+import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
+import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
@@ -23,11 +26,43 @@ data AgentConfig = AgentConfig
     connIdBytes :: Int,
     tbqSize :: Natural,
     dbFile :: FilePath,
-    smpCfg :: SMPClientConfig
+    dbPoolSize :: Int,
+    smpCfg :: SMPClientConfig,
+    retryInterval :: RetryInterval,
+    reconnectInterval :: RetryInterval
   }
+
+minute :: Int
+minute = 60_000_000
+
+defaultAgentConfig :: AgentConfig
+defaultAgentConfig =
+  AgentConfig
+    { tcpPort = "5224",
+      smpServers = undefined,
+      rsaKeySize = 2048 `div` 8,
+      connIdBytes = 12,
+      tbqSize = 16,
+      dbFile = "smp-agent.db",
+      dbPoolSize = 4,
+      smpCfg = smpDefaultConfig,
+      retryInterval =
+        RetryInterval
+          { initialInterval = 1_000_000,
+            increaseAfter = minute,
+            maxInterval = 10 * minute
+          },
+      reconnectInterval =
+        RetryInterval
+          { initialInterval = 1_000_000,
+            increaseAfter = 10_000_000,
+            maxInterval = 10_000_000
+          }
+    }
 
 data Env = Env
   { config :: AgentConfig,
+    store :: SQLiteStore,
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     reservedMsgSize :: Int,
@@ -35,15 +70,15 @@ data Env = Env
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config = do
+newSMPAgentEnv cfg = do
   idsDrg <- newTVarIO =<< drgNew
-  _ <- liftIO $ createSQLiteStore $ dbFile config
+  store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  return Env {config, idsDrg, clientCounter, reservedMsgSize, randomServer}
+  return Env {config = cfg, store, idsDrg, clientCounter, reservedMsgSize, randomServer}
   where
     -- 1st rsaKeySize is used by the RSA signature in each command,
     -- 2nd - by encrypted message body header
     -- 3rd - by message signature
     -- smpCommandSize - is the estimated max size for SMP command, queueId, corrId
-    reservedMsgSize = 3 * rsaKeySize config + smpCommandSize (smpCfg config)
+    reservedMsgSize = 3 * rsaKeySize cfg + smpCommandSize (smpCfg cfg)

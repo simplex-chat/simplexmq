@@ -29,19 +29,25 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, stdout)
+import Text.Read (readEither)
 
 defaultServerPort :: ServiceName
 defaultServerPort = "5223"
+
+defaultBlockSize :: Int
+defaultBlockSize = 4096
 
 serverConfig :: ServerConfig
 serverConfig =
   ServerConfig
     { tbqSize = 16,
+      msgQueueQuota = 256,
       queueIdBytes = 12,
       msgIdBytes = 6,
       -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini
       transports = undefined,
       storeLog = undefined,
+      blockSize = undefined,
       serverPrivateKey = undefined
     }
 
@@ -96,9 +102,9 @@ getConfig opts = do
   pure $ makeConfig ini pk storeLog
 
 makeConfig :: IniOpts -> C.FullPrivateKey -> Maybe (StoreLog 'ReadMode) -> ServerConfig
-makeConfig IniOpts {serverPort, enableWebsockets} pk storeLog =
+makeConfig IniOpts {serverPort, blockSize, enableWebsockets} pk storeLog =
   let transports = (serverPort, transport @TCP) : [("80", transport @WS) | enableWebsockets]
-   in serverConfig {serverPrivateKey = pk, storeLog, transports}
+   in serverConfig {serverPrivateKey = pk, storeLog, blockSize, transports}
 
 printConfig :: ServerConfig -> IO ()
 printConfig ServerConfig {serverPrivateKey, storeLog} = do
@@ -139,6 +145,7 @@ data IniOpts = IniOpts
     storeLogFile :: FilePath,
     serverKeyFile :: FilePath,
     serverPort :: ServiceName,
+    blockSize :: Int,
     enableWebsockets :: Bool
   }
 
@@ -151,7 +158,8 @@ readIni = do
       serverKeyFile = opt defaultKeyFile "TRANSPORT" "key_file" ini
       serverPort = opt defaultServerPort "TRANSPORT" "port" ini
       enableWebsockets = (== Right "on") $ lookupValue "TRANSPORT" "websockets" ini
-  pure IniOpts {enableStoreLog, storeLogFile, serverKeyFile, serverPort, enableWebsockets}
+  blockSize <- liftEither . readEither $ opt (show defaultBlockSize) "TRANSPORT" "block_size" ini
+  pure IniOpts {enableStoreLog, storeLogFile, serverKeyFile, serverPort, blockSize, enableWebsockets}
   where
     opt :: String -> Text -> Text -> Ini -> String
     opt def section key ini = either (const def) T.unpack $ lookupValue section key ini
@@ -178,6 +186,9 @@ createIni ServerOpts {enableStoreLog} = do
          \# port: "
       <> defaultServerPort
       <> "\n\
+         \# block_size: "
+      <> show defaultBlockSize
+      <> "\n\
          \websockets: on\n"
   pure
     IniOpts
@@ -185,6 +196,7 @@ createIni ServerOpts {enableStoreLog} = do
         storeLogFile = defaultStoreLogFile,
         serverKeyFile = defaultKeyFile,
         serverPort = defaultServerPort,
+        blockSize = defaultBlockSize,
         enableWebsockets = True
       }
 
@@ -222,7 +234,7 @@ confirm msg = do
   when (map toLower ok /= "y") exitFailure
 
 serverKeyHash :: C.FullPrivateKey -> B.ByteString
-serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey
+serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey'
 
 openStoreLog :: ServerOpts -> IniOpts -> IO (Maybe (StoreLog 'ReadMode))
 openStoreLog ServerOpts {enableStoreLog = l} IniOpts {enableStoreLog = l', storeLogFile = f}
