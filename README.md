@@ -50,7 +50,7 @@ See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for
 
 ## Using SMP server and SMP agent
 
-You can either run your own SMP server locally or deploy using Linode or DigitalOcean recipe, or try local SMP agent with the deployed demo server:
+You can either run your own SMP server locally or deploy using [Linode StackScript](#deploy-smp-server-on-linode), or try local SMP agent with the deployed demo server:
 
 `smp1.simplex.im:5223#pLdiGvm0jD1CMblnov6Edd/391OrYsShw+RgdfR0ChA=`
 
@@ -78,17 +78,17 @@ Deployment on [Linode](https://www.linode.com/) is performed via StackScripts, w
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
-[<img alt="digitalocean" src="./img/digitalocean.svg" align="right" width="200">](TODO)
+[<img alt="linode" src="./img/digitalocean.png" align="right" width="300">](https://marketplace.digitalocean.com/apps/simplex-server)
 
 ## Deploy SMP server on DigitalOcean
 
-[DigitalOcean](https://cloud.digitalocean.com) operates on the concept of Droplets. Droplet is a unit of deployment instantiated based on a Snapshot. You can deploy SMP server using provided [Snapshot](TODO):
+You can deploy SMP server using [SimpleX Server 1-click app](https://marketplace.digitalocean.com/apps/simplex-server) from DigitalOcean marketplace:
 
 - Create a DigitalOcean account or login with an already existing one.
-- [Create Droplet](https://cloud.digitalocean.com/droplets/new?size=s-1vcpu-1gb&region=fra1).
+- Click 'Create SimpleX server Droplet' button.
 - Choose the region and plan according to your requirements (cheapest Regular plan should be sufficient).
-- Provide [ssh key](https://www.digitalocean.com/community/tutorials/how-to-set-up-ssh-keys-2) and confirm Droplet creation. 
-- Ssh to created Droplet (`ssh root@<droplet_ip_address>`) to get SMP server public key hash - either from the welcome message or from `/etc/opt/simplex/pub_key_hash`. DigitalOcean has a good guide on [how to login to Droplet via ssh](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
+- Provide ssh key and confirm Droplet creation. 
+- SSH to created Droplet (`ssh root@<droplet_ip_address>`) to get SMP server public key hash - either from the welcome message or from `/etc/opt/simplex/pub_key_hash`. DigitalOcean has a good guide on [how to login to Droplet via ssh](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
 - Great, your own SMP server is ready! Use `ip_address#hash` as SMP server address in the client.
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.

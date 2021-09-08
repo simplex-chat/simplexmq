@@ -115,6 +115,7 @@ printConfig ServerConfig {serverPrivateKey, storeLog} = do
 
 initializeServer :: ServerOpts -> IO ServerConfig
 initializeServer opts = do
+  createDirectoryIfMissing False cfgDir
   ini <- createIni opts
   pk <- createKey ini
   storeLog <- openStoreLog opts ini
@@ -213,7 +214,6 @@ readKey IniOpts {serverKeyFile} = do
 
 createKey :: IniOpts -> IO C.FullPrivateKey
 createKey IniOpts {serverKeyFile} = do
-  createDirectoryIfMissing True cfgDir
   (_, pk) <- C.generateKeyPair newKeySize
   S.writeKeyFile S.TraditionalFormat serverKeyFile [PrivKeyRSA $ C.rsaPrivateKey pk]
   pure pk
