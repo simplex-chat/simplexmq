@@ -106,7 +106,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
     smpAgent _ = runTransportServer started tcpPort $ \(h :: c) -> do
-      liftIO $ putLn h "Welcome to SMP v0.3.2 agent"
+      liftIO $ putLn h "Welcome to SMP v0.4.0 agent"
       c <- getAgentClient
       logConnection c True
       race_ (connectClient h c) (runAgentClient c)
