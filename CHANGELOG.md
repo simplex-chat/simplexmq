@@ -1,3 +1,7 @@
+# 0.4.1
+
+- Include migrations in the package
+
 # 0.4.0
 
 - SMP server implementation and [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md) changes:

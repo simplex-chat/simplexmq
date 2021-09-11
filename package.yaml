@@ -1,5 +1,5 @@
 name: simplexmq
-version: 0.4.0
+version: 0.4.1
 synopsis: SimpleXMQ message broker
 description:  |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -20,6 +20,7 @@ category: Chat, Network, Web, System, Cryptography
 extra-source-files:
   - README.md
   - CHANGELOG.md
+  - migrations/*.*
 
 dependencies:
   - ansi-terminal >= 0.10 && < 0.12

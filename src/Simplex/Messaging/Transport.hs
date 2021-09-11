@@ -221,7 +221,7 @@ major :: SMPVersion -> (Int, Int)
 major (SMPVersion a b _ _) = (a, b)
 
 currentSMPVersion :: SMPVersion
-currentSMPVersion = "0.4.0.0"
+currentSMPVersion = "0.4.1.0"
 
 serializeSMPVersion :: SMPVersion -> ByteString
 serializeSMPVersion (SMPVersion a b c d) = B.intercalate "." [bshow a, bshow b, bshow c, bshow d]

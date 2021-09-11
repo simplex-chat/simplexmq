@@ -13,11 +13,9 @@ SimpleXMQ is implemented in Haskell - it benefits from robust software transacti
 
 ## SimpleXMQ roadmap
 
-- Streams - high performance message queues. See [Streams RFC](https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-02-28-streams.md) for details.
-- "Small" connection groups, when each message will be sent by the SMP agent to multiple connections with a single client command. See [Groups RFC](https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-03-18-groups.md) for details.
-- SMP agents cluster to share connections and message management by multiple agents (for example, it would enable multi-device use for [simplex-chat](https://github.com/simplex-chat/simplex-chat)).
 - SMP queue redundancy and rotation in SMP agent duplex connections.
-- "Large" groups design and implementation. 
+- SMP agents synchronization to share connections and messages between multiple agents (it would allow using multiple devices for [simplex-chat](https://github.com/simplex-chat/simplex-chat)).
+- Streams - high performance message queues. See [Streams RFC](https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-02-28-streams.md) for details.
 
 ## Components
 
@@ -50,13 +48,14 @@ See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for
 
 ## Using SMP server and SMP agent
 
-You can either run your own SMP server locally or deploy using [Linode StackScript](#deploy-smp-server-on-linode), or try local SMP agent with the deployed demo server:
+You can either run your own SMP server locally or deploy using [Linode StackScript](#deploy-smp-server-on-linode), or try local SMP agent with the deployed servers:
 
-`smp1.simplex.im:5223#pLdiGvm0jD1CMblnov6Edd/391OrYsShw+RgdfR0ChA=`
+`smp2.simplex.im#z5W2QLQ1Br3Yd6CoWg7bIq1bHdwK7Y8bEiEXBs/WfAg=` (London, UK)
+`smp3.simplex.im#nxc7HnrnM8dOKgkMp008ub/9o9LXJlxlMrMpR+mfMQw=` (Fremont, CA)
 
 It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI.
 
-[<img alt="linode" src="./img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
+[<img alt="Linode" src="https://raw.githubusercontent.com/simplex-chat/simplexmq/master/img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
 
 ## Deploy SMP server on Linode
 
@@ -78,7 +77,7 @@ Deployment on [Linode](https://www.linode.com/) is performed via StackScripts, w
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
-[<img alt="linode" src="./img/digitalocean.png" align="right" width="300">](https://marketplace.digitalocean.com/apps/simplex-server)
+[<img alt="DigitalOcean" src="https://raw.githubusercontent.com/simplex-chat/simplexmq/master/img/digitalocean.png" align="right" width="300">](https://marketplace.digitalocean.com/apps/simplex-server)
 
 ## Deploy SMP server on DigitalOcean
 
