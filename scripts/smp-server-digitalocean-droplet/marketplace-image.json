@@ -3,7 +3,7 @@
     "token": "{{env `DIGITALOCEAN_TOKEN`}}",
     "image_name": "smp-server-snapshot",
     "application_name": "SMP server",
-    "release_tag": "v0.4.0"
+    "release_tag": "v0.4.1"
   },
   "sensitive-variables": ["token"],
   "builders": [
