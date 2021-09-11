@@ -312,7 +312,7 @@ data SMPServer = SMPServer
   deriving (Eq, Ord, Show)
 
 instance IsString SMPServer where
-  fromString = parseString . parseAll $ smpServerP
+  fromString = parseString $ parseAll smpServerP
 
 -- | SMP agent connection alias.
 type ConnId = ByteString

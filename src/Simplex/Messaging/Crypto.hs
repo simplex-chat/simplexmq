@@ -169,10 +169,10 @@ instance PrivateKey APrivateKey where
           else Just $ PublicKey k
 
 instance IsString FullPrivateKey where
-  fromString = parseString (decode >=> decodePrivKey)
+  fromString = parseString $ decode >=> decodePrivKey
 
 instance IsString PublicKey where
-  fromString = parseString (decode >=> decodePubKey)
+  fromString = parseString $ decode >=> decodePubKey
 
 instance ToField SafePrivateKey where toField = toField . encodePrivKey
 

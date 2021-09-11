@@ -108,10 +108,10 @@ testDuplexConnection _ alice bob = do
   alice <# ("", "bob", CON)
   alice #: ("3", "bob", "SEND :hello") #> ("3", "bob", MID 1)
   alice <# ("", "bob", SENT 1)
-  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", MID 2)
-  alice <# ("", "bob", SENT 2)
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
+  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", MID 2)
+  alice <# ("", "bob", SENT 2)
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
   bob #: ("13", "alice", "ACK 2") #> ("13", "alice", OK)
   bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 3)
@@ -141,10 +141,10 @@ testDuplexConnRandomIds _ alice bob = do
   alice <# ("", bobConn, CON)
   alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, MID 1)
   alice <# ("", bobConn, SENT 1)
-  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, MID 2)
-  alice <# ("", bobConn, SENT 2)
   bob <#= \case ("", c, Msg "hello") -> c == aliceConn; _ -> False
   bob #: ("12", aliceConn, "ACK 1") #> ("12", aliceConn, OK)
+  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, MID 2)
+  alice <# ("", bobConn, SENT 2)
   bob <#= \case ("", c, Msg "how are you?") -> c == aliceConn; _ -> False
   bob #: ("13", aliceConn, "ACK 2") #> ("13", aliceConn, OK)
   bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, MID 3)
@@ -166,10 +166,10 @@ testSubscription _ alice1 alice2 bob = do
   (alice1, "alice") `connect` (bob, "bob")
   bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", MID 1)
   bob <# ("", "alice", SENT 1)
-  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", MID 2)
-  bob <# ("", "alice", SENT 2)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   alice1 #: ("1", "bob", "ACK 1") #> ("1", "bob", OK)
+  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", MID 2)
+  bob <# ("", "alice", SENT 2)
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice1 #: ("2", "bob", "ACK 2") #> ("2", "bob", OK)
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)

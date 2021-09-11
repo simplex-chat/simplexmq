@@ -1,3 +1,27 @@
+# 0.4.0
+
+- SMP server implementation and [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md) changes:
+  - support 3072 bit RSA key size
+  - add SMP queue quotas
+  - set default transport block size to 4096 bits
+  - allow SMP client to change transport block size during transport connection handshake
+- SMP agent implementation and protocol changes:
+  - additional connection confirmation step for initiating party
+  - automatically resume subscribed duplex connections once transport connection is resumed
+  - passing an arbitrary binary information between parties during the duplex connection handshake - can be used to identify parties
+  - asynchronous duplex connection handshake - the parties do not have to be online at the same time
+  - asynchronous message delivery - the agent does not need transport connection to accept client messages for delivery
+  - additional confirmation of message reception from the client to prevent message loss in case of process termination
+  - set transport block size to 8192 bits (in the future the agent protocol can allow to have different block sizes for different duplex connections)
+  - added client commands and notifications (see [agent protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md)):
+    - `REQ` - the notification about joining party establishing connection
+    - `ACPT` - the command to accept connection with the joining party
+    - `INFO` - the notification with the information from the initiating party
+    - `DOWN`/`UP` - the notifications about losing/resuming the connection
+    - `ACK` - the command to confirm that the message reception/processing is complete
+    - `MID` - the response to `SEND` confirming that the message is accepted by the agent
+    - `MERR` - the notification about permanent message delivery error (e.g., `ERR AUTH` indicating that the queue was removed)
+
 # 0.3.2
 
 - Support websockets

@@ -66,6 +66,7 @@ import Data.Functor (($>))
 import Data.Maybe(fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.String
 import Data.Word (Word32)
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
@@ -74,7 +75,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import Network.Transport.Internal (decodeNum16, decodeNum32, encodeEnum16, encodeEnum32, encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (parse, parseAll, parseRead1)
+import Simplex.Messaging.Parsers (parse, parseAll, parseRead1, parseString)
 import Simplex.Messaging.Util (bshow, liftError)
 import System.IO
 import System.IO.Error
@@ -213,11 +214,14 @@ trimCR s = if B.last s == '\r' then B.init s else s
 data SMPVersion = SMPVersion Int Int Int Int
   deriving (Eq, Ord)
 
+instance IsString SMPVersion where
+  fromString = parseString $ parseAll smpVersionP
+
 major :: SMPVersion -> (Int, Int)
 major (SMPVersion a b _ _) = (a, b)
 
 currentSMPVersion :: SMPVersion
-currentSMPVersion = SMPVersion 0 3 2 0
+currentSMPVersion = "0.4.0.0"
 
 serializeSMPVersion :: SMPVersion -> ByteString
 serializeSMPVersion (SMPVersion a b c d) = B.intercalate "." [bshow a, bshow b, bshow c, bshow d]
