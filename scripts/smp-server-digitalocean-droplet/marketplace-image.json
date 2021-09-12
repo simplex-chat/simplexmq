@@ -2,8 +2,7 @@
   "variables": {
     "token": "{{env `DIGITALOCEAN_TOKEN`}}",
     "image_name": "smp-server-snapshot",
-    "application_name": "SMP server",
-    "release_tag": "v0.4.1"
+    "application_name": "SMP server"
   },
   "sensitive-variables": ["token"],
   "builders": [
@@ -34,7 +33,7 @@
       "type": "shell",
       "environment_vars": [
         "application_name={{user `application_name`}}",
-        "release_tag={{user `release_tag`}}"
+        "DEBIAN_FRONTEND=noninteractive"
       ],
       "scripts": [
         "scripts/01-packages.sh",
