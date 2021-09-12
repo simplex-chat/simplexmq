@@ -7,11 +7,15 @@ mkdir -p $bin_dir
 mkdir -p $conf_dir
 mkdir -p $var_dir
 
-echo "downloading SMP server release $release_tag"
-curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/tags/{$release_tag} \
-| jq -r '.assets[].browser_download_url | select(test("smp-server-ubuntu-20_04-x86-64"))' \
+echo "downloading the latest SMP server release"
+curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/latest > release.json
+jq '.assets[].browser_download_url | select(test("smp-server-ubuntu-20_04-x86-64"))' release.json \
 | tr -d \" \
 | wget -qi -
+
+release_version=$(jq '.tag_name' release.json | tr -d \")
+echo "downloaded SMP server $release_version"
+rm release.json
 
 echo "preparing for SMP server initiaization"
 mv smp-server-ubuntu-20_04-x86-64 $bin_dir/smp-server
