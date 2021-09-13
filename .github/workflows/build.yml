@@ -95,7 +95,6 @@ jobs:
             LICENSE
             ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}/bin/smp-server
           fail_on_unmatched_files: true
-          draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
