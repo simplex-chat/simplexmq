@@ -26,7 +26,7 @@ jobs:
         uses: actions/cache@v2
         with:
           path: ~/.stack
-          key: ${{ matrix.os }}-${{ hashFiles('stack.yaml') }}
+          key: ${{ hashFiles('stack.yaml') }}
 
       - name: Build & test
         id: build_test
