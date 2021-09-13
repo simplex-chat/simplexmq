@@ -69,7 +69,8 @@ jobs:
         id: build_test
         run: |
           stack build --test --force-dirty
-          echo "::set-output name=LOCAL_INSTALL_ROOT::$(stack path --local-install-root)"
+          install_root=$(stack path --local-install-root)
+          mv ${install_root}/bin/smp-server smp-server-ubuntu-20_04-x86-64
       
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v')
@@ -93,7 +94,7 @@ jobs:
           body: ${{ steps.build_changelog.outputs.changelog }}
           files: |
             LICENSE
-            ${{ steps.build_test.outputs.LOCAL_INSTALL_ROOT }}/bin/smp-server
+            smp-server-ubuntu-20_04-x86-64
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
