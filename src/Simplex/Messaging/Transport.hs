@@ -191,7 +191,7 @@ instance Transport TCP where
   transportName _ = "TCP"
   getServerConnection = fmap TCP . getSocketHandle
   getClientConnection = getServerConnection
-  closeConnection = hClose . tcpHandle
+  closeConnection (TCP h) = hClose h `E.catch` \(_ :: E.SomeException) -> pure ()
   cGet = B.hGet . tcpHandle
   cPut = B.hPut . tcpHandle
   getLn = fmap trimCR . B.hGetLine . tcpHandle
@@ -310,7 +310,7 @@ tPutEncrypted :: Transport c => THandle c -> ByteString -> IO (Either TransportE
 tPutEncrypted THandle {connection = c, sndKey, blockSize} block =
   encryptBlock sndKey (blockSize - C.authTagSize) block >>= \case
     Left _ -> pure $ Left TEEncrypt
-    Right (authTag, msg) -> Right <$> cPut c (C.authTagToBS authTag <> msg)
+    Right (authTag, msg) -> Right <$> cPut c (msg <> C.authTagToBS authTag)
 
 -- | Receive and decrypt block from SMP encrypted transport.
 tGetEncrypted :: Transport c => THandle c -> IO (Either TransportError ByteString)
@@ -327,7 +327,7 @@ encryptBlock k@SessionKey {aesKey} size block = do
 
 decryptBlock :: SessionKey -> ByteString -> IO (Either C.CryptoError ByteString)
 decryptBlock k@SessionKey {aesKey} block = do
-  let (authTag, msg') = B.splitAt C.authTagSize block
+  let (msg', authTag) = B.splitAt (B.length block - C.authTagSize) block
   ivBytes <- makeNextIV k
   runExceptT $ C.decryptAES aesKey ivBytes msg' (C.bsToAuthTag authTag)
 
