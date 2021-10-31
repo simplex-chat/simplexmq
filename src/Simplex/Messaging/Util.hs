@@ -1,4 +1,5 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -41,6 +42,9 @@ f <$?> m = m >>= either fail pure . f
 
 bshow :: Show a => a -> ByteString
 bshow = B.pack . show
+
+maybeWord :: (a -> ByteString) -> Maybe a -> ByteString
+maybeWord f = maybe "" $ B.cons ' ' . f
 
 liftIOEither :: (MonadIO m, MonadError e m) => IO (Either e a) -> m a
 liftIOEither a = liftIO a >>= liftEither

@@ -38,6 +38,7 @@ import Simplex.Messaging.Parsers (base64P, parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (QueueRec (..), QueueStatus (..))
 import Simplex.Messaging.Transport (trimCR)
+import Simplex.Messaging.Util (maybeWord)
 import System.Directory (doesFileExist)
 import System.IO
 
@@ -65,7 +66,9 @@ storeLogRecordP =
       senderId <- "sid=" *> base64P <* A.space
       recipientKey <- "rk=" *> C.pubKeyP <* A.space
       senderKey <- "sk=" *> optional C.pubKeyP
-      pure QueueRec {recipientId, senderId, recipientKey, senderKey, status = QueueActive}
+      notifyId <- optional $ " nid=" *> base64P
+      notifyKey <- optional $ " nk=" *> C.pubKeyP
+      pure QueueRec {recipientId, senderId, notifyId, recipientKey, notifyKey, senderKey, status = QueueActive}
 
 serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
@@ -73,13 +76,15 @@ serializeStoreLogRecord = \case
   SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> C.serializePubKey sKey
   DeleteQueue rId -> "DELETE " <> encode rId
   where
-    serializeQueue QueueRec {recipientId, senderId, recipientKey, senderKey} =
+    serializeQueue QueueRec {recipientId, senderId, notifyId, recipientKey, notifyKey, senderKey} =
       B.unwords
         [ "rid=" <> encode recipientId,
           "sid=" <> encode senderId,
           "rk=" <> C.serializePubKey recipientKey,
           "sk=" <> maybe "" C.serializePubKey senderKey
         ]
+        <> maybeWord encode notifyId
+        <> maybeWord C.serializePubKey notifyKey
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode

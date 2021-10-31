@@ -19,25 +19,27 @@ import UnliftIO.STM
 
 data QueueStoreData = QueueStoreData
   { queues :: Map RecipientId QueueRec,
-    senders :: Map SenderId RecipientId
+    senders :: Map SenderId RecipientId,
+    subscribers :: Map NotifyId RecipientId
   }
 
 type QueueStore = TVar QueueStoreData
 
 newQueueStore :: STM QueueStore
-newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty}
+newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty, subscribers = M.empty}
 
 instance MonadQueueStore QueueStore STM where
-  addQueue :: QueueStore -> RecipientPublicKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
-  addQueue store rKey ids@(rId, sId) = do
-    cs@QueueStoreData {queues, senders} <- readTVar store
-    if M.member rId queues || M.member sId senders
+  addQueue :: QueueStore -> RecipientPublicKey -> Maybe SubscriberPublicKey -> SMPQueueIds -> STM (Either ErrorType ())
+  addQueue store rKey nKey ids@(rId, sId, nId_) = do
+    cs@QueueStoreData {queues, senders, subscribers} <- readTVar store
+    if M.member rId queues || M.member sId senders || maybe False (`M.member` subscribers) nId_
       then return $ Left DUPLICATE_
       else do
         writeTVar store $
           cs
-            { queues = M.insert rId (mkQueueRec rKey ids) queues,
-              senders = M.insert sId rId senders
+            { queues = M.insert rId (mkQueueRec rKey nKey ids) queues,
+              senders = M.insert sId rId senders,
+              subscribers = maybe subscribers (\nId -> M.insert nId rId subscribers) nId_
             }
         return $ Right ()
 
@@ -48,6 +50,10 @@ instance MonadQueueStore QueueStore STM where
   getQueue store SSender sId = do
     cs <- readTVar store
     let rId = M.lookup sId $ senders cs
+    return $ maybe (Left AUTH) (getRcpQueue cs) rId
+  getQueue store SSubscriber nId = do
+    cs <- readTVar store
+    let rId = M.lookup nId $ subscribers cs
     return $ maybe (Left AUTH) (getRcpQueue cs) rId
   getQueue _ SBroker _ =
     return $ Left INTERNAL

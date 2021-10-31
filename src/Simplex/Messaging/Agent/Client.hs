@@ -231,7 +231,7 @@ newRcvQueue c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
   logServer "-->" c srv "" "NEW"
-  (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
+  (rcvId, sId, _) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey Nothing
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
   (encryptKey, decryptKey) <- liftIO $ C.generateKeyPair size
   let rq =

@@ -132,19 +132,20 @@ verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => SignedTr
 verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
-    Cmd SRecipient (NEW k) -> pure $ verifySignature k
+    Cmd SRecipient (NEW k _) -> pure $ verifySignature k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
-    Cmd SSender (SEND _) -> verifyCmd SSender $ verifySend sig . senderKey
+    Cmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe sig . senderKey
     Cmd SSender PING -> return cmd
+    Cmd SSubscriber LSTN -> verifyCmd SSubscriber $ verifyMaybe sig . notifyKey
   where
     verifyCmd :: SParty p -> (QueueRec -> Cmd) -> m Cmd
     verifyCmd party f = do
       st <- asks queueStore
       q <- atomically $ getQueue st party queueId
       pure $ either (const $ dummyVerify authErr) f q
-    verifySend :: C.Signature -> Maybe SenderPublicKey -> Cmd
-    verifySend "" = maybe cmd (const authErr)
-    verifySend _ = maybe authErr verifySignature
+    verifyMaybe :: C.Signature -> Maybe SenderPublicKey -> Cmd
+    verifyMaybe "" = maybe cmd (const authErr)
+    verifyMaybe _ = maybe authErr verifySignature
     verifySignature :: C.PublicKey -> Cmd
     verifySignature key = if verify key then cmd else authErr
     verify key
@@ -193,30 +194,31 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         Cmd SSender command -> case command of
           SEND msgBody -> sendMessage st msgBody
           PING -> return (corrId, queueId, Cmd SBroker PONG)
+        Cmd SSubscriber LSTN -> subscribeNotifications queueId
         Cmd SRecipient command -> case command of
-          NEW rKey -> createQueue st rKey
+          NEW rKey nKey_ -> createQueue st rKey nKey_
           SUB -> subscribeQueue queueId
           ACK -> acknowledgeMsg
           KEY sKey -> secureQueue_ st sKey
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RecipientPublicKey -> m Transmission
-        createQueue st rKey =
+        createQueue :: QueueStore -> RecipientPublicKey -> Maybe SubscriberPublicKey -> m Transmission
+        createQueue st rKey nKey_ =
           checkKeySize rKey addSubscribe
           where
             addSubscribe =
               addQueueRetry 3 >>= \case
                 Left e -> return $ ERR e
-                Right (rId, sId) -> do
+                Right ids@(rId, _, _) -> do
                   withLog (`logCreateById` rId)
-                  subscribeQueue rId $> IDS rId sId
+                  subscribeQueue rId $> IDS ids
 
-            addQueueRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
+            addQueueRetry :: Int -> m (Either ErrorType SMPQueueIds)
             addQueueRetry 0 = return $ Left INTERNAL
             addQueueRetry n = do
               ids <- getIds
-              atomically (addQueue st rKey ids) >>= \case
+              atomically (addQueue st rKey nKey_ ids) >>= \case
                 Left DUPLICATE_ -> addQueueRetry $ n - 1
                 Left e -> return $ Left e
                 Right _ -> return $ Right ids
@@ -227,10 +229,10 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
                 Right q -> logCreateQueue s q
                 _ -> pure ()
 
-            getIds :: m (RecipientId, SenderId)
+            getIds :: m SMPQueueIds
             getIds = do
               n <- asks $ queueIdBytes . config
-              liftM2 (,) (randomId n) (randomId n)
+              liftM3 (,,) (randomId n) (randomId n) (traverse (const $ randomId n) nKey_)
 
         secureQueue_ :: QueueStore -> SenderPublicKey -> m Transmission
         secureQueue_ st sKey = do
@@ -252,6 +254,9 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         subscribeQueue :: RecipientId -> m Transmission
         subscribeQueue rId =
           atomically (getSubscription rId) >>= deliverMessage tryPeekMsg rId
+
+        subscribeNotifications :: NotifyId -> m Transmission
+        subscribeNotifications _nId = pure . err $ CMD PROHIBITED
 
         getSubscription :: RecipientId -> STM Sub
         getSubscription rId = do

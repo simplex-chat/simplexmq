@@ -64,7 +64,7 @@ testCreateSecure (ATransport t) =
   it "should create (NEW) and secure (KEY) queue" $
     smpTest t $ \h -> do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" rId1 (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      Resp "abcd" rId1 (IDS (rId, sId, Nothing)) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
 
       Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND 5 hello ")
@@ -116,7 +116,7 @@ testCreateDelete (ATransport t) =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 t $ \rh sh -> do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" rId1 (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      Resp "abcd" rId1 (IDS (rId, sId, Nothing)) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       (rId1, "") #== "creates queue"
 
       (sPub, sKey) <- C.generateKeyPair rsaKeySize
@@ -184,7 +184,7 @@ testDuplex (ATransport t) =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 t $ \alice bob -> do
       (arPub, arKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" _ (IDS aRcv aSnd) <- signSendRecv alice arKey ("abcd", "", "NEW " <> C.serializePubKey arPub)
+      Resp "abcd" _ (IDS (aRcv, aSnd, Nothing)) <- signSendRecv alice arKey ("abcd", "", "NEW " <> C.serializePubKey arPub)
       -- aSnd ID is passed to Bob out-of-band
 
       (bsPub, bsKey) <- C.generateKeyPair rsaKeySize
@@ -198,7 +198,7 @@ testDuplex (ATransport t) =
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, "KEY " <> bobKey)
 
       (brPub, brKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" _ (IDS bRcv bSnd) <- signSendRecv bob brKey ("abcd", "", "NEW " <> C.serializePubKey brPub)
+      Resp "abcd" _ (IDS (bRcv, bSnd, Nothing)) <- signSendRecv bob brKey ("abcd", "", "NEW " <> C.serializePubKey brPub)
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, cmdSEND $ "reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, it is not a part of SMP protocol
 
@@ -234,7 +234,7 @@ testSwitchSub (ATransport t) =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 t $ \rh1 rh2 sh -> do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" _ (IDS rId sId) <- signSendRecv rh1 rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      Resp "abcd" _ (IDS (rId, sId, Nothing)) <- signSendRecv rh1 rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND 5 test1 ")
       (ok1, OK) #== "sent test message 1"
       Resp "cdab" _ ok2 <- sendRecv sh ("", "cdab", sId, cmdSEND "test2, no ACK")
@@ -312,7 +312,7 @@ testWithStoreLog at@(ATransport t) =
     createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
     createAndSecureQueue h sPub = do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      Resp "abcd" "" (IDS (rId, sId, Nothing)) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
       let keyCmd = "KEY " <> C.serializePubKey sPub
       Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, keyCmd)
       (rId', rId) #== "same queue ID"
@@ -358,7 +358,7 @@ testTiming (ATransport t) =
     testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
     testSameTiming rh sh (senderKeySize, badKeySize, n) = do
       (rPub, rKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" "" (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+      Resp "abcd" "" (IDS (rId, sId, Nothing)) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
 
       (sPub, sKey) <- C.generateKeyPair senderKeySize
       let keyCmd = "KEY " <> C.serializePubKey sPub

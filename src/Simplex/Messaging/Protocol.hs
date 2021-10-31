@@ -39,10 +39,14 @@ module Simplex.Messaging.Protocol
     QueueId,
     RecipientId,
     SenderId,
+    NotifyId,
+    SMPQueueIds,
     RecipientPrivateKey,
     RecipientPublicKey,
     SenderPrivateKey,
     SenderPublicKey,
+    SubscriberPrivateKey,
+    SubscriberPublicKey,
     Encoded,
     MsgId,
     MsgBody,
@@ -63,7 +67,7 @@ module Simplex.Messaging.Protocol
   )
 where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Control.Monad
 import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -85,7 +89,7 @@ import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
 -- | SMP protocol participants.
-data Party = Broker | Recipient | Sender
+data Party = Broker | Recipient | Sender | Subscriber
   deriving (Show)
 
 -- | Singleton types for SMP protocol participants.
@@ -93,6 +97,7 @@ data SParty :: Party -> Type where
   SBroker :: SParty Broker
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
+  SSubscriber :: SParty Subscriber
 
 deriving instance Show (SParty a)
 
@@ -124,13 +129,18 @@ type RecipientId = QueueId
 -- | SMP queue ID for the sender.
 type SenderId = QueueId
 
+-- | SMP queue ID for notifications.
+type NotifyId = QueueId
+
+type SMPQueueIds = (RecipientId, SenderId, Maybe NotifyId)
+
 -- | SMP queue ID on the server.
 type QueueId = Encoded
 
 -- | Parameterized type for SMP protocol commands from all participants.
 data Command (a :: Party) where
   -- SMP recipient commands
-  NEW :: RecipientPublicKey -> Command Recipient
+  NEW :: RecipientPublicKey -> Maybe NotifyPublicKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SenderPublicKey -> Command Recipient
   ACK :: Command Recipient
@@ -139,9 +149,12 @@ data Command (a :: Party) where
   -- SMP sender commands
   SEND :: MsgBody -> Command Sender
   PING :: Command Sender
+  -- SMP notification subscriber commands
+  LSTN :: Command Subscriber
   -- SMP broker commands (responses, messages, notifications)
-  IDS :: RecipientId -> SenderId -> Command Broker
+  IDS :: SMPQueueIds -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
+  NTFY :: Command Broker
   END :: Command Broker
   OK :: Command Broker
   ERR :: ErrorType -> Command Broker
@@ -170,6 +183,9 @@ type RecipientPrivateKey = C.SafePrivateKey
 -- | Recipient's public key used by SMP server to verify authorization of SMP commands.
 type RecipientPublicKey = C.PublicKey
 
+-- | Recipient's public key used by SMP server to verify authorization of notification subscriptions.
+type NotifyPublicKey = C.PublicKey
+
 -- | Sender's private key used by the recipient to authorize (sign) SMP commands.
 --
 -- Only used by SMP agent, kept here so its definition is close to respective public key.
@@ -177,6 +193,13 @@ type SenderPrivateKey = C.SafePrivateKey
 
 -- | Sender's public key used by SMP server to verify authorization of SMP commands.
 type SenderPublicKey = C.PublicKey
+
+-- | Subscriber's private key used by the subscriber authorize (sign) LSTN command.
+-- Only used by SMP agent.
+type SubscriberPrivateKey = C.PublicKey
+
+-- | Subscriber's public key used by SMP server to verify authorization of LSTN command.
+type SubscriberPublicKey = C.PublicKey
 
 -- | SMP message server ID.
 type MsgId = Encoded
@@ -245,14 +268,16 @@ commandP =
     <|> "DEL" $> Cmd SRecipient DEL
     <|> "SEND " *> sendCmd
     <|> "PING" $> Cmd SSender PING
+    <|> "LSTN" $> Cmd SSubscriber LSTN
     <|> "MSG " *> message
+    <|> "NTFY" $> Cmd SBroker NTFY
     <|> "END" $> Cmd SBroker END
     <|> "OK" $> Cmd SBroker OK
     <|> "ERR " *> serverError
     <|> "PONG" $> Cmd SBroker PONG
   where
-    newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
-    idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
+    newCmd = Cmd SRecipient <$> (NEW <$> C.pubKeyP <*> optional (A.space *> C.pubKeyP))
+    idsResp = Cmd SBroker . IDS <$> ((,,) <$> (base64P <* A.space) <*> base64P <*> optional (A.space *> base64P))
     keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
     sendCmd = do
       size <- A.decimal <* A.space
@@ -273,14 +298,15 @@ parseCommand = parse (commandP <* " " <* A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP command.
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
-  Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
+  Cmd SRecipient (NEW rKey nKey_) -> "NEW " <> C.serializePubKey rKey <> maybeWord C.serializePubKey nKey_
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
   Cmd SRecipient cmd -> bshow cmd
   Cmd SSender (SEND msgBody) -> "SEND " <> serializeMsg msgBody
   Cmd SSender PING -> "PING"
+  Cmd SSubscriber LSTN -> "LSTN"
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
-  Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
+  Cmd SBroker (IDS (rId, sId, nId_)) -> B.unwords ["IDS", encode rId, encode sId] <> maybeWord encode nId_
   Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
   Cmd SBroker resp -> bshow resp
   where
@@ -350,7 +376,7 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, _, queueId, _) cmd = case cmd of
       -- IDS response must not have queue ID
-      Cmd SBroker (IDS _ _) -> Right cmd
+      Cmd SBroker IDS {} -> Right cmd
       -- ERR response does not always have queue ID
       Cmd SBroker (ERR _) -> Right cmd
       -- PONG response must not have queue ID
@@ -362,7 +388,7 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
         | B.null queueId -> Left $ CMD NO_QUEUE
         | otherwise -> Right cmd
       -- NEW must have signature but NOT queue ID
-      Cmd SRecipient (NEW _)
+      Cmd SRecipient NEW {}
         | B.null signature -> Left $ CMD NO_AUTH
         | not (B.null queueId) -> Left $ CMD HAS_AUTH
         | otherwise -> Right cmd
@@ -375,6 +401,6 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
         | B.null queueId && B.null signature -> Right cmd
         | otherwise -> Left $ CMD HAS_AUTH
       -- other client commands must have both signature and queue ID
-      Cmd SRecipient _
+      Cmd _ _
         | B.null signature || B.null queueId -> Left $ CMD NO_AUTH
         | otherwise -> Right cmd
