@@ -136,7 +136,7 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe sig . senderKey
     Cmd SSender PING -> return cmd
-    Cmd SSubscriber LSTN -> verifyCmd SSubscriber $ verifyMaybe sig . notifyKey
+    Cmd SNotifier LSTN -> verifyCmd SNotifier $ verifyMaybe sig . notifyKey
   where
     verifyCmd :: SParty p -> (QueueRec -> Cmd) -> m Cmd
     verifyCmd party f = do
@@ -194,7 +194,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         Cmd SSender command -> case command of
           SEND msgBody -> sendMessage st msgBody
           PING -> return (corrId, queueId, Cmd SBroker PONG)
-        Cmd SSubscriber LSTN -> subscribeNotifications queueId
+        Cmd SNotifier LSTN -> subscribeNotifications queueId
         Cmd SRecipient command -> case command of
           NEW rKey nKey_ -> createQueue st rKey nKey_
           SUB -> subscribeQueue queueId
@@ -203,7 +203,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RecipientPublicKey -> Maybe SubscriberPublicKey -> m Transmission
+        createQueue :: QueueStore -> RecipientPublicKey -> Maybe NotifierPublicKey -> m Transmission
         createQueue st rKey nKey_ =
           checkKeySize rKey addSubscribe
           where

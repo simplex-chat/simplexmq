@@ -259,7 +259,7 @@ createSMPQueue ::
   SMPClient ->
   RecipientPrivateKey ->
   RecipientPublicKey ->
-  Maybe SubscriberPublicKey ->
+  Maybe NotifierPublicKey ->
   ExceptT SMPClientError IO SMPQueueIds
 createSMPQueue c rpKey rKey nKey_ =
   -- TODO add signing this request too - requires changes in the server

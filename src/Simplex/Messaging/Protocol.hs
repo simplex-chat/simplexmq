@@ -45,8 +45,8 @@ module Simplex.Messaging.Protocol
     RecipientPublicKey,
     SenderPrivateKey,
     SenderPublicKey,
-    SubscriberPrivateKey,
-    SubscriberPublicKey,
+    NotifierPrivateKey,
+    NotifierPublicKey,
     Encoded,
     MsgId,
     MsgBody,
@@ -89,7 +89,7 @@ import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
 -- | SMP protocol participants.
-data Party = Broker | Recipient | Sender | Subscriber
+data Party = Broker | Recipient | Sender | Notifier
   deriving (Show)
 
 -- | Singleton types for SMP protocol participants.
@@ -97,7 +97,7 @@ data SParty :: Party -> Type where
   SBroker :: SParty Broker
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
-  SSubscriber :: SParty Subscriber
+  SNotifier :: SParty Notifier
 
 deriving instance Show (SParty a)
 
@@ -140,7 +140,7 @@ type QueueId = Encoded
 -- | Parameterized type for SMP protocol commands from all participants.
 data Command (a :: Party) where
   -- SMP recipient commands
-  NEW :: RecipientPublicKey -> Maybe NotifyPublicKey -> Command Recipient
+  NEW :: RecipientPublicKey -> Maybe NotifierPublicKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SenderPublicKey -> Command Recipient
   ACK :: Command Recipient
@@ -150,7 +150,7 @@ data Command (a :: Party) where
   SEND :: MsgBody -> Command Sender
   PING :: Command Sender
   -- SMP notification subscriber commands
-  LSTN :: Command Subscriber
+  LSTN :: Command Notifier
   -- SMP broker commands (responses, messages, notifications)
   IDS :: SMPQueueIds -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
@@ -183,9 +183,6 @@ type RecipientPrivateKey = C.SafePrivateKey
 -- | Recipient's public key used by SMP server to verify authorization of SMP commands.
 type RecipientPublicKey = C.PublicKey
 
--- | Recipient's public key used by SMP server to verify authorization of notification subscriptions.
-type NotifyPublicKey = C.PublicKey
-
 -- | Sender's private key used by the recipient to authorize (sign) SMP commands.
 --
 -- Only used by SMP agent, kept here so its definition is close to respective public key.
@@ -194,12 +191,11 @@ type SenderPrivateKey = C.SafePrivateKey
 -- | Sender's public key used by SMP server to verify authorization of SMP commands.
 type SenderPublicKey = C.PublicKey
 
--- | Subscriber's private key used by the subscriber authorize (sign) LSTN command.
--- Only used by SMP agent.
-type SubscriberPrivateKey = C.PublicKey
+-- | Private key used by push notifications server to authorize (sign) LSTN command.
+type NotifierPrivateKey = C.PublicKey
 
--- | Subscriber's public key used by SMP server to verify authorization of LSTN command.
-type SubscriberPublicKey = C.PublicKey
+-- | Public key used by SMP server to verify authorization of LSTN command sent by push notifications server.
+type NotifierPublicKey = C.PublicKey
 
 -- | SMP message server ID.
 type MsgId = Encoded
@@ -268,7 +264,7 @@ commandP =
     <|> "DEL" $> Cmd SRecipient DEL
     <|> "SEND " *> sendCmd
     <|> "PING" $> Cmd SSender PING
-    <|> "LSTN" $> Cmd SSubscriber LSTN
+    <|> "LSTN" $> Cmd SNotifier LSTN
     <|> "MSG " *> message
     <|> "NTFY" $> Cmd SBroker NTFY
     <|> "END" $> Cmd SBroker END
@@ -303,7 +299,7 @@ serializeCommand = \case
   Cmd SRecipient cmd -> bshow cmd
   Cmd SSender (SEND msgBody) -> "SEND " <> serializeMsg msgBody
   Cmd SSender PING -> "PING"
-  Cmd SSubscriber LSTN -> "LSTN"
+  Cmd SNotifier LSTN -> "LSTN"
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS (rId, sId, nId_)) -> B.unwords ["IDS", encode rId, encode sId] <> maybeWord encode nId_

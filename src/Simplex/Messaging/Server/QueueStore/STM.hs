@@ -29,7 +29,7 @@ newQueueStore :: STM QueueStore
 newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty, subscribers = M.empty}
 
 instance MonadQueueStore QueueStore STM where
-  addQueue :: QueueStore -> RecipientPublicKey -> Maybe SubscriberPublicKey -> SMPQueueIds -> STM (Either ErrorType ())
+  addQueue :: QueueStore -> RecipientPublicKey -> Maybe NotifierPublicKey -> SMPQueueIds -> STM (Either ErrorType ())
   addQueue store rKey nKey ids@(rId, sId, nId_) = do
     cs@QueueStoreData {queues, senders, subscribers} <- readTVar store
     if M.member rId queues || M.member sId senders || maybe False (`M.member` subscribers) nId_
@@ -51,7 +51,7 @@ instance MonadQueueStore QueueStore STM where
     cs <- readTVar store
     let rId = M.lookup sId $ senders cs
     return $ maybe (Left AUTH) (getRcpQueue cs) rId
-  getQueue store SSubscriber nId = do
+  getQueue store SNotifier nId = do
     cs <- readTVar store
     let rId = M.lookup nId $ subscribers cs
     return $ maybe (Left AUTH) (getRcpQueue cs) rId
