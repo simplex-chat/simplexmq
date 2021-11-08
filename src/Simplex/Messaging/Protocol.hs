@@ -40,7 +40,6 @@ module Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
     NotifyId,
-    SMPQueueIds,
     RecipientPrivateKey,
     RecipientPublicKey,
     SenderPrivateKey,
@@ -67,7 +66,7 @@ module Simplex.Messaging.Protocol
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -132,15 +131,13 @@ type SenderId = QueueId
 -- | SMP queue ID for notifications.
 type NotifyId = QueueId
 
-type SMPQueueIds = (RecipientId, SenderId, Maybe NotifyId)
-
 -- | SMP queue ID on the server.
 type QueueId = Encoded
 
 -- | Parameterized type for SMP protocol commands from all participants.
 data Command (a :: Party) where
   -- SMP recipient commands
-  NEW :: RecipientPublicKey -> Maybe NotifierPublicKey -> Command Recipient
+  NEW :: RecipientPublicKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SenderPublicKey -> Command Recipient
   ACK :: Command Recipient
@@ -152,7 +149,7 @@ data Command (a :: Party) where
   -- SMP notification subscriber commands
   LSTN :: Command Notifier
   -- SMP broker commands (responses, messages, notifications)
-  IDS :: SMPQueueIds -> Command Broker
+  IDS :: RecipientId -> SenderId -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
   NTFY :: Command Broker
   END :: Command Broker
@@ -272,8 +269,8 @@ commandP =
     <|> "ERR " *> serverError
     <|> "PONG" $> Cmd SBroker PONG
   where
-    newCmd = Cmd SRecipient <$> (NEW <$> C.pubKeyP <*> optional (A.space *> C.pubKeyP))
-    idsResp = Cmd SBroker . IDS <$> ((,,) <$> (base64P <* A.space) <*> base64P <*> optional (A.space *> base64P))
+    newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
+    idsResp = Cmd SBroker <$> (IDS <$> base64P <* A.space <*> base64P)
     keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
     sendCmd = do
       size <- A.decimal <* A.space
@@ -294,7 +291,7 @@ parseCommand = parse (commandP <* " " <* A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP command.
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
-  Cmd SRecipient (NEW rKey nKey_) -> "NEW " <> C.serializePubKey rKey <> maybeWord C.serializePubKey nKey_
+  Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
   Cmd SRecipient cmd -> bshow cmd
   Cmd SSender (SEND msgBody) -> "SEND " <> serializeMsg msgBody
@@ -302,7 +299,7 @@ serializeCommand = \case
   Cmd SNotifier LSTN -> "LSTN"
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
-  Cmd SBroker (IDS (rId, sId, nId_)) -> B.unwords ["IDS", encode rId, encode sId] <> maybeWord encode nId_
+  Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
   Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
   Cmd SBroker resp -> bshow resp
   where

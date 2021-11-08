@@ -132,7 +132,7 @@ verifyTransmission :: forall m. (MonadUnliftIO m, MonadReader Env m) => SignedTr
 verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
   (corrId,queueId,) <$> case cmd of
     Cmd SBroker _ -> return $ smpErr INTERNAL -- it can only be client command, because `fromClient` was used
-    Cmd SRecipient (NEW k _) -> pure $ verifySignature k
+    Cmd SRecipient (NEW k) -> pure $ verifySignature k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe sig . senderKey
     Cmd SSender PING -> return cmd
@@ -196,29 +196,29 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           PING -> return (corrId, queueId, Cmd SBroker PONG)
         Cmd SNotifier LSTN -> subscribeNotifications queueId
         Cmd SRecipient command -> case command of
-          NEW rKey nKey_ -> createQueue st rKey nKey_
+          NEW rKey -> createQueue st rKey
           SUB -> subscribeQueue queueId
           ACK -> acknowledgeMsg
           KEY sKey -> secureQueue_ st sKey
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
       where
-        createQueue :: QueueStore -> RecipientPublicKey -> Maybe NotifierPublicKey -> m Transmission
-        createQueue st rKey nKey_ =
+        createQueue :: QueueStore -> RecipientPublicKey -> m Transmission
+        createQueue st rKey =
           checkKeySize rKey addSubscribe
           where
             addSubscribe =
               addQueueRetry 3 >>= \case
                 Left e -> return $ ERR e
-                Right ids@(rId, _, _) -> do
+                Right (rId, sId) -> do
                   withLog (`logCreateById` rId)
-                  subscribeQueue rId $> IDS ids
+                  subscribeQueue rId $> IDS rId sId
 
-            addQueueRetry :: Int -> m (Either ErrorType SMPQueueIds)
+            addQueueRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
             addQueueRetry 0 = return $ Left INTERNAL
             addQueueRetry n = do
               ids <- getIds
-              atomically (addQueue st rKey nKey_ ids) >>= \case
+              atomically (addQueue st rKey ids) >>= \case
                 Left DUPLICATE_ -> addQueueRetry $ n - 1
                 Left e -> return $ Left e
                 Right _ -> return $ Right ids
@@ -229,10 +229,10 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
                 Right q -> logCreateQueue s q
                 _ -> pure ()
 
-            getIds :: m SMPQueueIds
+            getIds :: m (RecipientId, SenderId)
             getIds = do
               n <- asks $ queueIdBytes . config
-              liftM3 (,,) (randomId n) (randomId n) (traverse (const $ randomId n) nKey_)
+              liftM2 (,) (randomId n) (randomId n)
 
         secureQueue_ :: QueueStore -> SenderPublicKey -> m Transmission
         secureQueue_ st sKey = do

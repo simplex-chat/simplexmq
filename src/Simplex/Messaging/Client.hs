@@ -259,12 +259,11 @@ createSMPQueue ::
   SMPClient ->
   RecipientPrivateKey ->
   RecipientPublicKey ->
-  Maybe NotifierPublicKey ->
-  ExceptT SMPClientError IO SMPQueueIds
-createSMPQueue c rpKey rKey nKey_ =
+  ExceptT SMPClientError IO (RecipientId, SenderId)
+createSMPQueue c rpKey rKey =
   -- TODO add signing this request too - requires changes in the server
-  sendSMPCommand c (Just rpKey) "" (Cmd SRecipient $ NEW rKey nKey_) >>= \case
-    Cmd _ (IDS qIds) -> pure qIds
+  sendSMPCommand c (Just rpKey) "" (Cmd SRecipient $ NEW rKey) >>= \case
+    Cmd _ (IDS rId sId) -> pure (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
 -- | Subscribe to the SMP queue.
