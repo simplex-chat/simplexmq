@@ -136,7 +136,7 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe sig . senderKey
     Cmd SSender PING -> return cmd
-    Cmd SNotifier LSTN -> verifyCmd SNotifier $ verifyMaybe sig . notifyKey
+    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe sig . notifyKey
   where
     verifyCmd :: SParty p -> (QueueRec -> Cmd) -> m Cmd
     verifyCmd party f = do
@@ -194,12 +194,13 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         Cmd SSender command -> case command of
           SEND msgBody -> sendMessage st msgBody
           PING -> return (corrId, queueId, Cmd SBroker PONG)
-        Cmd SNotifier LSTN -> subscribeNotifications queueId
+        Cmd SNotifier NSUB -> subscribeNotifications queueId
         Cmd SRecipient command -> case command of
           NEW rKey -> createQueue st rKey
           SUB -> subscribeQueue queueId
           ACK -> acknowledgeMsg
           KEY sKey -> secureQueue_ st sKey
+          NKEY nKey -> addNotifierKey_ st nKey
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
       where
@@ -238,6 +239,9 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         secureQueue_ st sKey = do
           withLog $ \s -> logSecureQueue s queueId sKey
           atomically . checkKeySize sKey $ either ERR (const OK) <$> secureQueue st queueId sKey
+
+        addNotifierKey_ :: QueueStore -> NotifierPublicKey -> m Transmission
+        addNotifierKey_ st nKey = pure undefined
 
         checkKeySize :: Monad m' => C.PublicKey -> m' (Command 'Broker) -> m' Transmission
         checkKeySize key action =

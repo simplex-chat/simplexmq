@@ -140,6 +140,7 @@ data Command (a :: Party) where
   NEW :: RecipientPublicKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SenderPublicKey -> Command Recipient
+  NKEY :: NotifierPublicKey -> Command Recipient
   ACK :: Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
@@ -147,11 +148,11 @@ data Command (a :: Party) where
   SEND :: MsgBody -> Command Sender
   PING :: Command Sender
   -- SMP notification subscriber commands
-  LSTN :: Command Notifier
+  NSUB :: Command Notifier
   -- SMP broker commands (responses, messages, notifications)
   IDS :: RecipientId -> SenderId -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
-  NTFY :: Command Broker
+  NTF :: Command Broker
   END :: Command Broker
   OK :: Command Broker
   ERR :: ErrorType -> Command Broker
@@ -256,22 +257,24 @@ commandP =
     <|> "IDS " *> idsResp
     <|> "SUB" $> Cmd SRecipient SUB
     <|> "KEY " *> keyCmd
+    <|> "NKEY" *> nKeyCmd
     <|> "ACK" $> Cmd SRecipient ACK
     <|> "OFF" $> Cmd SRecipient OFF
     <|> "DEL" $> Cmd SRecipient DEL
     <|> "SEND " *> sendCmd
     <|> "PING" $> Cmd SSender PING
-    <|> "LSTN" $> Cmd SNotifier LSTN
+    <|> "NSUB" $> Cmd SNotifier NSUB
     <|> "MSG " *> message
-    <|> "NTFY" $> Cmd SBroker NTFY
+    <|> "NTF" $> Cmd SBroker NTF
     <|> "END" $> Cmd SBroker END
     <|> "OK" $> Cmd SBroker OK
     <|> "ERR " *> serverError
     <|> "PONG" $> Cmd SBroker PONG
   where
     newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
-    idsResp = Cmd SBroker <$> (IDS <$> base64P <* A.space <*> base64P)
+    idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
     keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
+    nKeyCmd = Cmd SRecipient . NKEY <$> C.pubKeyP
     sendCmd = do
       size <- A.decimal <* A.space
       Cmd SSender . SEND <$> A.take size <* A.space
@@ -293,10 +296,11 @@ serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
   Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
+  Cmd SRecipient (NKEY nKey) -> "NKEY " <> C.serializePubKey nKey
   Cmd SRecipient cmd -> bshow cmd
   Cmd SSender (SEND msgBody) -> "SEND " <> serializeMsg msgBody
   Cmd SSender PING -> "PING"
-  Cmd SNotifier LSTN -> "LSTN"
+  Cmd SNotifier NSUB -> "NSUB"
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
