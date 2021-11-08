@@ -83,8 +83,8 @@ serializeStoreLogRecord = \case
           "rk=" <> C.serializePubKey recipientKey,
           "sk=" <> maybe "" C.serializePubKey senderKey
         ]
-        <> maybeWord encode notifyId
-        <> maybeWord C.serializePubKey notifyKey
+        <> maybeWord (("nid=" <>) . encode) notifyId
+        <> maybeWord (("nk=" <> ) . C.serializePubKey) notifyKey
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
