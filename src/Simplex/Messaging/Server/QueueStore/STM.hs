@@ -20,7 +20,7 @@ import UnliftIO.STM
 data QueueStoreData = QueueStoreData
   { queues :: Map RecipientId QueueRec,
     senders :: Map SenderId RecipientId,
-    notifiers :: Map NotifyId RecipientId
+    notifiers :: Map NotifierId RecipientId
   }
 
 type QueueStore = TVar QueueStoreData

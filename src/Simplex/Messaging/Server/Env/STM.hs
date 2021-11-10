@@ -46,7 +46,9 @@ data Env = Env
 
 data Server = Server
   { subscribedQ :: TBQueue (RecipientId, Client),
-    subscribers :: TVar (Map RecipientId Client)
+    subscribers :: TVar (Map RecipientId Client),
+    ntfSubscribedQ :: TBQueue (NotifierId, Client),
+    notifiers :: TVar (Map NotifierId Client)
   }
 
 data Client = Client
@@ -66,7 +68,9 @@ newServer :: Natural -> STM Server
 newServer qSize = do
   subscribedQ <- newTBQueue qSize
   subscribers <- newTVar M.empty
-  return Server {subscribedQ, subscribers}
+  ntfSubscribedQ <- newTBQueue qSize
+  notifiers <- newTVar M.empty
+  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
 newClient :: Natural -> STM Client
 newClient qSize = do
@@ -94,7 +98,17 @@ newEnv config = do
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do
       (queues, s') <- liftIO $ readWriteStoreLog s
-      atomically $ modifyTVar queueStore $ \d -> d {queues, senders = M.foldr' addSender M.empty queues}
+      atomically $
+        modifyTVar queueStore $ \d ->
+          d
+            { queues,
+              senders = M.foldr' addSender M.empty queues,
+              notifiers = M.foldr' addNotifier M.empty queues
+            }
       pure s'
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)
+    addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
+    addNotifier q = case notifierId q of
+      Nothing -> id
+      Just nId -> M.insert nId (recipientId q)

@@ -39,7 +39,7 @@ module Simplex.Messaging.Protocol
     QueueId,
     RecipientId,
     SenderId,
-    NotifyId,
+    NotifierId,
     RecipientPrivateKey,
     RecipientPublicKey,
     SenderPrivateKey,
@@ -129,7 +129,7 @@ type RecipientId = QueueId
 type SenderId = QueueId
 
 -- | SMP queue ID for notifications.
-type NotifyId = QueueId
+type NotifierId = QueueId
 
 -- | SMP queue ID on the server.
 type QueueId = Encoded
@@ -152,7 +152,8 @@ data Command (a :: Party) where
   -- SMP broker commands (responses, messages, notifications)
   IDS :: RecipientId -> SenderId -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
-  NTF :: Command Broker
+  NID :: NotifierId -> Command Broker
+  NMSG :: Command Broker
   END :: Command Broker
   OK :: Command Broker
   ERR :: ErrorType -> Command Broker
@@ -190,7 +191,7 @@ type SenderPrivateKey = C.SafePrivateKey
 type SenderPublicKey = C.PublicKey
 
 -- | Private key used by push notifications server to authorize (sign) LSTN command.
-type NotifierPrivateKey = C.PublicKey
+type NotifierPrivateKey = C.SafePrivateKey
 
 -- | Public key used by SMP server to verify authorization of LSTN command sent by push notifications server.
 type NotifierPublicKey = C.PublicKey
@@ -258,6 +259,7 @@ commandP =
     <|> "SUB" $> Cmd SRecipient SUB
     <|> "KEY " *> keyCmd
     <|> "NKEY" *> nKeyCmd
+    <|> "NID" *> nIdsResp
     <|> "ACK" $> Cmd SRecipient ACK
     <|> "OFF" $> Cmd SRecipient OFF
     <|> "DEL" $> Cmd SRecipient DEL
@@ -265,7 +267,7 @@ commandP =
     <|> "PING" $> Cmd SSender PING
     <|> "NSUB" $> Cmd SNotifier NSUB
     <|> "MSG " *> message
-    <|> "NTF" $> Cmd SBroker NTF
+    <|> "NMSG" $> Cmd SBroker NMSG
     <|> "END" $> Cmd SBroker END
     <|> "OK" $> Cmd SBroker OK
     <|> "ERR " *> serverError
@@ -273,6 +275,7 @@ commandP =
   where
     newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
     idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
+    nIdsResp = Cmd SBroker . NID <$> base64P
     keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
     nKeyCmd = Cmd SRecipient . NKEY <$> C.pubKeyP
     sendCmd = do
@@ -297,15 +300,22 @@ serializeCommand = \case
   Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
   Cmd SRecipient (NKEY nKey) -> "NKEY " <> C.serializePubKey nKey
-  Cmd SRecipient cmd -> bshow cmd
+  Cmd SRecipient SUB -> "SUB"
+  Cmd SRecipient ACK -> "ACK"
+  Cmd SRecipient OFF -> "OFF"
+  Cmd SRecipient DEL -> "DEL"
   Cmd SSender (SEND msgBody) -> "SEND " <> serializeMsg msgBody
   Cmd SSender PING -> "PING"
   Cmd SNotifier NSUB -> "NSUB"
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
+  Cmd SBroker (NID nId) -> "NID" <> encode nId
   Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
-  Cmd SBroker resp -> bshow resp
+  Cmd SBroker NMSG -> "NMSG"
+  Cmd SBroker END -> "END"
+  Cmd SBroker OK -> "OK"
+  Cmd SBroker PONG -> "PONG"
   where
     serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
 

@@ -72,20 +72,29 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
     smpServer :: (MonadUnliftIO m', MonadReader Env m') => m' ()
     smpServer = do
       s <- asks server
-      raceAny_ (serverThread s : map runServer transports)
+      raceAny_
+        ( serverThread s subscribedQ subscribers :
+          serverThread s ntfSubscribedQ notifiers :
+          map runServer transports
+        )
         `finally` withLog closeStoreLog
 
     runServer :: (MonadUnliftIO m', MonadReader Env m') => (ServiceName, ATransport) -> m' ()
     runServer (tcpPort, ATransport t) = runTransportServer started tcpPort (runClient t)
 
-    serverThread :: MonadUnliftIO m' => Server -> m' ()
-    serverThread Server {subscribedQ, subscribers} = forever . atomically $ do
-      (rId, clnt) <- readTBQueue subscribedQ
-      cs <- readTVar subscribers
+    serverThread ::
+      MonadUnliftIO m' =>
+      Server ->
+      (Server -> TBQueue (QueueId, Client)) ->
+      (Server -> TVar (M.Map QueueId Client)) ->
+      m' ()
+    serverThread s subQ subs = forever . atomically $ do
+      (rId, clnt) <- readTBQueue $ subQ s
+      cs <- readTVar $ subs s
       case M.lookup rId cs of
         Just Client {rcvQ} -> writeTBQueue rcvQ (CorrId B.empty, rId, Cmd SBroker END)
         Nothing -> return ()
-      writeTVar subscribers $ M.insert rId clnt cs
+      writeTVar (subs s) $ M.insert rId clnt cs
 
 runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
 runClient _ h = do
@@ -136,7 +145,7 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe sig . senderKey
     Cmd SSender PING -> return cmd
-    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe sig . notifyKey
+    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe sig . notifierKey
   where
     verifyCmd :: SParty p -> (QueueRec -> Cmd) -> m Cmd
     verifyCmd party f = do
@@ -259,7 +268,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
         subscribeQueue rId =
           atomically (getSubscription rId) >>= deliverMessage tryPeekMsg rId
 
-        subscribeNotifications :: NotifyId -> m Transmission
+        subscribeNotifications :: NotifierId -> m Transmission
         subscribeNotifications _nId = pure . err $ CMD PROHIBITED
 
         getSubscription :: RecipientId -> STM Sub

@@ -51,40 +51,45 @@ data StoreLog (a :: IOMode) where
 data StoreLogRecord
   = CreateQueue QueueRec
   | SecureQueue QueueId SenderPublicKey
+  | EnableNotifications QueueId NotifierId NotifierPublicKey
   | DeleteQueue QueueId
 
 storeLogRecordP :: Parser StoreLogRecord
 storeLogRecordP =
   "CREATE " *> createQueueP
     <|> "SECURE " *> secureQueueP
+    <|> "NOTIFY " *> enableNotificationsP
     <|> "DELETE " *> (DeleteQueue <$> base64P)
   where
     createQueueP = CreateQueue <$> queueRecP
     secureQueueP = SecureQueue <$> base64P <* A.space <*> C.pubKeyP
+    enableNotificationsP =
+      EnableNotifications <$> base64P <* A.space <*> base64P <* A.space <*> C.pubKeyP
     queueRecP = do
       recipientId <- "rid=" *> base64P <* A.space
       senderId <- "sid=" *> base64P <* A.space
       recipientKey <- "rk=" *> C.pubKeyP <* A.space
       senderKey <- "sk=" *> optional C.pubKeyP
-      notifyId <- optional $ " nid=" *> base64P
-      notifyKey <- optional $ " nk=" *> C.pubKeyP
-      pure QueueRec {recipientId, senderId, notifyId, recipientKey, notifyKey, senderKey, status = QueueActive}
+      notifierId <- optional $ " nid=" *> base64P
+      notifierKey <- optional $ " nk=" *> C.pubKeyP
+      pure QueueRec {recipientId, senderId, notifierId, recipientKey, notifierKey, senderKey, status = QueueActive}
 
 serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
   CreateQueue q -> "CREATE " <> serializeQueue q
   SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> C.serializePubKey sKey
+  EnableNotifications rId nId nKey -> B.unwords ["NOTIFY", encode rId, encode nId, C.serializePubKey nKey]
   DeleteQueue rId -> "DELETE " <> encode rId
   where
-    serializeQueue QueueRec {recipientId, senderId, notifyId, recipientKey, notifyKey, senderKey} =
+    serializeQueue QueueRec {recipientId, senderId, notifierId, recipientKey, notifierKey, senderKey} =
       B.unwords
         [ "rid=" <> encode recipientId,
           "sid=" <> encode senderId,
           "rk=" <> C.serializePubKey recipientKey,
           "sk=" <> maybe "" C.serializePubKey senderKey
         ]
-        <> maybeWord (("nid=" <>) . encode) notifyId
-        <> maybeWord (("nk=" <> ) . C.serializePubKey) notifyKey
+        <> maybeWord (("nid=" <>) . encode) notifierId
+        <> maybeWord (("nk=" <>) . C.serializePubKey) notifierKey
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
@@ -146,6 +151,7 @@ readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLo
     procLogRecord m = \case
       CreateQueue q -> M.insert (recipientId q) q m
       SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
+      EnableNotifications qId nId nKey -> M.adjust (\q -> q {notifierId = Just nId, notifierKey = Just nKey}) qId m
       DeleteQueue qId -> M.delete qId m
     printError :: LogParsingError -> IO ()
     printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s

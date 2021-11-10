@@ -10,9 +10,9 @@ import Simplex.Messaging.Protocol
 data QueueRec = QueueRec
   { recipientId :: RecipientId,
     senderId :: SenderId,
-    notifyId :: Maybe NotifyId,
+    notifierId :: Maybe NotifierId,
     recipientKey :: RecipientPublicKey,
-    notifyKey :: Maybe NotifierPublicKey,
+    notifierKey :: Maybe NotifierPublicKey,
     senderKey :: Maybe SenderPublicKey,
     status :: QueueStatus
   }
@@ -31,9 +31,9 @@ mkQueueRec recipientKey (recipientId, senderId) =
   QueueRec
     { recipientId,
       senderId,
-      notifyId = Nothing,
+      notifierId = Nothing,
       recipientKey,
-      notifyKey = Nothing,
+      notifierKey = Nothing,
       senderKey = Nothing,
       status = QueueActive
     }
