@@ -544,7 +544,7 @@ The push notifications server (notifier) must use this command to start receivin
 subscribeNotifications = %s"NSUB"
 ```
 
-If subscription is successful the server must respond with `messageNotification` notification or with `ok` response if no messages are available. The notifier will continue receiving the message notifications from this queue until the transport connection is closed or until another transport connection subscribes to notifications from the same simplex queue - in this case the first subscription should be cancelled and [subscription END notification](#subscription-end-notification) delivered.
+If subscription is successful the server must respond with `ok` response if no messages are available. The notifier will be receiving the message notifications from this queue until the transport connection is closed or until another transport connection subscribes to notifications from the same simplex queue - in this case the first subscription should be cancelled and [subscription END notification](#subscription-end-notification) delivered.
 
 The first message notification will be delivered either immediately or as soon as the message is available.
 

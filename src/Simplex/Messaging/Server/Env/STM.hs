@@ -53,6 +53,7 @@ data Server = Server
 
 data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
+    ntfSubscriptions :: TVar (Map NotifierId ()),
     rcvQ :: TBQueue Transmission,
     sndQ :: TBQueue Transmission
   }
@@ -75,9 +76,10 @@ newServer qSize = do
 newClient :: Natural -> STM Client
 newClient qSize = do
   subscriptions <- newTVar M.empty
+  ntfSubscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {subscriptions, rcvQ, sndQ}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ}
 
 newSubscription :: STM Sub
 newSubscription = do
