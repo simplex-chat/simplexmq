@@ -67,7 +67,7 @@ instance MonadQueueStore QueueStore STM where
   addQueueNotifier :: QueueStore -> RecipientId -> NotifierId -> NotifierPublicKey -> STM (Either ErrorType ())
   addQueueNotifier store rId nId nKey = do
     cs@QueueStoreData {queues, notifiers} <- readTVar store
-    if M.member nId notifiers || M.member nId queues
+    if M.member nId notifiers
       then pure $ Left DUPLICATE_
       else case M.lookup rId queues of
         Nothing -> pure $ Left AUTH
