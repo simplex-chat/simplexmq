@@ -259,7 +259,7 @@ commandP =
     <|> "SUB" $> Cmd SRecipient SUB
     <|> "KEY " *> keyCmd
     <|> "NKEY " *> nKeyCmd
-    <|> "NID" *> nIdsResp
+    <|> "NID " *> nIdsResp
     <|> "ACK" $> Cmd SRecipient ACK
     <|> "OFF" $> Cmd SRecipient OFF
     <|> "DEL" $> Cmd SRecipient DEL
@@ -310,7 +310,7 @@ serializeCommand = \case
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
-  Cmd SBroker (NID nId) -> "NID" <> encode nId
+  Cmd SBroker (NID nId) -> "NID " <> encode nId
   Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
   Cmd SBroker NMSG -> "NMSG"
   Cmd SBroker END -> "END"
