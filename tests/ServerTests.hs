@@ -273,14 +273,20 @@ testWithStoreLog at@(ATransport t) =
   it "should store simplex queues to log and restore them after server restart" $ do
     (sPub1, sKey1) <- C.generateKeyPair rsaKeySize
     (sPub2, sKey2) <- C.generateKeyPair rsaKeySize
+    (nPub, nKey) <- C.generateKeyPair rsaKeySize
     senderId1 <- newTVarIO ""
     senderId2 <- newTVarIO ""
+    notifierId <- newTVarIO ""
 
-    withSmpServerStoreLogOn at testPort . runTest t $ \h -> do
-      (sId1, _, _) <- createAndSecureQueue h sPub1
+    withSmpServerStoreLogOn at testPort . runTest t $ \h -> runClient t $ \h1 -> do
+      (sId1, rId, rKey) <- createAndSecureQueue h sPub1
       atomically $ writeTVar senderId1 sId1
+      Resp "abcd" _ (NID nId) <- signSendRecv h rKey ("abcd", rId, "NKEY " <> C.serializePubKey nPub)
+      atomically $ writeTVar notifierId nId
+      Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, "NSUB")
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
       Resp "" _ (MSG _ _ "hello") <- tGet fromServer h
+      Resp "" _ NMSG <- tGet fromServer h1
 
       (sId2, rId2, rKey2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
@@ -290,7 +296,7 @@ testWithStoreLog at@(ATransport t) =
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, "DEL")
       pure ()
 
-    logSize `shouldReturn` 5
+    logSize `shouldReturn` 6
 
     withSmpServerThreadOn at testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
@@ -298,10 +304,12 @@ testWithStoreLog at@(ATransport t) =
       Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
       pure ()
 
-    withSmpServerStoreLogOn at testPort . runTest t $ \h -> do
+    withSmpServerStoreLogOn at testPort . runTest t $ \h -> runClient t $ \h1 -> do
       -- this queue is restored
       sId1 <- readTVarIO senderId1
+      nId <- readTVarIO notifierId
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, "NSUB")
       -- this queue is removed - not restored
       sId2 <- readTVarIO senderId2
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
@@ -314,6 +322,9 @@ testWithStoreLog at@(ATransport t) =
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
+
+    runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+    runClient _ test' = testSMPClient test' `shouldReturn` ()
 
     logSize :: IO Int
     logSize =
