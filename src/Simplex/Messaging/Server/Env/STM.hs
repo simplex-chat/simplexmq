@@ -109,6 +109,6 @@ newEnv config = do
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)
     addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
-    addNotifier q = case notifierId q of
+    addNotifier q = case notifier q of
       Nothing -> id
-      Just nId -> M.insert nId (recipientId q)
+      Just (nId, _) -> M.insert nId (recipientId q)

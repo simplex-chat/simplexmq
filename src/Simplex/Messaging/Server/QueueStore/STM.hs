@@ -57,11 +57,29 @@ instance MonadQueueStore QueueStore STM where
   getQueue _ SBroker _ =
     return $ Left INTERNAL
 
+  secureQueue :: QueueStore -> RecipientId -> SenderPublicKey -> STM (Either ErrorType ())
   secureQueue store rId sKey =
     updateQueues store rId $ \cs c ->
       case senderKey c of
         Just _ -> (Left AUTH, cs)
         _ -> (Right (), cs {queues = M.insert rId c {senderKey = Just sKey} (queues cs)})
+
+  addQueueNotifier :: QueueStore -> RecipientId -> NotifierId -> NotifierPublicKey -> STM (Either ErrorType ())
+  addQueueNotifier store rId nId nKey = do
+    cs@QueueStoreData {queues, notifiers} <- readTVar store
+    if M.member nId notifiers || M.member nId queues
+      then pure $ Left DUPLICATE_
+      else case M.lookup rId queues of
+        Nothing -> pure $ Left AUTH
+        Just q -> case notifier q of
+          Just _ -> pure $ Left AUTH
+          _ -> do
+            writeTVar store $
+              cs
+                { queues = M.insert rId q {notifier = Just (nId, nKey)} queues,
+                  notifiers = M.insert nId rId notifiers
+                }
+            pure $ Right ()
 
   suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
   suspendQueue store rId =

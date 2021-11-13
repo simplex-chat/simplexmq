@@ -14,6 +14,7 @@ module Simplex.Messaging.Server.StoreLog
     closeStoreLog,
     logCreateQueue,
     logSecureQueue,
+    logAddNotifier,
     logDeleteQueue,
     readWriteStoreLog,
   )
@@ -38,7 +39,6 @@ import Simplex.Messaging.Parsers (base64P, parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (QueueRec (..), QueueStatus (..))
 import Simplex.Messaging.Transport (trimCR)
-import Simplex.Messaging.Util (maybeWord)
 import System.Directory (doesFileExist)
 import System.IO
 
@@ -51,45 +51,44 @@ data StoreLog (a :: IOMode) where
 data StoreLogRecord
   = CreateQueue QueueRec
   | SecureQueue QueueId SenderPublicKey
-  | EnableNotifications QueueId NotifierId NotifierPublicKey
+  | AddNotifier QueueId NotifierId NotifierPublicKey
   | DeleteQueue QueueId
 
 storeLogRecordP :: Parser StoreLogRecord
 storeLogRecordP =
   "CREATE " *> createQueueP
     <|> "SECURE " *> secureQueueP
-    <|> "NOTIFY " *> enableNotificationsP
+    <|> "NOTIFY " *> addNotifierP
     <|> "DELETE " *> (DeleteQueue <$> base64P)
   where
     createQueueP = CreateQueue <$> queueRecP
     secureQueueP = SecureQueue <$> base64P <* A.space <*> C.pubKeyP
-    enableNotificationsP =
-      EnableNotifications <$> base64P <* A.space <*> base64P <* A.space <*> C.pubKeyP
+    addNotifierP =
+      AddNotifier <$> base64P <* A.space <*> base64P <* A.space <*> C.pubKeyP
     queueRecP = do
       recipientId <- "rid=" *> base64P <* A.space
       senderId <- "sid=" *> base64P <* A.space
       recipientKey <- "rk=" *> C.pubKeyP <* A.space
       senderKey <- "sk=" *> optional C.pubKeyP
-      notifierId <- optional $ " nid=" *> base64P
-      notifierKey <- optional $ " nk=" *> C.pubKeyP
-      pure QueueRec {recipientId, senderId, notifierId, recipientKey, notifierKey, senderKey, status = QueueActive}
+      notifier <- optional $ (,) <$> (" nid=" *> base64P) <*> (" nk=" *> C.pubKeyP)
+      pure QueueRec {recipientId, senderId, recipientKey, senderKey, notifier, status = QueueActive}
 
 serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
   CreateQueue q -> "CREATE " <> serializeQueue q
   SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> C.serializePubKey sKey
-  EnableNotifications rId nId nKey -> B.unwords ["NOTIFY", encode rId, encode nId, C.serializePubKey nKey]
+  AddNotifier rId nId nKey -> B.unwords ["NOTIFY", encode rId, encode nId, C.serializePubKey nKey]
   DeleteQueue rId -> "DELETE " <> encode rId
   where
-    serializeQueue QueueRec {recipientId, senderId, notifierId, recipientKey, notifierKey, senderKey} =
+    serializeQueue QueueRec {recipientId, senderId, recipientKey, senderKey, notifier} =
       B.unwords
         [ "rid=" <> encode recipientId,
           "sid=" <> encode senderId,
           "rk=" <> C.serializePubKey recipientKey,
           "sk=" <> maybe "" C.serializePubKey senderKey
         ]
-        <> maybeWord (("nid=" <>) . encode) notifierId
-        <> maybeWord (("nk=" <>) . C.serializePubKey) notifierKey
+        <> maybe "" serializeNotifier notifier
+    serializeNotifier (nId, nKey) = " nid=" <> encode nId <> " nk=" <> C.serializePubKey nKey
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
@@ -119,6 +118,9 @@ logCreateQueue s = writeStoreLogRecord s . CreateQueue
 
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SenderPublicKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
+
+logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NotifierId -> NotifierPublicKey -> IO ()
+logAddNotifier s qId nId nKey = writeStoreLogRecord s $ AddNotifier qId nId nKey
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
@@ -151,7 +153,7 @@ readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLo
     procLogRecord m = \case
       CreateQueue q -> M.insert (recipientId q) q m
       SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
-      EnableNotifications qId nId nKey -> M.adjust (\q -> q {notifierId = Just nId, notifierKey = Just nKey}) qId m
+      AddNotifier qId nId nKey -> M.adjust (\q -> q {notifier = Just (nId, nKey)}) qId m
       DeleteQueue qId -> M.delete qId m
     printError :: LogParsingError -> IO ()
     printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s

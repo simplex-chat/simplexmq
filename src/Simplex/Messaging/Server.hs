@@ -145,7 +145,7 @@ verifyTransmission (sig, t@(corrId, queueId, cmd)) = do
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
     Cmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe sig . senderKey
     Cmd SSender PING -> return cmd
-    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe sig . notifierKey
+    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe sig . fmap snd . notifier
   where
     verifyCmd :: SParty p -> (QueueRec -> Cmd) -> m Cmd
     verifyCmd party f = do
@@ -209,29 +209,23 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           SUB -> subscribeQueue queueId
           ACK -> acknowledgeMsg
           KEY sKey -> secureQueue_ st sKey
-          NKEY nKey -> addNotifierKey_ st nKey
+          NKEY nKey -> addQueueNotifier_ st nKey
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
       where
         createQueue :: QueueStore -> RecipientPublicKey -> m Transmission
-        createQueue st rKey =
-          checkKeySize rKey addSubscribe
+        createQueue st rKey = checkKeySize rKey $ addQueueRetry 3
           where
-            addSubscribe =
-              addQueueRetry 3 >>= \case
-                Left e -> return $ ERR e
-                Right (rId, sId) -> do
-                  withLog (`logCreateById` rId)
-                  subscribeQueue rId $> IDS rId sId
-
-            addQueueRetry :: Int -> m (Either ErrorType (RecipientId, SenderId))
-            addQueueRetry 0 = return $ Left INTERNAL
+            addQueueRetry :: Int -> m (Command 'Broker)
+            addQueueRetry 0 = pure $ ERR INTERNAL
             addQueueRetry n = do
-              ids <- getIds
+              ids@(rId, sId) <- getIds
               atomically (addQueue st rKey ids) >>= \case
                 Left DUPLICATE_ -> addQueueRetry $ n - 1
-                Left e -> return $ Left e
-                Right _ -> return $ Right ids
+                Left e -> pure $ ERR e
+                Right _ -> do
+                  withLog (`logCreateById` rId)
+                  subscribeQueue rId $> IDS rId sId
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
             logCreateById s rId =
@@ -249,8 +243,19 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
           withLog $ \s -> logSecureQueue s queueId sKey
           atomically . checkKeySize sKey $ either ERR (const OK) <$> secureQueue st queueId sKey
 
-        addNotifierKey_ :: QueueStore -> NotifierPublicKey -> m Transmission
-        addNotifierKey_ st nKey = pure undefined
+        addQueueNotifier_ :: QueueStore -> NotifierPublicKey -> m Transmission
+        addQueueNotifier_ st nKey = checkKeySize nKey $ addNotifierRetry 3
+          where
+            addNotifierRetry :: Int -> m (Command 'Broker)
+            addNotifierRetry 0 = pure $ ERR INTERNAL
+            addNotifierRetry n = do
+              nId <- randomId =<< asks (queueIdBytes . config)
+              atomically (addQueueNotifier st queueId nId nKey) >>= \case
+                Left DUPLICATE_ -> addNotifierRetry $ n - 1
+                Left e -> pure $ ERR e
+                Right _ -> do
+                  withLog $ \s -> logAddNotifier s queueId nId nKey
+                  pure $ NID nId
 
         checkKeySize :: Monad m' => C.PublicKey -> m' (Command 'Broker) -> m' Transmission
         checkKeySize key action =
