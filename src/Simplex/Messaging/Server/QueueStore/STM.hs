@@ -43,19 +43,22 @@ instance MonadQueueStore QueueStore STM where
         return $ Right ()
 
   getQueue :: QueueStore -> SParty (p :: Party) -> QueueId -> STM (Either ErrorType QueueRec)
-  getQueue store SRecipient rId = do
-    cs <- readTVar store
-    return $ getRcpQueue cs rId
-  getQueue store SSender sId = do
-    cs <- readTVar store
-    let rId = M.lookup sId $ senders cs
-    return $ maybe (Left AUTH) (getRcpQueue cs) rId
-  getQueue store SNotifier nId = do
-    cs <- readTVar store
-    let rId = M.lookup nId $ notifiers cs
-    return $ maybe (Left AUTH) (getRcpQueue cs) rId
-  getQueue _ SBroker _ =
-    return $ Left INTERNAL
+  getQueue st party qId = do
+    cs <- readTVar st
+    pure $ case party of
+      SRecipient -> getRcpQueue cs qId
+      SSender -> getPartyQueue cs senders
+      SNotifier -> getPartyQueue cs notifiers
+      SBroker -> Left INTERNAL
+    where
+      getPartyQueue ::
+        QueueStoreData ->
+        (QueueStoreData -> Map QueueId RecipientId) ->
+        Either ErrorType QueueRec
+      getPartyQueue cs recipientIds =
+        case M.lookup qId $ recipientIds cs of
+          Just rId -> getRcpQueue cs rId
+          Nothing -> Left AUTH
 
   secureQueue :: QueueStore -> RecipientId -> SenderPublicKey -> STM (Either ErrorType ())
   secureQueue store rId sKey =
