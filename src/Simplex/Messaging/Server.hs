@@ -331,12 +331,10 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server 
                 quota <- asks $ msgQueueQuota . config
                 atomically $ do
                   q <- getMsgQueue ms (recipientId qr) quota
-                  isFull q >>= \case
-                    False -> do
-                      trySendNotification
-                      writeMsg q msg
-                      pure ok
-                    True -> pure $ err QUOTA
+                  ifM (isFull q) (pure $ err QUOTA) $ do
+                    trySendNotification
+                    writeMsg q msg
+                    pure ok
               where
                 trySendNotification :: STM ()
                 trySendNotification =
