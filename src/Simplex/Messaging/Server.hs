@@ -35,6 +35,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
+import Data.Maybe (isNothing)
 import Data.Time.Clock
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -197,7 +198,7 @@ dummyKey512 :: C.PublicKey
 dummyKey512 = "MIICoDANBgkqhkiG9w0BAQEFAAOCAo0AMIICiAKCAgEArkCY9DuverJ4mmzDektv9aZMFyeRV46WZK9NsOBKEc+1ncqMs+LhLti9asKNgUBRbNzmbOe0NYYftrUpwnATaenggkTFxxbJ4JGJuGYbsEdFWkXSvrbWGtM8YUmn5RkAGme12xQ89bSM4VoJAGnrYPHwmcQd+KYCPZvTUsxaxgrJTX65ejHN9BsAn8XtGViOtHTDJO9yUMD2WrJvd7wnNa+0ugEteDLzMU++xS98VC+uA1vfauUqi3yXVchdfrLdVUuM+JE0gUEXCgzjuHkaoHiaGNiGhdPYoAJJdOKQOIHAKdk7Th6OPhirPhc9XYNB4O8JDthKhNtfokvFIFlC4QBRzJhpLIENaEBDt08WmgpOnecZB/CuxkqqOrNa8j5K5jNrtXAI67W46VEC2jeQy/gZwb64Zit2A4D00xXzGbQTPGj4ehcEMhLx5LSCygViEf0w0tN3c3TEyUcgPzvECd2ZVpQLr9Z4a07Ebr+YSuxcHhjg4Rg1VyJyOTTvaCBGm5X2B3+tI4NUttmikIHOYpBnsLmHY2BgfH2KcrIsDyAhInXmTFr/L2+erFarUnlfATd2L8Ti43TNHDedO6k6jI5Gyi62yPwjqPLEIIK8l+pIeNfHJ3pPmjhHBfzFcQLMMMXffHWNK8kWklrQXK+4j4HiPcTBvlO1FEtG9nEIZhUCgYA4a6WtI2k5YNli1C89GY5rGUY7RP71T6RWri/D3Lz9T7GvU+FemAyYmsvCQwqijUOur0uLvwSP8VdxpSUcrjJJSWur2hrPWzWlu0XbNaeizxpFeKbQP+zSrWJ1z8RwfAeUjShxt8q1TuqGqY10wQyp3nyiTGvS+KwZVj5h5qx8NQ=="
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
-client clnt@Client {subscriptions, rcvQ, sndQ = sndQ'} Server {subscribedQ, notifiers} =
+client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server {subscribedQ, ntfSubscribedQ, notifiers} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
@@ -281,9 +282,6 @@ client clnt@Client {subscriptions, rcvQ, sndQ = sndQ'} Server {subscribedQ, noti
         subscribeQueue rId =
           atomically (getSubscription rId) >>= deliverMessage tryPeekMsg rId
 
-        subscribeNotifications :: m Transmission
-        subscribeNotifications = pure . err $ CMD PROHIBITED
-
         getSubscription :: RecipientId -> STM Sub
         getSubscription rId = do
           subs <- readTVar subscriptions
@@ -294,6 +292,14 @@ client clnt@Client {subscriptions, rcvQ, sndQ = sndQ'} Server {subscribedQ, noti
               s <- newSubscription
               writeTVar subscriptions $ M.insert rId s subs
               return s
+
+        subscribeNotifications :: m Transmission
+        subscribeNotifications = atomically $ do
+          subs <- readTVar ntfSubscriptions
+          when (isNothing $ M.lookup queueId subs) $ do
+            writeTBQueue ntfSubscribedQ (queueId, clnt)
+            writeTVar ntfSubscriptions $ M.insert queueId () subs
+          pure ok
 
         acknowledgeMsg :: m Transmission
         acknowledgeMsg =
