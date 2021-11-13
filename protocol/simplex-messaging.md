@@ -330,7 +330,7 @@ Simplex messaging server implementations MUST NOT create, store or send to any o
 
 ## Message delivery notifications
 
-Supporting message delivery while the client mobile app is not running requires sending PUSH notifications to the device token. All alternative mechanisms for background message delivery are unreliable, particularly on iOS platform. Obviously, supporting push notification delivery by simply subscribing to messages would reduce meta-data privacy as it allows to see all queues that a given device uses.
+Supporting message delivery while the client mobile app is not running requires sending push notifications with the device token. All alternative mechanisms for background message delivery are unreliable, particularly on iOS platform. Obviously, supporting push notification delivery by simply subscribing to messages would reduce meta-data privacy as it allows to see all queues that a given device uses.
 
 To protect the privacy of the recipients, there are several commands in SMP protocol that allow enabling and subscribing to message notifications from SMP queues, using separate set of "notifier keys" and via separate queue IDs - as long as SMP server is not compromised, these notifier queue IDs cannot be correlated with recipient or sender queue IDs.
 

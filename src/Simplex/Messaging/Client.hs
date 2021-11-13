@@ -283,12 +283,7 @@ subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
 subscribeSMPQueueNotifications :: SMPClient -> NotifierPrivateKey -> NotifierId -> ExceptT SMPClientError IO ()
-subscribeSMPQueueNotifications c@SMPClient {smpServer, msgQ} npKey rId =
-  sendSMPCommand c (Just npKey) rId (Cmd SNotifier NSUB) >>= \case
-    Cmd _ OK -> return ()
-    Cmd _ cmd@NMSG ->
-      lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
-    _ -> throwE SMPUnexpectedResponse
+subscribeSMPQueueNotifications = okSMPCommand $ Cmd SNotifier NSUB
 
 -- | Secure the SMP queue by adding a sender public key.
 --
@@ -302,8 +297,8 @@ secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY sender
 enableSMPQueueNotifications :: SMPClient -> RecipientPrivateKey -> RecipientId -> NotifierPublicKey -> ExceptT SMPClientError IO NotifierId
 enableSMPQueueNotifications c rpKey rId notifierKey =
   sendSMPCommand c (Just rpKey) rId (Cmd SRecipient $ NKEY notifierKey) >>= \case
-  Cmd _ (NID nId) -> pure nId
-  _ -> throwE SMPUnexpectedResponse
+    Cmd _ (NID nId) -> pure nId
+    _ -> throwE SMPUnexpectedResponse
 
 -- | Send SMP message.
 --
