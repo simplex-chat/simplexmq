@@ -258,7 +258,7 @@ commandP =
     <|> "IDS " *> idsResp
     <|> "SUB" $> Cmd SRecipient SUB
     <|> "KEY " *> keyCmd
-    <|> "NKEY" *> nKeyCmd
+    <|> "NKEY " *> nKeyCmd
     <|> "NID" *> nIdsResp
     <|> "ACK" $> Cmd SRecipient ACK
     <|> "OFF" $> Cmd SRecipient OFF

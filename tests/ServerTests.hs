@@ -39,6 +39,7 @@ serverTests t = do
     describe "switch subscription to another SMP queue" $ testSwitchSub t
   describe "Store log" $ testWithStoreLog t
   describe "Timing of AUTH error" $ testTiming t
+  describe "Message notifications" $ testMessageNotifications t
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
@@ -309,15 +310,6 @@ testWithStoreLog at@(ATransport t) =
     logSize `shouldReturn` 1
     removeFile testStoreLogFile
   where
-    createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
-    createAndSecureQueue h sPub = do
-      (rPub, rKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
-      let keyCmd = "KEY " <> C.serializePubKey sPub
-      Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, keyCmd)
-      (rId', rId) #== "same queue ID"
-      pure (sId, rId, rKey)
-
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
@@ -328,6 +320,15 @@ testWithStoreLog at@(ATransport t) =
       try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
         Right l -> pure l
         Left (_ :: SomeException) -> logSize
+
+createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
+createAndSecureQueue h sPub = do
+  (rPub, rKey) <- C.generateKeyPair rsaKeySize
+  Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+  let keyCmd = "KEY " <> C.serializePubKey sPub
+  Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, keyCmd)
+  (rId', rId) #== "same queue ID"
+  pure (sId, rId, rKey)
 
 testTiming :: ATransport -> Spec
 testTiming (ATransport t) =
@@ -374,6 +375,28 @@ testTiming (ATransport t) =
         return ()
       Resp "" _ (MSG _ _ "hello") <- tGet fromServer rh
       similarTime timeNoQueue timeWrongKey
+
+testMessageNotifications :: ATransport -> Spec
+testMessageNotifications (ATransport t) =
+  it "should create simplex connection, subscribe notifier and deliver notifications" $ do
+    (sPub, sKey) <- C.generateKeyPair rsaKeySize
+    (nPub, nKey) <- C.generateKeyPair rsaKeySize
+    smpTest4 t $ \rh sh nh1 nh2 -> do
+      (sId, rId, rKey) <- createAndSecureQueue rh sPub
+      Resp "1" _ (NID nId) <- signSendRecv rh rKey ("1", rId, "NKEY " <> C.serializePubKey nPub)
+      Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, "NSUB")
+      Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, "SEND 5 hello ")
+      Resp "" _ (MSG _ _ "hello") <- tGet fromServer rh
+      Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, "ACK")
+      Resp "" _ NMSG <- tGet fromServer nh1
+      Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, "NSUB")
+      Resp "" _ END <- tGet fromServer nh1
+      Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, "SEND 11 hello again ")
+      Resp "" _ (MSG _ _ "hello again") <- tGet fromServer rh
+      Resp "" _ NMSG <- tGet fromServer nh2
+      1000 `timeout` tGet fromServer nh1 >>= \case
+        Nothing -> return ()
+        Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
 
 samplePubKey :: ByteString
 samplePubKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
