@@ -161,6 +161,12 @@ smpTest3 _ test' = smpTestN 3 _test
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
+smpTest4 :: Transport c => TProxy c -> (THandle c -> THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
+smpTest4 _ test' = smpTestN 4 _test
+  where
+    _test [h1, h2, h3, h4] = test' h1 h2 h3 h4
+    _test _ = error "expected 4 handles"
+
 tPutRaw :: Transport c => THandle c -> RawTransmission -> IO ()
 tPutRaw h (sig, corrId, queueId, command) = do
   let t = B.intercalate " " [corrId, queueId, command]

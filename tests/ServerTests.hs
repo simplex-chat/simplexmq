@@ -39,6 +39,7 @@ serverTests t = do
     describe "switch subscription to another SMP queue" $ testSwitchSub t
   describe "Store log" $ testWithStoreLog t
   describe "Timing of AUTH error" $ testTiming t
+  describe "Message notifications" $ testMessageNotifications t
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
 pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker command)))
@@ -272,14 +273,20 @@ testWithStoreLog at@(ATransport t) =
   it "should store simplex queues to log and restore them after server restart" $ do
     (sPub1, sKey1) <- C.generateKeyPair rsaKeySize
     (sPub2, sKey2) <- C.generateKeyPair rsaKeySize
+    (nPub, nKey) <- C.generateKeyPair rsaKeySize
     senderId1 <- newTVarIO ""
     senderId2 <- newTVarIO ""
+    notifierId <- newTVarIO ""
 
-    withSmpServerStoreLogOn at testPort . runTest t $ \h -> do
-      (sId1, _, _) <- createAndSecureQueue h sPub1
+    withSmpServerStoreLogOn at testPort . runTest t $ \h -> runClient t $ \h1 -> do
+      (sId1, rId, rKey) <- createAndSecureQueue h sPub1
       atomically $ writeTVar senderId1 sId1
+      Resp "abcd" _ (NID nId) <- signSendRecv h rKey ("abcd", rId, "NKEY " <> C.serializePubKey nPub)
+      atomically $ writeTVar notifierId nId
+      Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, "NSUB")
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
       Resp "" _ (MSG _ _ "hello") <- tGet fromServer h
+      Resp "" _ NMSG <- tGet fromServer h1
 
       (sId2, rId2, rKey2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
@@ -289,7 +296,7 @@ testWithStoreLog at@(ATransport t) =
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, "DEL")
       pure ()
 
-    logSize `shouldReturn` 5
+    logSize `shouldReturn` 6
 
     withSmpServerThreadOn at testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
@@ -297,10 +304,12 @@ testWithStoreLog at@(ATransport t) =
       Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
       pure ()
 
-    withSmpServerStoreLogOn at testPort . runTest t $ \h -> do
+    withSmpServerStoreLogOn at testPort . runTest t $ \h -> runClient t $ \h1 -> do
       -- this queue is restored
       sId1 <- readTVarIO senderId1
+      nId <- readTVarIO notifierId
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, "NSUB")
       -- this queue is removed - not restored
       sId2 <- readTVarIO senderId2
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
@@ -309,25 +318,28 @@ testWithStoreLog at@(ATransport t) =
     logSize `shouldReturn` 1
     removeFile testStoreLogFile
   where
-    createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
-    createAndSecureQueue h sPub = do
-      (rPub, rKey) <- C.generateKeyPair rsaKeySize
-      Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
-      let keyCmd = "KEY " <> C.serializePubKey sPub
-      Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, keyCmd)
-      (rId', rId) #== "same queue ID"
-      pure (sId, rId, rKey)
-
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
+
+    runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+    runClient _ test' = testSMPClient test' `shouldReturn` ()
 
     logSize :: IO Int
     logSize =
       try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
         Right l -> pure l
         Left (_ :: SomeException) -> logSize
+
+createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
+createAndSecureQueue h sPub = do
+  (rPub, rKey) <- C.generateKeyPair rsaKeySize
+  Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
+  let keyCmd = "KEY " <> C.serializePubKey sPub
+  Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, keyCmd)
+  (rId', rId) #== "same queue ID"
+  pure (sId, rId, rKey)
 
 testTiming :: ATransport -> Spec
 testTiming (ATransport t) =
@@ -374,6 +386,28 @@ testTiming (ATransport t) =
         return ()
       Resp "" _ (MSG _ _ "hello") <- tGet fromServer rh
       similarTime timeNoQueue timeWrongKey
+
+testMessageNotifications :: ATransport -> Spec
+testMessageNotifications (ATransport t) =
+  it "should create simplex connection, subscribe notifier and deliver notifications" $ do
+    (sPub, sKey) <- C.generateKeyPair rsaKeySize
+    (nPub, nKey) <- C.generateKeyPair rsaKeySize
+    smpTest4 t $ \rh sh nh1 nh2 -> do
+      (sId, rId, rKey) <- createAndSecureQueue rh sPub
+      Resp "1" _ (NID nId) <- signSendRecv rh rKey ("1", rId, "NKEY " <> C.serializePubKey nPub)
+      Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, "NSUB")
+      Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, "SEND 5 hello ")
+      Resp "" _ (MSG _ _ "hello") <- tGet fromServer rh
+      Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, "ACK")
+      Resp "" _ NMSG <- tGet fromServer nh1
+      Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, "NSUB")
+      Resp "" _ END <- tGet fromServer nh1
+      Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, "SEND 11 hello again ")
+      Resp "" _ (MSG _ _ "hello again") <- tGet fromServer rh
+      Resp "" _ NMSG <- tGet fromServer nh2
+      1000 `timeout` tGet fromServer nh1 >>= \case
+        Nothing -> return ()
+        Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
 
 samplePubKey :: ByteString
 samplePubKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"

@@ -30,7 +30,9 @@ module Simplex.Messaging.Client
     -- * SMP protocol command functions
     createSMPQueue,
     subscribeSMPQueue,
+    subscribeSMPQueueNotifications,
     secureSMPQueue,
+    enableSMPQueueNotifications,
     sendSMPMessage,
     ackSMPMessage,
     suspendSMPQueue,
@@ -263,7 +265,7 @@ createSMPQueue ::
 createSMPQueue c rpKey rKey =
   -- TODO add signing this request too - requires changes in the server
   sendSMPCommand c (Just rpKey) "" (Cmd SRecipient $ NEW rKey) >>= \case
-    Cmd _ (IDS rId sId) -> return (rId, sId)
+    Cmd _ (IDS rId sId) -> pure (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
 -- | Subscribe to the SMP queue.
@@ -277,11 +279,26 @@ subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
+-- | Subscribe to the SMP queue notifications.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
+subscribeSMPQueueNotifications :: SMPClient -> NotifierPrivateKey -> NotifierId -> ExceptT SMPClientError IO ()
+subscribeSMPQueueNotifications = okSMPCommand $ Cmd SNotifier NSUB
+
 -- | Secure the SMP queue by adding a sender public key.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#secure-queue-command
 secureSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> SenderPublicKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
+
+-- | Enable notifications for the queue for push notifications server.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#enable-notifications-command
+enableSMPQueueNotifications :: SMPClient -> RecipientPrivateKey -> RecipientId -> NotifierPublicKey -> ExceptT SMPClientError IO NotifierId
+enableSMPQueueNotifications c rpKey rId notifierKey =
+  sendSMPCommand c (Just rpKey) rId (Cmd SRecipient $ NKEY notifierKey) >>= \case
+    Cmd _ (NID nId) -> pure nId
+    _ -> throwE SMPUnexpectedResponse
 
 -- | Send SMP message.
 --

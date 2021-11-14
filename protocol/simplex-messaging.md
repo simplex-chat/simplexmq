@@ -11,7 +11,8 @@
 - [SMP qualities and features](#smp-qualities-and-features)
 - [Cryptographic algorithms](#cryptographic-algorithms)
 - [Simplex queue IDs](#simplex-queue-ids)
-- [Server privacy requirements](#server-privacy-requirements)
+- [Server security requirements](#server-security-requirements)
+- [Message delivery notifications](#message-delivery-notifications)
 - [SMP commands](#smp-commands)
   - [Correlating responses with commands](#correlating-responses-with-commands)
   - [Command authentication](#command-authentication)
@@ -20,14 +21,19 @@
     - [Create queue command](#create-queue-command)
     - [Subscribe to queue](#subscribe-to-queue)
     - [Secure queue command](#secure-queue-command)
+    - [Enable notifications command](#enable-notifications-command)
     - [Acknowledge message delivery](#acknowledge-message-delivery)
     - [Suspend queue](#suspend-queue)
     - [Delete queue](#delete-queue)
   - [Sender commands](#sender-commands)
     - [Send message](#send-message)
+  - [Notifier commands](#notifier-commands)
+    - [Subscribe to queue notifications](#subscribe-to-queue-notifications)
   - [Server messages](#server-messages)
     - [Queue IDs response](#queue-ids-response)
     - [Deliver queue message](#deliver-queue-message)
+    - [Notifier queue ID response](#notifier-queue-id-response)
+    - [Deliver message notification](#deliver-message-notification)
     - [Subscription END notification](#subscription-end-notification)
     - [Error responses](#error-responses)
     - [OK response](#ok-response)
@@ -280,11 +286,14 @@ Simplex messaging clients need to cryptographically sign commands for the follow
   - create the queue (`NEW`)
   - subscribe to queue (`SUB`)
   - secure the queue (`KEY`)
+  - enable queue notifications (`NKEY`)
   - acknowledge received messages (`ACK`)
   - suspend the queue (`OFF`)
   - delete the queue (`DEL`)
 - With the sender's key `SK` (server to verify):
   - send messages (`SEND`)
+- With the optional notifier's key:
+  - subscribe to message notifications (`NSUB`)
 
 To sign and verify commands, clients and servers MUST use RSA-PSS algorithm defined in [RFC3447][2].
 
@@ -319,6 +328,18 @@ Simplex messaging server implementations MUST NOT create, store or send to any o
 
 - Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using simplex messaging servers.
 
+## Message delivery notifications
+
+Supporting message delivery while the client mobile app is not running requires sending push notifications with the device token. All alternative mechanisms for background message delivery are unreliable, particularly on iOS platform. Obviously, supporting push notification delivery by simply subscribing to messages would reduce meta-data privacy as it allows to see all queues that a given device uses.
+
+To protect the privacy of the recipients, there are several commands in SMP protocol that allow enabling and subscribing to message notifications from SMP queues, using separate set of "notifier keys" and via separate queue IDs - as long as SMP server is not compromised, these notifier queue IDs cannot be correlated with recipient or sender queue IDs.
+
+The clients can optionally instruct a dedicated push notification server to subscribe to notifications and deliver push notifications to the device, which can then retrieve the messages in the background and send local notifications to the user - this is out of scope of SMP protocol. The commands that SMP protocol provides to allow it:
+
+- `enableNotifications` (`"NKEY"`) with `notifierId` (`"NID"`) response - see [Enable notifications command](#enable-notifications-command).
+- `subscribeNotifications` (`"NSUB"`) - see [Subscribe to queue notifications](#subscribe-to-queue-notifications).
+- `messageNotification` (`"NMSG"`) - see [Deliver message notification](#deliver-message-notification).
+
 ## SMP commands
 
 Commands syntax below is provided using [ABNF][8] with [case-sensitive strings extension][8a].
@@ -328,9 +349,11 @@ Each transmission between the client and the server must have this format/syntax
 ```abnf
 transmission = [signature] SP signed SP pad ; pad to the fixed block size
 signed = [corrId] SP [queueId] SP cmd
-cmd = ping / recipientCmd / send / serverMsg
-recipientCmd = create / subscribe / secure / acknowledge / suspend / delete
-serverMsg = pong / queueIds / message / unsubscribed / ok / error
+cmd = ping / recipientCmd / send / subscribeNotifications / serverMsg
+recipientCmd = create / subscribe / secure / enableNotifications /
+               acknowledge / suspend / delete
+serverMsg = pong / queueIds / message / notifierId / messageNotification /
+            unsubscribed / ok / error
 corrId = 1*(%x21-7F) ; any characters other than control/whitespace
 queueId = encoded ; empty queue ID is used with "create" command
 signature = encoded
@@ -414,6 +437,26 @@ senderKey = %s"rsa:" x509encoded ; the sender's RSA public key for this queue
 
 Once the queue is secured only signed messages can be sent to it.
 
+#### Enable notifications command
+
+This command is sent by the recipient to the server to add notifier's key to the queue, to allow push notifications server to receive notifications when the message arrives, via a separate queue ID, without receiving message content.
+
+```abnf
+enableNotifications = %s"NKEY" SP notifierKey
+notifierKey = %s"rsa:" x509encoded ; the notifier's RSA public key for this queue
+```
+
+The server will respond with `notifierId` response if notifications were enabled and the notifier's key was successfully added to the queue:
+
+```abnf
+notifierId = %s"NID" SP notifierId
+recipientId = encoded
+```
+
+This response is sent with the recipient's queue ID (the second part of the transmission).
+
+To receive the message notifications, `subscribeNotifications` command ("NSUB") must be sent signed with the notifier's key.
+
 #### Acknowledge message delivery
 
 The recipient should send the acknowledgement of message delivery once the message was stored in the client, to notify the server that the message should be deleted:
@@ -491,6 +534,20 @@ clientBody = *OCTET
 
 `clientHeader` in the initial unsigned message is used to transmit sender's server key and can be used in the future revisions of SMP protocol for other purposes.
 
+### Notifier commands
+
+#### Subscribe to queue notifications
+
+The push notifications server (notifier) must use this command to start receiving message notifications from the queue:
+
+```abnf
+subscribeNotifications = %s"NSUB"
+```
+
+If subscription is successful the server must respond with `ok` response if no messages are available. The notifier will be receiving the message notifications from this queue until the transport connection is closed or until another transport connection subscribes to notifications from the same simplex queue - in this case the first subscription should be cancelled and [subscription END notification](#subscription-end-notification) delivered.
+
+The first message notification will be delivered either immediately or as soon as the message is available.
+
 ### Server messages
 
 #### Queue IDs response
@@ -514,6 +571,22 @@ timestamp = <date-time defined in RFC3339>
 `timestamp` - the UTC time when the server received the message from the sender, must be in date-time format defined by [RFC 3339][10]
 
 `binaryMsg` - see syntax in [Send message](#send-message)
+
+#### Notifier queue ID response
+
+Server must respond with this message when queue notifications are enabled.
+
+See its syntax in [Enable notifications command](#enable-notifications-command)
+
+#### Deliver message notification
+
+The server must deliver message notifications to all simplex queues that were subscribed with `subscribeNotifications` command ("NSUB") on the currently open transport connection. The syntax for the message notification delivery is:
+
+```abnf
+messageNotification = %s"NMSG"
+```
+
+Message notification does not contain any message data or meta-data, it only notifies that the message is available.
 
 #### Subscription END notification
 

@@ -39,10 +39,13 @@ module Simplex.Messaging.Protocol
     QueueId,
     RecipientId,
     SenderId,
+    NotifierId,
     RecipientPrivateKey,
     RecipientPublicKey,
     SenderPrivateKey,
     SenderPublicKey,
+    NotifierPrivateKey,
+    NotifierPublicKey,
     Encoded,
     MsgId,
     MsgBody,
@@ -85,7 +88,7 @@ import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
 -- | SMP protocol participants.
-data Party = Broker | Recipient | Sender
+data Party = Broker | Recipient | Sender | Notifier
   deriving (Show)
 
 -- | Singleton types for SMP protocol participants.
@@ -93,6 +96,7 @@ data SParty :: Party -> Type where
   SBroker :: SParty Broker
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
+  SNotifier :: SParty Notifier
 
 deriving instance Show (SParty a)
 
@@ -124,6 +128,9 @@ type RecipientId = QueueId
 -- | SMP queue ID for the sender.
 type SenderId = QueueId
 
+-- | SMP queue ID for notifications.
+type NotifierId = QueueId
+
 -- | SMP queue ID on the server.
 type QueueId = Encoded
 
@@ -133,15 +140,20 @@ data Command (a :: Party) where
   NEW :: RecipientPublicKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SenderPublicKey -> Command Recipient
+  NKEY :: NotifierPublicKey -> Command Recipient
   ACK :: Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
   -- SMP sender commands
   SEND :: MsgBody -> Command Sender
   PING :: Command Sender
+  -- SMP notification subscriber commands
+  NSUB :: Command Notifier
   -- SMP broker commands (responses, messages, notifications)
   IDS :: RecipientId -> SenderId -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
+  NID :: NotifierId -> Command Broker
+  NMSG :: Command Broker
   END :: Command Broker
   OK :: Command Broker
   ERR :: ErrorType -> Command Broker
@@ -177,6 +189,12 @@ type SenderPrivateKey = C.SafePrivateKey
 
 -- | Sender's public key used by SMP server to verify authorization of SMP commands.
 type SenderPublicKey = C.PublicKey
+
+-- | Private key used by push notifications server to authorize (sign) LSTN command.
+type NotifierPrivateKey = C.SafePrivateKey
+
+-- | Public key used by SMP server to verify authorization of LSTN command sent by push notifications server.
+type NotifierPublicKey = C.PublicKey
 
 -- | SMP message server ID.
 type MsgId = Encoded
@@ -240,12 +258,16 @@ commandP =
     <|> "IDS " *> idsResp
     <|> "SUB" $> Cmd SRecipient SUB
     <|> "KEY " *> keyCmd
+    <|> "NKEY " *> nKeyCmd
+    <|> "NID " *> nIdsResp
     <|> "ACK" $> Cmd SRecipient ACK
     <|> "OFF" $> Cmd SRecipient OFF
     <|> "DEL" $> Cmd SRecipient DEL
     <|> "SEND " *> sendCmd
     <|> "PING" $> Cmd SSender PING
+    <|> "NSUB" $> Cmd SNotifier NSUB
     <|> "MSG " *> message
+    <|> "NMSG" $> Cmd SBroker NMSG
     <|> "END" $> Cmd SBroker END
     <|> "OK" $> Cmd SBroker OK
     <|> "ERR " *> serverError
@@ -253,7 +275,9 @@ commandP =
   where
     newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
     idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
+    nIdsResp = Cmd SBroker . NID <$> base64P
     keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
+    nKeyCmd = Cmd SRecipient . NKEY <$> C.pubKeyP
     sendCmd = do
       size <- A.decimal <* A.space
       Cmd SSender . SEND <$> A.take size <* A.space
@@ -275,14 +299,23 @@ serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
   Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
-  Cmd SRecipient cmd -> bshow cmd
+  Cmd SRecipient (NKEY nKey) -> "NKEY " <> C.serializePubKey nKey
+  Cmd SRecipient SUB -> "SUB"
+  Cmd SRecipient ACK -> "ACK"
+  Cmd SRecipient OFF -> "OFF"
+  Cmd SRecipient DEL -> "DEL"
   Cmd SSender (SEND msgBody) -> "SEND " <> serializeMsg msgBody
   Cmd SSender PING -> "PING"
+  Cmd SNotifier NSUB -> "NSUB"
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
   Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
+  Cmd SBroker (NID nId) -> "NID " <> encode nId
   Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
-  Cmd SBroker resp -> bshow resp
+  Cmd SBroker NMSG -> "NMSG"
+  Cmd SBroker END -> "END"
+  Cmd SBroker OK -> "OK"
+  Cmd SBroker PONG -> "PONG"
   where
     serializeMsg msgBody = bshow (B.length msgBody) <> " " <> msgBody <> " "
 
@@ -350,7 +383,7 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
     tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (signature, _, queueId, _) cmd = case cmd of
       -- IDS response must not have queue ID
-      Cmd SBroker (IDS _ _) -> Right cmd
+      Cmd SBroker IDS {} -> Right cmd
       -- ERR response does not always have queue ID
       Cmd SBroker (ERR _) -> Right cmd
       -- PONG response must not have queue ID
@@ -362,7 +395,7 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
         | B.null queueId -> Left $ CMD NO_QUEUE
         | otherwise -> Right cmd
       -- NEW must have signature but NOT queue ID
-      Cmd SRecipient (NEW _)
+      Cmd SRecipient NEW {}
         | B.null signature -> Left $ CMD NO_AUTH
         | not (B.null queueId) -> Left $ CMD HAS_AUTH
         | otherwise -> Right cmd
@@ -375,6 +408,6 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
         | B.null queueId && B.null signature -> Right cmd
         | otherwise -> Left $ CMD HAS_AUTH
       -- other client commands must have both signature and queue ID
-      Cmd SRecipient _
+      Cmd _ _
         | B.null signature || B.null queueId -> Left $ CMD NO_AUTH
         | otherwise -> Right cmd
