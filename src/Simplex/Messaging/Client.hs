@@ -291,7 +291,7 @@ subscribeSMPQueueNotifications = okSMPCommand $ Cmd SNotifier NSUB
 secureSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> SenderPublicKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
 
--- | Secure the SMP queue by adding a sender public key.
+-- | Enable notifications for the queue for push notifications server.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#enable-notifications-command
 enableSMPQueueNotifications :: SMPClient -> RecipientPrivateKey -> RecipientId -> NotifierPublicKey -> ExceptT SMPClientError IO NotifierId
