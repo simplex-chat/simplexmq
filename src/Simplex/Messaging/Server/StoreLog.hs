@@ -58,7 +58,7 @@ storeLogRecordP :: Parser StoreLogRecord
 storeLogRecordP =
   "CREATE " *> createQueueP
     <|> "SECURE " *> secureQueueP
-    <|> "NOTIFY " *> addNotifierP
+    <|> "NOTIFIER " *> addNotifierP
     <|> "DELETE " *> (DeleteQueue <$> base64P)
   where
     createQueueP = CreateQueue <$> queueRecP
@@ -77,7 +77,7 @@ serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
   CreateQueue q -> "CREATE " <> serializeQueue q
   SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> C.serializePubKey sKey
-  AddNotifier rId nId nKey -> B.unwords ["NOTIFY", encode rId, encode nId, C.serializePubKey nKey]
+  AddNotifier rId nId nKey -> B.unwords ["NOTIFIER", encode rId, encode nId, C.serializePubKey nKey]
   DeleteQueue rId -> "DELETE " <> encode rId
   where
     serializeQueue QueueRec {recipientId, senderId, recipientKey, senderKey, notifier} =
