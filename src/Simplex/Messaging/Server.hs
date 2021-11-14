@@ -98,11 +98,11 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
         updateSubscribers :: STM (Maybe s)
         updateSubscribers = do
           (qId, clnt) <- readTBQueue $ subQ s
-          cs <- readTVar $ subs s
-          writeTVar (subs s) $ M.insert qId clnt cs
-          join <$> mapM (notifySubscribers qId) (M.lookup qId cs)
-        notifySubscribers :: QueueId -> Client -> STM (Maybe s)
-        notifySubscribers qId c = do
+          serverSubs <- readTVar $ subs s
+          writeTVar (subs s) $ M.insert qId clnt serverSubs
+          join <$> mapM (endPreviousSubscriptions qId) (M.lookup qId serverSubs)
+        endPreviousSubscriptions :: QueueId -> Client -> STM (Maybe s)
+        endPreviousSubscriptions qId c = do
           writeTBQueue (rcvQ c) (CorrId B.empty, qId, Cmd SBroker END)
           stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
 
