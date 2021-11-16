@@ -25,7 +25,6 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking) where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift

@@ -1,6 +1,4 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -164,9 +162,9 @@ cfg =
         smpDefaultConfig
           { qSize = 1,
             defaultTransport = (testPort, transport @TCP),
-            tcpTimeout = 500_000
+            tcpTimeout = 500000
           },
-      retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000}
+      retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50000}
     }
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a

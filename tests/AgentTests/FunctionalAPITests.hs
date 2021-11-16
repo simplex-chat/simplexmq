@@ -12,7 +12,7 @@ import Control.Monad.IO.Unlift
 import SMPAgentClient
 import SMPClient (withSmpServer)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (dbFile)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..))

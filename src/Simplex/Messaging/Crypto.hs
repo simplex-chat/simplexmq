@@ -335,7 +335,7 @@ decrypt :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
   let (encHeader, msg') = B.splitAt (privateKeySize pk) msg''
   header <- decryptOAEP pk encHeader
-  Header {aesKey, ivBytes, authTag, msgSize} <- except $ parseHeader header
+  Header {aesKey, ivBytes, authTag, msgSize} <- ExceptT $ pure $ parseHeader header
   msg <- decryptAES aesKey ivBytes msg' authTag
   return $ B.take msgSize msg
 

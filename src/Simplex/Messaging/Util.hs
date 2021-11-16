@@ -5,6 +5,8 @@
 
 module Simplex.Messaging.Util where
 
+import Control.Concurrent.STM
+import Control.Monad.Fail (MonadFail)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Data.Bifunctor (first)
@@ -63,3 +65,11 @@ ifM ba t f = ba >>= \b -> if b then t else f
 
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM b = ifM b $ pure ()
+
+stateTVar :: TVar s -> (s -> (a, s)) -> STM a
+stateTVar var f = do
+   s <- readTVar var
+   let (a, s') = f s -- since we destructure this, we are strict in f
+   writeTVar var s'
+   return a
+{-# INLINE stateTVar #-}

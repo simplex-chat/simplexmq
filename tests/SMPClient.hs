@@ -1,8 +1,7 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -22,6 +21,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (openReadStoreLog)
 import Simplex.Messaging.Transport
 import Test.Hspec
+import qualified Control.Concurrent as CC
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, takeTMVar)
@@ -111,6 +111,11 @@ withSmpServerThreadOn t port =
     (\started -> runSMPServerBlocking started cfg {transports = [(port, t)]})
     (pure ())
 
+forkIOWithUnmask :: MonadUnliftIO m => ((forall a. m a -> m a) -> m ()) -> m ThreadId
+forkIOWithUnmask m =
+  withRunInIO $ \run -> CC.forkIOWithUnmask $ \unmask -> run $ m $ liftIO . unmask . run
+{-# INLINABLE forkIOWithUnmask #-}
+
 serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
@@ -120,7 +125,7 @@ serverBracket process afterProcess f = do
     (\t -> waitFor started "start" >> f t)
   where
     waitFor started s =
-      5_000_000 `timeout` atomically (takeTMVar started) >>= \case
+      5000000 `timeout` atomically (takeTMVar started) >>= \case
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 

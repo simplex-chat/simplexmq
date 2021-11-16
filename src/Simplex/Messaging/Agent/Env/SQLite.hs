@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Env.SQLite where
@@ -33,7 +32,7 @@ data AgentConfig = AgentConfig
   }
 
 minute :: Int
-minute = 60_000_000
+minute = 60000000
 
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
@@ -48,15 +47,15 @@ defaultAgentConfig =
       smpCfg = smpDefaultConfig,
       retryInterval =
         RetryInterval
-          { initialInterval = 1_000_000,
+          { initialInterval = 1000000,
             increaseAfter = minute,
             maxInterval = 10 * minute
           },
       reconnectInterval =
         RetryInterval
-          { initialInterval = 1_000_000,
-            increaseAfter = 10_000_000,
-            maxInterval = 10_000_000
+          { initialInterval = 1000000,
+            increaseAfter = 10000000,
+            maxInterval = 10000000
           }
     }
 

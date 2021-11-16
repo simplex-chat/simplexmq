@@ -36,7 +36,6 @@ module Simplex.Messaging.Agent.Client
 where
 
 import Control.Concurrent.Async (Async, async, uninterruptibleCancel)
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -59,7 +58,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
-import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
+import Simplex.Messaging.Util (bshow, liftEitherError, liftError, stateTVar)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -86,9 +85,9 @@ data AgentClient = AgentClient
 newAgentClient :: Env -> STM AgentClient
 newAgentClient agentEnv = do
   let qSize = tbqSize $ config agentEnv
-  rcvQ <- newTBQueue qSize
-  subQ <- newTBQueue qSize
-  msgQ <- newTBQueue qSize
+  rcvQ <- newTBQueue $ fromIntegral qSize
+  subQ <- newTBQueue $ fromIntegral qSize
+  msgQ <- newTBQueue $ fromIntegral qSize
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty

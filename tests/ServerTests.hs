@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -31,10 +30,10 @@ rsaKeySize = 2048 `div` 8
 serverTests :: ATransport -> Spec
 serverTests t = do
   describe "SMP syntax" $ syntaxTests t
-  describe "SMP queues" do
+  describe "SMP queues" $ do
     describe "NEW and KEY commands, SEND messages" $ testCreateSecure t
     describe "NEW, OFF and DEL commands, SEND messages" $ testCreateDelete t
-  describe "SMP messages" do
+  describe "SMP messages" $ do
     describe "duplex communication over 2 SMP connections" $ testDuplex t
     describe "switch subscription to another SMP queue" $ testSwitchSub t
   describe "Store log" $ testWithStoreLog t
@@ -418,12 +417,12 @@ sampleSig = "\128\207*\159eq\220i!\"\157\161\130\184\226\246\232_\\\170`\180\160
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do
   it "unknown command" $ ("", "abcd", "1234", "HELLO") >#> ("", "abcd", "1234", "ERR CMD SYNTAX")
-  describe "NEW" do
+  describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", "NEW") >#> ("", "bcda", "", "ERR CMD SYNTAX")
     it "many parameters" $ (sampleSig, "cdab", "", "NEW 1 " <> samplePubKey) >#> ("", "cdab", "", "ERR CMD SYNTAX")
     it "no signature" $ ("", "dabc", "", "NEW " <> samplePubKey) >#> ("", "dabc", "", "ERR CMD NO_AUTH")
     it "queue ID" $ (sampleSig, "abcd", "12345678", "NEW " <> samplePubKey) >#> ("", "abcd", "12345678", "ERR CMD HAS_AUTH")
-  describe "KEY" do
+  describe "KEY" $ do
     it "valid syntax" $ (sampleSig, "bcda", "12345678", "KEY " <> samplePubKey) >#> ("", "bcda", "12345678", "ERR AUTH")
     it "no parameters" $ (sampleSig, "cdab", "12345678", "KEY") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
     it "many parameters" $ (sampleSig, "dabc", "12345678", "KEY 1 " <> samplePubKey) >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
@@ -433,7 +432,7 @@ syntaxTests (ATransport t) = do
   noParamsSyntaxTest "ACK"
   noParamsSyntaxTest "OFF"
   noParamsSyntaxTest "DEL"
-  describe "SEND" do
+  describe "SEND" $ do
     it "valid syntax 1" $ (sampleSig, "cdab", "12345678", "SEND 5 hello ") >#> ("", "cdab", "12345678", "ERR AUTH")
     it "valid syntax 2" $ (sampleSig, "dabc", "12345678", "SEND 11 hello there ") >#> ("", "dabc", "12345678", "ERR AUTH")
     it "no parameters" $ (sampleSig, "abcd", "12345678", "SEND") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
@@ -441,13 +440,13 @@ syntaxTests (ATransport t) = do
     it "bad message body 1" $ (sampleSig, "cdab", "12345678", "SEND 11 hello ") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
     it "bad message body 2" $ (sampleSig, "dabc", "12345678", "SEND hello ") >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
     it "bigger body" $ (sampleSig, "abcd", "12345678", "SEND 4 hello ") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
-  describe "PING" do
+  describe "PING" $ do
     it "valid syntax" $ ("", "abcd", "", "PING") >#> ("", "abcd", "", "PONG")
-  describe "broker response not allowed" do
+  describe "broker response not allowed" $ do
     it "OK" $ (sampleSig, "bcda", "12345678", "OK") >#> ("", "bcda", "12345678", "ERR CMD PROHIBITED")
   where
     noParamsSyntaxTest :: ByteString -> Spec
-    noParamsSyntaxTest cmd = describe (B.unpack cmd) do
+    noParamsSyntaxTest cmd = describe (B.unpack cmd) $ do
       it "valid syntax" $ (sampleSig, "abcd", "12345678", cmd) >#> ("", "abcd", "12345678", "ERR AUTH")
       it "wrong terminator" $ (sampleSig, "bcda", "12345678", cmd <> "=") >#> ("", "bcda", "12345678", "ERR CMD SYNTAX")
       it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", "ERR CMD NO_AUTH")

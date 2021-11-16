@@ -610,7 +610,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       return (corrId, connId, fullCmd)
 
     fromParty :: ACmd -> Either AgentErrorType (ACommand p)
-    fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
+    fromParty (ACmd p cmd) = case testEquality party p of
       Just Refl -> Right cmd
       _ -> Left $ CMD PROHIBITED
 

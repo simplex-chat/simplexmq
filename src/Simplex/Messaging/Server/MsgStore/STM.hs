@@ -29,7 +29,7 @@ instance MonadMsgStore STMMsgStore MsgQueue STM where
     maybe (newQ m) return $ M.lookup rId m
     where
       newQ m' = do
-        q <- MsgQueue <$> newTBQueue quota
+        q <- MsgQueue <$> newTBQueue (fromIntegral quota)
         writeTVar store . MsgStoreData $ M.insert rId q m'
         return q
 

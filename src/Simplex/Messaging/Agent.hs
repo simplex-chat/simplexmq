@@ -6,7 +6,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -52,7 +51,6 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -83,7 +81,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
-import Simplex.Messaging.Util (bshow, tryError)
+import Simplex.Messaging.Util (bshow, tryError, stateTVar)
 import System.Random (randomR)
 import UnliftIO.Async (Async, async, race_)
 import qualified UnliftIO.Exception as E
@@ -333,7 +331,7 @@ subscribeConnection' c connId =
     resumeInterval :: m RetryInterval
     resumeInterval = do
       r <- asks $ retryInterval . config
-      pure r {initialInterval = 5_000_000}
+      pure r {initialInterval = 5000000}
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId

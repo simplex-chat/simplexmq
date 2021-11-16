@@ -1,5 +1,4 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -127,7 +126,7 @@ data ATransport = forall c. Transport c => ATransport (TProxy c)
 runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
 runTransportServer started port server = do
   clients <- newTVarIO S.empty
-  E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) \sock -> forever $ do
+  E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) $ \sock -> forever $ do
     c <- liftIO $ acceptConnection sock
     tid <- forkFinally (server c) (const $ liftIO $ closeConnection c)
     atomically . modifyTVar clients $ S.insert tid
@@ -149,7 +148,8 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
-      withFdSocket sock setCloseOnExecIfNeeded
+      -- removed for GHC 8.4.4
+      -- withFdSocket sock setCloseOnExecIfNeeded
       bind sock $ addrAddress addr
       listen sock 1024
       return sock

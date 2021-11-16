@@ -4,7 +4,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -66,7 +65,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport (ATransport (..), TCP, THandle (..), TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, liftError, raceAny_)
+import Simplex.Messaging.Util (bshow, liftError, raceAny_, stateTVar)
 import System.Timeout (timeout)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
@@ -115,8 +114,8 @@ smpDefaultConfig =
   SMPClientConfig
     { qSize = 16,
       defaultTransport = ("5223", transport @TCP),
-      tcpTimeout = 4_000_000,
-      smpPing = 30_000_000,
+      tcpTimeout = 4000000,
+      smpPing = 30000000,
       smpBlockSize = Just 8192,
       smpCommandSize = 256
     }
@@ -142,8 +141,8 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
       connected <- newTVar False
       clientCorrId <- newTVar 0
       sentCommands <- newTVar M.empty
-      sndQ <- newTBQueue qSize
-      rcvQ <- newTBQueue qSize
+      sndQ <- newTBQueue $ fromIntegral qSize
+      rcvQ <- newTBQueue $ fromIntegral qSize
       return
         SMPClient
           { action = undefined,

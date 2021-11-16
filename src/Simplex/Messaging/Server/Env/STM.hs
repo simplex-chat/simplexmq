@@ -67,9 +67,9 @@ data Sub = Sub
 
 newServer :: Natural -> STM Server
 newServer qSize = do
-  subscribedQ <- newTBQueue qSize
+  subscribedQ <- newTBQueue $ fromIntegral qSize
   subscribers <- newTVar M.empty
-  ntfSubscribedQ <- newTBQueue qSize
+  ntfSubscribedQ <- newTBQueue $ fromIntegral qSize
   notifiers <- newTVar M.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
@@ -77,8 +77,8 @@ newClient :: Natural -> STM Client
 newClient qSize = do
   subscriptions <- newTVar M.empty
   ntfSubscriptions <- newTVar M.empty
-  rcvQ <- newTBQueue qSize
-  sndQ <- newTBQueue qSize
+  rcvQ <- newTBQueue $ fromIntegral qSize
+  sndQ <- newTBQueue $ fromIntegral qSize
   return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ}
 
 newSubscription :: STM Sub

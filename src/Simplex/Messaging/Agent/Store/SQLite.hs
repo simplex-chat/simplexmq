@@ -7,7 +7,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -54,7 +53,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Parsers (blobFieldParser)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (bshow, liftIOEither)
+import Simplex.Messaging.Util (bshow, liftIOEither, stateTVar)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
@@ -138,7 +137,7 @@ withConnection SQLiteStore {dbConnPool} =
     (atomically . writeTBQueue dbConnPool)
 
 withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransaction st action = withConnection st $ loop 100 100_000
+withTransaction st action = withConnection st $ loop 100 100000
   where
     loop :: Int -> Int -> DB.Connection -> IO a
     loop t tLim db =
