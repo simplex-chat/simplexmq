@@ -3,7 +3,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -18,9 +20,11 @@ import Data.Kind (Type)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
+    QueueId,
     RecipientPrivateKey,
     SenderPrivateKey,
     SenderPublicKey,
@@ -63,6 +67,15 @@ class Monad m => MonadAgentStore s m where
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   updateRcvMsgAck :: s -> ConnId -> InternalId -> m ()
 
+  -- Transmissions
+  createAgentTransmission :: s -> ConnId -> ACommand 'Client -> Maybe InternalId -> m Int64
+  deleteAgentTransmission :: s -> Int64 -> m ()
+  createSMPTransmission :: s -> SMPQueue -> SMP.Cmd -> Maybe Int64 -> m Int64
+  getNextSMPTransmission :: s -> SMPServer -> m (Maybe SMPTransmission)
+  getPendingSMPServers :: s -> m [SMPServer]
+  deleteSMPTransmission :: s -> Int64 -> m ()
+  deleteMsgTransmissions :: s -> ConnId -> InternalId -> m ()
+
 -- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
@@ -87,6 +100,38 @@ data SndQueue = SndQueue
     status :: QueueStatus
   }
   deriving (Eq, Show)
+
+data SMPTransmission = SMPTransmission
+  { trnId :: Int64,
+    queue :: SMPQueue,
+    command :: SMP.Cmd,
+    agentTransmission :: Maybe AgentTransmission
+  }
+
+data AgentTransmission = AgentTransmission
+  { aTrnId :: Int64,
+    connId :: ConnId,
+    aCmd :: ACommand 'Client,
+    internalMsgId :: Maybe InternalId,
+    confirmed :: Bool
+  }
+
+data SMPQueue = RQ RcvQueue | SQ SndQueue
+
+smpServer :: SMPQueue -> SMPServer
+smpServer = \case
+  RQ RcvQueue {server} -> server
+  SQ SndQueue {server} -> server
+
+smpQueueID :: SMPQueue -> QueueId
+smpQueueID = \case
+  RQ RcvQueue {rcvId} -> rcvId
+  SQ SndQueue {sndId} -> sndId
+
+smpQueuePrivateKey :: SMPQueue -> C.SafePrivateKey
+smpQueuePrivateKey = \case
+  RQ RcvQueue {rcvPrivateKey} -> rcvPrivateKey
+  SQ SndQueue {sndPrivateKey} -> sndPrivateKey
 
 -- * Connection types
 
@@ -322,6 +367,8 @@ data StoreError
     SEConfirmationNotFound
   | -- | Message not found
     SEMsgNotFound
+  | -- | invalid SMP transmission
+    SEBadSMPTransmission
   | -- | Currently not used. The intention was to pass current expected queue status in methods,
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.

@@ -250,11 +250,11 @@ testGetAllConnIds =
 testGetRcvConn :: SpecWith SQLiteStore
 testGetRcvConn =
   it "should get connection using rcv queue id and server" $ \store -> do
-    let smpServer = SMPServer "smp.simplex.im" (Just "5223") testKeyHash
+    let server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash
     let recipientId = "1234"
     g <- newTVarIO =<< drgNew
     _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
-    getRcvConn store smpServer recipientId
+    getRcvConn store server recipientId
       `returnsResult` SomeConn SCRcv (RcvConnection cData1 rcvQueue1)
 
 testDeleteRcvConn :: SpecWith SQLiteStore

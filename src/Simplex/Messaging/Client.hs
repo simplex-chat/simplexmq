@@ -88,7 +88,7 @@ data SMPClient = SMPClient
     blockSize :: Int
   }
 
--- | Type synonym for transmission from some SPM server queue.
+-- | Transmission from SPM server queue.
 type SMPServerTransmission = (SMPServer, RecipientId, Command 'Broker)
 
 -- | SMP client configuration.

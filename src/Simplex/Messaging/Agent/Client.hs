@@ -21,6 +21,8 @@ module Simplex.Messaging.Agent.Client
     sendHello,
     secureQueue,
     sendAgentMessage,
+    agentMessageSMPCmd,
+    sendAgentSMPCommand,
     decryptAndVerify,
     verifyMessage,
     sendAck,
@@ -58,7 +60,15 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
+import Simplex.Messaging.Protocol
+  ( Cmd (..),
+    ErrorType (AUTH),
+    MsgBody,
+    QueueId,
+    SParty (..),
+    SenderPublicKey,
+  )
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -76,6 +86,7 @@ data AgentClient = AgentClient
     connMsgDeliveries :: TVar (Map ConnId (Async ())),
     srvMsgQueues :: TVar (Map SMPServer (TQueue PendingMsg)),
     srvMsgDeliveries :: TVar (Map SMPServer (Async ())),
+    serverDeliveries :: TVar (Map SMPServer (Async (), TVar Bool)),
     reconnections :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
@@ -97,10 +108,11 @@ newAgentClient agentEnv = do
   connMsgDeliveries <- newTVar M.empty
   srvMsgQueues <- newTVar M.empty
   srvMsgDeliveries <- newTVar M.empty
+  serverDeliveries <- newTVar M.empty
   reconnections <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgQueues, connMsgDeliveries, srvMsgQueues, srvMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgQueues, connMsgDeliveries, srvMsgQueues, srvMsgDeliveries, serverDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -178,6 +190,7 @@ closeAgentClient c = liftIO $ do
   cancelActions $ reconnections c
   cancelActions $ connMsgDeliveries c
   cancelActions $ srvMsgDeliveries c
+  readTVarIO (serverDeliveries c) >>= mapM_ (uninterruptibleCancel . fst)
 
 closeSMPServerClients :: AgentClient -> IO ()
 closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ closeSMPClient
@@ -347,6 +360,21 @@ sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
   withLogSMP_ c server sndId "SEND <message>" $ \smp -> do
     msg' <- encryptAndSign smp sq msg
     liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg'
+
+-- TODO preparing SMP command should not require server connection
+-- currently it is required because SMP block size is fixed and can be determined by the server
+-- Should be changed so that SMP block size is always set by the agent, and can be different per queue (and persisted with queue record)
+agentMessageSMPCmd :: AgentMonad m => AgentClient -> SndQueue -> ByteString -> m Cmd
+agentMessageSMPCmd c sq@SndQueue {server, sndId} msg =
+  withLogSMP_ c server sndId "enqueue SEND <message>" $ \smp -> do
+    msg' <- encryptAndSign smp sq msg
+    pure . Cmd SSender $ SMP.SEND msg'
+
+sendAgentSMPCommand :: AgentMonad m => AgentClient -> SMPQueue -> Cmd -> m Cmd
+sendAgentSMPCommand c q cmd = do
+  let qId = smpQueueID q
+  withLogSMP_ c (smpServer q) qId "sending SMP command" $ \smp ->
+    liftSMP $ sendSMPCommand smp (Just $ smpQueuePrivateKey q) qId cmd
 
 encryptAndSign :: AgentMonad m => SMPClient -> SndQueue -> ByteString -> m ByteString
 encryptAndSign smp SndQueue {encryptKey, signKey} msg = do

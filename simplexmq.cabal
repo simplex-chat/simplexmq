@@ -29,6 +29,7 @@ extra-source-files:
     migrations/20210101_initial.sql
     migrations/20210624_confirmations.sql
     migrations/20210809_snd_messages.sql
+    migrations/20211113_snd_transmissions.sql
     migrations/README.md
 
 library

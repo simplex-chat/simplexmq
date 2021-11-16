@@ -22,6 +22,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
     withConnection,
     withTransaction,
+    insertedRowId,
     fromTextField_,
   )
 where
@@ -31,12 +32,14 @@ import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 (encode)
 import Data.Char (toLower)
+import Data.Int (Int64)
 import Data.List (find)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, field)
@@ -46,13 +49,14 @@ import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
-import Network.Socket (ServiceName)
+import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (blobFieldParser)
-import Simplex.Messaging.Protocol (MsgBody)
+import Simplex.Messaging.Protocol (MsgBody, RecipientId, RecipientPrivateKey, SenderId, SenderPrivateKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -148,6 +152,9 @@ withTransaction st action = withConnection st $ loop 100 100_000
             threadDelay t
             loop (t * 9 `div` 8) (tLim - t) db
           else E.throwIO e
+
+insertedRowId :: DB.Connection -> IO Int64
+insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> m ConnId
@@ -409,7 +416,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (SndQueue, MsgBody)
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
-      sq <- ExceptT $ sndQueue <$> getSndQueueByConnAlias_ db connId
+      sq <- ExceptT $ maybe (Left SEConnNotFound) Right <$> getSndQueueByConnAlias_ db connId
       msgBody <-
         ExceptT $
           sndMsgData
@@ -427,8 +434,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       sndMsgData :: [Only MsgBody] -> Either StoreError MsgBody
       sndMsgData [Only msgBody] = Right msgBody
       sndMsgData _ = Left SEMsgNotFound
-      sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
-      sndQueue = maybe (Left SEConnNotFound) Right
 
   getPendingMsgs :: SQLiteStore -> ConnId -> m [PendingMsg]
   getPendingMsgs st connId =
@@ -457,7 +462,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   updateRcvMsgAck :: SQLiteStore -> ConnId -> InternalId -> m ()
   updateRcvMsgAck st connId msgId =
-    liftIO . withTransaction st $ \db -> do
+    liftIO . withTransaction st $ \db ->
       DB.execute
         db
         [sql|
@@ -466,6 +471,99 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE conn_alias = ? AND internal_id = ?
         |]
         (AcknowledgedToBroker, connId, msgId)
+
+  createAgentTransmission :: SQLiteStore -> ConnId -> ACommand 'Client -> Maybe InternalId -> m Int64
+  createAgentTransmission st connId aCmd msgId_ =
+    liftIO . withTransaction st $ \db -> do
+      DB.execute
+        db
+        [sql|
+          insert into agent_transmissions
+            (conn_alias, agent_command, internal_msg_id) values (?, ?, ?)
+        |]
+        (connId, aCmd, msgId_)
+      insertedRowId db
+
+  createSMPTransmission :: SQLiteStore -> SMPQueue -> SMP.Cmd -> Maybe Int64 -> m Int64
+  createSMPTransmission st smpQueue smpCommand agentTrnId_ =
+    liftIO . withTransaction st $ \db -> do
+      DB.execute
+        db
+        [sql|
+          insert into smp_transmissions
+            (host, port, rcv_id, snd_id, smp_command, agent_trn_id) values (?, ?, ?, ?, ?, ?)
+        |]
+        (host, port, rcvQId, sndQId, smpCommand, agentTrnId_)
+      insertedRowId db
+    where
+      SMPServer {host, port} = smpServer smpQueue
+      (rcvQId, sndQId) = case smpQueue of
+        RQ RcvQueue {rcvId} -> (Just rcvId, Nothing)
+        SQ SndQueue {sndId} -> (Nothing, Just sndId)
+
+  getNextSMPTransmission :: SQLiteStore -> SMPServer -> m (Maybe SMPTransmission)
+  getNextSMPTransmission st srv@SMPServer {host, port} =
+    liftIOEither . withTransaction st $ \db -> runExceptT $ do
+      liftIO (getTransmission db) >>= getSMPQueue db >>= \case
+        Nothing -> pure Nothing
+        Just (trnId, queue, command, agentTrnId_) -> do
+          agentTransmission <- traverse (getAgentTransmission db) agentTrnId_
+          pure $ Just SMPTransmission {trnId, queue, command, agentTransmission}
+    where
+      getTransmission :: DB.Connection -> IO [(Int64, Maybe RecipientId, Maybe SenderId, SMP.Cmd, Maybe Int64)]
+      getTransmission db =
+        DB.query
+          db
+          [sql|
+            select s.smp_trn_id, s.rcv_id, s.snd_id, s.smp_command, a.agent_trn_id
+            from smp_transmissions s
+            left join agent_transmissions a using (agent_trn_id)
+            where s.host = ? and s.port = ?
+            limit 1
+          |]
+          (host, port)
+      getSMPQueue ::
+        DB.Connection ->
+        [(Int64, Maybe RecipientId, Maybe SenderId, SMP.Cmd, Maybe Int64)] ->
+        ExceptT StoreError IO (Maybe (Int64, SMPQueue, SMP.Cmd, Maybe Int64))
+      getSMPQueue _ [] = pure Nothing
+      getSMPQueue db ((trnId, rId_, sId_, cmd, agentTrnId_) : _) =
+        Just . (trnId,,cmd,agentTrnId_)
+          <$> ( case (rId_, sId_) of
+                  (Just rId, Nothing) -> getQ RQ $ getRcvQueue_ db srv rId
+                  (Nothing, Just sId) -> getQ SQ $ getSndQueue_ db srv sId
+                  _ -> throwE SEBadSMPTransmission
+              )
+        where
+          getQ q f = liftIO f >>= maybe (throwE SEBadSMPTransmission) (pure . q)
+      getAgentTransmission :: DB.Connection -> Int64 -> ExceptT StoreError IO AgentTransmission
+      getAgentTransmission db aTrnId =
+        agentTransmission
+          =<< liftIO
+            ( DB.query
+                db
+                [sql|
+                  SELECT conn_alias, agent_command, internal_msg_id, status
+                  FROM agent_transmissions
+                  WHERE agent_trn_id = ?
+                |]
+                (Only aTrnId)
+            )
+        where
+          agentTransmission ::
+            [(ConnId, ACommand 'Client, Maybe InternalId, Int)] -> ExceptT StoreError IO AgentTransmission
+          agentTransmission [] = throwE SEBadSMPTransmission
+          agentTransmission ((connId, aCmd, internalMsgId, status) : _) =
+            pure AgentTransmission {aTrnId, connId, aCmd, internalMsgId, confirmed = status > 0}
+
+  getPendingSMPServers :: SQLiteStore -> m [SMPServer]
+  getPendingSMPServers _st = throwError SENotImplemented
+
+  deleteSMPTransmission :: SQLiteStore -> Int64 -> m ()
+  deleteSMPTransmission _st _msgId_ = throwError SENotImplemented
+
+  deleteMsgTransmissions :: SQLiteStore -> ConnId -> InternalId -> m ()
+  deleteMsgTransmissions _st _connId _msgId = throwError SENotImplemented
 
 -- * Auxiliary helpers
 
@@ -504,6 +602,16 @@ instance FromField MsgIntegrity where fromField = blobFieldParser msgIntegrityP
 instance ToField SMPQueueInfo where toField = toField . serializeSmpQueueInfo
 
 instance FromField SMPQueueInfo where fromField = blobFieldParser smpQueueInfoP
+
+instance ToField (ACommand p) where toField = toField . serializeCommand
+
+instance FromField (ACommand 'Client) where fromField = blobFieldParser $ partyCommandP SClient
+
+instance FromField (ACommand 'Agent) where fromField = blobFieldParser $ partyCommandP SAgent
+
+instance ToField SMP.Cmd where toField = toField . SMP.serializeCommand
+
+instance FromField SMP.Cmd where fromField = blobFieldParser SMP.commandP
 
 fromTextField_ :: (E.Typeable a) => (Text -> Maybe a) -> Field -> Ok a
 fromTextField_ fromText = \case
@@ -646,7 +754,7 @@ getConnData_ dbConn connId' =
 
 getRcvQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
 getRcvQueueByConnAlias_ dbConn connId =
-  rcvQueue
+  fmap rcvQueue . listToMaybe
     <$> DB.query
       dbConn
       [sql|
@@ -657,15 +765,29 @@ getRcvQueueByConnAlias_ dbConn connId =
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
-  where
-    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, sndId, decryptKey, verifyKey, status)] =
-      let srv = SMPServer host (deserializePort_ port) keyHash
-       in Just $ RcvQueue srv rcvId rcvPrivateKey sndId decryptKey verifyKey status
-    rcvQueue _ = Nothing
+
+getRcvQueue_ :: DB.Connection -> SMPServer -> RecipientId -> IO (Maybe RcvQueue)
+getRcvQueue_ db SMPServer {host, port} rId =
+  fmap rcvQueue . listToMaybe
+    <$> DB.query
+      db
+      [sql|
+        SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key,
+          q.snd_id, q.decrypt_key, q.verify_key, q.status
+        FROM rcv_queues q
+        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+        WHERE host = ? AND port = ? AND rcv_id = ?
+      |]
+      (host, port, rId)
+
+rcvQueue :: (Maybe C.KeyHash, HostName, ServiceName, RecipientId, RecipientPrivateKey, Maybe SenderId, DecryptionKey, Maybe VerificationKey, QueueStatus) -> RcvQueue
+rcvQueue (keyHash, host, port, rcvId, rcvPrivateKey, sndId, decryptKey, verifyKey, status) =
+  let server = SMPServer host (deserializePort_ port) keyHash
+   in RcvQueue {server, rcvId, rcvPrivateKey, sndId, decryptKey, verifyKey, status}
 
 getSndQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnAlias_ dbConn connId =
-  sndQueue
+  fmap sndQueue . listToMaybe
     <$> DB.query
       dbConn
       [sql|
@@ -675,11 +797,24 @@ getSndQueueByConnAlias_ dbConn connId =
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
-  where
-    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] =
-      let srv = SMPServer host (deserializePort_ port) keyHash
-       in Just $ SndQueue srv sndId sndPrivateKey encryptKey signKey status
-    sndQueue _ = Nothing
+
+getSndQueue_ :: DB.Connection -> SMPServer -> SenderId -> IO (Maybe SndQueue)
+getSndQueue_ dbConn SMPServer {host, port} sId =
+  fmap sndQueue . listToMaybe
+    <$> DB.query
+      dbConn
+      [sql|
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.encrypt_key, q.sign_key, q.status
+        FROM snd_queues q
+        INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+        WHERE host = ? AND port = ? AND snd_id = ?
+      |]
+      (host, port, sId)
+
+sndQueue :: (Maybe C.KeyHash, HostName, ServiceName, SenderId, SenderPrivateKey, EncryptionKey, SignatureKey, QueueStatus) -> SndQueue
+sndQueue (keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status) =
+  let server = SMPServer host (deserializePort_ port) keyHash
+   in SndQueue {server, sndId, sndPrivateKey, encryptKey, signKey, status}
 
 -- * upgradeRcvConnToDuplex helpers
 

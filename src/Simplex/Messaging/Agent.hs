@@ -52,7 +52,7 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
+import Control.Concurrent.STM (retry, stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -63,6 +63,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -80,10 +81,10 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (MsgBody, SenderPublicKey)
+import Simplex.Messaging.Protocol (Cmd (..), MsgBody, SParty (..), SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
-import Simplex.Messaging.Util (bshow, tryError)
+import Simplex.Messaging.Util (bshow, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (Async, async, race_)
 import qualified UnliftIO.Exception as E
@@ -344,17 +345,25 @@ sendMessage' c connId msg =
     _ -> throwError $ CONN SIMPLEX
   where
     enqueueMessage :: SndQueue -> m AgentMsgId
-    enqueueMessage SndQueue {server} = do
-      msgId <- storeSentMsg
+    enqueueMessage sq@SndQueue {server} = do
+      (msgId, msgBody) <- storeSentMsg
+      -- new logic
+      -- trnId <- withStore $ \st -> createAgentTransmission st connId (SEND msg) (Just msgId)
+      -- cmd <- agentMessageSMPCmd c sq msgBody
+      -- void $ withStore $ \st -> createSMPTransmission st (SQ sq) cmd (Just trnId)
+      -- runServerDelivery c server
+
+      -- old logic
       wasDelivering <- resumeMsgDelivery c connId server
       pending <-
         if wasDelivering
           then pure [PendingMsg {connId, msgId}]
           else withStore (`getPendingMsgs` connId)
       queuePendingMsgs c connId pending
+      -- common
       pure $ unId msgId
       where
-        storeSentMsg :: m InternalId
+        storeSentMsg :: m (InternalId, MsgBody)
         storeSentMsg = do
           internalTs <- liftIO getCurrentTime
           withStore $ \st -> do
@@ -370,7 +379,48 @@ sendMessage' c connId msg =
                 internalHash = C.sha256Hash msgBody
                 msgData = SndMsgData {..}
             createSndMsg st connId msgData
-            pure internalId
+            pure (internalId, msgBody)
+
+runServerDelivery :: forall m. AgentMonad m => AgentClient -> SMPServer -> m ()
+runServerDelivery c@AgentClient {serverDeliveries, subQ} srv =
+  (M.lookup srv <$> readTVarIO serverDeliveries) >>= \case
+    Just (_, sem) -> atomically $ writeTVar sem True
+    Nothing -> do
+      sem <- newTVarIO True
+      a <- async $ serverDeliveryLoop sem
+      atomically . modifyTVar serverDeliveries $ M.insert srv (a, sem)
+  where
+    serverDeliveryLoop :: TVar Bool -> m ()
+    serverDeliveryLoop sem = do
+      ri <- asks $ reconnectInterval . config
+      forever $ do
+        atomically $ unlessM (readTVar sem) retry
+        withStore (`getNextSMPTransmission` srv) >>= \case
+          Nothing -> atomically $ writeTVar sem False
+          Just SMPTransmission {trnId, queue, command, agentTransmission = agentTrn} ->
+            withRetryInterval ri $ \loop ->
+              tryError (sendAgentSMPCommand c queue command) >>= \case
+                Left e -> case command of
+                  Cmd SSender SMP.SEND {} -> case e of
+                    SMP SMP.QUOTA -> loop
+                    SMP {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
+                    CMD {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
+                    _ -> loop
+                  _ -> case e of
+                    -- TODO
+                    SMP {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
+                    CMD {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
+                    _ -> loop
+                Right cmd -> do
+                  -- notify connId $ SENT mId
+                  -- withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
+                  pure ()
+    -- notify of the result
+
+    finalize :: Int64 -> Maybe AgentTransmission -> ACommand 'Agent -> m ()
+    finalize trnId agentTrn cmd = do
+      -- atomically $ writeTBQueue subQ ("", connId, cmd)
+      pure ()
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> SMPServer -> m Bool
 resumeMsgDelivery c connId srv = do
@@ -624,14 +674,14 @@ notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
 newSndQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, VerificationKey)
-newSndQueue (SMPQueueInfo smpServer senderId encryptKey) = do
+newSndQueue (SMPQueueInfo server sndId encryptKey) = do
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size
   (verifyKey, signKey) <- liftIO $ C.generateKeyPair size
   let sndQueue =
         SndQueue
-          { server = smpServer,
-            sndId = senderId,
+          { server,
+            sndId,
             sndPrivateKey,
             encryptKey,
             signKey,

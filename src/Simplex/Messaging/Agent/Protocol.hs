@@ -30,6 +30,7 @@ module Simplex.Messaging.Agent.Protocol
   ( -- * SMP agent protocol types
     ConnInfo,
     ACommand (..),
+    ACmd (..),
     AParty (..),
     SAParty (..),
     MsgHash,
@@ -70,6 +71,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeSmpQueueInfo,
     serializeAgentError,
     commandP,
+    partyCommandP,
     parseSMPMessage,
     smpServerP,
     smpQueueInfoP,
@@ -496,6 +498,14 @@ commandP =
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
+partyCommandP :: SAParty p -> Parser (ACommand p)
+partyCommandP party = fromParty party "bad command party" <$?> commandP
+
+fromParty :: SAParty p -> e -> ACmd -> Either e (ACommand p)
+fromParty party err (ACmd (p :: p1) cmd) = case testEquality party p of
+  Just Refl -> Right cmd
+  _ -> Left err
+
 -- | Message integrity validation result parser.
 msgIntegrityP :: Parser MsgIntegrity
 msgIntegrityP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
@@ -605,14 +615,9 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
     tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
     tParseLoadBody t@(corrId, connId, command) = do
-      let cmd = parseCommand command >>= fromParty >>= tConnId t
+      let cmd = parseCommand command >>= fromParty party (CMD PROHIBITED) >>= tConnId t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
       return (corrId, connId, fullCmd)
-
-    fromParty :: ACmd -> Either AgentErrorType (ACommand p)
-    fromParty (ACmd (p :: p1) cmd) = case testEquality party p of
-      Just Refl -> Right cmd
-      _ -> Left $ CMD PROHIBITED
 
     tConnId :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnId (_, connId, _) cmd = case cmd of
