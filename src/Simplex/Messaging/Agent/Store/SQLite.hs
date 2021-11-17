@@ -478,8 +478,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       DB.execute
         db
         [sql|
-          insert into agent_transmissions
-            (conn_alias, agent_command, internal_msg_id) values (?, ?, ?)
+          INSERT INTO agent_transmissions
+            (conn_alias, agent_command, internal_msg_id) VALUES (?, ?, ?)
         |]
         (connId, aCmd, msgId_)
       insertedRowId db
@@ -490,8 +490,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       DB.execute
         db
         [sql|
-          insert into smp_transmissions
-            (host, port, rcv_id, snd_id, smp_command, agent_trn_id) values (?, ?, ?, ?, ?, ?)
+          INSERT INTO smp_transmissions
+            (host, port, rcv_id, snd_id, smp_command, agent_trn_id) VALUES (?, ?, ?, ?, ?, ?)
         |]
         (host, port, rcvQId, sndQId, smpCommand, agentTrnId_)
       insertedRowId db
@@ -503,39 +503,41 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getNextSMPTransmission :: SQLiteStore -> SMPServer -> m (Maybe SMPTransmission)
   getNextSMPTransmission st srv@SMPServer {host, port} =
-    liftIOEither . withTransaction st $ \db -> runExceptT $ do
-      liftIO (getTransmission db) >>= getSMPQueue db >>= \case
-        Nothing -> pure Nothing
-        Just (trnId, queue, command, agentTrnId_) -> do
-          agentTransmission <- traverse (getAgentTransmission db) agentTrnId_
-          pure $ Just SMPTransmission {trnId, queue, command, agentTransmission}
+    liftIOEither . withTransaction st $ \db ->
+      runExceptT $
+        liftIO (getTransmissionRec db)
+          >>= traverse (getSMPQueue db >=> getTransmission db) . listToMaybe
     where
-      getTransmission :: DB.Connection -> IO [(Int64, Maybe RecipientId, Maybe SenderId, SMP.Cmd, Maybe Int64)]
-      getTransmission db =
+      getTransmissionRec :: DB.Connection -> IO [(Int64, Maybe RecipientId, Maybe SenderId, SMP.Cmd, Maybe Int64)]
+      getTransmissionRec db =
         DB.query
           db
           [sql|
-            select s.smp_trn_id, s.rcv_id, s.snd_id, s.smp_command, a.agent_trn_id
-            from smp_transmissions s
-            left join agent_transmissions a using (agent_trn_id)
-            where s.host = ? and s.port = ?
-            limit 1
+            SELECT s.smp_trn_id, s.rcv_id, s.snd_id, s.smp_command, a.agent_trn_id
+            FORM smp_transmissions s
+            LEFT JOIN agent_transmissions a USING (agent_trn_id)
+            WHERE sent != 0 AND s.host = ? AND s.port = ?
+            LIMIT 1
           |]
           (host, port)
       getSMPQueue ::
         DB.Connection ->
-        [(Int64, Maybe RecipientId, Maybe SenderId, SMP.Cmd, Maybe Int64)] ->
-        ExceptT StoreError IO (Maybe (Int64, SMPQueue, SMP.Cmd, Maybe Int64))
-      getSMPQueue _ [] = pure Nothing
-      getSMPQueue db ((trnId, rId_, sId_, cmd, agentTrnId_) : _) =
-        Just . (trnId,,cmd,agentTrnId_)
-          <$> ( case (rId_, sId_) of
-                  (Just rId, Nothing) -> getQ RQ $ getRcvQueue_ db srv rId
-                  (Nothing, Just sId) -> getQ SQ $ getSndQueue_ db srv sId
-                  _ -> throwE SEBadSMPTransmission
-              )
+        (Int64, Maybe RecipientId, Maybe SenderId, SMP.Cmd, Maybe Int64) ->
+        ExceptT StoreError IO (Int64, SMPQueue, SMP.Cmd, Maybe Int64)
+      getSMPQueue db (trnId, rId_, sId_, cmd, agentTrnId_) =
+        (trnId,,cmd,agentTrnId_) <$> getQueue (rId_, sId_)
         where
+          getQueue :: (Maybe RecipientId, Maybe SenderId) -> ExceptT StoreError IO SMPQueue
+          getQueue = \case
+            (Just rId, Nothing) -> getQ RQ $ getRcvQueue_ db srv rId
+            (Nothing, Just sId) -> getQ SQ $ getSndQueue_ db srv sId
+            _ -> throwE SEBadSMPTransmission
+          getQ :: (a -> SMPQueue) -> IO (Maybe a) -> ExceptT StoreError IO SMPQueue
           getQ q f = liftIO f >>= maybe (throwE SEBadSMPTransmission) (pure . q)
+      getTransmission :: DB.Connection -> (Int64, SMPQueue, SMP.Cmd, Maybe Int64) -> ExceptT StoreError IO SMPTransmission
+      getTransmission db (trnId, queue, command, agentTrnId_) = do
+        agentTransmission <- traverse (getAgentTransmission db) agentTrnId_
+        pure SMPTransmission {trnId, queue, command, agentTransmission}
       getAgentTransmission :: DB.Connection -> Int64 -> ExceptT StoreError IO AgentTransmission
       getAgentTransmission db aTrnId =
         agentTransmission

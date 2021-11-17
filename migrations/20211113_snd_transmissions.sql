@@ -17,6 +17,7 @@ CREATE TABLE smp_transmissions (
   rcv_id           BLOB,
   snd_id           BLOB,
   smp_command      BLOB NOT NULL,
+  sent             INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (host, port) REFERENCES servers,
   FOREIGN KEY (host, port, rcv_id) REFERENCES rcv_queues ON DELETE CASCADE,
   FOREIGN KEY (host, port, snd_id) REFERENCES snd_queues ON DELETE CASCADE
