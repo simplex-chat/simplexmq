@@ -349,6 +349,7 @@ sendMessage' c connId msg =
       (msgId, msgBody) <- storeSentMsg
       -- new logic
       -- trnId <- withStore $ \st -> createAgentTransmission st connId (SEND msg) (Just msgId)
+      -- -- TODO make it one transaction once block size is a queue property, and serializing command does not require a connection
       -- cmd <- agentMessageSMPCmd c sq msgBody
       -- void $ withStore $ \st -> createSMPTransmission st (SQ sq) cmd (Just trnId)
       -- runServerDelivery c server
@@ -397,24 +398,36 @@ runServerDelivery c@AgentClient {serverDeliveries, subQ} srv =
         atomically $ unlessM (readTVar sem) retry
         withStore (`getNextSMPTransmission` srv) >>= \case
           Nothing -> atomically $ writeTVar sem False
-          Just SMPTransmission {trnId, queue, command, agentTransmission = agentTrn} ->
+          Just SMPTransmission {trnId, queue, command, agentTransmission} ->
             withRetryInterval ri $ \loop ->
-              tryError (sendAgentSMPCommand c queue command) >>= \case
-                Left e -> case command of
-                  Cmd SSender SMP.SEND {} -> case e of
-                    SMP SMP.QUOTA -> loop
-                    SMP {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
-                    CMD {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
-                    _ -> loop
-                  _ -> case e of
-                    -- TODO
-                    SMP {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
-                    CMD {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
-                    _ -> loop
-                Right cmd -> do
-                  -- notify connId $ SENT mId
-                  -- withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
-                  pure ()
+              tryError (sendAgentSMPCommand c queue command) >>= \res ->
+                case (command, agentTransmission) of
+                  ( Cmd SSender SMP.SEND {},
+                    Just AgentTransmission {aTrnId, connId, aCmd = SEND {}, internalMsgId = Just msgId, confirmed = False}
+                    ) ->
+                      case res of
+                        Left e -> pure ()
+                        Right cmd -> pure ()
+                  _ -> liftIO $ do
+                    putStrLn "unexpected commands"
+                    print command
+    -- print agentTransmission
+
+    -- case command of
+    --   Cmd SSender SMP.SEND {} -> case e of
+    --     SMP SMP.QUOTA -> loop
+    --     SMP {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
+    --     CMD {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
+    --     _ -> loop
+    --   _ -> case e of
+    --     -- TODO
+    --     SMP {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
+    --     CMD {} -> finalize trnId agentTrn OK -- -- $ MERR mId e
+    --     _ -> loop
+    -- Right cmd -> do
+    --   -- notify connId $ SENT mId
+    --   -- withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
+    --   pure ()
     -- notify of the result
 
     finalize :: Int64 -> Maybe AgentTransmission -> ACommand 'Agent -> m ()
