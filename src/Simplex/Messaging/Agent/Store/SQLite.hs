@@ -430,10 +430,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
       sndQueue = maybe (Left SEConnNotFound) Right
 
-  getPendingMsgs :: SQLiteStore -> ConnId -> m [PendingMsg]
+  getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
   getPendingMsgs st connId =
     liftIO . withTransaction st $ \db ->
-      map (PendingMsg connId . fromOnly)
+      map fromOnly
         <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ? AND snd_status = ?" (connId, SndMsgCreated)
 
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
