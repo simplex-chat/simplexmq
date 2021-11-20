@@ -45,18 +45,20 @@ serverCredential =
 serverCert :: ByteString
 serverCert =
   "-----BEGIN CERTIFICATE-----\n\
-  \MIH8MIGvAhR5YwatGwtryGk5fVrbJrvXSFH9LzAFBgMrZXAwITELMAkGA1UEBhMC\n\
-  \REUxEjAQBgNVBAMMCWxvY2FsaG9zdDAeFw0yMTExMjAwODU1MDdaFw0yMzEwMjEw\n\
-  \ODU1MDdaMCExCzAJBgNVBAYTAkRFMRIwEAYDVQQDDAlsb2NhbGhvc3QwKjAFBgMr\n\
-  \ZXADIQAgl0ebleZp6babgxl4WQvnVEmrqYpgjjMfBRHBOptSWDAFBgMrZXADQQDu\n\
-  \ZYSHse8MtlMxtCQ4g/NoYVWwNvqi9WvMo7+jznG5afyT10f97kryDmXl4JtDATvQ\n\
-  \BVo+tM3Xu3AY3ZSKB2EE\n\
+  \MIIBSTCBygIUG8XHI4lGld/8Tb824iWF390hsOwwBQYDK2VxMCExCzAJBgNVBAYT\n\
+  \AkRFMRIwEAYDVQQDDAlsb2NhbGhvc3QwIBcNMjExMTIwMTAwMTU5WhgPOTk5OTEy\n\
+  \MzExMDAxNTlaMCExCzAJBgNVBAYTAkRFMRIwEAYDVQQDDAlsb2NhbGhvc3QwQzAF\n\
+  \BgMrZXEDOgDVgTUc+4Ur9or2N0IKjNgBx649yzAoM5cJKE90OklUKYKdnk4V7kap\n\
+  \oHX/d/OUgCdCYa6geMj69QAwBQYDK2VxA3MAlv8lp6xm+KgsGpE+5QLuNT0xdf/i\n\
+  \jjJfqLzXzuBwE0+5HwxnrOZ1xMPs30aubiChbpJaJx2xPXkAmnR5Z4p7HcmnPm1P\n\
+  \B1SKVlxfqTGWTsJI8E6rNjSsoTZR48DuDZuQthr4SWdcz+jkdFmprTrWHgMA\n\
   \-----END CERTIFICATE-----"
 
 serverPrivateKey :: ByteString
 serverPrivateKey =
   "-----BEGIN PRIVATE KEY-----\n\
-  \MC4CAQAwBQYDK2VwBCIEIIvXXpFZEjngVvS8dfoyZ9P8NOD7qDWOn3MgSzkWnib7\n\
+  \MEcCAQAwBQYDK2VxBDsEOWbzhmByxZ0z656MQV0Vtbkv0VfMpwpvdal8W4Vu9gXu\n\
+  \uT7CCDxjBTQQZ8yPnuUNY75jwlyEwbkM1g==\n\
   \-----END PRIVATE KEY-----"
 
 serverParams :: T.ServerParams
@@ -81,12 +83,9 @@ supportedParameters =
   def
     { T.supportedVersions = [T.TLS13],
       T.supportedCiphers = [TE.cipher_TLS13_AES256GCM_SHA384],
-      T.supportedHashSignatures =
-        [ (T.HashIntrinsic, T.SignatureEd448),
-          (T.HashIntrinsic, T.SignatureEd25519)
-        ],
+      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448)],
       T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448, T.X25519]
+      T.supportedGroups = [T.X448]
     }
 
 instance Transport TLS where
