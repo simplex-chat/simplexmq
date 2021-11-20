@@ -21,9 +21,10 @@ import Simplex.Messaging.Transport (Transport (..), TransportError (..))
 
 data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
 
-connect :: T.TLSParams p => p -> Socket -> IO TLS
-connect params sock = E.bracketOnError (T.contextNew sock params) closeTLS $ \tlsContext -> do
+connect :: T.TLSParams p => String -> p -> Socket -> IO TLS
+connect party params sock = E.bracketOnError (T.contextNew sock params) closeTLS $ \tlsContext -> do
   T.handshake tlsContext
+    `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
   buffer <- newTVarIO ""
   getLock <- newTMVarIO ()
   pure TLS {tlsContext, buffer, getLock}
@@ -90,8 +91,8 @@ supportedParameters =
 
 instance Transport TLS where
   transportName _ = "TLS 1.3"
-  getServerConnection c = connect serverParams c `E.catch` \(e :: E.SomeException) -> putStrLn ("server exception: " <> show e) >> E.throwIO e
-  getClientConnection c = connect clientParams c `E.catch` \(e :: E.SomeException) -> putStrLn ("client exception: " <> show e) >> E.throwIO e
+  getServerConnection = connect "server" serverParams
+  getClientConnection = connect "client" clientParams
   closeConnection = closeTLS . tlsContext
 
   cGet :: TLS -> Int -> IO ByteString
