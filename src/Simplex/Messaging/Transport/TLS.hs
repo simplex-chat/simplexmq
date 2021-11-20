@@ -96,20 +96,20 @@ instance Transport TLS where
 
   cGet :: TLS -> Int -> IO ByteString
   cGet TLS {tlsContext, buffer, getLock} n =
-    withGetLock $ do
-      b <- readChunks =<< readTVarIO buffer
-      let (s, b') = B.splitAt n b
-      atomically $ writeTVar buffer b'
-      pure s
+    E.bracket_
+      (atomically $ takeTMVar getLock)
+      (atomically $ putTMVar getLock ())
+      $ do
+        b <- readChunks =<< readTVarIO buffer
+        let (s, b') = B.splitAt n b
+        atomically $ writeTVar buffer b'
+        pure s
     where
-      withGetLock =
-        E.bracket_
-          (atomically $ takeTMVar getLock)
-          (atomically $ putTMVar getLock ())
+      readChunks :: ByteString -> IO ByteString
       readChunks b
         | B.length b >= n = pure b
-        | otherwise = readChunks . (b <>) =<< (T.recvData tlsContext `E.catch` handle)
-      handle = \case
+        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
+      handleEOF = \case
         T.Error_EOF -> E.throwIO TEBadBlock
         e -> E.throwIO e
 
