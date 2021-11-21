@@ -654,7 +654,7 @@ The transport protocol should provide the following:
 - server authentication (by matching server certificate hash with `serverIdentity`),
 - forward secrecy (by encrypting the traffic using ephemeral keys agreed during transport handshake),
 - integrity (preventing data modification by the attacker without detection),
-- unique channel binding to include in the signed part of SMP transmissions.
+- unique channel binding (`sessionIdentifier`) to include in the signed part of SMP transmissions.
 
 By default, the client and server communicate using [TLS 1.3 protocol][13] restricted to:
 - TLS_AES_256_GCM_SHA384 cypher suite,
