@@ -1,0 +1,11 @@
+Scheme name:  smp
+
+Status: Provisional
+
+Applications/protocols that use this scheme name: SimpleX Messaging Protocol
+
+Contact: Evgeny Poberezkin <ep@simplex.chat>
+
+Change controller: Evgeny Poberezkin <ep@simplex.chat>
+
+References: https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md

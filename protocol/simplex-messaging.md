@@ -78,23 +78,18 @@ Creating and using the queue requires sending commands to the SMP server from th
 
 ## Out-of-band messages
 
-The out-of-band message with the queue information is sent via some trusted alternative channel from the recipient to the sender. This message is used to share the encryption (a.k.a. "public") key that the sender will use to encrypt the messages (to be decrypted by the recipient), sender queue ID, server hostname and any other information necessary to establish secure encrypted connection with SMP server (see [Appendix A](#appendix-a) for SMP transport protocol).
+The out-of-band message with the queue information is sent via some trusted alternative channel from the recipient to the sender. This message is used to share one or several queue URIs that parties can use to establish the initial connection, the encryption scheme and, it can include the public key(s) for end-to-end encryption. The SMP queue URL should include queue hostname, an optional port, sender queue ID and server identity to establish secure connection with SMP server (see [Appendix A](#appendix-a) for SMP transport protocol). The syntax of out-of-band message is defined by application-level protocols.
 
-The [ABNF][8] syntax of the message is:
+The [ABNF][8] syntax of the queue URI is:
 
 ```abnf
-queueInfo = %s"smp::" smpServer "::" queueId "::" encryptionKey
-smpServer = srvHost [":" port] "#" serverIdentity
+queueURI = %s"smp://" smpServer "/" queueId
+smpServer = serverIdentity "@" srvHost [":" port] 
 srvHost = <hostname> ; RFC1123, RFC5891
 port = 1*DIGIT
-serverIdentity = encoded
-queueId = encoded
-encryptionKey = encryptionScheme ":" x509encoded ; the recipient's RSA public key for sender to encrypt messages
-encryptionScheme = %s"rsa" ; end-to-end encryption and key exchange protocols,
-                           ; the current hybrid encryption scheme (RSA-OAEP/AES-256-GCM-SHA256)
-                           ; will be replaced with double ratchet protocol and DH key exchange.
-x509encoded = <base64 X509 key encoding>
-encoded = <base64 encoded>
+serverIdentity = base64url
+queueId = base64url
+base64url = <base64url encoded binary> ; RFC4648, section 5
 ```
 
 `hostname` can be IP address or domain name, as defined in RFC 1123, section 2.1.
