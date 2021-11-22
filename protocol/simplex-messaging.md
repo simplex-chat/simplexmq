@@ -101,7 +101,7 @@ encoded = <base64 encoded>
 
 `port` is optional, the default TCP port for SMP protocol is 5223.
 
-`serverIdentity` is a required hash of the server certificate SPKI (without line breaks) used by the client to validate server certificate during transport handshake (see [Appendix A](#appendix-a)).
+`serverIdentity` is a required hash of the server certificate SPKI block (without line breaks, header and footer) used by the client to validate server certificate during transport handshake (see [Appendix A](#appendix-a)).
 
 Encryption keys are encoded using [X509][11] specification.
 
@@ -645,10 +645,12 @@ ok = %s"OK"
 
 Both the recipient and the sender can use TCP or some other, possibly higher level, transport protocol to communicate with the server. The default TCP port for SMP server is 5223.
 
-For scenarios when meta-data privacy is critical, it is recommended that:
-- clients and servers communicating over Tor network,
+For scenarios when meta-data privacy is critical, it is recommended that clients:
+- communicating over Tor network,
 - establish a separate connection for each SMP queue,
 - send noise traffic (using PING command).
+
+In addition to that, the servers can be deployed as Tor onion services.
 
 The transport protocol should provide the following:
 - server authentication (by matching server certificate hash with `serverIdentity`),
