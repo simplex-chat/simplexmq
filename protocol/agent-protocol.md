@@ -24,7 +24,7 @@
     - [END notification](#end-notification)
     - [OFF command](#off-command)
     - [DEL command](#del-command)
-- [Connection invitation](#connection-invitation)
+- [Connection request](#connection-request)
 
 ## Abstract
 
@@ -32,28 +32,27 @@ The purpose of SMP agent protocol is to define the syntax and the semantics of c
 
 It provides:
 - convenient protocol to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the protocol.
-- management of E2E encryption between SMP agents, generating ephemeral RSA keys for each connection.
-- SMP command authentication on SMP servers, generating ephemeral RSA keys for each SMP queue.
-- TCP transport handshake and encryption with SMP servers.
+- management of E2E encryption between SMP agents, generating ephemeral asymmetric keys for each connection.
+- SMP command authentication on SMP servers, generating ephemeral keys for each SMP queue.
+- TCP/TLS transport handshake with SMP servers.
 - validation of message integrity.
 
-SMP agent protocols provides no encryption or any security on the client side - it is assumed that the agent is executed in the trusted and secure environment.
+SMP agent protocol provides no encryption or security on the client side - it is assumed that the agent is executed in the trusted and secure environment, in one of three ways:
+- via TCP network using secure connection.
+- via local port (when the agent runs on the same device as a separate process).
+- via agent library, when the agent logic is included directly into the client application.
 
-The future versions of this protocol could provide:
-- managing redundant SMP queues with more than 1 queue in each direction.
-- managing simple symmetric groups as a foundation for chat groups and device synchronization.
-- agent cluster - synchronizing states of multiple agents.
-- secure "synchronous" streams with symmetric message encryption and connection-level authentication (requires extending [SMP protocol](./simplex-messaging.md)) - it can be used, e.g., for file transfers.
+The last option is the most secure, as it reduces the number of attack vectors in comparison with other options. [SimpleX Chat for terminal](https://github.com/simplex-chat/simplex-chat) uses this approach.
 
 ## SMP agent
 
-SMP agent is a client-side process or library that communicates via SMP servers using [simplex messaging protocol (SMP)](./simplex-messaging.md) with other SMP agents according to the commands received from its users. This protocol is a middle layer in SMP protocols stack (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
+SMP agent communicates via SMP servers using [simplex messaging protocol (SMP)](./simplex-messaging.md) with other SMP agents according to the commands received from its users. This protocol is a middle layer in SimpleX protocols (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
 
-The agent must have a persistent storage to manage the states of known connections and of the client-side information of two SMP queues that each connection consists of, and also the buffer of the most recent messages. The number of the messages that should be stored is implementation specific, depending on the error management approach that the agent implements; at the very least the agent must store the hash and id of the last received message.
+The agent must have a persistent storage to manage the states of known connections and of the client-side information of SMP queues that each connection consists of, and also the buffer of the most recent sent and received messages. The number of the messages that should be stored is implementation specific, depending on the error management approach that the agent implements; at the very least the agent must store the hash and id of the last received and sent message.
 
 ## SMP servers management
 
-SMP agent protocol commands do not contain SMP servers that the agent will use to establish the connections between their users. The servers are part of the agent configuration and can be dynamically added and removed by the agent implementation:
+SMP agent protocol commands do not contain SMP servers that the agent will use to establish the connections. The servers are part of the agent configuration and can be dynamically added and removed by the agent implementation:
 - by the client applications via any API that is outside of scope of this protocol.
 - by the agents themselves based on servers availability and latency.
 
@@ -64,7 +63,7 @@ SMP agent protocol has 3 main parts:
 - the syntax and semantics of messages that SMP agents exchange between each other in order to:
   - negotiate establishing unidirectional (simplex) encrypted queues on SMP server(s)
   - exchange client messages and delivery notifications, providing sequential message IDs and message integrity (by including the hash of the previous message).
-- the syntax and semantics of the commands (a higher level interface than SMP protocol) that are sent over TCP or other sequential protocol by agent clients to the agents. This protocol allows to create and manage multiple connections, each consisting of two simplex SMP queues.
+- the syntax and semantics of the commands that are sent over TCP or other sequential protocol by agent clients to the agents. This protocol allows to create and manage multiple connections, each consisting of two or more SMP queues.
 - the syntax and semantics of the message that the clients of SMP agents should send out-of-band (as pre-shared "invitation" including SMP server, queue ID and encryption key) to ensure [E2E encryption][1] the integrity of SMP queues and protection against active attacks ([MITM attacks][2]).
 
 ## Duplex connection procedure
@@ -74,7 +73,7 @@ SMP agent protocol has 3 main parts:
 The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection comprised of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP servers (which could be the same server). It is shown on the diagram above and has these steps:
 
 1. Alice requests the new connection from the SMP agent A using `NEW` command.
-2. Agent A creates an SMP connection on the server (using [SMP protocol](./simplex-messaging.md)) and responds to Alice with the invitation that contains queue information and the encryption key Bob's agent B should use. The invitation format is described in [Connection invitation](#connection-invitation).
+2. Agent A creates an SMP connection on the server (using [SMP protocol](./simplex-messaging.md)) and responds to Alice with the invitation that contains queue information and the encryption key Bob's agent B should use. The invitation format is described in [Connection request](#connection-request).
 3. Alice sends the invitation to Bob via any secure channel they have (out-of-band message).
 4. Bob sends `JOIN` command with the invitation as a parameter to agent B to accept the connection.
 5. Establishing Alice's SMP connection (with SMP protocol commands):
@@ -138,7 +137,7 @@ helloMsg = %s"HELLO" SP signatureVerificationKey [SP %s"NO_ACK"]
 ; NO_ACK means that acknowledgements to client messages will NOT be sent in this connection by the agent that sent `HELLO` message.
 signatureVerificationKey = encoded
 
-replyQueueMsg = %s"REPLY" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
+replyQueueMsg = %s"REPLY" SP <connectionRequest> ; `connectionRequest` is defined below
 ; this message can only be sent by the second connection party
 
 deleteQueueMsg = %s"DEL" ; notification that recipient queue will be deleted
@@ -204,7 +203,7 @@ agentMsg = invitation / connRequest / connInfo / connected / unsubscribed / conn
 newCmd = %s"NEW" [SP %s"NO_ACK"] ; response is `invitation` or `error`
 ; NO_ACK parameter currently not supported
 
-invitation = %s"INV" SP <queueInfo> ; `queueInfo` is the same as in out-of-band message, see SMP protocol
+invitation = %s"INV" SP <connectionRequest> ; `connectionRequest` is defined below
 
 connRequest = %s"REQ" SP confirmationId SP msgBody
 ; msgBody here is any binary information identifying connection request
@@ -231,8 +230,8 @@ connDown = %s"DOWN"
 connUp = %s"UP"
 ; restored connection
 
-joinCmd = %s"JOIN" SP <queueInfo> [SP %s"NO_REPLY"] [SP %s"NO_ACK"]
-; `queueInfo` is the same as in out-of-band message, see SMP protocol
+joinCmd = %s"JOIN" SP <connectionRequest> [SP %s"NO_REPLY"] [SP %s"NO_ACK"]
+; `connectionRequest` is defined below
 ; response is `connected` or `error`
 
 suspendCmd = %s"OFF" ; can be sent by either party, response `ok` or `error`
@@ -348,11 +347,21 @@ It is used to suspend the receiving SMP queue - sender will no longer be able to
 
 It is used to delete the connection and all messages in it, as well as the receiving SMP queue and all messages in it that were remaining on the server. Agent response to this command can be `OK` or `ERR`. This command is irreversible.
 
-## Connection invitation
+## Connection request
 
-Connection invitation `queueInfo` is generated by SMP agent in response to `newCmd` command (`"NEW"`), used by another party user with `joinCmd` command (`"JOIN"`), and then another invitation is sent by the agent in `replyQueueMsg` and used by the first party agent to connect to the reply queue (the second part of the process is invisible to the users).
+Connection request `connectionRequest` is generated by SMP agent in response to `newCmd` command (`"NEW"`), used by another party user with `joinCmd` command (`"JOIN"`), and then another invitation is sent by the agent in `replyQueueMsg` and used by the first party agent to connect to the reply queue (the second part of the process is invisible to the users).
 
-See SMP protocol [out-of-band messages](./simplex-messaging.md#out-of-band-messages) for connection invitation syntax.
+Connection request syntax:
+
+```
+connectionRequest = queueURI "#/connect/" encryptionScheme ":" publicKey
+encryptionScheme = %s"rsa" ; end-to-end encryption and key exchange protocols,
+                           ; the current hybrid encryption scheme (RSA-OAEP/AES-256-GCM-SHA256)
+                           ; will be replaced with double ratchet protocol and DH key exchange.
+publicKey = <base64 X509 SPKI key encoding>
+```
+
+See SMP protocol [out-of-band messages](./simplex-messaging.md#out-of-band-messages) for syntax for queueURI.
 
 [1]: https://en.wikipedia.org/wiki/End-to-end_encryption
 [2]: https://en.wikipedia.org/wiki/Man-in-the-middle_attack
