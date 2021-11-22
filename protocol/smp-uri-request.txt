@@ -4,7 +4,7 @@ Status: Provisional
 
 Applications/protocols that use this scheme name:
 This scheme is used for URIs of message queues in SimpleX Messaging Protocol,
-a client-server protocol for asynchronous distributed secure unidirectional
+a client-server protocol for asynchronous distributed unidirectional
 message transmission via persistent message queues.
 
 Contact: Evgeny Poberezkin <ep@simplex.chat>
