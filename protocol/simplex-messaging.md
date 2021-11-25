@@ -111,12 +111,13 @@ The protocol uses different IDs for sender and recipient in order to provide an 
 
 ## SMP queue URI
 
-The SMP queue URI should include queue hostname, an optional port, sender queue ID and server identity to establish secure connection with SMP server (see [Appendix A](#appendix-a) for SMP transport protocol). 
+The SMP queue URIs MUST include server identity, queue hostname, an optional port, sender queue ID and the public key that the clients must use to verify responses. Server identity is used to establish secure connection protected from MITM attack with SMP server (see [Appendix A](#appendix-a) for SMP transport protocol).
 
 The [ABNF][8] syntax of the queue URI is:
 
 ```abnf
-queueURI = %s"smp://" smpServer "/" queueId
+queueURI = %s"smp://" smpServer "/" queueId "#" serverSignaturePublicKey
+; serverSignaturePublicKey syntax is defined below
 smpServer = serverIdentity "@" srvHost [":" port] 
 srvHost = <hostname> ; RFC1123, RFC5891
 port = 1*DIGIT
@@ -281,7 +282,7 @@ Simplex Messaging Protocol:
 
 ## Cryptographic algorithms
 
-Simplex messaging clients need to cryptographically sign commands for the following operations:
+Simplex messaging clients and servers must cryptographically sign commands, responses and messages for the following operations:
 
 - With the recipient's key `RK` (server to verify):
   - create the queue (`NEW`)
@@ -295,18 +296,22 @@ Simplex messaging clients need to cryptographically sign commands for the follow
   - send messages (`SEND`)
 - With the optional notifier's key:
   - subscribe to message notifications (`NSUB`)
+- With the server's key (for recipient and sender to verify)
+  - queue IDs response (`IDS`)
+  - notifier queue ID response (`NID`)
+  - delivered messages (`MSG`)
+  - `OK` and `ERR` responses
 
-To sign and verify commands, clients and servers MUST use RSA-PSS algorithm defined in [RFC3447][2].
+To sign/verify commands, messages and responses, clients and servers MUST use Ed25519 or Ed448 algorithm defined in [RFC8709][15].
 
-To optionally sign and verify messages, clients SHOULD use RSA-PSS algorithm.
+To encrypt/decrypt message bodies delivered to the recipients, clients and servers MUST use x25519 or x448 algorithm defined in [RFC8709][15].
 
-To encrypt and decrypt messages, clients and servers SHOULD use RSA-OAEP algorithm defined in [RFC3447][2].
+Clients MUST encrypt message bodies sent via SMP servers - the protocol for this end-to-end encryption should be chosen by the clients using SMP protocol.
 
 The reasons to use these algorithms:
 
-- They are supported by WebCrypto API.
-- They are more widely supported than ECC algorithms.
-- They are newer versions than RSA-PKCS1-v1_5 encryption and signature schemes.
+- Faster operation that RSA algorithms.
+- DH key exchange provides forward secrecy.
 
 Future versions of the protocol may allow different cryptographic algorithms.
 
@@ -395,22 +400,37 @@ Sending any of the commands in this section (other than `create`, that is sent w
 This command is sent by the recipient to the SMP server to create a new queue. The syntax is:
 
 ```abnf
-create = %s"NEW" SP recipientKey
-recipientKey = signatureScheme ":" x509encoded ;  the recipient's public key to verify commands for this queue
-signatureScheme = %s"rsa" | %s"ed25519" | %s"ed448" ; "rsa" means deprecated RSA-PSS signature scheme,
-                                                    ; it must not be used for the new queues.
+create = %s"NEW" SP recipientSignaturePublicKey SP recipientDhPublicKey
+recipientSignaturePublicKey = signatureKey
+; the recipient's public key to verify commands for this queue
+signatureKey = signatureScheme ":" x509encoded
+signatureScheme = %s"rsa" | %s"ed25519" | %s"ed448"
+; "rsa" means deprecated RSA-PSS signature scheme,
+; it must not be used for the new queues.
+recipientDhPublicKey = dhPublicKey
+dhPublicKey = encryptionScheme ":" x509encoded
+; the recipient's key for DH exchange to derive the secret
+; that the server will use to encrypt delivered message bodies
+encryptionScheme = %s"x25519" | %s"x448"
+
 x509encoded = <base64 X509 key encoding>
 ```
 
-If the queue is created successfully, the server must send `queueIds` response with the recipient's and sender's queue IDs:
+If the queue is created successfully, the server must send `queueIds` response with the recipient's and sender's queue IDs and public keys to sign all responses and messages and to encrypt delivered message bodies:
 
 ```abnf
 queueIds = %s"IDS" SP recipientId SP senderId
+           SP serverSignaturePublicKey SP serverDhPublicKey
+serverSignaturePublicKey = signatureKey
+; the server's public key to verify responses and messages for this queue
+serverDhPublicKey = dhPublicKey
+; the server's key for DH exchange to derive the secret
+; that the server will use to encrypt delivered message bodies
 recipientId = encoded
 senderId = encoded
 ```
 
-This response should be sent with empty queue ID (the second part of the transmission).
+This response should be sent with empty queue ID (the third part of the transmission).
 
 Once the queue is created, the recipient gets automatically subscribed to receive the messages from that queue, until the transport connection is closed. The `subscribe` command is needed only to start receiving the messages from the existing queue when the new transport connection is opened.
 
@@ -457,7 +477,7 @@ notifierId = %s"NID" SP notifierId
 recipientId = encoded
 ```
 
-This response is sent with the recipient's queue ID (the second part of the transmission).
+This response is sent with the recipient's queue ID (the third part of the transmission).
 
 To receive the message notifications, `subscribeNotifications` command ("NSUB") must be sent signed with the notifier's key.
 
@@ -565,7 +585,9 @@ See its syntax in [Create queue command](#create-queue-command)
 The server must deliver messages to all subscribed simplex queues on the currently open transport connection. The syntax for the message delivery is:
 
 ```abnf
-message = %s"MSG" SP msgId SP timestamp SP size SP msgBody SP
+message = %s"MSG" SP encryptedMessage
+encryptedMessage = <encrypt sentMessage>
+sentMessage = msgId SP timestamp SP size SP msgBody SP
 msgId = encoded
 timestamp = <date-time defined in RFC3339>
 ```
@@ -575,6 +597,10 @@ timestamp = <date-time defined in RFC3339>
 `timestamp` - the UTC time when the server received the message from the sender, must be in date-time format defined by [RFC 3339][10]
 
 `msgBody` - see syntax in [Send message](#send-message)
+
+When server delivers the messages to the recipient, message body should be encrypted with the secret derived from DH exchange using the keys passed during the queue creation and returned with `queueIds` response.
+
+This is done to prevent the possibility of correlation of incoming and outgoing traffic of SMP server inside transport protocol.
 
 #### Notifier queue ID response
 
@@ -698,3 +724,4 @@ The communication party (client or server) that has the lower protocol version s
 [12]: https://tools.ietf.org/html/rfc7714
 [13]: https://datatracker.ietf.org/doc/html/rfc8446
 [14]: https://datatracker.ietf.org/doc/html/rfc5929#section-3
+[15]: https://www.rfc-editor.org/rfc/rfc8709.html
