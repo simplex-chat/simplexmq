@@ -310,7 +310,7 @@ Clients MUST encrypt message bodies sent via SMP servers - the protocol for this
 
 The reasons to use these algorithms:
 
-- Faster operation that RSA algorithms.
+- Faster operation than RSA algorithms.
 - DH key exchange provides forward secrecy.
 
 Future versions of the protocol may allow different cryptographic algorithms.
