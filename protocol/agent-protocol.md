@@ -40,9 +40,7 @@ It provides:
 SMP agent protocol provides no encryption or security on the client side - it is assumed that the agent is executed in the trusted and secure environment, in one of three ways:
 - via TCP network using secure connection.
 - via local port (when the agent runs on the same device as a separate process).
-- via agent library, when the agent logic is included directly into the client application.
-
-The last option is the most secure, as it reduces the number of attack vectors in comparison with other options. [SimpleX Chat for terminal](https://github.com/simplex-chat/simplex-chat) uses this approach.
+- via agent library, when the agent logic is included directly into the client application - [SimpleX Chat for terminal](https://github.com/simplex-chat/simplex-chat) uses this approach.
 
 ## SMP agent
 

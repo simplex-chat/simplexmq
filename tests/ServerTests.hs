@@ -47,7 +47,7 @@ pattern Resp corrId queueId command <- ("", (corrId, queueId, Right (Cmd SBroker
 sendRecv :: Transport c => THandle c -> (ByteString, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 sendRecv h (sgn, corrId, qId, cmd) = tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
 
-signSendRecv :: Transport c => THandle c -> C.SafePrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+signSendRecv :: Transport c => THandle c -> C.PrivateKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
 signSendRecv h pk (corrId, qId, cmd) = do
   let t = B.intercalate " " [corrId, encode qId, cmd]
   Right sig <- runExceptT $ C.sign pk t
@@ -332,7 +332,7 @@ testWithStoreLog at@(ATransport t) =
         Right l -> pure l
         Left (_ :: SomeException) -> logSize
 
-createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.SafePrivateKey)
+createAndSecureQueue :: Transport c => THandle c -> SenderPublicKey -> IO (SenderId, RecipientId, C.PrivateKey)
 createAndSecureQueue h sPub = do
   (rPub, rKey) <- C.generateKeyPair rsaKeySize
   Resp "abcd" "" (IDS rId sId) <- signSendRecv h rKey ("abcd", "", "NEW " <> C.serializePubKey rPub)
