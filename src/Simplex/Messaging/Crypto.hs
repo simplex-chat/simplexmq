@@ -30,6 +30,8 @@ module Simplex.Messaging.Crypto
   ( -- * Cryptographic keys
     Algorithm (..),
     SAlgorithm (..),
+    Alg (..),
+    SignAlg (..),
     PrivateKey (..),
     PublicKey (..),
     APrivateKey (..),
@@ -46,6 +48,7 @@ module Simplex.Messaging.Crypto
     generateKeyPair',
     generateSignatureKeyPair,
     generateEncryptionKeyPair,
+    privateToX509,
 
     -- * E2E hybrid encryption scheme
     encrypt,
@@ -62,6 +65,8 @@ module Simplex.Messaging.Crypto
     ASignature (..),
     CryptoSignature (..),
     SignatureSize (..),
+    SignatureAlgorithm,
+    AlgorithmI (..),
     sign,
     verify,
     verify',
@@ -147,7 +152,12 @@ deriving instance Eq (SAlgorithm a)
 
 deriving instance Show (SAlgorithm a)
 
-data Alg = forall a. Alg (SAlgorithm a)
+data Alg = forall a. AlgorithmI a => Alg (SAlgorithm a)
+
+data SignAlg
+  = forall a.
+    (AlgorithmI a, SignatureAlgorithm a) =>
+    SignAlg (SAlgorithm a)
 
 class AlgorithmI (a :: Algorithm) where sAlgorithm :: SAlgorithm a
 
@@ -171,7 +181,7 @@ instance TestEquality SAlgorithm where
 
 -- | GADT for public keys.
 data PublicKey (a :: Algorithm) where
-  PublicKeyRSA :: {publicKeyRSA :: R.PublicKey} -> PublicKey RSA
+  PublicKeyRSA :: R.PublicKey -> PublicKey RSA
   PublicKeyEd25519 :: Ed25519.PublicKey -> PublicKey Ed25519
   PublicKeyEd448 :: Ed448.PublicKey -> PublicKey Ed448
   PublicKeyX25519 :: X25519.PublicKey -> PublicKey X25519
@@ -196,8 +206,8 @@ deriving instance Show APublicKey
 -- | GADT for private keys.
 data PrivateKey (a :: Algorithm) where
   PrivateKeyRSA :: {privateKeyRSA :: R.PrivateKey} -> PrivateKey RSA
-  PrivateKeyEd25519 :: Ed25519.SecretKey -> PrivateKey Ed25519
-  PrivateKeyEd448 :: Ed448.SecretKey -> PrivateKey Ed448
+  PrivateKeyEd25519 :: Ed25519.SecretKey -> Ed25519.PublicKey -> PrivateKey Ed25519
+  PrivateKeyEd448 :: Ed448.SecretKey -> Ed448.PublicKey -> PrivateKey Ed448
   PrivateKeyX25519 :: X25519.SecretKey -> PrivateKey X25519
   PrivateKeyX448 :: X448.SecretKey -> PrivateKey X448
 
@@ -426,8 +436,8 @@ instance CryptoKey APrivateDecryptKey where
 instance AlgorithmI a => CryptoKey (PrivateKey a) where
   keySize = \case
     PrivateKeyRSA k -> rsaPrivateKeySize k
-    PrivateKeyEd25519 _ -> Ed25519.secretKeySize
-    PrivateKeyEd448 _ -> Ed448.secretKeySize
+    PrivateKeyEd25519 _ _ -> Ed25519.secretKeySize
+    PrivateKeyEd448 _ _ -> Ed448.secretKeySize
     PrivateKeyX25519 _ -> x25519_size
     PrivateKeyX448 _ -> x448_size
   validKeySize = \case
@@ -458,8 +468,8 @@ instance CryptoPrivateKey APrivateDecryptKey where
 instance CryptoPrivateKey (PrivateKey a) where
   publicKey = \case
     PrivateKeyRSA k -> PublicKeyRSA $ R.private_pub k
-    PrivateKeyEd25519 k -> PublicKeyEd25519 $ Ed25519.toPublic k
-    PrivateKeyEd448 k -> PublicKeyEd448 $ Ed448.toPublic k
+    PrivateKeyEd25519 _ k -> PublicKeyEd25519 k
+    PrivateKeyEd448 _ k -> PublicKeyEd448 k
     PrivateKeyX25519 k -> PublicKeyX25519 $ X25519.toPublic k
     PrivateKeyX448 k -> PublicKeyX448 $ X448.toPublic k
 
@@ -494,10 +504,22 @@ generateEncryptionKeyPair size a =
 generateKeyPair' :: Int -> SAlgorithm a -> IO (KeyPair a)
 generateKeyPair' size = \case
   SRSA -> generateKeyPairRSA size
-  SEd25519 -> Ed25519.generateSecretKey >>= \pk -> pure (PublicKeyEd25519 $ Ed25519.toPublic pk, PrivateKeyEd25519 pk)
-  SEd448 -> Ed448.generateSecretKey >>= \pk -> pure (PublicKeyEd448 $ Ed448.toPublic pk, PrivateKeyEd448 pk)
-  SX25519 -> X25519.generateSecretKey >>= \pk -> pure (PublicKeyX25519 $ X25519.toPublic pk, PrivateKeyX25519 pk)
-  SX448 -> X448.generateSecretKey >>= \pk -> pure (PublicKeyX448 $ X448.toPublic pk, PrivateKeyX448 pk)
+  SEd25519 ->
+    Ed25519.generateSecretKey >>= \pk ->
+      let k = Ed25519.toPublic pk
+       in pure (PublicKeyEd25519 k, PrivateKeyEd25519 pk k)
+  SEd448 ->
+    Ed448.generateSecretKey >>= \pk ->
+      let k = Ed448.toPublic pk
+       in pure (PublicKeyEd448 k, PrivateKeyEd448 pk k)
+  SX25519 ->
+    X25519.generateSecretKey >>= \pk ->
+      let k = X25519.toPublic pk
+       in pure (PublicKeyX25519 k, PrivateKeyX25519 pk)
+  SX448 ->
+    X448.generateSecretKey >>= \pk ->
+      let k = X448.toPublic pk
+       in pure (PublicKeyX448 k, PrivateKeyX448 pk)
 
 instance ToField APrivateSignKey where toField = toField . encodeKey
 
@@ -593,8 +615,8 @@ instance SignatureSize APublicVerifyKey where
 instance SignatureAlgorithm a => SignatureSize (PrivateKey a) where
   signatureSize = \case
     PrivateKeyRSA k -> rsaPrivateKeySize k
-    PrivateKeyEd25519 _ -> Ed25519.signatureSize
-    PrivateKeyEd448 _ -> Ed448.signatureSize
+    PrivateKeyEd25519 _ _ -> Ed25519.signatureSize
+    PrivateKeyEd448 _ _ -> Ed448.signatureSize
 
 instance SignatureAlgorithm a => SignatureSize (PublicKey a) where
   signatureSize = \case
@@ -831,9 +853,10 @@ pssParams = PSS.defaultPSSParams SHA256
 -- | Message signing.
 --
 -- Used by SMP clients to sign SMP commands and by SMP agents to sign messages.
-sign' :: PrivateKey a -> ByteString -> ExceptT CryptoError IO (Signature a)
+sign' :: SignatureAlgorithm a => PrivateKey a -> ByteString -> ExceptT CryptoError IO (Signature a)
 sign' (PrivateKeyRSA pk) msg = ExceptT $ bimap RSASignError SignatureRSA <$> PSS.signSafer pssParams pk msg
-sign' _ _ = throwE UnsupportedAlgorithm
+sign' (PrivateKeyEd25519 pk k) msg = pure . SignatureEd25519 $ Ed25519.sign pk k msg
+sign' (PrivateKeyEd448 pk k) msg = pure . SignatureEd448 $ Ed448.sign pk k msg
 
 sign :: APrivateSignKey -> ByteString -> ExceptT CryptoError IO ASignature
 sign (APrivateSignKey a k) = fmap (ASignature a) . sign' k
@@ -841,9 +864,10 @@ sign (APrivateSignKey a k) = fmap (ASignature a) . sign' k
 -- | Signature verification.
 --
 -- Used by SMP servers to authorize SMP commands and by SMP agents to verify messages.
-verify' :: PublicKey a -> Signature a -> ByteString -> Bool
+verify' :: SignatureAlgorithm a => PublicKey a -> Signature a -> ByteString -> Bool
 verify' (PublicKeyRSA k) (SignatureRSA sig) msg = PSS.verify pssParams k msg sig
-verify' _ _ _ = False
+verify' (PublicKeyEd25519 k) (SignatureEd25519 sig) msg = Ed25519.verify k msg sig
+verify' (PublicKeyEd448 k) (SignatureEd448 sig) msg = Ed448.verify k msg sig
 
 verify :: APublicVerifyKey -> ASignature -> ByteString -> Bool
 verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' of
@@ -891,8 +915,8 @@ publicToX509 = \case
 privateToX509 :: PrivateKey a -> PrivKey
 privateToX509 = \case
   PrivateKeyRSA k -> PrivKeyRSA k
-  PrivateKeyEd25519 k -> PrivKeyEd25519 k
-  PrivateKeyEd448 k -> PrivKeyEd448 k
+  PrivateKeyEd25519 k _ -> PrivKeyEd25519 k
+  PrivateKeyEd448 k _ -> PrivKeyEd448 k
   PrivateKeyX25519 k -> PrivKeyX25519 k
   PrivateKeyX448 k -> PrivKeyX448 k
 
@@ -915,8 +939,8 @@ decodePrivKey :: ByteString -> Either String APrivateKey
 decodePrivKey =
   decodeKey >=> \case
     (PrivKeyRSA pk, []) -> Right . APrivateKey SRSA $ PrivateKeyRSA pk
-    (PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 $ PrivateKeyEd25519 k
-    (PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 $ PrivateKeyEd448 k
+    (PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
+    (PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 . PrivateKeyEd448 k $ Ed448.toPublic k
     (PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 $ PrivateKeyX25519 k
     (PrivKeyX448 k, []) -> Right . APrivateKey SX448 $ PrivateKeyX448 k
     r -> keyError r

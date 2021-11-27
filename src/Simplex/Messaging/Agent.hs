@@ -604,9 +604,18 @@ notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
 newSndQueue ::
   (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, C.APublicVerifyKey)
-newSndQueue (SMPQueueInfo smpServer senderId encryptKey) = do
+newSndQueue qInfo =
+  asks (cmdSignAlg . config) >>= \case
+    C.SignAlg a -> newSndQueue_ a qInfo
+
+newSndQueue_ ::
+  (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m, MonadReader Env m) =>
+  C.SAlgorithm a ->
+  SMPQueueInfo ->
+  m (SndQueue, SenderPublicKey, C.APublicVerifyKey)
+newSndQueue_ a (SMPQueueInfo smpServer senderId encryptKey) = do
   size <- asks $ rsaKeySize . config
-  (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair size C.SRSA
+  (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
   (verifyKey, signKey) <- liftIO $ C.generateSignatureKeyPair size C.SRSA
   let sndQueue =
         SndQueue

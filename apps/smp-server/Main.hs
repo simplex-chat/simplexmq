@@ -215,7 +215,7 @@ readKey IniOpts {serverKeyFile} = do
 createKey :: IniOpts -> IO (C.PrivateKey 'C.RSA)
 createKey IniOpts {serverKeyFile} = do
   (_, pk) <- C.generateKeyPair' newKeySize C.SRSA
-  S.writeKeyFile S.TraditionalFormat serverKeyFile [PrivKeyRSA $ C.privateKeyRSA pk]
+  S.writeKeyFile S.TraditionalFormat serverKeyFile [C.privateToX509 pk]
   pure pk
 
 fileExists :: FilePath -> ExceptT String IO ()

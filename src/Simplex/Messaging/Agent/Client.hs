@@ -224,9 +224,19 @@ smpClientError = \case
   e -> INTERNAL $ show e
 
 newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
-newRcvQueue c srv = do
+newRcvQueue c srv =
+  asks (cmdSignAlg . config) >>= \case
+    C.SignAlg a -> newRcvQueue_ a c srv
+
+newRcvQueue_ ::
+  (C.SignatureAlgorithm a, C.AlgorithmI a, AgentMonad m) =>
+  C.SAlgorithm a ->
+  AgentClient ->
+  SMPServer ->
+  m (RcvQueue, SMPQueueInfo)
+newRcvQueue_ a c srv = do
   size <- asks $ rsaKeySize . config
-  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size C.SRSA
+  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
   logServer "-->" c srv "" "NEW"
   (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]

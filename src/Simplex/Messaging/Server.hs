@@ -175,7 +175,7 @@ verifyTransmission (sig_, t@(corrId, queueId, cmd)) = do
       case (testEquality a a', C.signatureSize k == C.signatureSize s) of
         (Just Refl, True) -> cryptoVerify k s
         _ -> dummyVerify sig False
-    cryptoVerify :: C.PublicKey a -> C.Signature a -> Bool
+    cryptoVerify :: C.SignatureAlgorithm a => C.PublicKey a -> C.Signature a -> Bool
     cryptoVerify k s = C.verify' k s (serializeTransmission t)
     dummyVerify_ :: Maybe C.ASignature -> a -> a
     dummyVerify_ = \case
