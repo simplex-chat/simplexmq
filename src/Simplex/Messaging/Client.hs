@@ -82,7 +82,7 @@ data SMPClient = SMPClient
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TVar (Map CorrId Request),
-    sndQ :: TBQueue SignedRawTransmission,
+    sndQ :: TBQueue SentRawTransmission,
     rcvQ :: TBQueue SignedTransmissionOrError,
     msgQ :: TBQueue SMPServerTransmission,
     blockSize :: Int
@@ -354,7 +354,7 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId
       i <- stateTVar clientCorrId $ \i -> (i, i + 1)
       pure . CorrId $ bshow i
 
-    signTransmission :: ByteString -> ExceptT SMPClientError IO SignedRawTransmission
+    signTransmission :: ByteString -> ExceptT SMPClientError IO SentRawTransmission
     signTransmission t = case pKey of
       Nothing -> return (Nothing, t)
       Just pk -> do
@@ -362,12 +362,12 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId
         return (Just sig, t)
 
     -- two separate "atomically" needed to avoid blocking
-    sendRecv :: CorrId -> SignedRawTransmission -> IO Response
+    sendRecv :: CorrId -> SentRawTransmission -> IO Response
     sendRecv corrId t = atomically (send corrId t) >>= withTimeout . atomically . takeTMVar
       where
         withTimeout a = fromMaybe (Left SMPResponseTimeout) <$> timeout tcpTimeout a
 
-    send :: CorrId -> SignedRawTransmission -> STM (TMVar Response)
+    send :: CorrId -> SentRawTransmission -> STM (TMVar Response)
     send corrId t = do
       r <- newEmptyTMVar
       modifyTVar sentCommands . M.insert corrId $ Request qId r

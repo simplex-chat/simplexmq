@@ -187,7 +187,7 @@ data APublicKey
     APublicKey (SAlgorithm a) (PublicKey a)
 
 instance Eq APublicKey where
-  (APublicKey a k) == (APublicKey a' k') = case testEquality a a' of
+  APublicKey a k == APublicKey a' k' = case testEquality a a' of
     Just Refl -> k == k'
     Nothing -> False
 
@@ -211,7 +211,7 @@ data APrivateKey
     APrivateKey (SAlgorithm a) (PrivateKey a)
 
 instance Eq APrivateKey where
-  (APrivateKey a k) == (APrivateKey a' k') = case testEquality a a' of
+  APrivateKey a k == APrivateKey a' k' = case testEquality a a' of
     Just Refl -> k == k'
     Nothing -> False
 
@@ -272,7 +272,7 @@ data APrivateSignKey
     APrivateSignKey (SAlgorithm a) (PrivateKey a)
 
 instance Eq APrivateSignKey where
-  (APrivateSignKey a k) == (APrivateSignKey a' k') = case testEquality a a' of
+  APrivateSignKey a k == APrivateSignKey a' k' = case testEquality a a' of
     Just Refl -> k == k'
     Nothing -> False
 
@@ -284,7 +284,7 @@ data APublicVerifyKey
     APublicVerifyKey (SAlgorithm a) (PublicKey a)
 
 instance Eq APublicVerifyKey where
-  (APublicVerifyKey a k) == (APublicVerifyKey a' k') = case testEquality a a' of
+  APublicVerifyKey a k == APublicVerifyKey a' k' = case testEquality a a' of
     Just Refl -> k == k'
     Nothing -> False
 
@@ -306,7 +306,7 @@ data APrivateDecryptKey
     APrivateDecryptKey (SAlgorithm a) (PrivateKey a)
 
 instance Eq APrivateDecryptKey where
-  (APrivateDecryptKey a k) == (APrivateDecryptKey a' k') = case testEquality a a' of
+  APrivateDecryptKey a k == APrivateDecryptKey a' k' = case testEquality a a' of
     Just Refl -> k == k'
     Nothing -> False
 
@@ -318,7 +318,7 @@ data APublicEncryptKey
     APublicEncryptKey (SAlgorithm a) (PublicKey a)
 
 instance Eq APublicEncryptKey where
-  (APublicEncryptKey a k) == (APublicEncryptKey a' k') = case testEquality a a' of
+  APublicEncryptKey a k == APublicEncryptKey a' k' = case testEquality a a' of
     Just Refl -> k == k'
     Nothing -> False
 
@@ -515,7 +515,7 @@ instance FromField APrivateDecryptKey where fromField = blobFieldParser binaryKe
 
 instance FromField APublicEncryptKey where fromField = blobFieldParser binaryKeyP
 
-instance IsString ASignature where
+instance IsString (Maybe ASignature) where
   fromString = parseString $ decode >=> decodeSignature
 
 data Signature (a :: Algorithm) where
@@ -523,10 +523,21 @@ data Signature (a :: Algorithm) where
   SignatureEd25519 :: Ed25519.Signature -> Signature Ed25519
   SignatureEd448 :: Ed448.Signature -> Signature Ed448
 
+deriving instance Eq (Signature a)
+
+deriving instance Show (Signature a)
+
 data ASignature
   = forall a.
     (AlgorithmI a, SignatureAlgorithm a) =>
     ASignature (SAlgorithm a) (Signature a)
+
+instance Eq ASignature where
+  ASignature a s == ASignature a' s' = case testEquality a a' of
+    Just Refl -> s == s'
+    _ -> False
+
+deriving instance Show ASignature
 
 class CryptoSignature s where
   serializeSignature :: s -> ByteString

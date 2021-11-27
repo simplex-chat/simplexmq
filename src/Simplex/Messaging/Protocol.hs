@@ -34,6 +34,7 @@ module Simplex.Messaging.Protocol
     SignedTransmission,
     SignedTransmissionOrError,
     RawTransmission,
+    SentRawTransmission,
     SignedRawTransmission,
     CorrId (..),
     QueueId,
@@ -120,8 +121,11 @@ type SignedTransmissionOrError = (Maybe C.ASignature, TransmissionOrError)
 -- | unparsed SMP transmission with signature.
 type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
 
--- | unparsed SMP transmission with signature.
-type SignedRawTransmission = (Maybe C.ASignature, ByteString)
+-- | unparsed sent SMP transmission with signature.
+type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString)
+
+-- | unparsed sent SMP transmission with signature.
+type SentRawTransmission = (Maybe C.ASignature, ByteString)
 
 -- | SMP queue ID for the recipient.
 type RecipientId = QueueId
@@ -329,7 +333,7 @@ serializeErrorType :: ErrorType -> ByteString
 serializeErrorType = bshow
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> SignedRawTransmission -> IO (Either TransportError ())
+tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut th (sig, t) =
   tPutEncrypted th $ C.serializeSignature sig <> " " <> t <> " "
 
@@ -371,12 +375,12 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
     tError :: ByteString -> m SignedTransmissionOrError
     tError corrId = return (Nothing, (CorrId corrId, "", Left BLOCK))
 
-    tParseValidate :: (Maybe C.ASignature, ByteString, ByteString, ByteString) -> m SignedTransmissionOrError
+    tParseValidate :: SignedRawTransmission -> m SignedTransmissionOrError
     tParseValidate t@(sig, corrId, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
       return (sig, (CorrId corrId, queueId, cmd))
 
-    tCredentials :: (Maybe C.ASignature, ByteString, ByteString, ByteString) -> Cmd -> Either ErrorType Cmd
+    tCredentials :: SignedRawTransmission -> Cmd -> Either ErrorType Cmd
     tCredentials (sig, _, queueId, _) cmd = case cmd of
       -- IDS response must not have queue ID
       Cmd SBroker IDS {} -> Right cmd

@@ -13,6 +13,7 @@ import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Base64 (encode)
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network.Socket
 import qualified Simplex.Messaging.Crypto as C
@@ -36,7 +37,7 @@ testPort = "5000"
 testPort2 :: ServiceName
 testPort2 = "5001"
 
-testKeyHashStr :: B.ByteString
+testKeyHashStr :: ByteString
 testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 
 testBlockSize :: Maybe Int
@@ -140,8 +141,8 @@ runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
     run 0 hs = test hs
     run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
 
-smpServerTest :: forall c. Transport c => TProxy c -> RawTransmission -> IO RawTransmission
-smpServerTest _ cmd = runSmpTest $ \(h :: THandle c) -> tPutRaw h cmd >> tGetRaw h
+smpServerTest :: forall c. Transport c => TProxy c -> SignedRawTransmission -> IO SignedRawTransmission
+smpServerTest _ t = runSmpTest $ \(h :: THandle c) -> tPutRaw h t >> tGetRaw h
 
 smpTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
 smpTest _ test' = runSmpTest test' `shouldReturn` ()
@@ -167,12 +168,12 @@ smpTest4 _ test' = smpTestN 4 _test
     _test [h1, h2, h3, h4] = test' h1 h2 h3 h4
     _test _ = error "expected 4 handles"
 
-tPutRaw :: Transport c => THandle c -> RawTransmission -> IO ()
+tPutRaw :: Transport c => THandle c -> SignedRawTransmission -> IO ()
 tPutRaw h (sig, corrId, queueId, command) = do
   let t = B.intercalate " " [corrId, queueId, command]
-  void $ tPut h (C.Signature sig, t)
+  void $ tPut h (sig, t)
 
-tGetRaw :: Transport c => THandle c -> IO RawTransmission
+tGetRaw :: Transport c => THandle c -> IO SignedRawTransmission
 tGetRaw h = do
-  ("", (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
-  pure ("", corrId, encode qId, serializeCommand cmd)
+  (Nothing, (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
+  pure (Nothing, corrId, encode qId, serializeCommand cmd)
