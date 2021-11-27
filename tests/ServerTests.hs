@@ -366,26 +366,39 @@ testTiming (ATransport t) =
         ]
   where
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t1 - t2) / t1 < 0.2 `shouldBe` True
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.2 `shouldBe` True
     testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
-    testSameTiming rh sh (senderKeySize, badKeySize, n) = do
-      (rPub, rKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+    testSameTiming rh sh (goodKeySize, badKeySize, n) = do
+      (rPub, rKey) <- C.generateSignatureKeyPair goodKeySize C.SRSA
       Resp "abcd" "" (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializeKey rPub)
+      Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, "SUB")
 
-      (sPub, sKey) <- C.generateSignatureKeyPair senderKeySize C.SRSA
+      (_, badKey) <- C.generateSignatureKeyPair badKeySize C.SRSA
+      -- runTimingTest rh badKey rId "SUB"
+
+      (sPub, sKey) <- C.generateSignatureKeyPair goodKeySize C.SRSA
       let keyCmd = "KEY " <> C.serializeKey sPub
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, keyCmd)
 
-      (_, badKey) <- C.generateSignatureKeyPair badKeySize C.SRSA
       Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, "SEND 5 hello ")
-      timeWrongKey <- timeRepeat n $ do
-        Resp "cdab" _ (ERR AUTH) <- signSendRecv sh badKey ("cdab", sId, "SEND 5 hello ")
-        return ()
-      timeNoQueue <- timeRepeat n $ do
-        Resp "dabc" _ (ERR AUTH) <- signSendRecv sh badKey ("dabc", "1234", "SEND 5 hello ")
-        return ()
       Resp "" _ (MSG _ _ "hello") <- tGet fromServer rh
-      similarTime timeNoQueue timeWrongKey
+      runTimingTest sh badKey sId "SEND 5 hello "
+      where
+        runTimingTest h badKey qId cmd = do
+          timeWrongKey <- timeRepeat n $ do
+            Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
+            return ()
+          timeNoQueue <- timeRepeat n $ do
+            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
+            return ()
+          -- (putStrLn . unwords . map show)
+          --   [ fromIntegral goodKeySize,
+          --     fromIntegral badKeySize,
+          --     timeWrongKey,
+          --     timeNoQueue,
+          --     timeWrongKey / timeNoQueue - 1
+          --   ]
+          similarTime timeNoQueue timeWrongKey
 
 testMessageNotifications :: ATransport -> Spec
 testMessageNotifications (ATransport t) =

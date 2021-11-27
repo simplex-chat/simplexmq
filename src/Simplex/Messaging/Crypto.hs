@@ -578,6 +578,12 @@ instance AlgorithmI a => CryptoSignature (Signature a) where
 
 class SignatureSize s where signatureSize :: s -> Int
 
+instance SignatureSize (Signature a) where
+  signatureSize = \case
+    SignatureRSA s -> B.length s
+    SignatureEd25519 _ -> Ed25519.signatureSize
+    SignatureEd448 _ -> Ed448.signatureSize
+
 instance SignatureSize APrivateSignKey where
   signatureSize (APrivateSignKey _ k) = signatureSize k
 

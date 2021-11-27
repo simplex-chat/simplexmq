@@ -165,15 +165,16 @@ verifyTransmission (sig_, t@(corrId, queueId, cmd)) = do
       pure $ either (const $ dummyVerify_ sig_ authErr) f q
     verifyMaybe :: Maybe C.APublicVerifyKey -> Cmd
     verifyMaybe (Just k) = verifySignature k
-    verifyMaybe _ = maybe cmd (`dummyVerify` authErr) sig_
+    verifyMaybe _ = maybe cmd (const authErr) sig_
     verifySignature :: C.APublicVerifyKey -> Cmd
     verifySignature key = case sig_ of
       Just s -> if verify key s then cmd else authErr
       _ -> authErr
     verify :: C.APublicVerifyKey -> C.ASignature -> Bool
-    verify (C.APublicVerifyKey a k) sig@(C.ASignature a' s) = case testEquality a a' of
-      Just Refl -> cryptoVerify k s
-      _ -> dummyVerify sig False
+    verify (C.APublicVerifyKey a k) sig@(C.ASignature a' s) =
+      case (testEquality a a', C.signatureSize k == C.signatureSize s) of
+        (Just Refl, True) -> cryptoVerify k s
+        _ -> dummyVerify sig False
     cryptoVerify :: C.PublicKey a -> C.Signature a -> Bool
     cryptoVerify k s = C.verify' k s (serializeTransmission t)
     dummyVerify_ :: Maybe C.ASignature -> a -> a
