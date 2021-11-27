@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -149,9 +150,9 @@ testForeignKeysEnabled =
 cData1 :: ConnData
 cData1 = ConnData {connId = "conn1"}
 
-testPrivateKey :: C.PrivateKey
+testPrivateKey :: C.PrivateKey 'C.RSA
 testPrivateKey =
-  C.PrivateKey
+  C.PrivateKeyRSA
     R.PrivateKey
       { private_pub =
           R.PublicKey
@@ -185,7 +186,7 @@ sndQueue1 =
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
       sndPrivateKey = testPrivateKey,
-      encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
+      encryptKey = C.PublicKeyRSA $ R.PublicKey 1 2 3,
       signKey = testPrivateKey,
       status = New
     }
@@ -325,7 +326,7 @@ testUpgradeRcvConnToDuplex =
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               sndId = "2345",
               sndPrivateKey = testPrivateKey,
-              encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
+              encryptKey = C.PublicKeyRSA $ R.PublicKey 1 2 3,
               signKey = testPrivateKey,
               status = New
             }

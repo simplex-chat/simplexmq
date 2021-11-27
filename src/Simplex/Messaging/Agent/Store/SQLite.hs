@@ -51,6 +51,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (blobFieldParser)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -248,7 +249,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
 
-  setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
+  setRcvQueueActive :: SQLiteStore -> RcvQueue -> C.APublicVerifyKey -> m ()
   setRcvQueueActive st RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->

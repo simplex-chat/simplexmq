@@ -18,6 +18,7 @@ import Data.Kind (Type)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
@@ -41,7 +42,7 @@ class Monad m => MonadAgentStore s m where
   upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
+  setRcvQueueActive :: s -> RcvQueue -> C.APublicVerifyKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Confirmations
@@ -70,8 +71,8 @@ data RcvQueue = RcvQueue
     rcvId :: SMP.RecipientId,
     rcvPrivateKey :: RecipientPrivateKey,
     sndId :: Maybe SMP.SenderId,
-    decryptKey :: DecryptionKey,
-    verifyKey :: Maybe VerificationKey,
+    decryptKey :: C.APrivateDecryptKey,
+    verifyKey :: Maybe C.APublicVerifyKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -81,8 +82,8 @@ data SndQueue = SndQueue
   { server :: SMPServer,
     sndId :: SMP.SenderId,
     sndPrivateKey :: SenderPrivateKey,
-    encryptKey :: EncryptionKey,
-    signKey :: SignatureKey,
+    encryptKey :: C.APublicEncryptKey,
+    signKey :: C.APrivateSignKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)

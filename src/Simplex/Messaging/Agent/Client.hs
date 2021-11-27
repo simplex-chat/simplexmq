@@ -226,11 +226,11 @@ smpClientError = \case
 newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
 newRcvQueue c srv = do
   size <- asks $ rsaKeySize . config
-  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
+  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size C.SRSA
   logServer "-->" c srv "" "NEW"
   (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
-  (encryptKey, decryptKey) <- liftIO $ C.generateKeyPair size
+  (encryptKey, decryptKey) <- liftIO $ C.generateEncryptionKeyPair size C.SRSA
   let rq =
         RcvQueue
           { server = srv,
@@ -299,7 +299,7 @@ sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
     mkConfirmation :: SMPClient -> m MsgBody
     mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
   withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
     msg <- mkHello smp $ AckMode On
@@ -350,23 +350,27 @@ encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
   paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
   liftError cryptoError $ do
     enc <- C.encrypt encryptKey paddedSize msg
-    C.Signature sig <- C.sign signKey enc
-    pure $ sig <> enc
+    sig <- C.sign signKey enc
+    pure $ C.signatureBytes sig <> enc
 
 decryptAndVerify :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
 decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
   verifyMessage verifyKey msg
     >>= liftError cryptoError . C.decrypt decryptKey
 
-verifyMessage :: AgentMonad m => Maybe VerificationKey -> ByteString -> m ByteString
+verifyMessage :: AgentMonad m => Maybe C.APublicVerifyKey -> ByteString -> m ByteString
 verifyMessage verifyKey msg = do
-  size <- asks $ rsaKeySize . config
-  let (sig, enc) = B.splitAt size msg
+  sigSize <- asks $ rsaKeySize . config
+  let (s, enc) = B.splitAt sigSize msg
   case verifyKey of
     Nothing -> pure enc
-    Just k
-      | C.verify k (C.Signature sig) enc -> pure enc
-      | otherwise -> throwError $ AGENT A_SIGNATURE
+    Just k ->
+      case C.decodeSignature $ B.take (C.signatureSize k) s of
+        Left _ -> throwError $ AGENT A_SIGNATURE
+        Right sig ->
+          if C.verify k sig enc
+            then pure enc
+            else throwError $ AGENT A_SIGNATURE
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case

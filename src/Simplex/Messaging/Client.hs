@@ -333,14 +333,14 @@ suspendSMPQueue = okSMPCommand $ Cmd SRecipient OFF
 deleteSMPQueue :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
 
-okSMPCommand :: Cmd -> SMPClient -> C.PrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+okSMPCommand :: Cmd -> SMPClient -> C.APrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c (Just pKey) qId cmd >>= \case
     Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
 -- | Send any SMP command ('Cmd' type).
-sendSMPCommand :: SMPClient -> Maybe C.PrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
+sendSMPCommand :: SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
   t <- signTransmission $ serializeTransmission (corrId, qId, cmd)
@@ -356,10 +356,10 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId
 
     signTransmission :: ByteString -> ExceptT SMPClientError IO SignedRawTransmission
     signTransmission t = case pKey of
-      Nothing -> return ("", t)
+      Nothing -> return (Nothing, t)
       Just pk -> do
         sig <- liftError SMPSignatureError $ C.sign pk t
-        return (sig, t)
+        return (Just sig, t)
 
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: CorrId -> SignedRawTransmission -> IO Response
