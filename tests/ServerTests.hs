@@ -347,36 +347,46 @@ testTiming (ATransport t) =
     smpTest2 t $ \rh sh ->
       mapM_
         (testSameTiming rh sh)
-        [ (128, 128, 100),
-          (128, 256, 25),
-          (128, 384, 15),
-          -- (128, 512, 15),
-          (256, 128, 100),
-          (256, 256, 25),
-          (256, 384, 15),
-          -- (256, 512, 15),
-          (384, 128, 100),
-          (384, 256, 25),
-          (384, 384, 15)
-          -- (384, 512, 15),
-          -- (512, 128, 100),
-          -- (512, 256, 25),
+        [ (32, 32, 200),
+          (32, 57, 100),
+          (32, 128, 40),
+          (32, 256, 20),
+          (57, 32, 200),
+          (57, 57, 100),
+          (57, 128, 40),
+          (57, 256, 20),
+          (128, 32, 200),
+          (128, 57, 100),
+          (128, 128, 40),
+          (128, 256, 20),
+          (256, 32, 200),
+          (256, 57, 100),
+          (256, 128, 40),
+          (256, 256, 20)
+          -- (256, 384, 15),
+          -- (256, 512, 10),
+          -- (384, 128, 40),
+          -- (384, 256, 20),
+          -- (384, 384, 15),
+          -- (384, 512, 10),
+          -- (512, 128, 40),
+          -- (512, 256, 20),
           -- (512, 384, 15),
-          -- (512, 512, 15)
+          -- (512, 512, 10)
         ]
   where
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
     similarTime t1 t2 = abs (t2 / t1 - 1) < 0.2 `shouldBe` True
     testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
     testSameTiming rh sh (goodKeySize, badKeySize, n) = do
-      (rPub, rKey) <- C.generateSignatureKeyPair goodKeySize C.SRSA
+      (rPub, rKey) <- generateKeys goodKeySize
       Resp "abcd" "" (IDS rId sId) <- signSendRecv rh rKey ("abcd", "", "NEW " <> C.serializeKey rPub)
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, "SUB")
 
-      (_, badKey) <- C.generateSignatureKeyPair badKeySize C.SRSA
+      (_, badKey) <- generateKeys badKeySize
       -- runTimingTest rh badKey rId "SUB"
 
-      (sPub, sKey) <- C.generateSignatureKeyPair goodKeySize C.SRSA
+      (sPub, sKey) <- generateKeys goodKeySize
       let keyCmd = "KEY " <> C.serializeKey sPub
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, keyCmd)
 
@@ -384,6 +394,10 @@ testTiming (ATransport t) =
       Resp "" _ (MSG _ _ "hello") <- tGet fromServer rh
       runTimingTest sh badKey sId "SEND 5 hello "
       where
+        generateKeys = \case
+          32 -> C.generateSignatureKeyPair 0 C.SEd25519
+          57 -> C.generateSignatureKeyPair 0 C.SEd448
+          size -> C.generateSignatureKeyPair size C.SRSA
         runTimingTest h badKey qId cmd = do
           timeWrongKey <- timeRepeat n $ do
             Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
