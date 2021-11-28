@@ -300,11 +300,11 @@ Simplex messaging clients and servers must cryptographically sign commands, resp
   - queue IDs response (`IDS`)
   - notifier queue ID response (`NID`)
   - delivered messages (`MSG`)
-  - `OK` and `ERR` responses
+  - `OK` and `ERR` responses (excluding error responses not related to a queue)
 
-To sign/verify commands, messages and responses, clients and servers MUST use Ed25519 or Ed448 algorithm defined in [RFC8709][15].
+To sign/verify transmissions clients and servers MUST use Ed25519 or Ed448 algorithm defined in [RFC8709][15].
 
-To encrypt/decrypt message bodies delivered to the recipients, clients and servers MUST use x25519 or x448 algorithm defined in [RFC8709][15].
+To encrypt/decrypt message bodies delivered to the recipients, servers/clients MUST use x25519 or x448 algorithm defined in [RFC8709][15] to derive the shared secret (TODO encryption scheme).
 
 Clients MUST encrypt message bodies sent via SMP servers - the protocol for this end-to-end encryption should be chosen by the clients using SMP protocol.
 
@@ -391,6 +391,8 @@ To keep the transport connection alive and to generate noise traffic the clients
 ping = %s"PING"
 ```
 
+This command is always send unsigned.
+
 ### Recipient commands
 
 Sending any of the commands in this section (other than `create`, that is sent without queue ID) is only allowed with recipient's ID (`RID`). If sender's ID is used the server must respond with `"ERR AUTH"` response (see [Error responses](#error-responses)).
@@ -401,17 +403,21 @@ This command is sent by the recipient to the SMP server to create a new queue. T
 
 ```abnf
 create = %s"NEW" SP recipientSignaturePublicKey SP recipientDhPublicKey
-recipientSignaturePublicKey = signatureKey
+recipientSignaturePublicKey = signaturePublicKey
 ; the recipient's public key to verify commands for this queue
-signatureKey = signatureScheme ":" x509encoded
+
+signaturePublicKey = signatureScheme ":" x509encoded
 signatureScheme = %s"rsa" | %s"ed25519" | %s"ed448"
 ; "rsa" means deprecated RSA-PSS signature scheme,
 ; it must not be used for the new queues.
+
 recipientDhPublicKey = dhPublicKey
 dhPublicKey = encryptionScheme ":" x509encoded
 ; the recipient's key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies
+
 encryptionScheme = %s"x25519" | %s"x448"
+; TODO change to define the encryption scheme, e.g. "crypto_box"
 
 x509encoded = <base64 X509 key encoding>
 ```
@@ -425,16 +431,16 @@ serverSignaturePublicKey = signatureKey
 ; the server's public key to verify responses and messages for this queue
 serverDhPublicKey = dhPublicKey
 ; the server's key for DH exchange to derive the secret
-; that the server will use to encrypt delivered message bodies
+; that the server will use to encrypt delivered message bodies to the recipient
 recipientId = encoded
 senderId = encoded
 ```
 
-This response should be sent with empty queue ID (the third part of the transmission).
-
 Once the queue is created, the recipient gets automatically subscribed to receive the messages from that queue, until the transport connection is closed. The `subscribe` command is needed only to start receiving the messages from the existing queue when the new transport connection is opened.
 
-NEW `transmission` must be signed using the `recipientKey` that was passed in the transmission – this verifies that the client has the private key that will be used to sign subsequent commands for this queue.
+`NEW` transmission MUST be signed using the private part of the `recipientSignaturePublicKey` – this verifies that the client has the private key that will be used to sign subsequent commands for this queue.
+
+`IDS` response transmission MUST be sent signed with `serverSignaturePublicKey` – this verifies that the server has the private key that will be used to sign subsequent responses and messages for this queue.  This response should be sent with empty queue ID (the third part of the transmission).
 
 #### Subscribe to queue
 
@@ -448,13 +454,16 @@ If subscription is successful the server must respond with the first available m
 
 The first message will be delivered either immediately or as soon as it is available; to receive the following message the recipient must acknowledge the reception of the message (see [Acknowledge message delivery](#acknowledge-message-delivery)).
 
+This transmission and its response MUST be signed.
+
 #### Secure queue command
 
 This command is sent by the recipient to the server to add sender's key to the queue:
 
 ```abnf
-secure = %s"KEY" SP senderKey
-senderKey = signatureScheme ":" x509encoded ; the sender's public key public key to verify SEND command for this queue
+secure = %s"KEY" SP senderSignaturePublicKey
+senderSignaturePublicKey = signaturePublicKey
+; the sender's key to verify SEND commands for this queue
 ```
 
 `senderKey` is received from the sender as part of the first message - see [Send Message](#send-message) command.
