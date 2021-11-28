@@ -63,7 +63,7 @@ import Data.ByteArray (xor)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import Data.Maybe(fromMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
@@ -345,7 +345,7 @@ makeNextIV SessionKey {baseIV, counter} = atomically $ do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 --
 -- The numbers in function names refer to the steps in the document.
-serverHandshake :: forall c. Transport c => c -> Int -> C.FullKeyPair -> ExceptT TransportError IO (THandle c)
+serverHandshake :: forall c. Transport c => c -> Int -> C.KeyPair -> ExceptT TransportError IO (THandle c)
 serverHandshake c srvBlockSize (k, pk) = do
   checkValidBlockSize srvBlockSize
   liftIO sendHeaderAndPublicKey_1

@@ -30,7 +30,7 @@ data ServerConfig = ServerConfig
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
-    serverPrivateKey :: C.FullPrivateKey
+    serverPrivateKey :: C.PrivateKey
     -- serverId :: ByteString
   }
 
@@ -40,7 +40,7 @@ data Env = Env
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
-    serverKeyPair :: C.FullKeyPair,
+    serverKeyPair :: C.KeyPair,
     storeLog :: Maybe (StoreLog 'WriteMode)
   }
 

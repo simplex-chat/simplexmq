@@ -20,20 +20,14 @@
 -- <https://hackage.haskell.org/package/cryptonite cryptonite package>.
 module Simplex.Messaging.Crypto
   ( -- * RSA keys
-    PrivateKey (rsaPrivateKey, publicKey),
-    SafePrivateKey (..), -- constructor is not exported
-    FullPrivateKey (..),
-    APrivateKey (..),
+    PrivateKey (..),
     PublicKey (..),
-    SafeKeyPair,
-    FullKeyPair,
+    KeyPair,
     KeyHash (..),
     generateKeyPair,
     publicKey',
     publicKeySize,
     validKeySize,
-    safePrivateKey,
-    removePublicKey,
 
     -- * E2E hybrid encryption scheme
     encrypt,
@@ -114,86 +108,25 @@ import Simplex.Messaging.Util (liftEitherError, (<$?>))
 -- | A newtype of 'Crypto.PubKey.RSA.PublicKey'.
 newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
 
--- | A newtype of 'Crypto.PubKey.RSA.PrivateKey', with PublicKey removed.
---
--- It is not possible to recover PublicKey from SafePrivateKey.
--- The constructor of this type is not exported.
-newtype SafePrivateKey = SafePrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
-
--- | A newtype of 'Crypto.PubKey.RSA.PrivateKey' (with PublicKey inside).
-newtype FullPrivateKey = FullPrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
-
 -- | A newtype of 'Crypto.PubKey.RSA.PrivateKey' (PublicKey may be inside).
-newtype APrivateKey = APrivateKey {unPrivateKey :: R.PrivateKey} deriving (Eq, Show)
+newtype PrivateKey = PrivateKey {rsaPrivateKey :: R.PrivateKey} deriving (Eq, Show)
 
--- | Type-class used for both private key types: SafePrivateKey and FullPrivateKey.
-class PrivateKey k where
-  -- unwraps 'Crypto.PubKey.RSA.PrivateKey'
-  rsaPrivateKey :: k -> R.PrivateKey
-
-  -- equivalent to data type constructor, not exported
-  _privateKey :: R.PrivateKey -> k
-
-  -- smart constructor removing public key from SafePrivateKey but keeping it in FullPrivateKey
-  mkPrivateKey :: R.PrivateKey -> k
-
-  -- extracts public key from private key
-  publicKey :: k -> Maybe PublicKey
-
--- | Remove public key exponent from APrivateKey.
-removePublicKey :: APrivateKey -> APrivateKey
-removePublicKey (APrivateKey R.PrivateKey {private_pub = k, private_d}) =
-  APrivateKey $ unPrivateKey (safePrivateKey (R.public_size k, R.public_n k, private_d) :: SafePrivateKey)
-
-instance PrivateKey SafePrivateKey where
-  rsaPrivateKey = unPrivateKey
-  _privateKey = SafePrivateKey
-  mkPrivateKey R.PrivateKey {private_pub = k, private_d} =
-    safePrivateKey (R.public_size k, R.public_n k, private_d)
-  publicKey _ = Nothing
-
-instance PrivateKey FullPrivateKey where
-  rsaPrivateKey = unPrivateKey
-  _privateKey = FullPrivateKey
-  mkPrivateKey = FullPrivateKey
-  publicKey = Just . PublicKey . R.private_pub . rsaPrivateKey
-
-instance PrivateKey APrivateKey where
-  rsaPrivateKey = unPrivateKey
-  _privateKey = APrivateKey
-  mkPrivateKey = APrivateKey
-  publicKey pk =
-    let k = R.private_pub $ rsaPrivateKey pk
-     in if R.public_e k == 0
-          then Nothing
-          else Just $ PublicKey k
-
-instance IsString FullPrivateKey where
+instance IsString PrivateKey where
   fromString = parseString $ decode >=> decodePrivKey
 
 instance IsString PublicKey where
   fromString = parseString $ decode >=> decodePubKey
 
-instance ToField SafePrivateKey where toField = toField . encodePrivKey
-
-instance ToField APrivateKey where toField = toField . encodePrivKey
+instance ToField PrivateKey where toField = toField . encodePrivKey
 
 instance ToField PublicKey where toField = toField . encodePubKey
 
-instance FromField SafePrivateKey where fromField = blobFieldParser binaryPrivKeyP
-
-instance FromField APrivateKey where fromField = blobFieldParser binaryPrivKeyP
+instance FromField PrivateKey where fromField = blobFieldParser binaryPrivKeyP
 
 instance FromField PublicKey where fromField = blobFieldParser binaryPubKeyP
 
 -- | Tuple of RSA 'PublicKey' and 'PrivateKey'.
-type KeyPair k = (PublicKey, k)
-
--- | Tuple of RSA 'PublicKey' and 'SafePrivateKey'.
-type SafeKeyPair = (PublicKey, SafePrivateKey)
-
--- | Tuple of RSA 'PublicKey' and 'FullPrivateKey'.
-type FullKeyPair = (PublicKey, FullPrivateKey)
+type KeyPair = (PublicKey, PrivateKey)
 
 -- | RSA signature newtype.
 newtype Signature = Signature {unSignature :: ByteString} deriving (Eq, Show)
@@ -230,8 +163,8 @@ aesKeySize = 256 `div` 8
 authTagSize :: Int
 authTagSize = 128 `div` 8
 
--- | Generate RSA key pair with either SafePrivateKey or FullPrivateKey.
-generateKeyPair :: PrivateKey k => Int -> IO (KeyPair k)
+-- | Generate RSA key pair.
+generateKeyPair :: Int -> IO KeyPair
 generateKeyPair size = loop
   where
     publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange
@@ -241,12 +174,12 @@ generateKeyPair size = loop
           d = R.private_d pk
       if d * d < n
         then loop
-        else pure (PublicKey k, mkPrivateKey pk)
+        else pure (PublicKey k, PrivateKey pk)
 
-privateKeySize :: PrivateKey k => k -> Int
+privateKeySize :: PrivateKey -> Int
 privateKeySize = R.public_size . R.private_pub . rsaPrivateKey
 
-publicKey' :: FullPrivateKey -> PublicKey
+publicKey' :: PrivateKey -> PublicKey
 publicKey' = PublicKey . R.private_pub . rsaPrivateKey
 
 publicKeySize :: PublicKey -> Int
@@ -331,7 +264,7 @@ encrypt k paddedSize msg = do
 -- | E2E decrypt SMP agent messages.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-01-26-crypto.md#e2e-encryption
-decrypt :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
+decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt pk msg'' = do
   let (encHeader, msg') = B.splitAt (privateKeySize pk) msg''
   header <- decryptOAEP pk encHeader
@@ -410,7 +343,7 @@ encryptOAEP (PublicKey k) aesKey =
 -- | RSA OAEP decryption.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport handshake.
-decryptOAEP :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO ByteString
+decryptOAEP :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
 decryptOAEP pk encKey =
   liftEitherError RSADecryptError $
     OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
@@ -421,7 +354,7 @@ pssParams = PSS.defaultPSSParams SHA256
 -- | RSA PSS message signing.
 --
 -- Used by SMP clients to sign SMP commands and by SMP agents to sign messages.
-sign :: PrivateKey k => k -> ByteString -> ExceptT CryptoError IO Signature
+sign :: PrivateKey -> ByteString -> ExceptT CryptoError IO Signature
 sign pk msg = ExceptT $ bimap RSASignError Signature <$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
 
 -- | RSA PSS signature verification.
@@ -439,7 +372,7 @@ serializePubKey = ("rsa:" <>) . encode . encodePubKey
 -- | Base-64 PKCS8 encoding of PSA private key.
 --
 -- Not used as part of SMP protocols.
-serializePrivKey :: PrivateKey k => k -> ByteString
+serializePrivKey :: PrivateKey -> ByteString
 serializePrivKey = ("rsa:" <>) . encode . encodePrivKey
 
 -- Base-64 X509 RSA public key parser.
@@ -451,40 +384,19 @@ binaryPubKeyP :: Parser PublicKey
 binaryPubKeyP = decodePubKey <$?> A.takeByteString
 
 -- Base-64 PKCS8 RSA private key parser.
-privKeyP :: PrivateKey k => Parser k
+privKeyP :: Parser PrivateKey
 privKeyP = decodePrivKey <$?> ("rsa:" *> base64P)
 
 -- Binary PKCS8 RSA private key parser.
-binaryPrivKeyP :: PrivateKey k => Parser k
+binaryPrivKeyP :: Parser PrivateKey
 binaryPrivKeyP = decodePrivKey <$?> A.takeByteString
-
--- | Construct 'SafePrivateKey' from three numbers - used internally and in the tests.
-safePrivateKey :: (Int, Integer, Integer) -> SafePrivateKey
-safePrivateKey = SafePrivateKey . safeRsaPrivateKey
-
-safeRsaPrivateKey :: (Int, Integer, Integer) -> R.PrivateKey
-safeRsaPrivateKey (size, n, d) =
-  R.PrivateKey
-    { private_pub =
-        R.PublicKey
-          { public_size = size,
-            public_n = n,
-            public_e = 0
-          },
-      private_d = d,
-      private_p = 0,
-      private_q = 0,
-      private_dP = 0,
-      private_dQ = 0,
-      private_qinv = 0
-    }
 
 -- Binary X509 encoding of 'PublicKey'.
 encodePubKey :: PublicKey -> ByteString
 encodePubKey = encodeKey . PubKeyRSA . rsaPublicKey
 
 -- Binary PKCS8 encoding of 'PrivateKey'.
-encodePrivKey :: PrivateKey k => k -> ByteString
+encodePrivKey :: PrivateKey -> ByteString
 encodePrivKey = encodeKey . PrivKeyRSA . rsaPrivateKey
 
 encodeKey :: ASN1Object a => a -> ByteString
@@ -498,10 +410,10 @@ decodePubKey =
     r -> keyError r
 
 -- Decoding of binary PKCS8 'PrivateKey'.
-decodePrivKey :: PrivateKey k => ByteString -> Either String k
+decodePrivKey :: ByteString -> Either String PrivateKey
 decodePrivKey =
   decodeKey >=> \case
-    (PrivKeyRSA pk, []) -> Right $ mkPrivateKey pk
+    (PrivKeyRSA pk, []) -> Right $ PrivateKey pk
     r -> keyError r
 
 decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])

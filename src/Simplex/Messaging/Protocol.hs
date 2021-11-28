@@ -177,7 +177,7 @@ instance IsString CorrId where
 -- | Recipient's private key used by the recipient to authorize (sign) SMP commands.
 --
 -- Only used by SMP agent, kept here so its definition is close to respective public key.
-type RecipientPrivateKey = C.SafePrivateKey
+type RecipientPrivateKey = C.PrivateKey
 
 -- | Recipient's public key used by SMP server to verify authorization of SMP commands.
 type RecipientPublicKey = C.PublicKey
@@ -185,13 +185,13 @@ type RecipientPublicKey = C.PublicKey
 -- | Sender's private key used by the recipient to authorize (sign) SMP commands.
 --
 -- Only used by SMP agent, kept here so its definition is close to respective public key.
-type SenderPrivateKey = C.SafePrivateKey
+type SenderPrivateKey = C.PrivateKey
 
 -- | Sender's public key used by SMP server to verify authorization of SMP commands.
 type SenderPublicKey = C.PublicKey
 
 -- | Private key used by push notifications server to authorize (sign) LSTN command.
-type NotifierPrivateKey = C.SafePrivateKey
+type NotifierPrivateKey = C.PrivateKey
 
 -- | Public key used by SMP server to verify authorization of LSTN command sent by push notifications server.
 type NotifierPublicKey = C.PublicKey

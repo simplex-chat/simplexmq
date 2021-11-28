@@ -298,30 +298,27 @@ subscribeConnection' c connId =
     SomeConn _ (DuplexConnection _ rq sq) -> do
       resumeMsgDelivery c connId sq
       case status (sq :: SndQueue) of
-        Confirmed -> withVerifyKey sq $ \verifyKey -> do
+        Confirmed -> do
           conf <- withStore (`getAcceptedConfirmation` connId)
           secureQueue c rq $ senderKey (conf :: AcceptedConfirmation)
           withStore $ \st -> setRcvQueueStatus st rq Secured
-          activateSecuredQueue rq sq verifyKey
-        Secured -> withVerifyKey sq $ activateSecuredQueue rq sq
+          activateSecuredQueue rq sq
+        Secured -> activateSecuredQueue rq sq
         Active -> subscribeQueue c rq connId
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (SndConnection _ sq) -> do
       resumeMsgDelivery c connId sq
       case status (sq :: SndQueue) of
-        Confirmed -> withVerifyKey sq $ \verifyKey ->
-          activateQueueJoining c connId sq verifyKey =<< resumeInterval
+        Confirmed -> activateQueueJoining c connId sq (verifyKey sq) =<< resumeInterval
         Active -> throwError $ CONN SIMPLEX
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
   where
-    withVerifyKey :: SndQueue -> (C.PublicKey -> m ()) -> m ()
-    withVerifyKey sq action =
-      let err = throwError $ INTERNAL "missing signing key public counterpart"
-       in maybe err action . C.publicKey $ signKey sq
-    activateSecuredQueue :: RcvQueue -> SndQueue -> C.PublicKey -> m ()
-    activateSecuredQueue rq sq verifyKey = do
-      activateQueueInitiating c connId sq verifyKey =<< resumeInterval
+    verifyKey :: SndQueue -> C.PublicKey
+    verifyKey = C.publicKey' . signKey
+    activateSecuredQueue :: RcvQueue -> SndQueue -> m ()
+    activateSecuredQueue rq sq = do
+      activateQueueInitiating c connId sq (verifyKey sq) =<< resumeInterval
       subscribeQueue c rq connId
     resumeInterval :: m RetryInterval
     resumeInterval = do
@@ -600,12 +597,7 @@ activateQueue c connId sq verifyKey retryInterval afterActivation =
       sendHello c sq verifyKey retryInterval
       withStore $ \st -> setSndQueueStatus st sq Active
       removeActivation c connId
-      removeVerificationKey
       afterActivation
-    removeVerificationKey :: m ()
-    removeVerificationKey =
-      let safeSignKey = C.removePublicKey $ signKey sq
-       in withStore $ \st -> updateSignKey st sq safeSignKey
 
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)

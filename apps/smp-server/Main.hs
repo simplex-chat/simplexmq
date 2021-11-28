@@ -101,7 +101,7 @@ getConfig opts = do
   storeLog <- liftIO $ openStoreLog opts ini
   pure $ makeConfig ini pk storeLog
 
-makeConfig :: IniOpts -> C.FullPrivateKey -> Maybe (StoreLog 'ReadMode) -> ServerConfig
+makeConfig :: IniOpts -> C.PrivateKey -> Maybe (StoreLog 'ReadMode) -> ServerConfig
 makeConfig IniOpts {serverPort, blockSize, enableWebsockets} pk storeLog =
   let transports = (serverPort, transport @TCP) : [("80", transport @WS) | enableWebsockets]
    in serverConfig {serverPrivateKey = pk, storeLog, blockSize, transports}
@@ -200,11 +200,11 @@ createIni ServerOpts {enableStoreLog} = do
         enableWebsockets = True
       }
 
-readKey :: IniOpts -> ExceptT String IO C.FullPrivateKey
+readKey :: IniOpts -> ExceptT String IO C.PrivateKey
 readKey IniOpts {serverKeyFile} = do
   fileExists serverKeyFile
   liftIO (S.readKeyFile serverKeyFile) >>= \case
-    [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.FullPrivateKey pk
+    [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.PrivateKey pk
     [_] -> err "not RSA key"
     [] -> err "invalid key file format"
     _ -> err "more than one key"
@@ -212,7 +212,7 @@ readKey IniOpts {serverKeyFile} = do
     err :: String -> ExceptT String IO b
     err e = throwE $ e <> ": " <> serverKeyFile
 
-createKey :: IniOpts -> IO C.FullPrivateKey
+createKey :: IniOpts -> IO C.PrivateKey
 createKey IniOpts {serverKeyFile} = do
   (_, pk) <- C.generateKeyPair newKeySize
   S.writeKeyFile S.TraditionalFormat serverKeyFile [PrivKeyRSA $ C.rsaPrivateKey pk]
@@ -233,7 +233,7 @@ confirm msg = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-serverKeyHash :: C.FullPrivateKey -> B.ByteString
+serverKeyHash :: C.PrivateKey -> B.ByteString
 serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey'
 
 openStoreLog :: ServerOpts -> IniOpts -> IO (Maybe (StoreLog 'ReadMode))

@@ -149,14 +149,32 @@ testForeignKeysEnabled =
 cData1 :: ConnData
 cData1 = ConnData {connId = "conn1"}
 
+testPrivateKey :: C.PrivateKey
+testPrivateKey =
+  C.PrivateKey
+    R.PrivateKey
+      { private_pub =
+          R.PublicKey
+            { public_size = 1,
+              public_n = 2,
+              public_e = 0
+            },
+        private_d = 3,
+        private_p = 0,
+        private_q = 0,
+        private_dP = 0,
+        private_dQ = 0,
+        private_qinv = 0
+      }
+
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
   RcvQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       rcvId = "1234",
-      rcvPrivateKey = C.safePrivateKey (1, 2, 3),
+      rcvPrivateKey = testPrivateKey,
       sndId = Just "2345",
-      decryptKey = C.safePrivateKey (1, 2, 3),
+      decryptKey = testPrivateKey,
       verifyKey = Nothing,
       status = New
     }
@@ -166,9 +184,9 @@ sndQueue1 =
   SndQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
-      sndPrivateKey = C.safePrivateKey (1, 2, 3),
+      sndPrivateKey = testPrivateKey,
       encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-      signKey = C.APrivateKey $ C.unPrivateKey (C.safePrivateKey (1, 2, 3) :: C.SafePrivateKey),
+      signKey = testPrivateKey,
       status = New
     }
 
@@ -306,9 +324,9 @@ testUpgradeRcvConnToDuplex =
           SndQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               sndId = "2345",
-              sndPrivateKey = C.safePrivateKey (1, 2, 3),
+              sndPrivateKey = testPrivateKey,
               encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-              signKey = C.APrivateKey $ C.unPrivateKey (C.safePrivateKey (1, 2, 3) :: C.SafePrivateKey),
+              signKey = testPrivateKey,
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
@@ -326,9 +344,9 @@ testUpgradeSndConnToDuplex =
           RcvQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               rcvId = "3456",
-              rcvPrivateKey = C.safePrivateKey (1, 2, 3),
+              rcvPrivateKey = testPrivateKey,
               sndId = Just "4567",
-              decryptKey = C.safePrivateKey (1, 2, 3),
+              decryptKey = testPrivateKey,
               verifyKey = Nothing,
               status = New
             }

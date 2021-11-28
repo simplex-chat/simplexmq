@@ -339,10 +339,10 @@ data SMPQueueInfo = SMPQueueInfo SMPServer SMP.SenderId EncryptionKey
 type EncryptionKey = C.PublicKey
 
 -- | Private key used to E2E decrypt SMP messages.
-type DecryptionKey = C.SafePrivateKey
+type DecryptionKey = C.PrivateKey
 
 -- | Private key used to sign SMP commands
-type SignatureKey = C.APrivateKey
+type SignatureKey = C.PrivateKey
 
 -- | Public key used by SMP server to authorize (verify) SMP commands.
 type VerificationKey = C.PublicKey
