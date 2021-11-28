@@ -376,7 +376,7 @@ testTiming (ATransport t) =
         ]
   where
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.2 `shouldBe` True
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.25 `shouldBe` True
     testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
     testSameTiming rh sh (goodKeySize, badKeySize, n) = do
       (rPub, rKey) <- generateKeys goodKeySize

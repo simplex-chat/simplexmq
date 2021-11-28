@@ -43,9 +43,9 @@ agentTests (ATransport t) = do
     it "should connect via 2 servers and 2 agents (random IDs)" $
       smpAgentTest2_2_2 $ testDuplexConnRandomIds t
   describe "Connection subscriptions" do
-    xit "(hangs with Ed448) should connect via one server and one agent" $
+    it "should connect via one server and one agent" $
       smpAgentTest3_1_1 $ testSubscription t
-    xit "(hangs with Ed448) should send notifications to client when server disconnects" $
+    it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
   describe "Message delivery" do
     it "should deliver messages after losing server connection and re-connecting" $
