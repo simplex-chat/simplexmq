@@ -34,6 +34,7 @@ module Simplex.Messaging.Protocol
     SignedTransmission,
     SignedTransmissionOrError,
     RawTransmission,
+    SentRawTransmission,
     SignedRawTransmission,
     CorrId (..),
     QueueId,
@@ -76,6 +77,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Kind
+import Data.Maybe (isNothing)
 import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
@@ -109,18 +111,21 @@ deriving instance Show Cmd
 type Transmission = (CorrId, QueueId, Cmd)
 
 -- | SMP transmission with signature.
-type SignedTransmission = (C.Signature, Transmission)
+type SignedTransmission = (Maybe C.ASignature, Transmission)
 
 type TransmissionOrError = (CorrId, QueueId, Either ErrorType Cmd)
 
 -- | signed parsed transmission, with parsing error.
-type SignedTransmissionOrError = (C.Signature, TransmissionOrError)
+type SignedTransmissionOrError = (Maybe C.ASignature, TransmissionOrError)
 
 -- | unparsed SMP transmission with signature.
 type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
 
--- | unparsed SMP transmission with signature.
-type SignedRawTransmission = (C.Signature, ByteString)
+-- | unparsed sent SMP transmission with signature.
+type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString)
+
+-- | unparsed sent SMP transmission with signature.
+type SentRawTransmission = (Maybe C.ASignature, ByteString)
 
 -- | SMP queue ID for the recipient.
 type RecipientId = QueueId
@@ -177,24 +182,24 @@ instance IsString CorrId where
 -- | Recipient's private key used by the recipient to authorize (sign) SMP commands.
 --
 -- Only used by SMP agent, kept here so its definition is close to respective public key.
-type RecipientPrivateKey = C.PrivateKey
+type RecipientPrivateKey = C.APrivateSignKey
 
 -- | Recipient's public key used by SMP server to verify authorization of SMP commands.
-type RecipientPublicKey = C.PublicKey
+type RecipientPublicKey = C.APublicVerifyKey
 
 -- | Sender's private key used by the recipient to authorize (sign) SMP commands.
 --
 -- Only used by SMP agent, kept here so its definition is close to respective public key.
-type SenderPrivateKey = C.PrivateKey
+type SenderPrivateKey = C.APrivateSignKey
 
 -- | Sender's public key used by SMP server to verify authorization of SMP commands.
-type SenderPublicKey = C.PublicKey
+type SenderPublicKey = C.APublicVerifyKey
 
 -- | Private key used by push notifications server to authorize (sign) LSTN command.
-type NotifierPrivateKey = C.PrivateKey
+type NotifierPrivateKey = C.APrivateSignKey
 
 -- | Public key used by SMP server to verify authorization of LSTN command sent by push notifications server.
-type NotifierPublicKey = C.PublicKey
+type NotifierPublicKey = C.APublicVerifyKey
 
 -- | SMP message server ID.
 type MsgId = Encoded
@@ -243,11 +248,11 @@ instance Arbitrary CommandError where arbitrary = genericArbitraryU
 -- | SMP transmission parser.
 transmissionP :: Parser RawTransmission
 transmissionP = do
-  signature <- segment
+  sig <- segment
   corrId <- segment
   queueId <- segment
   command <- A.takeByteString
-  return (signature, corrId, queueId, command)
+  return (sig, corrId, queueId, command)
   where
     segment = A.takeTill (== ' ') <* " "
 
@@ -273,11 +278,11 @@ commandP =
     <|> "ERR " *> serverError
     <|> "PONG" $> Cmd SBroker PONG
   where
-    newCmd = Cmd SRecipient . NEW <$> C.pubKeyP
+    newCmd = Cmd SRecipient . NEW <$> C.strKeyP
     idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
     nIdsResp = Cmd SBroker . NID <$> base64P
-    keyCmd = Cmd SRecipient . KEY <$> C.pubKeyP
-    nKeyCmd = Cmd SRecipient . NKEY <$> C.pubKeyP
+    keyCmd = Cmd SRecipient . KEY <$> C.strKeyP
+    nKeyCmd = Cmd SRecipient . NKEY <$> C.strKeyP
     sendCmd = do
       size <- A.decimal <* A.space
       Cmd SSender . SEND <$> A.take size <* A.space
@@ -297,9 +302,9 @@ parseCommand = parse (commandP <* " " <* A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP command.
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
-  Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializePubKey rKey
-  Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializePubKey sKey
-  Cmd SRecipient (NKEY nKey) -> "NKEY " <> C.serializePubKey nKey
+  Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializeKey rKey
+  Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializeKey sKey
+  Cmd SRecipient (NKEY nKey) -> "NKEY " <> C.serializeKey nKey
   Cmd SRecipient SUB -> "SUB"
   Cmd SRecipient ACK -> "ACK"
   Cmd SRecipient OFF -> "OFF"
@@ -328,9 +333,9 @@ serializeErrorType :: ErrorType -> ByteString
 serializeErrorType = bshow
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> SignedRawTransmission -> IO (Either TransportError ())
-tPut th (C.Signature sig, t) =
-  tPutEncrypted th $ encode sig <> " " <> t <> " "
+tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
+tPut th (sig, t) =
+  tPutEncrypted th $ C.serializeSignature sig <> " " <> t <> " "
 
 -- | Serialize SMP transmission.
 serializeTransmission :: Transmission -> ByteString
@@ -362,26 +367,21 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m SignedTransmissionOrError
     decodeParseValidate = \case
-      Right (signature, corrId, queueId, command) ->
-        let decodedTransmission = liftM2 (,corrId,,command) (validSig =<< decode signature) (decode queueId)
+      Right (sig, corrId, queueId, command) ->
+        let decodedTransmission = liftM2 (,corrId,,command) (C.decodeSignature =<< decode sig) (decode queueId)
          in either (const $ tError corrId) tParseValidate decodedTransmission
       Left _ -> tError ""
 
-    validSig :: ByteString -> Either String ByteString
-    validSig sig
-      | B.null sig || C.validKeySize (B.length sig) = Right sig
-      | otherwise = Left "invalid signature size"
-
     tError :: ByteString -> m SignedTransmissionOrError
-    tError corrId = return (C.Signature "", (CorrId corrId, "", Left BLOCK))
+    tError corrId = return (Nothing, (CorrId corrId, "", Left BLOCK))
 
-    tParseValidate :: RawTransmission -> m SignedTransmissionOrError
+    tParseValidate :: SignedRawTransmission -> m SignedTransmissionOrError
     tParseValidate t@(sig, corrId, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
-      return (C.Signature sig, (CorrId corrId, queueId, cmd))
+      return (sig, (CorrId corrId, queueId, cmd))
 
-    tCredentials :: RawTransmission -> Cmd -> Either ErrorType Cmd
-    tCredentials (signature, _, queueId, _) cmd = case cmd of
+    tCredentials :: SignedRawTransmission -> Cmd -> Either ErrorType Cmd
+    tCredentials (sig, _, queueId, _) cmd = case cmd of
       -- IDS response must not have queue ID
       Cmd SBroker IDS {} -> Right cmd
       -- ERR response does not always have queue ID
@@ -396,7 +396,7 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
         | otherwise -> Right cmd
       -- NEW must have signature but NOT queue ID
       Cmd SRecipient NEW {}
-        | B.null signature -> Left $ CMD NO_AUTH
+        | isNothing sig -> Left $ CMD NO_AUTH
         | not (B.null queueId) -> Left $ CMD HAS_AUTH
         | otherwise -> Right cmd
       -- SEND must have queue ID, signature is not always required
@@ -405,9 +405,9 @@ tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
         | otherwise -> Right cmd
       -- PING must not have queue ID or signature
       Cmd SSender PING
-        | B.null queueId && B.null signature -> Right cmd
+        | isNothing sig && B.null queueId -> Right cmd
         | otherwise -> Left $ CMD HAS_AUTH
       -- other client commands must have both signature and queue ID
       Cmd _ _
-        | B.null signature || B.null queueId -> Left $ CMD NO_AUTH
+        | isNothing sig || B.null queueId -> Left $ CMD NO_AUTH
         | otherwise -> Right cmd

@@ -30,7 +30,7 @@ data ServerConfig = ServerConfig
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
-    serverPrivateKey :: C.PrivateKey
+    serverPrivateKey :: C.PrivateKey 'C.RSA
     -- serverId :: ByteString
   }
 
@@ -40,7 +40,7 @@ data Env = Env
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
-    serverKeyPair :: C.KeyPair,
+    serverKeyPair :: C.KeyPair 'C.RSA,
     storeLog :: Maybe (StoreLog 'WriteMode)
   }
 
@@ -94,7 +94,7 @@ newEnv config = do
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
   let pk = serverPrivateKey config
-      serverKeyPair = (C.publicKey' pk, pk)
+      serverKeyPair = (C.publicKey pk, pk)
   return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s'}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)

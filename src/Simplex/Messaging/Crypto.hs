@@ -1,11 +1,19 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 -- |
 -- Module      : Simplex.Messaging.Crypto
@@ -19,28 +27,50 @@
 -- This module provides cryptography implementation for SMP protocols based on
 -- <https://hackage.haskell.org/package/cryptonite cryptonite package>.
 module Simplex.Messaging.Crypto
-  ( -- * RSA keys
+  ( -- * Cryptographic keys
+    Algorithm (..),
+    SAlgorithm (..),
+    Alg (..),
+    SignAlg (..),
     PrivateKey (..),
     PublicKey (..),
+    APrivateKey (..),
+    APublicKey (..),
+    APrivateSignKey (..),
+    APublicVerifyKey (..),
+    APrivateDecryptKey (..),
+    APublicEncryptKey (..),
+    CryptoKey (..),
+    CryptoPrivateKey (..),
     KeyPair,
     KeyHash (..),
     generateKeyPair,
-    publicKey',
-    publicKeySize,
-    validKeySize,
+    generateKeyPair',
+    generateSignatureKeyPair,
+    generateEncryptionKeyPair,
+    privateToX509,
 
     -- * E2E hybrid encryption scheme
     encrypt,
+    encrypt',
     decrypt,
+    decrypt',
 
     -- * RSA OAEP encryption
     encryptOAEP,
     decryptOAEP,
 
-    -- * RSA PSS signing
+    -- * sign/verify
     Signature (..),
+    ASignature (..),
+    CryptoSignature (..),
+    SignatureSize (..),
+    SignatureAlgorithm,
+    AlgorithmI (..),
     sign,
     verify,
+    verify',
+    validSignatureSize,
 
     -- * AES256 AEAD-GCM scheme
     Key (..),
@@ -56,13 +86,7 @@ module Simplex.Messaging.Crypto
     ivP,
 
     -- * Encoding of RSA keys
-    serializePrivKey,
-    serializePubKey,
-    encodePubKey,
     publicKeyHash,
-    privKeyP,
-    pubKeyP,
-    binaryPubKeyP,
 
     -- * SHA256 hash
     sha256Hash,
@@ -81,6 +105,10 @@ import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), hash)
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
+import qualified Crypto.PubKey.Curve25519 as X25519
+import qualified Crypto.PubKey.Curve448 as X448
+import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Crypto.PubKey.Ed448 as Ed448
 import qualified Crypto.PubKey.RSA as R
 import qualified Crypto.PubKey.RSA.OAEP as OAEP
 import qualified Crypto.PubKey.RSA.PSS as PSS
@@ -97,42 +125,507 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
 import Data.ByteString.Lazy (fromStrict, toStrict)
+import Data.Constraint (Dict (..))
+import Data.Kind (Constraint, Type)
 import Data.String
+import Data.Type.Equality
 import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord32, encodeWord32)
 import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
--- | A newtype of 'Crypto.PubKey.RSA.PublicKey'.
-newtype PublicKey = PublicKey {rsaPublicKey :: R.PublicKey} deriving (Eq, Show)
+-- | Cryptographic algorithms.
+data Algorithm = RSA | Ed25519 | Ed448 | X25519 | X448
 
--- | A newtype of 'Crypto.PubKey.RSA.PrivateKey' (PublicKey may be inside).
-newtype PrivateKey = PrivateKey {rsaPrivateKey :: R.PrivateKey} deriving (Eq, Show)
+-- | Singleton types for 'Algorithm'.
+data SAlgorithm :: Algorithm -> Type where
+  SRSA :: SAlgorithm RSA
+  SEd25519 :: SAlgorithm Ed25519
+  SEd448 :: SAlgorithm Ed448
+  SX25519 :: SAlgorithm X25519
+  SX448 :: SAlgorithm X448
 
-instance IsString PrivateKey where
-  fromString = parseString $ decode >=> decodePrivKey
+deriving instance Eq (SAlgorithm a)
 
-instance IsString PublicKey where
-  fromString = parseString $ decode >=> decodePubKey
+deriving instance Show (SAlgorithm a)
 
-instance ToField PrivateKey where toField = toField . encodePrivKey
+data Alg = forall a. AlgorithmI a => Alg (SAlgorithm a)
 
-instance ToField PublicKey where toField = toField . encodePubKey
+data SignAlg
+  = forall a.
+    (AlgorithmI a, SignatureAlgorithm a) =>
+    SignAlg (SAlgorithm a)
 
-instance FromField PrivateKey where fromField = blobFieldParser binaryPrivKeyP
+class AlgorithmI (a :: Algorithm) where sAlgorithm :: SAlgorithm a
 
-instance FromField PublicKey where fromField = blobFieldParser binaryPubKeyP
+instance AlgorithmI RSA where sAlgorithm = SRSA
+
+instance AlgorithmI Ed25519 where sAlgorithm = SEd25519
+
+instance AlgorithmI Ed448 where sAlgorithm = SEd448
+
+instance AlgorithmI X25519 where sAlgorithm = SX25519
+
+instance AlgorithmI X448 where sAlgorithm = SX448
+
+instance TestEquality SAlgorithm where
+  testEquality SRSA SRSA = Just Refl
+  testEquality SEd25519 SEd25519 = Just Refl
+  testEquality SEd448 SEd448 = Just Refl
+  testEquality SX25519 SX25519 = Just Refl
+  testEquality SX448 SX448 = Just Refl
+  testEquality _ _ = Nothing
+
+-- | GADT for public keys.
+data PublicKey (a :: Algorithm) where
+  PublicKeyRSA :: R.PublicKey -> PublicKey RSA
+  PublicKeyEd25519 :: Ed25519.PublicKey -> PublicKey Ed25519
+  PublicKeyEd448 :: Ed448.PublicKey -> PublicKey Ed448
+  PublicKeyX25519 :: X25519.PublicKey -> PublicKey X25519
+  PublicKeyX448 :: X448.PublicKey -> PublicKey X448
+
+deriving instance Eq (PublicKey a)
+
+deriving instance Show (PublicKey a)
+
+data APublicKey
+  = forall a.
+    AlgorithmI a =>
+    APublicKey (SAlgorithm a) (PublicKey a)
+
+instance Eq APublicKey where
+  APublicKey a k == APublicKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APublicKey
+
+-- | GADT for private keys.
+data PrivateKey (a :: Algorithm) where
+  PrivateKeyRSA :: {privateKeyRSA :: R.PrivateKey} -> PrivateKey RSA
+  PrivateKeyEd25519 :: Ed25519.SecretKey -> Ed25519.PublicKey -> PrivateKey Ed25519
+  PrivateKeyEd448 :: Ed448.SecretKey -> Ed448.PublicKey -> PrivateKey Ed448
+  PrivateKeyX25519 :: X25519.SecretKey -> PrivateKey X25519
+  PrivateKeyX448 :: X448.SecretKey -> PrivateKey X448
+
+deriving instance Eq (PrivateKey a)
+
+deriving instance Show (PrivateKey a)
+
+data APrivateKey
+  = forall a.
+    AlgorithmI a =>
+    APrivateKey (SAlgorithm a) (PrivateKey a)
+
+instance Eq APrivateKey where
+  APrivateKey a k == APrivateKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APrivateKey
+
+class AlgorithmPrefix k where
+  algorithmPrefix :: k -> ByteString
+
+instance AlgorithmPrefix (SAlgorithm a) where
+  algorithmPrefix = \case
+    SRSA -> "rsa"
+    SEd25519 -> "ed25519"
+    SEd448 -> "ed448"
+    SX25519 -> "x25519"
+    SX448 -> "x448"
+
+instance AlgorithmI a => AlgorithmPrefix (PublicKey a) where
+  algorithmPrefix _ = algorithmPrefix $ sAlgorithm @a
+
+instance AlgorithmI a => AlgorithmPrefix (PrivateKey a) where
+  algorithmPrefix _ = algorithmPrefix $ sAlgorithm @a
+
+instance AlgorithmPrefix APublicKey where
+  algorithmPrefix (APublicKey a _) = algorithmPrefix a
+
+instance AlgorithmPrefix APrivateKey where
+  algorithmPrefix (APrivateKey a _) = algorithmPrefix a
+
+prefixAlgorithm :: ByteString -> Either String Alg
+prefixAlgorithm = \case
+  "rsa" -> Right $ Alg SRSA
+  "ed25519" -> Right $ Alg SEd25519
+  "ed448" -> Right $ Alg SEd448
+  "x25519" -> Right $ Alg SX25519
+  "x448" -> Right $ Alg SX448
+  _ -> Left "unknown algorithm"
+
+algP :: Parser Alg
+algP = prefixAlgorithm <$?> A.takeTill (== ':')
+
+type family SignatureAlgorithm (a :: Algorithm) :: Constraint where
+  SignatureAlgorithm RSA = ()
+  SignatureAlgorithm Ed25519 = ()
+  SignatureAlgorithm Ed448 = ()
+  SignatureAlgorithm a =
+    (Int ~ Bool, TypeError (Text "Algorithm " :<>: ShowType a :<>: Text " cannot be used to sign/verify"))
+
+signatureAlgorithm :: SAlgorithm a -> Maybe (Dict (SignatureAlgorithm a))
+signatureAlgorithm = \case
+  SRSA -> Just Dict
+  SEd25519 -> Just Dict
+  SEd448 -> Just Dict
+  _ -> Nothing
+
+data APrivateSignKey
+  = forall a.
+    (AlgorithmI a, SignatureAlgorithm a) =>
+    APrivateSignKey (SAlgorithm a) (PrivateKey a)
+
+instance Eq APrivateSignKey where
+  APrivateSignKey a k == APrivateSignKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APrivateSignKey
+
+data APublicVerifyKey
+  = forall a.
+    (AlgorithmI a, SignatureAlgorithm a) =>
+    APublicVerifyKey (SAlgorithm a) (PublicKey a)
+
+instance Eq APublicVerifyKey where
+  APublicVerifyKey a k == APublicVerifyKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APublicVerifyKey
+
+type family EncryptionAlgorithm (a :: Algorithm) :: Constraint where
+  EncryptionAlgorithm RSA = ()
+  EncryptionAlgorithm a =
+    (Int ~ Bool, TypeError (Text "Algorithm " :<>: ShowType a :<>: Text " cannot be used to encrypt/decrypt"))
+
+encryptionAlgorithm :: SAlgorithm a -> Maybe (Dict (EncryptionAlgorithm a))
+encryptionAlgorithm = \case
+  SRSA -> Just Dict
+  _ -> Nothing
+
+data APrivateDecryptKey
+  = forall a.
+    (AlgorithmI a, EncryptionAlgorithm a) =>
+    APrivateDecryptKey (SAlgorithm a) (PrivateKey a)
+
+instance Eq APrivateDecryptKey where
+  APrivateDecryptKey a k == APrivateDecryptKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APrivateDecryptKey
+
+data APublicEncryptKey
+  = forall a.
+    (AlgorithmI a, EncryptionAlgorithm a) =>
+    APublicEncryptKey (SAlgorithm a) (PublicKey a)
+
+instance Eq APublicEncryptKey where
+  APublicEncryptKey a k == APublicEncryptKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APublicEncryptKey
+
+-- | Class for all key types
+class CryptoKey k where
+  keySize :: k -> Int
+
+  validKeySize :: k -> Bool
+
+  -- | base64 X509 key encoding with algorithm prefix
+  serializeKey :: k -> ByteString
+
+  -- | binary X509 key encoding
+  encodeKey :: k -> ByteString
+
+  -- | base64 X509 (with algorithm prefix) key parser
+  strKeyP :: Parser k
+
+  -- | binary X509 key parser
+  binaryKeyP :: Parser k
+
+-- | X509 encoding of any public key.
+instance CryptoKey APublicKey where
+  keySize (APublicKey _ k) = keySize k
+  validKeySize (APublicKey _ k) = validKeySize k
+  serializeKey (APublicKey _ k) = serializeKey k
+  encodeKey (APublicKey _ k) = encodeKey k
+  strKeyP = do
+    Alg a <- algP <* A.char ':'
+    k@(APublicKey a' _) <- decodePubKey <$?> base64P
+    case testEquality a a' of
+      Just Refl -> pure k
+      _ -> fail $ "public key algorithm " <> show a <> " does not match prefix"
+  binaryKeyP = decodePubKey <$?> A.takeByteString
+
+-- | X509 encoding of signature public key.
+instance CryptoKey APublicVerifyKey where
+  keySize (APublicVerifyKey _ k) = keySize k
+  validKeySize (APublicVerifyKey _ k) = validKeySize k
+  serializeKey (APublicVerifyKey _ k) = serializeKey k
+  encodeKey (APublicVerifyKey _ k) = encodeKey k
+  strKeyP = pubVerifyKey <$?> strKeyP
+  binaryKeyP = pubVerifyKey <$?> binaryKeyP
+
+-- | X509 encoding of encryption public key.
+instance CryptoKey APublicEncryptKey where
+  keySize (APublicEncryptKey _ k) = keySize k
+  validKeySize (APublicEncryptKey _ k) = validKeySize k
+  serializeKey (APublicEncryptKey _ k) = serializeKey k
+  encodeKey (APublicEncryptKey _ k) = encodeKey k
+  strKeyP = pubEncryptKey <$?> strKeyP
+  binaryKeyP = pubEncryptKey <$?> binaryKeyP
+
+-- | X509 encoding of 'PublicKey'.
+instance forall a. AlgorithmI a => CryptoKey (PublicKey a) where
+  keySize = \case
+    PublicKeyRSA k -> R.public_size k
+    PublicKeyEd25519 _ -> Ed25519.publicKeySize
+    PublicKeyEd448 _ -> Ed448.publicKeySize
+    PublicKeyX25519 _ -> x25519_size
+    PublicKeyX448 _ -> x448_size
+  validKeySize = \case
+    PublicKeyRSA k -> validRSAKeySize $ R.public_size k
+    _ -> True
+  serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
+  encodeKey = encodeASNKey . publicToX509
+  strKeyP = pubKey' <$?> strKeyP
+  binaryKeyP = pubKey' <$?> binaryKeyP
+
+-- | X509 encoding of any private key.
+instance CryptoKey APrivateKey where
+  keySize (APrivateKey _ k) = keySize k
+  validKeySize (APrivateKey _ k) = validKeySize k
+  serializeKey (APrivateKey _ k) = serializeKey k
+  encodeKey (APrivateKey _ k) = encodeKey k
+  strKeyP = do
+    Alg a <- algP <* A.char ':'
+    k@(APrivateKey a' _) <- decodePrivKey <$?> base64P
+    case testEquality a a' of
+      Just Refl -> pure k
+      _ -> fail $ "private key algorithm " <> show a <> " does not match prefix"
+  binaryKeyP = decodePrivKey <$?> A.takeByteString
+
+-- | X509 encoding of signature private key.
+instance CryptoKey APrivateSignKey where
+  keySize (APrivateSignKey _ k) = keySize k
+  validKeySize (APrivateSignKey _ k) = validKeySize k
+  serializeKey (APrivateSignKey _ k) = serializeKey k
+  encodeKey (APrivateSignKey _ k) = encodeKey k
+  strKeyP = privSignKey <$?> strKeyP
+  binaryKeyP = privSignKey <$?> binaryKeyP
+
+-- | X509 encoding of encryption private key.
+instance CryptoKey APrivateDecryptKey where
+  keySize (APrivateDecryptKey _ k) = keySize k
+  validKeySize (APrivateDecryptKey _ k) = validKeySize k
+  serializeKey (APrivateDecryptKey _ k) = serializeKey k
+  encodeKey (APrivateDecryptKey _ k) = encodeKey k
+  strKeyP = privDecryptKey <$?> strKeyP
+  binaryKeyP = privDecryptKey <$?> binaryKeyP
+
+-- | X509 encoding of 'PrivateKey'.
+instance AlgorithmI a => CryptoKey (PrivateKey a) where
+  keySize = \case
+    PrivateKeyRSA k -> rsaPrivateKeySize k
+    PrivateKeyEd25519 _ _ -> Ed25519.secretKeySize
+    PrivateKeyEd448 _ _ -> Ed448.secretKeySize
+    PrivateKeyX25519 _ -> x25519_size
+    PrivateKeyX448 _ -> x448_size
+  validKeySize = \case
+    PrivateKeyRSA k -> validRSAKeySize $ rsaPrivateKeySize k
+    _ -> True
+  serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
+  encodeKey = encodeASNKey . privateToX509
+  strKeyP = privKey' <$?> strKeyP
+  binaryKeyP = privKey' <$?> binaryKeyP
+
+type family PublicKeyType pk where
+  PublicKeyType APrivateKey = APublicKey
+  PublicKeyType APrivateSignKey = APublicVerifyKey
+  PublicKeyType APrivateDecryptKey = APublicEncryptKey
+  PublicKeyType (PrivateKey a) = PublicKey a
+
+class CryptoPrivateKey pk where publicKey :: pk -> PublicKeyType pk
+
+instance CryptoPrivateKey APrivateKey where
+  publicKey (APrivateKey a k) = APublicKey a $ publicKey k
+
+instance CryptoPrivateKey APrivateSignKey where
+  publicKey (APrivateSignKey a k) = APublicVerifyKey a $ publicKey k
+
+instance CryptoPrivateKey APrivateDecryptKey where
+  publicKey (APrivateDecryptKey a k) = APublicEncryptKey a $ publicKey k
+
+instance CryptoPrivateKey (PrivateKey a) where
+  publicKey = \case
+    PrivateKeyRSA k -> PublicKeyRSA $ R.private_pub k
+    PrivateKeyEd25519 _ k -> PublicKeyEd25519 k
+    PrivateKeyEd448 _ k -> PublicKeyEd448 k
+    PrivateKeyX25519 k -> PublicKeyX25519 $ X25519.toPublic k
+    PrivateKeyX448 k -> PublicKeyX448 $ X448.toPublic k
+
+instance AlgorithmI a => IsString (PrivateKey a) where
+  fromString = parseString $ decode >=> decodePrivKey >=> privKey'
+
+instance AlgorithmI a => IsString (PublicKey a) where
+  fromString = parseString $ decode >=> decodePubKey >=> pubKey'
 
 -- | Tuple of RSA 'PublicKey' and 'PrivateKey'.
-type KeyPair = (PublicKey, PrivateKey)
+type KeyPair a = (PublicKey a, PrivateKey a)
 
--- | RSA signature newtype.
-newtype Signature = Signature {unSignature :: ByteString} deriving (Eq, Show)
+type AKeyPair = (APublicKey, APrivateKey)
 
-instance IsString Signature where
-  fromString = Signature . fromString
+type ASignatureKeyPair = (APublicVerifyKey, APrivateSignKey)
+
+type AnEncryptionKeyPair = (APublicEncryptKey, APrivateDecryptKey)
+
+generateKeyPair :: AlgorithmI a => Int -> SAlgorithm a -> IO AKeyPair
+generateKeyPair size a = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair' size a
+
+generateSignatureKeyPair ::
+  (AlgorithmI a, SignatureAlgorithm a) => Int -> SAlgorithm a -> IO ASignatureKeyPair
+generateSignatureKeyPair size a =
+  bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair' size a
+
+generateEncryptionKeyPair ::
+  (AlgorithmI a, EncryptionAlgorithm a) => Int -> SAlgorithm a -> IO AnEncryptionKeyPair
+generateEncryptionKeyPair size a =
+  bimap (APublicEncryptKey a) (APrivateDecryptKey a) <$> generateKeyPair' size a
+
+generateKeyPair' :: Int -> SAlgorithm a -> IO (KeyPair a)
+generateKeyPair' size = \case
+  SRSA -> generateKeyPairRSA size
+  SEd25519 ->
+    Ed25519.generateSecretKey >>= \pk ->
+      let k = Ed25519.toPublic pk
+       in pure (PublicKeyEd25519 k, PrivateKeyEd25519 pk k)
+  SEd448 ->
+    Ed448.generateSecretKey >>= \pk ->
+      let k = Ed448.toPublic pk
+       in pure (PublicKeyEd448 k, PrivateKeyEd448 pk k)
+  SX25519 ->
+    X25519.generateSecretKey >>= \pk ->
+      let k = X25519.toPublic pk
+       in pure (PublicKeyX25519 k, PrivateKeyX25519 pk)
+  SX448 ->
+    X448.generateSecretKey >>= \pk ->
+      let k = X448.toPublic pk
+       in pure (PublicKeyX448 k, PrivateKeyX448 pk)
+
+instance ToField APrivateSignKey where toField = toField . encodeKey
+
+instance ToField APublicVerifyKey where toField = toField . encodeKey
+
+instance ToField APrivateDecryptKey where toField = toField . encodeKey
+
+instance ToField APublicEncryptKey where toField = toField . encodeKey
+
+instance FromField APrivateSignKey where fromField = blobFieldParser binaryKeyP
+
+instance FromField APublicVerifyKey where fromField = blobFieldParser binaryKeyP
+
+instance FromField APrivateDecryptKey where fromField = blobFieldParser binaryKeyP
+
+instance FromField APublicEncryptKey where fromField = blobFieldParser binaryKeyP
+
+instance IsString (Maybe ASignature) where
+  fromString = parseString $ decode >=> decodeSignature
+
+data Signature (a :: Algorithm) where
+  SignatureRSA :: ByteString -> Signature RSA
+  SignatureEd25519 :: Ed25519.Signature -> Signature Ed25519
+  SignatureEd448 :: Ed448.Signature -> Signature Ed448
+
+deriving instance Eq (Signature a)
+
+deriving instance Show (Signature a)
+
+data ASignature
+  = forall a.
+    (AlgorithmI a, SignatureAlgorithm a) =>
+    ASignature (SAlgorithm a) (Signature a)
+
+instance Eq ASignature where
+  ASignature a s == ASignature a' s' = case testEquality a a' of
+    Just Refl -> s == s'
+    _ -> False
+
+deriving instance Show ASignature
+
+class CryptoSignature s where
+  serializeSignature :: s -> ByteString
+  serializeSignature = encode . signatureBytes
+  signatureBytes :: s -> ByteString
+  decodeSignature :: ByteString -> Either String s
+
+instance CryptoSignature ASignature where
+  signatureBytes (ASignature _ sig) = signatureBytes sig
+  decodeSignature s
+    | l == Ed25519.signatureSize =
+      ASignature SEd25519 . SignatureEd25519 <$> ed Ed25519.signature s
+    | l == Ed448.signatureSize =
+      ASignature SEd448 . SignatureEd448 <$> ed Ed448.signature s
+    | l == 128 || l == 256 || l == 384 || l == 512 = rsa s
+    | otherwise = Left "bad signature size"
+    where
+      l = B.length s
+      ed alg = first show . CE.eitherCryptoError . alg
+      rsa = Right . ASignature SRSA . SignatureRSA
+
+instance CryptoSignature (Maybe ASignature) where
+  signatureBytes = maybe "" signatureBytes
+  decodeSignature s
+    | B.null s = Right Nothing
+    | otherwise = Just <$> decodeSignature s
+
+instance AlgorithmI a => CryptoSignature (Signature a) where
+  signatureBytes = \case
+    SignatureRSA s -> s
+    SignatureEd25519 s -> BA.convert s
+    SignatureEd448 s -> BA.convert s
+  decodeSignature s = do
+    ASignature a sig <- decodeSignature s
+    case testEquality a $ sAlgorithm @a of
+      Just Refl -> Right sig
+      _ -> Left "bad signature algorithm"
+
+class SignatureSize s where signatureSize :: s -> Int
+
+instance SignatureSize (Signature a) where
+  signatureSize = \case
+    SignatureRSA s -> B.length s
+    SignatureEd25519 _ -> Ed25519.signatureSize
+    SignatureEd448 _ -> Ed448.signatureSize
+
+instance SignatureSize APrivateSignKey where
+  signatureSize (APrivateSignKey _ k) = signatureSize k
+
+instance SignatureSize APublicVerifyKey where
+  signatureSize (APublicVerifyKey _ k) = signatureSize k
+
+instance SignatureAlgorithm a => SignatureSize (PrivateKey a) where
+  signatureSize = \case
+    PrivateKeyRSA k -> rsaPrivateKeySize k
+    PrivateKeyEd25519 _ _ -> Ed25519.signatureSize
+    PrivateKeyEd448 _ _ -> Ed448.signatureSize
+
+instance SignatureAlgorithm a => SignatureSize (PublicKey a) where
+  signatureSize = \case
+    PublicKeyRSA k -> R.public_size k
+    PublicKeyEd25519 _ -> Ed25519.signatureSize
+    PublicKeyEd448 _ -> Ed448.signatureSize
+
+rsaPrivateKeySize :: R.PrivateKey -> Int
+rsaPrivateKeySize = R.public_size . R.private_pub
 
 -- | Various cryptographic or related errors.
 data CryptoError
@@ -142,6 +635,8 @@ data CryptoError
     RSADecryptError R.Error
   | -- | RSA PSS signature error
     RSASignError R.Error
+  | -- | Unsupported signing algorithm
+    UnsupportedAlgorithm
   | -- | AES initialization error
     AESCipherError CE.CryptoError
   | -- | IV generation error
@@ -164,8 +659,8 @@ authTagSize :: Int
 authTagSize = 128 `div` 8
 
 -- | Generate RSA key pair.
-generateKeyPair :: Int -> IO KeyPair
-generateKeyPair size = loop
+generateKeyPairRSA :: Int -> IO (KeyPair RSA)
+generateKeyPairRSA size = loop
   where
     publicExponent = findPrimeFrom . (+ 3) <$> generateMax pubExpRange
     loop = do
@@ -174,24 +669,20 @@ generateKeyPair size = loop
           d = R.private_d pk
       if d * d < n
         then loop
-        else pure (PublicKey k, PrivateKey pk)
+        else pure (PublicKeyRSA k, PrivateKeyRSA pk)
 
-privateKeySize :: PrivateKey -> Int
-privateKeySize = R.public_size . R.private_pub . rsaPrivateKey
+x25519_size :: Int
+x25519_size = 32
 
-publicKey' :: PrivateKey -> PublicKey
-publicKey' = PublicKey . R.private_pub . rsaPrivateKey
+x448_size :: Int
+x448_size = 448 `quot` 8
 
-publicKeySize :: PublicKey -> Int
-publicKeySize = R.public_size . rsaPublicKey
+validRSAKeySize :: Int -> Bool
+validRSAKeySize n = n == 128 || n == 256 || n == 384 || n == 512
 
-validKeySize :: Int -> Bool
-validKeySize = \case
-  128 -> True
-  256 -> True
-  384 -> True
-  512 -> True
-  _ -> False
+validSignatureSize :: Int -> Bool
+validSignatureSize n =
+  n == Ed25519.signatureSize || n == Ed448.signatureSize || validRSAKeySize n
 
 data Header = Header
   { aesKey :: Key,
@@ -217,8 +708,8 @@ instance ToField KeyHash where toField = toField . encode . unKeyHash
 instance FromField KeyHash where fromField = blobFieldParser $ KeyHash <$> base64P
 
 -- | Digest (hash) of binary X509 encoding of RSA public key.
-publicKeyHash :: PublicKey -> KeyHash
-publicKeyHash = KeyHash . sha256Hash . encodePubKey
+publicKeyHash :: PublicKey RSA -> KeyHash
+publicKeyHash = KeyHash . sha256Hash . encodeKey
 
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString
@@ -249,28 +740,36 @@ parseHeader = first CryptoHeaderError . parseAll headerP
 
 -- * E2E hybrid encryption scheme
 
--- | E2E encrypt SMP agent messages.
+-- | Legacy hybrid E2E encryption of SMP agent messages (RSA-OAEP/AES-256-GCM-SHA256).
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-01-26-crypto.md#e2e-encryption
-encrypt :: PublicKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
-encrypt k paddedSize msg = do
+encrypt' :: PublicKey a -> Int -> ByteString -> ExceptT CryptoError IO ByteString
+encrypt' k@(PublicKeyRSA _) paddedSize msg = do
   aesKey <- liftIO randomAesKey
   ivBytes <- liftIO randomIV
   (authTag, msg') <- encryptAES aesKey ivBytes paddedSize msg
   let header = Header {aesKey, ivBytes, authTag, msgSize = B.length msg}
   encHeader <- encryptOAEP k $ serializeHeader header
   return $ encHeader <> msg'
+encrypt' _ _ _ = throwE UnsupportedAlgorithm
 
--- | E2E decrypt SMP agent messages.
+-- | Legacy hybrid E2E decryption of SMP agent messages (RSA-OAEP/AES-256-GCM-SHA256).
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-01-26-crypto.md#e2e-encryption
-decrypt :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
-decrypt pk msg'' = do
-  let (encHeader, msg') = B.splitAt (privateKeySize pk) msg''
+decrypt' :: PrivateKey a -> ByteString -> ExceptT CryptoError IO ByteString
+decrypt' pk@(PrivateKeyRSA _) msg'' = do
+  let (encHeader, msg') = B.splitAt (keySize pk) msg''
   header <- decryptOAEP pk encHeader
   Header {aesKey, ivBytes, authTag, msgSize} <- except $ parseHeader header
   msg <- decryptAES aesKey ivBytes msg' authTag
   return $ B.take msgSize msg
+decrypt' _ _ = throwE UnsupportedAlgorithm
+
+encrypt :: APublicEncryptKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
+encrypt (APublicEncryptKey _ k) = encrypt' k
+
+decrypt :: APrivateDecryptKey -> ByteString -> ExceptT CryptoError IO ByteString
+decrypt (APrivateDecryptKey _ pk) = decrypt' pk
 
 -- | AEAD-GCM encryption.
 --
@@ -335,85 +834,115 @@ oaepParams = OAEP.defaultOAEPParams SHA256
 -- | RSA OAEP encryption.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport handshake.
-encryptOAEP :: PublicKey -> ByteString -> ExceptT CryptoError IO ByteString
-encryptOAEP (PublicKey k) aesKey =
+encryptOAEP :: PublicKey RSA -> ByteString -> ExceptT CryptoError IO ByteString
+encryptOAEP (PublicKeyRSA k) aesKey =
   liftEitherError RSAEncryptError $
     OAEP.encrypt oaepParams k aesKey
 
 -- | RSA OAEP decryption.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport handshake.
-decryptOAEP :: PrivateKey -> ByteString -> ExceptT CryptoError IO ByteString
-decryptOAEP pk encKey =
+decryptOAEP :: PrivateKey RSA -> ByteString -> ExceptT CryptoError IO ByteString
+decryptOAEP (PrivateKeyRSA pk) encKey =
   liftEitherError RSADecryptError $
-    OAEP.decryptSafer oaepParams (rsaPrivateKey pk) encKey
+    OAEP.decryptSafer oaepParams pk encKey
 
 pssParams :: PSS.PSSParams SHA256 ByteString ByteString
 pssParams = PSS.defaultPSSParams SHA256
 
--- | RSA PSS message signing.
+-- | Message signing.
 --
 -- Used by SMP clients to sign SMP commands and by SMP agents to sign messages.
-sign :: PrivateKey -> ByteString -> ExceptT CryptoError IO Signature
-sign pk msg = ExceptT $ bimap RSASignError Signature <$> PSS.signSafer pssParams (rsaPrivateKey pk) msg
+sign' :: SignatureAlgorithm a => PrivateKey a -> ByteString -> ExceptT CryptoError IO (Signature a)
+sign' (PrivateKeyRSA pk) msg = ExceptT $ bimap RSASignError SignatureRSA <$> PSS.signSafer pssParams pk msg
+sign' (PrivateKeyEd25519 pk k) msg = pure . SignatureEd25519 $ Ed25519.sign pk k msg
+sign' (PrivateKeyEd448 pk k) msg = pure . SignatureEd448 $ Ed448.sign pk k msg
 
--- | RSA PSS signature verification.
+sign :: APrivateSignKey -> ByteString -> ExceptT CryptoError IO ASignature
+sign (APrivateSignKey a k) = fmap (ASignature a) . sign' k
+
+-- | Signature verification.
 --
 -- Used by SMP servers to authorize SMP commands and by SMP agents to verify messages.
-verify :: PublicKey -> Signature -> ByteString -> Bool
-verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig
+verify' :: SignatureAlgorithm a => PublicKey a -> Signature a -> ByteString -> Bool
+verify' (PublicKeyRSA k) (SignatureRSA sig) msg = PSS.verify pssParams k msg sig
+verify' (PublicKeyEd25519 k) (SignatureEd25519 sig) msg = Ed25519.verify k msg sig
+verify' (PublicKeyEd448 k) (SignatureEd448 sig) msg = Ed448.verify k msg sig
 
--- | Base-64 X509 encoding of RSA public key.
---
--- Used as part of SMP queue information (out-of-band message).
-serializePubKey :: PublicKey -> ByteString
-serializePubKey = ("rsa:" <>) . encode . encodePubKey
+verify :: APublicVerifyKey -> ASignature -> ByteString -> Bool
+verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' of
+  Just Refl -> verify' k sig msg
+  _ -> False
 
--- | Base-64 PKCS8 encoding of PSA private key.
---
--- Not used as part of SMP protocols.
-serializePrivKey :: PrivateKey -> ByteString
-serializePrivKey = ("rsa:" <>) . encode . encodePrivKey
+pubVerifyKey :: APublicKey -> Either String APublicVerifyKey
+pubVerifyKey (APublicKey a k) = case signatureAlgorithm a of
+  Just Dict -> Right $ APublicVerifyKey a k
+  _ -> Left "key does not support signature algorithms"
 
--- Base-64 X509 RSA public key parser.
-pubKeyP :: Parser PublicKey
-pubKeyP = decodePubKey <$?> ("rsa:" *> base64P)
+pubEncryptKey :: APublicKey -> Either String APublicEncryptKey
+pubEncryptKey (APublicKey a k) = case encryptionAlgorithm a of
+  Just Dict -> Right $ APublicEncryptKey a k
+  _ -> Left "key does not support encryption algorithms"
 
--- Binary X509 RSA public key parser.
-binaryPubKeyP :: Parser PublicKey
-binaryPubKeyP = decodePubKey <$?> A.takeByteString
+pubKey' :: forall a. AlgorithmI a => APublicKey -> Either String (PublicKey a)
+pubKey' (APublicKey a k) = case testEquality a $ sAlgorithm @a of
+  Just Refl -> Right k
+  _ -> Left "bad key algorithm"
 
--- Base-64 PKCS8 RSA private key parser.
-privKeyP :: Parser PrivateKey
-privKeyP = decodePrivKey <$?> ("rsa:" *> base64P)
+privSignKey :: APrivateKey -> Either String APrivateSignKey
+privSignKey (APrivateKey a k) = case signatureAlgorithm a of
+  Just Dict -> Right $ APrivateSignKey a k
+  _ -> Left "key does not support signature algorithms"
 
--- Binary PKCS8 RSA private key parser.
-binaryPrivKeyP :: Parser PrivateKey
-binaryPrivKeyP = decodePrivKey <$?> A.takeByteString
+privDecryptKey :: APrivateKey -> Either String APrivateDecryptKey
+privDecryptKey (APrivateKey a k) = case encryptionAlgorithm a of
+  Just Dict -> Right $ APrivateDecryptKey a k
+  _ -> Left "key does not support encryption algorithms"
 
--- Binary X509 encoding of 'PublicKey'.
-encodePubKey :: PublicKey -> ByteString
-encodePubKey = encodeKey . PubKeyRSA . rsaPublicKey
+privKey' :: forall a. AlgorithmI a => APrivateKey -> Either String (PrivateKey a)
+privKey' (APrivateKey a k) = case testEquality a $ sAlgorithm @a of
+  Just Refl -> Right k
+  _ -> Left "bad key algorithm"
 
--- Binary PKCS8 encoding of 'PrivateKey'.
-encodePrivKey :: PrivateKey -> ByteString
-encodePrivKey = encodeKey . PrivKeyRSA . rsaPrivateKey
+publicToX509 :: PublicKey a -> PubKey
+publicToX509 = \case
+  PublicKeyRSA k -> PubKeyRSA k
+  PublicKeyEd25519 k -> PubKeyEd25519 k
+  PublicKeyEd448 k -> PubKeyEd448 k
+  PublicKeyX25519 k -> PubKeyX25519 k
+  PublicKeyX448 k -> PubKeyX448 k
 
-encodeKey :: ASN1Object a => a -> ByteString
-encodeKey k = toStrict . encodeASN1 DER $ toASN1 k []
+privateToX509 :: PrivateKey a -> PrivKey
+privateToX509 = \case
+  PrivateKeyRSA k -> PrivKeyRSA k
+  PrivateKeyEd25519 k _ -> PrivKeyEd25519 k
+  PrivateKeyEd448 k _ -> PrivKeyEd448 k
+  PrivateKeyX25519 k -> PrivKeyX25519 k
+  PrivateKeyX448 k -> PrivKeyX448 k
+
+encodeASNKey :: ASN1Object a => a -> ByteString
+encodeASNKey k = toStrict . encodeASN1 DER $ toASN1 k []
 
 -- Decoding of binary X509 'PublicKey'.
-decodePubKey :: ByteString -> Either String PublicKey
+decodePubKey :: ByteString -> Either String APublicKey
 decodePubKey =
   decodeKey >=> \case
-    (PubKeyRSA k, []) -> Right $ PublicKey k
+    (PubKeyRSA k, []) -> Right . APublicKey SRSA $ PublicKeyRSA k
+    (PubKeyEd25519 k, []) -> Right . APublicKey SEd25519 $ PublicKeyEd25519 k
+    (PubKeyEd448 k, []) -> Right . APublicKey SEd448 $ PublicKeyEd448 k
+    (PubKeyX25519 k, []) -> Right . APublicKey SX25519 $ PublicKeyX25519 k
+    (PubKeyX448 k, []) -> Right . APublicKey SX448 $ PublicKeyX448 k
     r -> keyError r
 
 -- Decoding of binary PKCS8 'PrivateKey'.
-decodePrivKey :: ByteString -> Either String PrivateKey
+decodePrivKey :: ByteString -> Either String APrivateKey
 decodePrivKey =
   decodeKey >=> \case
-    (PrivKeyRSA pk, []) -> Right $ PrivateKey pk
+    (PrivKeyRSA pk, []) -> Right . APrivateKey SRSA $ PrivateKeyRSA pk
+    (PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
+    (PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 . PrivateKeyEd448 k $ Ed448.toPublic k
+    (PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 $ PrivateKeyX25519 k
+    (PrivKeyX448 k, []) -> Right . APrivateKey SX448 $ PrivateKeyX448 k
     r -> keyError r
 
 decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
@@ -421,5 +950,5 @@ decodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
 
 keyError :: (a, [ASN1]) -> Either String b
 keyError = \case
-  (_, []) -> Left "not RSA key"
+  (_, []) -> Left "unknown key algorithm"
   _ -> Left "more than one key"

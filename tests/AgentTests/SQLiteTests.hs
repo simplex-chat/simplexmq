@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -149,9 +150,18 @@ testForeignKeysEnabled =
 cData1 :: ConnData
 cData1 = ConnData {connId = "conn1"}
 
-testPrivateKey :: C.PrivateKey
+testPrivateSignKey :: C.APrivateSignKey
+testPrivateSignKey = C.APrivateSignKey C.SRSA testPrivateKey
+
+testPrivateDecryptKey :: C.APrivateDecryptKey
+testPrivateDecryptKey = C.APrivateDecryptKey C.SRSA testPrivateKey
+
+testPublicEncryptKey :: C.APublicEncryptKey
+testPublicEncryptKey = C.APublicEncryptKey C.SRSA $ C.PublicKeyRSA $ R.PublicKey 1 2 3
+
+testPrivateKey :: C.PrivateKey 'C.RSA
 testPrivateKey =
-  C.PrivateKey
+  C.PrivateKeyRSA
     R.PrivateKey
       { private_pub =
           R.PublicKey
@@ -172,9 +182,9 @@ rcvQueue1 =
   RcvQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       rcvId = "1234",
-      rcvPrivateKey = testPrivateKey,
+      rcvPrivateKey = testPrivateSignKey,
       sndId = Just "2345",
-      decryptKey = testPrivateKey,
+      decryptKey = testPrivateDecryptKey,
       verifyKey = Nothing,
       status = New
     }
@@ -184,9 +194,9 @@ sndQueue1 =
   SndQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
-      sndPrivateKey = testPrivateKey,
-      encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-      signKey = testPrivateKey,
+      sndPrivateKey = testPrivateSignKey,
+      encryptKey = testPublicEncryptKey,
+      signKey = testPrivateSignKey,
       status = New
     }
 
@@ -324,9 +334,9 @@ testUpgradeRcvConnToDuplex =
           SndQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               sndId = "2345",
-              sndPrivateKey = testPrivateKey,
-              encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-              signKey = testPrivateKey,
+              sndPrivateKey = testPrivateSignKey,
+              encryptKey = testPublicEncryptKey,
+              signKey = testPrivateSignKey,
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
@@ -344,9 +354,9 @@ testUpgradeSndConnToDuplex =
           RcvQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               rcvId = "3456",
-              rcvPrivateKey = testPrivateKey,
+              rcvPrivateKey = testPrivateSignKey,
               sndId = Just "4567",
-              decryptKey = testPrivateKey,
+              decryptKey = testPrivateDecryptKey,
               verifyKey = Nothing,
               status = New
             }

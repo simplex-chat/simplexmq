@@ -264,7 +264,7 @@ joinConn c connId qInfo cInfo = do
   activateQueueJoining c connId' sq verifyKey $ retryInterval cfg
   pure connId'
 
-activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 activateQueueJoining c connId sq verifyKey retryInterval =
   activateQueue c connId sq verifyKey retryInterval createReplyQueue
   where
@@ -314,8 +314,8 @@ subscribeConnection' c connId =
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
   where
-    verifyKey :: SndQueue -> C.PublicKey
-    verifyKey = C.publicKey' . signKey
+    verifyKey :: SndQueue -> C.APublicVerifyKey
+    verifyKey = C.publicKey . signKey
     activateSecuredQueue :: RcvQueue -> SndQueue -> m ()
     activateSecuredQueue rq sq = do
       activateQueueInitiating c connId sq (verifyKey sq) =<< resumeInterval
@@ -582,11 +582,11 @@ confirmQueue c sq senderKey cInfo = do
   sendConfirmation c sq senderKey cInfo
   withStore $ \st -> setSndQueueStatus st sq Confirmed
 
-activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 activateQueueInitiating c connId sq verifyKey retryInterval =
   activateQueue c connId sq verifyKey retryInterval $ notifyConnected c connId
 
-activateQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m () -> m ()
+activateQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m () -> m ()
 activateQueue c connId sq verifyKey retryInterval afterActivation =
   getActivation c connId >>= \case
     Nothing -> async runActivation >>= addActivation c connId
@@ -603,11 +603,20 @@ notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
 newSndQueue ::
-  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, VerificationKey)
-newSndQueue (SMPQueueInfo smpServer senderId encryptKey) = do
+  (MonadUnliftIO m, MonadReader Env m) => SMPQueueInfo -> m (SndQueue, SenderPublicKey, C.APublicVerifyKey)
+newSndQueue qInfo =
+  asks (cmdSignAlg . config) >>= \case
+    C.SignAlg a -> newSndQueue_ a qInfo
+
+newSndQueue_ ::
+  (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m, MonadReader Env m) =>
+  C.SAlgorithm a ->
+  SMPQueueInfo ->
+  m (SndQueue, SenderPublicKey, C.APublicVerifyKey)
+newSndQueue_ a (SMPQueueInfo smpServer senderId encryptKey) = do
   size <- asks $ rsaKeySize . config
-  (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size
-  (verifyKey, signKey) <- liftIO $ C.generateKeyPair size
+  (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
+  (verifyKey, signKey) <- liftIO $ C.generateSignatureKeyPair size C.SRSA
   let sndQueue =
         SndQueue
           { server = smpServer,

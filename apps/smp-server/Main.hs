@@ -101,7 +101,7 @@ getConfig opts = do
   storeLog <- liftIO $ openStoreLog opts ini
   pure $ makeConfig ini pk storeLog
 
-makeConfig :: IniOpts -> C.PrivateKey -> Maybe (StoreLog 'ReadMode) -> ServerConfig
+makeConfig :: IniOpts -> C.PrivateKey 'C.RSA -> Maybe (StoreLog 'ReadMode) -> ServerConfig
 makeConfig IniOpts {serverPort, blockSize, enableWebsockets} pk storeLog =
   let transports = (serverPort, transport @TCP) : [("80", transport @WS) | enableWebsockets]
    in serverConfig {serverPrivateKey = pk, storeLog, blockSize, transports}
@@ -200,11 +200,11 @@ createIni ServerOpts {enableStoreLog} = do
         enableWebsockets = True
       }
 
-readKey :: IniOpts -> ExceptT String IO C.PrivateKey
+readKey :: IniOpts -> ExceptT String IO (C.PrivateKey 'C.RSA)
 readKey IniOpts {serverKeyFile} = do
   fileExists serverKeyFile
   liftIO (S.readKeyFile serverKeyFile) >>= \case
-    [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.PrivateKey pk
+    [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.PrivateKeyRSA pk
     [_] -> err "not RSA key"
     [] -> err "invalid key file format"
     _ -> err "more than one key"
@@ -212,10 +212,10 @@ readKey IniOpts {serverKeyFile} = do
     err :: String -> ExceptT String IO b
     err e = throwE $ e <> ": " <> serverKeyFile
 
-createKey :: IniOpts -> IO C.PrivateKey
+createKey :: IniOpts -> IO (C.PrivateKey 'C.RSA)
 createKey IniOpts {serverKeyFile} = do
-  (_, pk) <- C.generateKeyPair newKeySize
-  S.writeKeyFile S.TraditionalFormat serverKeyFile [PrivKeyRSA $ C.rsaPrivateKey pk]
+  (_, pk) <- C.generateKeyPair' newKeySize C.SRSA
+  S.writeKeyFile S.TraditionalFormat serverKeyFile [C.privateToX509 pk]
   pure pk
 
 fileExists :: FilePath -> ExceptT String IO ()
@@ -233,8 +233,8 @@ confirm msg = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-serverKeyHash :: C.PrivateKey -> B.ByteString
-serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey'
+serverKeyHash :: C.PrivateKey 'C.RSA -> B.ByteString
+serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey
 
 openStoreLog :: ServerOpts -> IniOpts -> IO (Maybe (StoreLog 'ReadMode))
 openStoreLog ServerOpts {enableStoreLog = l} IniOpts {enableStoreLog = l', storeLogFile = f}
