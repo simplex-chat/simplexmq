@@ -279,18 +279,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
-  updateSignKey :: SQLiteStore -> SndQueue -> SignatureKey -> m ()
-  updateSignKey st SndQueue {sndId, server = SMPServer {host, port}} signatureKey =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE snd_queues
-          SET sign_key = :sign_key
-          WHERE host = :host AND port = :port AND snd_id = :snd_id;
-        |]
-        [":sign_key" := signatureKey, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
-
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderKey, senderConnInfo} =
     liftIOEither . withTransaction st $ \db ->
