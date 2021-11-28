@@ -94,7 +94,7 @@ The procedure of establishing a duplex connection is explained on the example of
 
 At this point the duplex connection between Alice and Bob is established, they can use `SEND` command to send messages. The diagram also shows how the connection status changes for both parties, where the first part is the status of the SMP queue to receive messages, and the second part - the status of the queue to send messages.
 
-The most communication happens between the agents and servers, from the point of view of Alice and Bob there 4 steps (not including notifications):
+The most communication happens between the agents and servers, from the point of view of Alice and Bob there are 4 steps (not including notifications):
 
 1. Alice requests a new connection with `NEW` command and receives the invitation.
 2. Alice passes connection request out-of-band to Bob.
