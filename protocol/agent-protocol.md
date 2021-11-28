@@ -50,7 +50,7 @@ The agent must have a persistent storage to manage the states of known connectio
 
 ## SMP servers management
 
-SMP agent protocol commands do not contain SMP servers that the agent will use to create and use the connections (excluding the server in queue URIs used in JOIN command). The servers are part of the agent configuration and can be dynamically added and removed by the agent implementation:
+SMP agent protocol commands do not contain the addresses of the SMP servers that the agent will use to create and use the connections (excluding the server address in queue URIs used in JOIN command). The list of the servers is a part of the agent configuration and can be dynamically changed by the agent implementation:
 - by the client applications via any API that is outside of scope of this protocol.
 - by the agents themselves based on availability and latency of the configured servers.
 
