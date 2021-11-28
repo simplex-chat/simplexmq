@@ -438,7 +438,7 @@ senderId = encoded
 
 Once the queue is created, the recipient gets automatically subscribed to receive the messages from that queue, until the transport connection is closed. The `subscribe` command is needed only to start receiving the messages from the existing queue when the new transport connection is opened.
 
-`NEW` transmission MUST be signed using the `recipientSignaturePublicKey` – this verifies that the client has the private key that will be used to sign subsequent commands for this queue.
+`NEW` transmission MUST be signed using the private part of the `recipientSignaturePublicKey` – this verifies that the client has the private key that will be used to sign subsequent commands for this queue.
 
 `IDS` response transmission MUST be sent signed with `serverSignaturePublicKey` – this verifies that the server has the private key that will be used to sign subsequent responses and messages for this queue.  This response should be sent with empty queue ID (the third part of the transmission).
 
