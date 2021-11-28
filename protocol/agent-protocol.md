@@ -75,7 +75,7 @@ The procedure of establishing a duplex connection is explained on the example of
 3. Alice sends the [connection request](#connection-request) to Bob via any secure channel (out-of-band message).
 4. Bob sends `JOIN` command with the connection request as a parameter to agent B to accept the connection.
 5. Establishing Alice's SMP queue (with SMP protocol commands):
-  - Agent B sends an "SMP confirmation" with SMP SEND command to the SMP queue specified in the connection request - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, etc.). This message is encrypted using key passed in the connection request (or with the derived key, in which public key for key derivation should be sent in clear text).
+  - Agent B sends an "SMP confirmation" with SMP SEND command to the SMP queue specified in the connection request - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, etc.). This message is encrypted using key passed in the connection request (or with the derived key, in which case public key for key derivation should be sent in clear text).
   - Agent A receives the SMP confirmation containing Bob's key and info as SMP MSG.
   - Agent A notifies Alice sending REQ notification with Bob's info.
   - Alice accepts connection request with ACPT command.
