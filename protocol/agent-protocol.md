@@ -31,7 +31,7 @@
 The purpose of SMP agent protocol is to define the syntax and the semantics of communications between the client and the agent that connects to [SMP](./simplex-messaging.md) servers.
 
 It provides:
-- convenient protocol to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the protocol.
+- protocol to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the agent protocol.
 - management of E2E encryption between SMP agents, generating ephemeral asymmetric keys for each connection.
 - SMP command authentication on SMP servers, generating ephemeral keys for each SMP queue.
 - TCP/TLS transport handshake with SMP servers.
@@ -44,31 +44,31 @@ SMP agent protocol provides no encryption or security on the client side - it is
 
 ## SMP agent
 
-SMP agent communicates via SMP servers using [simplex messaging protocol (SMP)](./simplex-messaging.md) with other SMP agents according to the commands received from its users. This protocol is a middle layer in SimpleX protocols (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
+SMP agents communicate with each other via SMP servers using [simplex messaging protocol (SMP)](./simplex-messaging.md) according to the commands received from its users. This protocol is a middle layer in SimpleX protocols (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
 
-The agent must have a persistent storage to manage the states of known connections and of the client-side information of SMP queues that each connection consists of, and also the buffer of the most recent sent and received messages. The number of the messages that should be stored is implementation specific, depending on the error management approach that the agent implements; at the very least the agent must store the hash and id of the last received and sent message.
+The agent must have a persistent storage to manage the states of known connections and of the client-side information of SMP queues that each connection consists of, and also the buffer of the most recent sent and received messages. The number of the messages that should be stored is implementation specific, depending on the error management approach that the agent implements; at the very least the agent must store the hashes and IDs of the last received and sent messages.
 
 ## SMP servers management
 
-SMP agent protocol commands do not contain SMP servers that the agent will use to establish the connections. The servers are part of the agent configuration and can be dynamically added and removed by the agent implementation:
+SMP agent protocol commands do not contain SMP servers that the agent will use to create and use the connections (excluding the server in queue URIs used in JOIN command). The servers are part of the agent configuration and can be dynamically added and removed by the agent implementation:
 - by the client applications via any API that is outside of scope of this protocol.
-- by the agents themselves based on servers availability and latency.
+- by the agents themselves based on availability and latency of the configured servers.
 
 ## SMP agent protocol components
 
 SMP agent protocol has 3 main parts:
 
-- the syntax and semantics of messages that SMP agents exchange between each other in order to:
-  - negotiate establishing unidirectional (simplex) encrypted queues on SMP server(s)
+- the syntax and semantics of the messages that SMP agents exchange with each other in order to:
+  - negotiate establishing unidirectional (simplex) encrypted queues on SMP servers.
   - exchange client messages and delivery notifications, providing sequential message IDs and message integrity (by including the hash of the previous message).
-- the syntax and semantics of the commands that are sent over TCP or other sequential protocol by agent clients to the agents. This protocol allows to create and manage multiple connections, each consisting of two or more SMP queues.
-- the syntax and semantics of the message that the clients of SMP agents should send out-of-band (as pre-shared "invitation" including SMP server, queue ID and encryption key) to ensure [E2E encryption][1] the integrity of SMP queues and protection against active attacks ([MITM attacks][2]).
+- the syntax and semantics of the commands that are sent by the agent clients to the agents. This protocol allows to create and manage multiple connections, each consisting of two or more SMP queues.
+- the syntax and semantics of the message that the clients of SMP agents should send out-of-band (as pre-shared "invitation" including queue URIs) to protect [E2E encryption][1] from active attacks ([MITM attacks][2]).
 
 ## Duplex connection procedure
 
 ![Duplex connection procedure](./diagrams/duplex-messaging/duplex-creating.svg)
 
-The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection comprised of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP servers (which could be the same server). It is shown on the diagram above and has these steps:
+The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection consisting of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP servers (which could be the same server). It is shown on the diagram above and has these steps:
 
 1. Alice requests the new connection from the SMP agent A using `NEW` command.
 2. Agent A creates an SMP connection on the server (using [SMP protocol](./simplex-messaging.md)) and responds to Alice with the invitation that contains queue information and the encryption key Bob's agent B should use. The invitation format is described in [Connection request](#connection-request).
@@ -352,11 +352,16 @@ Connection request `connectionRequest` is generated by SMP agent in response to 
 Connection request syntax:
 
 ```
-connectionRequest = queueURI "#/connect/" encryptionScheme ":" publicKey
+connectionRequest = connectionProtocol "/" action "?smp=" smpQueues "&e2e=" e2eEncryption
+action = %s"connect"
+connectionProtocol = ("https://" serverHost) | "simplex:"
+e2eEncryption = encryptionScheme ":" publicKey
 encryptionScheme = %s"rsa" ; end-to-end encryption and key exchange protocols,
                            ; the current hybrid encryption scheme (RSA-OAEP/AES-256-GCM-SHA256)
                            ; will be replaced with double ratchet protocol and DH key exchange.
-publicKey = <base64 X509 SPKI key encoding>
+publicKey = <base64url X509 SPKI key encoding>
+smpQueues = smpQueue [ "," 1*smpQueue ] ; SMP queues for the connection
+smpQueue = <URL-encoded queueURI>
 ```
 
 See SMP protocol [out-of-band messages](./simplex-messaging.md#out-of-band-messages) for syntax for queueURI.
