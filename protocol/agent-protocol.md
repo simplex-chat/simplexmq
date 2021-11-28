@@ -99,7 +99,7 @@ The most communication happens between the agents and servers, from the point of
 1. Alice requests a new connection with `NEW` command and receives the invitation.
 2. Alice passes connection request out-of-band to Bob.
 3. Bob accepts the connection with `JOIN` command with the connection request to his agent.
-4. Alice accept the connection with `ACPT` command.
+4. Alice accepts the connection with `ACPT` command.
 5. Both parties receive `CON` notification once duplex connection is established.
 
 Clients SHOULD support establishing duplex connection asynchronously (when parties are intermittently offline) by persisting intermediate states and resuming SMP queue subscriptions.
