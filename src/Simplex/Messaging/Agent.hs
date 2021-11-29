@@ -514,7 +514,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
             Right SMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
               case agentMessage of
                 HELLO verifyKey _ -> helloMsg verifyKey msgBody >> sendAck c rq
-                REPLY qReq -> replyMsg qReq >> sendAck c rq
+                REPLY cReq -> replyMsg cReq >> sendAck c rq
                 A_MSG body -> agentClientMsg previousMsgHash (senderMsgId, senderTimestamp) (srvMsgId, srvTs) body msgHash
         SMP.END -> do
           removeSubscription c connId

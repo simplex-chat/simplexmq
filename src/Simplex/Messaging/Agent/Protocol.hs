@@ -82,6 +82,7 @@ module Simplex.Messaging.Agent.Protocol
     connReqP,
     msgIntegrityP,
     agentErrorTypeP,
+    agentMessageP,
 
     -- * TCP transport functions
     tPut,
@@ -330,7 +331,7 @@ connReqP :: Parser ConnectionRequest
 connReqP = do
   crScheme <- "simplex:" $> CRSSimplex <|> "https://" *> appServer
   crAction <- "/" *> ("connect" $> CRAConnect) <* "#/?"
-  query <- parseSimpleQuery <$> A.takeByteString
+  query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
   crSmpQueues <- paramP "smp" smpQueues query
   crEncryptKey <- paramP "e2e" C.pubKeyP query
   pure ConnectionRequest {crScheme, crAction, crSmpQueues, crEncryptKey}
