@@ -226,7 +226,7 @@ smpClientError = \case
   SMPTransportError e -> BROKER $ TRANSPORT e
   e -> INTERNAL $ show e
 
-newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
+newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri, EncryptionKey)
 newRcvQueue c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
@@ -244,7 +244,7 @@ newRcvQueue c srv = do
             verifyKey = Nothing,
             status = New
           }
-  return (rq, SMPQueueInfo srv sId encryptKey)
+  pure (rq, SMPQueueUri srv sId reservedServerKey, encryptKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do

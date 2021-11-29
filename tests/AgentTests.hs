@@ -10,6 +10,7 @@
 
 module AgentTests (agentTests) where
 
+import AgentTests.ConnectionRequestTests
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
@@ -26,6 +27,7 @@ import Test.Hspec
 
 agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
+  fdescribe "Connection request" connectionRequestTests
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
@@ -98,9 +100,9 @@ pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
-  ("1", "bob", Right (INV qInfo)) <- alice #: ("1", "bob", "NEW")
-  let qInfo' = serializeSmpQueueInfo qInfo
-  bob #: ("11", "alice", "JOIN " <> qInfo' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
+  ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW")
+  let cReq' = serializeConnReq cReq
+  bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (REQ confId "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "ACPT " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   bob <# ("", "alice", INFO "alice's connInfo")
@@ -130,9 +132,9 @@ testDuplexConnection _ alice bob = do
 
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
-  ("1", bobConn, Right (INV qInfo)) <- alice #: ("1", "", "NEW")
-  let qInfo' = serializeSmpQueueInfo qInfo
-  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> qInfo' <> " 14\nbob's connInfo")
+  ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW")
+  let cReq' = serializeConnReq cReq
+  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", bobConn', Right (REQ confId "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
   alice #: ("2", bobConn, "ACPT " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
@@ -250,9 +252,9 @@ testMsgDeliveryAgentRestart t bob = do
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
-  ("c1", _, Right (INV qInfo)) <- h1 #: ("c1", name2, "NEW")
-  let qInfo' = serializeSmpQueueInfo qInfo
-  h2 #: ("c2", name1, "JOIN " <> qInfo' <> " 5\ninfo2") #> ("c2", name1, OK)
+  ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW")
+  let cReq' = serializeConnReq cReq
+  h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "ACPT " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
   h2 <# ("", name1, INFO "info1")
@@ -261,9 +263,9 @@ connect (h1, name1) (h2, name2) = do
 
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do
---   ("c1", conn2, Right (INV qInfo)) <- h1 #: ("c1", "", "NEW")
---   let qInfo' = serializeSmpQueueInfo qInfo
---   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> qInfo' <> " 5\ninfo2")
+--   ("c1", conn2, Right (INV cReq)) <- h1 #: ("c1", "", "NEW")
+--   let cReq' = serializeConnReq cReq
+--   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> cReq' <> " 5\ninfo2")
 --   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
 --   h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
 --   h2 <# ("", conn1, INFO "info1")

@@ -501,9 +501,9 @@ instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
 
 instance FromField MsgIntegrity where fromField = blobFieldParser msgIntegrityP
 
-instance ToField SMPQueueInfo where toField = toField . serializeSmpQueueInfo
+instance ToField SMPQueueUri where toField = toField . serializeSMPQueueUri
 
-instance FromField SMPQueueInfo where fromField = blobFieldParser smpQueueInfoP
+instance FromField SMPQueueUri where fromField = blobFieldParser smpQueueUriP
 
 fromTextField_ :: (E.Typeable a) => (Text -> Maybe a) -> Field -> Ok a
 fromTextField_ fromText = \case
