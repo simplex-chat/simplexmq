@@ -505,6 +505,10 @@ instance ToField SMPQueueUri where toField = toField . serializeSMPQueueUri
 
 instance FromField SMPQueueUri where fromField = blobFieldParser smpQueueUriP
 
+instance ToField ConnectionRequest where toField = toField . serializeConnReq
+
+instance FromField ConnectionRequest where fromField = blobFieldParser connReqP
+
 fromTextField_ :: (E.Typeable a) => (Text -> Maybe a) -> Field -> Ok a
 fromTextField_ fromText = \case
   f@(Field (SQLText t) _) ->
