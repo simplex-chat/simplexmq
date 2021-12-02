@@ -27,11 +27,14 @@ sequenceDiagram
   note over BA: status: NONE/NEW
 
   note over BA, AA: 5. establish Alice's SMP queue
-  BA ->> AS: SEND: KEY: sender's server key
+  BA ->> AS: SEND: Bob's info and sender server key (SMP confirmation)
   note over BA: status: NONE/CONFIRMED
   activate BA
-  AS ->> AA: MSG: KEY: sender's server key
+  AS ->> AA: MSG: Bob's info and<br>sender server key
   note over AA: status: CONFIRMED/NONE
+  AA ->> AS: ACK: confirm message
+  AA ->> A: REQ: connection request ID<br>and Bob's info
+  A ->> AA: ACPT: accept connection request,<br>send Alice's info
   AA ->> AS: KEY: secure queue
   note over AA: status: SECURED/NONE
 
@@ -40,6 +43,7 @@ sequenceDiagram
   note over BA: status: NONE/ACTIVE
   AS ->> AA: MSG: HELLO: Alice's agent<br>knows Bob can send
   note over AA: status: ACTIVE/NONE
+  AA ->> AS: ACK: confirm message
 
   note over BA, BS: 6. create Bob's SMP queue
   BA ->> BS: NEW: create SMP queue
@@ -51,12 +55,15 @@ sequenceDiagram
   note over BA: status: PENDING/ACTIVE
   AS ->> AA: MSG: REPLY: invitation<br>to connect
   note over AA: status: ACTIVE/NEW
+  AA ->> AS: ACK: confirm message
 
-  AA ->> BS: SEND: KEY: sender's server key
+  AA ->> BS: SEND: Alice's info and sender's server key
   note over AA: status: ACTIVE/CONFIRMED
   activate AA
-  BS ->> BA: MSG: KEY: sender's server key
+  BS ->> BA: MSG: Alice's info and<br>sender's server key
   note over BA: status: CONFIRMED/ACTIVE
+  BA ->> B: INFO: Alice's info
+  BA ->> BS: ACK: confirm message
   BA ->> BS: KEY: secure queue
   note over BA: status: SECURED/ACTIVE
 
@@ -65,6 +72,7 @@ sequenceDiagram
   note over AA: status: ACTIVE/ACTIVE
   BS ->> BA: MSG: HELLO: Bob's agent<br>knows Alice can send
   note over BA: status: ACTIVE/ACTIVE
+  BA ->> BS: ACK: confirm message
 
   note over A, B: 8. notify users about connection success
   AA ->> A: CON: connected

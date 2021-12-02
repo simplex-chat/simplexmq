@@ -1,5 +1,4 @@
 *.lock
-*.cabal
 *.db
 *.db.bak
 *.session.sql

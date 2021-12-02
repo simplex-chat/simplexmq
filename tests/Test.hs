@@ -1,6 +1,6 @@
 {-# LANGUAGE TypeApplications #-}
 
-import AgentTests
+import AgentTests (agentTests)
 import ProtocolErrorTests
 import ServerTests
 import Simplex.Messaging.Transport (TCP, Transport (..))

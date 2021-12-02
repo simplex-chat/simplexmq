@@ -7,6 +7,7 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
@@ -24,13 +25,27 @@ base64P :: Parser ByteString
 base64P = decode <$?> base64StringP
 
 base64StringP :: Parser ByteString
-base64StringP = do
-  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
-  pad <- A.takeWhile (== '=')
-  pure $ str <> pad
+base64StringP = paddedBase64 rawBase64P
+
+base64UriP :: Parser ByteString
+base64UriP = U.decode <$?> base64UriStringP
+
+base64UriStringP :: Parser ByteString
+base64UriStringP = paddedBase64 rawBase64UriP
+
+paddedBase64 :: Parser ByteString -> Parser ByteString
+paddedBase64 raw = (<>) <$> raw <*> pad
+  where
+    pad = A.takeWhile (== '=')
+
+rawBase64P :: Parser ByteString
+rawBase64P = A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
+
+rawBase64UriP :: Parser ByteString
+rawBase64UriP = A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
 
 tsISO8601P :: Parser UTCTime
-tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill (== ' ')
+tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill wordEnd
 
 parse :: Parser a -> e -> (ByteString -> Either e a)
 parse parser err = first (const err) . parseAll parser
@@ -42,13 +57,16 @@ parseRead :: Read a => Parser ByteString -> Parser a
 parseRead = (>>= maybe (fail "cannot read") pure . readMaybe . B.unpack)
 
 parseRead1 :: Read a => Parser a
-parseRead1 = parseRead $ A.takeTill (== ' ')
+parseRead1 = parseRead $ A.takeTill wordEnd
 
 parseRead2 :: Read a => Parser a
 parseRead2 = parseRead $ do
-  w1 <- A.takeTill (== ' ') <* A.char ' '
-  w2 <- A.takeTill (== ' ')
+  w1 <- A.takeTill wordEnd <* A.char ' '
+  w2 <- A.takeTill wordEnd
   pure $ w1 <> " " <> w2
+
+wordEnd :: Char -> Bool
+wordEnd c = c == ' ' || c == '\n'
 
 parseString :: (ByteString -> Either String a) -> (String -> a)
 parseString p = either error id . p . B.pack

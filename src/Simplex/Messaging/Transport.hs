@@ -63,8 +63,10 @@ import Data.ByteArray (xor)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Maybe(fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.String
 import Data.Word (Word32)
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
@@ -73,7 +75,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import Network.Transport.Internal (decodeNum16, decodeNum32, encodeEnum16, encodeEnum32, encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (parse, parseAll, parseRead1)
+import Simplex.Messaging.Parsers (parse, parseAll, parseRead1, parseString)
 import Simplex.Messaging.Util (bshow, liftError)
 import System.IO
 import System.IO.Error
@@ -212,11 +214,14 @@ trimCR s = if B.last s == '\r' then B.init s else s
 data SMPVersion = SMPVersion Int Int Int Int
   deriving (Eq, Ord)
 
+instance IsString SMPVersion where
+  fromString = parseString $ parseAll smpVersionP
+
 major :: SMPVersion -> (Int, Int)
 major (SMPVersion a b _ _) = (a, b)
 
 currentSMPVersion :: SMPVersion
-currentSMPVersion = SMPVersion 0 3 2 0
+currentSMPVersion = "0.4.1.0"
 
 serializeSMPVersion :: SMPVersion -> ByteString
 serializeSMPVersion (SMPVersion a b c d) = B.intercalate "." [bshow a, bshow b, bshow c, bshow d]
@@ -340,21 +345,21 @@ makeNextIV SessionKey {baseIV, counter} = atomically $ do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 --
 -- The numbers in function names refer to the steps in the document.
-serverHandshake :: forall c. Transport c => c -> C.FullKeyPair -> ExceptT TransportError IO (THandle c)
-serverHandshake c (k, pk) = do
+serverHandshake :: forall c. Transport c => c -> Int -> C.FullKeyPair -> ExceptT TransportError IO (THandle c)
+serverHandshake c srvBlockSize (k, pk) = do
+  checkValidBlockSize srvBlockSize
   liftIO sendHeaderAndPublicKey_1
   encryptedKeys <- receiveEncryptedKeys_4
-  -- TODO server currently ignores blockSize returned by the client
-  -- this is reserved for future support of streams
-  ClientHandshake {blockSize = _, sndKey, rcvKey} <- decryptParseKeys_5 encryptedKeys
-  th <- liftIO $ transportHandle c rcvKey sndKey transportBlockSize -- keys are swapped here
+  ClientHandshake {blockSize, sndKey, rcvKey} <- decryptParseKeys_5 encryptedKeys
+  checkValidBlockSize blockSize
+  th <- liftIO $ transportHandle c rcvKey sndKey blockSize -- keys are swapped here
   sendWelcome_6 th
   pure th
   where
     sendHeaderAndPublicKey_1 :: IO ()
     sendHeaderAndPublicKey_1 = do
       let sKey = C.encodePubKey k
-          header = ServerHeader {blockSize = transportBlockSize, keySize = B.length sKey}
+          header = ServerHeader {blockSize = srvBlockSize, keySize = B.length sKey}
       cPut c $ binaryServerHeader header
       cPut c sKey
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString
@@ -374,13 +379,14 @@ serverHandshake c (k, pk) = do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 --
 -- The numbers in function names refer to the steps in the document.
-clientHandshake :: forall c. Transport c => c -> Maybe C.KeyHash -> ExceptT TransportError IO (THandle c)
-clientHandshake c keyHash = do
+clientHandshake :: forall c. Transport c => c -> Maybe Int -> Maybe C.KeyHash -> ExceptT TransportError IO (THandle c)
+clientHandshake c blkSize_ keyHash = do
+  mapM_ checkValidBlockSize blkSize_
   (k, blkSize) <- getHeaderAndPublicKey_1_2
-  -- TODO currently client always uses the blkSize returned by the server
-  keys@ClientHandshake {sndKey, rcvKey} <- liftIO $ generateKeys_3 blkSize
-  sendEncryptedKeys_4 k keys
-  th <- liftIO $ transportHandle c sndKey rcvKey blkSize
+  let clientBlkSize = fromMaybe blkSize blkSize_
+  chs@ClientHandshake {sndKey, rcvKey} <- liftIO $ generateKeys_3 clientBlkSize
+  sendEncryptedKeys_4 k chs
+  th <- liftIO $ transportHandle c sndKey rcvKey clientBlkSize
   getWelcome_6 th >>= checkVersion
   pure th
   where
@@ -388,8 +394,7 @@ clientHandshake c keyHash = do
     getHeaderAndPublicKey_1_2 = do
       header <- liftIO (cGet c serverHeaderSize)
       ServerHeader {blockSize, keySize} <- liftEither $ parse serverHeaderP (TEHandshake HEADER) header
-      when (blockSize < transportBlockSize || blockSize > maxTransportBlockSize) $
-        throwError $ TEHandshake HEADER
+      checkValidBlockSize blockSize
       s <- liftIO $ cGet c keySize
       maybe (pure ()) (validateKeyHash_2 s) keyHash
       key <- liftEither $ parseKey s
@@ -408,8 +413,8 @@ clientHandshake c keyHash = do
       baseIV <- C.randomIV
       pure SessionKey {aesKey, baseIV, counter = undefined}
     sendEncryptedKeys_4 :: C.PublicKey -> ClientHandshake -> ExceptT TransportError IO ()
-    sendEncryptedKeys_4 k keys =
-      liftError (const $ TEHandshake ENCRYPT) (C.encryptOAEP k $ serializeClientHandshake keys)
+    sendEncryptedKeys_4 k chs =
+      liftError (const $ TEHandshake ENCRYPT) (C.encryptOAEP k $ serializeClientHandshake chs)
         >>= liftIO . cPut c
     getWelcome_6 :: THandle c -> ExceptT TransportError IO SMPVersion
     getWelcome_6 th = ExceptT $ (>>= parseSMPVersion) <$> tGetEncrypted th
@@ -420,17 +425,18 @@ clientHandshake c keyHash = do
       when (major smpVersion > major currentSMPVersion) . throwE $
         TEHandshake MAJOR_VERSION
 
+checkValidBlockSize :: Int -> ExceptT TransportError IO ()
+checkValidBlockSize blkSize =
+  when (blkSize `notElem` transportBlockSizes) . throwError $ TEHandshake HEADER
+
 data ServerHeader = ServerHeader {blockSize :: Int, keySize :: Int}
   deriving (Eq, Show)
 
 binaryRsaTransport :: Int
 binaryRsaTransport = 0
 
-transportBlockSize :: Int
-transportBlockSize = 4096
-
-maxTransportBlockSize :: Int
-maxTransportBlockSize = 65536
+transportBlockSizes :: [Int]
+transportBlockSizes = map (* 1024) [4, 8, 16, 32, 64]
 
 serverHeaderSize :: Int
 serverHeaderSize = 8

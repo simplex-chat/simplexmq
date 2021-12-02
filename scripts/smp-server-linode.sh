@@ -21,42 +21,69 @@ ufw allow ssh
 ufw allow http
 ufw allow 5223
 
+bin_dir="/opt/simplex/bin"
+conf_dir="/etc/opt/simplex"
+var_dir="/var/opt/simplex"
+mkdir -p $bin_dir
+mkdir -p $conf_dir
+mkdir -p $var_dir
+
 # retrieve latest release info and download smp-server executable
 curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/latest > release.json
 jq '.assets[].browser_download_url | select(test("smp-server-ubuntu-20_04-x86-64"))' release.json \
 | tr -d \" \
 | wget -qi -
 
-# move smp-server executable to /opt/simplex/bin
-mkdir -p /opt/simplex/bin
-mv smp-server-ubuntu-20_04-x86-64 /opt/simplex/bin/smp-server
-chmod +x /opt/simplex/bin/smp-server
+mv smp-server-ubuntu-20_04-x86-64 $bin_dir/smp-server
+chmod +x $bin_dir/smp-server
 
-# add /opt/simplex/bin to $PATH
 cat <<EOT >> /etc/profile.d/simplex.sh
 #!/bin/bash
 
-export PATH="$PATH:/opt/simplex/bin"
+export PATH="$PATH:$bin_dir"
 
 EOT
 source /etc/profile.d/simplex.sh
 
 # initialize SMP server
-mkdir -p /etc/opt/simplex
-mkdir -p /var/opt/simplex
 init_opts=()
 [[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
-smp-server init "${init_opts[@]}" > simplex.conf
-tail -n +2 "simplex.conf" > "simplex.tmp" && mv "simplex.tmp" "simplex.conf"
+hash_file="$conf_dir/pubkey_hash"
+smp-server init "${init_opts[@]}" | grep "transport key hash:" | cut -f2 -d":" | xargs > $hash_file
 # turn off websockets support
-sed -e '/websockets/s/^/# /g' -i /etc/opt/simplex/smp-server.ini
+sed -e '/websockets/s/^/# /g' -i $conf_dir/smp-server.ini
+# create script that will run on login
+on_login_script="/opt/simplex/on_login.sh"
+cat <<EOT >> $on_login_script
+#!/bin/bash
+# receives pubkey_hash file location as the first parameter
 
+ip_address=\$(hostname -I | awk '{print\$1}')
+hash=\$(cat \$1)
+
+cat <<EOF
+********************************************************************************
+
+SMP server address: \$ip_address#\$hash
+Check SMP server status with: systemctl status smp-server
+
+To keep this server secure, the UFW firewall is enabled.
+All ports are BLOCKED except 22 (SSH), 80 (HTTP), 5223 (SMP server).
+
+********************************************************************************
+To stop seeing this message delete line - bash /opt/simplex/on_login.sh - from /root/.bashrc
+EOF
+
+EOT
+chmod +x $on_login_script
+echo "bash $on_login_script $hash_file" >> /root/.bashrc
+
+# create A record and update linode's tags
 if [ ! -z "$API_TOKEN" ]; then
      ip_address=$(curl ifconfig.me)
      address=$ip_address
      if [ ! -z "$FQDN" ]; then
           domain_address=$(echo $FQDN | rev | cut -d "." -f 1,2 | rev)
-          # create A record if domain is created in linode account
           domain_id=$(curl -H "Authorization: Bearer $API_TOKEN" https://api.linode.com/v4/domains \
           | jq --arg da "$domain_address" '.data[] | select( .domain == $da ) | .id')
           if [[ ! -z $domain_id ]]; then
@@ -68,10 +95,9 @@ if [ ! -z "$API_TOKEN" ]; then
           fi
      fi
 
-     hash=$(cat simplex.conf | grep hash: | cut -f2 -d":" | xargs)
+     hash=$(cat $hash_file)
      release_version=$(jq '.tag_name' release.json | tr -d \")
 
-     # update linode's tags
      curl -s -H "Content-Type: application/json" \
           -H "Authorization: Bearer $API_TOKEN" \
           -X PUT -d "{\"tags\":[\"$address\",\"#$hash\",\"$release_version\"]}" \
@@ -85,28 +111,15 @@ Description=SMP server systemd service
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c "/opt/simplex/bin/smp-server start"
+ExecStart=/bin/sh -c "$bin_dir/smp-server start"
 
 [Install]
 WantedBy=multi-user.target
 
 EOT
-
 chmod 644 /etc/systemd/system/smp-server.service
 sudo systemctl enable smp-server
 sudo systemctl start smp-server
-
-# create script that will on login
-cat <<EOT >> /opt/simplex/on_login.sh
-#!/bin/bash
-
-printf "\n### SMP server address: $address#$hash ###\n"
-printf "### to see SMP server status run: systemctl status smp-server ###\n"
-printf "### (to stop seeing this message delete line - bash /opt/simplex/on_login.sh - from /root/.bashrc) ###\n\n"
-
-EOT
-chmod +x /opt/simplex/on_login.sh
-echo "bash /opt/simplex/on_login.sh" >> /root/.bashrc
 
 # cleanup
 rm release.json

@@ -1,0 +1,47 @@
+{
+  "variables": {
+    "token": "{{env `DIGITALOCEAN_TOKEN`}}",
+    "image_name": "smp-server-snapshot",
+    "application_name": "SMP server"
+  },
+  "sensitive-variables": ["token"],
+  "builders": [
+    {
+      "type": "digitalocean",
+      "api_token": "{{user `token`}}",
+      "image": "ubuntu-20-04-x64",
+      "region": "fra1",
+      "size": "s-1vcpu-1gb",
+      "ssh_username": "root",
+      "snapshot_name": "{{user `image_name`}}"
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": [
+        "cloud-init status --wait",
+        "mkdir -p /opt/simplex"
+      ]
+    },
+    {
+      "type": "file",
+      "source": "files/opt/",
+      "destination": "/opt/"
+    },
+    {
+      "type": "shell",
+      "environment_vars": [
+        "application_name={{user `application_name`}}",
+        "DEBIAN_FRONTEND=noninteractive"
+      ],
+      "scripts": [
+        "scripts/01-packages.sh",
+        "scripts/02-firewall.sh",
+        "scripts/03-init-start.sh",
+        "scripts/90-cleanup.sh",
+        "scripts/99-img-check.sh"
+      ]
+    }
+  ]
+}

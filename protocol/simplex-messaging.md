@@ -410,7 +410,7 @@ secure = %s"KEY" SP senderKey
 senderKey = %s"rsa:" x509encoded ; the sender's RSA public key for this queue
 ```
 
-`senderKey` is received from the sender as part of the first message - see [Send Message Command](#send-message-command).
+`senderKey` is received from the sender as part of the first message - see [Send Message](#send-message) command.
 
 Once the queue is secured only signed messages can be sent to it.
 
@@ -535,7 +535,8 @@ No further messages should be delivered to unsubscribed transport connection.
   - transmission has no required signature or queue ID (`NO_AUTH`)
   - transmission has unexpected credentials (`HAS_AUTH`)
   - transmission has no required queue ID (`NO_QUEUE`)
-- authentication error (`AUTH`) - incorrect signature, unknown (or suspended) queue, sender's ID is used in place of recipient's and vice versa, and some other cases (see [Send message command](#send-message-command)).
+- authentication error (`AUTH`) - incorrect signature, unknown (or suspended) queue, sender's ID is used in place of recipient's and vice versa, and some other cases (see [Send message](#send-message) command).
+- message queue quota exceeded error (`QUOTA`) - too many messages were sent to the message queue. Further messages can only be sent after the recipient retrieves the messages.
 - incorrect message body size (`SIZE`).
 - internal server error (`INTERNAL`).
 
