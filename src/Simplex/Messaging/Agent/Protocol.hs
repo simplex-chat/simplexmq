@@ -38,10 +38,10 @@ module Simplex.Messaging.Agent.Protocol
     AMessage (..),
     SMPServer (..),
     SMPQueueUri (..),
+    ConnectionMode (..),
     ConnectionRequest (..),
     ConnReqScheme (..),
     simplexChat,
-    ConnReqAction (..),
     AgentErrorType (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
@@ -73,12 +73,14 @@ module Simplex.Messaging.Agent.Protocol
     serializeServer,
     serializeSMPQueueUri,
     reservedServerKey, -- TODO remove
+    serializeConnMode,
     serializeConnReq,
     serializeAgentError,
     commandP,
     parseSMPMessage,
     smpServerP,
     smpQueueUriP,
+    connModeT,
     connReqP,
     msgIntegrityP,
     agentErrorTypeP,
@@ -107,6 +109,7 @@ import Data.Kind (Type)
 import Data.List (find)
 import qualified Data.List.NonEmpty as L
 import Data.String (IsString (..))
+import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
@@ -167,7 +170,7 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) where
-  NEW :: ACommand Client -- response INV
+  NEW :: ConnectionMode -> ACommand Client -- response INV
   INV :: ConnectionRequest -> ACommand Agent
   JOIN :: ConnectionRequest -> ConnInfo -> ACommand Client -- response OK
   REQ :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
@@ -195,6 +198,9 @@ data ACommand (p :: AParty) where
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
+
+data ConnectionMode = CMInvitation | CMContact
+  deriving (Eq, Show)
 
 type MsgHash = ByteString
 
@@ -315,14 +321,15 @@ reservedServerKey :: C.PublicKey
 reservedServerKey = C.PublicKey $ R.PublicKey 1 0 0
 
 serializeConnReq :: ConnectionRequest -> ByteString
-serializeConnReq (ConnectionRequest scheme action smpQueues encryptionKey) =
-  sch <> "/" <> act <> "#/" <> queryStr
+serializeConnReq (ConnectionRequest scheme mode smpQueues encryptionKey) =
+  sch <> "/" <> m <> "#/" <> queryStr
   where
     sch = case scheme of
       CRSSimplex -> "simplex:"
       CRSAppServer host port -> B.pack $ "https://" <> host <> maybe "" (':' :) port
-    act = case action of
-      CRAConnect -> "connect"
+    m = case mode of
+      CMInvitation -> "connect"
+      CMContact -> "contact"
     queryStr = renderSimpleQuery True [("smp", queues), ("e2e", key)]
     queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList smpQueues
     key = C.serializePubKey encryptionKey
@@ -330,15 +337,16 @@ serializeConnReq (ConnectionRequest scheme action smpQueues encryptionKey) =
 connReqP :: Parser ConnectionRequest
 connReqP = do
   crScheme <- "simplex:" $> CRSSimplex <|> "https://" *> appServer
-  crAction <- "/" *> ("connect" $> CRAConnect) <* "#/?"
+  crMode <- "/" *> mode <* "#/?"
   query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
   crSmpQueues <- paramP "smp" smpQueues query
   crEncryptKey <- paramP "e2e" C.pubKeyP query
-  pure ConnectionRequest {crScheme, crAction, crSmpQueues, crEncryptKey}
+  pure ConnectionRequest {crScheme, crMode, crSmpQueues, crEncryptKey}
   where
     appServer = CRSAppServer <$> host <*> optional port
     host = B.unpack <$> A.takeTill (\c -> c == ':' || c == '/')
     port = B.unpack <$> (A.char ':' *> A.takeTill (== '/'))
+    mode = "connect" $> CMInvitation <|> "contact" $> CMContact
     paramP param parser query =
       let p = maybe (fail "") (pure . snd) $ find ((== param) . fst) query
        in parseAll parser <$?> p
@@ -365,6 +373,20 @@ smpServerUriP = do
   host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
   port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
   pure SMPServer {host, port, keyHash}
+
+serializeConnMode :: ConnectionMode -> ByteString
+serializeConnMode = \case
+  CMInvitation -> "INV"
+  CMContact -> "CON"
+
+connModeP :: Parser ConnectionMode
+connModeP = "INV" $> CMInvitation <|> "CON" $> CMContact
+
+connModeT :: Text -> Maybe ConnectionMode
+connModeT = \case
+  "INV" -> Just CMInvitation
+  "CON" -> Just CMContact
+  _ -> Nothing
 
 -- | SMP server location and transport key digest (hash).
 data SMPServer = SMPServer
@@ -404,7 +426,7 @@ data SMPQueueUri = SMPQueueUri
 
 data ConnectionRequest = ConnectionRequest
   { crScheme :: ConnReqScheme,
-    crAction :: ConnReqAction,
+    crMode :: ConnectionMode,
     crSmpQueues :: L.NonEmpty SMPQueueUri,
     crEncryptKey :: EncryptionKey
   }
@@ -415,8 +437,6 @@ data ConnReqScheme = CRSSimplex | CRSAppServer HostName (Maybe ServiceName)
 
 simplexChat :: ConnReqScheme
 simplexChat = CRSAppServer "simplex.chat" Nothing
-
-data ConnReqAction = CRAConnect deriving (Eq, Show)
 
 -- | Public key used to E2E encrypt SMP messages.
 type EncryptionKey = C.PublicKey
@@ -537,7 +557,7 @@ instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 -- | SMP agent command and response parser
 commandP :: Parser ACmd
 commandP =
-  "NEW" $> ACmd SClient NEW
+  "NEW " *> newCmd
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
     <|> "REQ " *> reqCmd
@@ -559,6 +579,7 @@ commandP =
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
+    newCmd = ACmd SClient . NEW <$> connModeP
     invResp = ACmd SAgent . INV <$> connReqP
     joinCmd = ACmd SClient <$> (JOIN <$> connReqP <* A.space <*> A.takeByteString)
     reqCmd = ACmd SAgent <$> (REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
@@ -595,7 +616,7 @@ parseCommand = parse commandP $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW -> "NEW"
+  NEW cMode -> "NEW " <> serializeConnMode cMode
   INV cReq -> "INV " <> serializeConnReq cReq
   JOIN cReq cInfo -> "JOIN " <> serializeConnReq cReq <> " " <> serializeBinary cInfo
   REQ confId cInfo -> "REQ " <> confId <> " " <> serializeBinary cInfo
@@ -700,7 +721,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     tConnId :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnId (_, connId, _) cmd = case cmd of
       -- NEW, JOIN and ACPT have optional connId
-      NEW -> Right cmd
+      NEW _ -> Right cmd
       JOIN {} -> Right cmd
       -- ERROR response does not always have connId
       ERR _ -> Right cmd

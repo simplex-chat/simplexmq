@@ -1,0 +1,1 @@
+ALTER TABLE connections ADD conn_mode TEXT NOT NULL DEFAULT 'INV';

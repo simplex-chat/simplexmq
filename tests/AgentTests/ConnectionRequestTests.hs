@@ -34,7 +34,7 @@ connReq :: ConnectionRequest
 connReq =
   ConnectionRequest
     { crScheme = appServer,
-      crAction = CRAConnect,
+      crMode = CMInvitation,
       crSmpQueues = [queue],
       crEncryptKey = reservedServerKey
     }

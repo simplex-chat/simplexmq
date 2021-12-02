@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS connections(
   snd_host TEXT,
   snd_port TEXT,
   snd_id BLOB,
-  last_internal_msg_id INTEGER NOT NULL,
+  last_internal_msg_id INTEGER NOT NULL, -- TODO add defauls here and below in the new schema
   last_internal_rcv_msg_id INTEGER NOT NULL,
   last_internal_snd_msg_id INTEGER NOT NULL,
   last_external_snd_msg_id INTEGER NOT NULL,

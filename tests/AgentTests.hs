@@ -101,7 +101,7 @@ pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
-  ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW")
+  ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW INV")
   let cReq' = serializeConnReq cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (REQ confId "bob's connInfo")) <- (alice <#:)
@@ -133,7 +133,7 @@ testDuplexConnection _ alice bob = do
 
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
-  ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW")
+  ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW INV")
   let cReq' = serializeConnReq cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", bobConn', Right (REQ confId "bob's connInfo")) <- (alice <#:)
@@ -185,7 +185,7 @@ testSubscription _ alice1 alice2 bob = do
 
 testSubscrNotification :: Transport c => TProxy c -> (ThreadId, ThreadId) -> c -> IO ()
 testSubscrNotification t (server, _) client = do
-  client #: ("1", "conn1", "NEW") =#> \case ("1", "conn1", INV {}) -> True; _ -> False
+  client #: ("1", "conn1", "NEW INV") =#> \case ("1", "conn1", INV {}) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
   client <# ("", "conn1", DOWN)
@@ -253,7 +253,7 @@ testMsgDeliveryAgentRestart t bob = do
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
-  ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW")
+  ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW INV")
   let cReq' = serializeConnReq cReq
   h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
@@ -264,7 +264,7 @@ connect (h1, name1) (h2, name2) = do
 
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do
---   ("c1", conn2, Right (INV cReq)) <- h1 #: ("c1", "", "NEW")
+--   ("c1", conn2, Right (INV cReq)) <- h1 #: ("c1", "", "NEW INV")
 --   let cReq' = serializeConnReq cReq
 --   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> cReq' <> " 5\ninfo2")
 --   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
@@ -283,10 +283,10 @@ syntaxTests t = do
   describe "NEW" do
     describe "valid" do
       -- TODO: add tests with defined connection alias
-      it "without parameters" $ ("211", "", "NEW") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
+      it "with correct parameter" $ ("211", "", "NEW INV") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
     describe "invalid" do
       -- TODO: add tests with defined connection alias
-      it "with parameters" $ ("222", "", "NEW hi") >#> ("222", "", "ERR CMD SYNTAX")
+      it "with incorrect parameter" $ ("222", "", "NEW hi") >#> ("222", "", "ERR CMD SYNTAX")
 
   describe "JOIN" do
     describe "valid" do

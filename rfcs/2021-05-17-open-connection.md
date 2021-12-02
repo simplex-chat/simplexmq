@@ -11,9 +11,11 @@ It can be used for:
 
 ## Solution
 
-A minimal change to an SMP protocol - a dedicated unsecured SMP queue is used to receive invitations to connect: instead of the initial KEY message with the KEY to secure the queue, an additional INV message will be used to send an invitation to the queue of the sender, effectively using an unsecured SMP queue as an out-of-band channel for creating SMP queue.
+No changes to SMP protocol - a dedicated unsecured SMP queue is used to receive invitations to connect that are sent in encrypted agent message. An unsecured SMP queue is used as an out-of-band channel for establishing another SMP queue.
 
-Additional commands in SMP agent protocol:
+Additional parameters in commands in SMP agent protocol:
+
+- `NEW` command will have a parameter `INV` or `CON` to create an invitation or a permanent contact connection.
 
 `conn_alias? OPEN` (or `PUB`, `NEWPUB`, tbc) - to create an "open"/"public" queue, the response is an invitation in a different format (TBC):
   - should allow multiple servers (probably the original invitation should be extended to support it)
