@@ -30,14 +30,14 @@ queue =
 appServer :: ConnReqScheme
 appServer = CRSAppServer "simplex.chat" Nothing
 
-connReq :: ConnectionRequest
+connReq :: AConnectionRequest
 connReq =
-  ConnectionRequest
-    { crScheme = appServer,
-      crMode = CMInvitation,
-      crSmpQueues = [queue],
-      crEncryptKey = reservedServerKey
-    }
+  ACR SCMInvitation . CRInvitation $
+    ConnReqData
+      { crScheme = appServer,
+        crSmpQueues = [queue],
+        crEncryptKey = reservedServerKey
+      }
 
 connectionRequestTests :: Spec
 connectionRequestTests = do

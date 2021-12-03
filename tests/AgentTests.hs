@@ -104,7 +104,7 @@ testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW INV")
   let cReq' = serializeConnReq cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "bob", Right (REQ CMInvitation confId "bob's connInfo")) <- (alice <#:)
+  ("", "bob", Right (REQ (ACM SCMInvitation) confId "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "ACPT INV " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
@@ -136,7 +136,7 @@ testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW INV")
   let cReq' = serializeConnReq cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
-  ("", bobConn', Right (REQ CMInvitation confId "bob's connInfo")) <- (alice <#:)
+  ("", bobConn', Right (REQ (ACM SCMInvitation) confId "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
   alice #: ("2", bobConn, "ACPT INV " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
   bob <# ("", aliceConn, INFO "alice's connInfo")
@@ -256,7 +256,7 @@ connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW INV")
   let cReq' = serializeConnReq cReq
   h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
-  ("", _, Right (REQ CMInvitation connId "info2")) <- (h1 <#:)
+  ("", _, Right (REQ (ACM SCMInvitation) connId "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "ACPT INV " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
   h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)

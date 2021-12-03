@@ -32,7 +32,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 -- | Store class type. Defines store access methods for implementations.
 class Monad m => MonadAgentStore s m where
   -- Queue and Connection management
-  createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> ConnectionMode -> m ConnId
+  createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   getConn :: s -> ConnId -> m SomeConn
   getAllConnIds :: s -> m [ConnId] -- TODO remove - hack for subscribing to all

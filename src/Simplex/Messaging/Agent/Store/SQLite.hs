@@ -151,7 +151,7 @@ withTransaction st action = withConnection st $ loop 100 100_000
           else E.throwIO e
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
-  createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> ConnectionMode -> m ConnId
+  createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createRcvConn st gVar cData q@RcvQueue {server} connMode =
     -- TODO if schema has to be restarted, this function can be refactored
     -- to create connection first using createWithRandomId
@@ -506,13 +506,17 @@ instance ToField SMPQueueUri where toField = toField . serializeSMPQueueUri
 
 instance FromField SMPQueueUri where fromField = blobFieldParser smpQueueUriP
 
-instance ToField ConnectionRequest where toField = toField . serializeConnReq
+instance ToField AConnectionRequest where toField = toField . serializeConnReq
 
-instance FromField ConnectionRequest where fromField = blobFieldParser connReqP
+instance FromField AConnectionRequest where fromField = blobFieldParser connReqP
 
-instance ToField ConnectionMode where toField = toField . decodeLatin1 . serializeConnMode
+instance ToField ConnectionMode where toField = toField . decodeLatin1 . serializeConnMode'
 
 instance FromField ConnectionMode where fromField = fromTextField_ connModeT
+
+instance ToField (SConnectionMode c) where toField = toField . connMode
+
+instance FromField AConnectionMode where fromField = fromTextField_ $ fmap connMode' . connModeT
 
 fromTextField_ :: (E.Typeable a) => (Text -> Maybe a) -> Field -> Ok a
 fromTextField_ fromText = \case
@@ -573,7 +577,7 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":status" := status
     ]
 
-insertRcvConnection_ :: DB.Connection -> ConnData -> RcvQueue -> ConnectionMode -> IO ()
+insertRcvConnection_ :: DB.Connection -> ConnData -> RcvQueue -> SConnectionMode c -> IO ()
 insertRcvConnection_ dbConn ConnData {connId} RcvQueue {server, rcvId} connMode = do
   let port_ = serializePort_ $ port server
   DB.executeNamed

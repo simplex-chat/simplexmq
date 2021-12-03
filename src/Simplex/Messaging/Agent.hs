@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -129,15 +130,15 @@ disconnectAgentClient c = closeAgentClient c >> logConnection c False
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: AgentErrorMonad m => AgentClient -> ConnectionMode -> m (ConnId, ConnectionRequest)
+createConnection :: AgentErrorMonad m => AgentClient -> SConnectionMode c -> m (ConnId, ConnectionRequest c)
 createConnection c cMode = withAgentEnv c $ newConn c "" cMode
 
 -- | Join SMP agent connection (JOIN command)
-joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequest -> ConnInfo -> m ConnId
+joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequest c -> ConnInfo -> m ConnId
 joinConnection c = withAgentEnv c .: joinConn c ""
 
 -- | Approve confirmation (LET command)
-acceptConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConnectionMode -> ConfirmationId -> ConnInfo -> m ()
+acceptConnection :: AgentErrorMonad m => AgentClient -> ConnId -> SConnectionMode c -> ConfirmationId -> ConnInfo -> m ()
 acceptConnection c = withAgentEnv c .:: acceptConnection' c
 
 -- | Subscribe to receive connection messages (SUB command)
@@ -236,16 +237,16 @@ withStore action = do
 -- | execute any SMP agent command
 processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
 processCommand c (connId, cmd) = case cmd of
-  NEW cMode -> second INV <$> newConn c connId cMode
-  JOIN smpQueueUri connInfo -> (,OK) <$> joinConn c connId smpQueueUri connInfo
-  ACPT cMode confId ownConnInfo -> acceptConnection' c connId cMode confId ownConnInfo $> (connId, OK)
+  NEW (ACM cMode) -> second (INV . ACR cMode) <$> newConn c connId cMode
+  JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
+  ACPT (ACM cMode) confId ownConnInfo -> acceptConnection' c connId cMode confId ownConnInfo $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgBody -> (connId,) . MID <$> sendMessage' c connId msgBody
   ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
 
-newConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionMode -> m (ConnId, ConnectionRequest)
+newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequest c)
 newConn c connId connMode = do
   srv <- getSMPServer
   (rq, qUri, encryptKey) <- newRcvQueue c srv
@@ -253,10 +254,13 @@ newConn c connId connMode = do
   let cData = ConnData {connId}
   connId' <- withStore $ \st -> createRcvConn st g cData rq connMode
   addSubscription c rq connId'
-  pure (connId', ConnectionRequest simplexChat connMode [qUri] encryptKey)
+  let crData = ConnReqData simplexChat [qUri] encryptKey
+  pure . (connId',) $ case connMode of
+    SCMInvitation -> CRInvitation crData
+    SCMContact -> CRContact crData
 
-joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequest -> ConnInfo -> m ConnId
-joinConn c connId (ConnectionRequest _ CMInvitation (qUri :| _) encryptKey) cInfo = do
+joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequest c -> ConnInfo -> m ConnId
+joinConn c connId (CRInvitation (ConnReqData _ (qUri :| _) encryptKey)) cInfo = do
   (sq, senderKey, verifyKey) <- newSndQueue qUri encryptKey
   g <- asks idsDrg
   cfg <- asks config
@@ -265,7 +269,7 @@ joinConn c connId (ConnectionRequest _ CMInvitation (qUri :| _) encryptKey) cInf
   confirmQueue c sq senderKey cInfo
   activateQueueJoining c connId' sq verifyKey $ retryInterval cfg
   pure connId'
-joinConn c connId (ConnectionRequest _ CMContact (qUri :| _) encryptKey) cInfo = do
+joinConn c connId (CRContact (ConnReqData _ (qUri :| _) encryptKey)) cInfo = do
   throwError $ INTERNAL "unsupported"
 
 activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
@@ -278,10 +282,10 @@ activateQueueJoining c connId sq verifyKey retryInterval =
       (rq, qUri', encryptKey) <- newRcvQueue c srv
       addSubscription c rq connId
       withStore $ \st -> upgradeSndConnToDuplex st connId rq
-      sendControlMessage c sq . REPLY $ ConnectionRequest CRSSimplex CMInvitation [qUri'] encryptKey
+      sendControlMessage c sq . REPLY $ CRInvitation $ ConnReqData CRSSimplex [qUri'] encryptKey
 
 -- | Approve confirmation (LET command) in Reader monad
-acceptConnection' :: AgentMonad m => AgentClient -> ConnId -> ConnectionMode -> ConfirmationId -> ConnInfo -> m ()
+acceptConnection' :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> ConfirmationId -> ConnInfo -> m ()
 acceptConnection' c connId cMode confId ownConnInfo =
   withStore (`getConn` connId) >>= \case
     SomeConn SCRcv (RcvConnection _ rq) -> do
@@ -519,6 +523,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 HELLO verifyKey _ -> helloMsg verifyKey msgBody >> sendAck c rq
                 REPLY cReq -> replyMsg cReq >> sendAck c rq
                 A_MSG body -> agentClientMsg previousMsgHash (senderMsgId, senderTimestamp) (srvMsgId, srvTs) body msgHash
+                A_INV cReq -> pure ()
         SMP.END -> do
           removeSubscription c connId
           logServer "<--" c srv rId "END"
@@ -542,7 +547,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 g <- asks idsDrg
                 let newConfirmation = NewConfirmation {connId, senderKey, senderConnInfo = cInfo}
                 confId <- withStore $ \st -> createConfirmation st g newConfirmation
-                notify $ REQ CMInvitation confId cInfo
+                notify $ REQ (ACM SCMInvitation) confId cInfo
               SCDuplex -> do
                 notify $ INFO cInfo
                 processConfirmation c rq senderKey
@@ -561,11 +566,11 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 SCDuplex -> notifyConnected c connId
                 _ -> pure ()
 
-        replyMsg :: ConnectionRequest -> m ()
-        replyMsg (ConnectionRequest _ cMode (qUri :| _) encryptKey) = do
+        replyMsg :: ConnectionRequest CMInvitation -> m ()
+        replyMsg (CRInvitation (ConnReqData _ (qUri :| _) encryptKey)) = do
           logServer "<--" c srv rId "MSG <REPLY>"
-          case (cType, cMode) of
-            (SCRcv, CMInvitation) -> do
+          case cType of
+            SCRcv -> do
               AcceptedConfirmation {ownConnInfo} <- withStore (`getAcceptedConfirmation` connId)
               (sq, senderKey, verifyKey) <- newSndQueue qUri encryptKey
               withStore $ \st -> upgradeRcvConnToDuplex st connId sq

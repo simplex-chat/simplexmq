@@ -10,6 +10,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
@@ -39,7 +40,11 @@ module Simplex.Messaging.Agent.Protocol
     SMPServer (..),
     SMPQueueUri (..),
     ConnectionMode (..),
+    SConnectionMode (..),
+    AConnectionMode (..),
     ConnectionRequest (..),
+    AConnectionRequest (..),
+    ConnReqData (..),
     ConnReqScheme (..),
     simplexChat,
     AgentErrorType (..),
@@ -74,6 +79,9 @@ module Simplex.Messaging.Agent.Protocol
     serializeSMPQueueUri,
     reservedServerKey, -- TODO remove
     serializeConnMode,
+    serializeConnMode',
+    connMode,
+    connMode',
     serializeConnReq,
     serializeAgentError,
     commandP,
@@ -108,6 +116,7 @@ import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List (find)
 import qualified Data.List.NonEmpty as L
+import Data.Maybe (isJust)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
@@ -170,11 +179,11 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) where
-  NEW :: ConnectionMode -> ACommand Client -- response INV
-  INV :: ConnectionRequest -> ACommand Agent
-  JOIN :: ConnectionRequest -> ConnInfo -> ACommand Client -- response OK
-  REQ :: ConnectionMode -> ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  ACPT :: ConnectionMode -> ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  NEW :: AConnectionMode -> ACommand Client -- response INV
+  INV :: AConnectionRequest -> ACommand Agent
+  JOIN :: AConnectionRequest -> ConnInfo -> ACommand Client -- response OK
+  REQ :: AConnectionMode -> ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  ACPT :: AConnectionMode -> ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
@@ -201,6 +210,40 @@ deriving instance Show (ACommand p)
 
 data ConnectionMode = CMInvitation | CMContact
   deriving (Eq, Show)
+
+data SConnectionMode (m :: ConnectionMode) where
+  SCMInvitation :: SConnectionMode CMInvitation
+  SCMContact :: SConnectionMode CMContact
+
+deriving instance Eq (SConnectionMode m)
+
+deriving instance Show (SConnectionMode m)
+
+instance TestEquality SConnectionMode where
+  testEquality SCMInvitation SCMInvitation = Just Refl
+  testEquality SCMContact SCMContact = Just Refl
+  testEquality _ _ = Nothing
+
+data AConnectionMode = forall m. ACM (SConnectionMode m)
+
+instance Eq AConnectionMode where
+  ACM m == ACM m' = isJust $ testEquality m m'
+
+deriving instance Show AConnectionMode
+
+connMode :: SConnectionMode m -> ConnectionMode
+connMode SCMInvitation = CMInvitation
+connMode SCMContact = CMContact
+
+connMode' :: ConnectionMode -> AConnectionMode
+connMode' CMInvitation = ACM SCMInvitation
+connMode' CMContact = ACM SCMContact
+
+class ConnectionModeI (m :: ConnectionMode) where sConnectionMode :: SConnectionMode m
+
+instance ConnectionModeI CMInvitation where sConnectionMode = SCMInvitation
+
+instance ConnectionModeI CMContact where sConnectionMode = SCMContact
 
 type MsgHash = ByteString
 
@@ -244,9 +287,11 @@ data AMessage where
   -- | the first message in the queue to validate it is secured
   HELLO :: VerificationKey -> AckMode -> AMessage
   -- | reply queue information
-  REPLY :: ConnectionRequest -> AMessage
+  REPLY :: ConnectionRequest CMInvitation -> AMessage
   -- | agent envelope for the client message
   A_MSG :: MsgBody -> AMessage
+  -- | connection request with the invitation to connect
+  A_INV :: ConnectionRequest CMInvitation -> AMessage
   deriving (Show)
 
 -- | Parse SMP message.
@@ -287,10 +332,12 @@ agentMessageP =
   "HELLO " *> hello
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
+    <|> "INV " *> a_inv
   where
     hello = HELLO <$> C.pubKeyP <*> ackMode
-    reply = REPLY <$> connReqP
+    reply = REPLY <$> connReqP'
     a_msg = A_MSG <$> binaryBodyP <* A.endOfLine
+    a_inv = A_INV <$> connReqP'
     ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
 -- | SMP server location parser.
@@ -304,8 +351,9 @@ smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
   HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
-  REPLY cReq -> "REPLY " <> serializeConnReq cReq
+  REPLY cReq -> "REPLY " <> serializeConnReq' cReq
   A_MSG body -> "MSG " <> serializeBinary body <> "\n"
+  A_INV cReq -> "INV " <> serializeConnReq' cReq
 
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSMPQueueUri :: SMPQueueUri -> ByteString
@@ -320,28 +368,45 @@ smpQueueUriP =
 reservedServerKey :: C.PublicKey
 reservedServerKey = C.PublicKey $ R.PublicKey 1 0 0
 
-serializeConnReq :: ConnectionRequest -> ByteString
-serializeConnReq (ConnectionRequest scheme mode smpQueues encryptionKey) =
-  sch <> "/" <> m <> "#/" <> queryStr
-  where
-    sch = case scheme of
-      CRSSimplex -> "simplex:"
-      CRSAppServer host port -> B.pack $ "https://" <> host <> maybe "" (':' :) port
-    m = case mode of
-      CMInvitation -> "connect"
-      CMContact -> "contact"
-    queryStr = renderSimpleQuery True [("smp", queues), ("e2e", key)]
-    queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList smpQueues
-    key = C.serializePubKey encryptionKey
+serializeConnReq :: AConnectionRequest -> ByteString
+serializeConnReq (ACR _ cr) = serializeConnReq' cr
 
-connReqP :: Parser ConnectionRequest
+serializeConnReq' :: ConnectionRequest m -> ByteString
+serializeConnReq' = \case
+  CRInvitation crData -> serialize CMInvitation crData
+  CRContact crData -> serialize CMContact crData
+  where
+    serialize crMode ConnReqData {crScheme, crSmpQueues, crEncryptKey} =
+      sch <> "/" <> m <> "#/" <> queryStr
+      where
+        sch = case crScheme of
+          CRSSimplex -> "simplex:"
+          CRSAppServer host port -> B.pack $ "https://" <> host <> maybe "" (':' :) port
+        m = case crMode of
+          CMInvitation -> "connect"
+          CMContact -> "contact"
+        queryStr = renderSimpleQuery True [("smp", queues), ("e2e", key)]
+        queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList crSmpQueues
+        key = C.serializePubKey crEncryptKey
+
+connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
+connReqP' = do
+  ACR m cr <- connReqP
+  case testEquality m $ sConnectionMode @m of
+    Just Refl -> pure cr
+    _ -> fail "bad connection request mode"
+
+connReqP :: Parser AConnectionRequest
 connReqP = do
   crScheme <- "simplex:" $> CRSSimplex <|> "https://" *> appServer
   crMode <- "/" *> mode <* "#/?"
   query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
   crSmpQueues <- paramP "smp" smpQueues query
   crEncryptKey <- paramP "e2e" C.pubKeyP query
-  pure ConnectionRequest {crScheme, crMode, crSmpQueues, crEncryptKey}
+  let connReq = ConnReqData {crScheme, crSmpQueues, crEncryptKey}
+  pure $ case crMode of
+    CMInvitation -> ACR SCMInvitation $ CRInvitation connReq
+    CMContact -> ACR SCMContact $ CRContact connReq
   where
     appServer = CRSAppServer <$> host <*> optional port
     host = B.unpack <$> A.takeTill (\c -> c == ':' || c == '/')
@@ -374,13 +439,19 @@ smpServerUriP = do
   port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
   pure SMPServer {host, port, keyHash}
 
-serializeConnMode :: ConnectionMode -> ByteString
-serializeConnMode = \case
+serializeConnMode :: AConnectionMode -> ByteString
+serializeConnMode (ACM cMode) = serializeConnMode' $ connMode cMode
+
+serializeConnMode' :: ConnectionMode -> ByteString
+serializeConnMode' = \case
   CMInvitation -> "INV"
   CMContact -> "CON"
 
-connModeP :: Parser ConnectionMode
-connModeP = "INV" $> CMInvitation <|> "CON" $> CMContact
+connModeP' :: Parser ConnectionMode
+connModeP' = "INV" $> CMInvitation <|> "CON" $> CMContact
+
+connModeP :: Parser AConnectionMode
+connModeP = connMode' <$> connModeP'
 
 connModeT :: Text -> Maybe ConnectionMode
 connModeT = \case
@@ -424,9 +495,25 @@ data SMPQueueUri = SMPQueueUri
   }
   deriving (Eq, Show)
 
-data ConnectionRequest = ConnectionRequest
+data ConnectionRequest (m :: ConnectionMode) where
+  CRInvitation :: ConnReqData -> ConnectionRequest CMInvitation
+  CRContact :: ConnReqData -> ConnectionRequest CMContact
+
+deriving instance Eq (ConnectionRequest m)
+
+deriving instance Show (ConnectionRequest m)
+
+data AConnectionRequest = forall m. ACR (SConnectionMode m) (ConnectionRequest m)
+
+instance Eq AConnectionRequest where
+  ACR m cr == ACR m' cr' = case testEquality m m' of
+    Just Refl -> cr == cr'
+    _ -> False
+
+deriving instance Show AConnectionRequest
+
+data ConnReqData = ConnReqData
   { crScheme :: ConnReqScheme,
-    crMode :: ConnectionMode,
     crSmpQueues :: L.NonEmpty SMPQueueUri,
     crEncryptKey :: EncryptionKey
   }
