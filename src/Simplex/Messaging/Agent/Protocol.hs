@@ -173,8 +173,8 @@ data ACommand (p :: AParty) where
   NEW :: ConnectionMode -> ACommand Client -- response INV
   INV :: ConnectionRequest -> ACommand Agent
   JOIN :: ConnectionRequest -> ConnInfo -> ACommand Client -- response OK
-  REQ :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  ACPT :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  REQ :: ConnectionMode -> ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  ACPT :: ConnectionMode -> ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
@@ -582,8 +582,8 @@ commandP =
     newCmd = ACmd SClient . NEW <$> connModeP
     invResp = ACmd SAgent . INV <$> connReqP
     joinCmd = ACmd SClient <$> (JOIN <$> connReqP <* A.space <*> A.takeByteString)
-    reqCmd = ACmd SAgent <$> (REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
-    acptCmd = ACmd SClient <$> (ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    reqCmd = ACmd SAgent <$> (REQ <$> connModeP <* A.space <*> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    acptCmd = ACmd SClient <$> (ACPT <$> connModeP <* A.space <*> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
@@ -618,9 +618,9 @@ serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
   NEW cMode -> "NEW " <> serializeConnMode cMode
   INV cReq -> "INV " <> serializeConnReq cReq
-  JOIN cReq cInfo -> "JOIN " <> serializeConnReq cReq <> " " <> serializeBinary cInfo
-  REQ confId cInfo -> "REQ " <> confId <> " " <> serializeBinary cInfo
-  ACPT confId cInfo -> "ACPT " <> confId <> " " <> serializeBinary cInfo
+  JOIN cReq cInfo -> B.unwords ["JOIN", serializeConnReq cReq, serializeBinary cInfo]
+  REQ cMode confId cInfo -> B.unwords ["REQ", serializeConnMode cMode, confId, serializeBinary cInfo]
+  ACPT cMode confId cInfo -> B.unwords ["ACPT", serializeConnMode cMode, confId, serializeBinary cInfo]
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
@@ -629,9 +629,8 @@ serializeCommand = \case
   SEND msgBody -> "SEND " <> serializeBinary msgBody
   MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
-  MERR mId e -> "MERR " <> bshow mId <> " " <> serializeAgentError e
-  MSG msgMeta msgBody ->
-    "MSG " <> serializeMsgMeta msgMeta <> " " <> serializeBinary msgBody
+  MERR mId e -> B.unwords ["MERR", bshow mId, serializeAgentError e]
+  MSG msgMeta msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, serializeBinary msgBody]
   ACK mId -> "ACK " <> bshow mId
   OFF -> "OFF"
   DEL -> "DEL"
@@ -735,8 +734,8 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       SEND body -> SEND <$$> getBody body
       MSG msgMeta body -> MSG msgMeta <$$> getBody body
       JOIN qUri cInfo -> JOIN qUri <$$> getBody cInfo
-      REQ confId cInfo -> REQ confId <$$> getBody cInfo
-      ACPT confId cInfo -> ACPT confId <$$> getBody cInfo
+      REQ cMode confId cInfo -> REQ cMode confId <$$> getBody cInfo
+      ACPT cMode confId cInfo -> ACPT cMode confId <$$> getBody cInfo
       INFO cInfo -> INFO <$$> getBody cInfo
       cmd -> pure $ Right cmd
 
