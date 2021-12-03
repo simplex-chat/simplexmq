@@ -51,6 +51,11 @@ class Monad m => MonadAgentStore s m where
   getAcceptedConfirmation :: s -> ConnId -> m AcceptedConfirmation
   removeConfirmations :: s -> ConnId -> m ()
 
+  -- Invitations - sent via Contact connections
+  createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
+  getInvitation :: s -> InvitationId -> m Invitation
+  acceptInvitation :: s -> InvitationId -> ConnInfo -> m ()
+
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
@@ -164,6 +169,23 @@ data AcceptedConfirmation = AcceptedConfirmation
     senderKey :: SenderPublicKey,
     senderConnInfo :: ConnInfo,
     ownConnInfo :: ConnInfo
+  }
+
+-- * Invitations
+
+data NewInvitation = NewInvitation
+  { contactConnId :: ConnId,
+    connReq :: ConnectionRequest 'CMInvitation,
+    recipientConnInfo :: ConnInfo
+  }
+
+data Invitation = Invitation
+  { invitationId :: InvitationId,
+    contactConnId :: ConnId,
+    connReq :: ConnectionRequest 'CMInvitation,
+    recipientConnInfo :: ConnInfo,
+    ownConnInfo :: Maybe ConnInfo,
+    accepted :: Bool
   }
 
 -- * Message integrity validation types
@@ -324,6 +346,8 @@ data StoreError
     SEBadConnType ConnType
   | -- | Confirmation not found.
     SEConfirmationNotFound
+  | -- | Invitation not found
+    SEInvitationNotFound
   | -- | Message not found
     SEMsgNotFound
   | -- | Currently not used. The intention was to pass current expected queue status in methods,

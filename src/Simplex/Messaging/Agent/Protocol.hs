@@ -42,6 +42,9 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionMode (..),
     SConnectionMode (..),
     AConnectionMode (..),
+    cmInvitation,
+    cmContact,
+    ConnectionModeI (..),
     ConnectionRequest (..),
     AConnectionRequest (..),
     ConnReqData (..),
@@ -57,7 +60,6 @@ module Simplex.Messaging.Agent.Protocol
     ARawTransmission,
     ConnId,
     ConfirmationId,
-    IntroId,
     InvitationId,
     AckMode (..),
     OnOff (..),
@@ -83,6 +85,7 @@ module Simplex.Messaging.Agent.Protocol
     connMode,
     connMode',
     serializeConnReq,
+    serializeConnReq',
     serializeAgentError,
     commandP,
     parseSMPMessage,
@@ -90,6 +93,7 @@ module Simplex.Messaging.Agent.Protocol
     smpQueueUriP,
     connModeT,
     connReqP,
+    connReqP',
     msgIntegrityP,
     agentErrorTypeP,
     agentMessageP,
@@ -182,8 +186,8 @@ data ACommand (p :: AParty) where
   NEW :: AConnectionMode -> ACommand Client -- response INV
   INV :: AConnectionRequest -> ACommand Agent
   JOIN :: AConnectionRequest -> ConnInfo -> ACommand Client -- response OK
-  REQ :: AConnectionMode -> ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  ACPT :: AConnectionMode -> ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  REQ :: AConnectionMode -> ConfOrInvId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  ACPT :: AConnectionMode -> ConfOrInvId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
@@ -229,6 +233,12 @@ data AConnectionMode = forall m. ACM (SConnectionMode m)
 instance Eq AConnectionMode where
   ACM m == ACM m' = isJust $ testEquality m m'
 
+cmInvitation :: AConnectionMode
+cmInvitation = ACM SCMInvitation
+
+cmContact :: AConnectionMode
+cmContact = ACM SCMContact
+
 deriving instance Show AConnectionMode
 
 connMode :: SConnectionMode m -> ConnectionMode
@@ -236,8 +246,8 @@ connMode SCMInvitation = CMInvitation
 connMode SCMContact = CMContact
 
 connMode' :: ConnectionMode -> AConnectionMode
-connMode' CMInvitation = ACM SCMInvitation
-connMode' CMContact = ACM SCMContact
+connMode' CMInvitation = cmInvitation
+connMode' CMContact = cmContact
 
 class ConnectionModeI (m :: ConnectionMode) where sConnectionMode :: SConnectionMode m
 
@@ -291,7 +301,7 @@ data AMessage where
   -- | agent envelope for the client message
   A_MSG :: MsgBody -> AMessage
   -- | connection request with the invitation to connect
-  A_INV :: ConnectionRequest CMInvitation -> AMessage
+  A_INV :: ConnectionRequest CMInvitation -> ConnInfo -> AMessage
   deriving (Show)
 
 -- | Parse SMP message.
@@ -337,7 +347,7 @@ agentMessageP =
     hello = HELLO <$> C.pubKeyP <*> ackMode
     reply = REPLY <$> connReqP'
     a_msg = A_MSG <$> binaryBodyP <* A.endOfLine
-    a_inv = A_INV <$> connReqP'
+    a_inv = A_INV <$> connReqP' <* A.space <*> binaryBodyP <* A.endOfLine
     ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
 -- | SMP server location parser.
@@ -353,7 +363,7 @@ serializeAgentMessage = \case
   HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY cReq -> "REPLY " <> serializeConnReq' cReq
   A_MSG body -> "MSG " <> serializeBinary body <> "\n"
-  A_INV cReq -> "INV " <> serializeConnReq' cReq
+  A_INV cReq cInfo -> B.unwords ["INV", serializeConnReq' cReq, serializeBinary cInfo] <> "\n"
 
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSMPQueueUri :: SMPQueueUri -> ByteString
@@ -403,10 +413,10 @@ connReqP = do
   query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
   crSmpQueues <- paramP "smp" smpQueues query
   crEncryptKey <- paramP "e2e" C.pubKeyP query
-  let connReq = ConnReqData {crScheme, crSmpQueues, crEncryptKey}
+  let cReq = ConnReqData {crScheme, crSmpQueues, crEncryptKey}
   pure $ case crMode of
-    CMInvitation -> ACR SCMInvitation $ CRInvitation connReq
-    CMContact -> ACR SCMContact $ CRContact connReq
+    CMInvitation -> ACR SCMInvitation $ CRInvitation cReq
+    CMContact -> ACR SCMContact $ CRContact cReq
   where
     appServer = CRSAppServer <$> host <*> optional port
     host = B.unpack <$> A.takeTill (\c -> c == ':' || c == '/')
@@ -475,9 +485,9 @@ type ConnId = ByteString
 
 type ConfirmationId = ByteString
 
-type IntroId = ByteString
-
 type InvitationId = ByteString
+
+type ConfOrInvId = ByteString
 
 -- | Connection modes.
 data OnOff = On | Off deriving (Eq, Show, Read)

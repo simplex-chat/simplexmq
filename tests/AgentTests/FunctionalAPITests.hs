@@ -5,7 +5,11 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
-module AgentTests.FunctionalAPITests (functionalAPITests) where
+module AgentTests.FunctionalAPITests
+  ( functionalAPITests,
+    pattern REQ_INV,
+  )
+where
 
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
@@ -32,6 +36,9 @@ get c = atomically (readTBQueue $ subQ c)
 pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
 
+pattern REQ_INV :: ConfirmationId -> ConnInfo -> ACommand 'Agent
+pattern REQ_INV confId cInfo <- REQ (ACM SCMInvitation) confId cInfo
+
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
   describe "Establishing duplex connection" $
@@ -55,8 +62,8 @@ testAgentClient = do
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, REQ (ACM SCMInvitation) confId "bob's connInfo") <- get alice
-    acceptConnection alice bobId SCMInvitation confId "alice's connInfo"
+    ("", _, REQ_INV confId "bob's connInfo") <- get alice
+    acceptConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -101,8 +108,8 @@ testAsyncInitiatingOffline = do
     aliceId <- joinConnection bob cReq "bob's connInfo"
     alice' <- liftIO $ getSMPAgentClient cfg
     subscribeConnection alice' bobId
-    ("", _, REQ (ACM SCMInvitation) confId "bob's connInfo") <- get alice'
-    acceptConnection alice' bobId SCMInvitation confId "alice's connInfo"
+    ("", _, REQ_INV confId "bob's connInfo") <- get alice'
+    acceptConnection alice' bobId confId "alice's connInfo"
     get alice' ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -117,8 +124,8 @@ testAsyncJoiningOfflineBeforeActivation = do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     disconnectAgentClient bob
-    ("", _, REQ (ACM SCMInvitation) confId "bob's connInfo") <- get alice
-    acceptConnection alice bobId SCMInvitation confId "alice's connInfo"
+    ("", _, REQ_INV confId "bob's connInfo") <- get alice
+    acceptConnection alice bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
     subscribeConnection bob' aliceId
     get alice ##> ("", bobId, CON)
@@ -141,8 +148,8 @@ testAsyncBothOffline = do
     disconnectAgentClient bob
     alice' <- liftIO $ getSMPAgentClient cfg
     subscribeConnection alice' bobId
-    ("", _, REQ (ACM SCMInvitation) confId "bob's connInfo") <- get alice'
-    acceptConnection alice' bobId SCMInvitation confId "alice's connInfo"
+    ("", _, REQ_INV confId "bob's connInfo") <- get alice'
+    acceptConnection alice' bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
     subscribeConnection bob' aliceId
     get alice' ##> ("", bobId, CON)

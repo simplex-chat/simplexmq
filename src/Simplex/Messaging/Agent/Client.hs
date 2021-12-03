@@ -17,6 +17,7 @@ module Simplex.Messaging.Agent.Client
     subscribeQueue,
     addSubscription,
     sendConfirmation,
+    sendInvitation,
     RetryInterval (..),
     sendHello,
     secureQueue,
@@ -322,6 +323,23 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
             agentMessage = HELLO verifyKey ackMode
           }
 
+sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> EncryptionKey -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
+sendInvitation c SMPQueueUri {smpServer, senderId} encryptKey cReq connInfo = do
+  withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
+    msg <- mkInvitation smp
+    liftSMP $ sendSMPMessage smp Nothing senderId msg
+  where
+    mkInvitation :: SMPClient -> m ByteString
+    mkInvitation smp = do
+      senderTimestamp <- liftIO getCurrentTime
+      encryptUnsigned smp encryptKey . serializeSMPMessage $
+        SMPMessage
+          { senderMsgId = 0,
+            senderTimestamp,
+            previousMsgHash = "",
+            agentMessage = A_INV cReq connInfo
+          }
+
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
 secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
   withLogSMP c server rcvId "KEY <key>" $ \smp ->
@@ -360,6 +378,15 @@ decryptAndVerify :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
 decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
   verifyMessage verifyKey msg
     >>= liftError cryptoError . C.decrypt decryptKey
+
+encryptUnsigned :: AgentMonad m => SMPClient -> EncryptionKey -> ByteString -> m ByteString
+encryptUnsigned smp encryptKey msg = do
+  paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
+  size <- asks $ rsaKeySize . config
+  liftError cryptoError $ do
+    enc <- C.encrypt encryptKey paddedSize msg
+    let sig = B.replicate size ' '
+    pure $ sig <> enc
 
 verifyMessage :: AgentMonad m => Maybe VerificationKey -> ByteString -> m ByteString
 verifyMessage verifyKey msg = do
