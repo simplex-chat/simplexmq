@@ -182,8 +182,10 @@ data ACommand (p :: AParty) where
   NEW :: AConnectionMode -> ACommand Client -- response INV
   INV :: AConnectionRequest -> ACommand Agent
   JOIN :: AConnectionRequest -> ConnInfo -> ACommand Client -- response OK
-  REQ :: AConnectionMode -> ConfOrInvId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  ACPT :: AConnectionMode -> ConfOrInvId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  CONF :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  REQ :: InvitationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  ACPT :: InvitationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
@@ -483,8 +485,6 @@ type ConfirmationId = ByteString
 
 type InvitationId = ByteString
 
-type ConfOrInvId = ByteString
-
 -- | Connection modes.
 data OnOff = On | Off deriving (Eq, Show, Read)
 
@@ -641,7 +641,9 @@ commandP =
   "NEW " *> newCmd
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
-    <|> "REQ " *> reqCmd
+    <|> "CONF " *> confMsg
+    <|> "LET " *> letCmd
+    <|> "REQ " *> reqMsg
     <|> "ACPT " *> acptCmd
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
@@ -663,8 +665,10 @@ commandP =
     newCmd = ACmd SClient . NEW <$> connModeP
     invResp = ACmd SAgent . INV <$> connReqP
     joinCmd = ACmd SClient <$> (JOIN <$> connReqP <* A.space <*> A.takeByteString)
-    reqCmd = ACmd SAgent <$> (REQ <$> connModeP <* A.space <*> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
-    acptCmd = ACmd SClient <$> (ACPT <$> connModeP <* A.space <*> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    confMsg = ACmd SAgent <$> (CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    reqMsg = ACmd SAgent <$> (REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    acptCmd = ACmd SClient <$> (ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
@@ -700,8 +704,10 @@ serializeCommand = \case
   NEW cMode -> "NEW " <> serializeConnMode cMode
   INV cReq -> "INV " <> serializeConnReq cReq
   JOIN cReq cInfo -> B.unwords ["JOIN", serializeConnReq cReq, serializeBinary cInfo]
-  REQ cMode confId cInfo -> B.unwords ["REQ", serializeConnMode cMode, confId, serializeBinary cInfo]
-  ACPT cMode confId cInfo -> B.unwords ["ACPT", serializeConnMode cMode, confId, serializeBinary cInfo]
+  CONF confId cInfo -> B.unwords ["CONF", confId, serializeBinary cInfo]
+  LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
+  REQ invId cInfo -> B.unwords ["REQ", invId, serializeBinary cInfo]
+  ACPT invId cInfo -> B.unwords ["ACPT", invId, serializeBinary cInfo]
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
@@ -816,8 +822,10 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       SEND body -> SEND <$$> getBody body
       MSG msgMeta body -> MSG msgMeta <$$> getBody body
       JOIN qUri cInfo -> JOIN qUri <$$> getBody cInfo
-      REQ cMode confId cInfo -> REQ cMode confId <$$> getBody cInfo
-      ACPT cMode confId cInfo -> ACPT cMode confId <$$> getBody cInfo
+      CONF confId cInfo -> CONF confId <$$> getBody cInfo
+      LET confId cInfo -> LET confId <$$> getBody cInfo
+      REQ invId cInfo -> REQ invId <$$> getBody cInfo
+      ACPT invId cInfo -> ACPT invId <$$> getBody cInfo
       INFO cInfo -> INFO <$$> getBody cInfo
       cmd -> pure $ Right cmd
 

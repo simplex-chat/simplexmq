@@ -20,6 +20,7 @@
   - [Client commands and server responses](#client-commands-and-server-responses)
     - [NEW command and INV response](#new-command-and-inv-response)
     - [JOIN command](#join-command)
+    - [CONF notification and LET command](#conf-notification-and-let-command)
     - [REQ notification and ACPT command](#req-notification-and-acpt-command)
     - [INFO and CON notifications](#info-and-con-notifications)
     - [SUB command](#sub-command)
@@ -233,8 +234,8 @@ cId = encoded
 cName = 1*(ALPHA / DIGIT / "_" / "-")
 
 agentCommand = (userCmd / agentMsg) CRLF
-userCmd = newCmd / joinCmd / acceptCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
-agentMsg = invitation / connRequest / connInfo / connected / unsubscribed / connDown / connUp / messageId / sent / messageError / message / received / ok / error
+userCmd = newCmd / joinCmd / letCmd / acceptCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
+agentMsg = invitation / confMsg / connReqMsg / connInfo / connected / unsubscribed / connDown / connUp / messageId / sent / messageError / message / received / ok / error
 
 newCmd = %s"NEW" SP connectionMode [SP %s"NO_ACK"] ; response is `invitation` or `error`
 ; NO_ACK parameter currently not supported
@@ -243,13 +244,21 @@ connectionMode = %s"INV" / %s"CON"
 
 invitation = %s"INV" SP connectionRequest ; `connectionRequest` is defined below
 
-connRequest = %s"REQ" SP connectionMode SP confirmationId SP msgBody
+confMsg = %s"CONF" SP confirmationId SP msgBody
 ; msgBody here is any binary information identifying connection request
+
+letCmd = %s"LET" SP confirmationId SP msgBody
+; msgBody here is any binary information identifying connecting party
 
 confirmationId = 1*DIGIT
 
-acceptCmd = %s"ACPT" SP connectionMode SP confirmationId SP msgBody
+connReqMsg = %s"REQ" SP invitationId SP msgBody
+; msgBody here is any binary information identifying connection request
+
+acceptCmd = %s"ACPT" SP invitationId SP msgBody
 ; msgBody here is any binary information identifying connecting party
+
+invitationId = 1*DIGIT
 
 connInfo = %s"INFO" SP msgBody
 ; msgBody here is any binary information identifying connecting party
@@ -338,11 +347,17 @@ error = %s"ERR" SP <errorType>
 
 It is used to create a connection and accept the connection request received out-of-band. It should be used by the client of the agent that accepts the connection (the joining party).
 
+#### CONF notification and LET command
+
+When the joining party uses `JOIN` command to accept connection invitation created with `NEW INV` command, the initiating party will receive `CONF` notification with some numeric identifier and an additional binary information, that can be used to identify the joining party or for any other purpose.
+
+To continue with the connection the initiating party should use `LET` command.
+
 #### REQ notification and ACPT command
 
-When the joining party uses `JOIN` command, the initiating party will receive `REQ` notification with some numeric identifier and an additional binary information, that can be used to identify the joining party or for any other purpose.
+When the joining party uses `JOIN` command to connect to the contact created with `NEW CON` command, the initiating party will receive `REQ` notification with some numeric identifier and an additional binary information, that can be used to identify the joining party or for any other purpose.
 
-To continue with the connection the initiating party should use `ACPT` command.
+To continue with the connection the party that created the contact should use `ACPT` command.
 
 #### INFO and CON notifications
 
