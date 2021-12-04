@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: eac6184d7efe4fc07606d5f6bd75f1821af768a087526ff08749385844580cec
+-- hash: 1e44584019db4d35d25a97c553870b0960fe7a18b5296f0e49b8084c343276ab
 
 name:           simplexmq
 version:        0.4.1
@@ -31,6 +31,7 @@ extra-source-files:
     migrations/20210101_initial.sql
     migrations/20210624_confirmations.sql
     migrations/20210809_snd_messages.sql
+    migrations/20211202_connection_mode.sql
     migrations/README.md
 
 library

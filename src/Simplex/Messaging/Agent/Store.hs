@@ -33,7 +33,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 -- | Store class type. Defines store access methods for implementations.
 class Monad m => MonadAgentStore s m where
   -- Queue and Connection management
-  createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> m ConnId
+  createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   getConn :: s -> ConnId -> m SomeConn
   getAllConnIds :: s -> m [ConnId] -- TODO remove - hack for subscribing to all
@@ -50,6 +50,11 @@ class Monad m => MonadAgentStore s m where
   acceptConfirmation :: s -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
   getAcceptedConfirmation :: s -> ConnId -> m AcceptedConfirmation
   removeConfirmations :: s -> ConnId -> m ()
+
+  -- Invitations - sent via Contact connections
+  createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
+  getInvitation :: s -> InvitationId -> m Invitation
+  acceptInvitation :: s -> InvitationId -> ConnInfo -> m ()
 
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
@@ -91,7 +96,7 @@ data SndQueue = SndQueue
 -- * Connection types
 
 -- | Type of a connection.
-data ConnType = CRcv | CSnd | CDuplex deriving (Eq, Show)
+data ConnType = CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 
 -- | Connection of a specific type.
 --
@@ -107,6 +112,7 @@ data Connection (d :: ConnType) where
   RcvConnection :: ConnData -> RcvQueue -> Connection CRcv
   SndConnection :: ConnData -> SndQueue -> Connection CSnd
   DuplexConnection :: ConnData -> RcvQueue -> SndQueue -> Connection CDuplex
+  ContactConnection :: ConnData -> RcvQueue -> Connection CContact
 
 deriving instance Eq (Connection d)
 
@@ -116,11 +122,13 @@ data SConnType :: ConnType -> Type where
   SCRcv :: SConnType CRcv
   SCSnd :: SConnType CSnd
   SCDuplex :: SConnType CDuplex
+  SCContact :: SConnType CContact
 
 connType :: SConnType c -> ConnType
 connType SCRcv = CRcv
 connType SCSnd = CSnd
 connType SCDuplex = CDuplex
+connType SCContact = CContact
 
 deriving instance Eq (SConnType d)
 
@@ -130,6 +138,7 @@ instance TestEquality SConnType where
   testEquality SCRcv SCRcv = Just Refl
   testEquality SCSnd SCSnd = Just Refl
   testEquality SCDuplex SCDuplex = Just Refl
+  testEquality SCContact SCContact = Just Refl
   testEquality _ _ = Nothing
 
 -- | Connection of an unknown type.
@@ -160,6 +169,23 @@ data AcceptedConfirmation = AcceptedConfirmation
     senderKey :: SenderPublicKey,
     senderConnInfo :: ConnInfo,
     ownConnInfo :: ConnInfo
+  }
+
+-- * Invitations
+
+data NewInvitation = NewInvitation
+  { contactConnId :: ConnId,
+    connReq :: ConnectionRequest 'CMInvitation,
+    recipientConnInfo :: ConnInfo
+  }
+
+data Invitation = Invitation
+  { invitationId :: InvitationId,
+    contactConnId :: ConnId,
+    connReq :: ConnectionRequest 'CMInvitation,
+    recipientConnInfo :: ConnInfo,
+    ownConnInfo :: Maybe ConnInfo,
+    accepted :: Bool
   }
 
 -- * Message integrity validation types
@@ -320,6 +346,8 @@ data StoreError
     SEBadConnType ConnType
   | -- | Confirmation not found.
     SEConfirmationNotFound
+  | -- | Invitation not found
+    SEInvitationNotFound
   | -- | Message not found
     SEMsgNotFound
   | -- | Currently not used. The intention was to pass current expected queue status in methods,
