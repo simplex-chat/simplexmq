@@ -11,7 +11,7 @@
 module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
-import AgentTests.FunctionalAPITests (functionalAPITests, pattern REQ_CON, pattern REQ_INV)
+import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
@@ -109,8 +109,8 @@ testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW INV")
   let cReq' = serializeConnReq cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "bob", Right (REQ_INV confId "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "ACPT INV " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  ("", "bob", Right (CONF confId "bob's connInfo")) <- (alice <#:)
+  alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
@@ -141,9 +141,9 @@ testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW INV")
   let cReq' = serializeConnReq cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
-  ("", bobConn', Right (REQ_INV confId "bob's connInfo")) <- (alice <#:)
+  ("", bobConn', Right (CONF confId "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
-  alice #: ("2", bobConn, "ACPT INV " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
+  alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
   bob <# ("", aliceConn, INFO "alice's connInfo")
   bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
@@ -175,10 +175,10 @@ testContactConnection _ alice bob tom = do
   let cReq' = serializeConnReq cReq
 
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "alice_contact", Right (REQ_CON aConfId "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "ACPT CON " <> aConfId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
-  ("", "alice", Right (REQ_INV bConfId "alice's connInfo")) <- (bob <#:)
-  bob #: ("12", "alice", "ACPT INV " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
+  ("", "alice_contact", Right (REQ aConfId "bob's connInfo")) <- (alice <#:)
+  alice #: ("2", "bob", "ACPT " <> aConfId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  ("", "alice", Right (CONF bConfId "alice's connInfo")) <- (bob <#:)
+  bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
   alice <# ("", "bob", INFO "bob's connInfo 2")
   alice <# ("", "bob", CON)
   bob <# ("", "alice", CON)
@@ -188,10 +188,10 @@ testContactConnection _ alice bob tom = do
   bob #: ("13", "alice", "ACK 1") #> ("13", "alice", OK)
 
   tom #: ("21", "alice", "JOIN " <> cReq' <> " 14\ntom's connInfo") #> ("21", "alice", OK)
-  ("", "alice_contact", Right (REQ_CON aConfId' "tom's connInfo")) <- (alice <#:)
-  alice #: ("4", "tom", "ACPT CON " <> aConfId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
-  ("", "alice", Right (REQ_INV tConfId "alice's connInfo")) <- (tom <#:)
-  tom #: ("22", "alice", "ACPT INV " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
+  ("", "alice_contact", Right (REQ aConfId' "tom's connInfo")) <- (alice <#:)
+  alice #: ("4", "tom", "ACPT " <> aConfId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
+  ("", "alice", Right (CONF tConfId "alice's connInfo")) <- (tom <#:)
+  tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
   alice <# ("", "tom", INFO "tom's connInfo 2")
   alice <# ("", "tom", CON)
   tom <# ("", "alice", CON)
@@ -206,14 +206,14 @@ testContactConnRandomIds _ alice bob = do
   let cReq' = serializeConnReq cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
-  ("", aliceContact', Right (REQ_CON aConfId "bob's connInfo")) <- (alice <#:)
+  ("", aliceContact', Right (REQ aConfId "bob's connInfo")) <- (alice <#:)
   aliceContact' `shouldBe` aliceContact
 
-  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT CON " <> aConfId <> " 16\nalice's connInfo")
-  ("", aliceConn', Right (REQ_INV bConfId "alice's connInfo")) <- (bob <#:)
+  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aConfId <> " 16\nalice's connInfo")
+  ("", aliceConn', Right (CONF bConfId "alice's connInfo")) <- (bob <#:)
   aliceConn' `shouldBe` aliceConn
 
-  bob #: ("12", aliceConn, "ACPT INV " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
+  bob #: ("12", aliceConn, "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
   alice <# ("", bobConn, INFO "bob's connInfo 2")
   alice <# ("", bobConn, CON)
   bob <# ("", aliceConn, CON)
@@ -315,8 +315,8 @@ connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW INV")
   let cReq' = serializeConnReq cReq
   h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
-  ("", _, Right (REQ_INV connId "info2")) <- (h1 <#:)
-  h1 #: ("c3", name2, "ACPT INV " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
+  ("", _, Right (CONF connId "info2")) <- (h1 <#:)
+  h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
   h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)

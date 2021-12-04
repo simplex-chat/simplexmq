@@ -45,7 +45,7 @@ module Simplex.Messaging.Agent
     withAgentLock,
     createConnection,
     joinConnection,
-    acceptConnection,
+    allowConnection,
     acceptContact,
     subscribeConnection,
     sendMessage,
@@ -139,8 +139,8 @@ joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequest c -> Con
 joinConnection c = withAgentEnv c .: joinConn c ""
 
 -- | Approve confirmation (ACPT INV command)
-acceptConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-acceptConnection c = withAgentEnv c .:. acceptConnection' c
+allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnection c = withAgentEnv c .:. allowConnection' c
 
 -- | Approve contact (ACPT CON command)
 acceptContact :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
@@ -244,9 +244,8 @@ processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Cl
 processCommand c (connId, cmd) = case cmd of
   NEW (ACM cMode) -> second (INV . ACR cMode) <$> newConn c connId cMode
   JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
-  ACPT (ACM cMode) confInvId ownConnInfo -> case cMode of
-    SCMInvitation -> acceptConnection' c connId confInvId ownConnInfo $> (connId, OK)
-    SCMContact -> (,OK) <$> acceptContact' c connId confInvId ownConnInfo
+  LET confId ownCInfo -> allowConnection' c connId confId ownCInfo $> (connId, OK)
+  ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId invId ownCInfo
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgBody -> (connId,) . MID <$> sendMessage' c connId msgBody
   ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
@@ -294,8 +293,8 @@ activateQueueJoining c connId sq verifyKey retryInterval =
       sendControlMessage c sq . REPLY $ CRInvitation $ ConnReqData CRSSimplex [qUri'] encryptKey
 
 -- | Approve confirmation (ACPT INV command) in Reader monad
-acceptConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-acceptConnection' c connId confId ownConnInfo = do
+allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnection' c connId confId ownConnInfo = do
   withStore (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection _ rq) -> do
       AcceptedConfirmation {senderKey} <- withStore $ \st -> acceptConfirmation st confId ownConnInfo
@@ -567,7 +566,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 g <- asks idsDrg
                 let newConfirmation = NewConfirmation {connId, senderKey, senderConnInfo = cInfo}
                 confId <- withStore $ \st -> createConfirmation st g newConfirmation
-                notify $ REQ cmInvitation confId cInfo
+                notify $ CONF confId cInfo
               SCDuplex -> do
                 notify $ INFO cInfo
                 processConfirmation c rq senderKey
@@ -620,7 +619,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               g <- asks idsDrg
               let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
               invId <- withStore $ \st -> createInvitation st g newInv
-              notify $ REQ cmContact invId cInfo
+              notify $ REQ invId cInfo
             _ -> prohibited
 
         checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
