@@ -144,7 +144,7 @@ import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTra
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 import Text.Read
-import UnliftIO.Exception
+import UnliftIO.Exception (Exception)
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
@@ -393,7 +393,7 @@ serializeConnReq' = \case
           CRSSimplex -> "simplex:"
           CRSAppServer host port -> B.pack $ "https://" <> host <> maybe "" (':' :) port
         m = case crMode of
-          CMInvitation -> "connect"
+          CMInvitation -> "invitation"
           CMContact -> "contact"
         queryStr = renderSimpleQuery True [("smp", queues), ("e2e", key)]
         queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList crSmpQueues
@@ -421,7 +421,7 @@ connReqP = do
     appServer = CRSAppServer <$> host <*> optional port
     host = B.unpack <$> A.takeTill (\c -> c == ':' || c == '/')
     port = B.unpack <$> (A.char ':' *> A.takeTill (== '/'))
-    mode = "connect" $> CMInvitation <|> "contact" $> CMContact
+    mode = "invitation" $> CMInvitation <|> "contact" $> CMContact
     paramP param parser query =
       let p = maybe (fail "") (pure . snd) $ find ((== param) . fst) query
        in parseAll parser <$?> p
@@ -819,6 +819,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       -- NEW, JOIN and ACPT have optional connId
       NEW _ -> Right cmd
       JOIN {} -> Right cmd
+      ACPT {} -> Right cmd
       -- ERROR response does not always have connId
       ERR _ -> Right cmd
       -- other responses must have connId

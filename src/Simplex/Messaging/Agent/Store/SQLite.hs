@@ -368,7 +368,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           db
           [sql|
             INSERT INTO conn_invitations
-            (invitation_id,  contact_conn_id, cr_invitation, conn_info, accepted) VALUES (?, ?, ?, ?, 0);
+            (invitation_id,  contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
           |]
           (invitationId, contactConnId, connReq, recipientConnInfo)
 

@@ -11,7 +11,7 @@
 module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
-import AgentTests.FunctionalAPITests (functionalAPITests, pattern REQ_INV)
+import AgentTests.FunctionalAPITests (functionalAPITests, pattern REQ_CON, pattern REQ_INV)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
 import Data.ByteString.Char8 (ByteString)
@@ -45,6 +45,11 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_2 $ testDuplexConnection t
     it "should connect via 2 servers and 2 agents (random IDs)" $
       smpAgentTest2_2_2 $ testDuplexConnRandomIds t
+  describe "Establishing two connections via `contact connection" do
+    it "should connect via contact contact with one server and 3 agents" $
+      smpAgentTest3 $ testContactConnection t
+    it "should connect via contact contact with one server and 2 agents (random IDs)" $
+      smpAgentTest2_2_1 $ testContactConnRandomIds t
   describe "Connection subscriptions" do
     it "should connect via one server and one agent" $
       smpAgentTest3_1_1 $ testSubscription t
@@ -163,6 +168,60 @@ testDuplexConnRandomIds _ alice bob = do
   bob <# ("", aliceConn, MERR 5 (SMP AUTH))
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
+
+testContactConnection :: Transport c => TProxy c -> c -> c -> c -> IO ()
+testContactConnection _ alice bob tom = do
+  ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW CON")
+  let cReq' = serializeConnReq cReq
+
+  bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
+  ("", "alice_contact", Right (REQ_CON aConfId "bob's connInfo")) <- (alice <#:)
+  alice #: ("2", "bob", "ACPT CON " <> aConfId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  ("", "alice", Right (REQ_INV bConfId "alice's connInfo")) <- (bob <#:)
+  bob #: ("12", "alice", "ACPT INV " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
+  alice <# ("", "bob", INFO "bob's connInfo 2")
+  alice <# ("", "bob", CON)
+  bob <# ("", "alice", CON)
+  alice #: ("3", "bob", "SEND :hi") #> ("3", "bob", MID 1)
+  alice <# ("", "bob", SENT 1)
+  bob <#= \case ("", "alice", Msg "hi") -> True; _ -> False
+  bob #: ("13", "alice", "ACK 1") #> ("13", "alice", OK)
+
+  tom #: ("21", "alice", "JOIN " <> cReq' <> " 14\ntom's connInfo") #> ("21", "alice", OK)
+  ("", "alice_contact", Right (REQ_CON aConfId' "tom's connInfo")) <- (alice <#:)
+  alice #: ("4", "tom", "ACPT CON " <> aConfId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
+  ("", "alice", Right (REQ_INV tConfId "alice's connInfo")) <- (tom <#:)
+  tom #: ("22", "alice", "ACPT INV " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
+  alice <# ("", "tom", INFO "tom's connInfo 2")
+  alice <# ("", "tom", CON)
+  tom <# ("", "alice", CON)
+  alice #: ("5", "tom", "SEND :hi there") #> ("5", "tom", MID 1)
+  alice <# ("", "tom", SENT 1)
+  tom <#= \case ("", "alice", Msg "hi there") -> True; _ -> False
+  tom #: ("23", "alice", "ACK 1") #> ("23", "alice", OK)
+
+testContactConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
+testContactConnRandomIds _ alice bob = do
+  ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW CON")
+  let cReq' = serializeConnReq cReq
+
+  ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
+  ("", aliceContact', Right (REQ_CON aConfId "bob's connInfo")) <- (alice <#:)
+  aliceContact' `shouldBe` aliceContact
+
+  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT CON " <> aConfId <> " 16\nalice's connInfo")
+  ("", aliceConn', Right (REQ_INV bConfId "alice's connInfo")) <- (bob <#:)
+  aliceConn' `shouldBe` aliceConn
+
+  bob #: ("12", aliceConn, "ACPT INV " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
+  alice <# ("", bobConn, INFO "bob's connInfo 2")
+  alice <# ("", bobConn, CON)
+  bob <# ("", aliceConn, CON)
+
+  alice #: ("3", bobConn, "SEND :hi") #> ("3", bobConn, MID 1)
+  alice <# ("", bobConn, SENT 1)
+  bob <#= \case ("", c, Msg "hi") -> c == aliceConn; _ -> False
+  bob #: ("13", aliceConn, "ACK 1") #> ("13", aliceConn, OK)
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
@@ -293,7 +352,7 @@ syntaxTests t = do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
-        ("311", "a", "JOIN https://simpex.chat/connect#/?smp=smp%3A%2F%2Flocalhost%3A5000%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
+        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5000%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")

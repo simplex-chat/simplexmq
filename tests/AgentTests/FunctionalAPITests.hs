@@ -8,6 +8,7 @@
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
     pattern REQ_INV,
+    pattern REQ_CON,
   )
 where
 
@@ -38,6 +39,9 @@ pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
 
 pattern REQ_INV :: ConfirmationId -> ConnInfo -> ACommand 'Agent
 pattern REQ_INV confId cInfo <- REQ (ACM SCMInvitation) confId cInfo
+
+pattern REQ_CON :: ConfirmationId -> ConnInfo -> ACommand 'Agent
+pattern REQ_CON confId cInfo <- REQ (ACM SCMContact) confId cInfo
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
