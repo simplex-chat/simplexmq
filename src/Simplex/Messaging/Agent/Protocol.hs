@@ -399,7 +399,7 @@ serializeConnReq' = \case
           CMContact -> "contact"
         queryStr = renderSimpleQuery True [("smp", queues), ("e2e", key)]
         queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList crSmpQueues
-        key = C.serializePubKey crEncryptKey
+        key = C.serializePubKeyUri crEncryptKey
 
 connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
 connReqP' = do
@@ -414,7 +414,7 @@ connReqP = do
   crMode <- "/" *> mode <* "#/?"
   query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
   crSmpQueues <- paramP "smp" smpQueues query
-  crEncryptKey <- paramP "e2e" C.pubKeyP query
+  crEncryptKey <- paramP "e2e" C.pubKeyUriP query
   let cReq = ConnReqData {crScheme, crSmpQueues, crEncryptKey}
   pure $ case crMode of
     CMInvitation -> ACR SCMInvitation $ CRInvitation cReq

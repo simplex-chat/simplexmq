@@ -64,10 +64,12 @@ module Simplex.Messaging.Crypto
     -- * Encoding of RSA keys
     serializePrivKey,
     serializePubKey,
+    serializePubKeyUri,
     encodePubKey,
     publicKeyHash,
     privKeyP,
     pubKeyP,
+    pubKeyUriP,
     binaryPubKeyP,
 
     -- * SHA256 hash
@@ -99,6 +101,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
@@ -108,7 +111,7 @@ import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll, parseString)
+import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
 -- | A newtype of 'Crypto.PubKey.RSA.PublicKey'.
@@ -436,6 +439,9 @@ verify (PublicKey k) (Signature sig) msg = PSS.verify pssParams k msg sig
 serializePubKey :: PublicKey -> ByteString
 serializePubKey = ("rsa:" <>) . encode . encodePubKey
 
+serializePubKeyUri :: PublicKey -> ByteString
+serializePubKeyUri = ("rsa:" <>) . U.encode . encodePubKey
+
 -- | Base-64 PKCS8 encoding of PSA private key.
 --
 -- Not used as part of SMP protocols.
@@ -445,6 +451,9 @@ serializePrivKey = ("rsa:" <>) . encode . encodePrivKey
 -- Base-64 X509 RSA public key parser.
 pubKeyP :: Parser PublicKey
 pubKeyP = decodePubKey <$?> ("rsa:" *> base64P)
+
+pubKeyUriP :: Parser PublicKey
+pubKeyUriP = decodePubKey <$?> ("rsa:" *> base64UriP)
 
 -- Binary X509 RSA public key parser.
 binaryPubKeyP :: Parser PublicKey
