@@ -32,10 +32,10 @@ testHost :: HostName
 testHost = "localhost"
 
 testPort :: ServiceName
-testPort = "5000"
+testPort = "5001"
 
 testPort2 :: ServiceName
-testPort2 = "5001"
+testPort2 = "5002"
 
 testKeyHashStr :: ByteString
 testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="

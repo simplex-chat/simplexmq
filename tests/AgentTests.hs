@@ -352,7 +352,7 @@ syntaxTests t = do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
-        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5000%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
+        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5001%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
