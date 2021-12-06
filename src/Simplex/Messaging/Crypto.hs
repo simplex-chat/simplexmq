@@ -121,6 +121,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
@@ -134,7 +135,7 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll, parseString)
+import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
 -- | Cryptographic algorithms.
@@ -343,11 +344,17 @@ class CryptoKey k where
   -- | base64 X509 key encoding with algorithm prefix
   serializeKey :: k -> ByteString
 
+  -- | base64url X509 key encoding with algorithm prefix
+  serializeKeyUri :: k -> ByteString
+
   -- | binary X509 key encoding
   encodeKey :: k -> ByteString
 
   -- | base64 X509 (with algorithm prefix) key parser
   strKeyP :: Parser k
+
+  -- | base64url X509 (with algorithm prefix) key parser
+  strKeyUriP :: Parser k
 
   -- | binary X509 key parser
   binaryKeyP :: Parser k
@@ -357,22 +364,29 @@ instance CryptoKey APublicKey where
   keySize (APublicKey _ k) = keySize k
   validKeySize (APublicKey _ k) = validKeySize k
   serializeKey (APublicKey _ k) = serializeKey k
+  serializeKeyUri (APublicKey _ k) = serializeKeyUri k
   encodeKey (APublicKey _ k) = encodeKey k
-  strKeyP = do
-    Alg a <- algP <* A.char ':'
-    k@(APublicKey a' _) <- decodePubKey <$?> base64P
-    case testEquality a a' of
-      Just Refl -> pure k
-      _ -> fail $ "public key algorithm " <> show a <> " does not match prefix"
+  strKeyP = strPublicKeyP_ base64P
+  strKeyUriP = strPublicKeyP_ base64UriP
   binaryKeyP = decodePubKey <$?> A.takeByteString
+
+strPublicKeyP_ :: Parser ByteString -> Parser APublicKey
+strPublicKeyP_ b64P = do
+  Alg a <- algP <* A.char ':'
+  k@(APublicKey a' _) <- decodePubKey <$?> b64P
+  case testEquality a a' of
+    Just Refl -> pure k
+    _ -> fail $ "public key algorithm " <> show a <> " does not match prefix"
 
 -- | X509 encoding of signature public key.
 instance CryptoKey APublicVerifyKey where
   keySize (APublicVerifyKey _ k) = keySize k
   validKeySize (APublicVerifyKey _ k) = validKeySize k
   serializeKey (APublicVerifyKey _ k) = serializeKey k
+  serializeKeyUri (APublicVerifyKey _ k) = serializeKeyUri k
   encodeKey (APublicVerifyKey _ k) = encodeKey k
   strKeyP = pubVerifyKey <$?> strKeyP
+  strKeyUriP = pubVerifyKey <$?> strKeyUriP
   binaryKeyP = pubVerifyKey <$?> binaryKeyP
 
 -- | X509 encoding of encryption public key.
@@ -380,8 +394,10 @@ instance CryptoKey APublicEncryptKey where
   keySize (APublicEncryptKey _ k) = keySize k
   validKeySize (APublicEncryptKey _ k) = validKeySize k
   serializeKey (APublicEncryptKey _ k) = serializeKey k
+  serializeKeyUri (APublicEncryptKey _ k) = serializeKeyUri k
   encodeKey (APublicEncryptKey _ k) = encodeKey k
   strKeyP = pubEncryptKey <$?> strKeyP
+  strKeyUriP = pubEncryptKey <$?> strKeyUriP
   binaryKeyP = pubEncryptKey <$?> binaryKeyP
 
 -- | X509 encoding of 'PublicKey'.
@@ -396,8 +412,10 @@ instance forall a. AlgorithmI a => CryptoKey (PublicKey a) where
     PublicKeyRSA k -> validRSAKeySize $ R.public_size k
     _ -> True
   serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
+  serializeKeyUri k = algorithmPrefix k <> ":" <> U.encode (encodeKey k)
   encodeKey = encodeASNKey . publicToX509
   strKeyP = pubKey' <$?> strKeyP
+  strKeyUriP = pubKey' <$?> strKeyUriP
   binaryKeyP = pubKey' <$?> binaryKeyP
 
 -- | X509 encoding of any private key.
@@ -405,22 +423,29 @@ instance CryptoKey APrivateKey where
   keySize (APrivateKey _ k) = keySize k
   validKeySize (APrivateKey _ k) = validKeySize k
   serializeKey (APrivateKey _ k) = serializeKey k
+  serializeKeyUri (APrivateKey _ k) = serializeKeyUri k
   encodeKey (APrivateKey _ k) = encodeKey k
-  strKeyP = do
-    Alg a <- algP <* A.char ':'
-    k@(APrivateKey a' _) <- decodePrivKey <$?> base64P
-    case testEquality a a' of
-      Just Refl -> pure k
-      _ -> fail $ "private key algorithm " <> show a <> " does not match prefix"
+  strKeyP = strPrivateKeyP_ base64P
+  strKeyUriP = strPrivateKeyP_ base64UriP
   binaryKeyP = decodePrivKey <$?> A.takeByteString
+
+strPrivateKeyP_ :: Parser ByteString -> Parser APrivateKey
+strPrivateKeyP_ b64P = do
+  Alg a <- algP <* A.char ':'
+  k@(APrivateKey a' _) <- decodePrivKey <$?> b64P
+  case testEquality a a' of
+    Just Refl -> pure k
+    _ -> fail $ "private key algorithm " <> show a <> " does not match prefix"
 
 -- | X509 encoding of signature private key.
 instance CryptoKey APrivateSignKey where
   keySize (APrivateSignKey _ k) = keySize k
   validKeySize (APrivateSignKey _ k) = validKeySize k
   serializeKey (APrivateSignKey _ k) = serializeKey k
+  serializeKeyUri (APrivateSignKey _ k) = serializeKeyUri k
   encodeKey (APrivateSignKey _ k) = encodeKey k
   strKeyP = privSignKey <$?> strKeyP
+  strKeyUriP = privSignKey <$?> strKeyUriP
   binaryKeyP = privSignKey <$?> binaryKeyP
 
 -- | X509 encoding of encryption private key.
@@ -428,8 +453,10 @@ instance CryptoKey APrivateDecryptKey where
   keySize (APrivateDecryptKey _ k) = keySize k
   validKeySize (APrivateDecryptKey _ k) = validKeySize k
   serializeKey (APrivateDecryptKey _ k) = serializeKey k
+  serializeKeyUri (APrivateDecryptKey _ k) = serializeKeyUri k
   encodeKey (APrivateDecryptKey _ k) = encodeKey k
   strKeyP = privDecryptKey <$?> strKeyP
+  strKeyUriP = privDecryptKey <$?> strKeyUriP
   binaryKeyP = privDecryptKey <$?> binaryKeyP
 
 -- | X509 encoding of 'PrivateKey'.
@@ -444,8 +471,10 @@ instance AlgorithmI a => CryptoKey (PrivateKey a) where
     PrivateKeyRSA k -> validRSAKeySize $ rsaPrivateKeySize k
     _ -> True
   serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
+  serializeKeyUri k = algorithmPrefix k <> ":" <> U.encode (encodeKey k)
   encodeKey = encodeASNKey . privateToX509
   strKeyP = privKey' <$?> strKeyP
+  strKeyUriP = privKey' <$?> strKeyUriP
   binaryKeyP = privKey' <$?> binaryKeyP
 
 type family PublicKeyType pk where

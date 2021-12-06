@@ -338,7 +338,7 @@ subscribeConnection' c connId =
         Active -> throwError $ CONN SIMPLEX
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
-    SomeConn _ (ContactConnection _ _rq) -> pure ()
+    SomeConn _ (ContactConnection _ rq) -> subscribeQueue c rq connId
   where
     verifyKey :: SndQueue -> C.APublicVerifyKey
     verifyKey = C.publicKey . signKey

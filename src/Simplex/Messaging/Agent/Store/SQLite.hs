@@ -40,7 +40,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
-import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, field)
+import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, ToRow, field)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
@@ -371,6 +371,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
             FROM conn_invitations
             WHERE invitation_id = ?
+              AND accepted = 0
           |]
           (Only invitationId)
     where
@@ -572,6 +573,22 @@ instance (FromField a, FromField b, FromField c, FromField d, FromField e,
   fromRow = (,,,,,,,,,,) <$> field <*> field <*> field <*> field <*> field
                          <*> field <*> field <*> field <*> field <*> field
                          <*> field
+
+instance (FromField a, FromField b, FromField c, FromField d, FromField e,
+          FromField f, FromField g, FromField h, FromField i, FromField j,
+          FromField k, FromField l) =>
+  FromRow (a,b,c,d,e,f,g,h,i,j,k,l) where
+  fromRow = (,,,,,,,,,,,) <$> field <*> field <*> field <*> field <*> field
+                          <*> field <*> field <*> field <*> field <*> field
+                          <*> field <*> field
+
+instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
+          ToField g, ToField h, ToField i, ToField j, ToField k, ToField l) =>
+  ToRow (a,b,c,d,e,f,g,h,i,j,k,l) where
+  toRow (a,b,c,d,e,f,g,h,i,j,k,l) =
+    [ toField a, toField b, toField c, toField d, toField e, toField f,
+      toField g, toField h, toField i, toField j, toField k, toField l
+    ]
 {- ORMOLU_ENABLE -}
 
 -- * Server upsert helper
