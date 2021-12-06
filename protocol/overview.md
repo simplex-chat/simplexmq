@@ -240,7 +240,7 @@ Used cryptographic primitives are not compromised.
 
 **cannot:**
 
-- prove to a third-party that a message came from a user (assuming a user’s device is not seized)
+- cryptographically prove to a third-party that a message came from a user (assuming a user’s device is not seized)
 
 - prove that two contacts they have is the same user.
 
