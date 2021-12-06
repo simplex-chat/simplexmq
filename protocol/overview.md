@@ -8,11 +8,11 @@
 
 ## SimpleX objectives
 
-1. Provide messaging infrastructure for distributed applications. This infrastructure needs to have the following qualities:
+1. Provide *messaging infrastructure* (COMMENT the idea here is that servers on their own or agents+servers can be used for applications other than chat, but also that chat will be used to build the applications upon, e.g. with interactive chat widgets that can distribute some part of their state and respond to commands - something similar to what I did in the past for content publishing... In the context of this doc it's the former) for distributed applications. This infrastructure needs to have the following qualities:
 
    - Security against passive and active (man-in-the-middle) attacks: the parties should have reliable end-to-end encryption and be able to identify and to some extent compensate for the presence of the active attacker who may modify, delete or add messages.
   
-   - Privacy: network server operators should have no ability to read or modify messages without detection, and it should be impossible or hard to infer the contacts the users communicate with. Non-malicious network operators should retain no record of participants communications.
+   - Privacy: *network server operators should have no ability to read or modify messages without detection* (COMMENT redundant), and it should be impossible or hard to infer the contacts the users communicate with. Non-malicious network operators should retain no record of participants communications.
   
    - Reliability: the messages should be delivered even if some participating network servers or receiving clients fail, with “at least once” delivery guarantee.
   
@@ -102,7 +102,7 @@ Depending on the privacy requirements of the clients, the client can use a separ
 
 - permanently removes queues after they are deleted by the users
 
-- only stores messages in transit in server operating memory; as clients are expected to use multiple servers to deliver each message, the message loss in one of the servers is acceptable.
+- only stores messages in transit in server operating memory; as *clients are expected to use multiple servers to deliver each message* (AMENDED based on the comment) , the message loss in one of the servers is acceptable.
 
 ### SimpleX clients and agents
 
