@@ -190,6 +190,7 @@ data ACommand (p :: AParty) where
   LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   REQ :: InvitationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
   ACPT :: InvitationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  RJCT :: InvitationId -> ACommand Client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
@@ -661,6 +662,7 @@ commandP =
     <|> "LET " *> letCmd
     <|> "REQ " *> reqMsg
     <|> "ACPT " *> acptCmd
+    <|> "RJCT " *> rjctCmd
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
@@ -685,6 +687,7 @@ commandP =
     letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     reqMsg = ACmd SAgent <$> (REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     acptCmd = ACmd SClient <$> (ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
@@ -724,6 +727,7 @@ serializeCommand = \case
   LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
   REQ invId cInfo -> B.unwords ["REQ", invId, serializeBinary cInfo]
   ACPT invId cInfo -> B.unwords ["ACPT", invId, serializeBinary cInfo]
+  RJCT invId -> "RJCT " <> invId
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"

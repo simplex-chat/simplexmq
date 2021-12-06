@@ -405,6 +405,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           ":invitation_id" := invitationId
         ]
 
+  deleteInvitation :: SQLiteStore -> ConnId -> InvitationId -> m ()
+  deleteInvitation st contactConnId invId =
+    liftIOEither . withTransaction st $ \db ->
+      runExceptT $
+        ExceptT (getConn_ db contactConnId) >>= \case
+          SomeConn SCContact _ ->
+            liftIO $ DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, invId)
+          _ -> throwError SEConnNotFound
+
   updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   updateRcvIds st connId =
     liftIO . withTransaction st $ \db -> do
