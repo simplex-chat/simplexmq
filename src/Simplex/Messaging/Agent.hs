@@ -340,7 +340,7 @@ subscribeConnection' c connId =
         Active -> throwError $ CONN SIMPLEX
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
-    SomeConn _ (ContactConnection _ _rq) -> pure ()
+    SomeConn _ (ContactConnection _ rq) -> subscribeQueue c rq connId
   where
     resumeDelivery :: SndQueue -> m ()
     resumeDelivery SndQueue {server} = do
