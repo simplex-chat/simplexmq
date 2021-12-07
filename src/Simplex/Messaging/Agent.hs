@@ -496,7 +496,8 @@ deleteConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> delete rq
     SomeConn _ (RcvConnection _ rq) -> delete rq
-    _ -> withStore (`deleteConn` connId)
+    SomeConn _ (ContactConnection _ rq) -> delete rq
+    SomeConn _ (SndConnection _ _) -> withStore (`deleteConn` connId)
   where
     delete :: RcvQueue -> m ()
     delete rq = do
