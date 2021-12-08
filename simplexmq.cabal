@@ -4,10 +4,10 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 1e44584019db4d35d25a97c553870b0960fe7a18b5296f0e49b8084c343276ab
+-- hash: 3bdb491a0318dc4b53cba4131f192e4c4e17b42e88043495666d1688a1f95443
 
 name:           simplexmq
-version:        0.4.1
+version:        0.5.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and

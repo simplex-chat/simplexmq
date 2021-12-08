@@ -86,7 +86,7 @@ import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
+import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, runTransportServer)
 import Simplex.Messaging.Util (bshow, tryError)
 import System.Random (randomR)
 import UnliftIO.Async (Async, async, race_)
@@ -110,7 +110,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
     smpAgent _ = runTransportServer started tcpPort $ \(h :: c) -> do
-      liftIO $ putLn h "Welcome to SMP v0.4.1 agent"
+      liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
       c <- getAgentClient
       logConnection c True
       race_ (connectClient h c) (runAgentClient c)
