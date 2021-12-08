@@ -189,7 +189,7 @@ testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m
 testSMPAgentClientOn port' client = do
   runTransportClient agentTestHost port' $ \h -> do
     line <- liftIO $ getLn h
-    if line == "Welcome to SMP v0.4.1 agent"
+    if line == "Welcome to SMP agent v" <> currentSMPVersionStr
       then client h
       else error $ "wrong welcome message: " <> B.unpack line
 
