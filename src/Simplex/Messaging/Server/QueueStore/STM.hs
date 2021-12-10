@@ -19,13 +19,14 @@ import UnliftIO.STM
 
 data QueueStoreData = QueueStoreData
   { queues :: Map RecipientId QueueRec,
-    senders :: Map SenderId RecipientId
+    senders :: Map SenderId RecipientId,
+    notifiers :: Map NotifierId RecipientId
   }
 
 type QueueStore = TVar QueueStoreData
 
 newQueueStore :: STM QueueStore
-newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty}
+newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty, notifiers = M.empty}
 
 instance MonadQueueStore QueueStore STM where
   addQueue :: QueueStore -> RecipientPublicKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
@@ -42,21 +43,46 @@ instance MonadQueueStore QueueStore STM where
         return $ Right ()
 
   getQueue :: QueueStore -> SParty (p :: Party) -> QueueId -> STM (Either ErrorType QueueRec)
-  getQueue store SRecipient rId = do
-    cs <- readTVar store
-    return $ getRcpQueue cs rId
-  getQueue store SSender sId = do
-    cs <- readTVar store
-    let rId = M.lookup sId $ senders cs
-    return $ maybe (Left AUTH) (getRcpQueue cs) rId
-  getQueue _ SBroker _ =
-    return $ Left INTERNAL
+  getQueue st party qId = do
+    cs <- readTVar st
+    pure $ case party of
+      SRecipient -> getRcpQueue cs qId
+      SSender -> getPartyQueue cs senders
+      SNotifier -> getPartyQueue cs notifiers
+      SBroker -> Left INTERNAL
+    where
+      getPartyQueue ::
+        QueueStoreData ->
+        (QueueStoreData -> Map QueueId RecipientId) ->
+        Either ErrorType QueueRec
+      getPartyQueue cs recipientIds =
+        case M.lookup qId $ recipientIds cs of
+          Just rId -> getRcpQueue cs rId
+          Nothing -> Left AUTH
 
+  secureQueue :: QueueStore -> RecipientId -> SenderPublicKey -> STM (Either ErrorType ())
   secureQueue store rId sKey =
     updateQueues store rId $ \cs c ->
       case senderKey c of
         Just _ -> (Left AUTH, cs)
         _ -> (Right (), cs {queues = M.insert rId c {senderKey = Just sKey} (queues cs)})
+
+  addQueueNotifier :: QueueStore -> RecipientId -> NotifierId -> NotifierPublicKey -> STM (Either ErrorType ())
+  addQueueNotifier store rId nId nKey = do
+    cs@QueueStoreData {queues, notifiers} <- readTVar store
+    if M.member nId notifiers
+      then pure $ Left DUPLICATE_
+      else case M.lookup rId queues of
+        Nothing -> pure $ Left AUTH
+        Just q -> case notifier q of
+          Just _ -> pure $ Left AUTH
+          _ -> do
+            writeTVar store $
+              cs
+                { queues = M.insert rId q {notifier = Just (nId, nKey)} queues,
+                  notifiers = M.insert nId rId notifiers
+                }
+            pure $ Right ()
 
   suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
   suspendQueue store rId =

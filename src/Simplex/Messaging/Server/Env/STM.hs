@@ -30,7 +30,7 @@ data ServerConfig = ServerConfig
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
-    serverPrivateKey :: C.FullPrivateKey
+    serverPrivateKey :: C.PrivateKey 'C.RSA
     -- serverId :: ByteString
   }
 
@@ -40,17 +40,20 @@ data Env = Env
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
-    serverKeyPair :: C.FullKeyPair,
+    serverKeyPair :: C.KeyPair 'C.RSA,
     storeLog :: Maybe (StoreLog 'WriteMode)
   }
 
 data Server = Server
   { subscribedQ :: TBQueue (RecipientId, Client),
-    subscribers :: TVar (Map RecipientId Client)
+    subscribers :: TVar (Map RecipientId Client),
+    ntfSubscribedQ :: TBQueue (NotifierId, Client),
+    notifiers :: TVar (Map NotifierId Client)
   }
 
 data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
+    ntfSubscriptions :: TVar (Map NotifierId ()),
     rcvQ :: TBQueue Transmission,
     sndQ :: TBQueue Transmission
   }
@@ -66,14 +69,17 @@ newServer :: Natural -> STM Server
 newServer qSize = do
   subscribedQ <- newTBQueue qSize
   subscribers <- newTVar M.empty
-  return Server {subscribedQ, subscribers}
+  ntfSubscribedQ <- newTBQueue qSize
+  notifiers <- newTVar M.empty
+  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
 newClient :: Natural -> STM Client
 newClient qSize = do
   subscriptions <- newTVar M.empty
+  ntfSubscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {subscriptions, rcvQ, sndQ}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ}
 
 newSubscription :: STM Sub
 newSubscription = do
@@ -88,13 +94,23 @@ newEnv config = do
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
   let pk = serverPrivateKey config
-      serverKeyPair = (C.publicKey' pk, pk)
+      serverKeyPair = (C.publicKey pk, pk)
   return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s'}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do
       (queues, s') <- liftIO $ readWriteStoreLog s
-      atomically $ modifyTVar queueStore $ \d -> d {queues, senders = M.foldr' addSender M.empty queues}
+      atomically $
+        modifyTVar queueStore $ \d ->
+          d
+            { queues,
+              senders = M.foldr' addSender M.empty queues,
+              notifiers = M.foldr' addNotifier M.empty queues
+            }
       pure s'
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)
+    addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
+    addNotifier q = case notifier q of
+      Nothing -> id
+      Just (nId, _) -> M.insert nId (recipientId q)

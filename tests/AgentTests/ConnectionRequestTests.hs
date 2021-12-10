@@ -3,6 +3,7 @@
 
 module AgentTests.ConnectionRequestTests where
 
+import qualified Crypto.PubKey.RSA as R
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parseAll)
@@ -36,7 +37,7 @@ connectionRequest =
     ConnReqData
       { crScheme = appServer,
         crSmpQueues = [queue],
-        crEncryptKey = reservedServerKey
+        crEncryptKey = C.APublicEncryptKey C.SRSA (C.PublicKeyRSA $ R.PublicKey 1 0 0)
       }
 
 connectionRequestTests :: Spec

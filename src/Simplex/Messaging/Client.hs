@@ -30,7 +30,9 @@ module Simplex.Messaging.Client
     -- * SMP protocol command functions
     createSMPQueue,
     subscribeSMPQueue,
+    subscribeSMPQueueNotifications,
     secureSMPQueue,
+    enableSMPQueueNotifications,
     sendSMPMessage,
     ackSMPMessage,
     suspendSMPQueue,
@@ -80,7 +82,7 @@ data SMPClient = SMPClient
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TVar (Map CorrId Request),
-    sndQ :: TBQueue SignedRawTransmission,
+    sndQ :: TBQueue SentRawTransmission,
     rcvQ :: TBQueue SignedTransmissionOrError,
     msgQ :: TBQueue SMPServerTransmission,
     blockSize :: Int
@@ -263,7 +265,7 @@ createSMPQueue ::
 createSMPQueue c rpKey rKey =
   -- TODO add signing this request too - requires changes in the server
   sendSMPCommand c (Just rpKey) "" (Cmd SRecipient $ NEW rKey) >>= \case
-    Cmd _ (IDS rId sId) -> return (rId, sId)
+    Cmd _ (IDS rId sId) -> pure (rId, sId)
     _ -> throwE SMPUnexpectedResponse
 
 -- | Subscribe to the SMP queue.
@@ -277,11 +279,26 @@ subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
+-- | Subscribe to the SMP queue notifications.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
+subscribeSMPQueueNotifications :: SMPClient -> NotifierPrivateKey -> NotifierId -> ExceptT SMPClientError IO ()
+subscribeSMPQueueNotifications = okSMPCommand $ Cmd SNotifier NSUB
+
 -- | Secure the SMP queue by adding a sender public key.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#secure-queue-command
 secureSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> SenderPublicKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
+
+-- | Enable notifications for the queue for push notifications server.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#enable-notifications-command
+enableSMPQueueNotifications :: SMPClient -> RecipientPrivateKey -> RecipientId -> NotifierPublicKey -> ExceptT SMPClientError IO NotifierId
+enableSMPQueueNotifications c rpKey rId notifierKey =
+  sendSMPCommand c (Just rpKey) rId (Cmd SRecipient $ NKEY notifierKey) >>= \case
+    Cmd _ (NID nId) -> pure nId
+    _ -> throwE SMPUnexpectedResponse
 
 -- | Send SMP message.
 --
@@ -316,14 +333,14 @@ suspendSMPQueue = okSMPCommand $ Cmd SRecipient OFF
 deleteSMPQueue :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
 deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
 
-okSMPCommand :: Cmd -> SMPClient -> C.SafePrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+okSMPCommand :: Cmd -> SMPClient -> C.APrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c (Just pKey) qId cmd >>= \case
     Cmd _ OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
 -- | Send any SMP command ('Cmd' type).
-sendSMPCommand :: SMPClient -> Maybe C.SafePrivateKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
+sendSMPCommand :: SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
   t <- signTransmission $ serializeTransmission (corrId, qId, cmd)
@@ -337,20 +354,20 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId
       i <- stateTVar clientCorrId $ \i -> (i, i + 1)
       pure . CorrId $ bshow i
 
-    signTransmission :: ByteString -> ExceptT SMPClientError IO SignedRawTransmission
+    signTransmission :: ByteString -> ExceptT SMPClientError IO SentRawTransmission
     signTransmission t = case pKey of
-      Nothing -> return ("", t)
+      Nothing -> return (Nothing, t)
       Just pk -> do
         sig <- liftError SMPSignatureError $ C.sign pk t
-        return (sig, t)
+        return (Just sig, t)
 
     -- two separate "atomically" needed to avoid blocking
-    sendRecv :: CorrId -> SignedRawTransmission -> IO Response
+    sendRecv :: CorrId -> SentRawTransmission -> IO Response
     sendRecv corrId t = atomically (send corrId t) >>= withTimeout . atomically . takeTMVar
       where
         withTimeout a = fromMaybe (Left SMPResponseTimeout) <$> timeout tcpTimeout a
 
-    send :: CorrId -> SignedRawTransmission -> STM (TMVar Response)
+    send :: CorrId -> SentRawTransmission -> STM (TMVar Response)
     send corrId t = do
       r <- newEmptyTMVar
       modifyTVar sentCommands . M.insert corrId $ Request qId r
