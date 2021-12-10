@@ -692,7 +692,7 @@ The transport protocol should provide the following:
 - unique channel binding (`sessionIdentifier`) to include in the signed part of SMP transmissions.
 
 By default, the client and server communicate using [TLS 1.3 protocol][13] restricted to:
-- TLS_AES_256_GCM_SHA384 cypher suite,
+- TLS_CHACHA20_POLY1305_SHA256 cipher suite (for better performance on mobile devices),
 - ed25519 and ed448 EdDSA algorithms for signatures,
 - x25519 and x448 ECDHE groups for key exchange.
 - servers must send only one self-signed certificate in the handshake, clients must abort the connection in case more than one certificate is sent.
