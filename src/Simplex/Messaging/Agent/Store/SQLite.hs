@@ -38,7 +38,8 @@ import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, field)
+import Data.Text.Encoding (decodeLatin1)
+import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, ToRow, field)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.Internal (Field (..))
@@ -50,6 +51,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (blobFieldParser)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -149,8 +151,8 @@ withTransaction st action = withConnection st $ loop 100 100000
           else E.throwIO e
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
-  createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> m ConnId
-  createRcvConn st gVar cData q@RcvQueue {server} =
+  createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
+  createRcvConn st gVar cData q@RcvQueue {server} cMode =
     -- TODO if schema has to be restarted, this function can be refactored
     -- to create connection first using createWithRandomId
     liftIOEither . checkConstraint SEConnDuplicate . withTransaction st $ \db ->
@@ -160,7 +162,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       create db connId = do
         upsertServer_ db server
         insertRcvQueue_ db connId q
-        insertRcvConnection_ db cData {connId} q
+        insertRcvConnection_ db cData {connId} q cMode
         pure connId
 
   createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
@@ -247,7 +249,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
 
-  setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
+  setRcvQueueActive :: SQLiteStore -> RcvQueue -> C.APublicVerifyKey -> m ()
   setRcvQueueActive st RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
@@ -277,18 +279,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE host = :host AND port = :port AND snd_id = :snd_id;
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
-
-  updateSignKey :: SQLiteStore -> SndQueue -> SignatureKey -> m ()
-  updateSignKey st SndQueue {sndId, server = SMPServer {host, port}} signatureKey =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE snd_queues
-          SET sign_key = :sign_key
-          WHERE host = :host AND port = :port AND snd_id = :snd_id;
-        |]
-        [":sign_key" := signatureKey, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderKey, senderConnInfo} =
@@ -357,6 +347,60 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE conn_alias = :conn_alias;
         |]
         [":conn_alias" := connId]
+
+  createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
+  createInvitation st gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
+    liftIOEither . withTransaction st $ \db ->
+      createWithRandomId gVar $ \invitationId ->
+        DB.execute
+          db
+          [sql|
+            INSERT INTO conn_invitations
+            (invitation_id,  contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
+          |]
+          (invitationId, contactConnId, connReq, recipientConnInfo)
+
+  getInvitation :: SQLiteStore -> InvitationId -> m Invitation
+  getInvitation st invitationId =
+    liftIOEither . withTransaction st $ \db ->
+      invitation
+        <$> DB.query
+          db
+          [sql|
+            SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
+            FROM conn_invitations
+            WHERE invitation_id = ?
+              AND accepted = 0
+          |]
+          (Only invitationId)
+    where
+      invitation [(contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted)] =
+        Right Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
+      invitation _ = Left SEInvitationNotFound
+
+  acceptInvitation :: SQLiteStore -> InvitationId -> ConnInfo -> m ()
+  acceptInvitation st invitationId ownConnInfo =
+    liftIO . withTransaction st $ \db -> do
+      DB.executeNamed
+        db
+        [sql|
+          UPDATE conn_invitations
+          SET accepted = 1,
+              own_conn_info = :own_conn_info
+          WHERE invitation_id = :invitation_id
+        |]
+        [ ":own_conn_info" := ownConnInfo,
+          ":invitation_id" := invitationId
+        ]
+
+  deleteInvitation :: SQLiteStore -> ConnId -> InvitationId -> m ()
+  deleteInvitation st contactConnId invId =
+    liftIOEither . withTransaction st $ \db ->
+      runExceptT $
+        ExceptT (getConn_ db contactConnId) >>= \case
+          SomeConn SCContact _ ->
+            liftIO $ DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, invId)
+          _ -> throwError SEConnNotFound
 
   updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   updateRcvIds st connId =
@@ -429,10 +473,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
       sndQueue = maybe (Left SEConnNotFound) Right
 
-  getPendingMsgs :: SQLiteStore -> ConnId -> m [PendingMsg]
+  getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
   getPendingMsgs st connId =
     liftIO . withTransaction st $ \db ->
-      map (PendingMsg connId . fromOnly)
+      map fromOnly
         <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ? AND snd_status = ?" (connId, SndMsgCreated)
 
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
@@ -500,9 +544,25 @@ instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
 
 instance FromField MsgIntegrity where fromField = blobFieldParser msgIntegrityP
 
-instance ToField SMPQueueInfo where toField = toField . serializeSmpQueueInfo
+instance ToField SMPQueueUri where toField = toField . serializeSMPQueueUri
 
-instance FromField SMPQueueInfo where fromField = blobFieldParser smpQueueInfoP
+instance FromField SMPQueueUri where fromField = blobFieldParser smpQueueUriP
+
+instance ToField AConnectionRequest where toField = toField . serializeConnReq
+
+instance FromField AConnectionRequest where fromField = blobFieldParser connReqP
+
+instance ToField (ConnectionRequest c) where toField = toField . serializeConnReq'
+
+instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequest c) where fromField = blobFieldParser connReqP'
+
+instance ToField ConnectionMode where toField = toField . decodeLatin1 . serializeConnMode'
+
+instance FromField ConnectionMode where fromField = fromTextField_ connModeT
+
+instance ToField (SConnectionMode c) where toField = toField . connMode
+
+instance FromField AConnectionMode where fromField = fromTextField_ $ fmap connMode' . connModeT
 
 fromTextField_ :: (E.Typeable a) => (Text -> Maybe a) -> Field -> Ok a
 fromTextField_ fromText = \case
@@ -521,6 +581,22 @@ instance (FromField a, FromField b, FromField c, FromField d, FromField e,
   fromRow = (,,,,,,,,,,) <$> field <*> field <*> field <*> field <*> field
                          <*> field <*> field <*> field <*> field <*> field
                          <*> field
+
+instance (FromField a, FromField b, FromField c, FromField d, FromField e,
+          FromField f, FromField g, FromField h, FromField i, FromField j,
+          FromField k, FromField l) =>
+  FromRow (a,b,c,d,e,f,g,h,i,j,k,l) where
+  fromRow = (,,,,,,,,,,,) <$> field <*> field <*> field <*> field <*> field
+                          <*> field <*> field <*> field <*> field <*> field
+                          <*> field <*> field
+
+instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
+          ToField g, ToField h, ToField i, ToField j, ToField k, ToField l) =>
+  ToRow (a,b,c,d,e,f,g,h,i,j,k,l) where
+  toRow (a,b,c,d,e,f,g,h,i,j,k,l) =
+    [ toField a, toField b, toField c, toField d, toField e, toField f,
+      toField g, toField h, toField i, toField j, toField k, toField l
+    ]
 {- ORMOLU_ENABLE -}
 
 -- * Server upsert helper
@@ -563,21 +639,24 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":status" := status
     ]
 
-insertRcvConnection_ :: DB.Connection -> ConnData -> RcvQueue -> IO ()
-insertRcvConnection_ dbConn ConnData {connId} RcvQueue {server, rcvId} = do
+insertRcvConnection_ :: DB.Connection -> ConnData -> RcvQueue -> SConnectionMode c -> IO ()
+insertRcvConnection_ dbConn ConnData {connId} RcvQueue {server, rcvId} cMode = do
   let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO connections
-        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash,
+          conn_mode )
       VALUES
-        (:conn_alias,:rcv_host,:rcv_port,:rcv_id, NULL,     NULL,     NULL, 0, 0, 0, 0, x'', x'');
+        (:conn_alias,:rcv_host,:rcv_port,:rcv_id, NULL,     NULL,     NULL, 0, 0, 0, 0, x'', x'',
+         :conn_mode );
     |]
     [ ":conn_alias" := connId,
       ":rcv_host" := host server,
       ":rcv_port" := port_,
-      ":rcv_id" := rcvId
+      ":rcv_id" := rcvId,
+      ":conn_mode" := cMode
     ]
 
 -- * createSndConn helpers
@@ -626,21 +705,22 @@ getConn_ :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getConn_ dbConn connId =
   getConnData_ dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
-    Just connData -> do
+    Just (connData, cMode) -> do
       rQ <- getRcvQueueByConnAlias_ dbConn connId
       sQ <- getSndQueueByConnAlias_ dbConn connId
-      pure $ case (rQ, sQ) of
-        (Just rcvQ, Just sndQ) -> Right $ SomeConn SCDuplex (DuplexConnection connData rcvQ sndQ)
-        (Just rcvQ, Nothing) -> Right $ SomeConn SCRcv (RcvConnection connData rcvQ)
-        (Nothing, Just sndQ) -> Right $ SomeConn SCSnd (SndConnection connData sndQ)
+      pure $ case (rQ, sQ, cMode) of
+        (Just rcvQ, Just sndQ, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection connData rcvQ sndQ)
+        (Just rcvQ, Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection connData rcvQ)
+        (Nothing, Just sndQ, CMInvitation) -> Right $ SomeConn SCSnd (SndConnection connData sndQ)
+        (Just rcvQ, Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection connData rcvQ)
         _ -> Left SEConnNotFound
 
-getConnData_ :: DB.Connection -> ConnId -> IO (Maybe ConnData)
+getConnData_ :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData_ dbConn connId' =
   connData
-    <$> DB.query dbConn "SELECT conn_alias FROM connections WHERE conn_alias = ?;" (Only connId')
+    <$> DB.query dbConn "SELECT conn_alias, conn_mode FROM connections WHERE conn_alias = ?;" (Only connId')
   where
-    connData [Only connId] = Just ConnData {connId}
+    connData [(connId, cMode)] = Just (ConnData {connId}, cMode)
     connData _ = Nothing
 
 getRcvQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)

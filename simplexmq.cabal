@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        0.4.1
+version:        0.5.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -29,6 +29,7 @@ extra-source-files:
     migrations/20210101_initial.sql
     migrations/20210624_confirmations.sql
     migrations/20210809_snd_messages.sql
+    migrations/20211202_connection_mode.sql
     migrations/README.md
 
 library
@@ -79,6 +80,7 @@ library
     , file-embed >=0.0.10.0 && <=0.0.15.0
     , filepath ==1.4.*
     , generic-random >=1.2 && <1.5
+    , http-types ==0.12.*
     , iso8601-time ==0.1.*
     , memory >=0.14 && <0.16
     , mtl ==2.2.*
@@ -124,6 +126,7 @@ executable smp-agent
     , file-embed >=0.0.10.0 && <=0.0.15.0
     , filepath ==1.4.*
     , generic-random >=1.2 && <1.5
+    , http-types ==0.12.*
     , iso8601-time ==0.1.*
     , memory >=0.14 && <0.16
     , mtl ==2.2.*
@@ -171,6 +174,7 @@ executable smp-server
     , file-embed >=0.0.10.0 && <=0.0.15.0
     , filepath ==1.4.*
     , generic-random >=1.2 && <1.5
+    , http-types ==0.12.*
     , ini >=0.3 && <0.5
     , iso8601-time ==0.1.*
     , memory >=0.14 && <0.16
@@ -198,6 +202,7 @@ test-suite smp-server-test
   main-is: Test.hs
   other-modules:
       AgentTests
+      AgentTests.ConnectionRequestTests
       AgentTests.FunctionalAPITests
       AgentTests.SQLiteTests
       ProtocolErrorTests
@@ -230,6 +235,7 @@ test-suite smp-server-test
     , generic-random >=1.2 && <1.5
     , hspec >=2.5 && <2.8
     , hspec-core >=2.5 && <2.8
+    , http-types ==0.12.*
     , iso8601-time ==0.1.*
     , memory >=0.14 && <0.16
     , mtl ==2.2.*

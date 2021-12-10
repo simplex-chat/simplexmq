@@ -15,6 +15,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
+import qualified Simplex.Messaging.Crypto as C
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
@@ -22,6 +23,7 @@ data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     smpServers :: NonEmpty SMPServer,
     rsaKeySize :: Int,
+    cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
     dbFile :: FilePath,
@@ -40,6 +42,7 @@ defaultAgentConfig =
     { tcpPort = "5224",
       smpServers = undefined,
       rsaKeySize = 2048 `div` 8,
+      cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 16,
       dbFile = "smp-agent.db",

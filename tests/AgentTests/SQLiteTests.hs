@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -113,7 +114,7 @@ testConcurrentWrites :: SpecWith (SQLiteStore, SQLiteStore)
 testConcurrentWrites =
   it "should complete multiple concurrent write transactions w/t sqlite busy errors" $ \(s1, s2) -> do
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn s1 g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn s1 g cData1 rcvQueue1 SCMInvitation
     let ConnData {connId} = cData1
     concurrently_ (runTest s1 connId) (runTest s2 connId)
   where
@@ -148,14 +149,41 @@ testForeignKeysEnabled =
 cData1 :: ConnData
 cData1 = ConnData {connId = "conn1"}
 
+testPrivateSignKey :: C.APrivateSignKey
+testPrivateSignKey = C.APrivateSignKey C.SRSA testPrivateKey
+
+testPrivateDecryptKey :: C.APrivateDecryptKey
+testPrivateDecryptKey = C.APrivateDecryptKey C.SRSA testPrivateKey
+
+testPublicEncryptKey :: C.APublicEncryptKey
+testPublicEncryptKey = C.APublicEncryptKey C.SRSA $ C.PublicKeyRSA $ R.PublicKey 1 2 3
+
+testPrivateKey :: C.PrivateKey 'C.RSA
+testPrivateKey =
+  C.PrivateKeyRSA
+    R.PrivateKey
+      { private_pub =
+          R.PublicKey
+            { public_size = 1,
+              public_n = 2,
+              public_e = 0
+            },
+        private_d = 3,
+        private_p = 0,
+        private_q = 0,
+        private_dP = 0,
+        private_dQ = 0,
+        private_qinv = 0
+      }
+
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
   RcvQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       rcvId = "1234",
-      rcvPrivateKey = C.safePrivateKey (1, 2, 3),
+      rcvPrivateKey = testPrivateSignKey,
       sndId = Just "2345",
-      decryptKey = C.safePrivateKey (1, 2, 3),
+      decryptKey = testPrivateDecryptKey,
       verifyKey = Nothing,
       status = New
     }
@@ -165,9 +193,9 @@ sndQueue1 =
   SndQueue
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
-      sndPrivateKey = C.safePrivateKey (1, 2, 3),
-      encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-      signKey = C.APrivateKey $ C.unPrivateKey (C.safePrivateKey (1, 2, 3) :: C.SafePrivateKey),
+      sndPrivateKey = testPrivateSignKey,
+      encryptKey = testPublicEncryptKey,
+      signKey = testPrivateSignKey,
       status = New
     }
 
@@ -175,7 +203,7 @@ testCreateRcvConn :: SpecWith SQLiteStore
 testCreateRcvConn =
   it "should create RcvConnection and add SndQueue" $ \store -> do
     g <- newTVarIO =<< drgNew
-    createRcvConn store g cData1 rcvQueue1
+    createRcvConn store g cData1 rcvQueue1 SCMInvitation
       `returnsResult` "conn1"
     getConn store "conn1"
       `returnsResult` SomeConn SCRcv (RcvConnection cData1 rcvQueue1)
@@ -188,7 +216,7 @@ testCreateRcvConnRandomId :: SpecWith SQLiteStore
 testCreateRcvConnRandomId =
   it "should create RcvConnection and add SndQueue with random ID" $ \store -> do
     g <- newTVarIO =<< drgNew
-    Right connId <- runExceptT $ createRcvConn store g cData1 {connId = ""} rcvQueue1
+    Right connId <- runExceptT $ createRcvConn store g cData1 {connId = ""} rcvQueue1 SCMInvitation
     getConn store connId
       `returnsResult` SomeConn SCRcv (RcvConnection cData1 {connId} rcvQueue1)
     upgradeRcvConnToDuplex store connId sndQueue1
@@ -200,8 +228,8 @@ testCreateRcvConnDuplicate :: SpecWith SQLiteStore
 testCreateRcvConnDuplicate =
   it "should throw error on attempt to create duplicate RcvConnection" $ \store -> do
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
-    createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
+    createRcvConn store g cData1 rcvQueue1 SCMInvitation
       `throwsError` SEConnDuplicate
 
 testCreateSndConn :: SpecWith SQLiteStore
@@ -241,7 +269,7 @@ testGetAllConnIds :: SpecWith SQLiteStore
 testGetAllConnIds =
   it "should get all conn aliases" $ \store -> do
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     _ <- runExceptT $ createSndConn store g cData1 {connId = "conn2"} sndQueue1
     getAllConnIds store
       `returnsResult` ["conn1" :: ConnId, "conn2" :: ConnId]
@@ -252,7 +280,7 @@ testGetRcvConn =
     let smpServer = SMPServer "smp.simplex.im" (Just "5223") testKeyHash
     let recipientId = "1234"
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     getRcvConn store smpServer recipientId
       `returnsResult` SomeConn SCRcv (RcvConnection cData1 rcvQueue1)
 
@@ -260,7 +288,7 @@ testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn =
   it "should create RcvConnection and delete it" $ \store -> do
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     getConn store "conn1"
       `returnsResult` SomeConn SCRcv (RcvConnection cData1 rcvQueue1)
     deleteConn store "conn1"
@@ -286,7 +314,7 @@ testDeleteDuplexConn :: SpecWith SQLiteStore
 testDeleteDuplexConn =
   it "should create DuplexConnection and delete it" $ \store -> do
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     _ <- runExceptT $ upgradeRcvConnToDuplex store "conn1" sndQueue1
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1)
@@ -305,9 +333,9 @@ testUpgradeRcvConnToDuplex =
           SndQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               sndId = "2345",
-              sndPrivateKey = C.safePrivateKey (1, 2, 3),
-              encryptKey = C.PublicKey $ R.PublicKey 1 2 3,
-              signKey = C.APrivateKey $ C.unPrivateKey (C.safePrivateKey (1, 2, 3) :: C.SafePrivateKey),
+              sndPrivateKey = testPrivateSignKey,
+              encryptKey = testPublicEncryptKey,
+              signKey = testPrivateSignKey,
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
@@ -320,14 +348,14 @@ testUpgradeSndConnToDuplex :: SpecWith SQLiteStore
 testUpgradeSndConnToDuplex =
   it "should throw error on attempt to add RcvQueue to RcvConnection or DuplexConnection" $ \store -> do
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     let anotherRcvQueue =
           RcvQueue
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               rcvId = "3456",
-              rcvPrivateKey = C.safePrivateKey (1, 2, 3),
+              rcvPrivateKey = testPrivateSignKey,
               sndId = Just "4567",
-              decryptKey = C.safePrivateKey (1, 2, 3),
+              decryptKey = testPrivateDecryptKey,
               verifyKey = Nothing,
               status = New
             }
@@ -341,7 +369,7 @@ testSetRcvQueueStatus :: SpecWith SQLiteStore
 testSetRcvQueueStatus =
   it "should update status of RcvQueue" $ \store -> do
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     getConn store "conn1"
       `returnsResult` SomeConn SCRcv (RcvConnection cData1 rcvQueue1)
     setRcvQueueStatus store rcvQueue1 Confirmed
@@ -365,7 +393,7 @@ testSetQueueStatusDuplex :: SpecWith SQLiteStore
 testSetQueueStatusDuplex =
   it "should update statuses of RcvQueue and SndQueue in DuplexConnection" $ \store -> do
     g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     _ <- runExceptT $ upgradeRcvConnToDuplex store "conn1" sndQueue1
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1)
@@ -425,7 +453,7 @@ testCreateRcvMsg =
   it "should reserve internal ids and create a RcvMsg" $ \st -> do
     g <- newTVarIO =<< drgNew
     let ConnData {connId} = cData1
-    _ <- runExceptT $ createRcvConn st g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn st g cData1 rcvQueue1 SCMInvitation
     -- TODO getMsg to check message
     testCreateRcvMsg' st 0 "" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "hash_dummy"
     testCreateRcvMsg' st 1 "hash_dummy" connId $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "new_hash_dummy"
@@ -463,7 +491,7 @@ testCreateRcvAndSndMsgs =
   it "should create multiple RcvMsg and SndMsg, correctly ordering internal Ids and returning previous state" $ \store -> do
     g <- newTVarIO =<< drgNew
     let ConnData {connId} = cData1
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1
+    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     _ <- runExceptT $ upgradeRcvConnToDuplex store "conn1" sndQueue1
     testCreateRcvMsg' store 0 "" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "rcv_hash_1"
     testCreateRcvMsg' store 1 "rcv_hash_1" connId $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "rcv_hash_2"

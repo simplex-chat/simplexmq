@@ -17,6 +17,7 @@ module Simplex.Messaging.Agent.Client
     subscribeQueue,
     addSubscription,
     sendConfirmation,
+    sendInvitation,
     RetryInterval (..),
     sendHello,
     secureQueue,
@@ -71,8 +72,7 @@ data AgentClient = AgentClient
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     subscrConns :: TVar (Map ConnId SMPServer),
     activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
-    connMsgQueues :: TVar (Map ConnId (TQueue PendingMsg)),
-    connMsgDeliveries :: TVar (Map ConnId (Async ())),
+    connMsgsQueued :: TVar (Map ConnId Bool),
     srvMsgQueues :: TVar (Map SMPServer (TQueue PendingMsg)),
     srvMsgDeliveries :: TVar (Map SMPServer (Async ())),
     reconnections :: TVar [Async ()],
@@ -92,14 +92,13 @@ newAgentClient agentEnv = do
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
   activations <- newTVar M.empty
-  connMsgQueues <- newTVar M.empty
-  connMsgDeliveries <- newTVar M.empty
+  connMsgsQueued <- newTVar M.empty
   srvMsgQueues <- newTVar M.empty
   srvMsgDeliveries <- newTVar M.empty
   reconnections <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgQueues, connMsgDeliveries, srvMsgQueues, srvMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgsQueued, srvMsgQueues, srvMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -175,7 +174,6 @@ closeAgentClient c = liftIO $ do
   closeSMPServerClients c
   cancelActions $ activations c
   cancelActions $ reconnections c
-  cancelActions $ connMsgDeliveries c
   cancelActions $ srvMsgDeliveries c
 
 closeSMPServerClients :: AgentClient -> IO ()
@@ -225,14 +223,24 @@ smpClientError = \case
   SMPTransportError e -> BROKER $ TRANSPORT e
   e -> INTERNAL $ show e
 
-newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueInfo)
-newRcvQueue c srv = do
+newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri, C.APublicEncryptKey)
+newRcvQueue c srv =
+  asks (cmdSignAlg . config) >>= \case
+    C.SignAlg a -> newRcvQueue_ a c srv
+
+newRcvQueue_ ::
+  (C.SignatureAlgorithm a, C.AlgorithmI a, AgentMonad m) =>
+  C.SAlgorithm a ->
+  AgentClient ->
+  SMPServer ->
+  m (RcvQueue, SMPQueueUri, C.APublicEncryptKey)
+newRcvQueue_ a c srv = do
   size <- asks $ rsaKeySize . config
-  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
+  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
   logServer "-->" c srv "" "NEW"
   (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
-  (encryptKey, decryptKey) <- liftIO $ C.generateKeyPair size
+  (encryptKey, decryptKey) <- liftIO $ C.generateEncryptionKeyPair size C.SRSA
   let rq =
         RcvQueue
           { server = srv,
@@ -243,7 +251,7 @@ newRcvQueue c srv = do
             verifyKey = Nothing,
             status = New
           }
-  return (rq, SMPQueueInfo srv sId encryptKey)
+  pure (rq, SMPQueueUri srv sId reservedServerKey, encryptKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
@@ -301,7 +309,7 @@ sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
     mkConfirmation :: SMPClient -> m MsgBody
     mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
   withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
     msg <- mkHello smp $ AckMode On
@@ -319,6 +327,23 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
             senderTimestamp,
             previousMsgHash = "",
             agentMessage = HELLO verifyKey ackMode
+          }
+
+sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> C.APublicEncryptKey -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
+sendInvitation c SMPQueueUri {smpServer, senderId} encryptKey cReq connInfo = do
+  withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
+    msg <- mkInvitation smp
+    liftSMP $ sendSMPMessage smp Nothing senderId msg
+  where
+    mkInvitation :: SMPClient -> m ByteString
+    mkInvitation smp = do
+      senderTimestamp <- liftIO getCurrentTime
+      encryptUnsigned smp encryptKey . serializeSMPMessage $
+        SMPMessage
+          { senderMsgId = 0,
+            senderTimestamp,
+            previousMsgHash = "",
+            agentMessage = A_INV cReq connInfo
           }
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
@@ -352,23 +377,36 @@ encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
   paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
   liftError cryptoError $ do
     enc <- C.encrypt encryptKey paddedSize msg
-    C.Signature sig <- C.sign signKey enc
-    pure $ sig <> enc
+    sig <- C.sign signKey enc
+    pure $ C.signatureBytes sig <> enc
 
 decryptAndVerify :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
 decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
   verifyMessage verifyKey msg
     >>= liftError cryptoError . C.decrypt decryptKey
 
-verifyMessage :: AgentMonad m => Maybe VerificationKey -> ByteString -> m ByteString
-verifyMessage verifyKey msg = do
+encryptUnsigned :: AgentMonad m => SMPClient -> C.APublicEncryptKey -> ByteString -> m ByteString
+encryptUnsigned smp encryptKey msg = do
+  paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
   size <- asks $ rsaKeySize . config
-  let (sig, enc) = B.splitAt size msg
+  liftError cryptoError $ do
+    enc <- C.encrypt encryptKey paddedSize msg
+    let sig = B.replicate size ' '
+    pure $ sig <> enc
+
+verifyMessage :: AgentMonad m => Maybe C.APublicVerifyKey -> ByteString -> m ByteString
+verifyMessage verifyKey msg = do
+  sigSize <- asks $ rsaKeySize . config
+  let (s, enc) = B.splitAt sigSize msg
   case verifyKey of
     Nothing -> pure enc
-    Just k
-      | C.verify k (C.Signature sig) enc -> pure enc
-      | otherwise -> throwError $ AGENT A_SIGNATURE
+    Just k ->
+      case C.decodeSignature $ B.take (C.signatureSize k) s of
+        Left _ -> throwError $ AGENT A_SIGNATURE
+        Right sig ->
+          if C.verify k sig enc
+            then pure enc
+            else throwError $ AGENT A_SIGNATURE
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case

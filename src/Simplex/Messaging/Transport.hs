@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -44,6 +45,7 @@ module Simplex.Messaging.Transport
     tGetEncrypted,
     serializeTransportError,
     transportErrorP,
+    currentSMPVersionStr,
 
     -- * Trim trailing CR
     trimCR,
@@ -62,7 +64,7 @@ import Data.ByteArray (xor)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import Data.Maybe(fromMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
@@ -221,7 +223,10 @@ major :: SMPVersion -> (Int, Int)
 major (SMPVersion a b _ _) = (a, b)
 
 currentSMPVersion :: SMPVersion
-currentSMPVersion = "0.4.1.0"
+currentSMPVersion = "0.5.0.0"
+
+currentSMPVersionStr :: ByteString
+currentSMPVersionStr = serializeSMPVersion currentSMPVersion
 
 serializeSMPVersion :: SMPVersion -> ByteString
 serializeSMPVersion (SMPVersion a b c d) = B.intercalate "." [bshow a, bshow b, bshow c, bshow d]
@@ -345,7 +350,7 @@ makeNextIV SessionKey {baseIV, counter} = atomically $ do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 --
 -- The numbers in function names refer to the steps in the document.
-serverHandshake :: forall c. Transport c => c -> Int -> C.FullKeyPair -> ExceptT TransportError IO (THandle c)
+serverHandshake :: forall c. Transport c => c -> Int -> C.KeyPair 'C.RSA -> ExceptT TransportError IO (THandle c)
 serverHandshake c srvBlockSize (k, pk) = do
   checkValidBlockSize srvBlockSize
   liftIO sendHeaderAndPublicKey_1
@@ -358,13 +363,13 @@ serverHandshake c srvBlockSize (k, pk) = do
   where
     sendHeaderAndPublicKey_1 :: IO ()
     sendHeaderAndPublicKey_1 = do
-      let sKey = C.encodePubKey k
+      let sKey = C.encodeKey k
           header = ServerHeader {blockSize = srvBlockSize, keySize = B.length sKey}
       cPut c $ binaryServerHeader header
       cPut c sKey
     receiveEncryptedKeys_4 :: ExceptT TransportError IO ByteString
     receiveEncryptedKeys_4 =
-      liftIO (cGet c $ C.publicKeySize k) >>= \case
+      liftIO (cGet c $ C.keySize k) >>= \case
         "" -> throwE $ TEHandshake TERMINATED
         ks -> pure ks
     decryptParseKeys_5 :: ByteString -> ExceptT TransportError IO ClientHandshake
@@ -372,7 +377,7 @@ serverHandshake c srvBlockSize (k, pk) = do
       liftError (const $ TEHandshake DECRYPT) (C.decryptOAEP pk encKeys)
         >>= liftEither . parseClientHandshake
     sendWelcome_6 :: THandle c -> ExceptT TransportError IO ()
-    sendWelcome_6 th = ExceptT . tPutEncrypted th $ serializeSMPVersion currentSMPVersion <> " "
+    sendWelcome_6 th = ExceptT . tPutEncrypted th $ currentSMPVersionStr <> " "
 
 -- | Client SMP encrypted transport handshake.
 --
@@ -390,7 +395,7 @@ clientHandshake c blkSize_ keyHash = do
   getWelcome_6 th >>= checkVersion
   pure th
   where
-    getHeaderAndPublicKey_1_2 :: ExceptT TransportError IO (C.PublicKey, Int)
+    getHeaderAndPublicKey_1_2 :: ExceptT TransportError IO (C.PublicKey 'C.RSA, Int)
     getHeaderAndPublicKey_1_2 = do
       header <- liftIO (cGet c serverHeaderSize)
       ServerHeader {blockSize, keySize} <- liftEither $ parse serverHeaderP (TEHandshake HEADER) header
@@ -399,8 +404,8 @@ clientHandshake c blkSize_ keyHash = do
       maybe (pure ()) (validateKeyHash_2 s) keyHash
       key <- liftEither $ parseKey s
       pure (key, blockSize)
-    parseKey :: ByteString -> Either TransportError C.PublicKey
-    parseKey = first (const $ TEHandshake RSA_KEY) . parseAll C.binaryPubKeyP
+    parseKey :: ByteString -> Either TransportError (C.PublicKey 'C.RSA)
+    parseKey = first (const $ TEHandshake RSA_KEY) . parseAll C.binaryKeyP
     validateKeyHash_2 :: ByteString -> C.KeyHash -> ExceptT TransportError IO ()
     validateKeyHash_2 k (C.KeyHash kHash)
       | C.sha256Hash k == kHash = pure ()
@@ -412,7 +417,7 @@ clientHandshake c blkSize_ keyHash = do
       aesKey <- C.randomAesKey
       baseIV <- C.randomIV
       pure SessionKey {aesKey, baseIV, counter = undefined}
-    sendEncryptedKeys_4 :: C.PublicKey -> ClientHandshake -> ExceptT TransportError IO ()
+    sendEncryptedKeys_4 :: C.PublicKey 'C.RSA -> ClientHandshake -> ExceptT TransportError IO ()
     sendEncryptedKeys_4 k chs =
       liftError (const $ TEHandshake ENCRYPT) (C.encryptOAEP k $ serializeClientHandshake chs)
         >>= liftIO . cPut c
