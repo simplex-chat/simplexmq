@@ -1,5 +1,4 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -129,7 +128,7 @@ data ATransport = forall c. Transport c => ATransport (TProxy c)
 runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
 runTransportServer started port server = do
   clients <- newTVarIO S.empty
-  E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) \sock -> forever $ do
+  E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) $ \sock -> forever $ do
     c <- liftIO $ acceptConnection sock
     tid <- forkFinally (server c) (const $ liftIO $ closeConnection c)
     atomically . modifyTVar clients $ S.insert tid
