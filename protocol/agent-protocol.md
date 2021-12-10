@@ -123,7 +123,7 @@ Each SMP message client body, once decrypted, contains 3 parts (one of them may 
   - to send and to acknowledge user messages (`clientMsg`, `acknowledgeMsg`)
   - to manage SMP queue rotation (`newQueueMessage`, `deleteQueueMsg`)
   - to manage encryption key rotation (TODO)
-- `msgPadding` - an optional message padding to make all SMP messages have constant size, to prevent servers from observing the actual message size.
+- `msgPadding` - an optional message padding to make all SMP messages have constant size, to prevent servers from observing the actual message size. The only case the message padding can be absent is when the message has exactly the maximum size, in all other cases the message MUST be padded to a fixed size.
 
 ### Messages between SMP agents
 
@@ -131,9 +131,8 @@ Message syntax below uses [ABNF][3] with [case-sensitive strings extension][4].
 
 ```abnf
 decryptedSmpMessageBody = agentMsgHeader CRLF agentMessage CRLF msgPadding
-agentMsgHeader = agentMsgId SP agentTimestamp SP previousMsgHash ; here `agentMsgId` is sequential ID set by the sending agent
+agentMsgHeader = agentMsgId SP previousMsgHash ; here `agentMsgId` is sequential ID set by the sending agent
 agentMsgId = 1*DIGIT
-agentTimestamp = <date-time> ; RFC3339
 previousMsgHash = encoded
 encoded = <base64 encoded>
 
@@ -214,7 +213,7 @@ This message is sent to add an additional SMP queue to the connection. Unlike RE
 
 #### DEL message 
 
-This message is sent to notify that the queue with passed URI will be deleted - having received this message, the receiving agent should no longer send messages to this queue. In case it was the only queue in the connection to which the agent could send the messages, it MAY also delete the reply queue(s) in the connection.
+This message is sent to notify that the queue with passed URI will be deleted - having received this message, the receiving agent should no longer send messages to this queue. In case it was the last remaining send queue in the duplex connection, the agent MAY also delete the reply queue(s) in the connection.
 
 ## SMP agent commands
 
