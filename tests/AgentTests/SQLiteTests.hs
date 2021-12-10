@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
@@ -71,42 +70,42 @@ action `throwsError` e = runExceptT action `shouldReturn` Left e
 -- TODO add null port tests
 storeTests :: Spec
 storeTests = do
-  withStore2 do
+  withStore2 $ do
     describe "stress test" testConcurrentWrites
-  withStore do
-    describe "store setup" do
+  withStore $ do
+    describe "store setup" $ do
       testCompiledThreadsafe
       testForeignKeysEnabled
-    describe "store methods" do
-      describe "Queue and Connection management" do
-        describe "createRcvConn" do
+    describe "store methods" $ do
+      describe "Queue and Connection management" $ do
+        describe "createRcvConn" $ do
           testCreateRcvConn
           testCreateRcvConnRandomId
           testCreateRcvConnDuplicate
-        describe "createSndConn" do
+        describe "createSndConn" $ do
           testCreateSndConn
           testCreateSndConnRandomID
           testCreateSndConnDuplicate
         describe "getAllConnIds" testGetAllConnIds
         describe "getRcvConn" testGetRcvConn
-        describe "deleteConn" do
+        describe "deleteConn" $ do
           testDeleteRcvConn
           testDeleteSndConn
           testDeleteDuplexConn
-        describe "upgradeRcvConnToDuplex" do
+        describe "upgradeRcvConnToDuplex" $ do
           testUpgradeRcvConnToDuplex
-        describe "upgradeSndConnToDuplex" do
+        describe "upgradeSndConnToDuplex" $ do
           testUpgradeSndConnToDuplex
-        describe "set Queue status" do
-          describe "setRcvQueueStatus" do
+        describe "set Queue status" $ do
+          describe "setRcvQueueStatus" $ do
             testSetRcvQueueStatus
             testSetRcvQueueStatusNoQueue
-          describe "setSndQueueStatus" do
+          describe "setSndQueueStatus" $ do
             testSetSndQueueStatus
             testSetSndQueueStatusNoQueue
           testSetQueueStatusDuplex
-      describe "Msg management" do
-        describe "create Msg" do
+      describe "Msg management" $ do
+        describe "create Msg" $ do
           testCreateRcvMsg
           testCreateSndMsg
           testCreateRcvAndSndMsgs

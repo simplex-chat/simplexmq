@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -33,7 +32,7 @@ agentTests (ATransport t) = do
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
-  describe "Establishing duplex connection" do
+  describe "Establishing duplex connection" $ do
     it "should connect via one server and one agent" $
       smpAgentTest2_1_1 $ testDuplexConnection t
     it "should connect via one server and one agent (random IDs)" $
@@ -46,19 +45,19 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_2 $ testDuplexConnection t
     it "should connect via 2 servers and 2 agents (random IDs)" $
       smpAgentTest2_2_2 $ testDuplexConnRandomIds t
-  describe "Establishing connections via `contact connection`" do
+  describe "Establishing connections via `contact connection`" $ do
     it "should connect via contact connection with one server and 3 agents" $
       smpAgentTest3 $ testContactConnection t
     it "should connect via contact connection with one server and 2 agents (random IDs)" $
       smpAgentTest2_2_1 $ testContactConnRandomIds t
     it "should support rejecting contact request" $
       smpAgentTest2_2_1 $ testRejectContactRequest t
-  describe "Connection subscriptions" do
+  describe "Connection subscriptions" $ do
     it "should connect via one server and one agent" $
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
-  describe "Message delivery" do
+  describe "Message delivery" $ do
     it "should deliver messages after losing server connection and re-connecting" $
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
     it "should deliver pending messages after agent restarting" $
@@ -354,21 +353,21 @@ samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSG
 syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
   it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
-  describe "NEW" do
-    describe "valid" do
+  describe "NEW" $ do
+    describe "valid" $ do
       -- TODO: add tests with defined connection alias
       it "with correct parameter" $ ("211", "", "NEW INV") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
-    describe "invalid" do
+    describe "invalid" $ do
       -- TODO: add tests with defined connection alias
       it "with incorrect parameter" $ ("222", "", "NEW hi") >#> ("222", "", "ERR CMD SYNTAX")
 
-  describe "JOIN" do
-    describe "valid" do
+  describe "JOIN" $ do
+    describe "valid" $ do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
         ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5001%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
-    describe "invalid" do
+    describe "invalid" $ do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
   where
