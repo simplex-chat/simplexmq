@@ -47,6 +47,7 @@ module Simplex.Messaging.Agent
     joinConnection,
     allowConnection,
     acceptContact,
+    rejectContact,
     subscribeConnection,
     sendMessage,
     ackMessage,
@@ -68,7 +69,6 @@ import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
 import qualified Data.Text as T
@@ -85,10 +85,10 @@ import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
-import Simplex.Messaging.Util (bshow, tryError)
+import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, runTransportServer)
+import Simplex.Messaging.Util (bshow, tryError, unlessM)
 import System.Random (randomR)
-import UnliftIO.Async (Async, async, race_)
+import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -109,7 +109,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
     smpAgent _ = runTransportServer started tcpPort $ \(h :: c) -> do
-      liftIO $ putLn h "Welcome to SMP v0.4.1 agent"
+      liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
       c <- getAgentClient
       logConnection c True
       race_ (connectClient h c) (runAgentClient c)
@@ -138,13 +138,17 @@ createConnection c cMode = withAgentEnv c $ newConn c "" cMode
 joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequest c -> ConnInfo -> m ConnId
 joinConnection c = withAgentEnv c .: joinConn c ""
 
--- | Approve confirmation (ACPT INV command)
+-- | Allow connection to continue after CONF notification (LET command)
 allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
 allowConnection c = withAgentEnv c .:. allowConnection' c
 
--- | Approve contact (ACPT CON command)
+-- | Accept contact after REQ notification (ACPT command)
 acceptContact :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
 acceptContact c = withAgentEnv c .: acceptContact' c ""
+
+-- | Reject contact (RJCT command)
+rejectContact :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> m ()
+rejectContact c = withAgentEnv c .: rejectContact' c
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
@@ -237,6 +241,7 @@ withStore action = do
       SEConnDuplicate -> CONN DUPLICATE
       SEBadConnType CRcv -> CONN SIMPLEX
       SEBadConnType CSnd -> CONN SIMPLEX
+      SEInvitationNotFound -> CMD PROHIBITED
       e -> INTERNAL $ show e
 
 -- | execute any SMP agent command
@@ -246,6 +251,7 @@ processCommand c (connId, cmd) = case cmd of
   JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
   LET confId ownCInfo -> allowConnection' c connId confId ownCInfo $> (connId, OK)
   ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId invId ownCInfo
+  RJCT invId -> rejectContact' c connId invId $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgBody -> (connId,) . MID <$> sendMessage' c connId msgBody
   ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
@@ -280,7 +286,7 @@ joinConn c connId (CRContact (ConnReqData _ (qUri :| _) encryptKey)) cInfo = do
   sendInvitation c qUri encryptKey cReq cInfo
   pure connId'
 
-activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+activateQueueJoining :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 activateQueueJoining c connId sq verifyKey retryInterval =
   activateQueue c connId sq verifyKey retryInterval createReplyQueue
   where
@@ -292,7 +298,7 @@ activateQueueJoining c connId sq verifyKey retryInterval =
       withStore $ \st -> upgradeSndConnToDuplex st connId rq
       sendControlMessage c sq . REPLY $ CRInvitation $ ConnReqData CRSSimplex [qUri'] encryptKey
 
--- | Approve confirmation (ACPT INV command) in Reader monad
+-- | Approve confirmation (LET command) in Reader monad
 allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
 allowConnection' c connId confId ownConnInfo = do
   withStore (`getConn` connId) >>= \case
@@ -301,7 +307,7 @@ allowConnection' c connId confId ownConnInfo = do
       processConfirmation c rq senderKey
     _ -> throwError $ CMD PROHIBITED
 
--- | Accept contact (ACPT CON command) in Reader monad
+-- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> ConnInfo -> m ConnId
 acceptContact' c connId invId ownConnInfo = do
   Invitation {contactConnId, connReq} <- withStore (`getInvitation` invId)
@@ -310,6 +316,11 @@ acceptContact' c connId invId ownConnInfo = do
       withStore $ \st -> acceptInvitation st invId ownConnInfo
       joinConn c connId connReq ownConnInfo
     _ -> throwError $ CMD PROHIBITED
+
+-- | Reject contact (RJCT command) in Reader monad
+rejectContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> m ()
+rejectContact' _ contactConnId invId =
+  withStore $ \st -> deleteInvitation st contactConnId invId
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
 processConfirmation c rq sndKey = do
@@ -322,39 +333,30 @@ subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq sq) -> do
-      resumeDelivery sq
+      resumeMsgDelivery c connId sq
       case status (sq :: SndQueue) of
-        Confirmed -> withVerifyKey sq $ \verifyKey -> do
+        Confirmed -> do
           conf <- withStore (`getAcceptedConfirmation` connId)
           secureQueue c rq $ senderKey (conf :: AcceptedConfirmation)
           withStore $ \st -> setRcvQueueStatus st rq Secured
-          activateSecuredQueue rq sq verifyKey
-        Secured -> withVerifyKey sq $ activateSecuredQueue rq sq
+          activateSecuredQueue rq sq
+        Secured -> activateSecuredQueue rq sq
         Active -> subscribeQueue c rq connId
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (SndConnection _ sq) -> do
-      resumeDelivery sq
+      resumeMsgDelivery c connId sq
       case status (sq :: SndQueue) of
-        Confirmed -> withVerifyKey sq $ \verifyKey ->
-          activateQueueJoining c connId sq verifyKey =<< resumeInterval
+        Confirmed -> activateQueueJoining c connId sq (verifyKey sq) =<< resumeInterval
         Active -> throwError $ CONN SIMPLEX
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
     SomeConn _ (ContactConnection _ rq) -> subscribeQueue c rq connId
   where
-    resumeDelivery :: SndQueue -> m ()
-    resumeDelivery SndQueue {server} = do
-      wasDelivering <- resumeMsgDelivery c connId server
-      unless wasDelivering $ do
-        pending <- withStore (`getPendingMsgs` connId)
-        queuePendingMsgs c connId pending
-    withVerifyKey :: SndQueue -> (C.PublicKey -> m ()) -> m ()
-    withVerifyKey sq action =
-      let err = throwError $ INTERNAL "missing signing key public counterpart"
-       in maybe err action . C.publicKey $ signKey sq
-    activateSecuredQueue :: RcvQueue -> SndQueue -> C.PublicKey -> m ()
-    activateSecuredQueue rq sq verifyKey = do
-      activateQueueInitiating c connId sq verifyKey =<< resumeInterval
+    verifyKey :: SndQueue -> C.APublicVerifyKey
+    verifyKey = C.publicKey . signKey
+    activateSecuredQueue :: RcvQueue -> SndQueue -> m ()
+    activateSecuredQueue rq sq = do
+      activateQueueInitiating c connId sq (verifyKey sq) =<< resumeInterval
       subscribeQueue c rq connId
     resumeInterval :: m RetryInterval
     resumeInterval = do
@@ -370,14 +372,10 @@ sendMessage' c connId msg =
     _ -> throwError $ CONN SIMPLEX
   where
     enqueueMessage :: SndQueue -> m AgentMsgId
-    enqueueMessage SndQueue {server} = do
+    enqueueMessage sq@SndQueue {server} = do
+      resumeMsgDelivery c connId sq
       msgId <- storeSentMsg
-      wasDelivering <- resumeMsgDelivery c connId server
-      pending <-
-        if wasDelivering
-          then pure [PendingMsg {connId, msgId}]
-          else withStore (`getPendingMsgs` connId)
-      queuePendingMsgs c connId pending
+      queuePendingMsgs c connId server [msgId]
       pure $ unId msgId
       where
         storeSentMsg :: m InternalId
@@ -398,42 +396,41 @@ sendMessage' c connId msg =
             createSndMsg st connId msgData
             pure internalId
 
-resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> SMPServer -> m Bool
-resumeMsgDelivery c connId srv = do
-  void $ resume srv (srvMsgDeliveries c) $ runSrvMsgDelivery c srv
-  resume connId (connMsgDeliveries c) $ runMsgDelivery c connId srv
+resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
+resumeMsgDelivery c connId SndQueue {server} = do
+  unlessM srvDelivering $
+    async (runSrvMsgDelivery c server)
+      >>= atomically . modifyTVar (srvMsgDeliveries c) . M.insert server
+  unlessM connQueued $
+    withStore (`getPendingMsgs` connId)
+      >>= queuePendingMsgs c connId server
   where
-    resume :: Ord a => a -> TVar (Map a (Async ())) -> m () -> m Bool
-    resume key actionMap actionProcess = do
-      isDelivering <- isJust . M.lookup key <$> readTVarIO actionMap
-      unless isDelivering $
-        async actionProcess
-          >>= atomically . modifyTVar actionMap . M.insert key
-      pure isDelivering
+    srvDelivering = isJust . M.lookup server <$> readTVarIO (srvMsgDeliveries c)
+    connQueued =
+      atomically $
+        isJust
+          <$> stateTVar
+            (connMsgsQueued c)
+            (\m -> (M.lookup connId m, M.insert connId True m))
 
-queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> [PendingMsg] -> m ()
-queuePendingMsgs c connId pending =
-  atomically $ getPendingMsgQ connId (connMsgQueues c) >>= forM_ pending . writeTQueue
+queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> SMPServer -> [InternalId] -> m ()
+queuePendingMsgs c connId server msgIds = atomically $ do
+  q <- getPendingMsgQ c server
+  mapM_ (writeTQueue q . PendingMsg connId) msgIds
 
-getPendingMsgQ :: Ord a => a -> TVar (Map a (TQueue PendingMsg)) -> STM (TQueue PendingMsg)
-getPendingMsgQ key queueMap = do
-  maybe newMsgQueue pure . M.lookup key =<< readTVar queueMap
+getPendingMsgQ :: AgentClient -> SMPServer -> STM (TQueue PendingMsg)
+getPendingMsgQ c srv = do
+  maybe newMsgQueue pure . M.lookup srv =<< readTVar (srvMsgQueues c)
   where
     newMsgQueue :: STM (TQueue PendingMsg)
     newMsgQueue = do
       mq <- newTQueue
-      modifyTVar queueMap $ M.insert key mq
+      modifyTVar (srvMsgQueues c) $ M.insert srv mq
       pure mq
-
-runMsgDelivery :: AgentMonad m => AgentClient -> ConnId -> SMPServer -> m ()
-runMsgDelivery c connId srv = do
-  mq <- atomically . getPendingMsgQ connId $ connMsgQueues c
-  smq <- atomically . getPendingMsgQ srv $ srvMsgQueues c
-  forever . atomically $ readTQueue mq >>= writeTQueue smq
 
 runSrvMsgDelivery :: forall m. AgentMonad m => AgentClient -> SMPServer -> m ()
 runSrvMsgDelivery c@AgentClient {subQ} srv = do
-  mq <- atomically . getPendingMsgQ srv $ srvMsgQueues c
+  mq <- atomically $ getPendingMsgQ c srv
   ri <- asks $ reconnectInterval . config
   forever $ do
     PendingMsg {connId, msgId} <- atomically $ readTQueue mq
@@ -484,7 +481,8 @@ deleteConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> delete rq
     SomeConn _ (RcvConnection _ rq) -> delete rq
-    _ -> withStore (`deleteConn` connId)
+    SomeConn _ (ContactConnection _ rq) -> delete rq
+    SomeConn _ (SndConnection _ _) -> withStore (`deleteConn` connId)
   where
     delete :: RcvQueue -> m ()
     delete rq = do
@@ -636,11 +634,11 @@ confirmQueue c sq senderKey cInfo = do
   sendConfirmation c sq senderKey cInfo
   withStore $ \st -> setSndQueueStatus st sq Confirmed
 
-activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m ()
+activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 activateQueueInitiating c connId sq verifyKey retryInterval =
   activateQueue c connId sq verifyKey retryInterval $ notifyConnected c connId
 
-activateQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> VerificationKey -> RetryInterval -> m () -> m ()
+activateQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m () -> m ()
 activateQueue c connId sq verifyKey retryInterval afterActivation =
   getActivation c connId >>= \case
     Nothing -> async runActivation >>= addActivation c connId
@@ -651,22 +649,27 @@ activateQueue c connId sq verifyKey retryInterval afterActivation =
       sendHello c sq verifyKey retryInterval
       withStore $ \st -> setSndQueueStatus st sq Active
       removeActivation c connId
-      removeVerificationKey
       afterActivation
-    removeVerificationKey :: m ()
-    removeVerificationKey =
-      let safeSignKey = C.removePublicKey $ signKey sq
-       in withStore $ \st -> updateSignKey st sq safeSignKey
 
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
 newSndQueue ::
-  (MonadUnliftIO m, MonadReader Env m) => SMPQueueUri -> EncryptionKey -> m (SndQueue, SenderPublicKey, VerificationKey)
-newSndQueue (SMPQueueUri smpServer senderId _) encryptKey = do
+  (MonadUnliftIO m, MonadReader Env m) => SMPQueueUri -> C.APublicEncryptKey -> m (SndQueue, SenderPublicKey, C.APublicVerifyKey)
+newSndQueue qUri encryptKey =
+  asks (cmdSignAlg . config) >>= \case
+    C.SignAlg a -> newSndQueue_ a qUri encryptKey
+
+newSndQueue_ ::
+  (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m, MonadReader Env m) =>
+  C.SAlgorithm a ->
+  SMPQueueUri ->
+  C.APublicEncryptKey ->
+  m (SndQueue, SenderPublicKey, C.APublicVerifyKey)
+newSndQueue_ a (SMPQueueUri smpServer senderId _) encryptKey = do
   size <- asks $ rsaKeySize . config
-  (senderKey, sndPrivateKey) <- liftIO $ C.generateKeyPair size
-  (verifyKey, signKey) <- liftIO $ C.generateKeyPair size
+  (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
+  (verifyKey, signKey) <- liftIO $ C.generateSignatureKeyPair size C.SRSA
   let sndQueue =
         SndQueue
           { server = smpServer,

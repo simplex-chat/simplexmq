@@ -66,10 +66,6 @@ module Simplex.Messaging.Agent.Protocol
     MsgIntegrity (..),
     MsgErrorType (..),
     QueueStatus (..),
-    SignatureKey,
-    VerificationKey,
-    EncryptionKey,
-    DecryptionKey,
     ACorrId,
     AgentMsgId,
 
@@ -190,6 +186,7 @@ data ACommand (p :: AParty) where
   LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   REQ :: InvitationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
   ACPT :: InvitationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  RJCT :: InvitationId -> ACommand Client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
@@ -297,7 +294,7 @@ data SMPMessage
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents
 data AMessage where
   -- | the first message in the queue to validate it is secured
-  HELLO :: VerificationKey -> AckMode -> AMessage
+  HELLO :: C.APublicVerifyKey -> AckMode -> AMessage
   -- | reply queue information
   REPLY :: ConnectionRequest CMInvitation -> AMessage
   -- | agent envelope for the client message
@@ -314,7 +311,7 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
     smpMessageP = A.endOfLine *> smpClientMessageP <|> smpConfirmationP
 
     smpConfirmationP :: Parser SMPMessage
-    smpConfirmationP = "KEY " *> (SMPConfirmation <$> C.pubKeyP <* A.endOfLine <* A.endOfLine <*> binaryBodyP <* A.endOfLine)
+    smpConfirmationP = "KEY " *> (SMPConfirmation <$> C.strKeyP <* A.endOfLine <* A.endOfLine <*> binaryBodyP <* A.endOfLine)
 
     smpClientMessageP :: Parser SMPMessage
     smpClientMessageP =
@@ -329,7 +326,7 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
 -- | Serialize SMP message.
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
-  SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializePubKey sKey) "" (serializeBinary cInfo) <> "\n"
+  SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializeKey sKey) "" (serializeBinary cInfo) <> "\n"
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
     let header = messageHeader senderMsgId senderTimestamp previousMsgHash
         body = serializeAgentMessage agentMessage
@@ -346,7 +343,7 @@ agentMessageP =
     <|> "MSG " *> a_msg
     <|> "INV " *> a_inv
   where
-    hello = HELLO <$> C.pubKeyP <*> ackMode
+    hello = HELLO <$> C.strKeyP <*> ackMode
     reply = REPLY <$> connReqP'
     a_msg = A_MSG <$> binaryBodyP <* A.endOfLine
     a_inv = A_INV <$> connReqP' <* A.space <*> binaryBodyP <* A.endOfLine
@@ -362,7 +359,7 @@ smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
-  HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
+  HELLO verifyKey ackMode -> "HELLO " <> C.serializeKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY cReq -> "REPLY " <> serializeConnReq' cReq
   A_MSG body -> "MSG " <> serializeBinary body <> "\n"
   A_INV cReq cInfo -> B.unwords ["INV", serializeConnReq' cReq, serializeBinary cInfo] <> "\n"
@@ -377,8 +374,8 @@ smpQueueUriP :: Parser SMPQueueUri
 smpQueueUriP =
   SMPQueueUri <$> smpServerUriP <* "/" <*> base64UriP <* "#" <*> pure reservedServerKey
 
-reservedServerKey :: C.PublicKey
-reservedServerKey = C.PublicKey $ R.PublicKey 1 0 0
+reservedServerKey :: C.APublicVerifyKey
+reservedServerKey = C.APublicVerifyKey C.SRSA (C.PublicKeyRSA $ R.PublicKey 1 0 0)
 
 serializeConnReq :: AConnectionRequest -> ByteString
 serializeConnReq (ACR _ cr) = serializeConnReq' cr
@@ -399,7 +396,7 @@ serializeConnReq' = \case
           CMContact -> "contact"
         queryStr = renderSimpleQuery True [("smp", queues), ("e2e", key)]
         queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList crSmpQueues
-        key = C.serializePubKeyUri crEncryptKey
+        key = C.serializeKeyUri crEncryptKey
 
 connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
 connReqP' = do
@@ -414,7 +411,7 @@ connReqP = do
   crMode <- "/" *> mode <* "#/?"
   query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
   crSmpQueues <- paramP "smp" smpQueues query
-  crEncryptKey <- paramP "e2e" C.pubKeyUriP query
+  crEncryptKey <- paramP "e2e" C.strKeyUriP query
   let cReq = ConnReqData {crScheme, crSmpQueues, crEncryptKey}
   pure $ case crMode of
     CMInvitation -> ACR SCMInvitation $ CRInvitation cReq
@@ -501,7 +498,7 @@ newtype AckMode = AckMode OnOff deriving (Eq, Show)
 data SMPQueueUri = SMPQueueUri
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    serverVerifyKey :: VerificationKey
+    serverVerifyKey :: C.APublicVerifyKey
   }
   deriving (Eq, Show)
 
@@ -525,7 +522,7 @@ deriving instance Show AConnectionRequest
 data ConnReqData = ConnReqData
   { crScheme :: ConnReqScheme,
     crSmpQueues :: L.NonEmpty SMPQueueUri,
-    crEncryptKey :: EncryptionKey
+    crEncryptKey :: C.APublicEncryptKey
   }
   deriving (Eq, Show)
 
@@ -534,18 +531,6 @@ data ConnReqScheme = CRSSimplex | CRSAppServer HostName (Maybe ServiceName)
 
 simplexChat :: ConnReqScheme
 simplexChat = CRSAppServer "simplex.chat" Nothing
-
--- | Public key used to E2E encrypt SMP messages.
-type EncryptionKey = C.PublicKey
-
--- | Private key used to E2E decrypt SMP messages.
-type DecryptionKey = C.SafePrivateKey
-
--- | Private key used to sign SMP commands
-type SignatureKey = C.APrivateKey
-
--- | Public key used by SMP server to authorize (verify) SMP commands.
-type VerificationKey = C.PublicKey
 
 data QueueDirection = SND | RCV deriving (Show)
 
@@ -637,7 +622,7 @@ data SMPAgentError
     A_PROHIBITED
   | -- | cannot RSA/AES-decrypt or parse decrypted header
     A_ENCRYPTION
-  | -- | invalid RSA signature
+  | -- | invalid signature
     A_SIGNATURE
   deriving (Eq, Generic, Read, Show, Exception)
 
@@ -661,6 +646,7 @@ commandP =
     <|> "LET " *> letCmd
     <|> "REQ " *> reqMsg
     <|> "ACPT " *> acptCmd
+    <|> "RJCT " *> rjctCmd
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
@@ -685,6 +671,7 @@ commandP =
     letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     reqMsg = ACmd SAgent <$> (REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
     acptCmd = ACmd SClient <$> (ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
@@ -724,6 +711,7 @@ serializeCommand = \case
   LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
   REQ invId cInfo -> B.unwords ["REQ", invId, serializeBinary cInfo]
   ACPT invId cInfo -> B.unwords ["ACPT", invId, serializeBinary cInfo]
+  RJCT invId -> "RJCT " <> invId
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"

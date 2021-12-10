@@ -18,6 +18,7 @@ import Data.Kind (Type)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
@@ -41,9 +42,8 @@ class Monad m => MonadAgentStore s m where
   upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
+  setRcvQueueActive :: s -> RcvQueue -> C.APublicVerifyKey -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
-  updateSignKey :: s -> SndQueue -> SignatureKey -> m ()
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
@@ -55,6 +55,7 @@ class Monad m => MonadAgentStore s m where
   createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   getInvitation :: s -> InvitationId -> m Invitation
   acceptInvitation :: s -> InvitationId -> ConnInfo -> m ()
+  deleteInvitation :: s -> ConnId -> InvitationId -> m ()
 
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
@@ -63,7 +64,7 @@ class Monad m => MonadAgentStore s m where
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
   updateSndMsgStatus :: s -> ConnId -> InternalId -> SndMsgStatus -> m ()
   getPendingMsgData :: s -> ConnId -> InternalId -> m (SndQueue, MsgBody)
-  getPendingMsgs :: s -> ConnId -> m [PendingMsg]
+  getPendingMsgs :: s -> ConnId -> m [InternalId]
   getMsg :: s -> ConnId -> InternalId -> m Msg
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   updateRcvMsgAck :: s -> ConnId -> InternalId -> m ()
@@ -76,8 +77,8 @@ data RcvQueue = RcvQueue
     rcvId :: SMP.RecipientId,
     rcvPrivateKey :: RecipientPrivateKey,
     sndId :: Maybe SMP.SenderId,
-    decryptKey :: DecryptionKey,
-    verifyKey :: Maybe VerificationKey,
+    decryptKey :: C.APrivateDecryptKey,
+    verifyKey :: Maybe C.APublicVerifyKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -87,8 +88,8 @@ data SndQueue = SndQueue
   { server :: SMPServer,
     sndId :: SMP.SenderId,
     sndPrivateKey :: SenderPrivateKey,
-    encryptKey :: EncryptionKey,
-    signKey :: SignatureKey,
+    encryptKey :: C.APublicEncryptKey,
+    signKey :: C.APrivateSignKey,
     status :: QueueStatus
   }
   deriving (Eq, Show)

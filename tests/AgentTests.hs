@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -20,6 +19,7 @@ import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
+import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import System.Directory (removeFile)
@@ -32,7 +32,7 @@ agentTests (ATransport t) = do
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
-  describe "Establishing duplex connection" do
+  describe "Establishing duplex connection" $ do
     it "should connect via one server and one agent" $
       smpAgentTest2_1_1 $ testDuplexConnection t
     it "should connect via one server and one agent (random IDs)" $
@@ -45,17 +45,19 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_2 $ testDuplexConnection t
     it "should connect via 2 servers and 2 agents (random IDs)" $
       smpAgentTest2_2_2 $ testDuplexConnRandomIds t
-  describe "Establishing two connections via `contact connection" do
-    it "should connect via contact contact with one server and 3 agents" $
+  describe "Establishing connections via `contact connection`" $ do
+    it "should connect via contact connection with one server and 3 agents" $
       smpAgentTest3 $ testContactConnection t
-    it "should connect via contact contact with one server and 2 agents (random IDs)" $
+    it "should connect via contact connection with one server and 2 agents (random IDs)" $
       smpAgentTest2_2_1 $ testContactConnRandomIds t
-  describe "Connection subscriptions" do
+    it "should support rejecting contact request" $
+      smpAgentTest2_2_1 $ testRejectContactRequest t
+  describe "Connection subscriptions" $ do
     it "should connect via one server and one agent" $
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
-  describe "Message delivery" do
+  describe "Message delivery" $ do
     it "should deliver messages after losing server connection and re-connecting" $
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
     it "should deliver pending messages after agent restarting" $
@@ -175,8 +177,8 @@ testContactConnection _ alice bob tom = do
   let cReq' = serializeConnReq cReq
 
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "alice_contact", Right (REQ aConfId "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "ACPT " <> aConfId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  ("", "alice_contact", Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
+  alice #: ("2", "bob", "ACPT " <> aInvId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   ("", "alice", Right (CONF bConfId "alice's connInfo")) <- (bob <#:)
   bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
   alice <# ("", "bob", INFO "bob's connInfo 2")
@@ -188,8 +190,8 @@ testContactConnection _ alice bob tom = do
   bob #: ("13", "alice", "ACK 1") #> ("13", "alice", OK)
 
   tom #: ("21", "alice", "JOIN " <> cReq' <> " 14\ntom's connInfo") #> ("21", "alice", OK)
-  ("", "alice_contact", Right (REQ aConfId' "tom's connInfo")) <- (alice <#:)
-  alice #: ("4", "tom", "ACPT " <> aConfId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
+  ("", "alice_contact", Right (REQ aInvId' "tom's connInfo")) <- (alice <#:)
+  alice #: ("4", "tom", "ACPT " <> aInvId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
   ("", "alice", Right (CONF tConfId "alice's connInfo")) <- (tom <#:)
   tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
   alice <# ("", "tom", INFO "tom's connInfo 2")
@@ -206,10 +208,10 @@ testContactConnRandomIds _ alice bob = do
   let cReq' = serializeConnReq cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
-  ("", aliceContact', Right (REQ aConfId "bob's connInfo")) <- (alice <#:)
+  ("", aliceContact', Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
   aliceContact' `shouldBe` aliceContact
 
-  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aConfId <> " 16\nalice's connInfo")
+  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> " 16\nalice's connInfo")
   ("", aliceConn', Right (CONF bConfId "alice's connInfo")) <- (bob <#:)
   aliceConn' `shouldBe` aliceConn
 
@@ -222,6 +224,18 @@ testContactConnRandomIds _ alice bob = do
   alice <# ("", bobConn, SENT 1)
   bob <#= \case ("", c, Msg "hi") -> c == aliceConn; _ -> False
   bob #: ("13", aliceConn, "ACK 1") #> ("13", aliceConn, OK)
+
+testRejectContactRequest :: Transport c => TProxy c -> c -> c -> IO ()
+testRejectContactRequest _ alice bob = do
+  ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW CON")
+  let cReq' = serializeConnReq cReq
+  bob #: ("11", "alice", "JOIN " <> cReq' <> " 10\nbob's info") #> ("11", "alice", OK)
+  ("", "a_contact", Right (REQ aInvId "bob's info")) <- (alice <#:)
+  -- RJCT must use correct contact connection
+  alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
+  alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
+  alice #: ("3", "bob", "ACPT " <> aInvId <> " 12\nalice's info") #> ("3", "bob", ERR $ A.CMD PROHIBITED)
+  bob #:# "nothing should be delivered to bob"
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
@@ -339,21 +353,21 @@ samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSG
 syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
   it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
-  describe "NEW" do
-    describe "valid" do
+  describe "NEW" $ do
+    describe "valid" $ do
       -- TODO: add tests with defined connection alias
       it "with correct parameter" $ ("211", "", "NEW INV") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
-    describe "invalid" do
+    describe "invalid" $ do
       -- TODO: add tests with defined connection alias
       it "with incorrect parameter" $ ("222", "", "NEW hi") >#> ("222", "", "ERR CMD SYNTAX")
 
-  describe "JOIN" do
-    describe "valid" do
+  describe "JOIN" $ do
+    describe "valid" $ do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
-        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5000%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
-    describe "invalid" do
+        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5001%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
+    describe "invalid" $ do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
   where

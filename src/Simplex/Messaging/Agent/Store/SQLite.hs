@@ -52,6 +52,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (blobFieldParser)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -249,7 +250,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
 
-  setRcvQueueActive :: SQLiteStore -> RcvQueue -> VerificationKey -> m ()
+  setRcvQueueActive :: SQLiteStore -> RcvQueue -> C.APublicVerifyKey -> m ()
   setRcvQueueActive st RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
@@ -279,18 +280,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE host = :host AND port = :port AND snd_id = :snd_id;
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
-
-  updateSignKey :: SQLiteStore -> SndQueue -> SignatureKey -> m ()
-  updateSignKey st SndQueue {sndId, server = SMPServer {host, port}} signatureKey =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE snd_queues
-          SET sign_key = :sign_key
-          WHERE host = :host AND port = :port AND snd_id = :snd_id;
-        |]
-        [":sign_key" := signatureKey, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderKey, senderConnInfo} =
@@ -405,6 +394,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           ":invitation_id" := invitationId
         ]
 
+  deleteInvitation :: SQLiteStore -> ConnId -> InvitationId -> m ()
+  deleteInvitation st contactConnId invId =
+    liftIOEither . withTransaction st $ \db ->
+      runExceptT $
+        ExceptT (getConn_ db contactConnId) >>= \case
+          SomeConn SCContact _ ->
+            liftIO $ DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, invId)
+          _ -> throwError SEConnNotFound
+
   updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   updateRcvIds st connId =
     liftIO . withTransaction st $ \db -> do
@@ -476,10 +474,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
       sndQueue = maybe (Left SEConnNotFound) Right
 
-  getPendingMsgs :: SQLiteStore -> ConnId -> m [PendingMsg]
+  getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
   getPendingMsgs st connId =
     liftIO . withTransaction st $ \db ->
-      map (PendingMsg connId . fromOnly)
+      map fromOnly
         <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ? AND snd_status = ?" (connId, SndMsgCreated)
 
   getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
