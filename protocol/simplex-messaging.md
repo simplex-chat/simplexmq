@@ -416,8 +416,8 @@ dhPublicKey = encryptionScheme ":" x509encoded
 ; the recipient's key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies
 
-encryptionScheme = %s"x25519" | %s"x448"
-; TODO change to define the encryption scheme, e.g. "crypto_box"
+encryptionScheme = %s"x25519"
+; x25519 scheme means [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
 
 x509encoded = <base64 X509 key encoding>
 ```
@@ -734,3 +734,4 @@ The communication party (client or server) that has the lower protocol version s
 [13]: https://datatracker.ietf.org/doc/html/rfc8446
 [14]: https://datatracker.ietf.org/doc/html/rfc5929#section-3
 [15]: https://www.rfc-editor.org/rfc/rfc8709.html
+[16]: https://nacl.cr.yp.to/box.html
