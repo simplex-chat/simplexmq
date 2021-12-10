@@ -55,6 +55,7 @@ class Monad m => MonadAgentStore s m where
   createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   getInvitation :: s -> InvitationId -> m Invitation
   acceptInvitation :: s -> InvitationId -> ConnInfo -> m ()
+  deleteInvitation :: s -> ConnId -> InvitationId -> m ()
 
   -- Msg management
   updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)

@@ -47,6 +47,7 @@ module Simplex.Messaging.Agent
     joinConnection,
     allowConnection,
     acceptContact,
+    rejectContact,
     subscribeConnection,
     sendMessage,
     ackMessage,
@@ -84,7 +85,7 @@ import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody, SenderPublicKey)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), runTransportServer)
+import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, runTransportServer)
 import Simplex.Messaging.Util (bshow, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
@@ -108,7 +109,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReader
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
     smpAgent _ = runTransportServer started tcpPort $ \(h :: c) -> do
-      liftIO $ putLn h "Welcome to SMP v0.4.1 agent"
+      liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
       c <- getAgentClient
       logConnection c True
       race_ (connectClient h c) (runAgentClient c)
@@ -137,13 +138,17 @@ createConnection c cMode = withAgentEnv c $ newConn c "" cMode
 joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequest c -> ConnInfo -> m ConnId
 joinConnection c = withAgentEnv c .: joinConn c ""
 
--- | Approve confirmation (ACPT INV command)
+-- | Allow connection to continue after CONF notification (LET command)
 allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
 allowConnection c = withAgentEnv c .:. allowConnection' c
 
--- | Approve contact (ACPT CON command)
+-- | Accept contact after REQ notification (ACPT command)
 acceptContact :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
 acceptContact c = withAgentEnv c .: acceptContact' c ""
+
+-- | Reject contact (RJCT command)
+rejectContact :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> m ()
+rejectContact c = withAgentEnv c .: rejectContact' c
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
@@ -236,6 +241,7 @@ withStore action = do
       SEConnDuplicate -> CONN DUPLICATE
       SEBadConnType CRcv -> CONN SIMPLEX
       SEBadConnType CSnd -> CONN SIMPLEX
+      SEInvitationNotFound -> CMD PROHIBITED
       e -> INTERNAL $ show e
 
 -- | execute any SMP agent command
@@ -245,6 +251,7 @@ processCommand c (connId, cmd) = case cmd of
   JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
   LET confId ownCInfo -> allowConnection' c connId confId ownCInfo $> (connId, OK)
   ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId invId ownCInfo
+  RJCT invId -> rejectContact' c connId invId $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgBody -> (connId,) . MID <$> sendMessage' c connId msgBody
   ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
@@ -291,7 +298,7 @@ activateQueueJoining c connId sq verifyKey retryInterval =
       withStore $ \st -> upgradeSndConnToDuplex st connId rq
       sendControlMessage c sq . REPLY $ CRInvitation $ ConnReqData CRSSimplex [qUri'] encryptKey
 
--- | Approve confirmation (ACPT INV command) in Reader monad
+-- | Approve confirmation (LET command) in Reader monad
 allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
 allowConnection' c connId confId ownConnInfo = do
   withStore (`getConn` connId) >>= \case
@@ -300,7 +307,7 @@ allowConnection' c connId confId ownConnInfo = do
       processConfirmation c rq senderKey
     _ -> throwError $ CMD PROHIBITED
 
--- | Accept contact (ACPT CON command) in Reader monad
+-- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> ConnInfo -> m ConnId
 acceptContact' c connId invId ownConnInfo = do
   Invitation {contactConnId, connReq} <- withStore (`getInvitation` invId)
@@ -309,6 +316,11 @@ acceptContact' c connId invId ownConnInfo = do
       withStore $ \st -> acceptInvitation st invId ownConnInfo
       joinConn c connId connReq ownConnInfo
     _ -> throwError $ CMD PROHIBITED
+
+-- | Reject contact (RJCT command) in Reader monad
+rejectContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> m ()
+rejectContact' _ contactConnId invId =
+  withStore $ \st -> deleteInvitation st contactConnId invId
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
 processConfirmation c rq sndKey = do
@@ -469,7 +481,8 @@ deleteConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> delete rq
     SomeConn _ (RcvConnection _ rq) -> delete rq
-    _ -> withStore (`deleteConn` connId)
+    SomeConn _ (ContactConnection _ rq) -> delete rq
+    SomeConn _ (SndConnection _ _) -> withStore (`deleteConn` connId)
   where
     delete :: RcvQueue -> m ()
     delete rq = do

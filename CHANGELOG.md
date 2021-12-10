@@ -1,3 +1,13 @@
+# 0.5.0
+
+- No changes in SMP server implementation - it is backwards compatible with v0.4.1
+- SMP agent changes:
+  - URI syntax for SMP queues and connection requests.
+  - long-term connections links ("contacts") in SMP agent protocol.
+  - agent command changes:
+    - `REQ` notification and `ACPT` command are used only with long-term connection links.
+    - `CONF` notification and `LET` commands are used for normal duplex connections.
+
 # 0.4.1
 
 - Include migrations in the package
