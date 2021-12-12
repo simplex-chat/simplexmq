@@ -44,6 +44,7 @@ module Simplex.Messaging.Crypto
     CryptoPrivateKey (..),
     KeyPair,
     DhSecret (..),
+    ADhSecret (..),
     CryptoDhSecret (..),
     KeyHash (..),
     generateKeyPair,
@@ -77,6 +78,7 @@ module Simplex.Messaging.Crypto
     -- * DH derivation
     dh',
     dhSecret,
+    dhSecret',
 
     -- * AES256 AEAD-GCM scheme
     Key (..),
@@ -90,6 +92,10 @@ module Simplex.Messaging.Crypto
     randomIV,
     aesKeyP,
     ivP,
+
+    -- * NaCl crypto_box
+    cbEncrypt,
+    cbDecrypt,
 
     -- * Encoding of RSA keys
     publicKeyHash,
@@ -107,8 +113,10 @@ import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
+import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), hash)
+import qualified Crypto.MAC.Poly1305 as Poly1305
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
 import qualified Crypto.PubKey.Curve25519 as X25519
@@ -747,6 +755,8 @@ data CryptoError
     CryptoIVError
   | -- | AES decryption error
     AESDecryptError
+  | -- CryptoBox decryption error
+    CBDecryptError
   | -- | message does not fit in SMP block
     CryptoLargeMsgError
   | -- | failure parsing RSA-encrypted message header
@@ -981,6 +991,34 @@ verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' o
 dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
 dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
 dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
+
+-- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
+cbEncrypt :: DhSecret X25519 -> ByteString -> ByteString -> ByteString
+cbEncrypt secret nonce msg = BA.convert tag `B.append` c
+  where
+    (rs, c) = xSalsa20 secret nonce msg
+    tag = Poly1305.auth rs c
+
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
+cbDecrypt :: DhSecret X25519 -> ByteString -> ByteString -> Either CryptoError ByteString
+cbDecrypt secret nonce packet
+  | B.length packet < 16 = Left CBDecryptError
+  | BA.constEq tag' tag = Right msg
+  | otherwise = Left CBDecryptError
+  where
+    (tag', c) = B.splitAt 16 packet
+    (rs, msg) = xSalsa20 secret nonce c
+    tag = Poly1305.auth rs c
+
+xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
+xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')
+  where
+    zero = B.replicate 16 $ toEnum 0
+    (iv0, iv1) = B.splitAt 8 nonce
+    state0 = XSalsa.initialize 20 shared (zero `B.append` iv0)
+    state1 = XSalsa.derive state0 iv1
+    (rs, state2) = XSalsa.generate state1 32
+    (msg', _) = XSalsa.combine state2 msg
 
 pubVerifyKey :: APublicKey -> Either String APublicVerifyKey
 pubVerifyKey (APublicKey a k) = case signatureAlgorithm a of
