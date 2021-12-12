@@ -43,6 +43,7 @@ module Simplex.Messaging.Crypto
     CryptoKey (..),
     CryptoPrivateKey (..),
     KeyPair,
+    DhSecret (..),
     KeyHash (..),
     generateKeyPair,
     generateKeyPair',
@@ -71,6 +72,9 @@ module Simplex.Messaging.Crypto
     verify,
     verify',
     validSignatureSize,
+
+    -- * DH derivation
+    dh',
 
     -- * AES256 AEAD-GCM scheme
     Key (..),
@@ -130,6 +134,7 @@ import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import Data.String
 import Data.Type.Equality
+import Data.Typeable (Typeable)
 import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -335,6 +340,58 @@ instance Eq APublicEncryptKey where
 
 deriving instance Show APublicEncryptKey
 
+data DhSecret (a :: Algorithm) where
+  DhSecretX25519 :: X25519.DhSecret -> DhSecret X25519
+  DhSecretX448 :: X448.DhSecret -> DhSecret X448
+
+deriving instance Eq (DhSecret a)
+
+deriving instance Show (DhSecret a)
+
+data ADhSecret
+  = forall a.
+    (AlgorithmI a, DhAlgorithm a) =>
+    ADhSecret (SAlgorithm a) (DhSecret a)
+
+type family DhAlgorithm (a :: Algorithm) :: Constraint where
+  DhAlgorithm X25519 = ()
+  DhAlgorithm X448 = ()
+  DhAlgorithm a =
+    (Int ~ Bool, TypeError (Text "Algorithm " :<>: ShowType a :<>: Text " cannot be used for DH exchange"))
+
+dhAlgorithm :: SAlgorithm a -> Maybe (Dict (DhAlgorithm a))
+dhAlgorithm = \case
+  SX25519 -> Just Dict
+  SX448 -> Just Dict
+  _ -> Nothing
+
+class CryptoDhSecret s where
+  dhSecretBytes :: s -> ByteString
+  dhSecretP :: Parser s
+
+instance CryptoDhSecret ADhSecret where
+  dhSecretBytes (ADhSecret _ s) = dhSecretBytes s
+  dhSecretP = cryptoPassed . secret =<< A.takeByteString
+    where
+      secret bs
+        | B.length bs == x25519_size = ADhSecret SX25519 . DhSecretX25519 <$> X25519.dhSecret bs
+        | B.length bs == x448_size = ADhSecret SX448 . DhSecretX448 <$> X448.dhSecret bs
+        | otherwise = CE.CryptoFailed CE.CryptoError_SharedSecretSizeInvalid
+      cryptoPassed = \case
+        CE.CryptoPassed s -> pure s
+        CE.CryptoFailed e -> fail $ show e
+
+instance forall a. AlgorithmI a => CryptoDhSecret (DhSecret a) where
+  dhSecretBytes = \case
+    DhSecretX25519 s -> BA.convert s
+    DhSecretX448 s -> BA.convert s
+  dhSecretP = dhSecret' <$?> dhSecretP
+
+dhSecret' :: forall a. AlgorithmI a => ADhSecret -> Either String (DhSecret a)
+dhSecret' (ADhSecret a s) = case testEquality a $ sAlgorithm @a of
+  Just Refl -> Right s
+  _ -> Left "bad DH secret algorithm"
+
 -- | Class for all key types
 class CryptoKey k where
   keySize :: k -> Int
@@ -518,20 +575,20 @@ type ASignatureKeyPair = (APublicVerifyKey, APrivateSignKey)
 type AnEncryptionKeyPair = (APublicEncryptKey, APrivateDecryptKey)
 
 generateKeyPair :: AlgorithmI a => Int -> SAlgorithm a -> IO AKeyPair
-generateKeyPair size a = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair' size a
+generateKeyPair size a = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair' size
 
 generateSignatureKeyPair ::
   (AlgorithmI a, SignatureAlgorithm a) => Int -> SAlgorithm a -> IO ASignatureKeyPair
 generateSignatureKeyPair size a =
-  bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair' size a
+  bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair' size
 
 generateEncryptionKeyPair ::
   (AlgorithmI a, EncryptionAlgorithm a) => Int -> SAlgorithm a -> IO AnEncryptionKeyPair
 generateEncryptionKeyPair size a =
-  bimap (APublicEncryptKey a) (APrivateDecryptKey a) <$> generateKeyPair' size a
+  bimap (APublicEncryptKey a) (APrivateDecryptKey a) <$> generateKeyPair' size
 
-generateKeyPair' :: Int -> SAlgorithm a -> IO (KeyPair a)
-generateKeyPair' size = \case
+generateKeyPair' :: forall a. AlgorithmI a => Int -> IO (KeyPair a)
+generateKeyPair' size = case sAlgorithm @a of
   SRSA -> generateKeyPairRSA size
   SEd25519 ->
     Ed25519.generateSecretKey >>= \pk ->
@@ -558,6 +615,8 @@ instance ToField APrivateDecryptKey where toField = toField . encodeKey
 
 instance ToField APublicEncryptKey where toField = toField . encodeKey
 
+instance (Typeable a, AlgorithmI a) => ToField (DhSecret a) where toField = toField . dhSecretBytes
+
 instance FromField APrivateSignKey where fromField = blobFieldParser binaryKeyP
 
 instance FromField APublicVerifyKey where fromField = blobFieldParser binaryKeyP
@@ -565,6 +624,8 @@ instance FromField APublicVerifyKey where fromField = blobFieldParser binaryKeyP
 instance FromField APrivateDecryptKey where fromField = blobFieldParser binaryKeyP
 
 instance FromField APublicEncryptKey where fromField = blobFieldParser binaryKeyP
+
+instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldParser dhSecretP
 
 instance IsString (Maybe ASignature) where
   fromString = parseString $ decode >=> decodeSignature
@@ -902,6 +963,10 @@ verify :: APublicVerifyKey -> ASignature -> ByteString -> Bool
 verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' of
   Just Refl -> verify' k sig msg
   _ -> False
+
+dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
+dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
+dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
 
 pubVerifyKey :: APublicKey -> Either String APublicVerifyKey
 pubVerifyKey (APublicKey a k) = case signatureAlgorithm a of

@@ -10,23 +10,27 @@ import Simplex.Messaging.Protocol
 data QueueRec = QueueRec
   { recipientId :: RecipientId,
     senderId :: SenderId,
-    recipientKey :: RecipientPublicKey,
-    senderKey :: Maybe SenderPublicKey,
-    notifier :: Maybe (NotifierId, NotifierPublicKey),
+    recipientKey :: RcvPublicVerifyKey,
+    rcvSrvSignKey :: RcvPrivateSignKey,
+    rcvDhSecret :: RcvDHSecret,
+    senderKey :: Maybe SndPublicVerifyKey,
+    sndSrvSignKey :: SndPrivateSignKey,
+    notifier :: Maybe (NotifierId, NtfPublicVerifyKey),
     status :: QueueStatus
   }
 
 data QueueStatus = QueueActive | QueueOff deriving (Eq)
 
 class MonadQueueStore s m where
-  addQueue :: s -> RecipientPublicKey -> (RecipientId, SenderId) -> m (Either ErrorType ())
+  addQueue :: s -> RcvPublicVerifyKey -> (RecipientId, SenderId) -> m (Either ErrorType ())
+  addQueue' :: s -> QueueRec -> m (Either ErrorType ())
   getQueue :: s -> SParty (a :: Party) -> QueueId -> m (Either ErrorType QueueRec)
-  secureQueue :: s -> RecipientId -> SenderPublicKey -> m (Either ErrorType ())
-  addQueueNotifier :: s -> RecipientId -> NotifierId -> NotifierPublicKey -> m (Either ErrorType ())
+  secureQueue :: s -> RecipientId -> SndPublicVerifyKey -> m (Either ErrorType ())
+  addQueueNotifier :: s -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> m (Either ErrorType ())
   suspendQueue :: s -> RecipientId -> m (Either ErrorType ())
   deleteQueue :: s -> RecipientId -> m (Either ErrorType ())
 
-mkQueueRec :: RecipientPublicKey -> (RecipientId, SenderId) -> QueueRec
+mkQueueRec :: RcvPublicVerifyKey -> (RecipientId, SenderId) -> QueueRec
 mkQueueRec recipientKey (recipientId, senderId) =
   QueueRec
     { recipientId,

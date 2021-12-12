@@ -30,8 +30,8 @@ data ServerConfig = ServerConfig
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
+    trnSignAlg :: C.SignAlg,
     serverPrivateKey :: C.PrivateKey 'C.RSA
-    -- serverId :: ByteString
   }
 
 data Env = Env

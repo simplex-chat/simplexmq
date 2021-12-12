@@ -50,8 +50,8 @@ data StoreLog (a :: IOMode) where
 
 data StoreLogRecord
   = CreateQueue QueueRec
-  | SecureQueue QueueId SenderPublicKey
-  | AddNotifier QueueId NotifierId NotifierPublicKey
+  | SecureQueue QueueId SndPublicVerifyKey
+  | AddNotifier QueueId NotifierId NtfPublicVerifyKey
   | DeleteQueue QueueId
 
 storeLogRecordP :: Parser StoreLogRecord
@@ -116,10 +116,10 @@ writeStoreLogRecord (WriteStoreLog _ h) r = do
 logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
 logCreateQueue s = writeStoreLogRecord s . CreateQueue
 
-logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SenderPublicKey -> IO ()
+logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicVerifyKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
 
-logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NotifierId -> NotifierPublicKey -> IO ()
+logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NotifierId -> NtfPublicVerifyKey -> IO ()
 logAddNotifier s qId nId nKey = writeStoreLogRecord s $ AddNotifier qId nId nKey
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()

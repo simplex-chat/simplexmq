@@ -15,5 +15,5 @@ main = do
     describe "Protocol errors" protocolErrorTests
     describe "SMP server via TCP" $ serverTests (transport @TCP)
     describe "SMP server via WebSockets" $ serverTests (transport @WS)
-    describe "SMP client agent" $ agentTests (transport @TCP)
+    xdescribe "SMP client agent" $ agentTests (transport @TCP)
   removeDirectoryRecursive "tests/tmp"

@@ -133,7 +133,7 @@ import Simplex.Messaging.Protocol
   ( ErrorType,
     MsgBody,
     MsgId,
-    SenderPublicKey,
+    SndPublicVerifyKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
@@ -271,7 +271,7 @@ data SMPMessage
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message SMP protocol>)
     SMPConfirmation
       { -- | sender's public key to use for authentication of sender's commands at the recepient's server
-        senderKey :: SenderPublicKey,
+        senderKey :: SndPublicVerifyKey,
         -- | sender's information to be associated with the connection, e.g. sender's profile information
         connInfo :: ConnInfo
       }
