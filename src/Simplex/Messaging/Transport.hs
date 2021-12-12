@@ -124,7 +124,7 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
--- * Transport over TCP
+-- * Transport via TLS 1.3 over TCP
 
 data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
 
