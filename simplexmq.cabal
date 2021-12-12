@@ -56,7 +56,7 @@ library
       Simplex.Messaging.Server.QueueStore.STM
       Simplex.Messaging.Server.StoreLog
       Simplex.Messaging.Transport
-      Simplex.Messaging.Transport.TLS
+      Simplex.Messaging.Transport.Plain
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
   other-modules:

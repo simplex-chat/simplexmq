@@ -26,6 +26,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Plain
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
@@ -162,7 +163,7 @@ cfg =
       smpCfg =
         smpDefaultConfig
           { qSize = 1,
-            defaultTransport = (testPort, transport @TCP),
+            defaultTransport = (testPort, transport @Plain),
             tcpTimeout = 500_000
           },
       retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000}
