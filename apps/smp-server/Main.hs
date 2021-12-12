@@ -42,8 +42,8 @@ serverConfig =
   ServerConfig
     { tbqSize = 16,
       msgQueueQuota = 256,
-      queueIdBytes = 12,
-      msgIdBytes = 6,
+      queueIdBytes = 24,
+      msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
       trnSignAlg = C.SignAlg C.SEd448,
       -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini
       transports = undefined,
