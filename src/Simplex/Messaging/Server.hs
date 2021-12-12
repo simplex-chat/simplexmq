@@ -271,7 +271,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server 
             addQueueRetry n qik qRec = do
               ids@(rId, _) <- getIds
               -- create QueueRec record with these ids and keys
-              atomically (addQueue' st $ qRec ids) >>= \case
+              atomically (addQueue st $ qRec ids) >>= \case
                 Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec
                 Left e -> pure $ ERR e
                 Right _ -> do

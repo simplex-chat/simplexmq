@@ -76,6 +76,7 @@ module Simplex.Messaging.Crypto
 
     -- * DH derivation
     dh',
+    dhSecret,
 
     -- * AES256 AEAD-GCM scheme
     Key (..),
@@ -372,14 +373,17 @@ class CryptoDhSecret s where
   strDhSecretP :: Parser s
   dhSecretP :: Parser s
 
+instance AlgorithmI a => IsString (DhSecret a) where
+  fromString = parseString $ dhSecret >=> dhSecret'
+
 instance CryptoDhSecret ADhSecret where
   serializeDhSecret (ADhSecret _ s) = serializeDhSecret s
   dhSecretBytes (ADhSecret _ s) = dhSecretBytes s
-  strDhSecretP = dhSecret_ <$?> base64P
-  dhSecretP = dhSecret_ <$?> A.takeByteString
+  strDhSecretP = dhSecret <$?> base64P
+  dhSecretP = dhSecret <$?> A.takeByteString
 
-dhSecret_ :: ByteString -> Either String ADhSecret
-dhSecret_ = cryptoPassed . secret
+dhSecret :: ByteString -> Either String ADhSecret
+dhSecret = cryptoPassed . secret
   where
     secret bs
       | B.length bs == x25519_size = ADhSecret SX25519 . DhSecretX25519 <$> X25519.dhSecret bs

@@ -29,21 +29,8 @@ newQueueStore :: STM QueueStore
 newQueueStore = newTVar QueueStoreData {queues = M.empty, senders = M.empty, notifiers = M.empty}
 
 instance MonadQueueStore QueueStore STM where
-  addQueue :: QueueStore -> RcvPublicVerifyKey -> (RecipientId, SenderId) -> STM (Either ErrorType ())
-  addQueue store rKey ids@(rId, sId) = do
-    cs@QueueStoreData {queues, senders} <- readTVar store
-    if M.member rId queues || M.member sId senders
-      then return $ Left DUPLICATE_
-      else do
-        writeTVar store $
-          cs
-            { queues = M.insert rId (mkQueueRec rKey ids) queues,
-              senders = M.insert sId rId senders
-            }
-        return $ Right ()
-
-  addQueue' :: QueueStore -> QueueRec -> STM (Either ErrorType ())
-  addQueue' store qRec@QueueRec {recipientId = rId, senderId = sId} = do
+  addQueue :: QueueStore -> QueueRec -> STM (Either ErrorType ())
+  addQueue store qRec@QueueRec {recipientId = rId, senderId = sId} = do
     cs@QueueStoreData {queues, senders} <- readTVar store
     if M.member rId queues || M.member sId senders
       then return $ Left DUPLICATE_

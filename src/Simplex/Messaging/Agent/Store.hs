@@ -87,7 +87,7 @@ data RcvQueue = RcvQueue
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
     -- | key used by the sender to sign transmissions
-    sndSrvVerifyKey :: Maybe SndPublicVerifyKey,
+    sndSrvVerifyKey :: SndPublicVerifyKey,
     -- | TODO keys used for E2E encryption - these will change with double ratchet
     decryptKey :: C.APrivateDecryptKey,
     verifyKey :: Maybe C.APublicVerifyKey,

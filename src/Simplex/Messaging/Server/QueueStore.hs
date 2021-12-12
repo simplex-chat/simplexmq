@@ -22,21 +22,9 @@ data QueueRec = QueueRec
 data QueueStatus = QueueActive | QueueOff deriving (Eq)
 
 class MonadQueueStore s m where
-  addQueue :: s -> RcvPublicVerifyKey -> (RecipientId, SenderId) -> m (Either ErrorType ())
-  addQueue' :: s -> QueueRec -> m (Either ErrorType ())
+  addQueue :: s -> QueueRec -> m (Either ErrorType ())
   getQueue :: s -> SParty (a :: Party) -> QueueId -> m (Either ErrorType QueueRec)
   secureQueue :: s -> RecipientId -> SndPublicVerifyKey -> m (Either ErrorType ())
   addQueueNotifier :: s -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> m (Either ErrorType ())
   suspendQueue :: s -> RecipientId -> m (Either ErrorType ())
   deleteQueue :: s -> RecipientId -> m (Either ErrorType ())
-
-mkQueueRec :: RcvPublicVerifyKey -> (RecipientId, SenderId) -> QueueRec
-mkQueueRec recipientKey (recipientId, senderId) =
-  QueueRec
-    { recipientId,
-      senderId,
-      recipientKey,
-      senderKey = Nothing,
-      notifier = Nothing,
-      status = QueueActive
-    }
