@@ -44,6 +44,7 @@ module Simplex.Messaging.Crypto
     CryptoPrivateKey (..),
     KeyPair,
     DhSecret (..),
+    CryptoDhSecret (..),
     KeyHash (..),
     generateKeyPair,
     generateKeyPair',
@@ -366,25 +367,34 @@ dhAlgorithm = \case
   _ -> Nothing
 
 class CryptoDhSecret s where
+  serializeDhSecret :: s -> ByteString
   dhSecretBytes :: s -> ByteString
+  strDhSecretP :: Parser s
   dhSecretP :: Parser s
 
 instance CryptoDhSecret ADhSecret where
+  serializeDhSecret (ADhSecret _ s) = serializeDhSecret s
   dhSecretBytes (ADhSecret _ s) = dhSecretBytes s
-  dhSecretP = cryptoPassed . secret =<< A.takeByteString
-    where
-      secret bs
-        | B.length bs == x25519_size = ADhSecret SX25519 . DhSecretX25519 <$> X25519.dhSecret bs
-        | B.length bs == x448_size = ADhSecret SX448 . DhSecretX448 <$> X448.dhSecret bs
-        | otherwise = CE.CryptoFailed CE.CryptoError_SharedSecretSizeInvalid
-      cryptoPassed = \case
-        CE.CryptoPassed s -> pure s
-        CE.CryptoFailed e -> fail $ show e
+  strDhSecretP = dhSecret_ <$?> base64P
+  dhSecretP = dhSecret_ <$?> A.takeByteString
+
+dhSecret_ :: ByteString -> Either String ADhSecret
+dhSecret_ = cryptoPassed . secret
+  where
+    secret bs
+      | B.length bs == x25519_size = ADhSecret SX25519 . DhSecretX25519 <$> X25519.dhSecret bs
+      | B.length bs == x448_size = ADhSecret SX448 . DhSecretX448 <$> X448.dhSecret bs
+      | otherwise = CE.CryptoFailed CE.CryptoError_SharedSecretSizeInvalid
+    cryptoPassed = \case
+      CE.CryptoPassed s -> Right s
+      CE.CryptoFailed e -> Left $ show e
 
 instance forall a. AlgorithmI a => CryptoDhSecret (DhSecret a) where
+  serializeDhSecret = encode . dhSecretBytes
   dhSecretBytes = \case
     DhSecretX25519 s -> BA.convert s
     DhSecretX448 s -> BA.convert s
+  strDhSecretP = dhSecret' <$?> strDhSecretP
   dhSecretP = dhSecret' <$?> dhSecretP
 
 dhSecret' :: forall a. AlgorithmI a => ADhSecret -> Either String (DhSecret a)

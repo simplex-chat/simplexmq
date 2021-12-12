@@ -66,12 +66,15 @@ storeLogRecordP =
     addNotifierP =
       AddNotifier <$> base64P <* A.space <*> base64P <* A.space <*> C.strKeyP
     queueRecP = do
-      recipientId <- "rid=" *> base64P <* A.space
-      senderId <- "sid=" *> base64P <* A.space
-      recipientKey <- "rk=" *> C.strKeyP <* A.space
-      senderKey <- "sk=" *> optional C.strKeyP
+      recipientId <- "rid=" *> base64P
+      recipientKey <- " rk=" *> C.strKeyP
+      rcvSrvSignKey <- " rsk=" *> C.strKeyP
+      rcvDhSecret <- " rdh=" *> C.strDhSecretP
+      senderId <- " sid=" *> base64P
+      senderKey <- " sk=" *> optional C.strKeyP
+      sndSrvSignKey <- " ssk=" *> C.strKeyP
       notifier <- optional $ (,) <$> (" nid=" *> base64P) <*> (" nk=" *> C.strKeyP)
-      pure QueueRec {recipientId, senderId, recipientKey, senderKey, notifier, status = QueueActive}
+      pure QueueRec {recipientId, recipientKey, rcvSrvSignKey, rcvDhSecret, senderId, senderKey, sndSrvSignKey, notifier, status = QueueActive}
 
 serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
@@ -80,14 +83,18 @@ serializeStoreLogRecord = \case
   AddNotifier rId nId nKey -> B.unwords ["NOTIFIER", encode rId, encode nId, C.serializeKey nKey]
   DeleteQueue rId -> "DELETE " <> encode rId
   where
-    serializeQueue QueueRec {recipientId, senderId, recipientKey, senderKey, notifier} =
-      B.unwords
-        [ "rid=" <> encode recipientId,
-          "sid=" <> encode senderId,
-          "rk=" <> C.serializeKey recipientKey,
-          "sk=" <> maybe "" C.serializeKey senderKey
-        ]
-        <> maybe "" serializeNotifier notifier
+    serializeQueue
+      QueueRec {recipientId, recipientKey, rcvSrvSignKey, rcvDhSecret, senderId, senderKey, sndSrvSignKey, notifier} =
+        B.unwords
+          [ "rid=" <> encode recipientId,
+            "rk=" <> C.serializeKey recipientKey,
+            "rsk=" <> C.serializeKey rcvSrvSignKey,
+            "rdh=" <> C.serializeDhSecret rcvDhSecret,
+            "sid=" <> encode senderId,
+            "sk=" <> maybe "" C.serializeKey senderKey,
+            "ssk=" <> C.serializeKey sndSrvSignKey
+          ]
+          <> maybe "" serializeNotifier notifier
     serializeNotifier (nId, nKey) = " nid=" <> encode nId <> " nk=" <> C.serializeKey nKey
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)

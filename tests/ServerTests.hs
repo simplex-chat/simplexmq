@@ -36,7 +36,7 @@ serverTests t = do
   describe "SMP messages" $ do
     describe "duplex communication over 2 SMP connections" $ testDuplex t
     describe "switch subscription to another SMP queue" $ testSwitchSub t
-  xdescribe "Store log" $ testWithStoreLog t
+  describe "Store log" $ testWithStoreLog t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
 
@@ -66,7 +66,7 @@ testCreateSecure :: ATransport -> Spec
 testCreateSecure (ATransport t) =
   it "should create (NEW) and secure (KEY) queue" $
     smpTest t $ \h -> do
-      (rPub, rKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd448
       (dhPub, _ :: C.PrivateKey 'C.X25519) <- C.generateKeyPair' 0
       Resp "abcd" rId1 (Ids rId sId) <- signSendRecv h rKey ("abcd", "", B.unwords ["NEW", C.serializeKey rPub, C.serializeKey dhPub])
       (rId1, "") #== "creates queue"
@@ -84,7 +84,7 @@ testCreateSecure (ATransport t) =
       Resp "dabc" _ err6 <- signSendRecv h rKey ("dabc", rId, "ACK")
       (err6, ERR NO_MSG) #== "replies ERR when message acknowledged without messages"
 
-      (sPub, sKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (sPub, sKey) <- C.generateSignatureKeyPair 0 C.SEd448
       Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND 5 hello ")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
@@ -119,12 +119,12 @@ testCreateDelete :: ATransport -> Spec
 testCreateDelete (ATransport t) =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 t $ \rh sh -> do
-      (rPub, rKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd25519
       (dhPub, _ :: C.PrivateKey 'C.X25519) <- C.generateKeyPair' 0
       Resp "abcd" rId1 (Ids rId sId) <- signSendRecv rh rKey ("abcd", "", B.unwords ["NEW", C.serializeKey rPub, C.serializeKey dhPub])
       (rId1, "") #== "creates queue"
 
-      (sPub, sKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (sPub, sKey) <- C.generateSignatureKeyPair 0 C.SEd25519
       Resp "bcda" _ ok1 <- signSendRecv rh rKey ("bcda", rId, "KEY " <> C.serializeKey sPub)
       (ok1, OK) #== "secures queue"
 
@@ -188,12 +188,12 @@ testDuplex :: ATransport -> Spec
 testDuplex (ATransport t) =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 t $ \alice bob -> do
-      (arPub, arKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (arPub, arKey) <- C.generateSignatureKeyPair 0 C.SEd448
       (adhPub, _ :: C.PrivateKey 'C.X25519) <- C.generateKeyPair' 0
       Resp "abcd" _ (Ids aRcv aSnd) <- signSendRecv alice arKey ("abcd", "", B.unwords ["NEW", C.serializeKey arPub, C.serializeKey adhPub])
       -- aSnd ID is passed to Bob out-of-band
 
-      (bsPub, bsKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (bsPub, bsKey) <- C.generateSignatureKeyPair 0 C.SEd448
       Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, cmdSEND $ "key " <> C.serializeKey bsPub)
       -- "key ..." is ad-hoc, different from SMP protocol
 
@@ -203,7 +203,7 @@ testDuplex (ATransport t) =
       (bobKey, C.serializeKey bsPub) #== "key received from Bob"
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, "KEY " <> bobKey)
 
-      (brPub, brKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (brPub, brKey) <- C.generateSignatureKeyPair 0 C.SEd448
       (bdhPub, _ :: C.PrivateKey 'C.X25519) <- C.generateKeyPair' 0
       Resp "abcd" _ (Ids bRcv bSnd) <- signSendRecv bob brKey ("abcd", "", B.unwords ["NEW", C.serializeKey brPub, C.serializeKey bdhPub])
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, cmdSEND $ "reply_id " <> encode bSnd)
@@ -214,7 +214,7 @@ testDuplex (ATransport t) =
       ["reply_id", bId] <- return $ B.words msg2
       (bId, encode bSnd) #== "reply queue ID received from Bob"
 
-      (asPub, asKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (asPub, asKey) <- C.generateSignatureKeyPair 0 C.SEd448
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, cmdSEND $ "key " <> C.serializeKey asPub)
       -- "key ..." is ad-hoc, different from SMP protocol
 
@@ -240,7 +240,7 @@ testSwitchSub :: ATransport -> Spec
 testSwitchSub (ATransport t) =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 t $ \rh1 rh2 sh -> do
-      (rPub, rKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+      (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd448
       (dhPub, _ :: C.PrivateKey 'C.X25519) <- C.generateKeyPair' 0
       Resp "abcd" _ (Ids rId sId) <- signSendRecv rh1 rKey ("abcd", "", B.unwords ["NEW", C.serializeKey rPub, C.serializeKey dhPub])
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND 5 test1 ")
@@ -278,9 +278,9 @@ testSwitchSub (ATransport t) =
 testWithStoreLog :: ATransport -> Spec
 testWithStoreLog at@(ATransport t) =
   it "should store simplex queues to log and restore them after server restart" $ do
-    (sPub1, sKey1) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
-    (sPub2, sKey2) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
-    (nPub, nKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+    (sPub1, sKey1) <- C.generateSignatureKeyPair 0 C.SEd25519
+    (sPub2, sKey2) <- C.generateSignatureKeyPair 0 C.SEd25519
+    (nPub, nKey) <- C.generateSignatureKeyPair 0 C.SEd25519
     senderId1 <- newTVarIO ""
     senderId2 <- newTVarIO ""
     notifierId <- newTVarIO ""
@@ -341,7 +341,7 @@ testWithStoreLog at@(ATransport t) =
 
 createAndSecureQueue :: Transport c => THandle c -> SndPublicVerifyKey -> IO (SenderId, RecipientId, C.APrivateSignKey)
 createAndSecureQueue h sPub = do
-  (rPub, rKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+  (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd448
   (dhPub, _ :: C.PrivateKey 'C.X25519) <- C.generateKeyPair' 0
   Resp "abcd" "" (Ids rId sId) <- signSendRecv h rKey ("abcd", "", B.unwords ["NEW", C.serializeKey rPub, C.serializeKey dhPub])
   let keyCmd = "KEY " <> C.serializeKey sPub
@@ -426,8 +426,8 @@ testTiming (ATransport t) =
 testMessageNotifications :: ATransport -> Spec
 testMessageNotifications (ATransport t) =
   it "should create simplex connection, subscribe notifier and deliver notifications" $ do
-    (sPub, sKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
-    (nPub, nKey) <- C.generateSignatureKeyPair rsaKeySize C.SRSA
+    (sPub, sKey) <- C.generateSignatureKeyPair 0 C.SEd25519
+    (nPub, nKey) <- C.generateSignatureKeyPair 0 C.SEd25519
     smpTest4 t $ \rh sh nh1 nh2 -> do
       (sId, rId, rKey) <- createAndSecureQueue rh sPub
       Resp "1" _ (NID nId) <- signSendRecv rh rKey ("1", rId, "NKEY " <> C.serializeKey nPub)
@@ -446,7 +446,7 @@ testMessageNotifications (ATransport t) =
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
 
 samplePubKey :: ByteString
-samplePubKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj+toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP+Tm4sokaFDTIG3QJFzOjC+/9nW4MUjAOFll9PCp9kaEFHJ/YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju/f6kAayvYKW3/lbJNXCmyinAccBosO08/0sUxvtuniIo18kfYJE0UmP1ReCjhMP+O+yOmwZJini/QelJk/Pez8IIDDWnY1qYQsN/q7ocjakOYrpGG7mig6JMFpDJtD6istR"
+samplePubKey = "ed25519:MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="
 
 sampleDhPubKey :: ByteString
 sampleDhPubKey = "x25519:MCowBQYDK2VuAyEAriy+HcARIhqsgSjVnjKqoft+y6pxrxdY68zn4+LjYhQ="
