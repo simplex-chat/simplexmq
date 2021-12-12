@@ -5,6 +5,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -62,6 +63,7 @@ import Data.Bifunctor (first)
 import Data.ByteArray (xor)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Either (fromRight)
 import Data.Functor (($>))
@@ -188,7 +190,7 @@ supportedParameters :: T.Supported
 supportedParameters =
   def
     { T.supportedVersions = [T.TLS13],
-      T.supportedCiphers = [TE.cipher_TLS13_AES256GCM_SHA384],
+      T.supportedCiphers = [TE.cipher_TLS13_AES256GCM_SHA384], -- replace AES with Poly1305_Salsa... from overview
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448)],
       T.supportedSecureRenegotiation = False,
       T.supportedGroups = [T.X448]
@@ -260,6 +262,42 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
       connectTLS "client" getClientConnection clientParams sock
+
+instance Transport TLS where
+  transportName _ = "Plain TLS 1.3 over TCP"
+  getServerConnection = pure
+  getClientConnection = pure
+  closeConnection tls = closeTLS $ tlsContext tls
+
+  cGet :: TLS -> Int -> IO ByteString
+  cGet TLS {tlsContext, buffer, getLock} n =
+    E.bracket_
+      (atomically $ takeTMVar getLock)
+      (atomically $ putTMVar getLock ())
+      $ do
+        b <- readChunks =<< readTVarIO buffer
+        let (s, b') = B.splitAt n b
+        atomically $ writeTVar buffer b'
+        pure s
+    where
+      readChunks :: ByteString -> IO ByteString
+      readChunks b
+        | B.length b >= n = pure b
+        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
+      handleEOF = \case
+        T.Error_EOF -> E.throwIO TEBadBlock
+        e -> E.throwIO e
+
+  cPut :: TLS -> ByteString -> IO ()
+  cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
+
+  -- ?
+  getLn :: TLS -> IO ByteString
+  getLn tls = do
+    s <- trimCR <$> T.recvData (tlsContext tls)
+    if B.null s || B.last s /= '\n'
+      then E.throwIO TEBadBlock
+      else pure $ B.init s
 
 -- | Trim trailing CR from ByteString.
 trimCR :: ByteString -> ByteString

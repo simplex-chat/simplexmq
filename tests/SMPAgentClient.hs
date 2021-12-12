@@ -26,7 +26,6 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Plain
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
@@ -163,7 +162,7 @@ cfg =
       smpCfg =
         smpDefaultConfig
           { qSize = 1,
-            defaultTransport = (testPort, transport @Plain),
+            defaultTransport = (testPort, transport @TLS),
             tcpTimeout = 500_000
           },
       retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000}
@@ -191,7 +190,10 @@ testSMPAgentClientOn port' client = do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> currentSMPVersionStr
       then client h
-      else error $ "wrong welcome message: " <> B.unpack line
+      else do
+        liftIO $ print line
+        liftIO $ print currentSMPVersionStr
+        error $ "wrong welcome message: " <> B.unpack line
 
 testSMPAgentClient :: (Transport c, MonadUnliftIO m) => (c -> m a) -> m a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort

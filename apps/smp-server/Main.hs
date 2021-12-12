@@ -23,8 +23,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), Transport (..))
-import Simplex.Messaging.Transport.Plain (Plain)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
@@ -104,8 +103,8 @@ getConfig opts = do
 
 makeConfig :: IniOpts -> C.PrivateKey 'C.RSA -> Maybe (StoreLog 'ReadMode) -> ServerConfig
 makeConfig IniOpts {serverPort, blockSize, enableWebsockets} pk storeLog =
-  -- let transports = (serverPort, transport @Plain) : [("80", transport @WS) | enableWebsockets]
-  let transports = [(serverPort, transport @Plain)]
+  -- let transports = (serverPort, transport @TLS) : [("80", transport @WS) | enableWebsockets]
+  let transports = [(serverPort, transport @TLS)]
    in serverConfig {serverPrivateKey = pk, storeLog, blockSize, transports}
 
 printConfig :: ServerConfig -> IO ()
