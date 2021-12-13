@@ -253,7 +253,7 @@ newRcvQueue_ a c srv = do
             rcvSrvVerifyKey,
             rcvDhSecret,
             sndId = Just sndId,
-            sndSrvVerifyKey = sndSrvVerifyKey,
+            sndSrvVerifyKey,
             decryptKey,
             verifyKey = Nothing,
             status = New
