@@ -27,11 +27,11 @@ data ServerConfig = ServerConfig
     tbqSize :: Natural,
     msgQueueQuota :: Natural,
     queueIdBytes :: Int,
-    msgIdBytes :: Int,
+    msgIdBytes :: Int, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
+    trnSignAlg :: C.SignAlg,
     serverPrivateKey :: C.PrivateKey 'C.RSA
-    -- serverId :: ByteString
   }
 
 data Env = Env

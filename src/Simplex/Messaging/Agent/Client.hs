@@ -59,7 +59,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
+import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -238,21 +238,27 @@ newRcvQueue_ ::
 newRcvQueue_ a c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
+  (dhKey, privDhKey) <- liftIO $ C.generateKeyPair' 0
   logServer "-->" c srv "" "NEW"
-  (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
-  logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
+  QIK {rcvId, rcvSrvVerifyKey, rcvPublicDHKey, sndId, sndSrvVerifyKey} <-
+    withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
+  let rcvDhSecret = C.dh' rcvPublicDHKey privDhKey
+  logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   (encryptKey, decryptKey) <- liftIO $ C.generateEncryptionKeyPair size C.SRSA
   let rq =
         RcvQueue
           { server = srv,
             rcvId,
             rcvPrivateKey,
-            sndId = Just sId,
+            rcvSrvVerifyKey,
+            rcvDhSecret,
+            sndId = Just sndId,
+            sndSrvVerifyKey,
             decryptKey,
             verifyKey = Nothing,
             status = New
           }
-  pure (rq, SMPQueueUri srv sId reservedServerKey, encryptKey)
+  pure (rq, SMPQueueUri srv sndId sndSrvVerifyKey, encryptKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
@@ -301,7 +307,7 @@ showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> ConnInfo -> m ()
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SndPublicVerifyKey -> ConnInfo -> m ()
 sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation smp
@@ -347,7 +353,7 @@ sendInvitation c SMPQueueUri {smpServer, senderId} encryptKey cReq connInfo = do
             agentMessage = A_INV cReq connInfo
           }
 
-secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
+secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
 secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
   withLogSMP c server rcvId "KEY <key>" $ \smp ->
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
@@ -381,7 +387,7 @@ encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
     sig <- C.sign signKey enc
     pure $ C.signatureBytes sig <> enc
 
-decryptAndVerify :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
+decryptAndVerify :: AgentMonad m => RcvQueue -> MsgBody -> m ByteString
 decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
   verifyMessage verifyKey msg
     >>= liftError cryptoError . C.decrypt decryptKey

@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -28,6 +29,7 @@ module Simplex.Messaging.Protocol
     Party (..),
     Cmd (..),
     SParty (..),
+    QueueIdsKeys (..),
     ErrorType (..),
     CommandError (..),
     Transmission,
@@ -41,12 +43,14 @@ module Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
     NotifierId,
-    RecipientPrivateKey,
-    RecipientPublicKey,
-    SenderPrivateKey,
-    SenderPublicKey,
-    NotifierPrivateKey,
-    NotifierPublicKey,
+    RcvPrivateSignKey,
+    RcvPublicVerifyKey,
+    RcvPublicDhKey,
+    RcvDhSecret,
+    SndPrivateSignKey,
+    SndPublicVerifyKey,
+    NtfPrivateSignKey,
+    NtfPublicVerifyKey,
     Encoded,
     MsgId,
     MsgBody,
@@ -142,10 +146,10 @@ type QueueId = Encoded
 -- | Parameterized type for SMP protocol commands from all participants.
 data Command (a :: Party) where
   -- SMP recipient commands
-  NEW :: RecipientPublicKey -> Command Recipient
+  NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> Command Recipient
   SUB :: Command Recipient
-  KEY :: SenderPublicKey -> Command Recipient
-  NKEY :: NotifierPublicKey -> Command Recipient
+  KEY :: SndPublicVerifyKey -> Command Recipient
+  NKEY :: NtfPublicVerifyKey -> Command Recipient
   ACK :: Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
@@ -155,7 +159,7 @@ data Command (a :: Party) where
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
   -- SMP broker commands (responses, messages, notifications)
-  IDS :: RecipientId -> SenderId -> Command Broker
+  IDS :: QueueIdsKeys -> Command Broker
   MSG :: MsgId -> UTCTime -> MsgBody -> Command Broker
   NID :: NotifierId -> Command Broker
   NMSG :: Command Broker
@@ -179,27 +183,43 @@ newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
 instance IsString CorrId where
   fromString = CorrId . fromString
 
+-- | Queue IDs and keys
+data QueueIdsKeys = QIK
+  { rcvId :: RecipientId,
+    rcvSrvVerifyKey :: RcvPublicVerifyKey,
+    rcvPublicDHKey :: RcvPublicDhKey,
+    sndId :: SenderId,
+    sndSrvVerifyKey :: SndPublicVerifyKey
+  }
+  deriving (Eq, Show)
+
 -- | Recipient's private key used by the recipient to authorize (sign) SMP commands.
 --
 -- Only used by SMP agent, kept here so its definition is close to respective public key.
-type RecipientPrivateKey = C.APrivateSignKey
+type RcvPrivateSignKey = C.APrivateSignKey
 
 -- | Recipient's public key used by SMP server to verify authorization of SMP commands.
-type RecipientPublicKey = C.APublicVerifyKey
+type RcvPublicVerifyKey = C.APublicVerifyKey
+
+-- | Public key used for DH exchange to encrypt message bodies from server to recipient
+type RcvPublicDhKey = C.PublicKey C.X25519
+
+-- | DH Secret used to encrypt message bodies from server to recipient
+type RcvDhSecret = C.DhSecret C.X25519
 
 -- | Sender's private key used by the recipient to authorize (sign) SMP commands.
 --
 -- Only used by SMP agent, kept here so its definition is close to respective public key.
-type SenderPrivateKey = C.APrivateSignKey
+type SndPrivateSignKey = C.APrivateSignKey
 
 -- | Sender's public key used by SMP server to verify authorization of SMP commands.
-type SenderPublicKey = C.APublicVerifyKey
+type SndPublicVerifyKey = C.APublicVerifyKey
 
 -- | Private key used by push notifications server to authorize (sign) LSTN command.
-type NotifierPrivateKey = C.APrivateSignKey
+type NtfPrivateSignKey = C.APrivateSignKey
 
 -- | Public key used by SMP server to verify authorization of LSTN command sent by push notifications server.
-type NotifierPublicKey = C.APublicVerifyKey
+type NtfPublicVerifyKey = C.APublicVerifyKey
 
 -- | SMP message server ID.
 type MsgId = Encoded
@@ -278,8 +298,15 @@ commandP =
     <|> "ERR " *> serverError
     <|> "PONG" $> Cmd SBroker PONG
   where
-    newCmd = Cmd SRecipient . NEW <$> C.strKeyP
-    idsResp = Cmd SBroker <$> (IDS <$> (base64P <* A.space) <*> base64P)
+    newCmd = Cmd SRecipient <$> (NEW <$> C.strKeyP <* A.space <*> C.strKeyP)
+    idsResp = Cmd SBroker . IDS <$> qik
+    qik = do
+      rcvId <- base64P <* A.space
+      rcvSrvVerifyKey <- C.strKeyP <* A.space
+      rcvPublicDHKey <- C.strKeyP <* A.space
+      sndId <- base64P <* A.space
+      sndSrvVerifyKey <- C.strKeyP
+      pure QIK {rcvId, rcvSrvVerifyKey, rcvPublicDHKey, sndId, sndSrvVerifyKey}
     nIdsResp = Cmd SBroker . NID <$> base64P
     keyCmd = Cmd SRecipient . KEY <$> C.strKeyP
     nKeyCmd = Cmd SRecipient . NKEY <$> C.strKeyP
@@ -302,7 +329,7 @@ parseCommand = parse (commandP <* " " <* A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP command.
 serializeCommand :: Cmd -> ByteString
 serializeCommand = \case
-  Cmd SRecipient (NEW rKey) -> "NEW " <> C.serializeKey rKey
+  Cmd SRecipient (NEW rKey dhKey) -> B.unwords ["NEW", C.serializeKey rKey, C.serializeKey dhKey]
   Cmd SRecipient (KEY sKey) -> "KEY " <> C.serializeKey sKey
   Cmd SRecipient (NKEY nKey) -> "NKEY " <> C.serializeKey nKey
   Cmd SRecipient SUB -> "SUB"
@@ -314,7 +341,8 @@ serializeCommand = \case
   Cmd SNotifier NSUB -> "NSUB"
   Cmd SBroker (MSG msgId ts msgBody) ->
     B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeMsg msgBody]
-  Cmd SBroker (IDS rId sId) -> B.unwords ["IDS", encode rId, encode sId]
+  Cmd SBroker (IDS QIK {rcvId, rcvSrvVerifyKey = rsKey, rcvPublicDHKey = dhKey, sndId, sndSrvVerifyKey = ssKey}) ->
+    B.unwords ["IDS", encode rcvId, C.serializeKey rsKey, C.serializeKey dhKey, encode sndId, C.serializeKey ssKey]
   Cmd SBroker (NID nId) -> "NID " <> encode nId
   Cmd SBroker (ERR err) -> "ERR " <> serializeErrorType err
   Cmd SBroker NMSG -> "NMSG"

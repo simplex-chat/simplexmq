@@ -43,6 +43,9 @@ module Simplex.Messaging.Crypto
     CryptoKey (..),
     CryptoPrivateKey (..),
     KeyPair,
+    DhSecret (..),
+    ADhSecret (..),
+    CryptoDhSecret (..),
     KeyHash (..),
     generateKeyPair,
     generateKeyPair',
@@ -72,6 +75,11 @@ module Simplex.Messaging.Crypto
     verify',
     validSignatureSize,
 
+    -- * DH derivation
+    dh',
+    dhSecret,
+    dhSecret',
+
     -- * AES256 AEAD-GCM scheme
     Key (..),
     IV (..),
@@ -84,6 +92,11 @@ module Simplex.Messaging.Crypto
     randomIV,
     aesKeyP,
     ivP,
+
+    -- * NaCl crypto_box
+    cbEncrypt,
+    cbDecrypt,
+    cbNonce,
 
     -- * Encoding of RSA keys
     publicKeyHash,
@@ -101,8 +114,10 @@ import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
+import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), hash)
+import qualified Crypto.MAC.Poly1305 as Poly1305
 import Crypto.Number.Generate (generateMax)
 import Crypto.Number.Prime (findPrimeFrom)
 import qualified Crypto.PubKey.Curve25519 as X25519
@@ -130,6 +145,7 @@ import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import Data.String
 import Data.Type.Equality
+import Data.Typeable (Typeable)
 import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -335,6 +351,70 @@ instance Eq APublicEncryptKey where
 
 deriving instance Show APublicEncryptKey
 
+data DhSecret (a :: Algorithm) where
+  DhSecretX25519 :: X25519.DhSecret -> DhSecret X25519
+  DhSecretX448 :: X448.DhSecret -> DhSecret X448
+
+deriving instance Eq (DhSecret a)
+
+deriving instance Show (DhSecret a)
+
+data ADhSecret
+  = forall a.
+    (AlgorithmI a, DhAlgorithm a) =>
+    ADhSecret (SAlgorithm a) (DhSecret a)
+
+type family DhAlgorithm (a :: Algorithm) :: Constraint where
+  DhAlgorithm X25519 = ()
+  DhAlgorithm X448 = ()
+  DhAlgorithm a =
+    (Int ~ Bool, TypeError (Text "Algorithm " :<>: ShowType a :<>: Text " cannot be used for DH exchange"))
+
+dhAlgorithm :: SAlgorithm a -> Maybe (Dict (DhAlgorithm a))
+dhAlgorithm = \case
+  SX25519 -> Just Dict
+  SX448 -> Just Dict
+  _ -> Nothing
+
+class CryptoDhSecret s where
+  serializeDhSecret :: s -> ByteString
+  dhSecretBytes :: s -> ByteString
+  strDhSecretP :: Parser s
+  dhSecretP :: Parser s
+
+instance AlgorithmI a => IsString (DhSecret a) where
+  fromString = parseString $ dhSecret >=> dhSecret'
+
+instance CryptoDhSecret ADhSecret where
+  serializeDhSecret (ADhSecret _ s) = serializeDhSecret s
+  dhSecretBytes (ADhSecret _ s) = dhSecretBytes s
+  strDhSecretP = dhSecret <$?> base64P
+  dhSecretP = dhSecret <$?> A.takeByteString
+
+dhSecret :: ByteString -> Either String ADhSecret
+dhSecret = cryptoPassed . secret
+  where
+    secret bs
+      | B.length bs == x25519_size = ADhSecret SX25519 . DhSecretX25519 <$> X25519.dhSecret bs
+      | B.length bs == x448_size = ADhSecret SX448 . DhSecretX448 <$> X448.dhSecret bs
+      | otherwise = CE.CryptoFailed CE.CryptoError_SharedSecretSizeInvalid
+    cryptoPassed = \case
+      CE.CryptoPassed s -> Right s
+      CE.CryptoFailed e -> Left $ show e
+
+instance forall a. AlgorithmI a => CryptoDhSecret (DhSecret a) where
+  serializeDhSecret = encode . dhSecretBytes
+  dhSecretBytes = \case
+    DhSecretX25519 s -> BA.convert s
+    DhSecretX448 s -> BA.convert s
+  strDhSecretP = dhSecret' <$?> strDhSecretP
+  dhSecretP = dhSecret' <$?> dhSecretP
+
+dhSecret' :: forall a. AlgorithmI a => ADhSecret -> Either String (DhSecret a)
+dhSecret' (ADhSecret a s) = case testEquality a $ sAlgorithm @a of
+  Just Refl -> Right s
+  _ -> Left "bad DH secret algorithm"
+
 -- | Class for all key types
 class CryptoKey k where
   keySize :: k -> Int
@@ -518,20 +598,20 @@ type ASignatureKeyPair = (APublicVerifyKey, APrivateSignKey)
 type AnEncryptionKeyPair = (APublicEncryptKey, APrivateDecryptKey)
 
 generateKeyPair :: AlgorithmI a => Int -> SAlgorithm a -> IO AKeyPair
-generateKeyPair size a = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair' size a
+generateKeyPair size a = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair' size
 
 generateSignatureKeyPair ::
   (AlgorithmI a, SignatureAlgorithm a) => Int -> SAlgorithm a -> IO ASignatureKeyPair
 generateSignatureKeyPair size a =
-  bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair' size a
+  bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair' size
 
 generateEncryptionKeyPair ::
   (AlgorithmI a, EncryptionAlgorithm a) => Int -> SAlgorithm a -> IO AnEncryptionKeyPair
 generateEncryptionKeyPair size a =
-  bimap (APublicEncryptKey a) (APrivateDecryptKey a) <$> generateKeyPair' size a
+  bimap (APublicEncryptKey a) (APrivateDecryptKey a) <$> generateKeyPair' size
 
-generateKeyPair' :: Int -> SAlgorithm a -> IO (KeyPair a)
-generateKeyPair' size = \case
+generateKeyPair' :: forall a. AlgorithmI a => Int -> IO (KeyPair a)
+generateKeyPair' size = case sAlgorithm @a of
   SRSA -> generateKeyPairRSA size
   SEd25519 ->
     Ed25519.generateSecretKey >>= \pk ->
@@ -558,6 +638,8 @@ instance ToField APrivateDecryptKey where toField = toField . encodeKey
 
 instance ToField APublicEncryptKey where toField = toField . encodeKey
 
+instance (Typeable a, AlgorithmI a) => ToField (DhSecret a) where toField = toField . dhSecretBytes
+
 instance FromField APrivateSignKey where fromField = blobFieldParser binaryKeyP
 
 instance FromField APublicVerifyKey where fromField = blobFieldParser binaryKeyP
@@ -565,6 +647,8 @@ instance FromField APublicVerifyKey where fromField = blobFieldParser binaryKeyP
 instance FromField APrivateDecryptKey where fromField = blobFieldParser binaryKeyP
 
 instance FromField APublicEncryptKey where fromField = blobFieldParser binaryKeyP
+
+instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldParser dhSecretP
 
 instance IsString (Maybe ASignature) where
   fromString = parseString $ decode >=> decodeSignature
@@ -672,6 +756,8 @@ data CryptoError
     CryptoIVError
   | -- | AES decryption error
     AESDecryptError
+  | -- CryptoBox decryption error
+    CBDecryptError
   | -- | message does not fit in SMP block
     CryptoLargeMsgError
   | -- | failure parsing RSA-encrypted message header
@@ -902,6 +988,46 @@ verify :: APublicVerifyKey -> ASignature -> ByteString -> Bool
 verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' of
   Just Refl -> verify' k sig msg
   _ -> False
+
+dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
+dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
+dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
+
+-- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
+cbEncrypt :: DhSecret X25519 -> ByteString -> ByteString -> ByteString
+cbEncrypt secret nonce msg = BA.convert tag `B.append` c
+  where
+    (rs, c) = xSalsa20 secret nonce msg
+    tag = Poly1305.auth rs c
+
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
+cbDecrypt :: DhSecret X25519 -> ByteString -> ByteString -> Either CryptoError ByteString
+cbDecrypt secret nonce packet
+  | B.length packet < 16 = Left CBDecryptError
+  | BA.constEq tag' tag = Right msg
+  | otherwise = Left CBDecryptError
+  where
+    (tag', c) = B.splitAt 16 packet
+    (rs, msg) = xSalsa20 secret nonce c
+    tag = Poly1305.auth rs c
+
+cbNonce :: ByteString -> ByteString
+cbNonce s
+  | len == 24 = s
+  | len > 24 = fst $ B.splitAt 24 s
+  | otherwise = s <> B.replicate (24 - len) (toEnum 0)
+  where
+    len = B.length s
+
+xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
+xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')
+  where
+    zero = B.replicate 16 $ toEnum 0
+    (iv0, iv1) = B.splitAt 8 nonce
+    state0 = XSalsa.initialize 20 shared (zero `B.append` iv0)
+    state1 = XSalsa.derive state0 iv1
+    (rs, state2) = XSalsa.generate state1 32
+    (msg', _) = XSalsa.combine state2 msg
 
 pubVerifyKey :: APublicKey -> Either String APublicVerifyKey
 pubVerifyKey (APublicKey a k) = case signatureAlgorithm a of
