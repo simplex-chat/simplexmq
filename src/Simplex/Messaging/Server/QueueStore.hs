@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Server.QueueStore where
 
@@ -12,7 +11,7 @@ data QueueRec = QueueRec
     senderId :: SenderId,
     recipientKey :: RcvPublicVerifyKey,
     rcvSrvSignKey :: RcvPrivateSignKey,
-    rcvDhSecret :: RcvDHSecret,
+    rcvDhSecret :: RcvDhSecret,
     senderKey :: Maybe SndPublicVerifyKey,
     sndSrvSignKey :: SndPrivateSignKey,
     notifier :: Maybe (NotifierId, NtfPublicVerifyKey),

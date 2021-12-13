@@ -261,7 +261,7 @@ createSMPQueue ::
   SMPClient ->
   RcvPrivateSignKey ->
   RcvPublicVerifyKey ->
-  RcvPublicDHKey ->
+  RcvPublicDhKey ->
   ExceptT SMPClientError IO QueueIdsKeys
 createSMPQueue c rpKey rKey dhKey =
   -- TODO add signing this request too - requires changes in the server

@@ -96,6 +96,7 @@ module Simplex.Messaging.Crypto
     -- * NaCl crypto_box
     cbEncrypt,
     cbDecrypt,
+    cbNonce,
 
     -- * Encoding of RSA keys
     publicKeyHash,
@@ -1009,6 +1010,14 @@ cbDecrypt secret nonce packet
     (tag', c) = B.splitAt 16 packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
+
+cbNonce :: ByteString -> ByteString
+cbNonce s
+  | len == 24 = s
+  | len > 24 = fst $ B.splitAt 24 s
+  | otherwise = s <> B.replicate (24 - len) (toEnum 0)
+  where
+    len = B.length s
 
 xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')

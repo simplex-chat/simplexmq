@@ -22,7 +22,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
-    RcvDHSecret,
+    RcvDhSecret,
     RcvPrivateSignKey,
     RcvPublicVerifyKey,
     SndPrivateSignKey,
@@ -83,7 +83,7 @@ data RcvQueue = RcvQueue
     -- | key used by the recipient to verify server transmissions
     rcvSrvVerifyKey :: RcvPublicVerifyKey,
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
-    rcvDhSecret :: RcvDHSecret,
+    rcvDhSecret :: RcvDhSecret,
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
     -- | key used by the sender to sign transmissions

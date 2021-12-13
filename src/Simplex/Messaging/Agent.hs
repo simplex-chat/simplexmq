@@ -62,7 +62,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
-import Data.Bifunctor (second)
+import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.))
@@ -526,10 +526,11 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
     _ -> atomically $ writeTBQueue subQ ("", "", ERR $ CONN NOT_FOUND)
   where
     processSMP :: SConnType c -> ConnData -> RcvQueue -> m ()
-    processSMP cType ConnData {connId} rq@RcvQueue {status} =
+    processSMP cType ConnData {connId} rq@RcvQueue {rcvDhSecret, status} =
       case cmd of
-        SMP.MSG srvMsgId srvTs msgBody -> do
+        SMP.MSG srvMsgId srvTs msgBody' -> do
           -- TODO deduplicate with previously received
+          msgBody <- liftEither . first cryptoError $ C.cbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
           msg <- decryptAndVerify rq msgBody
           let msgHash = C.sha256Hash msg
           case parseSMPMessage msg of

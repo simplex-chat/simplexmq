@@ -387,7 +387,7 @@ encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
     sig <- C.sign signKey enc
     pure $ C.signatureBytes sig <> enc
 
-decryptAndVerify :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
+decryptAndVerify :: AgentMonad m => RcvQueue -> MsgBody -> m ByteString
 decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
   verifyMessage verifyKey msg
     >>= liftError cryptoError . C.decrypt decryptKey

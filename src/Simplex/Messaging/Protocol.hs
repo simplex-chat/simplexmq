@@ -45,8 +45,8 @@ module Simplex.Messaging.Protocol
     NotifierId,
     RcvPrivateSignKey,
     RcvPublicVerifyKey,
-    RcvPublicDHKey,
-    RcvDHSecret,
+    RcvPublicDhKey,
+    RcvDhSecret,
     SndPrivateSignKey,
     SndPublicVerifyKey,
     NtfPrivateSignKey,
@@ -146,7 +146,7 @@ type QueueId = Encoded
 -- | Parameterized type for SMP protocol commands from all participants.
 data Command (a :: Party) where
   -- SMP recipient commands
-  NEW :: RcvPublicVerifyKey -> RcvPublicDHKey -> Command Recipient
+  NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicVerifyKey -> Command Recipient
   NKEY :: NtfPublicVerifyKey -> Command Recipient
@@ -187,7 +187,7 @@ instance IsString CorrId where
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
     rcvSrvVerifyKey :: RcvPublicVerifyKey,
-    rcvPublicDHKey :: RcvPublicDHKey,
+    rcvPublicDHKey :: RcvPublicDhKey,
     sndId :: SenderId,
     sndSrvVerifyKey :: SndPublicVerifyKey
   }
@@ -202,10 +202,10 @@ type RcvPrivateSignKey = C.APrivateSignKey
 type RcvPublicVerifyKey = C.APublicVerifyKey
 
 -- | Public key used for DH exchange to encrypt message bodies from server to recipient
-type RcvPublicDHKey = C.PublicKey C.X25519
+type RcvPublicDhKey = C.PublicKey C.X25519
 
 -- | DH Secret used to encrypt message bodies from server to recipient
-type RcvDHSecret = C.DhSecret C.X25519
+type RcvDhSecret = C.DhSecret C.X25519
 
 -- | Sender's private key used by the recipient to authorize (sign) SMP commands.
 --
