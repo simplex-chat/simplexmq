@@ -89,7 +89,7 @@ import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (THandle, Transport, TransportError (..), tGetEncrypted, tPutEncrypted)
+import Simplex.Messaging.Transport (SessionId (..), THandle (..), Transport, TransportError (..), tGetEncrypted, tPutEncrypted)
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
@@ -112,21 +112,21 @@ data Cmd = forall a. Cmd (SParty a) (Command a)
 deriving instance Show Cmd
 
 -- | SMP transmission without signature.
-type Transmission = (CorrId, QueueId, Cmd)
+type Transmission = (SessionId, CorrId, QueueId, Cmd)
 
 -- | SMP transmission with signature.
 type SignedTransmission = (Maybe C.ASignature, Transmission)
 
-type TransmissionOrError = (CorrId, QueueId, Either ErrorType Cmd)
+type TransmissionOrError = (SessionId, CorrId, QueueId, Either ErrorType Cmd)
 
 -- | signed parsed transmission, with parsing error.
 type SignedTransmissionOrError = (Maybe C.ASignature, TransmissionOrError)
 
 -- | unparsed SMP transmission with signature.
-type RawTransmission = (ByteString, ByteString, ByteString, ByteString)
+type RawTransmission = (ByteString, ByteString, ByteString, ByteString, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
-type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString)
+type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
 type SentRawTransmission = (Maybe C.ASignature, ByteString)
@@ -176,8 +176,6 @@ deriving instance Eq (Command a)
 type Encoded = ByteString
 
 -- | Transmission correlation ID.
---
--- A newtype to avoid accidentally changing order of transmission parts.
 newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
 
 instance IsString CorrId where
@@ -231,6 +229,8 @@ type MsgBody = ByteString
 data ErrorType
   = -- | incorrect block format, encoding or signature size
     BLOCK
+  | -- | incorrect SMP session ID (TLS Finished message / tls-unique binding RFC5929)
+    SESSION
   | -- | SMP command is unknown or has invalid syntax
     CMD CommandError
   | -- | command authorization error - bad signature or non-existing SMP queue
@@ -269,10 +269,11 @@ instance Arbitrary CommandError where arbitrary = genericArbitraryU
 transmissionP :: Parser RawTransmission
 transmissionP = do
   sig <- segment
+  sessionId <- segment
   corrId <- segment
   queueId <- segment
   command <- A.takeByteString
-  return (sig, corrId, queueId, command)
+  return (sig, sessionId, corrId, queueId, command)
   where
     segment = A.takeTill (== ' ') <* " "
 
@@ -367,8 +368,8 @@ tPut th (sig, t) =
 
 -- | Serialize SMP transmission.
 serializeTransmission :: Transmission -> ByteString
-serializeTransmission (CorrId corrId, queueId, command) =
-  B.intercalate " " [corrId, encode queueId, serializeCommand command]
+serializeTransmission (SessionId sessionId, CorrId corrId, queueId, command) =
+  B.intercalate " " [sessionId, corrId, encode queueId, serializeCommand command]
 
 -- | Validate that it is an SMP client command, used with 'tGet' by 'Simplex.Messaging.Server'.
 fromClient :: Cmd -> Either ErrorType Cmd
@@ -391,27 +392,29 @@ tGetParse th = (>>= parse transmissionP TEBadBlock) <$> tGetEncrypted th
 -- The first argument is used to limit allowed senders.
 -- 'fromClient' or 'fromServer' should be used here.
 tGet :: forall c m. (Transport c, MonadIO m) => (Cmd -> Either ErrorType Cmd) -> THandle c -> m SignedTransmissionOrError
-tGet fromParty th = liftIO (tGetParse th) >>= decodeParseValidate
+tGet fromParty th@THandle {rcvSessionId, sndSessionId} = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m SignedTransmissionOrError
     decodeParseValidate = \case
-      Right (sig, corrId, queueId, command) ->
-        let decodedTransmission = liftM2 (,corrId,,command) (C.decodeSignature =<< decode sig) (decode queueId)
-         in either (const $ tError corrId) tParseValidate decodedTransmission
+      Right (sig, sessionId, corrId, queueId, command)
+        | SessionId sessionId == rcvSessionId ->
+          let decodedTransmission = liftM2 (,sessionId,corrId,,command) (C.decodeSignature =<< decode sig) (decode queueId)
+           in either (const $ tError corrId) tParseValidate decodedTransmission
+        | otherwise -> pure (Nothing, (sndSessionId, CorrId corrId, "", Left SESSION))
       Left _ -> tError ""
 
     tError :: ByteString -> m SignedTransmissionOrError
-    tError corrId = return (Nothing, (CorrId corrId, "", Left BLOCK))
+    tError corrId = pure (Nothing, (sndSessionId, CorrId corrId, "", Left BLOCK))
 
     tParseValidate :: SignedRawTransmission -> m SignedTransmissionOrError
-    tParseValidate t@(sig, corrId, queueId, command) = do
+    tParseValidate t@(sig, sessionId, corrId, queueId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tCredentials t
-      return (sig, (CorrId corrId, queueId, cmd))
+      return (sig, (SessionId sessionId, CorrId corrId, queueId, cmd))
 
     tCredentials :: SignedRawTransmission -> Cmd -> Either ErrorType Cmd
-    tCredentials (sig, _, queueId, _) cmd = case cmd of
+    tCredentials (sig, _, _, queueId, _) cmd = case cmd of
       -- IDS response must not have queue ID
-      Cmd SBroker IDS {} -> Right cmd
+      Cmd SBroker (IDS _) -> Right cmd
       -- ERR response does not always have queue ID
       Cmd SBroker (ERR _) -> Right cmd
       -- PONG response must not have queue ID
