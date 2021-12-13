@@ -190,7 +190,7 @@ supportedParameters :: T.Supported
 supportedParameters =
   def
     { T.supportedVersions = [T.TLS13],
-      T.supportedCiphers = [TE.cipher_TLS13_AES256GCM_SHA384], -- replace AES with Poly1305_Salsa... from overview
+      T.supportedCiphers = [TE.cipher_TLS13_CHACHA20POLY1305_SHA256],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448)],
       T.supportedSecureRenegotiation = False,
       T.supportedGroups = [T.X448]
@@ -291,13 +291,24 @@ instance Transport TLS where
   cPut :: TLS -> ByteString -> IO ()
   cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
 
-  -- ?
   getLn :: TLS -> IO ByteString
-  getLn tls = do
-    s <- trimCR <$> T.recvData (tlsContext tls)
-    if B.null s || B.last s /= '\n'
-      then E.throwIO TEBadBlock
-      else pure $ B.init s
+  getLn TLS {tlsContext, buffer, getLock} = do
+    E.bracket_
+      (atomically $ takeTMVar getLock)
+      (atomically $ putTMVar getLock ())
+      $ do
+        b <- readChunks =<< readTVarIO buffer
+        let (s, b') = B.break (== '\n') b
+        atomically $ writeTVar buffer (B.drop 1 b') -- drop '\n' we made a break at
+        pure $ trimCR s
+    where
+      readChunks :: ByteString -> IO ByteString
+      readChunks b
+        | B.elem '\n' b = pure b
+        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
+      handleEOF = \case
+        T.Error_EOF -> E.throwIO TEBadBlock
+        e -> E.throwIO e
 
 -- | Trim trailing CR from ByteString.
 trimCR :: ByteString -> ByteString

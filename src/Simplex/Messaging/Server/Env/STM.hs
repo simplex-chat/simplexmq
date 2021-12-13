@@ -31,7 +31,6 @@ data ServerConfig = ServerConfig
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
     serverPrivateKey :: C.PrivateKey 'C.RSA
-    -- serverId :: ByteString
   }
 
 data Env = Env

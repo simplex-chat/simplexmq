@@ -29,6 +29,23 @@ On the first start the server generates an RSA key pair for encrypted transport 
 
 SMP server implements [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md).
 
+#### Running SMP server on MacOS
+
+if:
+
+openssl version -> LibreSSL
+
+LibreSSL doesn't support required algrorithms. Instal OpenSSL:
+
+brew update
+brew install openssl
+echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile # or w/e brew suggests
+. ~/.zprofile # or restart your shell
+
+now:
+
+openssl version -> OpenSSL
+
 ### SMP client library
 
 [SMP client](https://github.com/simplex-chat/simplexmq/blob/master/src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
