@@ -66,7 +66,6 @@ import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.))
-import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -76,7 +75,6 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
 import Database.SQLite.Simple (SQLError)
-import qualified Network.TLS as T
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
@@ -106,43 +104,19 @@ runSMPAgent t cfg = do
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
---
--- Note: SMP agent over TCP isn't being utilized, so for simplification of Transport implementation
--- it uses a fixed private key and a fixed certificate for the TLS credential.
 runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> m ()
-runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
+runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = do
+  runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
-    smpAgent _ = runTransportServer started tcpPort fixedCredential $ \(h :: c) -> do
-      liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
-      c <- getAgentClient
-      logConnection c True
-      race_ (connectClient h c) (runAgentClient c)
-        `E.finally` disconnectAgentClient c
-
-fixedCredential :: T.Credential
-fixedCredential =
-  fromRight (error "invalid credential") $
-    T.credentialLoadX509FromMemory fixedCertificate fixedPrivateKey
-
-fixedCertificate :: ByteString
-fixedCertificate =
-  "-----BEGIN CERTIFICATE-----\n\
-  \MIIBLzCBsAIUDS2s4hUHeT9gYpGcf7SJNnyReDUwBQYDK2VxMBQxEjAQBgNVBAMM\n\
-  \CWxvY2FsaG9zdDAgFw0yMTEyMTQxMDM3NTFaGA80NzU5MTExMDEwMzc1MVowFDES\n\
-  \MBAGA1UEAwwJbG9jYWxob3N0MEMwBQYDK2VxAzoAMb/HUcgN/sU2rm1YHoTMFVTu\n\
-  \ptY7hKjDm8mRxUWXzvHS0S6vqZRfJuCBQms4MSlTv+z1LjzDevUAMAUGAytlcQNz\n\
-  \AA2eyrpA0O2TzNCeVEs0Dp/uXTzQPWJHD8fN0DCwSJf7xIY01jNmcvx/IFYnGCd+\n\
-  \uQ/7vm6kcUFNgKhVWY9e7xLjYqeBirHTQiTRrh+9mKDOwmsSOhnz3acYPgrJ2QUO\n\
-  \zDtZa16ppKRA5ucLJ4AXaacOAA==\n\
-  \-----END CERTIFICATE-----"
-
-fixedPrivateKey :: ByteString
-fixedPrivateKey =
-  "-----BEGIN PRIVATE KEY-----\n\
-  \MEcCAQAwBQYDK2VxBDsEOcj0BvnNHWg2dsOnww++p/PHxnl+KGWFXre57wXEredA\n\
-  \j0xo78ZgadAeY0Y5mO4nfb8lk3CBz+ojGA==\n\
-  \-----END PRIVATE KEY-----"
+    smpAgent _ = do
+      credential <- asks agentCredential
+      runTransportServer started tcpPort credential $ \(h :: c) -> do
+        liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
+        c <- getAgentClient
+        logConnection c True
+        race_ (connectClient h c) (runAgentClient c)
+          `E.finally` disconnectAgentClient c
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
