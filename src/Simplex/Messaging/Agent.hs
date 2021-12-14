@@ -62,7 +62,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
-import Data.Bifunctor (second)
+import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.))
@@ -85,7 +85,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (MsgBody, SenderPublicKey)
+import Simplex.Messaging.Protocol (MsgBody, SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, runTransportServer)
 import Simplex.Messaging.Util (bshow, tryError, unlessM)
@@ -351,7 +351,7 @@ rejectContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> m ()
 rejectContact' _ contactConnId invId =
   withStore $ \st -> deleteInvitation st contactConnId invId
 
-processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
+processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
 processConfirmation c rq sndKey = do
   withStore $ \st -> setRcvQueueStatus st rq Confirmed
   secureQueue c rq sndKey
@@ -555,10 +555,11 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
     _ -> atomically $ writeTBQueue subQ ("", "", ERR $ CONN NOT_FOUND)
   where
     processSMP :: SConnType c -> ConnData -> RcvQueue -> m ()
-    processSMP cType ConnData {connId} rq@RcvQueue {status} =
+    processSMP cType ConnData {connId} rq@RcvQueue {rcvDhSecret, status} =
       case cmd of
-        SMP.MSG srvMsgId srvTs msgBody -> do
+        SMP.MSG srvMsgId srvTs msgBody' -> do
           -- TODO deduplicate with previously received
+          msgBody <- liftEither . first cryptoError $ C.cbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
           msg <- decryptAndVerify rq msgBody
           let msgHash = C.sha256Hash msg
           case parseSMPMessage msg of
@@ -584,7 +585,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         prohibited :: m ()
         prohibited = notify . ERR $ AGENT A_PROHIBITED
 
-        smpConfirmation :: SenderPublicKey -> ConnInfo -> m ()
+        smpConfirmation :: SndPublicVerifyKey -> ConnInfo -> m ()
         smpConfirmation senderKey cInfo = do
           logServer "<--" c srv rId "MSG <KEY>"
           case status of
@@ -600,7 +601,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               _ -> prohibited
             _ -> prohibited
 
-        helloMsg :: SenderPublicKey -> ByteString -> m ()
+        helloMsg :: SndPublicVerifyKey -> ByteString -> m ()
         helloMsg verifyKey msgBody = do
           logServer "<--" c srv rId "MSG <HELLO>"
           case status of
@@ -658,7 +659,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-confirmQueue :: AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> ConnInfo -> m ()
+confirmQueue :: AgentMonad m => AgentClient -> SndQueue -> SndPublicVerifyKey -> ConnInfo -> m ()
 confirmQueue c sq senderKey cInfo = do
   sendConfirmation c sq senderKey cInfo
   withStore $ \st -> setSndQueueStatus st sq Confirmed
@@ -684,7 +685,7 @@ notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
 newSndQueue ::
-  (MonadUnliftIO m, MonadReader Env m) => SMPQueueUri -> C.APublicEncryptKey -> m (SndQueue, SenderPublicKey, C.APublicVerifyKey)
+  (MonadUnliftIO m, MonadReader Env m) => SMPQueueUri -> C.APublicEncryptKey -> m (SndQueue, SndPublicVerifyKey, C.APublicVerifyKey)
 newSndQueue qUri encryptKey =
   asks (cmdSignAlg . config) >>= \case
     C.SignAlg a -> newSndQueue_ a qUri encryptKey
@@ -694,7 +695,7 @@ newSndQueue_ ::
   C.SAlgorithm a ->
   SMPQueueUri ->
   C.APublicEncryptKey ->
-  m (SndQueue, SenderPublicKey, C.APublicVerifyKey)
+  m (SndQueue, SndPublicVerifyKey, C.APublicVerifyKey)
 newSndQueue_ a (SMPQueueUri smpServer senderId _) encryptKey = do
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a

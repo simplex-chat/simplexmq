@@ -425,10 +425,11 @@ x509encoded = <base64 X509 key encoding>
 If the queue is created successfully, the server must send `queueIds` response with the recipient's and sender's queue IDs and public keys to sign all responses and messages and to encrypt delivered message bodies:
 
 ```abnf
-queueIds = %s"IDS" SP recipientId SP senderId
-           SP serverSignaturePublicKey SP serverDhPublicKey
-serverSignaturePublicKey = signatureKey
-; the server's public key to verify responses and messages for this queue
+queueIds = %s"IDS" SP recipientId SP srvRcvPublicVerifyKey SP srvDhPublicKey
+                   SP senderId SP srvSndPublicVerifyKey
+srvRcvPublicVerifyKey = signatureKey
+srvSndPublicVerifyKey = signatureKey
+; the server's public keys to verify responses and messages for this queue
 serverDhPublicKey = dhPublicKey
 ; the server's key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies to the recipient

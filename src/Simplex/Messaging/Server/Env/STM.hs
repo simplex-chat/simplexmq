@@ -34,7 +34,8 @@ data ServerConfig = ServerConfig
     blockSize :: Int,
     serverPrivateKey :: C.PrivateKey 'C.RSA, -- TODO delete
     serverPrivateKeyFile :: FilePath,
-    serverCertificateFile :: FilePath
+    serverCertificateFile :: FilePath,
+    trnSignAlg :: C.SignAlg
   }
 
 data Env = Env
