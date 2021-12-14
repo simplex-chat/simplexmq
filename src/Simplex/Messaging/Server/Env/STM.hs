@@ -101,6 +101,7 @@ newEnv config = do
   let pk = serverPrivateKey config -- TODO remove
       serverKeyPair = (C.publicKey pk, pk)
   serverCredential <- loadServerCredential config
+  -- serverCredential `seq` ()
   return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s', serverCredential}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
