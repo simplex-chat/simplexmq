@@ -42,7 +42,7 @@ If it says "LibreSSL", please install original OpenSSL:
 ```sh
 brew update
 brew install openssl
-echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile # or follow whatever brew suggests
+echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile # or follow whatever instructions brew suggests
 . ~/.zprofile # or restart your terminal to start a new session
 ```
 
