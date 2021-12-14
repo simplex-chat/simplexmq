@@ -11,7 +11,6 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -415,7 +414,6 @@ instance PartyI p => CommandI (Command p) where
     END -> "END"
     OK -> "OK"
     PONG -> "PONG"
-    where
 
 serializeBody :: ByteString -> ByteString
 serializeBody s = bshow (B.length s) <> " " <> s <> " "

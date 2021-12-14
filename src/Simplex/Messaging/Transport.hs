@@ -38,7 +38,6 @@ module Simplex.Messaging.Transport
 
     -- * SMP encrypted transport
     THandle (..),
-    TSession (..),
     SessionId (..),
     TransportError (..),
     serverHandshake,
@@ -242,12 +241,6 @@ smpVersionP =
 newtype SessionId = SessionId {unSessionId :: ByteString}
   deriving (Eq, Show)
 
-data TSession = TSession
-  { sndSessId :: SessionId,
-    rcvSessId :: SessionId
-  }
-  deriving (Eq, Show)
-
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
@@ -375,7 +368,7 @@ serverHandshake c srvBlockSize (k, pk) = do
   encryptedKeys <- receiveEncryptedKeys_4
   ClientHandshake {blockSize, sndKey, rcvKey} <- decryptParseKeys_5 encryptedKeys
   checkValidBlockSize blockSize
-  th <- liftIO $ transportHandle c rcvKey sndKey "rcv" "snd" blockSize -- keys are swapped here
+  th <- liftIO $ transportHandle c rcvKey sndKey blockSize -- keys are swapped here
   sendWelcome_6 th
   pure th
   where
@@ -409,7 +402,7 @@ clientHandshake c blkSize_ keyHash = do
   let clientBlkSize = fromMaybe blkSize blkSize_
   chs@ClientHandshake {sndKey, rcvKey} <- liftIO $ generateKeys_3 clientBlkSize
   sendEncryptedKeys_4 k chs
-  th <- liftIO $ transportHandle c sndKey rcvKey "snd" "rcv" clientBlkSize
+  th <- liftIO $ transportHandle c sndKey rcvKey clientBlkSize
   getWelcome_6 th >>= checkVersion
   pure th
   where
@@ -504,8 +497,8 @@ binaryRsaTransportP = binaryRsa =<< int16
 parseClientHandshake :: ByteString -> Either TransportError ClientHandshake
 parseClientHandshake = parse clientHandshakeP $ TEHandshake AES_KEYS
 
-transportHandle :: c -> SessionKey -> SessionKey -> ByteString -> ByteString -> Int -> IO (THandle c)
-transportHandle c sk rk sId rId blockSize = do
+transportHandle :: c -> SessionKey -> SessionKey -> Int -> IO (THandle c)
+transportHandle c sk rk blockSize = do
   sndCounter <- newTVarIO 0
   rcvCounter <- newTVarIO 0
   pure
