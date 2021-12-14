@@ -94,7 +94,9 @@ cfg =
         \vqiBHoO3RNbqg+2rmTMfDuXreME3S955ZiPZm4Z+T8Hj52mPAoGAQm5QH/gLFtY5\
         \+znqU/0G8V6BKISCQMxbbmTQVcTgGySrP2gVd+e4MWvUttaZykhWqs8rpr7mgpIY\
         \hul7Swx0SHFN3WpXu8uj+B6MLpRcCbDHO65qU4kQLs+IaXXsuuTjMvJ5LwjkZVrQ\
-        \TmKzSAw7iVWwEUZR/PeiEKazqrpp9VU="
+        \TmKzSAw7iVWwEUZR/PeiEKazqrpp9VU=",
+      serverPrivateKeyFile = "tests/fixtures/localhost.key",
+      serverCertificateFile = "tests/fixtures/localhost.crt"
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a

@@ -31,20 +31,22 @@ SMP server implements [SMP protocol](https://github.com/simplex-chat/simplexmq/b
 
 #### Running SMP server on MacOS
 
-if:
+SMP server requires OpenSSL library for initialization. On MacOS OpenSSL library may be replaced with LibreSSL, which doesn't support required algorithms. Before initializing SMP server verify you have OpenSSL installed:
 
-openssl version -> LibreSSL
+```sh
+openssl version
+```
 
-LibreSSL doesn't support required algrorithms. Instal OpenSSL:
+If it says "LibreSSL", please install original OpenSSL:
 
+```sh
 brew update
 brew install openssl
-echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile # or w/e brew suggests
-. ~/.zprofile # or restart your shell
+echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile # or follow whatever brew suggests
+. ~/.zprofile # or restart your terminal to start a new session
+```
 
-now:
-
-openssl version -> OpenSSL
+Now `openssl version` should be saying "OpenSSL". You can now run `smp-server init` to initialize your SMP server.
 
 ### SMP client library
 
@@ -78,7 +80,7 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 You can get Linode [free credits](https://www.linode.com/lp/affiliate-referral/?irclickid=02-QkdTEpxyLW0W0EOSREQreUkB2DtzGE2lGTE0&irgwc=1&utm_source=impact) to deploy SMP server.
 
-Deployment on [Linode](https://www.linode.com/) is performed via StackScripts, which serve as recipes for Linode instances, also called Linodes. To deploy SMP server on Linode:
+Deployment on Linode is performed via StackScripts, which serve as recipes for Linode instances, also called Linodes. To deploy SMP server on Linode:
 
 - Create a Linode account or login with an already existing one.
 - Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".

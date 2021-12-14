@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -11,8 +12,9 @@ import Crypto.Random
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
+import qualified Network.TLS as T
 import Numeric.Natural
-import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto as C -- TODO delete
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
@@ -23,14 +25,16 @@ import System.IO (IOMode (..))
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
-  { transports :: [(ServiceName, ATransport)],
-    tbqSize :: Natural,
+  { tbqSize :: Natural,
     msgQueueQuota :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
+    transports :: [(ServiceName, ATransport)],
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
-    serverPrivateKey :: C.PrivateKey 'C.RSA
+    serverPrivateKey :: C.PrivateKey 'C.RSA, -- TODO delete
+    serverPrivateKeyFile :: FilePath,
+    serverCertificateFile :: FilePath
   }
 
 data Env = Env
@@ -39,8 +43,9 @@ data Env = Env
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
-    serverKeyPair :: C.KeyPair 'C.RSA,
-    storeLog :: Maybe (StoreLog 'WriteMode)
+    serverKeyPair :: C.KeyPair 'C.RSA, -- TODO delete
+    storeLog :: Maybe (StoreLog 'WriteMode),
+    serverCredential :: T.Credential
   }
 
 data Server = Server
@@ -92,9 +97,10 @@ newEnv config = do
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
-  let pk = serverPrivateKey config
+  let pk = serverPrivateKey config -- TODO remove
       serverKeyPair = (C.publicKey pk, pk)
-  return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s'}
+  serverCredential <- loadServerCredential config
+  return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s', serverCredential}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do
@@ -113,3 +119,9 @@ newEnv config = do
     addNotifier q = case notifier q of
       Nothing -> id
       Just (nId, _) -> M.insert nId (recipientId q)
+    loadServerCredential :: ServerConfig -> m T.Credential
+    loadServerCredential ServerConfig {serverPrivateKeyFile, serverCertificateFile} =
+      -- TODO non lazy
+      liftIO (T.credentialLoadX509 serverCertificateFile serverPrivateKeyFile) >>= \case
+        Right cert -> pure cert
+        Left _ -> error "invalid credential"

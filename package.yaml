@@ -73,6 +73,7 @@ executables:
       - cryptostore == 0.2.*
       - ini == 0.4.*
       - optparse-applicative >= 0.15 && < 0.17
+      - process == 1.6.*
       - simplexmq
     ghc-options:
       - -threaded

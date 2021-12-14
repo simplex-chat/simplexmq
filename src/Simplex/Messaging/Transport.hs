@@ -31,10 +31,9 @@ module Simplex.Messaging.Transport
     ATransport (..),
 
     -- * Transport via TLS 1.3 over TCP
-    TLS (..),
-    closeTLS,
     runTransportServer,
     runTransportClient,
+    TLS (..),
 
     -- * SMP encrypted transport
     THandle (..),
@@ -65,7 +64,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
-import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
@@ -126,81 +124,11 @@ data ATransport = forall c. Transport c => ATransport (TProxy c)
 
 -- * Transport via TLS 1.3 over TCP
 
-data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
-
-connectTLS :: (T.TLSParams p) => String -> (TLS -> IO c) -> p -> Socket -> IO c
-connectTLS party getPartyConnection params sock =
-  E.bracketOnError (T.contextNew sock params) closeTLS $ \tlsContext -> do
-    T.handshake tlsContext
-    buffer <- newTVarIO ""
-    getLock <- newTMVarIO ()
-    getPartyConnection TLS {tlsContext, buffer, getLock}
-      `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
-
-closeTLS :: T.Context -> IO ()
-closeTLS ctx =
-  (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
-    `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
-
-serverParams :: T.ServerParams
-serverParams =
-  def
-    { T.serverWantClientCert = False,
-      T.serverShared = def {T.sharedCredentials = T.Credentials [serverCredential]},
-      T.serverHooks = def,
-      T.serverSupported = supportedParameters
-    }
-
-clientParams :: T.ClientParams
-clientParams =
-  (T.defaultParamsClient "localhost" "5223")
-    { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ _ -> pure []},
-      T.clientSupported = supportedParameters
-    }
-
-serverCredential :: T.Credential
-serverCredential =
-  fromRight (error "invalid credential") $
-    T.credentialLoadX509FromMemory serverCert serverPrivateKey
-
--- To generate self-signed certificate:
--- https://blog.pinterjann.is/ed25519-certificates.html
-
-serverCert :: ByteString
-serverCert =
-  "-----BEGIN CERTIFICATE-----\n\
-  \MIIBSTCBygIUG8XHI4lGld/8Tb824iWF390hsOwwBQYDK2VxMCExCzAJBgNVBAYT\n\
-  \AkRFMRIwEAYDVQQDDAlsb2NhbGhvc3QwIBcNMjExMTIwMTAwMTU5WhgPOTk5OTEy\n\
-  \MzExMDAxNTlaMCExCzAJBgNVBAYTAkRFMRIwEAYDVQQDDAlsb2NhbGhvc3QwQzAF\n\
-  \BgMrZXEDOgDVgTUc+4Ur9or2N0IKjNgBx649yzAoM5cJKE90OklUKYKdnk4V7kap\n\
-  \oHX/d/OUgCdCYa6geMj69QAwBQYDK2VxA3MAlv8lp6xm+KgsGpE+5QLuNT0xdf/i\n\
-  \jjJfqLzXzuBwE0+5HwxnrOZ1xMPs30aubiChbpJaJx2xPXkAmnR5Z4p7HcmnPm1P\n\
-  \B1SKVlxfqTGWTsJI8E6rNjSsoTZR48DuDZuQthr4SWdcz+jkdFmprTrWHgMA\n\
-  \-----END CERTIFICATE-----"
-
-serverPrivateKey :: ByteString
-serverPrivateKey =
-  "-----BEGIN PRIVATE KEY-----\n\
-  \MEcCAQAwBQYDK2VxBDsEOWbzhmByxZ0z656MQV0Vtbkv0VfMpwpvdal8W4Vu9gXu\n\
-  \uT7CCDxjBTQQZ8yPnuUNY75jwlyEwbkM1g==\n\
-  \-----END PRIVATE KEY-----"
-
-supportedParameters :: T.Supported
-supportedParameters =
-  def
-    { T.supportedVersions = [T.TLS13],
-      T.supportedCiphers = [TE.cipher_TLS13_CHACHA20POLY1305_SHA256],
-      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448)],
-      T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448]
-    }
-
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
-runTransportServer started port server = do
+runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.Credential -> (c -> m ()) -> m ()
+runTransportServer started port credential server = do
   clients <- newTVarIO S.empty
   E.bracket
     (liftIO $ startTCPServer started port)
@@ -218,6 +146,7 @@ runTransportServer started port server = do
     acceptConnection :: Transport c => Socket -> IO c
     acceptConnection sock = do
       (newSock, _) <- accept sock
+      let serverParams = mkServerParams credential
       connectTLS "server" getServerConnection serverParams newSock
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
@@ -263,8 +192,51 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       connect sock $ addrAddress addr
       connectTLS "client" getClientConnection clientParams sock
 
+data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
+
+connectTLS :: (T.TLSParams p) => String -> (TLS -> IO c) -> p -> Socket -> IO c
+connectTLS party getPartyConnection params sock =
+  E.bracketOnError (T.contextNew sock params) closeTLS $ \tlsContext -> do
+    T.handshake tlsContext
+    buffer <- newTVarIO ""
+    getLock <- newTMVarIO ()
+    getPartyConnection TLS {tlsContext, buffer, getLock}
+      `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
+
+closeTLS :: T.Context -> IO ()
+closeTLS ctx =
+  (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
+    `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
+
+mkServerParams :: T.Credential -> T.ServerParams
+mkServerParams credential =
+  def
+    { T.serverWantClientCert = False,
+      T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
+      T.serverHooks = def,
+      T.serverSupported = supportedParameters
+    }
+
+clientParams :: T.ClientParams
+clientParams =
+  (T.defaultParamsClient "localhost" "5223")
+    { T.clientShared = def,
+      T.clientHooks = def {T.onServerCertificate = \_ _ _ _ -> pure []},
+      T.clientSupported = supportedParameters
+    }
+
+supportedParameters :: T.Supported
+supportedParameters =
+  def
+    { T.supportedVersions = [T.TLS13],
+      T.supportedCiphers = [TE.cipher_TLS13_CHACHA20POLY1305_SHA256],
+      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
+      T.supportedSecureRenegotiation = False,
+      T.supportedGroups = [T.X448, T.X25519]
+    }
+
 instance Transport TLS where
-  transportName _ = "Plain TLS 1.3 over TCP"
+  transportName _ = "TLS 1.3"
   getServerConnection = pure
   getClientConnection = pure
   closeConnection tls = closeTLS $ tlsContext tls

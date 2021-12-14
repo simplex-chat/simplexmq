@@ -13,7 +13,7 @@ main = do
   createDirectoryIfMissing False "tests/tmp"
   hspec $ do
     describe "Protocol errors" protocolErrorTests
-    describe "SMP server via Plain TLS 1.3 over TCP" $ serverTests (transport @TLS)
+    describe "SMP server via TLS 1.3" $ serverTests (transport @TLS)
     -- describe "SMP server via WebSockets" $ serverTests (transport @WS)
     describe "SMP client agent" $ agentTests (transport @TLS)
   removeDirectoryRecursive "tests/tmp"
