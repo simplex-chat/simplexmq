@@ -30,9 +30,11 @@ module Simplex.Messaging.Transport
     TProxy (..),
     ATransport (..),
 
-    -- * Transport via TLS 1.3 over TCP
+    -- * Transport over TLS 1.3
     runTransportServer,
     runTransportClient,
+
+    -- * TLS 1.3 Transport
     TLS (..),
 
     -- * SMP encrypted transport
@@ -122,7 +124,7 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
--- * Transport via TLS 1.3 over TCP
+-- * Transport over TLS 1.3
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
@@ -191,6 +193,8 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
       connectTLS "client" getClientConnection clientParams sock
+
+-- * TLS 1.3 Transport
 
 data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
 
