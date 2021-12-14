@@ -108,7 +108,7 @@ main = do
     checkPubkeyAlgorihtm :: String -> IO ()
     checkPubkeyAlgorihtm alg
       | alg == "ED448" || alg == "ED25519" = pure ()
-      | otherwise = error "unsupported public-key algorithm"
+      | otherwise = putStrLn ("unsupported public-key algorithm " <> alg) >> exitFailure
 
 getConfig :: ServerOpts -> ExceptT String IO ServerConfig
 getConfig opts = do
