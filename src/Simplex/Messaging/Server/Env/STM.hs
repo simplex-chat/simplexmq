@@ -74,13 +74,13 @@ newServer qSize = do
   notifiers <- newTVar M.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Natural -> STM Client
-newClient qSize = do
+newClient :: Natural -> SessionId -> STM Client
+newClient qSize sndSessionId = do
   subscriptions <- newTVar M.empty
   ntfSubscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sndSessionId}
 
 newSubscription :: STM Sub
 newSubscription = do

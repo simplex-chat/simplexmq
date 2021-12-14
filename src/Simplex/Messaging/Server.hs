@@ -117,9 +117,9 @@ runClient _ h = do
     Left _ -> pure ()
 
 runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
-runClientTransport th = do
+runClientTransport th@THandle {sndSessionId} = do
   q <- asks $ tbqSize . config
-  c <- atomically $ newClient q
+  c <- atomically $ newClient q sndSessionId
   s <- asks server
   raceAny_ [send th c, client c s, receive th c]
     `finally` cancelSubscribers c
@@ -211,19 +211,19 @@ dummyKey512 :: C.PublicKey 'C.RSA
 dummyKey512 = "MIICoDANBgkqhkiG9w0BAQEFAAOCAo0AMIICiAKCAgEArkCY9DuverJ4mmzDektv9aZMFyeRV46WZK9NsOBKEc+1ncqMs+LhLti9asKNgUBRbNzmbOe0NYYftrUpwnATaenggkTFxxbJ4JGJuGYbsEdFWkXSvrbWGtM8YUmn5RkAGme12xQ89bSM4VoJAGnrYPHwmcQd+KYCPZvTUsxaxgrJTX65ejHN9BsAn8XtGViOtHTDJO9yUMD2WrJvd7wnNa+0ugEteDLzMU++xS98VC+uA1vfauUqi3yXVchdfrLdVUuM+JE0gUEXCgzjuHkaoHiaGNiGhdPYoAJJdOKQOIHAKdk7Th6OPhirPhc9XYNB4O8JDthKhNtfokvFIFlC4QBRzJhpLIENaEBDt08WmgpOnecZB/CuxkqqOrNa8j5K5jNrtXAI67W46VEC2jeQy/gZwb64Zit2A4D00xXzGbQTPGj4ehcEMhLx5LSCygViEf0w0tN3c3TEyUcgPzvECd2ZVpQLr9Z4a07Ebr+YSuxcHhjg4Rg1VyJyOTTvaCBGm5X2B3+tI4NUttmikIHOYpBnsLmHY2BgfH2KcrIsDyAhInXmTFr/L2+erFarUnlfATd2L8Ti43TNHDedO6k6jI5Gyi62yPwjqPLEIIK8l+pIeNfHJ3pPmjhHBfzFcQLMMMXffHWNK8kWklrQXK+4j4HiPcTBvlO1FEtG9nEIZhUCgYA4a6WtI2k5YNli1C89GY5rGUY7RP71T6RWri/D3Lz9T7GvU+FemAyYmsvCQwqijUOur0uLvwSP8VdxpSUcrjJJSWur2hrPWzWlu0XbNaeizxpFeKbQP+zSrWJ1z8RwfAeUjShxt8q1TuqGqY10wQyp3nyiTGvS+KwZVj5h5qx8NQ=="
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
-client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server {subscribedQ, ntfSubscribedQ, notifiers} =
+client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sndSessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
-      >>= atomically . writeTBQueue sndQ'
+      >>= atomically . writeTBQueue sndQ
   where
     processCommand :: Transmission ClientCmd -> m BrokerTransmission
-    processCommand (sessId, corrId, queueId, cmd) = do
+    processCommand (_, corrId, queueId, cmd) = do
       st <- asks queueStore
       case cmd of
         ClientCmd SSender command -> case command of
           SEND msgBody -> sendMessage st msgBody
-          PING -> pure (sessId, corrId, queueId, PONG)
+          PING -> pure (sndSessionId, corrId, queueId, PONG)
         ClientCmd SNotifier NSUB -> subscribeNotifications
         ClientCmd SRecipient command -> case command of
           NEW rKey dhKey -> createQueue st rKey dhKey
@@ -301,7 +301,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server 
 
         checkKeySize :: Monad m' => C.APublicVerifyKey -> m' (Command 'Broker) -> m' BrokerTransmission
         checkKeySize key action =
-          (sessId,corrId,queueId,)
+          (sndSessionId,corrId,queueId,)
             <$> if C.validKeySize key
               then action
               else pure . ERR $ CMD KEY_SIZE
@@ -376,9 +376,9 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server 
                     mapM_ (writeNtf nId) . M.lookup nId =<< readTVar notifiers
 
                 writeNtf :: NotifierId -> Client -> STM ()
-                writeNtf nId Client {sndQ} =
+                writeNtf nId Client {sndQ = q, sndSessionId = sessId} =
                   unlessM (isFullTBQueue sndQ) $
-                    writeTBQueue sndQ (sessId, CorrId "", nId, NMSG)
+                    writeTBQueue q (sessId, CorrId "", nId, NMSG)
 
         deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> Sub -> m BrokerTransmission
         deliverMessage tryPeek rId = \case
@@ -388,7 +388,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server 
             q <- atomically $ getMsgQueue ms rId quota
             atomically (tryPeek q) >>= \case
               Nothing -> forkSub q $> ok
-              Just msg -> atomically setDelivered $> (sessId, corrId, rId, msgCmd msg)
+              Just msg -> atomically setDelivered $> (sndSessionId, corrId, rId, msgCmd msg)
           _ -> return ok
           where
             forkSub :: MsgQueue -> m ()
@@ -402,7 +402,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server 
             subscriber :: MsgQueue -> m ()
             subscriber q = atomically $ do
               msg <- peekMsg q
-              writeTBQueue sndQ' (sessId, CorrId "", rId, msgCmd msg)
+              writeTBQueue sndQ (sndSessionId, CorrId "", rId, msgCmd msg)
               setSub (\s -> s {subThread = NoSub})
               void setDelivered
 
@@ -425,10 +425,10 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ = sndQ'} Server 
               Right _ -> delMsgQueue ms queueId $> ok
 
         ok :: BrokerTransmission
-        ok = (sessId, corrId, queueId, OK)
+        ok = (sndSessionId, corrId, queueId, OK)
 
         err :: ErrorType -> BrokerTransmission
-        err e = (sessId, corrId, queueId, ERR e)
+        err e = (sndSessionId, corrId, queueId, ERR e)
 
         okResp :: Either ErrorType () -> BrokerTransmission
         okResp = either err $ const ok
