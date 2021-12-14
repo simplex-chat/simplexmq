@@ -82,6 +82,7 @@ defaultCertificateFile = combine cfgDir "localhost.crt"
 main :: IO ()
 main = do
   opts <- getServerOpts
+  checkPubkeyAlgorihtm $ pubkeyAlgorihtm opts
   case serverCommand opts of
     ServerInit ->
       runExceptT (getConfig opts) >>= \case
@@ -103,6 +104,11 @@ main = do
     ServerDelete -> do
       deleteServer
       putStrLn "Server key, config file and store log deleted"
+  where
+    checkPubkeyAlgorihtm :: String -> IO ()
+    checkPubkeyAlgorihtm alg
+      | alg == "ED448" || alg == "ED25519" = pure ()
+      | otherwise = error "unsupported public-key algorithm"
 
 getConfig :: ServerOpts -> ExceptT String IO ServerConfig
 getConfig opts = do
@@ -233,16 +239,11 @@ createIni ServerOpts {enableStoreLog} = do
 
 createKeyAndCertificate :: IniOpts -> ServerOpts -> IO ()
 createKeyAndCertificate IniOpts {serverPrivateKeyFile, serverCertificateFile} ServerOpts {pubkeyAlgorihtm} = do
-  checkPubkeyAlgorihtm pubkeyAlgorihtm
   run $ "openssl genpkey -algorithm " <> pubkeyAlgorihtm <> " -out " <> serverPrivateKeyFile
   run $ "openssl req -new -key " <> serverPrivateKeyFile <> " -subj \"/CN=localhost\" -out " <> csrPath
   run $ "openssl x509 -req -days 999999 -in " <> csrPath <> " -signkey " <> serverPrivateKeyFile <> " -out " <> serverCertificateFile
   run $ "rm " <> csrPath
   where
-    checkPubkeyAlgorihtm :: String -> IO ()
-    checkPubkeyAlgorihtm alg
-      | alg == "ED448" || alg == "ED25519" = pure ()
-      | otherwise = error "unsupported public-key algorithm"
     run :: String -> IO ()
     run cmd = void $ readCreateProcess (shell cmd) ""
     csrPath :: String
