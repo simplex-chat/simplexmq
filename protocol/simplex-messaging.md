@@ -353,7 +353,8 @@ Commands syntax below is provided using [ABNF][8] with [case-sensitive strings e
 Each transmission between the client and the server must have this format/syntax (after the decryption):
 
 ```abnf
-transmission = [signature] SP signed SP pad ; pad to the fixed block size
+transmission = [signature] SP signedSize SP signed SP pad ; pad to the fixed block size
+signedSize = 1*DIGIT
 signed = sessionIdentifier SP [corrId] SP [queueId] SP cmd ; corrId is required in client commands and server responses,
                                                            ; corrId is empty in server notifications.
 cmd = ping / recipientCmd / send / subscribeNotifications / serverMsg

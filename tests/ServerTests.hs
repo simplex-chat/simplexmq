@@ -41,17 +41,17 @@ serverTests t = do
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
 
-pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmissionOrError
-pattern Resp corrId queueId command <- ("", (_, corrId, queueId, Right (Cmd SBroker command)))
+pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmission (Command 'Broker)
+pattern Resp corrId queueId command <- ("", _, (_, corrId, queueId, Right command))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> Command 'Broker
 pattern Ids rId sId srvDh <- IDS (QIK rId _ srvDh sId _)
 
-sendRecv :: Transport c => THandle c -> (Maybe C.ASignature, ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+sendRecv :: Transport c => THandle c -> (Maybe C.ASignature, ByteString, ByteString, ByteString) -> IO (SignedTransmission (Command 'Broker))
 sendRecv h@THandle {sndSessionId = SessionId sessId} (sgn, corrId, qId, cmd) =
   tPutRaw h (sgn, sessId, corrId, encode qId, cmd) >> tGet fromServer h
 
-signSendRecv :: Transport c => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, ByteString) -> IO SignedTransmissionOrError
+signSendRecv :: Transport c => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, ByteString) -> IO (SignedTransmission (Command 'Broker))
 signSendRecv h@THandle {sndSessionId = SessionId sessId} pk (corrId, qId, cmd) = do
   let t = B.intercalate " " [sessId, corrId, encode qId, cmd]
   Right sig <- runExceptT $ C.sign pk t

@@ -38,6 +38,7 @@ module Simplex.Messaging.Transport
 
     -- * SMP encrypted transport
     THandle (..),
+    TSession (..),
     SessionId (..),
     TransportError (..),
     serverHandshake,
@@ -241,11 +242,18 @@ smpVersionP =
 newtype SessionId = SessionId {unSessionId :: ByteString}
   deriving (Eq, Show)
 
+data TSession = TSession
+  { sndSessId :: SessionId,
+    rcvSessId :: SessionId
+  }
+  deriving (Eq, Show)
+
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
     sndSessionId :: SessionId,
     rcvSessionId :: SessionId,
+    session :: TSession,
     sndKey :: SessionKey,
     rcvKey :: SessionKey,
     blockSize :: Int
@@ -267,6 +275,8 @@ data ClientHandshake = ClientHandshake
 data TransportError
   = -- | error parsing transport block
     TEBadBlock
+  | -- | incorrect session ID
+    TEBadSession
   | -- | block encryption error
     TEEncrypt
   | -- | block decryption error
@@ -305,6 +315,7 @@ instance Arbitrary HandshakeError where arbitrary = genericArbitraryU
 transportErrorP :: Parser TransportError
 transportErrorP =
   "BLOCK" $> TEBadBlock
+    <|> "SESSION" $> TEBadSession
     <|> "AES_ENCRYPT" $> TEEncrypt
     <|> "AES_DECRYPT" $> TEDecrypt
     <|> TEHandshake <$> parseRead1
@@ -315,6 +326,7 @@ serializeTransportError = \case
   TEEncrypt -> "AES_ENCRYPT"
   TEDecrypt -> "AES_DECRYPT"
   TEBadBlock -> "BLOCK"
+  TEBadSession -> "SESSION"
   TEHandshake e -> bshow e
 
 -- | Encrypt and send block to SMP encrypted transport.
@@ -500,6 +512,7 @@ transportHandle c sk rk blockSize = do
   pure
     THandle
       { connection = c,
+        session = TSession (SessionId "") (SessionId ""),
         sndSessionId = SessionId "",
         rcvSessionId = SessionId "",
         sndKey = sk {counter = sndCounter},

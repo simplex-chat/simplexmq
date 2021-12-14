@@ -170,10 +170,10 @@ smpTest4 _ test' = smpTestN 4 _test
 
 tPutRaw :: Transport c => THandle c -> SignedRawTransmission -> IO ()
 tPutRaw h (sig, sessId, corrId, queueId, command) = do
-  let t = B.intercalate " " [sessId, corrId, queueId, command]
+  let t = B.unwords [sessId, corrId, queueId, command]
   void $ tPut h (sig, t)
 
 tGetRaw :: Transport c => THandle c -> IO SignedRawTransmission
 tGetRaw h = do
-  (Nothing, (SessionId sessId, CorrId corrId, qId, Right cmd)) <- tGet fromServer h
+  (Nothing, _, (SessionId sessId, CorrId corrId, qId, Right cmd)) <- tGet fromServer h
   pure (Nothing, sessId, corrId, encode qId, serializeCommand cmd)
