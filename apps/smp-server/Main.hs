@@ -77,7 +77,7 @@ defaultPrivateKeyFile :: FilePath
 defaultPrivateKeyFile = combine cfgDir "server.key"
 
 defaultCertificateFile :: FilePath
-defaultCertificateFile = combine cfgDir "localhost.crt"
+defaultCertificateFile = combine cfgDir "server.crt"
 
 main :: IO ()
 main = do
