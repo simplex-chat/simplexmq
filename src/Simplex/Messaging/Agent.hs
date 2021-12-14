@@ -107,8 +107,8 @@ runSMPAgent t cfg = do
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 --
--- Note: SMP agent over TCP isn't being utilized, so for simplification of Transport implementation it
--- uses a fixed private key and a fixed certificate for the TLS credential.
+-- Note: SMP agent over TCP isn't being utilized, so for simplification of Transport implementation
+-- it uses a fixed private key and a fixed certificate for the TLS credential.
 runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> m ()
 runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
   where
