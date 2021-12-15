@@ -33,10 +33,10 @@ module Simplex.Messaging.Transport
     -- * Transport over TLS 1.3
     runTransportServer,
     runTransportClient,
+    mkTLSServerParams,
 
     -- * TLS 1.3 Transport
     TLS (..),
-    mkTLSServerParams,
 
     -- * SMP encrypted transport
     THandle (..),
@@ -196,24 +196,6 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       connect sock $ addrAddress addr
       connectTLS "client" getClientConnection clientParams sock
 
--- * TLS 1.3 Transport
-
-data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
-
-connectTLS :: (T.TLSParams p) => String -> (TLS -> IO c) -> p -> Socket -> IO c
-connectTLS party getPartyConnection params sock =
-  E.bracketOnError (T.contextNew sock params) closeTLS $ \tlsContext -> do
-    T.handshake tlsContext
-    buffer <- newTVarIO ""
-    getLock <- newTMVarIO ()
-    getPartyConnection TLS {tlsContext, buffer, getLock}
-      `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
-
-closeTLS :: T.Context -> IO ()
-closeTLS ctx =
-  (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
-    `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
-
 mkTLSServerParams :: MonadUnliftIO m => FilePath -> FilePath -> m T.ServerParams
 mkTLSServerParams privateKeyFile certificateFile =
   liftIO loadServerCredential <&> fromCredential
@@ -231,6 +213,24 @@ mkTLSServerParams privateKeyFile certificateFile =
           T.serverHooks = def,
           T.serverSupported = supportedParameters
         }
+
+-- * TLS 1.3 Transport
+
+data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
+
+connectTLS :: (T.TLSParams p) => String -> (TLS -> IO c) -> p -> Socket -> IO c
+connectTLS party getPartyConnection params sock =
+  E.bracketOnError (T.contextNew sock params) closeTLS $ \tlsContext -> do
+    T.handshake tlsContext
+    buffer <- newTVarIO ""
+    getLock <- newTMVarIO ()
+    getPartyConnection TLS {tlsContext, buffer, getLock}
+      `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
+
+closeTLS :: T.Context -> IO ()
+closeTLS ctx =
+  (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
+    `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
 
 clientParams :: T.ClientParams
 clientParams =
