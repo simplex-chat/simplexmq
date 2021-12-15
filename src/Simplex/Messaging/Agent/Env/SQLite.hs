@@ -96,6 +96,6 @@ newSMPAgentEnv cfg = do
     reservedMsgSize = 3 * rsaKeySize cfg + smpCommandSize (smpCfg cfg)
     loadAgentCredential :: (MonadUnliftIO m') => AgentConfig -> m' T.Credential
     loadAgentCredential AgentConfig {agentPrivateKeyFile, agentCertificateFile} =
-      liftIO (T.credentialLoadX509 agentPrivateKeyFile agentCertificateFile) >>= \case
+      liftIO (T.credentialLoadX509 agentCertificateFile agentPrivateKeyFile) >>= \case
         Right cert -> pure cert
         Left _ -> error "invalid credential"

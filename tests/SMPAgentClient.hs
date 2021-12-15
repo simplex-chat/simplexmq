@@ -166,8 +166,8 @@ cfg =
             tcpTimeout = 500_000
           },
       retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000},
-      agentPrivateKeyFile = "tests/fixtures/server.key",
-      agentCertificateFile = "tests/fixtures/server.crt"
+      agentPrivateKeyFile = "tests/fixtures/example.key",
+      agentCertificateFile = "tests/fixtures/example.crt"
     }
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
