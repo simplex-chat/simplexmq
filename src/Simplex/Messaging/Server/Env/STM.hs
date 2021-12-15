@@ -19,7 +19,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport, loadServerCredential)
+import Simplex.Messaging.Transport (ATransport, SessionId, loadServerCredential)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -58,8 +58,9 @@ data Server = Server
 data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
     ntfSubscriptions :: TVar (Map NotifierId ()),
-    rcvQ :: TBQueue Transmission,
-    sndQ :: TBQueue Transmission
+    rcvQ :: TBQueue (Transmission ClientCmd),
+    sndQ :: TBQueue BrokerTransmission,
+    sndSessionId :: SessionId
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
@@ -77,13 +78,13 @@ newServer qSize = do
   notifiers <- newTVar M.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Natural -> STM Client
-newClient qSize = do
+newClient :: Natural -> SessionId -> STM Client
+newClient qSize sndSessionId = do
   subscriptions <- newTVar M.empty
   ntfSubscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sndSessionId}
 
 newSubscription :: STM Sub
 newSubscription = do
