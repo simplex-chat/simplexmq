@@ -59,7 +59,7 @@ data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
     ntfSubscriptions :: TVar (Map NotifierId ()),
     rcvQ :: TBQueue (Transmission ClientCmd),
-    sndQ :: TBQueue BrokerTransmission,
+    sndQ :: TBQueue (Maybe ClientParty, BrokerTransmission),
     sndSessionId :: SessionId
   }
 

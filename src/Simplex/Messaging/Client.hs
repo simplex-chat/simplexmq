@@ -206,7 +206,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
 
     process :: SMPClient -> IO ()
     process SMPClient {rcvQ, sentCommands} = forever $ do
-      (_, _, (_, corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
+      (_, _, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
       if B.null $ bs corrId
         then sendMsg qId respOrErr
         else do
@@ -349,7 +349,7 @@ okSMPCommand cmd c pKey qId =
 sendSMPCommand :: SMPClient -> Maybe C.APrivateSignKey -> QueueId -> ClientCmd -> ExceptT SMPClientError IO (Command 'Broker)
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, sndSessionId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
-  t <- signTransmission $ serializeTransmission (sndSessionId, corrId, qId, cmd)
+  t <- signTransmission $ serializeTransmission sndSessionId (corrId, qId, cmd)
   ExceptT $ sendRecv corrId t
   where
     lift_ :: STM a -> ExceptT SMPClientError IO a

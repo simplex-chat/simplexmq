@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -42,14 +41,14 @@ serverTests t = do
   describe "Message notifications" $ testMessageNotifications t
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmission (Command 'Broker)
-pattern Resp corrId queueId command <- ("", _, (_, corrId, queueId, Right command))
+pattern Resp corrId queueId command <- ("", _, (corrId, queueId, Right command))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> Command 'Broker
 pattern Ids rId sId srvDh <- IDS (QIK rId _ srvDh sId _)
 
 sendRecv :: Transport c => THandle c -> (Maybe C.ASignature, ByteString, ByteString, ByteString) -> IO (SignedTransmission (Command 'Broker))
-sendRecv h@THandle {sndSessionId = SessionId sessId} (sgn, corrId, qId, cmd) =
-  tPutRaw h (sgn, sessId, corrId, encode qId, cmd) >> tGet fromServer h
+sendRecv h (sgn, corrId, qId, cmd) =
+  tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
 
 signSendRecv :: Transport c => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, ByteString) -> IO (SignedTransmission (Command 'Broker))
 signSendRecv h@THandle {sndSessionId = SessionId sessId} pk (corrId, qId, cmd) = do
@@ -484,40 +483,40 @@ sampleSig = "gM8qn2Vx3GkhIp2hgrji9uhfXKpgtKDmc0maxdP8GvbORUxMCTlLG8Q/gNcl3pQVOzm
 
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do
-  it "unknown command" $ ("", "", "abcd", "1234", "HELLO") >#> ("", "", "abcd", "1234", "ERR CMD SYNTAX")
+  it "unknown command" $ ("", "abcd", "1234", "HELLO") >#> ("", "abcd", "1234", "ERR CMD SYNTAX")
   describe "NEW" $ do
-    it "no parameters" $ (sampleSig, "", "bcda", "", "NEW") >#> ("", "", "bcda", "", "ERR CMD SYNTAX")
-    it "many parameters" $ (sampleSig, "", "cdab", "", B.unwords ["NEW 1", samplePubKey, sampleDhPubKey]) >#> ("", "", "cdab", "", "ERR CMD SYNTAX")
-    it "no signature" $ ("", "", "dabc", "", B.unwords ["NEW", samplePubKey, sampleDhPubKey]) >#> ("", "", "dabc", "", "ERR CMD NO_AUTH")
-    it "queue ID" $ (sampleSig, "", "abcd", "12345678", B.unwords ["NEW", samplePubKey, sampleDhPubKey]) >#> ("", "", "abcd", "12345678", "ERR CMD HAS_AUTH")
+    it "no parameters" $ (sampleSig, "bcda", "", "NEW") >#> ("", "bcda", "", "ERR CMD SYNTAX")
+    it "many parameters" $ (sampleSig, "cdab", "", B.unwords ["NEW 1", samplePubKey, sampleDhPubKey]) >#> ("", "cdab", "", "ERR CMD SYNTAX")
+    it "no signature" $ ("", "dabc", "", B.unwords ["NEW", samplePubKey, sampleDhPubKey]) >#> ("", "dabc", "", "ERR CMD NO_AUTH")
+    it "queue ID" $ (sampleSig, "abcd", "12345678", B.unwords ["NEW", samplePubKey, sampleDhPubKey]) >#> ("", "abcd", "12345678", "ERR CMD HAS_AUTH")
   describe "KEY" $ do
-    it "valid syntax" $ (sampleSig, "", "bcda", "12345678", "KEY " <> samplePubKey) >#> ("", "", "bcda", "12345678", "ERR AUTH")
-    it "no parameters" $ (sampleSig, "", "cdab", "12345678", "KEY") >#> ("", "", "cdab", "12345678", "ERR CMD SYNTAX")
-    it "many parameters" $ (sampleSig, "", "dabc", "12345678", "KEY 1 " <> samplePubKey) >#> ("", "", "dabc", "12345678", "ERR CMD SYNTAX")
-    it "no signature" $ ("", "", "abcd", "12345678", "KEY " <> samplePubKey) >#> ("", "", "abcd", "12345678", "ERR CMD NO_AUTH")
-    it "no queue ID" $ (sampleSig, "", "bcda", "", "KEY " <> samplePubKey) >#> ("", "", "bcda", "", "ERR CMD NO_AUTH")
+    it "valid syntax" $ (sampleSig, "bcda", "12345678", "KEY " <> samplePubKey) >#> ("", "bcda", "12345678", "ERR AUTH")
+    it "no parameters" $ (sampleSig, "cdab", "12345678", "KEY") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
+    it "many parameters" $ (sampleSig, "dabc", "12345678", "KEY 1 " <> samplePubKey) >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
+    it "no signature" $ ("", "abcd", "12345678", "KEY " <> samplePubKey) >#> ("", "abcd", "12345678", "ERR CMD NO_AUTH")
+    it "no queue ID" $ (sampleSig, "bcda", "", "KEY " <> samplePubKey) >#> ("", "bcda", "", "ERR CMD NO_AUTH")
   noParamsSyntaxTest "SUB"
   noParamsSyntaxTest "ACK"
   noParamsSyntaxTest "OFF"
   noParamsSyntaxTest "DEL"
   describe "SEND" $ do
-    it "valid syntax 1" $ (sampleSig, "", "cdab", "12345678", "SEND 5 hello ") >#> ("", "", "cdab", "12345678", "ERR AUTH")
-    it "valid syntax 2" $ (sampleSig, "", "dabc", "12345678", "SEND 11 hello there ") >#> ("", "", "dabc", "12345678", "ERR AUTH")
-    it "no parameters" $ (sampleSig, "", "abcd", "12345678", "SEND") >#> ("", "", "abcd", "12345678", "ERR CMD SYNTAX")
-    it "no queue ID" $ (sampleSig, "", "bcda", "", "SEND 5 hello ") >#> ("", "", "bcda", "", "ERR CMD NO_QUEUE")
-    it "bad message body 1" $ (sampleSig, "", "cdab", "12345678", "SEND 11 hello ") >#> ("", "", "cdab", "12345678", "ERR CMD SYNTAX")
-    it "bad message body 2" $ (sampleSig, "", "dabc", "12345678", "SEND hello ") >#> ("", "", "dabc", "12345678", "ERR CMD SYNTAX")
-    it "bigger body" $ (sampleSig, "", "abcd", "12345678", "SEND 4 hello ") >#> ("", "", "abcd", "12345678", "ERR CMD SYNTAX")
+    it "valid syntax 1" $ (sampleSig, "cdab", "12345678", "SEND 5 hello ") >#> ("", "cdab", "12345678", "ERR AUTH")
+    it "valid syntax 2" $ (sampleSig, "dabc", "12345678", "SEND 11 hello there ") >#> ("", "dabc", "12345678", "ERR AUTH")
+    it "no parameters" $ (sampleSig, "abcd", "12345678", "SEND") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
+    it "no queue ID" $ (sampleSig, "bcda", "", "SEND 5 hello ") >#> ("", "bcda", "", "ERR CMD NO_QUEUE")
+    it "bad message body 1" $ (sampleSig, "cdab", "12345678", "SEND 11 hello ") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
+    it "bad message body 2" $ (sampleSig, "dabc", "12345678", "SEND hello ") >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
+    it "bigger body" $ (sampleSig, "abcd", "12345678", "SEND 4 hello ") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
   describe "PING" $ do
-    it "valid syntax" $ ("", "", "abcd", "", "PING") >#> ("", "", "abcd", "", "PONG")
+    it "valid syntax" $ ("", "abcd", "", "PING") >#> ("", "abcd", "", "PONG")
   describe "broker response not allowed" $ do
-    it "OK" $ (sampleSig, "", "bcda", "12345678", "OK") >#> ("", "", "bcda", "12345678", "ERR CMD PROHIBITED")
+    it "OK" $ (sampleSig, "bcda", "12345678", "OK") >#> ("", "bcda", "12345678", "ERR CMD PROHIBITED")
   where
     noParamsSyntaxTest :: ByteString -> Spec
     noParamsSyntaxTest cmd = describe (B.unpack cmd) $ do
-      it "valid syntax" $ (sampleSig, "", "abcd", "12345678", cmd) >#> ("", "", "abcd", "12345678", "ERR AUTH")
-      it "wrong terminator" $ (sampleSig, "", "bcda", "12345678", cmd <> "=") >#> ("", "", "bcda", "12345678", "ERR CMD SYNTAX")
-      it "no signature" $ ("", "", "cdab", "12345678", cmd) >#> ("", "", "cdab", "12345678", "ERR CMD NO_AUTH")
-      it "no queue ID" $ (sampleSig, "", "dabc", "", cmd) >#> ("", "", "dabc", "", "ERR CMD NO_AUTH")
+      it "valid syntax" $ (sampleSig, "abcd", "12345678", cmd) >#> ("", "abcd", "12345678", "ERR AUTH")
+      it "wrong terminator" $ (sampleSig, "bcda", "12345678", cmd <> "=") >#> ("", "bcda", "12345678", "ERR CMD SYNTAX")
+      it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", "ERR CMD NO_AUTH")
+      it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", "ERR CMD NO_AUTH")
     (>#>) :: SignedRawTransmission -> SignedRawTransmission -> Expectation
     command >#> response = smpServerTest t command `shouldReturn` response
