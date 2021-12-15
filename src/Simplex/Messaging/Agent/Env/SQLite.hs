@@ -86,7 +86,7 @@ newSMPAgentEnv cfg = do
   store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  tlsServerParams <- mkTLSServerParams (agentPrivateKeyFile cfg) (agentCertificateFile cfg)
+  tlsServerParams <- loadTLSServerParams (agentPrivateKeyFile cfg) (agentCertificateFile cfg)
   return Env {config = cfg, store, idsDrg, clientCounter, reservedMsgSize, randomServer, tlsServerParams}
   where
     -- 1st rsaKeySize is used by the RSA signature in each command,
