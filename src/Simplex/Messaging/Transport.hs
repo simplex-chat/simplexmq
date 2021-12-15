@@ -33,7 +33,7 @@ module Simplex.Messaging.Transport
     -- * Transport over TLS 1.3
     runTransportServer,
     runTransportClient,
-    mkTLSServerParams,
+    loadTLSServerParams,
 
     -- * TLS 1.3 Transport
     TLS (..),
