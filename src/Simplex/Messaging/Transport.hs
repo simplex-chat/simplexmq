@@ -68,7 +68,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
-import Data.Functor (($>), (<&>))
+import Data.Functor (($>))
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
