@@ -18,7 +18,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Transport (mkTLSServerParams)
+import Simplex.Messaging.Transport (loadTLSServerParams)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
