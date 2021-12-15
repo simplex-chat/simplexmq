@@ -33,7 +33,6 @@ module Simplex.Messaging.Transport
     -- * Transport over TLS 1.3
     runTransportServer,
     runTransportClient,
-    loadServerCredential,
 
     -- * TLS 1.3 Transport
     TLS (..),
@@ -69,7 +68,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
-import Data.Functor (($>))
+import Data.Functor (($>), (<&>))
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
@@ -197,13 +196,6 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       connect sock $ addrAddress addr
       connectTLS "client" getClientConnection clientParams sock
 
--- TODO non lazy
-loadServerCredential :: FilePath -> FilePath -> IO T.Credential
-loadServerCredential privateKeyFile certificateFile =
-  T.credentialLoadX509 certificateFile privateKeyFile >>= \case
-    Right cert -> pure cert
-    Left _ -> putStrLn "invalid credential" >> exitFailure
-
 -- * TLS 1.3 Transport
 
 data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
@@ -222,14 +214,23 @@ closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
 
-mkTLSServerParams :: T.Credential -> T.ServerParams
-mkTLSServerParams credential =
-  def
-    { T.serverWantClientCert = False,
-      T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
-      T.serverHooks = def,
-      T.serverSupported = supportedParameters
-    }
+mkTLSServerParams :: MonadUnliftIO m => FilePath -> FilePath -> m T.ServerParams
+mkTLSServerParams privateKeyFile certificateFile =
+  liftIO loadServerCredential <&> fromCredential
+  where
+    loadServerCredential :: IO T.Credential
+    loadServerCredential =
+      T.credentialLoadX509 certificateFile privateKeyFile >>= \case
+        Right cert -> pure cert
+        Left _ -> putStrLn "invalid credential" >> exitFailure
+    fromCredential :: T.Credential -> T.ServerParams
+    fromCredential credential =
+      def
+        { T.serverWantClientCert = False,
+          T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
+          T.serverHooks = def,
+          T.serverSupported = supportedParameters
+        }
 
 clientParams :: T.ClientParams
 clientParams =

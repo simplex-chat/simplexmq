@@ -19,7 +19,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport, SessionId, loadServerCredential, mkTLSServerParams)
+import Simplex.Messaging.Transport (ATransport, SessionId, mkTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -100,8 +100,7 @@ newEnv config = do
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
   let pk = serverPrivateKey config -- TODO remove
       serverKeyPair = (C.publicKey pk, pk)
-  serverCredential <- liftIO $ loadServerCredential (serverPrivateKeyFile config) (serverCertificateFile config)
-  let tlsServerParams = mkTLSServerParams serverCredential
+  tlsServerParams <- mkTLSServerParams (serverPrivateKeyFile config) (serverCertificateFile config)
   return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)

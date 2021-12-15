@@ -18,7 +18,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Transport (loadServerCredential, mkTLSServerParams)
+import Simplex.Messaging.Transport (mkTLSServerParams)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
@@ -86,8 +86,7 @@ newSMPAgentEnv cfg = do
   store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  serverCredential <- liftIO $ loadServerCredential (agentPrivateKeyFile cfg) (agentCertificateFile cfg)
-  let tlsServerParams = mkTLSServerParams serverCredential
+  tlsServerParams <- mkTLSServerParams (agentPrivateKeyFile cfg) (agentCertificateFile cfg)
   return Env {config = cfg, store, idsDrg, clientCounter, reservedMsgSize, randomServer, tlsServerParams}
   where
     -- 1st rsaKeySize is used by the RSA signature in each command,
