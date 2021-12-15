@@ -30,7 +30,7 @@ instance Transport WS where
 
   getServerConnection :: TLS -> IO WS
   getServerConnection TLS {tlsContext} = do
-    s <- wsStream tlsContext
+    s <- websocketsStream tlsContext
     WS s <$> acceptClientRequest s
     where
       acceptClientRequest :: Stream -> IO Connection
@@ -38,7 +38,7 @@ instance Transport WS where
 
   getClientConnection :: TLS -> IO WS
   getClientConnection TLS {tlsContext} = do
-    s <- wsStream tlsContext
+    s <- websocketsStream tlsContext
     WS s <$> sendClientRequest s
     where
       sendClientRequest :: Stream -> IO Connection
@@ -64,8 +64,8 @@ instance Transport WS where
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-wsStream :: T.Context -> IO S.Stream
-wsStream tlsContext =
+websocketsStream :: T.Context -> IO S.Stream
+websocketsStream tlsContext =
   S.makeStream readStream writeStream
   where
     readStream :: IO (Maybe ByteString)
