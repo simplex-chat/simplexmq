@@ -37,6 +37,7 @@ module Simplex.Messaging.Transport
 
     -- * TLS 1.3 Transport
     TLS (..),
+    mkTLSServerParams,
 
     -- * SMP encrypted transport
     THandle (..),
@@ -132,8 +133,8 @@ data ATransport = forall c. Transport c => ATransport (TProxy c)
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.Credential -> (c -> m ()) -> m ()
-runTransportServer started port credential server = do
+runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
+runTransportServer started port serverParams server = do
   clients <- newTVarIO S.empty
   E.bracket
     (liftIO $ startTCPServer started port)
@@ -151,7 +152,6 @@ runTransportServer started port credential server = do
     acceptConnection :: Transport c => Socket -> IO c
     acceptConnection sock = do
       (newSock, _) <- accept sock
-      let serverParams = mkServerParams credential
       connectTLS "server" getServerConnection serverParams newSock
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
@@ -222,8 +222,8 @@ closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
 
-mkServerParams :: T.Credential -> T.ServerParams
-mkServerParams credential =
+mkTLSServerParams :: T.Credential -> T.ServerParams
+mkTLSServerParams credential =
   def
     { T.serverWantClientCert = False,
       T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
