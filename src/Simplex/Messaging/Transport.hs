@@ -37,6 +37,7 @@ module Simplex.Messaging.Transport
 
     -- * TLS 1.3 Transport
     TLS (..),
+    closeTLS,
 
     -- * SMP encrypted transport
     THandle (..),
