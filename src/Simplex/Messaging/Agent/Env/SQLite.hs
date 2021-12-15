@@ -10,7 +10,6 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
-import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
 import Simplex.Messaging.Agent.RetryInterval
@@ -18,7 +17,6 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Transport (loadServerCredential)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
@@ -76,8 +74,7 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     reservedMsgSize :: Int,
-    randomServer :: TVar StdGen,
-    agentCredential :: T.Credential
+    randomServer :: TVar StdGen
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -86,8 +83,7 @@ newSMPAgentEnv cfg = do
   store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  agentCredential <- liftIO $ loadServerCredential (agentPrivateKeyFile cfg) (agentCertificateFile cfg)
-  return Env {config = cfg, store, idsDrg, clientCounter, reservedMsgSize, randomServer, agentCredential}
+  return Env {config = cfg, store, idsDrg, clientCounter, reservedMsgSize, randomServer}
   where
     -- 1st rsaKeySize is used by the RSA signature in each command,
     -- 2nd - by encrypted message body header

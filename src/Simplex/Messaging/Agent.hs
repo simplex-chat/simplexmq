@@ -85,7 +85,7 @@ import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody, SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, runTransportServer)
+import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, loadTLSServerParams, runTransportServer)
 import Simplex.Messaging.Util (bshow, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
@@ -105,13 +105,14 @@ runSMPAgent t cfg = do
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> m ()
-runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = do
+runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, agentCertificateFile, agentPrivateKeyFile} = do
   runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
     smpAgent _ = do
-      credential <- asks agentCredential
-      runTransportServer started tcpPort credential $ \(h :: c) -> do
+      -- tlsServerParams not in env to avoid breaking functional api w/t key and certificate generation
+      tlsServerParams <- liftIO $ loadTLSServerParams agentCertificateFile agentPrivateKeyFile
+      runTransportServer started tcpPort tlsServerParams $ \(h :: c) -> do
         liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
         c <- getAgentClient
         logConnection c True
