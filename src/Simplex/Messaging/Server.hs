@@ -82,7 +82,9 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
         `finally` withLog closeStoreLog
 
     runServer :: (MonadUnliftIO m', MonadReader Env m') => (ServiceName, ATransport) -> m' ()
-    runServer (tcpPort, ATransport t) = runTransportServer started tcpPort (runClient t)
+    runServer (tcpPort, ATransport t) = do
+      credential <- asks serverCredential
+      runTransportServer started tcpPort credential (runClient t)
 
     serverThread ::
       forall m' s.

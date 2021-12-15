@@ -162,10 +162,12 @@ cfg =
       smpCfg =
         smpDefaultConfig
           { qSize = 1,
-            defaultTransport = (testPort, transport @TCP),
+            defaultTransport = (testPort, transport @TLS),
             tcpTimeout = 500_000
           },
-      retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000}
+      retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000},
+      agentPrivateKeyFile = "tests/fixtures/example.key",
+      agentCertificateFile = "tests/fixtures/example.crt"
     }
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
@@ -190,7 +192,8 @@ testSMPAgentClientOn port' client = do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> currentSMPVersionStr
       then client h
-      else error $ "wrong welcome message: " <> B.unpack line
+      else do
+        error $ "wrong welcome message: " <> B.unpack line
 
 testSMPAgentClient :: (Transport c, MonadUnliftIO m) => (c -> m a) -> m a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort

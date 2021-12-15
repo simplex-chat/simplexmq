@@ -105,15 +105,18 @@ runSMPAgent t cfg = do
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> m ()
-runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
+runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort} = do
+  runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
-    smpAgent _ = runTransportServer started tcpPort $ \(h :: c) -> do
-      liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
-      c <- getAgentClient
-      logConnection c True
-      race_ (connectClient h c) (runAgentClient c)
-        `E.finally` disconnectAgentClient c
+    smpAgent _ = do
+      credential <- asks agentCredential
+      runTransportServer started tcpPort credential $ \(h :: c) -> do
+        liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
+        c <- getAgentClient
+        logConnection c True
+        race_ (connectClient h c) (runAgentClient c)
+          `E.finally` disconnectAgentClient c
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
