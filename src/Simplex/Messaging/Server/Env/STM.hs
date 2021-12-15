@@ -33,8 +33,7 @@ data ServerConfig = ServerConfig
     blockSize :: Int,
     serverPrivateKey :: C.PrivateKey 'C.RSA, -- TODO delete
     serverPrivateKeyFile :: FilePath,
-    serverCertificateFile :: FilePath,
-    trnSignAlg :: C.SignAlg
+    serverCertificateFile :: FilePath
   }
 
 data Env = Env
@@ -59,7 +58,7 @@ data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
     ntfSubscriptions :: TVar (Map NotifierId ()),
     rcvQ :: TBQueue (Transmission ClientCmd),
-    sndQ :: TBQueue (Maybe ClientParty, BrokerTransmission),
+    sndQ :: TBQueue BrokerTransmission,
     sndSessionId :: SessionId
   }
 

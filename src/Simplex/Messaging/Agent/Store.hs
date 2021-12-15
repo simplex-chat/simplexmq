@@ -24,7 +24,6 @@ import Simplex.Messaging.Protocol
     MsgId,
     RcvDhSecret,
     RcvPrivateSignKey,
-    RcvPublicVerifyKey,
     SndPrivateSignKey,
     SndPublicVerifyKey,
   )
@@ -80,14 +79,10 @@ data RcvQueue = RcvQueue
     rcvId :: SMP.RecipientId,
     -- | key used by the recipient to sign transmissions
     rcvPrivateKey :: RcvPrivateSignKey,
-    -- | key used by the recipient to verify server transmissions
-    rcvSrvVerifyKey :: RcvPublicVerifyKey,
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
     rcvDhSecret :: RcvDhSecret,
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
-    -- | key used by the sender to sign transmissions
-    sndSrvVerifyKey :: SndPublicVerifyKey,
     -- | TODO keys used for E2E encryption - these will change with double ratchet
     decryptKey :: C.APrivateDecryptKey,
     verifyKey :: Maybe C.APublicVerifyKey,

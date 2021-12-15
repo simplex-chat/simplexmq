@@ -41,10 +41,10 @@ serverTests t = do
   describe "Message notifications" $ testMessageNotifications t
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmission (Command 'Broker)
-pattern Resp corrId queueId command <- ("", _, (corrId, queueId, Right command))
+pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> Command 'Broker
-pattern Ids rId sId srvDh <- IDS (QIK rId _ srvDh sId _)
+pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
 
 sendRecv :: Transport c => THandle c -> (Maybe C.ASignature, ByteString, ByteString, ByteString) -> IO (SignedTransmission (Command 'Broker))
 sendRecv h (sgn, corrId, qId, cmd) =

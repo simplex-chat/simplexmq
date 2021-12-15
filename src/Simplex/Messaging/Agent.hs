@@ -670,7 +670,7 @@ newSndQueue_ ::
   SMPQueueUri ->
   C.APublicEncryptKey ->
   m (SndQueue, SndPublicVerifyKey, C.APublicVerifyKey)
-newSndQueue_ a (SMPQueueUri smpServer senderId _) encryptKey = do
+newSndQueue_ a (SMPQueueUri smpServer senderId) encryptKey = do
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
   (verifyKey, signKey) <- liftIO $ C.generateSignatureKeyPair size C.SRSA

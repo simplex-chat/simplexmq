@@ -68,13 +68,11 @@ storeLogRecordP =
     queueRecP = do
       recipientId <- "rid=" *> base64P
       recipientKey <- " rk=" *> C.strKeyP
-      rcvSrvSignKey <- " rsk=" *> C.strKeyP
       rcvDhSecret <- " rdh=" *> C.strDhSecretP
       senderId <- " sid=" *> base64P
       senderKey <- " sk=" *> optional C.strKeyP
-      sndSrvSignKey <- " ssk=" *> C.strKeyP
       notifier <- optional $ (,) <$> (" nid=" *> base64P) <*> (" nk=" *> C.strKeyP)
-      pure QueueRec {recipientId, recipientKey, rcvSrvSignKey, rcvDhSecret, senderId, senderKey, sndSrvSignKey, notifier, status = QueueActive}
+      pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
 
 serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
@@ -84,15 +82,13 @@ serializeStoreLogRecord = \case
   DeleteQueue rId -> "DELETE " <> encode rId
   where
     serializeQueue
-      QueueRec {recipientId, recipientKey, rcvSrvSignKey, rcvDhSecret, senderId, senderKey, sndSrvSignKey, notifier} =
+      QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
         B.unwords
           [ "rid=" <> encode recipientId,
             "rk=" <> C.serializeKey recipientKey,
-            "rsk=" <> C.serializeKey rcvSrvSignKey,
             "rdh=" <> C.serializeDhSecret rcvDhSecret,
             "sid=" <> encode senderId,
-            "sk=" <> maybe "" C.serializeKey senderKey,
-            "ssk=" <> C.serializeKey sndSrvSignKey
+            "sk=" <> maybe "" C.serializeKey senderKey
           ]
           <> maybe "" serializeNotifier notifier
     serializeNotifier (nId, nKey) = " nid=" <> encode nId <> " nk=" <> C.serializeKey nKey

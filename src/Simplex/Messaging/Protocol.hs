@@ -132,6 +132,8 @@ instance PartyI Notifier where sParty = SNotifier
 
 data ClientParty = forall p. IsClient p => CP (SParty p)
 
+deriving instance Show ClientParty
+
 -- | Type for command or response of any participant.
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
 
@@ -237,10 +239,8 @@ instance IsString CorrId where
 -- | Queue IDs and keys
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
-    rcvSrvVerifyKey :: RcvPublicVerifyKey,
-    rcvPublicDHKey :: RcvPublicDhKey,
     sndId :: SenderId,
-    sndSrvVerifyKey :: SndPublicVerifyKey
+    rcvPublicDHKey :: RcvPublicDhKey
   }
   deriving (Eq, Show)
 
@@ -358,13 +358,7 @@ instance CommandI Cmd where
     where
       newCmd = Cmd SRecipient <$> (NEW <$> C.strKeyP <* A.space <*> C.strKeyP)
       idsResp = Cmd SBroker . IDS <$> qik
-      qik = do
-        rcvId <- base64P <* A.space
-        rcvSrvVerifyKey <- C.strKeyP <* A.space
-        rcvPublicDHKey <- C.strKeyP <* A.space
-        sndId <- base64P <* A.space
-        sndSrvVerifyKey <- C.strKeyP
-        pure QIK {rcvId, rcvSrvVerifyKey, rcvPublicDHKey, sndId, sndSrvVerifyKey}
+      qik = QIK <$> base64P <* A.space <*> base64P <* A.space <*> C.strKeyP
       nIdsResp = Cmd SBroker . NID <$> base64P
       keyCmd = Cmd SRecipient . KEY <$> C.strKeyP
       nKeyCmd = Cmd SRecipient . NKEY <$> C.strKeyP
@@ -411,8 +405,8 @@ instance PartyI p => CommandI (Command p) where
     NSUB -> "NSUB"
     MSG msgId ts msgBody ->
       B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeBody msgBody]
-    IDS QIK {rcvId, rcvSrvVerifyKey = rsKey, rcvPublicDHKey = dhKey, sndId, sndSrvVerifyKey = ssKey} ->
-      B.unwords ["IDS", encode rcvId, C.serializeKey rsKey, C.serializeKey dhKey, encode sndId, C.serializeKey ssKey]
+    IDS (QIK rcvId sndId srvDh) ->
+      B.unwords ["IDS", encode rcvId, encode sndId, C.serializeKey srvDh]
     NID nId -> "NID " <> encode nId
     ERR err -> "ERR " <> serializeErrorType err
     NMSG -> "NMSG"

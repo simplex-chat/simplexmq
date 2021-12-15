@@ -24,8 +24,7 @@ queue :: SMPQueueUri
 queue =
   SMPQueueUri
     { smpServer = srv,
-      senderId = "\215m\248\251",
-      serverVerifyKey = reservedServerKey
+      senderId = "\215m\248\251"
     }
 
 appServer :: ConnReqScheme

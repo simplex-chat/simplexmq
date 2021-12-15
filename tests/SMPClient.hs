@@ -64,7 +64,6 @@ cfg =
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      trnSignAlg = C.SignAlg C.SEd448,
       storeLog = Nothing,
       blockSize = 8192,
       serverPrivateKey =
