@@ -197,13 +197,13 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       connectTLS "client" getClientConnection clientParams sock
 
 loadTLSServerParams :: FilePath -> FilePath -> IO T.ServerParams
-loadTLSServerParams privateKeyFile certificateFile =
+loadTLSServerParams certificateFile privateKeyFile =
   fromCredential <$> loadServerCredential
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
       T.credentialLoadX509 certificateFile privateKeyFile >>= \case
-        Right cert -> pure cert
+        Right credential -> pure credential
         Left _ -> putStrLn "invalid credential" >> exitFailure
     fromCredential :: T.Credential -> T.ServerParams
     fromCredential credential =
