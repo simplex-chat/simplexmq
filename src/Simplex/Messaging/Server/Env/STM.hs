@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -20,8 +19,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport)
-import System.Exit (exitFailure)
+import Simplex.Messaging.Transport (ATransport, loadServerCredential)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -101,7 +99,7 @@ newEnv config = do
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
   let pk = serverPrivateKey config -- TODO remove
       serverKeyPair = (C.publicKey pk, pk)
-  serverCredential <- loadServerCredential config
+  serverCredential <- liftIO $ loadServerCredential (serverPrivateKeyFile config) (serverCertificateFile config)
   return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s', serverCredential}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
@@ -121,9 +119,3 @@ newEnv config = do
     addNotifier q = case notifier q of
       Nothing -> id
       Just (nId, _) -> M.insert nId (recipientId q)
-    loadServerCredential :: ServerConfig -> m T.Credential
-    loadServerCredential ServerConfig {serverPrivateKeyFile, serverCertificateFile} =
-      -- TODO non lazy
-      liftIO (T.credentialLoadX509 serverCertificateFile serverPrivateKeyFile) >>= \case
-        Right cert -> pure cert
-        Left _ -> liftIO $ putStrLn "invalid credential" >> exitFailure

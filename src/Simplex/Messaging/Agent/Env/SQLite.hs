@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
@@ -19,7 +18,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import System.Exit (exitFailure)
+import Simplex.Messaging.Transport (loadServerCredential)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
@@ -87,7 +86,7 @@ newSMPAgentEnv cfg = do
   store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  agentCredential <- loadAgentCredential cfg
+  agentCredential <- liftIO $ loadServerCredential (agentPrivateKeyFile cfg) (agentCertificateFile cfg)
   return Env {config = cfg, store, idsDrg, clientCounter, reservedMsgSize, randomServer, agentCredential}
   where
     -- 1st rsaKeySize is used by the RSA signature in each command,
@@ -95,8 +94,3 @@ newSMPAgentEnv cfg = do
     -- 3rd - by message signature
     -- smpCommandSize - is the estimated max size for SMP command, queueId, corrId
     reservedMsgSize = 3 * rsaKeySize cfg + smpCommandSize (smpCfg cfg)
-    loadAgentCredential :: (MonadUnliftIO m') => AgentConfig -> m' T.Credential
-    loadAgentCredential AgentConfig {agentPrivateKeyFile, agentCertificateFile} =
-      liftIO (T.credentialLoadX509 agentCertificateFile agentPrivateKeyFile) >>= \case
-        Right cert -> pure cert
-        Left _ -> liftIO $ putStrLn "invalid credential" >> exitFailure

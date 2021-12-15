@@ -33,6 +33,7 @@ module Simplex.Messaging.Transport
     -- * Transport over TLS 1.3
     runTransportServer,
     runTransportClient,
+    loadServerCredential,
 
     -- * TLS 1.3 Transport
     TLS (..),
@@ -83,6 +84,7 @@ import Network.Transport.Internal (decodeNum16, decodeNum32, encodeEnum16, encod
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parse, parseAll, parseRead1, parseString)
 import Simplex.Messaging.Util (bshow, liftError)
+import System.Exit (exitFailure)
 import System.IO.Error
 import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Concurrent
@@ -193,6 +195,14 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
       connectTLS "client" getClientConnection clientParams sock
+
+-- TODO non lazy
+loadServerCredential :: FilePath -> FilePath -> IO T.Credential
+loadServerCredential privateKeyFile certificateFile =
+  liftIO $
+    T.credentialLoadX509 certificateFile privateKeyFile >>= \case
+      Right cert -> pure cert
+      Left _ -> putStrLn "invalid credential" >> exitFailure
 
 -- * TLS 1.3 Transport
 
