@@ -100,7 +100,7 @@ newEnv config = do
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
   let pk = serverPrivateKey config -- TODO remove
       serverKeyPair = (C.publicKey pk, pk)
-  tlsServerParams <- mkTLSServerParams (serverPrivateKeyFile config) (serverCertificateFile config)
+  tlsServerParams <- loadTLSServerParams (serverPrivateKeyFile config) (serverCertificateFile config)
   return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
