@@ -21,6 +21,7 @@ import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Transport (ATransport)
+import System.Exit (exitFailure)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -125,4 +126,4 @@ newEnv config = do
       -- TODO non lazy
       liftIO (T.credentialLoadX509 serverCertificateFile serverPrivateKeyFile) >>= \case
         Right cert -> pure cert
-        Left _ -> error "invalid credential"
+        Left _ -> liftIO $ putStrLn "invalid credential" >> exitFailure

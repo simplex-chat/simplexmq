@@ -19,6 +19,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import System.Exit (exitFailure)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
@@ -98,4 +99,4 @@ newSMPAgentEnv cfg = do
     loadAgentCredential AgentConfig {agentPrivateKeyFile, agentCertificateFile} =
       liftIO (T.credentialLoadX509 agentCertificateFile agentPrivateKeyFile) >>= \case
         Right cert -> pure cert
-        Left _ -> error "invalid credential"
+        Left _ -> liftIO $ putStrLn "invalid credential" >> exitFailure
