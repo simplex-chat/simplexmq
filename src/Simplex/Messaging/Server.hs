@@ -118,9 +118,9 @@ runClient _ h = do
     Left _ -> pure ()
 
 runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
-runClientTransport th@THandle {sndSessionId} = do
+runClientTransport th@THandle {sessionId} = do
   q <- asks $ tbqSize . config
-  c <- atomically $ newClient q sndSessionId
+  c <- atomically $ newClient q sessionId
   s <- asks server
   raceAny_ [send th c, client c s, receive th c]
     `finally` cancelSubscribers c
@@ -148,9 +148,9 @@ receive th Client {rcvQ, sndQ} = forever $ do
     write q t = atomically $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
-send h Client {sndQ, sndSessionId} = forever $ do
+send h Client {sndQ, sessionId} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  liftIO $ tPut h (Nothing, serializeTransmission sndSessionId t)
+  liftIO $ tPut h (Nothing, serializeTransmission sessionId t)
 
 verifyTransmission ::
   forall m. (MonadUnliftIO m, MonadReader Env m) => Maybe C.ASignature -> ByteString -> QueueId -> ClientCmd -> m Bool

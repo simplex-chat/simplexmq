@@ -171,8 +171,8 @@ smpTest4 _ test' = smpTestN 4 _test
     _test _ = error "expected 4 handles"
 
 tPutRaw :: Transport c => THandle c -> SignedRawTransmission -> IO ()
-tPutRaw h@THandle {sndSessionId = SessionId sessId} (sig, corrId, queueId, command) = do
-  let t = B.unwords [sessId, corrId, queueId, command]
+tPutRaw h@THandle {sessionId} (sig, corrId, queueId, command) = do
+  let t = B.unwords [sessionId, corrId, queueId, command]
   void $ tPut h (sig, t)
 
 tGetRaw :: Transport c => THandle c -> IO SignedRawTransmission

@@ -8,6 +8,7 @@ module Simplex.Messaging.Server.Env.STM where
 import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
@@ -19,7 +20,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport, SessionId, loadServerCredential)
+import Simplex.Messaging.Transport (ATransport, loadServerCredential)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -59,7 +60,7 @@ data Client = Client
     ntfSubscriptions :: TVar (Map NotifierId ()),
     rcvQ :: TBQueue (Transmission ClientCmd),
     sndQ :: TBQueue BrokerTransmission,
-    sndSessionId :: SessionId
+    sessionId :: ByteString
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
@@ -77,13 +78,13 @@ newServer qSize = do
   notifiers <- newTVar M.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Natural -> SessionId -> STM Client
-newClient qSize sndSessionId = do
+newClient :: Natural -> ByteString -> STM Client
+newClient qSize sessionId = do
   subscriptions <- newTVar M.empty
   ntfSubscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sndSessionId}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId}
 
 newSubscription :: STM Sub
 newSubscription = do

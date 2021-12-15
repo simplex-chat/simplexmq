@@ -64,7 +64,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport (ATransport (..), SessionId (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
 -- import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.Timeout (timeout)
@@ -78,8 +78,7 @@ import System.Timeout (timeout)
 data SMPClient = SMPClient
   { action :: Async (),
     connected :: TVar Bool,
-    sndSessionId :: SessionId,
-    rcvSessionId :: SessionId,
+    sessionId :: ByteString,
     smpServer :: SMPServer,
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
@@ -149,8 +148,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
       return
         SMPClient
           { action = undefined,
-            sndSessionId = undefined,
-            rcvSessionId = undefined,
+            sessionId = undefined,
             blockSize = undefined,
             connected,
             smpServer,
@@ -171,8 +169,8 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
             `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
       bSize <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case bSize of
-        Just (Right THandle {sndSessionId, rcvSessionId, blockSize}) ->
-          Right c {action, sndSessionId, rcvSessionId, blockSize}
+        Just (Right THandle {sessionId, blockSize}) ->
+          Right c {action, sessionId, blockSize}
         Just (Left e) -> Left e
         Nothing -> Left SMPNetworkError
 
@@ -347,9 +345,9 @@ okSMPCommand cmd c pKey qId =
 
 -- | Send any SMP command ('ClientCmd' type).
 sendSMPCommand :: SMPClient -> Maybe C.APrivateSignKey -> QueueId -> ClientCmd -> ExceptT SMPClientError IO (Command 'Broker)
-sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, sndSessionId, tcpTimeout} pKey qId cmd = do
+sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
-  t <- signTransmission $ serializeTransmission sndSessionId (corrId, qId, cmd)
+  t <- signTransmission $ serializeTransmission sessionId (corrId, qId, cmd)
   ExceptT $ sendRecv corrId t
   where
     lift_ :: STM a -> ExceptT SMPClientError IO a
