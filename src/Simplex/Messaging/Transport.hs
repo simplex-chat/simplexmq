@@ -196,9 +196,9 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       connect sock $ addrAddress addr
       connectTLS "client" getClientConnection clientParams sock
 
-loadTLSServerParams :: MonadUnliftIO m => FilePath -> FilePath -> m T.ServerParams
+loadTLSServerParams :: FilePath -> FilePath -> IO T.ServerParams
 loadTLSServerParams privateKeyFile certificateFile =
-  liftIO $ fromCredential <$> loadServerCredential
+  fromCredential <$> loadServerCredential
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
