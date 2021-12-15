@@ -5,6 +5,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -29,12 +30,13 @@ module Simplex.Messaging.Transport
     TProxy (..),
     ATransport (..),
 
-    -- * Transport over TCP
+    -- * Transport over TLS 1.3
     runTransportServer,
     runTransportClient,
+    loadServerCredential,
 
-    -- * TCP transport
-    TCP (..),
+    -- * TLS 1.3 Transport
+    TLS (..),
 
     -- * SMP encrypted transport
     THandle (..),
@@ -63,6 +65,8 @@ import Data.Bifunctor (first)
 import Data.ByteArray (xor)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as BL
+import Data.Default (def)
 import Data.Functor (($>))
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
@@ -74,11 +78,13 @@ import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
 import Network.Socket
+import qualified Network.TLS as T
+import qualified Network.TLS.Extra as TE
 import Network.Transport.Internal (decodeNum16, decodeNum32, encodeEnum16, encodeEnum32, encodeWord32)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parse, parseAll, parseRead1, parseString)
 import Simplex.Messaging.Util (bshow, liftError)
-import System.IO
+import System.Exit (exitFailure)
 import System.IO.Error
 import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Concurrent
@@ -94,11 +100,11 @@ class Transport c where
 
   transportName :: TProxy c -> String
 
-  -- | Upgrade client socket to connection (used in the server)
-  getServerConnection :: Socket -> IO c
+  -- | Upgrade client TLS context to connection (used in the server)
+  getServerConnection :: TLS -> IO c
 
-  -- | Upgrade server socket to connection (used in the client)
-  getClientConnection :: Socket -> IO c
+  -- | Upgrade server TLS context to connection (used in the client)
+  getClientConnection :: TLS -> IO c
 
   -- | Close connection
   closeConnection :: c -> IO ()
@@ -120,18 +126,21 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
--- * Transport over TCP
+-- * Transport over TLS 1.3
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> (c -> m ()) -> m ()
-runTransportServer started port server = do
+runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.Credential -> (c -> m ()) -> m ()
+runTransportServer started port credential server = do
   clients <- newTVarIO S.empty
-  E.bracket (liftIO $ startTCPServer started port) (liftIO . closeServer clients) $ \sock -> forever $ do
-    c <- liftIO $ acceptConnection sock
-    tid <- forkFinally (server c) (const $ liftIO $ closeConnection c)
-    atomically . modifyTVar clients $ S.insert tid
+  E.bracket
+    (liftIO $ startTCPServer started port)
+    (liftIO . closeServer clients)
+    $ \sock -> forever $ do
+      c <- liftIO $ acceptConnection sock
+      tid <- forkFinally (server c) (const $ liftIO $ closeConnection c)
+      atomically . modifyTVar clients $ S.insert tid
   where
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
     closeServer clients sock = do
@@ -139,7 +148,10 @@ runTransportServer started port server = do
       close sock
       void . atomically $ tryPutTMVar started False
     acceptConnection :: Transport c => Socket -> IO c
-    acceptConnection sock = accept sock >>= getServerConnection . fst
+    acceptConnection sock = do
+      (newSock, _) <- accept sock
+      let serverParams = mkServerParams credential
+      connectTLS "server" getServerConnection serverParams newSock
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
@@ -182,28 +194,106 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      getClientConnection sock
+      connectTLS "client" getClientConnection clientParams sock
 
--- * TCP transport
+-- TODO non lazy
+loadServerCredential :: FilePath -> FilePath -> IO T.Credential
+loadServerCredential privateKeyFile certificateFile =
+  T.credentialLoadX509 certificateFile privateKeyFile >>= \case
+    Right cert -> pure cert
+    Left _ -> putStrLn "invalid credential" >> exitFailure
 
-newtype TCP = TCP {tcpHandle :: Handle}
+-- * TLS 1.3 Transport
 
-instance Transport TCP where
-  transportName _ = "TCP"
-  getServerConnection = fmap TCP . getSocketHandle
-  getClientConnection = getServerConnection
-  closeConnection (TCP h) = hClose h `E.catch` \(_ :: E.SomeException) -> pure ()
-  cGet = B.hGet . tcpHandle
-  cPut = B.hPut . tcpHandle
-  getLn = fmap trimCR . B.hGetLine . tcpHandle
+data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
 
-getSocketHandle :: Socket -> IO Handle
-getSocketHandle conn = do
-  h <- socketToHandle conn ReadWriteMode
-  hSetBinaryMode h True
-  hSetNewlineMode h NewlineMode {inputNL = CRLF, outputNL = CRLF}
-  hSetBuffering h LineBuffering
-  return h
+connectTLS :: (T.TLSParams p) => String -> (TLS -> IO c) -> p -> Socket -> IO c
+connectTLS party getPartyConnection params sock =
+  E.bracketOnError (T.contextNew sock params) closeTLS $ \tlsContext -> do
+    T.handshake tlsContext
+    buffer <- newTVarIO ""
+    getLock <- newTMVarIO ()
+    getPartyConnection TLS {tlsContext, buffer, getLock}
+      `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
+
+closeTLS :: T.Context -> IO ()
+closeTLS ctx =
+  (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
+    `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
+
+mkServerParams :: T.Credential -> T.ServerParams
+mkServerParams credential =
+  def
+    { T.serverWantClientCert = False,
+      T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
+      T.serverHooks = def,
+      T.serverSupported = supportedParameters
+    }
+
+clientParams :: T.ClientParams
+clientParams =
+  (T.defaultParamsClient "localhost" "5223")
+    { T.clientShared = def,
+      T.clientHooks = def {T.onServerCertificate = \_ _ _ _ -> pure []},
+      T.clientSupported = supportedParameters
+    }
+
+supportedParameters :: T.Supported
+supportedParameters =
+  def
+    { T.supportedVersions = [T.TLS13],
+      T.supportedCiphers = [TE.cipher_TLS13_CHACHA20POLY1305_SHA256],
+      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
+      T.supportedSecureRenegotiation = False,
+      T.supportedGroups = [T.X448, T.X25519]
+    }
+
+instance Transport TLS where
+  transportName _ = "TLS 1.3"
+  getServerConnection = pure
+  getClientConnection = pure
+  closeConnection tls = closeTLS $ tlsContext tls
+
+  cGet :: TLS -> Int -> IO ByteString
+  cGet TLS {tlsContext, buffer, getLock} n =
+    E.bracket_
+      (atomically $ takeTMVar getLock)
+      (atomically $ putTMVar getLock ())
+      $ do
+        b <- readChunks =<< readTVarIO buffer
+        let (s, b') = B.splitAt n b
+        atomically $ writeTVar buffer b'
+        pure s
+    where
+      readChunks :: ByteString -> IO ByteString
+      readChunks b
+        | B.length b >= n = pure b
+        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
+      handleEOF = \case
+        T.Error_EOF -> E.throwIO TEBadBlock
+        e -> E.throwIO e
+
+  cPut :: TLS -> ByteString -> IO ()
+  cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
+
+  getLn :: TLS -> IO ByteString
+  getLn TLS {tlsContext, buffer, getLock} = do
+    E.bracket_
+      (atomically $ takeTMVar getLock)
+      (atomically $ putTMVar getLock ())
+      $ do
+        b <- readChunks =<< readTVarIO buffer
+        let (s, b') = B.break (== '\n') b
+        atomically $ writeTVar buffer (B.drop 1 b') -- drop '\n' we made a break at
+        pure $ trimCR s
+    where
+      readChunks :: ByteString -> IO ByteString
+      readChunks b
+        | B.elem '\n' b = pure b
+        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
+      handleEOF = \case
+        T.Error_EOF -> E.throwIO TEBadBlock
+        e -> E.throwIO e
 
 -- | Trim trailing CR from ByteString.
 trimCR :: ByteString -> ByteString

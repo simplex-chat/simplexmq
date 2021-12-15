@@ -11,27 +11,30 @@ import Crypto.Random
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
+import qualified Network.TLS as T
 import Numeric.Natural
-import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto as C -- TODO delete
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport (ATransport, loadServerCredential)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
-  { transports :: [(ServiceName, ATransport)],
-    tbqSize :: Natural,
+  { tbqSize :: Natural,
     msgQueueQuota :: Natural,
     queueIdBytes :: Int,
-    msgIdBytes :: Int, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
+    msgIdBytes :: Int,
+    transports :: [(ServiceName, ATransport)],
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
-    trnSignAlg :: C.SignAlg,
-    serverPrivateKey :: C.PrivateKey 'C.RSA
+    serverPrivateKey :: C.PrivateKey 'C.RSA, -- TODO delete
+    serverPrivateKeyFile :: FilePath,
+    serverCertificateFile :: FilePath,
+    trnSignAlg :: C.SignAlg
   }
 
 data Env = Env
@@ -40,8 +43,9 @@ data Env = Env
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
-    serverKeyPair :: C.KeyPair 'C.RSA,
-    storeLog :: Maybe (StoreLog 'WriteMode)
+    serverKeyPair :: C.KeyPair 'C.RSA, -- TODO delete
+    storeLog :: Maybe (StoreLog 'WriteMode),
+    serverCredential :: T.Credential
   }
 
 data Server = Server
@@ -93,9 +97,10 @@ newEnv config = do
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
-  let pk = serverPrivateKey config
+  let pk = serverPrivateKey config -- TODO remove
       serverKeyPair = (C.publicKey pk, pk)
-  return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s'}
+  serverCredential <- liftIO $ loadServerCredential (serverPrivateKeyFile config) (serverCertificateFile config)
+  return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s', serverCredential}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do
