@@ -19,7 +19,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport, SessionId, mkTLSServerParams)
+import Simplex.Messaging.Transport (ATransport, SessionId, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
