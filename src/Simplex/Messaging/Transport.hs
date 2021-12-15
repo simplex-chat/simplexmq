@@ -199,10 +199,9 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
 -- TODO non lazy
 loadServerCredential :: FilePath -> FilePath -> IO T.Credential
 loadServerCredential privateKeyFile certificateFile =
-  liftIO $
-    T.credentialLoadX509 certificateFile privateKeyFile >>= \case
-      Right cert -> pure cert
-      Left _ -> putStrLn "invalid credential" >> exitFailure
+  T.credentialLoadX509 certificateFile privateKeyFile >>= \case
+    Right cert -> pure cert
+    Left _ -> putStrLn "invalid credential" >> exitFailure
 
 -- * TLS 1.3 Transport
 
