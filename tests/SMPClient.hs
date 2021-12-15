@@ -1,5 +1,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -171,11 +172,11 @@ smpTest4 _ test' = smpTestN 4 _test
     _test _ = error "expected 4 handles"
 
 tPutRaw :: Transport c => THandle c -> SignedRawTransmission -> IO ()
-tPutRaw h (sig, sessId, corrId, queueId, command) = do
+tPutRaw h@THandle {sndSessionId = SessionId sessId} (sig, corrId, queueId, command) = do
   let t = B.unwords [sessId, corrId, queueId, command]
   void $ tPut h (sig, t)
 
 tGetRaw :: Transport c => THandle c -> IO SignedRawTransmission
 tGetRaw h = do
-  (Nothing, _, (SessionId sessId, CorrId corrId, qId, Right cmd)) <- tGet fromServer h
-  pure (Nothing, sessId, corrId, encode qId, serializeCommand cmd)
+  (Nothing, _, (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
+  pure (Nothing, corrId, encode qId, serializeCommand cmd)

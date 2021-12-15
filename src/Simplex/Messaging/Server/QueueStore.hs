@@ -22,7 +22,7 @@ data QueueStatus = QueueActive | QueueOff deriving (Eq)
 
 class MonadQueueStore s m where
   addQueue :: s -> QueueRec -> m (Either ErrorType ())
-  getQueue :: s -> SParty (a :: Party) -> QueueId -> m (Either ErrorType QueueRec)
+  getQueue :: s -> ClientParty -> QueueId -> m (Either ErrorType QueueRec)
   secureQueue :: s -> RecipientId -> SndPublicVerifyKey -> m (Either ErrorType ())
   addQueueNotifier :: s -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> m (Either ErrorType ())
   suspendQueue :: s -> RecipientId -> m (Either ErrorType ())

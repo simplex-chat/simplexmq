@@ -31,6 +31,7 @@ module Simplex.Messaging.Protocol
     Command (..),
     CommandI (..),
     Party (..),
+    ClientParty (..),
     Cmd (..),
     ClientCmd (..),
     SParty (..),
@@ -129,25 +130,29 @@ instance PartyI Sender where sParty = SSender
 
 instance PartyI Notifier where sParty = SNotifier
 
+data ClientParty = forall p. IsClient p => CP (SParty p)
+
 -- | Type for command or response of any participant.
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
 
 deriving instance Show Cmd
 
 -- | Type for command or response of any participant.
-data ClientCmd = forall p. (PartyI p, ClientParty p) => ClientCmd (SParty p) (Command p)
+data ClientCmd = forall p. (PartyI p, IsClient p) => ClientCmd (SParty p) (Command p)
 
 class CommandI c where
   serializeCommand :: c -> ByteString
   commandP :: Parser c
 
--- | SMP transmission without signature.
-type Transmission c = (SessionId, CorrId, QueueId, c)
+-- | Parsed SMP transmission without signature, size and session ID.
+type Transmission c = (CorrId, QueueId, c)
 
 type BrokerTransmission = Transmission (Command Broker)
 
 -- | signed parsed transmission, with original raw bytes and parsing error.
-type SignedTransmission c = (Maybe C.ASignature, ByteString, Transmission (Either ErrorType c))
+type SignedTransmission c = (Maybe C.ASignature, Signed, Transmission (Either ErrorType c))
+
+type Signed = ByteString
 
 -- | unparsed SMP transmission with signature.
 data RawTransmission = RawTransmission
@@ -159,8 +164,8 @@ data RawTransmission = RawTransmission
     command :: ByteString
   }
 
--- | unparsed sent SMP transmission with signature.
-type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString, ByteString)
+-- | unparsed sent SMP transmission with signature, without session ID.
+type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
 type SentRawTransmission = (Maybe C.ASignature, ByteString)
@@ -206,15 +211,15 @@ deriving instance Show (Command a)
 
 deriving instance Eq (Command a)
 
-type family ClientParty p :: Constraint where
-  ClientParty Recipient = ()
-  ClientParty Sender = ()
-  ClientParty Notifier = ()
-  ClientParty p =
+type family IsClient p :: Constraint where
+  IsClient Recipient = ()
+  IsClient Sender = ()
+  IsClient Notifier = ()
+  IsClient p =
     (Int ~ Bool, TypeError (Text "Party " :<>: ShowType p :<>: Text " is not a Client"))
 
-clientParty :: SParty p -> Maybe (Dict (ClientParty p))
-clientParty = \case
+isClient :: SParty p -> Maybe (Dict (IsClient p))
+isClient = \case
   SRecipient -> Just Dict
   SSender -> Just Dict
   SNotifier -> Just Dict
@@ -378,7 +383,7 @@ instance CommandI ClientCmd where
   commandP = clientCmd <$?> commandP
     where
       clientCmd :: Cmd -> Either String ClientCmd
-      clientCmd (Cmd p cmd) = case clientParty p of
+      clientCmd (Cmd p cmd) = case isClient p of
         Just Dict -> Right (ClientCmd p cmd)
         _ -> Left "not a client command"
 
@@ -430,13 +435,13 @@ serializeErrorType = bshow
 tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut th (sig, t) = tPutEncrypted th $ C.serializeSignature sig <> " " <> serializeBody t
 
-serializeTransmission :: CommandI c => Transmission c -> ByteString
-serializeTransmission (SessionId sessId, CorrId corrId, queueId, command) =
+serializeTransmission :: CommandI c => SessionId -> Transmission c -> ByteString
+serializeTransmission (SessionId sessId) (CorrId corrId, queueId, command) =
   B.unwords [sessId, corrId, encode queueId, serializeCommand command]
 
 -- | Validate that it is an SMP client command, used with 'tGet' by 'Simplex.Messaging.Server'.
 fromClient :: Cmd -> Either ErrorType ClientCmd
-fromClient (Cmd p cmd) = case clientParty p of
+fromClient (Cmd p cmd) = case isClient p of
   Just Dict -> Right $ ClientCmd p cmd
   Nothing -> Left $ CMD PROHIBITED
 
@@ -455,27 +460,27 @@ tGetParse th = (first (const TEBadBlock) . A.parseOnly transmissionP =<<) <$> tG
 -- The first argument is used to limit allowed senders.
 -- 'fromClient' or 'fromServer' should be used here.
 tGet :: forall c m cmd. (Transport c, MonadIO m) => (Cmd -> Either ErrorType cmd) -> THandle c -> m (SignedTransmission cmd)
-tGet fromParty th@THandle {rcvSessionId, sndSessionId} = liftIO (tGetParse th) >>= decodeParseValidate
+tGet fromParty th@THandle {rcvSessionId} = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m (SignedTransmission cmd)
     decodeParseValidate = \case
       Right RawTransmission {signature, signed, sessId, corrId, queueId, command}
         | SessionId sessId == rcvSessionId ->
-          let decodedTransmission = liftM2 (,sessId,corrId,,command) (C.decodeSignature =<< decode signature) (decode queueId)
+          let decodedTransmission = liftM2 (,corrId,,command) (C.decodeSignature =<< decode signature) (decode queueId)
            in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
-        | otherwise -> pure (Nothing, "", (sndSessionId, CorrId corrId, "", Left SESSION))
+        | otherwise -> pure (Nothing, "", (CorrId corrId, "", Left SESSION))
       Left _ -> tError ""
 
     tError :: ByteString -> m (SignedTransmission cmd)
-    tError corrId = pure (Nothing, "", (sndSessionId, CorrId corrId, "", Left BLOCK))
+    tError corrId = pure (Nothing, "", (CorrId corrId, "", Left BLOCK))
 
     tParseValidate :: ByteString -> SignedRawTransmission -> m (SignedTransmission cmd)
-    tParseValidate signed t@(sig, sessId, corrId, queueId, command) = do
+    tParseValidate signed t@(sig, corrId, queueId, command) = do
       let cmd = parseCommand command >>= tCredentials t >>= fromParty
-      return (sig, signed, (SessionId sessId, CorrId corrId, queueId, cmd))
+      return (sig, signed, (CorrId corrId, queueId, cmd))
 
     tCredentials :: SignedRawTransmission -> Cmd -> Either ErrorType Cmd
-    tCredentials (sig, _, _, queueId, _) cmd = case cmd of
+    tCredentials (sig, _, queueId, _) cmd = case cmd of
       -- IDS response must not have queue ID
       Cmd SBroker (IDS _) -> Right cmd
       -- ERR response does not always have queue ID
