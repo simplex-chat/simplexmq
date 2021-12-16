@@ -103,9 +103,12 @@ runClientTransport th = do
   raceAny_ [send th c, client c s, receive th c]
     `finally` cancelSubscribers c
 
-cancelSubscribers :: MonadUnliftIO m => Client -> m ()
-cancelSubscribers Client {subscriptions} =
-  readTVarIO subscriptions >>= mapM_ cancelSub
+cancelSubscribers :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
+cancelSubscribers Client {subscriptions} = do
+  subs <- readTVarIO subscriptions
+  mapM_ cancelSub subs
+  cs <- asks $ subscribers . server
+  atomically . mapM_ (modifyTVar cs . M.delete) $ M.keys subs
 
 cancelSub :: MonadUnliftIO m => Sub -> m ()
 cancelSub = \case
