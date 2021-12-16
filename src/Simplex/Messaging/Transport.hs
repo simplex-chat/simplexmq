@@ -102,10 +102,10 @@ class Transport c where
   transportName :: TProxy c -> String
 
   -- | Upgrade client TLS context to connection (used in the server)
-  getServerConnection :: TLS -> IO c
+  getServerConnection :: T.Context -> IO c
 
   -- | Upgrade server TLS context to connection (used in the client)
-  getClientConnection :: TLS -> IO c
+  getClientConnection :: T.Context -> IO c
 
   -- | Close connection
   closeConnection :: c -> IO ()
@@ -151,7 +151,8 @@ runTransportServer started port serverParams server = do
     acceptConnection :: Transport c => Socket -> IO c
     acceptConnection sock = do
       (newSock, _) <- accept sock
-      connectTLS "server" getServerConnection serverParams newSock
+      ctx <- connectTLS "server" serverParams newSock
+      getServerConnection ctx
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
@@ -194,7 +195,8 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      connectTLS "client" getClientConnection clientParams sock
+      ctx <- connectTLS "client" clientParams sock
+      getClientConnection ctx
 
 loadTLSServerParams :: FilePath -> FilePath -> IO T.ServerParams
 loadTLSServerParams certificateFile privateKeyFile =
@@ -218,14 +220,18 @@ loadTLSServerParams certificateFile privateKeyFile =
 
 data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
 
-connectTLS :: (T.TLSParams p) => String -> (TLS -> IO c) -> p -> Socket -> IO c
-connectTLS party getPartyConnection params sock =
-  E.bracketOnError (T.contextNew sock params) closeTLS $ \tlsContext -> do
-    T.handshake tlsContext
-    buffer <- newTVarIO ""
-    getLock <- newTMVarIO ()
-    getPartyConnection TLS {tlsContext, buffer, getLock}
+connectTLS :: T.TLSParams p => String -> p -> Socket -> IO T.Context
+connectTLS party params sock =
+  E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
+    T.handshake ctx
       `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
+    pure ctx
+
+newTLS :: T.Context -> IO TLS
+newTLS tlsContext = do
+  buffer <- newTVarIO ""
+  getLock <- newTMVarIO ()
+  pure TLS {tlsContext, buffer, getLock}
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
@@ -252,8 +258,8 @@ supportedParameters =
 
 instance Transport TLS where
   transportName _ = "TLS 1.3"
-  getServerConnection = pure
-  getClientConnection = pure
+  getServerConnection = newTLS
+  getClientConnection = newTLS
   closeConnection tls = closeTLS $ tlsContext tls
 
   cGet :: TLS -> Int -> IO ByteString

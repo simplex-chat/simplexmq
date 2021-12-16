@@ -1,6 +1,5 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Transport.WebSockets (WS (..)) where
 
@@ -12,7 +11,7 @@ import qualified Network.TLS as T
 import Network.WebSockets
 import Network.WebSockets.Stream (Stream)
 import qualified Network.WebSockets.Stream as S
-import Simplex.Messaging.Transport (TLS (..), TProxy, Transport (..), TransportError (..), closeTLS, trimCR)
+import Simplex.Messaging.Transport (TProxy, Transport (..), TransportError (..), closeTLS, trimCR)
 
 data WS = WS {wsStream :: Stream, wsConnection :: Connection}
 
@@ -28,17 +27,17 @@ instance Transport WS where
   transportName :: TProxy WS -> String
   transportName _ = "WebSockets"
 
-  getServerConnection :: TLS -> IO WS
-  getServerConnection TLS {tlsContext} = do
-    s <- websocketsStream tlsContext
+  getServerConnection :: T.Context -> IO WS
+  getServerConnection ctx = do
+    s <- makeTLSContextStream ctx
     WS s <$> acceptClientRequest s
     where
       acceptClientRequest :: Stream -> IO Connection
       acceptClientRequest s = makePendingConnectionFromStream s websocketsOpts >>= acceptRequest
 
-  getClientConnection :: TLS -> IO WS
-  getClientConnection TLS {tlsContext} = do
-    s <- websocketsStream tlsContext
+  getClientConnection :: T.Context -> IO WS
+  getClientConnection ctx = do
+    s <- makeTLSContextStream ctx
     WS s <$> sendClientRequest s
     where
       sendClientRequest :: Stream -> IO Connection
@@ -64,8 +63,8 @@ instance Transport WS where
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-websocketsStream :: T.Context -> IO S.Stream
-websocketsStream tlsContext =
+makeTLSContextStream :: T.Context -> IO S.Stream
+makeTLSContextStream tlsContext =
   S.makeStream readStream writeStream
   where
     readStream :: IO (Maybe ByteString)
