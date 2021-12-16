@@ -96,7 +96,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (SessionId (..), THandle (..), Transport, TransportError (..), tGetEncrypted, tPutEncrypted)
+import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetEncrypted, tPutEncrypted)
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
@@ -131,6 +131,8 @@ instance PartyI Sender where sParty = SSender
 instance PartyI Notifier where sParty = SNotifier
 
 data ClientParty = forall p. IsClient p => CP (SParty p)
+
+deriving instance Show ClientParty
 
 -- | Type for command or response of any participant.
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
@@ -237,10 +239,8 @@ instance IsString CorrId where
 -- | Queue IDs and keys
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
-    rcvSrvVerifyKey :: RcvPublicVerifyKey,
-    rcvPublicDHKey :: RcvPublicDhKey,
     sndId :: SenderId,
-    sndSrvVerifyKey :: SndPublicVerifyKey
+    rcvPublicDHKey :: RcvPublicDhKey
   }
   deriving (Eq, Show)
 
@@ -358,13 +358,7 @@ instance CommandI Cmd where
     where
       newCmd = Cmd SRecipient <$> (NEW <$> C.strKeyP <* A.space <*> C.strKeyP)
       idsResp = Cmd SBroker . IDS <$> qik
-      qik = do
-        rcvId <- base64P <* A.space
-        rcvSrvVerifyKey <- C.strKeyP <* A.space
-        rcvPublicDHKey <- C.strKeyP <* A.space
-        sndId <- base64P <* A.space
-        sndSrvVerifyKey <- C.strKeyP
-        pure QIK {rcvId, rcvSrvVerifyKey, rcvPublicDHKey, sndId, sndSrvVerifyKey}
+      qik = QIK <$> base64P <* A.space <*> base64P <* A.space <*> C.strKeyP
       nIdsResp = Cmd SBroker . NID <$> base64P
       keyCmd = Cmd SRecipient . KEY <$> C.strKeyP
       nKeyCmd = Cmd SRecipient . NKEY <$> C.strKeyP
@@ -411,8 +405,8 @@ instance PartyI p => CommandI (Command p) where
     NSUB -> "NSUB"
     MSG msgId ts msgBody ->
       B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeBody msgBody]
-    IDS QIK {rcvId, rcvSrvVerifyKey = rsKey, rcvPublicDHKey = dhKey, sndId, sndSrvVerifyKey = ssKey} ->
-      B.unwords ["IDS", encode rcvId, C.serializeKey rsKey, C.serializeKey dhKey, encode sndId, C.serializeKey ssKey]
+    IDS (QIK rcvId sndId srvDh) ->
+      B.unwords ["IDS", encode rcvId, encode sndId, C.serializeKey srvDh]
     NID nId -> "NID " <> encode nId
     ERR err -> "ERR " <> serializeErrorType err
     NMSG -> "NMSG"
@@ -435,9 +429,9 @@ serializeErrorType = bshow
 tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut th (sig, t) = tPutEncrypted th $ C.serializeSignature sig <> " " <> serializeBody t
 
-serializeTransmission :: CommandI c => SessionId -> Transmission c -> ByteString
-serializeTransmission (SessionId sessId) (CorrId corrId, queueId, command) =
-  B.unwords [sessId, corrId, encode queueId, serializeCommand command]
+serializeTransmission :: CommandI c => ByteString -> Transmission c -> ByteString
+serializeTransmission sessionId (CorrId corrId, queueId, command) =
+  B.unwords [sessionId, corrId, encode queueId, serializeCommand command]
 
 -- | Validate that it is an SMP client command, used with 'tGet' by 'Simplex.Messaging.Server'.
 fromClient :: Cmd -> Either ErrorType ClientCmd
@@ -460,12 +454,12 @@ tGetParse th = (first (const TEBadBlock) . A.parseOnly transmissionP =<<) <$> tG
 -- The first argument is used to limit allowed senders.
 -- 'fromClient' or 'fromServer' should be used here.
 tGet :: forall c m cmd. (Transport c, MonadIO m) => (Cmd -> Either ErrorType cmd) -> THandle c -> m (SignedTransmission cmd)
-tGet fromParty th@THandle {rcvSessionId} = liftIO (tGetParse th) >>= decodeParseValidate
+tGet fromParty th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m (SignedTransmission cmd)
     decodeParseValidate = \case
       Right RawTransmission {signature, signed, sessId, corrId, queueId, command}
-        | SessionId sessId == rcvSessionId ->
+        | sessId == sessionId ->
           let decodedTransmission = liftM2 (,corrId,,command) (C.decodeSignature =<< decode signature) (decode queueId)
            in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
         | otherwise -> pure (Nothing, "", (CorrId corrId, "", Left SESSION))

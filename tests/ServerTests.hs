@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -41,18 +42,18 @@ serverTests t = do
   describe "Message notifications" $ testMessageNotifications t
 
 pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmission (Command 'Broker)
-pattern Resp corrId queueId command <- ("", _, (corrId, queueId, Right command))
+pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> Command 'Broker
-pattern Ids rId sId srvDh <- IDS (QIK rId _ srvDh sId _)
+pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
 
 sendRecv :: Transport c => THandle c -> (Maybe C.ASignature, ByteString, ByteString, ByteString) -> IO (SignedTransmission (Command 'Broker))
 sendRecv h (sgn, corrId, qId, cmd) =
   tPutRaw h (sgn, corrId, encode qId, cmd) >> tGet fromServer h
 
 signSendRecv :: Transport c => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, ByteString) -> IO (SignedTransmission (Command 'Broker))
-signSendRecv h@THandle {sndSessionId = SessionId sessId} pk (corrId, qId, cmd) = do
-  let t = B.intercalate " " [sessId, corrId, encode qId, cmd]
+signSendRecv h@THandle {sessionId} pk (corrId, qId, cmd) = do
+  let t = B.intercalate " " [sessionId, corrId, encode qId, cmd]
   Right sig <- runExceptT $ C.sign pk t
   _ <- tPut h (Just sig, t)
   tGet fromServer h

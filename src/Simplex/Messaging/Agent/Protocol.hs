@@ -366,13 +366,13 @@ serializeAgentMessage = \case
 
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSMPQueueUri :: SMPQueueUri -> ByteString
-serializeSMPQueueUri (SMPQueueUri srv qId _) =
+serializeSMPQueueUri (SMPQueueUri srv qId) =
   serializeServerUri srv <> "/" <> U.encode qId <> "#"
 
 -- | SMP queue information parser.
 smpQueueUriP :: Parser SMPQueueUri
 smpQueueUriP =
-  SMPQueueUri <$> smpServerUriP <* "/" <*> base64UriP <* "#" <*> pure reservedServerKey
+  SMPQueueUri <$> smpServerUriP <* "/" <*> base64UriP <* optional "#"
 
 reservedServerKey :: C.APublicVerifyKey
 reservedServerKey = C.APublicVerifyKey C.SRSA (C.PublicKeyRSA $ R.PublicKey 1 0 0)
@@ -497,8 +497,7 @@ newtype AckMode = AckMode OnOff deriving (Eq, Show)
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
 data SMPQueueUri = SMPQueueUri
   { smpServer :: SMPServer,
-    senderId :: SMP.SenderId,
-    serverVerifyKey :: C.APublicVerifyKey
+    senderId :: SMP.SenderId
   }
   deriving (Eq, Show)
 

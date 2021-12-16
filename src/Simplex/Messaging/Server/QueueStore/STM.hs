@@ -59,14 +59,14 @@ instance MonadQueueStore QueueStore STM where
           Just rId -> getRcpQueue cs rId
           Nothing -> Left AUTH
 
-  secureQueue :: QueueStore -> RecipientId -> SndPublicVerifyKey -> STM (Either ErrorType ())
+  secureQueue :: QueueStore -> RecipientId -> SndPublicVerifyKey -> STM (Either ErrorType QueueRec)
   secureQueue store rId sKey =
     updateQueues store rId $ \cs c ->
       case senderKey c of
         Just _ -> (Left AUTH, cs)
-        _ -> (Right (), cs {queues = M.insert rId c {senderKey = Just sKey} (queues cs)})
+        _ -> (Right c, cs {queues = M.insert rId c {senderKey = Just sKey} (queues cs)})
 
-  addQueueNotifier :: QueueStore -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> STM (Either ErrorType ())
+  addQueueNotifier :: QueueStore -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> STM (Either ErrorType QueueRec)
   addQueueNotifier store rId nId nKey = do
     cs@QueueStoreData {queues, notifiers} <- readTVar store
     if M.member nId notifiers
@@ -81,7 +81,7 @@ instance MonadQueueStore QueueStore STM where
                 { queues = M.insert rId q {notifier = Just (nId, nKey)} queues,
                   notifiers = M.insert nId rId notifiers
                 }
-            pure $ Right ()
+            pure $ Right q
 
   suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
   suspendQueue store rId =
@@ -101,8 +101,8 @@ instance MonadQueueStore QueueStore STM where
 updateQueues ::
   QueueStore ->
   RecipientId ->
-  (QueueStoreData -> QueueRec -> (Either ErrorType (), QueueStoreData)) ->
-  STM (Either ErrorType ())
+  (QueueStoreData -> QueueRec -> (Either ErrorType a, QueueStoreData)) ->
+  STM (Either ErrorType a)
 updateQueues store rId update = do
   cs <- readTVar store
   let conn = getRcpQueue cs rId

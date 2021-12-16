@@ -30,6 +30,7 @@ extra-source-files:
     migrations/20210624_confirmations.sql
     migrations/20210809_snd_messages.sql
     migrations/20211202_connection_mode.sql
+    migrations/20211215_rcv_dh_secret.sql
     migrations/README.md
 
 library

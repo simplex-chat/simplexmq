@@ -41,7 +41,6 @@ module Simplex.Messaging.Transport
 
     -- * SMP encrypted transport
     THandle (..),
-    SessionId (..),
     TransportError (..),
     serverHandshake,
     clientHandshake,
@@ -328,16 +327,10 @@ smpVersionP =
   let ver = A.decimal <* A.char '.'
    in SMPVersion <$> ver <*> ver <*> ver <*> A.decimal
 
--- | Session identifier (base64 encoded here, to avoid encoding every time it is sent)
--- It should be set from TLS finished and passed in the initial handshake
-newtype SessionId = SessionId {unSessionId :: ByteString}
-  deriving (Eq, Show)
-
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
-    sndSessionId :: SessionId,
-    rcvSessionId :: SessionId,
+    sessionId :: ByteString,
     sndKey :: SessionKey,
     rcvKey :: SessionKey,
     blockSize :: Int
@@ -596,8 +589,7 @@ transportHandle c sk rk blockSize = do
   pure
     THandle
       { connection = c,
-        sndSessionId = SessionId "",
-        rcvSessionId = SessionId "",
+        sessionId = "",
         sndKey = sk {counter = sndCounter},
         rcvKey = rk {counter = rcvCounter},
         blockSize

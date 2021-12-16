@@ -240,9 +240,8 @@ newRcvQueue_ a c srv = do
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
   (dhKey, privDhKey) <- liftIO $ C.generateKeyPair' 0
   logServer "-->" c srv "" "NEW"
-  QIK {rcvId, rcvSrvVerifyKey, rcvPublicDHKey, sndId, sndSrvVerifyKey} <-
+  QIK {rcvId, sndId, rcvPublicDHKey} <-
     withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
-  let rcvDhSecret = C.dh' rcvPublicDHKey privDhKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   (encryptKey, decryptKey) <- liftIO $ C.generateEncryptionKeyPair size C.SRSA
   let rq =
@@ -250,15 +249,13 @@ newRcvQueue_ a c srv = do
           { server = srv,
             rcvId,
             rcvPrivateKey,
-            rcvSrvVerifyKey,
-            rcvDhSecret,
+            rcvDhSecret = C.dh' rcvPublicDHKey privDhKey,
             sndId = Just sndId,
-            sndSrvVerifyKey,
             decryptKey,
             verifyKey = Nothing,
             status = New
           }
-  pure (rq, SMPQueueUri srv sndId sndSrvVerifyKey, encryptKey)
+  pure (rq, SMPQueueUri srv sndId, encryptKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
