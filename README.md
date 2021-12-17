@@ -3,6 +3,12 @@
 [![GitHub build](https://github.com/simplex-chat/simplexmq/workflows/build/badge.svg)](https://github.com/simplex-chat/simplexmq/actions?query=workflow%3Abuild)
 [![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplexmq)](https://github.com/simplex-chat/simplexmq/releases)
 
+📢 **v0.5.1 brings a hotfix to the server's subscription management logic, to apply it run the following command on your server.** If you're doing a custom installation instead of Linode or DigitalOcean you may have to change the path for binary download.
+
+```sh
+curl -L -o /opt/simplex/bin/smp-server https://github.com/simplex-chat/simplexmq/releases/latest/download/smp-server-ubuntu-20_04-x86-64 && chmod +x /opt/simplex/bin/smp-server
+```
+
 ## Message broker for unidirectional (simplex) queues
 
 SimpleXMQ is a message broker for managing message queues and sending messages over public network. It consists of SMP server, SMP client library and SMP agent that implement [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md) for client-server communication and [SMP agent protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md) to manage duplex connections via simplex queues on multiple SMP servers.
