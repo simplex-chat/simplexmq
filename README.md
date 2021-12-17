@@ -3,7 +3,7 @@
 [![GitHub build](https://github.com/simplex-chat/simplexmq/workflows/build/badge.svg)](https://github.com/simplex-chat/simplexmq/actions?query=workflow%3Abuild)
 [![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplexmq)](https://github.com/simplex-chat/simplexmq/releases)
 
-📢 **v0.5.1 brings a hotfix to the server's subscription management logic, to apply it run the following command on your server.** If you're doing a custom installation instead of Linode or DigitalOcean you may have to change the path for binary download.
+📢 **v0.5.1 brings a hotfix to the server's subscription management logic, to apply it run the following command on your server. If you have store log enabled for your server, information about already established queues will be preserved.** If you're doing a custom installation instead of Linode or DigitalOcean you may have to change the path for binary download.
 
 ```sh
 systemctl stop smp-server && curl -L -o /opt/simplex/bin/smp-server https://github.com/simplex-chat/simplexmq/releases/download/v0.5.1/smp-server-ubuntu-20_04-x86-64 && chmod +x /opt/simplex/bin/smp-server && systemctl start smp-server
