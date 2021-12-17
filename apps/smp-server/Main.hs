@@ -41,6 +41,7 @@ serverConfig :: ServerConfig
 serverConfig =
   ServerConfig
     { tbqSize = 16,
+      serverTbqSize = 128,
       msgQueueQuota = 256,
       queueIdBytes = 12,
       msgIdBytes = 6,
