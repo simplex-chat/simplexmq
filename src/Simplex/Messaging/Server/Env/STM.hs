@@ -6,6 +6,7 @@
 module Simplex.Messaging.Server.Env.STM where
 
 import Control.Concurrent (ThreadId)
+import Control.Concurrent.STM (stateTVar)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Map.Strict (Map)
@@ -25,6 +26,7 @@ import UnliftIO.STM
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
+    serverTbqSize :: Natural,
     msgQueueQuota :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
@@ -46,13 +48,16 @@ data Env = Env
 
 data Server = Server
   { subscribedQ :: TBQueue (RecipientId, Client),
-    subscribers :: TVar (Map RecipientId Client)
+    subscribers :: TVar (Map RecipientId Client),
+    nextClientId :: TVar Natural
   }
 
 data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
     rcvQ :: TBQueue Transmission,
-    sndQ :: TBQueue Transmission
+    sndQ :: TBQueue Transmission,
+    clientId :: Natural,
+    connected :: TVar Bool
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
@@ -66,14 +71,17 @@ newServer :: Natural -> STM Server
 newServer qSize = do
   subscribedQ <- newTBQueue qSize
   subscribers <- newTVar M.empty
-  return Server {subscribedQ, subscribers}
+  nextClientId <- newTVar 0
+  return Server {subscribedQ, subscribers, nextClientId}
 
-newClient :: Natural -> STM Client
-newClient qSize = do
+newClient :: Server -> Natural -> STM Client
+newClient Server {nextClientId} qSize = do
   subscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {subscriptions, rcvQ, sndQ}
+  clientId <- stateTVar nextClientId $ \i -> (i, i + 1)
+  connected <- newTVar True
+  return Client {subscriptions, rcvQ, sndQ, clientId, connected}
 
 newSubscription :: STM Sub
 newSubscription = do
@@ -82,7 +90,7 @@ newSubscription = do
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config = do
-  server <- atomically $ newServer (tbqSize config)
+  server <- atomically $ newServer (serverTbqSize config)
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO

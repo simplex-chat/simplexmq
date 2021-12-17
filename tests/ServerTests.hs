@@ -11,7 +11,7 @@ module ServerTests where
 import Control.Concurrent (ThreadId, killThread)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
-import Control.Monad.Except (forM_, runExceptT)
+import Control.Monad.Except (forM, forM_, runExceptT)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -34,6 +34,7 @@ serverTests t = do
   describe "SMP queues" do
     describe "NEW and KEY commands, SEND messages" $ testCreateSecure t
     describe "NEW, OFF and DEL commands, SEND messages" $ testCreateDelete t
+    describe "Stress test" $ stressTest t
   describe "SMP messages" do
     describe "duplex communication over 2 SMP connections" $ testDuplex t
     describe "switch subscription to another SMP queue" $ testSwitchSub t
@@ -178,6 +179,22 @@ testCreateDelete (ATransport t) =
 
       Resp "cdab" _ err10 <- signSendRecv rh rKey ("cdab", rId, "SUB")
       (err10, ERR AUTH) #== "rejects SUB when deleted"
+
+stressTest :: ATransport -> Spec
+stressTest (ATransport t) =
+  it "should create many queues, disconnect and re-connect" $
+    smpTest3 t $ \h1 h2 h3 -> do
+      (rPub, rKey) <- C.generateKeyPair rsaKeySize
+      rIds <- forM [1 .. 50 :: Int] . const $ do
+        Resp "" "" (IDS rId _) <- signSendRecv h1 rKey ("", "", "NEW " <> C.serializePubKey rPub)
+        pure rId
+      let subscribeQueues h = forM_ rIds $ \rId -> do
+            Resp "" rId' OK <- signSendRecv h rKey ("", rId, "SUB")
+            rId' `shouldBe` rId
+      closeConnection $ connection h1
+      subscribeQueues h2
+      closeConnection $ connection h2
+      subscribeQueues h3
 
 testDuplex :: ATransport -> Spec
 testDuplex (ATransport t) =

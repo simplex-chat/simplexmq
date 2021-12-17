@@ -79,13 +79,25 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
     runServer (tcpPort, ATransport t) = runTransportServer started tcpPort (runClient t)
 
     serverThread :: MonadUnliftIO m' => Server -> m' ()
-    serverThread Server {subscribedQ, subscribers} = forever . atomically $ do
-      (rId, clnt) <- readTBQueue subscribedQ
-      cs <- readTVar subscribers
-      case M.lookup rId cs of
-        Just Client {rcvQ} -> writeTBQueue rcvQ (CorrId B.empty, rId, Cmd SBroker END)
-        Nothing -> return ()
-      writeTVar subscribers $ M.insert rId clnt cs
+    serverThread Server {subscribedQ, subscribers} = forever $ do
+      atomically updateSubscribers >>= \case
+        Just (rId, Client {rcvQ}) ->
+          void . forkIO . atomically $
+            writeTBQueue rcvQ (CorrId "", rId, Cmd SBroker END)
+        _ -> pure ()
+      where
+        updateSubscribers :: STM (Maybe (RecipientId, Client))
+        updateSubscribers = do
+          (rId, c) <- readTBQueue subscribedQ
+          stateTVar subscribers (\cs -> (M.lookup rId cs, M.insert rId c cs)) >>= \case
+            Just c' -> clientToBeNotified rId c c'
+            _ -> pure Nothing
+        clientToBeNotified :: RecipientId -> Client -> Client -> STM (Maybe (RecipientId, Client))
+        clientToBeNotified rId c c'@Client {connected}
+          | clientId c /= clientId c' = do
+            yes <- readTVar connected
+            pure $ if yes then Just (rId, c') else Nothing
+          | otherwise = pure Nothing
 
 runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
 runClient _ h = do
@@ -98,14 +110,23 @@ runClient _ h = do
 runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
 runClientTransport th = do
   q <- asks $ tbqSize . config
-  c <- atomically $ newClient q
   s <- asks server
+  c <- atomically $ newClient s q
   raceAny_ [send th c, client c s, receive th c]
-    `finally` cancelSubscribers c
+    `finally` clientDisconnected c
 
-cancelSubscribers :: MonadUnliftIO m => Client -> m ()
-cancelSubscribers Client {subscriptions} =
-  readTVarIO subscriptions >>= mapM_ cancelSub
+clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
+clientDisconnected c@Client {subscriptions, connected} = do
+  atomically $ writeTVar connected False
+  subs <- readTVarIO subscriptions
+  mapM_ cancelSub subs
+  cs <- asks $ subscribers . server
+  atomically . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
+  where
+    deleteCurrentClient :: Client -> Maybe Client
+    deleteCurrentClient c'
+      | clientId c == clientId c' = Nothing
+      | otherwise = Just c'
 
 cancelSub :: MonadUnliftIO m => Sub -> m ()
 cancelSub = \case
@@ -326,7 +347,7 @@ client clnt@Client {subscriptions, rcvQ, sndQ} Server {subscribedQ} =
             subscriber :: MsgQueue -> m ()
             subscriber q = atomically $ do
               msg <- peekMsg q
-              writeTBQueue sndQ $ mkResp (CorrId B.empty) rId (msgCmd msg)
+              writeTBQueue sndQ $ mkResp (CorrId "") rId (msgCmd msg)
               setSub (\s -> s {subThread = NoSub})
               void setDelivered
 
