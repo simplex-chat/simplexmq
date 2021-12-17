@@ -320,7 +320,7 @@ major :: SMPVersion -> (Int, Int)
 major (SMPVersion a b _ _) = (a, b)
 
 currentSMPVersion :: SMPVersion
-currentSMPVersion = "0.5.0.0"
+currentSMPVersion = "0.5.1.0"
 
 currentSMPVersionStr :: ByteString
 currentSMPVersionStr = serializeSMPVersion currentSMPVersion

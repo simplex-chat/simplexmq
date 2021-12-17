@@ -25,11 +25,12 @@ import System.IO (IOMode (..))
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
-  { tbqSize :: Natural,
+  { transports :: [(ServiceName, ATransport)],
+    tbqSize :: Natural,
+    serverTbqSize :: Natural,
     msgQueueQuota :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
-    transports :: [(ServiceName, ATransport)],
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
     serverPrivateKey :: C.PrivateKey 'C.RSA, -- TODO delete
@@ -60,7 +61,8 @@ data Client = Client
     ntfSubscriptions :: TVar (Map NotifierId ()),
     rcvQ :: TBQueue (Transmission ClientCmd),
     sndQ :: TBQueue BrokerTransmission,
-    sessionId :: ByteString
+    sessionId :: ByteString,
+    connected :: TVar Bool
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
@@ -84,7 +86,8 @@ newClient qSize sessionId = do
   ntfSubscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId}
+  connected <- newTVar True
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, connected}
 
 newSubscription :: STM Sub
 newSubscription = do
@@ -93,7 +96,7 @@ newSubscription = do
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config = do
-  server <- atomically $ newServer (tbqSize config)
+  server <- atomically $ newServer (serverTbqSize config)
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO

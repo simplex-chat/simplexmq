@@ -96,18 +96,26 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
       (s -> m' ()) ->
       m' ()
     serverThread s subQ subs clientSubs unsub = forever $ do
-      atomically updateSubscribers >>= mapM_ unsub
+      atomically updateSubscribers
+        >>= fmap join . mapM endPreviousSubscriptions
+        >>= mapM_ unsub
       where
-        updateSubscribers :: STM (Maybe s)
+        updateSubscribers :: STM (Maybe (QueueId, Client))
         updateSubscribers = do
           (qId, clnt) <- readTBQueue $ subQ s
-          serverSubs <- readTVar $ subs s
-          writeTVar (subs s) $ M.insert qId clnt serverSubs
-          join <$> mapM (endPreviousSubscriptions qId) (M.lookup qId serverSubs)
-        endPreviousSubscriptions :: QueueId -> Client -> STM (Maybe s)
-        endPreviousSubscriptions qId c = do
-          writeTBQueue (sndQ c) (CorrId "", qId, END)
-          stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
+          let clientToBeNotified = \c' ->
+                if sameClientSession clnt c'
+                  then pure Nothing
+                  else do
+                    yes <- readTVar $ connected c'
+                    pure $ if yes then Just (qId, c') else Nothing
+          stateTVar (subs s) (\cs -> (M.lookup qId cs, M.insert qId clnt cs))
+            >>= fmap join . mapM clientToBeNotified
+        endPreviousSubscriptions :: (QueueId, Client) -> m' (Maybe s)
+        endPreviousSubscriptions (qId, c) = do
+          void . forkIO . atomically $
+            writeTBQueue (sndQ c) (CorrId "", qId, END)
+          atomically . stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
 
 runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
 runClient _ h = do
@@ -123,11 +131,23 @@ runClientTransport th@THandle {sessionId} = do
   c <- atomically $ newClient q sessionId
   s <- asks server
   raceAny_ [send th c, client c s, receive th c]
-    `finally` cancelSubscribers c
+    `finally` clientDisconnected c
 
-cancelSubscribers :: MonadUnliftIO m => Client -> m ()
-cancelSubscribers Client {subscriptions} =
-  readTVarIO subscriptions >>= mapM_ cancelSub
+clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
+clientDisconnected c@Client {subscriptions, connected} = do
+  atomically $ writeTVar connected False
+  subs <- readTVarIO subscriptions
+  mapM_ cancelSub subs
+  cs <- asks $ subscribers . server
+  atomically . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
+  where
+    deleteCurrentClient :: Client -> Maybe Client
+    deleteCurrentClient c'
+      | sameClientSession c c' = Nothing
+      | otherwise = Just c'
+
+sameClientSession :: Client -> Client -> Bool
+sameClientSession Client {sessionId = s} Client {sessionId = s'} = False -- TODO replace with s == s'
 
 cancelSub :: MonadUnliftIO m => Sub -> m ()
 cancelSub = \case

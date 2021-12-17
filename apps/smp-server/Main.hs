@@ -42,6 +42,7 @@ serverConfig :: ServerConfig
 serverConfig =
   ServerConfig
     { tbqSize = 16,
+      serverTbqSize = 128,
       msgQueueQuota = 256,
       queueIdBytes = 24,
       msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
