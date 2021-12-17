@@ -116,12 +116,17 @@ runClientTransport th = do
     `finally` clientDisconnected c
 
 clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
-clientDisconnected Client {subscriptions, connected} = do
+clientDisconnected c@Client {subscriptions, connected} = do
   atomically $ writeTVar connected False
   subs <- readTVarIO subscriptions
   mapM_ cancelSub subs
   cs <- asks $ subscribers . server
-  atomically . mapM_ (modifyTVar cs . M.delete) $ M.keys subs
+  atomically . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
+  where
+    deleteCurrentClient :: Client -> Maybe Client
+    deleteCurrentClient c'
+      | clientId c == clientId c' = Nothing
+      | otherwise = Just c'
 
 cancelSub :: MonadUnliftIO m => Sub -> m ()
 cancelSub = \case
