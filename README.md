@@ -6,7 +6,7 @@
 📢 **v0.5.1 brings a hotfix to the server's subscription management logic, to apply it run the following command on your server.** If you're doing a custom installation instead of Linode or DigitalOcean you may have to change the path for binary download.
 
 ```sh
-systemctl stop smp-server && curl -L -o /opt/simplex/bin/smp-server https://github.com/simplex-chat/simplexmq/releases/latest/download/smp-server-ubuntu-20_04-x86-64 && chmod +x /opt/simplex/bin/smp-server && systemctl start smp-server
+systemctl stop smp-server && curl -L -o /opt/simplex/bin/smp-server https://github.com/simplex-chat/simplexmq/releases/download/v0.5.1/smp-server-ubuntu-20_04-x86-64 && chmod +x /opt/simplex/bin/smp-server && systemctl start smp-server
 ```
 
 ## Message broker for unidirectional (simplex) queues
