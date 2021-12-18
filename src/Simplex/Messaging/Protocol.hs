@@ -79,7 +79,6 @@ import Control.Monad
 import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -96,7 +95,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Generic.Random (genericArbitraryU)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetEncrypted, tPutEncrypted)
+import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
@@ -427,7 +426,7 @@ serializeErrorType = bshow
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
-tPut th (sig, t) = tPutEncrypted th $ C.serializeSignature sig <> " " <> serializeBody t
+tPut th (sig, t) = tPutBlock th $ C.serializeSignature sig <> " " <> serializeBody t
 
 serializeTransmission :: CommandI c => ByteString -> Transmission c -> ByteString
 serializeTransmission sessionId (CorrId corrId, queueId, command) =
@@ -447,7 +446,12 @@ fromServer = \case
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (Either TransportError RawTransmission)
-tGetParse th = (first (const TEBadBlock) . A.parseOnly transmissionP =<<) <$> tGetEncrypted th
+tGetParse th = do
+  block <- tGetBlock th
+  -- pure $ first (const TEBadBlock) $ A.parseOnly transmissionP block -- * I think below is simpler
+  case A.parseOnly transmissionP block of
+    Left _ -> pure $ Left TEBadBlock
+    Right parsedBlock -> pure $ Right parsedBlock
 
 -- | Receive client and server transmissions.
 --

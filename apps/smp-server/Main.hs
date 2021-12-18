@@ -9,14 +9,12 @@ module Main where
 
 import Control.Monad.Except
 import Control.Monad.Trans.Except
-import qualified Crypto.Store.PKCS8 as S
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.X509 (PrivKey (PrivKeyRSA))
 import Network.Socket (ServiceName)
 import Options.Applicative
 import qualified Simplex.Messaging.Crypto as C
@@ -30,13 +28,9 @@ import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, stdout)
 import System.Process (readCreateProcess, shell)
-import Text.Read (readEither)
 
 defaultServerPort :: ServiceName
 defaultServerPort = "5223"
-
-defaultBlockSize :: Int
-defaultBlockSize = 4096
 
 serverConfig :: ServerConfig
 serverConfig =
@@ -46,11 +40,10 @@ serverConfig =
       msgQueueQuota = 256,
       queueIdBytes = 24,
       msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
+      blockSize = 16 * 1024, -- TODO move to Protocol
       -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini
       transports = undefined,
       storeLog = undefined,
-      blockSize = undefined,
-      serverPrivateKey = undefined, -- TODO delete
       serverPrivateKeyFile = undefined,
       serverCertificateFile = undefined
     }
@@ -69,9 +62,6 @@ defaultStoreLogFile = combine logDir "smp-server-store.log"
 
 iniFile :: FilePath
 iniFile = combine cfgDir "smp-server.ini"
-
-defaultKeyFile :: FilePath
-defaultKeyFile = combine cfgDir "server_key"
 
 defaultPrivateKeyFile :: FilePath
 defaultPrivateKeyFile = combine cfgDir "server.key"
@@ -103,7 +93,7 @@ main = do
           exitFailure
     ServerDelete -> do
       deleteServer
-      putStrLn "Server key, config file and store log deleted"
+      putStrLn "Server configuration and log files deleted"
   where
     checkPubkeyAlgorihtm :: String -> IO ()
     checkPubkeyAlgorihtm alg
@@ -113,18 +103,17 @@ main = do
 getConfig :: ServerOpts -> ExceptT String IO ServerConfig
 getConfig opts = do
   ini <- readIni
-  pk <- readKey ini
   storeLog <- liftIO $ openStoreLog opts ini
-  pure $ makeConfig ini pk storeLog
+  pure $ makeConfig ini storeLog
 
-makeConfig :: IniOpts -> C.PrivateKey 'C.RSA -> Maybe (StoreLog 'ReadMode) -> ServerConfig
-makeConfig IniOpts {serverPort, blockSize, enableWebsockets, serverPrivateKeyFile, serverCertificateFile} pk storeLog =
+makeConfig :: IniOpts -> Maybe (StoreLog 'ReadMode) -> ServerConfig
+makeConfig IniOpts {serverPort, enableWebsockets, serverPrivateKeyFile, serverCertificateFile} storeLog =
   let transports = (serverPort, transport @TLS) : [("80", transport @WS) | enableWebsockets]
-   in serverConfig {transports, storeLog, blockSize, serverPrivateKey = pk, serverPrivateKeyFile, serverCertificateFile}
+   in serverConfig {transports, storeLog, serverPrivateKeyFile, serverCertificateFile}
 
 printConfig :: ServerConfig -> IO ()
-printConfig ServerConfig {serverPrivateKey, storeLog} = do
-  B.putStrLn $ "transport key hash: " <> serverKeyHash serverPrivateKey
+printConfig ServerConfig {storeLog} = do
+  -- TODO print certificate hash
   putStrLn $ case storeLog of
     Just s -> "store log: " <> storeLogFilePath s
     Nothing -> "store log disabled"
@@ -133,10 +122,9 @@ initializeServer :: ServerOpts -> IO ServerConfig
 initializeServer opts = do
   createDirectoryIfMissing True cfgDir
   ini <- createIni opts
-  pk <- createKey ini
   createKeyAndCertificate ini opts
   storeLog <- openStoreLog opts ini
-  pure $ makeConfig ini pk storeLog
+  pure $ makeConfig ini storeLog
 
 runServer :: ServerConfig -> IO ()
 runServer cfg = do
@@ -150,14 +138,12 @@ deleteServer = do
   ini <- runExceptT readIni
   deleteIfExists iniFile
   case ini of
-    Right IniOpts {storeLogFile, serverKeyFile, serverPrivateKeyFile, serverCertificateFile} -> do
+    Right IniOpts {storeLogFile, serverPrivateKeyFile, serverCertificateFile} -> do
       deleteIfExists storeLogFile
-      deleteIfExists serverKeyFile
       deleteIfExists serverPrivateKeyFile
       deleteIfExists serverCertificateFile
     Left _ -> do
       deleteIfExists defaultStoreLogFile
-      deleteIfExists defaultKeyFile
       deleteIfExists defaultPrivateKeyFile
       deleteIfExists defaultCertificateFile
 
@@ -165,9 +151,7 @@ data IniOpts = IniOpts
   { enableStoreLog :: Bool,
     storeLogFile :: FilePath,
     serverPort :: ServiceName,
-    blockSize :: Int,
     enableWebsockets :: Bool,
-    serverKeyFile :: FilePath,
     serverPrivateKeyFile :: FilePath,
     serverCertificateFile :: FilePath
   }
@@ -180,11 +164,9 @@ readIni = do
       storeLogFile = opt defaultStoreLogFile "STORE_LOG" "file" ini
       serverPort = opt defaultServerPort "TRANSPORT" "port" ini
       enableWebsockets = (== Right "on") $ lookupValue "TRANSPORT" "websockets" ini
-      serverKeyFile = opt defaultKeyFile "TRANSPORT" "key_file" ini
       serverPrivateKeyFile = opt defaultPrivateKeyFile "TRANSPORT" "private_key_file" ini
       serverCertificateFile = opt defaultCertificateFile "TRANSPORT" "certificate_file" ini
-  blockSize <- liftEither . readEither $ opt (show defaultBlockSize) "TRANSPORT" "block_size" ini
-  pure IniOpts {enableStoreLog, storeLogFile, serverPort, blockSize, enableWebsockets, serverKeyFile, serverPrivateKeyFile, serverCertificateFile}
+  pure IniOpts {enableStoreLog, storeLogFile, serverPort, enableWebsockets, serverPrivateKeyFile, serverCertificateFile}
   where
     opt :: String -> Text -> Text -> Ini -> String
     opt def section key ini = either (const def) T.unpack $ lookupValue section key ini
@@ -205,9 +187,6 @@ createIni ServerOpts {enableStoreLog} = do
       <> defaultStoreLogFile
       <> "\n\n\
          \[TRANSPORT]\n\n\
-         \# key_file: "
-      <> defaultKeyFile
-      <> "\n\
          \# private_key_file: "
       <> defaultPrivateKeyFile
       <> "\n\
@@ -217,18 +196,13 @@ createIni ServerOpts {enableStoreLog} = do
          \# port: "
       <> defaultServerPort
       <> "\n\
-         \# block_size: "
-      <> show defaultBlockSize
-      <> "\n\
          \websockets: on\n"
   pure
     IniOpts
       { enableStoreLog,
         storeLogFile = defaultStoreLogFile,
         serverPort = defaultServerPort,
-        blockSize = defaultBlockSize,
         enableWebsockets = True,
-        serverKeyFile = defaultKeyFile,
         serverPrivateKeyFile = defaultPrivateKeyFile,
         serverCertificateFile = defaultCertificateFile
       }
@@ -247,24 +221,6 @@ createKeyAndCertificate IniOpts {serverPrivateKeyFile, serverCertificateFile} Se
     run cmd = void $ readCreateProcess (shell cmd) ""
     csrPath :: String
     csrPath = combine cfgDir "localhost.csr"
-
-readKey :: IniOpts -> ExceptT String IO (C.PrivateKey 'C.RSA)
-readKey IniOpts {serverKeyFile} = do
-  fileExists serverKeyFile
-  liftIO (S.readKeyFile serverKeyFile) >>= \case
-    [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.PrivateKeyRSA pk
-    [_] -> err "not RSA key"
-    [] -> err "invalid key file format"
-    _ -> err "more than one key"
-  where
-    err :: String -> ExceptT String IO b
-    err e = throwE $ e <> ": " <> serverKeyFile
-
-createKey :: IniOpts -> IO (C.PrivateKey 'C.RSA)
-createKey IniOpts {serverKeyFile} = do
-  (_, pk) <- C.generateKeyPair' newKeySize
-  S.writeKeyFile S.TraditionalFormat serverKeyFile [C.privateToX509 pk]
-  pure pk
 
 fileExists :: FilePath -> ExceptT String IO ()
 fileExists path = do
