@@ -79,6 +79,7 @@ import Control.Monad
 import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -446,12 +447,7 @@ fromServer = \case
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (Either TransportError RawTransmission)
-tGetParse th = do
-  block <- tGetBlock th
-  -- pure $ first (const TEBadBlock) $ A.parseOnly transmissionP block -- * I think below is simpler
-  case A.parseOnly transmissionP block of
-    Left _ -> pure $ Left TEBadBlock
-    Right parsedBlock -> pure $ Right parsedBlock
+tGetParse th = first (const TEBadBlock) . A.parseOnly transmissionP <$> tGetBlock th
 
 -- | Receive client and server transmissions.
 --
