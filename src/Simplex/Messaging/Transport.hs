@@ -63,7 +63,7 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
-import Data.ByteString.Char8 (ByteString, unpack)
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
@@ -79,7 +79,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
-import Simplex.Messaging.Parsers (base64P, parse, parseAll, parseRead1, parseString)
+import Simplex.Messaging.Parsers (base64P, parseAll, parseRead1, parseString)
 import Simplex.Messaging.Util (bshow)
 import System.Exit (exitFailure)
 import System.IO.Error
@@ -307,8 +307,7 @@ trimCR s = if B.last s == '\r' then B.init s else s
 -- * SMP encrypted transport
 
 data SMPVersion = SMPVersion Int Int Int
-  -- deriving (Eq, Ord)
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
 
 instance IsString SMPVersion where
   fromString = parseString $ parseAll smpVersionP
@@ -338,7 +337,6 @@ data Handshake = Handshake
   { sessionIdentifier :: ByteString,
     smpVersion :: SMPVersion
   }
-  deriving (Show)
 
 serializeHandshake :: Handshake -> ByteString
 serializeHandshake Handshake {sessionIdentifier, smpVersion} =
@@ -393,7 +391,7 @@ serializeTransportError = \case
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, blockSize} block
-  | len >= blockSize = pure $ Left TELargeMsg
+  | len > blockSize = pure $ Left TELargeMsg
   | otherwise = Right <$> cPut c (block <> B.replicate (blockSize - len) '#')
   where
     len = B.length block
@@ -452,7 +450,7 @@ clientHandshake c blockSize = do
     sendClientHello :: THandle c -> ExceptT TransportError IO ()
     sendClientHello th = do
       let handshake = Handshake {sessionIdentifier = "", smpVersion = currentSMPVersion}
-          -- serHandshake = serializeHandshake handshake
+      -- serHandshake = serializeHandshake handshake
       -- liftIO $ putStrLn ("\"" <> unpack serHandshake <> "\"")
       -- ExceptT . tPutBlock th $ serHandshake
       ExceptT . tPutBlock th $ serializeHandshake handshake
