@@ -58,7 +58,6 @@ where
 import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
-import Control.Monad.Trans.Except (throwE)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -334,13 +333,13 @@ data THandle c = THandle
   }
 
 data Handshake = Handshake
-  { sessionIdentifier :: ByteString,
+  { sessionId :: ByteString,
     smpVersion :: SMPVersion
   }
 
 serializeHandshake :: Handshake -> ByteString
-serializeHandshake Handshake {sessionIdentifier, smpVersion} =
-  encode sessionIdentifier <> " " <> serializeSMPVersion smpVersion <> " "
+serializeHandshake Handshake {sessionId, smpVersion} =
+  encode sessionId <> " " <> serializeSMPVersion smpVersion <> " "
 
 handshakeP :: Parser Handshake
 handshakeP = Handshake <$> base64OrEmptyP <* A.space <*> smpVersionP <* A.space
@@ -364,7 +363,7 @@ data TransportError
 data HandshakeError
   = -- | parsing error
     PARSE
-  | -- | lower counterparty version
+  | -- | incompatible peer version
     VERSION
   deriving (Eq, Generic, Read, Show, Exception)
 
@@ -406,73 +405,38 @@ tGetBlock THandle {connection = c, blockSize} =
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-serverHandshake :: forall c. Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
+serverHandshake :: Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
 serverHandshake c blockSize = do
-  th <- liftIO $ transportHandle c blockSize
-  clientHello <- getClientHello th
-  -- liftIO $ putStrLn "server - after getClientHello"
-  checkHandshake clientHello
-  sendServerHello th
+  let th = transportHandle c blockSize
+  _ <- getPeerHello th
+  sendHelloToPeer th ""
   pure th
-  where
-    sendServerHello :: THandle c -> ExceptT TransportError IO ()
-    sendServerHello th = do
-      let handshake = Handshake {sessionIdentifier = "abc", smpVersion = currentSMPVersion}
-      ExceptT . tPutBlock th $ serializeHandshake handshake
-    getClientHello :: THandle c -> ExceptT TransportError IO Handshake
-    getClientHello th = ExceptT $ do
-      -- liftIO $ putStrLn "server - before tGetBlock"
-      block <- tGetBlock th
-      -- liftIO $ putStrLn "server - after tGetBlock"
-      -- liftIO $ putStrLn (unpack block)
-      case parseHandshake block of
-        Left e -> pure $ Left e
-        Right handshake -> pure $ Right handshake
-    checkHandshake :: Handshake -> ExceptT TransportError IO ()
-    checkHandshake Handshake {smpVersion} =
-      when (smpVersion < currentSMPVersion) . throwE $
-        TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 clientHandshake :: forall c. Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
 clientHandshake c blockSize = do
-  th <- liftIO $ transportHandle c blockSize
-  -- liftIO $ putStrLn "client - before sendClientHello"
-  sendClientHello th
-  -- liftIO $ putStrLn "client - after sendClientHello"
-  serverHello <- getServerHello th
-  -- liftIO $ putStrLn "client - after getServerHello"
-  checkHandshake serverHello
-  pure th
+  let th = transportHandle c blockSize
+  sendHelloToPeer th ""
+  Handshake {sessionId} <- getPeerHello th
+  pure (th :: THandle c) {sessionId}
+
+sendHelloToPeer :: Transport c => THandle c -> ByteString -> ExceptT TransportError IO ()
+sendHelloToPeer th sessionId =
+  let handshake = Handshake {sessionId, smpVersion = currentSMPVersion}
+   in ExceptT . tPutBlock th $ serializeHandshake handshake
+
+getPeerHello :: Transport c => THandle c -> ExceptT TransportError IO Handshake
+getPeerHello th = ExceptT $ parseHandshake <$> tGetBlock th
   where
-    sendClientHello :: THandle c -> ExceptT TransportError IO ()
-    sendClientHello th = do
-      let handshake = Handshake {sessionIdentifier = "", smpVersion = currentSMPVersion}
-      -- serHandshake = serializeHandshake handshake
-      -- liftIO $ putStrLn ("\"" <> unpack serHandshake <> "\"")
-      -- ExceptT . tPutBlock th $ serHandshake
-      ExceptT . tPutBlock th $ serializeHandshake handshake
-    getServerHello :: THandle c -> ExceptT TransportError IO Handshake
-    getServerHello th = ExceptT $ do
-      block <- tGetBlock th
-      case parseHandshake block of
-        Left e -> pure $ Left e
-        Right handshake -> pure $ Right handshake
-    checkHandshake :: Handshake -> ExceptT TransportError IO ()
-    checkHandshake Handshake {smpVersion} =
-      when (smpVersion < currentSMPVersion) . throwE $
-        TEHandshake VERSION
+    parseHandshake :: ByteString -> Either TransportError Handshake
+    parseHandshake = first (const $ TEHandshake PARSE) . A.parseOnly handshakeP
 
-parseHandshake :: ByteString -> Either TransportError Handshake
-parseHandshake = first (const $ TEHandshake PARSE) . A.parseOnly handshakeP
-
-transportHandle :: c -> Int -> IO (THandle c)
+transportHandle :: c -> Int -> THandle c
 transportHandle c blockSize = do
-  pure
-    THandle
-      { connection = c,
-        sessionId = "",
-        blockSize
-      }
+  THandle
+    { connection = c,
+      sessionId = "",
+      blockSize
+    }
