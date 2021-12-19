@@ -29,17 +29,19 @@ module Simplex.Messaging.Transport
     Transport (..),
     TProxy (..),
     ATransport (..),
+    TransportPeer (..),
 
-    -- * Transport over TLS 1.3
+    -- * Transport over TLS 1.2
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
+    withTlsUnique,
 
-    -- * TLS 1.3 Transport
+    -- * TLS 1.2 Transport
     TLS (..),
     closeTLS,
 
-    -- * SMP encrypted transport
+    -- * SMP transport
     THandle (..),
     TransportError (..),
     serverHandshake,
@@ -55,9 +57,10 @@ module Simplex.Messaging.Transport
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
+import Control.Monad.Trans.Except (throwE)
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -67,7 +70,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
-import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
@@ -78,7 +80,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
-import Simplex.Messaging.Parsers (base64P, parseAll, parseRead1, parseString)
+import Simplex.Messaging.Parsers (parseAll, parseRead1, parseString)
 import Simplex.Messaging.Util (bshow)
 import System.Exit (exitFailure)
 import System.IO.Error
@@ -96,11 +98,16 @@ class Transport c where
 
   transportName :: TProxy c -> String
 
-  -- | Upgrade client TLS context to connection (used in the server)
+  transportPeer :: c -> TransportPeer
+
+  -- | Upgrade server TLS context to connection (used in the server)
   getServerConnection :: T.Context -> IO c
 
-  -- | Upgrade server TLS context to connection (used in the client)
+  -- | Upgrade client TLS context to connection (used in the client)
   getClientConnection :: T.Context -> IO c
+
+  -- | tls-unique channel binding per RFC5929
+  tlsUnique :: c -> ByteString
 
   -- | Close connection
   closeConnection :: c -> IO ()
@@ -118,32 +125,37 @@ class Transport c where
   putLn :: c -> ByteString -> IO ()
   putLn c = cPut c . (<> "\r\n")
 
+data TransportPeer = TClient | TServer
+  deriving (Eq, Show)
+
 data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
--- * Transport over TLS 1.3
+-- * Transport over TLS 1.2
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
+runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
 runTransportServer started port serverParams server = do
   clients <- newTVarIO S.empty
   E.bracket
     (liftIO $ startTCPServer started port)
     (liftIO . closeServer clients)
-    $ \sock -> forever $ do
-      c <- liftIO $ acceptConnection sock
-      tid <- forkFinally (server c) (const $ liftIO $ closeConnection c)
-      atomically . modifyTVar clients $ S.insert tid
+    $ \sock -> forever $ connectClients sock clients `E.catch` \(_ :: E.SomeException) -> pure ()
   where
+    connectClients :: Socket -> TVar (Set ThreadId) -> m ()
+    connectClients sock clients = do
+      c <- liftIO $ acceptConnection sock
+      tid <- server c `forkFinally` const (liftIO $ closeConnection c)
+      atomically . modifyTVar clients $ S.insert tid
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
     closeServer clients sock = do
       readTVarIO clients >>= mapM_ killThread
       close sock
       void . atomically $ tryPutTMVar started False
-    acceptConnection :: Transport c => Socket -> IO c
+    acceptConnection :: Socket -> IO c
     acceptConnection sock = do
       (newSock, _) <- accept sock
       ctx <- connectTLS "server" serverParams newSock
@@ -211,9 +223,15 @@ loadTLSServerParams certificateFile privateKeyFile =
           T.serverSupported = supportedParameters
         }
 
--- * TLS 1.3 Transport
+-- * TLS 1.2 Transport
 
-data TLS = TLS {tlsContext :: T.Context, buffer :: TVar ByteString, getLock :: TMVar ()}
+data TLS = TLS
+  { tlsContext :: T.Context,
+    tlsPeer :: TransportPeer,
+    tlsUniq :: ByteString,
+    buffer :: TVar ByteString,
+    getLock :: TMVar ()
+  }
 
 connectTLS :: T.TLSParams p => String -> p -> Socket -> IO T.Context
 connectTLS party params sock =
@@ -222,11 +240,21 @@ connectTLS party params sock =
       `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
     pure ctx
 
-newTLS :: T.Context -> IO TLS
-newTLS tlsContext = do
-  buffer <- newTVarIO ""
-  getLock <- newTMVarIO ()
-  pure TLS {tlsContext, buffer, getLock}
+getTLS :: TransportPeer -> T.Context -> IO TLS
+getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS
+  where
+    newTLS tlsUniq = do
+      buffer <- newTVarIO ""
+      getLock <- newTMVarIO ()
+      pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, buffer, getLock}
+
+withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
+withTlsUnique peer cxt f =
+  cxtFinished peer cxt
+    >>= maybe (closeTLS cxt >> ioe_EOF) f
+  where
+    cxtFinished TServer = T.getPeerFinished
+    cxtFinished TClient = T.getFinished
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
@@ -244,17 +272,19 @@ clientParams =
 supportedParameters :: T.Supported
 supportedParameters =
   def
-    { T.supportedVersions = [T.TLS13],
-      T.supportedCiphers = [TE.cipher_TLS13_CHACHA20POLY1305_SHA256],
+    { T.supportedVersions = [T.TLS12],
+      T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
       T.supportedSecureRenegotiation = False,
       T.supportedGroups = [T.X448, T.X25519]
     }
 
 instance Transport TLS where
-  transportName _ = "TLS 1.3"
-  getServerConnection = newTLS
-  getClientConnection = newTLS
+  transportName _ = "TLS 1.2"
+  transportPeer = tlsPeer
+  getServerConnection = getTLS TServer
+  getClientConnection = getTLS TClient
+  tlsUnique = tlsUniq
   closeConnection tls = closeTLS $ tlsContext tls
 
   cGet :: TLS -> Int -> IO ByteString
@@ -339,13 +369,10 @@ data Handshake = Handshake
 
 serializeHandshake :: Handshake -> ByteString
 serializeHandshake Handshake {sessionId, smpVersion} =
-  encode sessionId <> " " <> serializeSMPVersion smpVersion <> " "
+  sessionId <> " " <> serializeSMPVersion smpVersion <> " "
 
 handshakeP :: Parser Handshake
-handshakeP = Handshake <$> base64OrEmptyP <* A.space <*> smpVersionP <* A.space
-
-base64OrEmptyP :: Parser ByteString
-base64OrEmptyP = fromMaybe "" <$> optional base64P
+handshakeP = Handshake <$> A.takeWhile (/= ' ') <* A.space <*> smpVersionP <* A.space
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -407,9 +434,9 @@ tGetBlock THandle {connection = c, blockSize} =
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 serverHandshake :: Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
 serverHandshake c blockSize = do
-  let th = transportHandle c blockSize
+  let th@THandle {sessionId} = tHandle c blockSize
   _ <- getPeerHello th
-  sendHelloToPeer th ""
+  sendHelloToPeer th sessionId
   pure th
 
 -- | Client SMP transport handshake.
@@ -417,10 +444,12 @@ serverHandshake c blockSize = do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 clientHandshake :: forall c. Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
 clientHandshake c blockSize = do
-  let th = transportHandle c blockSize
+  let th@THandle {sessionId} = tHandle c blockSize
   sendHelloToPeer th ""
-  Handshake {sessionId} <- getPeerHello th
-  pure (th :: THandle c) {sessionId}
+  Handshake {sessionId = sessId} <- getPeerHello th
+  if sessionId == sessId
+    then pure th
+    else throwE TEBadSession
 
 sendHelloToPeer :: Transport c => THandle c -> ByteString -> ExceptT TransportError IO ()
 sendHelloToPeer th sessionId =
@@ -433,10 +462,6 @@ getPeerHello th = ExceptT $ parseHandshake <$> tGetBlock th
     parseHandshake :: ByteString -> Either TransportError Handshake
     parseHandshake = first (const $ TEHandshake PARSE) . A.parseOnly handshakeP
 
-transportHandle :: c -> Int -> THandle c
-transportHandle c blockSize = do
-  THandle
-    { connection = c,
-      sessionId = "",
-      blockSize
-    }
+tHandle :: Transport c => c -> Int -> THandle c
+tHandle c blockSize =
+  THandle {connection = c, sessionId = encode $ tlsUnique c, blockSize}
