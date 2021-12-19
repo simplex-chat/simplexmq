@@ -14,6 +14,6 @@ main = do
   hspec $ do
     describe "Protocol errors" protocolErrorTests
     describe "SMP server via TLS 1.3" $ serverTests (transport @TLS)
-    -- describe "SMP server via WebSockets" $ serverTests (transport @WS)
+    describe "SMP server via WebSockets" $ serverTests (transport @WS)
     describe "SMP client agent" $ agentTests (transport @TLS)
   removeDirectoryRecursive "tests/tmp"
