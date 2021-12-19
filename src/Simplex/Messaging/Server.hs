@@ -146,7 +146,7 @@ clientDisconnected c@Client {subscriptions, connected} = do
       | otherwise = Just c'
 
 sameClientSession :: Client -> Client -> Bool
-sameClientSession Client {sessionId = s} Client {sessionId = s'} = False -- TODO replace with s == s'
+sameClientSession Client {sessionId} Client {sessionId = s'} = sessionId == s'
 
 cancelSub :: MonadUnliftIO m => Sub -> m ()
 cancelSub = \case

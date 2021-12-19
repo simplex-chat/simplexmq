@@ -1,5 +1,6 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Transport.WebSockets (WS (..)) where
 
@@ -11,9 +12,22 @@ import qualified Network.TLS as T
 import Network.WebSockets
 import Network.WebSockets.Stream (Stream)
 import qualified Network.WebSockets.Stream as S
-import Simplex.Messaging.Transport (TProxy, Transport (..), TransportError (..), closeTLS, trimCR)
+import Simplex.Messaging.Transport
+  ( TProxy,
+    Transport (..),
+    TransportError (..),
+    TransportPeer (..),
+    closeTLS,
+    trimCR,
+    withTlsUnique,
+  )
 
-data WS = WS {wsStream :: Stream, wsConnection :: Connection}
+data WS = WS
+  { wsPeer :: TransportPeer,
+    tlsUniq :: ByteString,
+    wsStream :: Stream,
+    wsConnection :: Connection
+  }
 
 websocketsOpts :: ConnectionOptions
 websocketsOpts =
@@ -27,21 +41,17 @@ instance Transport WS where
   transportName :: TProxy WS -> String
   transportName _ = "WebSockets"
 
+  transportPeer :: WS -> TransportPeer
+  transportPeer = wsPeer
+
   getServerConnection :: T.Context -> IO WS
-  getServerConnection ctx = do
-    s <- makeTLSContextStream ctx
-    WS s <$> acceptClientRequest s
-    where
-      acceptClientRequest :: Stream -> IO Connection
-      acceptClientRequest s = makePendingConnectionFromStream s websocketsOpts >>= acceptRequest
+  getServerConnection = getWS TServer
 
   getClientConnection :: T.Context -> IO WS
-  getClientConnection ctx = do
-    s <- makeTLSContextStream ctx
-    WS s <$> sendClientRequest s
-    where
-      sendClientRequest :: Stream -> IO Connection
-      sendClientRequest s = newClientConnection s "" "/" websocketsOpts []
+  getClientConnection = getWS TClient
+
+  tlsUnique :: WS -> ByteString
+  tlsUnique = tlsUniq
 
   closeConnection :: WS -> IO ()
   closeConnection = S.close . wsStream
@@ -63,16 +73,27 @@ instance Transport WS where
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-makeTLSContextStream :: T.Context -> IO S.Stream
-makeTLSContextStream tlsContext =
+getWS :: TransportPeer -> T.Context -> IO WS
+getWS wsPeer cxt = withTlsUnique wsPeer cxt connectWS
+  where
+    connectWS tlsUniq = do
+      s <- makeTLSContextStream cxt
+      wsConnection <- connectPeer wsPeer s
+      pure $ WS {wsPeer = TClient, tlsUniq, wsStream = s, wsConnection}
+    connectPeer :: TransportPeer -> Stream -> IO Connection
+    connectPeer TServer = acceptClientRequest
+    connectPeer TClient = sendClientRequest
+    acceptClientRequest s = makePendingConnectionFromStream s websocketsOpts >>= acceptRequest
+    sendClientRequest s = newClientConnection s "" "/" websocketsOpts []
+
+makeTLSContextStream :: T.Context -> IO Stream
+makeTLSContextStream cxt =
   S.makeStream readStream writeStream
   where
     readStream :: IO (Maybe ByteString)
     readStream =
-      (Just <$> T.recvData tlsContext) `E.catch` \case
+      (Just <$> T.recvData cxt) `E.catch` \case
         T.Error_EOF -> pure Nothing
         e -> E.throwIO e
     writeStream :: Maybe BL.ByteString -> IO ()
-    writeStream = \case
-      Nothing -> closeTLS tlsContext
-      Just bs -> T.sendData tlsContext bs
+    writeStream = maybe (closeTLS cxt) (T.sendData cxt)
