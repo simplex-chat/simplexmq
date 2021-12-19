@@ -79,7 +79,7 @@ getWS wsPeer cxt = withTlsUnique wsPeer cxt connectWS
     connectWS tlsUniq = do
       s <- makeTLSContextStream cxt
       wsConnection <- connectPeer wsPeer s
-      pure $ WS {wsPeer = TClient, tlsUniq, wsStream = s, wsConnection}
+      pure $ WS {wsPeer, tlsUniq, wsStream = s, wsConnection}
     connectPeer :: TransportPeer -> Stream -> IO Connection
     connectPeer TServer = acceptClientRequest
     connectPeer TClient = sendClientRequest
