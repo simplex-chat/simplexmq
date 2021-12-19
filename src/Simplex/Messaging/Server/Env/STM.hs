@@ -14,7 +14,6 @@ import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
-import qualified Simplex.Messaging.Crypto as C -- TODO delete
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
@@ -33,7 +32,6 @@ data ServerConfig = ServerConfig
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
-    serverPrivateKey :: C.PrivateKey 'C.RSA, -- TODO delete
     serverPrivateKeyFile :: FilePath,
     serverCertificateFile :: FilePath
   }
@@ -44,7 +42,6 @@ data Env = Env
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
-    serverKeyPair :: C.KeyPair 'C.RSA, -- TODO delete
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams
   }
@@ -101,10 +98,8 @@ newEnv config = do
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
-  let pk = serverPrivateKey config -- TODO remove
-      serverKeyPair = (C.publicKey pk, pk)
   tlsServerParams <- liftIO $ loadTLSServerParams (serverCertificateFile config) (serverPrivateKeyFile config)
-  return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s', tlsServerParams}
+  return Env {config, server, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do

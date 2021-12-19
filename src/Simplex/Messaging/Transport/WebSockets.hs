@@ -19,7 +19,7 @@ websocketsOpts :: ConnectionOptions
 websocketsOpts =
   defaultConnectionOptions
     { connectionCompressionOptions = NoCompression,
-      connectionFramePayloadSizeLimit = SizeLimit 8192,
+      connectionFramePayloadSizeLimit = SizeLimit $ 16 * 1024, -- TODO move to Protocol
       connectionMessageDataSizeLimit = SizeLimit 65536
     }
 

@@ -102,9 +102,8 @@ data SMPClientConfig = SMPClientConfig
     tcpTimeout :: Int,
     -- | period for SMP ping commands (microseconds)
     smpPing :: Int,
-    -- | SMP transport block size, Nothing - the block size will be set by the server.
-    -- Allowed sizes are 4, 8, 16, 32, 64 KiB (* 1024 bytes).
-    smpBlockSize :: Maybe Int,
+    -- | SMP transport block size
+    smpBlockSize :: Int,
     -- | estimated maximum size of SMP command excluding message body,
     -- determines the maximum allowed message size
     smpCommandSize :: Int
@@ -118,7 +117,7 @@ smpDefaultConfig =
       defaultTransport = ("5223", transport @TLS),
       tcpTimeout = 4_000_000,
       smpPing = 30_000_000,
-      smpBlockSize = Just 8192,
+      smpBlockSize = 16 * 1024, -- TODO move to Protocol
       smpCommandSize = 256
     }
 
@@ -182,7 +181,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
 
     client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =
-      runExceptT (clientHandshake h smpBlockSize $ keyHash smpServer) >>= \case
+      runExceptT (clientHandshake h smpBlockSize) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
         Right th -> do
           atomically $ do
