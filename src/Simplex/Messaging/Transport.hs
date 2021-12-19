@@ -256,8 +256,6 @@ withTlsUnique peer cxt f =
     cxtFinished TServer = T.getPeerFinished
     cxtFinished TClient = T.getFinished
 
--- pure TLS {tlsContext = cxt, tlsUniq = "", buffer, getLock}
-
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
