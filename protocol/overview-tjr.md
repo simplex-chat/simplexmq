@@ -38,7 +38,7 @@ SimpleX as a whole is a platform upon which applications can be built.  SimpleX 
  - SimpleX Agents interface with SimpleX Clients to provide a more high-level API intended to be used by applications. Typically they are embedded as libraries, but are designed so they can also be abstracted into local services.
 
 
-*Diagram showing the SimpleX Chat app, with logical layers of the chat application interfacing with a SimpleX Agent library, which in in turn interfaces with a SimpleX Client library. The Client library in turn speaks the Messaging Protocol to a SimpleX Server.*
+*Diagram showing the SimpleX Chat app, with logical layers of the chat application interfacing with a SimpleX Agent library, which in turn interfaces with a SimpleX Client library. The Client library in turn speaks the Messaging Protocol to a SimpleX Server.*
 
 ```
   User's Computer                 Internet                    Third-Party Server
@@ -72,7 +72,7 @@ SimpleX as a whole is a platform upon which applications can be built.  SimpleX 
 
    - Low latency: the delay introduced by the network should not be higher than 100ms-1s in addition to the underlying TCP network latency.
 
-2. Provide better communication security and privacy than the alternative instant messaging solutions.  In particular SimpleX provides better privacy of metadata (who talks to whom and when) and better security active network attackers and malicious servers.
+2. Provide better communication security and privacy than the alternative instant messaging solutions.  In particular SimpleX provides better privacy of metadata (who talks to whom and when) and better security against active network attackers and malicious servers.
 
 3. Balance user experience with privacy requirements, prioritizing experience of mobile device users.
 
@@ -109,7 +109,7 @@ Users may trust a server because:
 
 - Users trust their contacts and the servers they chose.
 
-By default, servers do not retain access logs, and permanently delete messages and queues when requested.  Messages persist only in memory until they cross a threshold of time, typically on the order of days.[0] There is still a risk that a server maliciously record all queues and messages (even though encrypted) sent via the same transport connection and to gain a partial knowledge of the user’s communications graph and other meta-data.
+By default, servers do not retain access logs, and permanently delete messages and queues when requested.  Messages persist only in memory until they cross a threshold of time, typically on the order of days.[0] There is still a risk that a server maliciously records all queues and messages (even though encrypted) sent via the same transport connection to gain a partial knowledge of the user’s communications graph and other meta-data.
 
 SimpleX supports measures (managed transparently to the user at the agent level) to mitigate the trust placed in servers.  These include rotating the queues in use between users, noise traffic, and supporting overlay networks such as Tor.
 
@@ -128,7 +128,7 @@ It's important to note that the SMP protocol does not do server authentication. 
 
 After the connection is established, the client sends blocks of a fixed size 16Kb, and the server replies with the blocks of the same size to reduce metadata observable to a network adversary. The protocol has been designed to make traffic correlation attacks difficult, adapting ideas from Tor, remailers, and more general onion and mix networks. It does not try to replace Tor though - SimpleX servers can be deployed as onion services and SimpleX clients can communicate with servers over Tor to further improve participants privacy.
 
-By using fixed-size blocks, oversized for the expected content, the vast majority of traffic is uniform in nature. When enough traffic is transiting a server simultaneously, the server acts a (very) low-latency mix node.  We can't rely on this behavior to make a security claim, but we have engineered to take advantage of it when we can. As mentioned, this holds true even if the transport connection is compromised.
+By using fixed-size blocks, oversized for the expected content, the vast majority of traffic is uniform in nature. When enough traffic is transiting a server simultaneously, the server acts as a (very) low-latency mix node.  We can't rely on this behavior to make a security claim, but we have engineered to take advantage of it when we can. As mentioned, this holds true even if the transport connection is compromised.
 
 The protocol does not protect against attacks targeted at particular users with known identities - e.g., if the attacker wants to prove that two known users are communicating, they can achieve it. At the same time, it substantially complicates large-scale traffic correlation, making determining the real user identities much less effective.
 
