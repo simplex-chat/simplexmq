@@ -2,7 +2,7 @@ Revision 1, 2021-12-20
 
 Evgeny Poberezkin
 
-# SimpleX: messaging and application network
+# SimpleX: messaging and application platform
 
 ## Table of contents
 
@@ -23,7 +23,7 @@ Evgeny Poberezkin
 
 #### What is SimpleX
 
-SimpleX as a whole is a framework upon which applications can be built.  SimpleX Chat is one such application that also serves as an example and reference application.
+SimpleX as a whole is a platform upon which applications can be built.  SimpleX Chat is one such application that also serves as an example and reference application.
 
  - SimpleX Messaging Protocol (SMP) is a protocol to send messages in one direction to a recipient, relying on a server in-between. The messages are delivered via uni-directional queues created by recipients.
 
