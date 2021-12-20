@@ -89,7 +89,7 @@ The simplex queue is the main unit of SMP protocol. It is used by:
 
 - Sender of the queue (who received out-of-band message) to send messages to the server using sender's queue ID, signed by sender's key.
 
-- Recipient of the queue (who created the queue and sent out-of-band message) will use it to retrieve messages from the server, signing the commands by the recipient key and decrypting them with the key negotiated during the creation of the queue.
+- Recipient of the queue (who created the queue and sent out-of-band message) will use it to retrieve messages from the server, signing the commands by the recipient key. Recipient decrypts the messages with the key negotiated during the creation of the queue.
 
 - Participant identities are not shared with the server - new unique keys and queue IDs are used for each queue.
 
