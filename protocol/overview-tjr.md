@@ -1,8 +1,23 @@
+Revision 1, 2021-12-20
+
+Evgeny Poberezkin
+
 # SimpleX: messaging and application network
 
 ## Table of contents
 
-todo
+- [Introduction](#introduction)
+  - [What is SimpleX](#what-is-simplex)
+  - [SimpleX objectives](#simplex-objectives)
+  - [In Comparison](#in-comparison)
+- [Technical Details](#technical-details)
+  - [Trust in Servers](#trust-in-servers)
+  - [Client -> Server Communication](#client---server-communication)
+  - [SimpleX Messaging Protocol](#simplex-messaging-protocol)
+  - [SimpleX Agents](#simplex-agents)
+  - [Encryption Primitives Used](#encryption-primitives-used)
+- [Threat model](#threat-model)
+- [Acknowledgements](#acknowledgements)
 
 ## Introduction
 
@@ -57,7 +72,7 @@ SimpleX as a whole is a framework upon which applications can be built.  SimpleX
 
    - Low latency: the delay introduced by the network should not be higher than 100ms-1s in addition to the underlying TCP network latency.
 
-2. Provide better communication security and privacy than the alternative instant messaging solutions.  In particular SimpleX provides better privacy of metadata (who talks to whom and when) and better security active network attackers and malicious servers. XXX I added malicious servers because I think that's a claim you want to make - i.e. the out of band key exchange was specifically because you didn't trust signal's central server, no?
+2. Provide better communication security and privacy than the alternative instant messaging solutions.  In particular SimpleX provides better privacy of metadata (who talks to whom and when) and better security active network attackers and malicious servers.
 
 3. Balance user experience with privacy requirements, prioritizing experience of mobile device users.
 
@@ -74,7 +89,7 @@ In comparison to more traditional messaging applications (e.g. WhatsApp, Signal,
 
 - servers do not store any user information (no user profiles or contacts, or messages once they are delivered), and primarily use in-memory persistence.
 
-- users can change servers with minimal disruption - even after an in-use server disappears, simply by changing the configuration on which servers the new queues are created. XXX I reworded this because I think you can make this claim.  Claim that senders and recipients SHOULD use different servers for their receive queue, and then if an in-use server disappears, the user who had it as their receive queue will notice and tell its communication partners to rotate their sending queue.  
+- users can change servers with minimal disruption - even after an in-use server disappears, simply by changing the configuration on which servers the new queues are created.
 
 ## Technical Details
 
@@ -98,18 +113,18 @@ By default, servers do not retain access logs, and permanently delete messages a
 
 SimpleX supports measures (managed transparently to the user at the agent level) to mitigate the trust placed in servers.  These include rotating the queues in use between users, noise traffic, and supporting overlay networks such as Tor.
 
-[0] While configurable by servers, a minimum value is enforced by the default software. SimpleX Agents provide redundant routing over queues to mitigate against message loss. XXX Note that I added this design (for engineering, not privacy purposes) because it seems like a concession might be needed in some scenarios.  You don't have to keep it (or implement it right away.)
+[0] While configurable by servers, a minimum value is enforced by the default software. SimpleX Agents provide redundant routing over queues to mitigate against message loss.
 
 
 #### Client -> Server Communication
 
 Utilizing TLS grants the SimpleX Messaging Protocol (SMP) server authentication and metadata protection to a passive network observer. But SMP does not rely on the transport protocol for message confidentiality or client authentication. The SMP protocol itself provides end-to-end confidentiality, authentication, and integrity of messages between communicating parties.
 
-Servers have long-lived, self-signed, offline certificates whose hash is pre-shared with clients over secure channels - either provided with the client library or provided in the secure introduction between clients.  The offline certificate signs an online certificate used in the transport protocol handshake. [0] XXX This is a change from our previous discussion. I realized the original model of a single key is not good practice because it hamstrings you with regards to rotating the key due to suspected compromise/protocol upgrades. So instead we make it a two-cert chain.  This is the same model used in Tor both for node connections and DirAuth signing.
+Servers have long-lived, self-signed, offline certificates whose hash is pre-shared with clients over secure channels - either provided with the client library or provided in the secure introduction between clients.  The offline certificate signs an online certificate used in the transport protocol handshake. [0]
 
 If the transport protocol's confidentiality is broken, incoming and outgoing messages to the server cannot be correlated by message contents. Additionally, because of encryption at the SMP layer, impersonating the server is not sufficient to pass (and therefore correlate) a message from a sender to recipient - the only attack possible is to drop the messages. Only by additionally *compromising* the server can one pass and correlate messages.
 
-XXX It's important to note in one's head that the SMP protocol does not do server authentication.  Instead we rely upon the fact that an attacker who tricks the transport protocol into authenticating the server incorrectly cannot do anything with the SMP messages except drop them.
+It's important to note that the SMP protocol does not do server authentication. Instead we rely upon the fact that an attacker who tricks the transport protocol into authenticating the server incorrectly cannot do anything with the SMP messages except drop them.
 
 After the connection is established, the client sends blocks of a fixed size 16Kb, and the server replies with the blocks of the same size to reduce metadata observable to a network adversary. The protocol has been designed to make traffic correlation attacks difficult, adapting ideas from Tor, remailers, and more general onion and mix networks. It does not try to replace Tor though - SimpleX servers can be deployed as onion services and SimpleX clients can communicate with servers over Tor to further improve participants privacy.
 
@@ -146,10 +161,11 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 #### Encryption Primitives Used
 
- - XXX todo
-
-
-
+- Ed25519/Ed448 to sign/verify commands to SMP servers.
+- Curve25519/Curve448 for DH exchange to negotiate the shared secret between server and recipient.
+- [NaCl crypto_box][https://nacl.cr.yp.to/box.html] encryption scheme (curve25519xsalsa20poly1305) for message body encryption between server and recipient.
+- SHA256 to validate server offline certificates.
+- primitives recommended in [double ratchet protocol](https://signal.org/docs/specifications/doubleratchet/#recommended-cryptographic-algorithms) for end-to-end message encryption between the agents.
 
 ## Threat Model
 
@@ -170,12 +186,11 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
  - determine which servers the user communicates with
 
- - observe how much traffic is being sent, and make guesses as to its purpose XXX It occurs to me that at some point you may be able to improve SMP's traffic resistance by analyzing common traffic patterns and seeking to make them more uniform.
+ - observe how much traffic is being sent, and make guesses as to its purpose.
 
 *cannot:*
 
  - see who sends messages to the user and who the user sends the messages to
-
 
 #### A passive adversary able to monitor a set of senders and recipients
 
@@ -221,10 +236,9 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 - learn the contents of messages
 
-- distinguish noise messages from regular messages except via timing regularities XXX the algorithm for noise traffic will undoubtedly make this attack pretty strong
+- distinguish noise messages from regular messages except via timing regularities
 
 - compromise the user's end-to-end encryption with an active attack
-
 
 #### An attacker who obtained Alice's (decrypted) chat database
 
@@ -287,3 +301,10 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 - send messages to a user who they are not connected with
 
 - enumerate queues on a SimpleX server
+
+
+## Acknowledgements
+
+Efim Poberezkin contributed to the design and implementation of SimpleX Messaging Protocol and SimpleX Agent Protocol in 2019-2021.
+
+Adam Langley's [Pond][https://github.com/agl/pond] inspired some of the recent improvements and the structure of this document.
