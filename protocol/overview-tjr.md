@@ -174,7 +174,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
  - A user protects their local database and key material
  - The user's application is authentic, and no local malware is running
  - The cryptographic primitives in use are not broken
- - A user's choice of servers is not directly tied to their identity or otherwise represent distinguishing information about the user.
+ - A user's choice of servers is not directly tied to their identity or otherwise represents distinguishing information about the user.
 
 #### A passive adversary able to monitor the traffic of one user
 
