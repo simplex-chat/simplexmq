@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS rcv_queues(
   rcv_id BLOB NOT NULL,
   conn_alias BLOB NOT NULL,
   rcv_private_key BLOB NOT NULL,
-  snd_id BLOB,
+  snd_id BLOB NOT NULL,
   snd_key BLOB,
   decrypt_key BLOB NOT NULL,
   verify_key BLOB,

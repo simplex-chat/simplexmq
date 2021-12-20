@@ -64,7 +64,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport (ATransport (..), TCP, THandle (..), TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.Timeout (timeout)
@@ -78,12 +78,13 @@ import System.Timeout (timeout)
 data SMPClient = SMPClient
   { action :: Async (),
     connected :: TVar Bool,
+    sessionId :: ByteString,
     smpServer :: SMPServer,
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TVar (Map CorrId Request),
     sndQ :: TBQueue SentRawTransmission,
-    rcvQ :: TBQueue SignedTransmissionOrError,
+    rcvQ :: TBQueue (SignedTransmission (Command 'Broker)),
     msgQ :: TBQueue SMPServerTransmission,
     blockSize :: Int
   }
@@ -101,9 +102,8 @@ data SMPClientConfig = SMPClientConfig
     tcpTimeout :: Int,
     -- | period for SMP ping commands (microseconds)
     smpPing :: Int,
-    -- | SMP transport block size, Nothing - the block size will be set by the server.
-    -- Allowed sizes are 4, 8, 16, 32, 64 KiB (* 1024 bytes).
-    smpBlockSize :: Maybe Int,
+    -- | SMP transport block size
+    smpBlockSize :: Int,
     -- | estimated maximum size of SMP command excluding message body,
     -- determines the maximum allowed message size
     smpCommandSize :: Int
@@ -114,10 +114,10 @@ smpDefaultConfig :: SMPClientConfig
 smpDefaultConfig =
   SMPClientConfig
     { qSize = 16,
-      defaultTransport = ("5223", transport @TCP),
+      defaultTransport = ("5223", transport @TLS),
       tcpTimeout = 4_000_000,
       smpPing = 30_000_000,
-      smpBlockSize = Just 8192,
+      smpBlockSize = 16 * 1024, -- TODO move to Protocol
       smpCommandSize = 256
     }
 
@@ -126,7 +126,7 @@ data Request = Request
     responseVar :: TMVar Response
   }
 
-type Response = Either SMPClientError Cmd
+type Response = Either SMPClientError (Command 'Broker)
 
 -- | Connects to 'SMPServer' using passed client configuration
 -- and queue for messages and notifications.
@@ -147,6 +147,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
       return
         SMPClient
           { action = undefined,
+            sessionId = undefined,
             blockSize = undefined,
             connected,
             smpServer,
@@ -167,7 +168,8 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
             `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
       bSize <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case bSize of
-        Just (Right blockSize) -> Right c {action, blockSize}
+        Just (Right THandle {sessionId, blockSize}) ->
+          Right c {action, sessionId, blockSize}
         Just (Left e) -> Left e
         Nothing -> Left SMPNetworkError
 
@@ -175,16 +177,16 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
     useTransport = case port smpServer of
       Nothing -> defaultTransport cfg
       Just "80" -> ("80", transport @WS)
-      Just p -> (p, transport @TCP)
+      Just p -> (p, transport @TLS)
 
-    client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError Int) -> c -> IO ()
+    client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =
-      runExceptT (clientHandshake h smpBlockSize $ keyHash smpServer) >>= \case
+      runExceptT (clientHandshake h smpBlockSize) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
         Right th -> do
           atomically $ do
             writeTVar (connected c) True
-            putTMVar thVar . Right $ blockSize (th :: THandle c)
+            putTMVar thVar $ Right th
           raceAny_ [send c th, process c, receive c th, ping c]
             `finally` disconnected
 
@@ -197,11 +199,11 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
     ping :: SMPClient -> IO ()
     ping c = forever $ do
       threadDelay smpPing
-      runExceptT $ sendSMPCommand c Nothing "" (Cmd SSender PING)
+      runExceptT $ sendSMPCommand c Nothing "" (ClientCmd SSender PING)
 
     process :: SMPClient -> IO ()
     process SMPClient {rcvQ, sentCommands} = forever $ do
-      (_, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
+      (_, _, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
       if B.null $ bs corrId
         then sendMsg qId respOrErr
         else do
@@ -214,13 +216,13 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
                 if queueId == qId
                   then case respOrErr of
                     Left e -> Left $ SMPResponseError e
-                    Right (Cmd _ (ERR e)) -> Left $ SMPServerError e
+                    Right (ERR e) -> Left $ SMPServerError e
                     Right r -> Right r
                   else Left SMPUnexpectedResponse
 
-    sendMsg :: QueueId -> Either ErrorType Cmd -> IO ()
+    sendMsg :: QueueId -> Either ErrorType (Command 'Broker) -> IO ()
     sendMsg qId = \case
-      Right (Cmd SBroker cmd) -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
+      Right cmd -> atomically $ writeTBQueue msgQ (smpServer, qId, cmd)
       -- TODO send everything else to errQ and log in agent
       _ -> return ()
 
@@ -259,64 +261,65 @@ data SMPClientError
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#create-queue-command
 createSMPQueue ::
   SMPClient ->
-  RecipientPrivateKey ->
-  RecipientPublicKey ->
-  ExceptT SMPClientError IO (RecipientId, SenderId)
-createSMPQueue c rpKey rKey =
+  RcvPrivateSignKey ->
+  RcvPublicVerifyKey ->
+  RcvPublicDhKey ->
+  ExceptT SMPClientError IO QueueIdsKeys
+createSMPQueue c rpKey rKey dhKey =
   -- TODO add signing this request too - requires changes in the server
-  sendSMPCommand c (Just rpKey) "" (Cmd SRecipient $ NEW rKey) >>= \case
-    Cmd _ (IDS rId sId) -> pure (rId, sId)
+  sendSMPCommand c (Just rpKey) "" (ClientCmd SRecipient $ NEW rKey dhKey) >>= \case
+    IDS qik -> pure qik
     _ -> throwE SMPUnexpectedResponse
 
 -- | Subscribe to the SMP queue.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
-subscribeSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> ExceptT SMPClientError IO ()
+subscribeSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c@SMPClient {smpServer, msgQ} rpKey rId =
-  sendSMPCommand c (Just rpKey) rId (Cmd SRecipient SUB) >>= \case
-    Cmd _ OK -> return ()
-    Cmd _ cmd@MSG {} ->
+  sendSMPCommand c (Just rpKey) rId (ClientCmd SRecipient SUB) >>= \case
+    OK -> return ()
+    cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
 -- | Subscribe to the SMP queue notifications.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
-subscribeSMPQueueNotifications :: SMPClient -> NotifierPrivateKey -> NotifierId -> ExceptT SMPClientError IO ()
-subscribeSMPQueueNotifications = okSMPCommand $ Cmd SNotifier NSUB
+subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateSignKey -> NotifierId -> ExceptT SMPClientError IO ()
+subscribeSMPQueueNotifications = okSMPCommand $ ClientCmd SNotifier NSUB
 
 -- | Secure the SMP queue by adding a sender public key.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#secure-queue-command
-secureSMPQueue :: SMPClient -> RecipientPrivateKey -> RecipientId -> SenderPublicKey -> ExceptT SMPClientError IO ()
-secureSMPQueue c rpKey rId senderKey = okSMPCommand (Cmd SRecipient $ KEY senderKey) c rpKey rId
+secureSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> SndPublicVerifyKey -> ExceptT SMPClientError IO ()
+secureSMPQueue c rpKey rId senderKey = okSMPCommand (ClientCmd SRecipient $ KEY senderKey) c rpKey rId
 
 -- | Enable notifications for the queue for push notifications server.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#enable-notifications-command
-enableSMPQueueNotifications :: SMPClient -> RecipientPrivateKey -> RecipientId -> NotifierPublicKey -> ExceptT SMPClientError IO NotifierId
+enableSMPQueueNotifications :: SMPClient -> RcvPrivateSignKey -> RecipientId -> NtfPublicVerifyKey -> ExceptT SMPClientError IO NotifierId
 enableSMPQueueNotifications c rpKey rId notifierKey =
-  sendSMPCommand c (Just rpKey) rId (Cmd SRecipient $ NKEY notifierKey) >>= \case
-    Cmd _ (NID nId) -> pure nId
+  sendSMPCommand c (Just rpKey) rId (ClientCmd SRecipient $ NKEY notifierKey) >>= \case
+    NID nId -> pure nId
     _ -> throwE SMPUnexpectedResponse
 
 -- | Send SMP message.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message
-sendSMPMessage :: SMPClient -> Maybe SenderPrivateKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
+sendSMPMessage :: SMPClient -> Maybe SndPrivateSignKey -> SenderId -> MsgBody -> ExceptT SMPClientError IO ()
 sendSMPMessage c spKey sId msg =
-  sendSMPCommand c spKey sId (Cmd SSender $ SEND msg) >>= \case
-    Cmd _ OK -> return ()
+  sendSMPCommand c spKey sId (ClientCmd SSender $ SEND msg) >>= \case
+    OK -> pure ()
     _ -> throwE SMPUnexpectedResponse
 
 -- | Acknowledge message delivery (server deletes the message).
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
-ackSMPMessage :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
+ackSMPMessage :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
 ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
-  sendSMPCommand c (Just rpKey) rId (Cmd SRecipient ACK) >>= \case
-    Cmd _ OK -> return ()
-    Cmd _ cmd@MSG {} ->
+  sendSMPCommand c (Just rpKey) rId (ClientCmd SRecipient ACK) >>= \case
+    OK -> return ()
+    cmd@MSG {} ->
       lift . atomically $ writeTBQueue msgQ (smpServer, rId, cmd)
     _ -> throwE SMPUnexpectedResponse
 
@@ -324,26 +327,26 @@ ackSMPMessage c@SMPClient {smpServer, msgQ} rpKey rId =
 -- The existing messages from the queue will still be delivered.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#suspend-queue
-suspendSMPQueue :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
-suspendSMPQueue = okSMPCommand $ Cmd SRecipient OFF
+suspendSMPQueue :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
+suspendSMPQueue = okSMPCommand $ ClientCmd SRecipient OFF
 
 -- | Irreversibly delete SMP queue and all messages in it.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#delete-queue
-deleteSMPQueue :: SMPClient -> RecipientPrivateKey -> QueueId -> ExceptT SMPClientError IO ()
-deleteSMPQueue = okSMPCommand $ Cmd SRecipient DEL
+deleteSMPQueue :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
+deleteSMPQueue = okSMPCommand $ ClientCmd SRecipient DEL
 
-okSMPCommand :: Cmd -> SMPClient -> C.APrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
+okSMPCommand :: ClientCmd -> SMPClient -> C.APrivateSignKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c (Just pKey) qId cmd >>= \case
-    Cmd _ OK -> return ()
+    OK -> return ()
     _ -> throwE SMPUnexpectedResponse
 
--- | Send any SMP command ('Cmd' type).
-sendSMPCommand :: SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Cmd -> ExceptT SMPClientError IO Cmd
-sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, tcpTimeout} pKey qId cmd = do
+-- | Send any SMP command ('ClientCmd' type).
+sendSMPCommand :: SMPClient -> Maybe C.APrivateSignKey -> QueueId -> ClientCmd -> ExceptT SMPClientError IO (Command 'Broker)
+sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
-  t <- signTransmission $ serializeTransmission (corrId, qId, cmd)
+  t <- signTransmission $ serializeTransmission sessionId (corrId, qId, cmd)
   ExceptT $ sendRecv corrId t
   where
     lift_ :: STM a -> ExceptT SMPClientError IO a

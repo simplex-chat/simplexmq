@@ -1,5 +1,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -39,8 +40,8 @@ testPort2 = "5002"
 testKeyHashStr :: ByteString
 testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
 
-testBlockSize :: Maybe Int
-testBlockSize = Just 8192
+testBlockSize :: Int
+testBlockSize = 16 * 1024 -- TODO move to Protocol
 
 testKeyHash :: Maybe C.KeyHash
 testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
@@ -51,7 +52,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
   runTransportClient testHost testPort $ \h ->
-    liftIO (runExceptT $ clientHandshake h testBlockSize testKeyHash) >>= \case
+    liftIO (runExceptT $ clientHandshake h testBlockSize) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -60,41 +61,14 @@ cfg =
   ServerConfig
     { transports = undefined,
       tbqSize = 1,
+      serverTbqSize = 1,
       msgQueueQuota = 4,
-      queueIdBytes = 12,
-      msgIdBytes = 6,
+      queueIdBytes = 24,
+      msgIdBytes = 24,
       storeLog = Nothing,
-      blockSize = 8192,
-      serverPrivateKey =
-        -- full RSA private key (only for tests)
-        "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\
-        \TmKzSAw7iVWwEUZR/PeiEKazqrpp9VU="
+      blockSize = testBlockSize,
+      serverPrivateKeyFile = "tests/fixtures/example.key",
+      serverCertificateFile = "tests/fixtures/example.crt"
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
@@ -168,11 +142,11 @@ smpTest4 _ test' = smpTestN 4 _test
     _test _ = error "expected 4 handles"
 
 tPutRaw :: Transport c => THandle c -> SignedRawTransmission -> IO ()
-tPutRaw h (sig, corrId, queueId, command) = do
-  let t = B.intercalate " " [corrId, queueId, command]
+tPutRaw h@THandle {sessionId} (sig, corrId, queueId, command) = do
+  let t = B.unwords [sessionId, corrId, queueId, command]
   void $ tPut h (sig, t)
 
 tGetRaw :: Transport c => THandle c -> IO SignedRawTransmission
 tGetRaw h = do
-  (Nothing, (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
+  (Nothing, _, (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
   pure (Nothing, corrId, encode qId, serializeCommand cmd)

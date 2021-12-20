@@ -3,6 +3,14 @@
 [![GitHub build](https://github.com/simplex-chat/simplexmq/workflows/build/badge.svg)](https://github.com/simplex-chat/simplexmq/actions?query=workflow%3Abuild)
 [![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplexmq)](https://github.com/simplex-chat/simplexmq/releases)
 
+📢 **v0.5.1 brings a hotfix to the server's subscription management logic, to apply it log in to your server via SSH and run the following command. If you have store log enabled for your server, information about already established queues will be preserved.** If you're doing a custom installation instead of Linode or DigitalOcean you may have to change the path for binary download.
+
+```sh
+systemctl stop smp-server
+curl -L -o /opt/simplex/bin/smp-server https://github.com/simplex-chat/simplexmq/releases/download/v0.5.1/smp-server-ubuntu-20_04-x86-64
+systemctl start smp-server
+```
+
 ## Message broker for unidirectional (simplex) queues
 
 SimpleXMQ is a message broker for managing message queues and sending messages over public network. It consists of SMP server, SMP client library and SMP agent that implement [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md) for client-server communication and [SMP agent protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md) to manage duplex connections via simplex queues on multiple SMP servers.
@@ -28,6 +36,25 @@ To enable the queue logging, uncomment `enable: on` option in `smp-server.ini` c
 On the first start the server generates an RSA key pair for encrypted transport handshake and outputs hash of the public key every time it runs - this hash should be used as part of the server address: `<hostname>:5223#<key hash>`.
 
 SMP server implements [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md).
+
+#### Running SMP server on MacOS
+
+SMP server requires OpenSSL library for initialization. On MacOS OpenSSL library may be replaced with LibreSSL, which doesn't support required algorithms. Before initializing SMP server verify you have OpenSSL installed:
+
+```sh
+openssl version
+```
+
+If it says "LibreSSL", please install original OpenSSL:
+
+```sh
+brew update
+brew install openssl
+echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile # or follow whatever instructions brew suggests
+. ~/.zprofile # or restart your terminal to start a new session
+```
+
+Now `openssl version` should be saying "OpenSSL". You can now run `smp-server init` to initialize your SMP server.
 
 ### SMP client library
 
@@ -61,7 +88,7 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 You can get Linode [free credits](https://www.linode.com/lp/affiliate-referral/?irclickid=02-QkdTEpxyLW0W0EOSREQreUkB2DtzGE2lGTE0&irgwc=1&utm_source=impact) to deploy SMP server.
 
-Deployment on [Linode](https://www.linode.com/) is performed via StackScripts, which serve as recipes for Linode instances, also called Linodes. To deploy SMP server on Linode:
+Deployment on Linode is performed via StackScripts, which serve as recipes for Linode instances, also called Linodes. To deploy SMP server on Linode:
 
 - Create a Linode account or login with an already existing one.
 - Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".

@@ -8,30 +8,32 @@ module Simplex.Messaging.Server.Env.STM where
 import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Network.Socket (ServiceName)
+import qualified Network.TLS as T
 import Numeric.Natural
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport (ATransport, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     tbqSize :: Natural,
+    serverTbqSize :: Natural,
     msgQueueQuota :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
     blockSize :: Int,
-    serverPrivateKey :: C.PrivateKey 'C.RSA
-    -- serverId :: ByteString
+    serverPrivateKeyFile :: FilePath,
+    serverCertificateFile :: FilePath
   }
 
 data Env = Env
@@ -40,8 +42,8 @@ data Env = Env
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
-    serverKeyPair :: C.KeyPair 'C.RSA,
-    storeLog :: Maybe (StoreLog 'WriteMode)
+    storeLog :: Maybe (StoreLog 'WriteMode),
+    tlsServerParams :: T.ServerParams
   }
 
 data Server = Server
@@ -54,8 +56,10 @@ data Server = Server
 data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
     ntfSubscriptions :: TVar (Map NotifierId ()),
-    rcvQ :: TBQueue Transmission,
-    sndQ :: TBQueue Transmission
+    rcvQ :: TBQueue (Transmission ClientCmd),
+    sndQ :: TBQueue BrokerTransmission,
+    sessionId :: ByteString,
+    connected :: TVar Bool
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
@@ -73,13 +77,14 @@ newServer qSize = do
   notifiers <- newTVar M.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Natural -> STM Client
-newClient qSize = do
+newClient :: Natural -> ByteString -> STM Client
+newClient qSize sessionId = do
   subscriptions <- newTVar M.empty
   ntfSubscriptions <- newTVar M.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ}
+  connected <- newTVar True
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, connected}
 
 newSubscription :: STM Sub
 newSubscription = do
@@ -88,14 +93,13 @@ newSubscription = do
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config = do
-  server <- atomically $ newServer (tbqSize config)
+  server <- atomically $ newServer (serverTbqSize config)
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
-  let pk = serverPrivateKey config
-      serverKeyPair = (C.publicKey pk, pk)
-  return Env {config, server, queueStore, msgStore, idsDrg, serverKeyPair, storeLog = s'}
+  tlsServerParams <- liftIO $ loadTLSServerParams (serverCertificateFile config) (serverPrivateKeyFile config)
+  return Env {config, server, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do

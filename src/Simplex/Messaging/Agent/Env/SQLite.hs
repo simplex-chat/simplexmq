@@ -31,7 +31,9 @@ data AgentConfig = AgentConfig
     dbPoolSize :: Int,
     smpCfg :: SMPClientConfig,
     retryInterval :: RetryInterval,
-    reconnectInterval :: RetryInterval
+    reconnectInterval :: RetryInterval,
+    agentPrivateKeyFile :: FilePath,
+    agentCertificateFile :: FilePath
   }
 
 minute :: Int
@@ -60,7 +62,10 @@ defaultAgentConfig =
           { initialInterval = 1_000_000,
             increaseAfter = 10_000_000,
             maxInterval = 10_000_000
-          }
+          },
+      -- ! we do not generate these key and certificate
+      agentPrivateKeyFile = "/etc/opt/simplex-agent/agent.key",
+      agentCertificateFile = "/etc/opt/simplex-agent/agent.crt"
     }
 
 data Env = Env

@@ -22,9 +22,10 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
-    RecipientPrivateKey,
-    SenderPrivateKey,
-    SenderPublicKey,
+    RcvDhSecret,
+    RcvPrivateSignKey,
+    SndPrivateSignKey,
+    SndPublicVerifyKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 
@@ -74,9 +75,15 @@ class Monad m => MonadAgentStore s m where
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
 data RcvQueue = RcvQueue
   { server :: SMPServer,
+    -- | recipient queue ID
     rcvId :: SMP.RecipientId,
-    rcvPrivateKey :: RecipientPrivateKey,
+    -- | key used by the recipient to sign transmissions
+    rcvPrivateKey :: RcvPrivateSignKey,
+    -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
+    rcvDhSecret :: RcvDhSecret,
+    -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
+    -- | TODO keys used for E2E encryption - these will change with double ratchet
     decryptKey :: C.APrivateDecryptKey,
     verifyKey :: Maybe C.APublicVerifyKey,
     status :: QueueStatus
@@ -87,7 +94,7 @@ data RcvQueue = RcvQueue
 data SndQueue = SndQueue
   { server :: SMPServer,
     sndId :: SMP.SenderId,
-    sndPrivateKey :: SenderPrivateKey,
+    sndPrivateKey :: SndPrivateSignKey,
     encryptKey :: C.APublicEncryptKey,
     signKey :: C.APrivateSignKey,
     status :: QueueStatus
@@ -160,14 +167,14 @@ newtype ConnData = ConnData {connId :: ConnId}
 
 data NewConfirmation = NewConfirmation
   { connId :: ConnId,
-    senderKey :: SenderPublicKey,
+    senderKey :: SndPublicVerifyKey,
     senderConnInfo :: ConnInfo
   }
 
 data AcceptedConfirmation = AcceptedConfirmation
   { confirmationId :: ConfirmationId,
     connId :: ConnId,
-    senderKey :: SenderPublicKey,
+    senderKey :: SndPublicVerifyKey,
     senderConnInfo :: ConnInfo,
     ownConnInfo :: ConnInfo
   }

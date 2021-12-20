@@ -1,3 +1,7 @@
+# 0.5.1
+
+- Fix server subscription logic bug that was leading to memory leak / resource exhaustion in some edge cases.
+
 # 0.5.0
 
 - No changes in SMP server implementation - it is backwards compatible with v0.4.1

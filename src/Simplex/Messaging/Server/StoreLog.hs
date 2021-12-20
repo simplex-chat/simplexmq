@@ -50,8 +50,8 @@ data StoreLog (a :: IOMode) where
 
 data StoreLogRecord
   = CreateQueue QueueRec
-  | SecureQueue QueueId SenderPublicKey
-  | AddNotifier QueueId NotifierId NotifierPublicKey
+  | SecureQueue QueueId SndPublicVerifyKey
+  | AddNotifier QueueId NotifierId NtfPublicVerifyKey
   | DeleteQueue QueueId
 
 storeLogRecordP :: Parser StoreLogRecord
@@ -66,12 +66,13 @@ storeLogRecordP =
     addNotifierP =
       AddNotifier <$> base64P <* A.space <*> base64P <* A.space <*> C.strKeyP
     queueRecP = do
-      recipientId <- "rid=" *> base64P <* A.space
-      senderId <- "sid=" *> base64P <* A.space
-      recipientKey <- "rk=" *> C.strKeyP <* A.space
-      senderKey <- "sk=" *> optional C.strKeyP
+      recipientId <- "rid=" *> base64P
+      recipientKey <- " rk=" *> C.strKeyP
+      rcvDhSecret <- " rdh=" *> C.strDhSecretP
+      senderId <- " sid=" *> base64P
+      senderKey <- " sk=" *> optional C.strKeyP
       notifier <- optional $ (,) <$> (" nid=" *> base64P) <*> (" nk=" *> C.strKeyP)
-      pure QueueRec {recipientId, senderId, recipientKey, senderKey, notifier, status = QueueActive}
+      pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
 
 serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
@@ -80,14 +81,16 @@ serializeStoreLogRecord = \case
   AddNotifier rId nId nKey -> B.unwords ["NOTIFIER", encode rId, encode nId, C.serializeKey nKey]
   DeleteQueue rId -> "DELETE " <> encode rId
   where
-    serializeQueue QueueRec {recipientId, senderId, recipientKey, senderKey, notifier} =
-      B.unwords
-        [ "rid=" <> encode recipientId,
-          "sid=" <> encode senderId,
-          "rk=" <> C.serializeKey recipientKey,
-          "sk=" <> maybe "" C.serializeKey senderKey
-        ]
-        <> maybe "" serializeNotifier notifier
+    serializeQueue
+      QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
+        B.unwords
+          [ "rid=" <> encode recipientId,
+            "rk=" <> C.serializeKey recipientKey,
+            "rdh=" <> C.serializeDhSecret rcvDhSecret,
+            "sid=" <> encode senderId,
+            "sk=" <> maybe "" C.serializeKey senderKey
+          ]
+          <> maybe "" serializeNotifier notifier
     serializeNotifier (nId, nKey) = " nid=" <> encode nId <> " nk=" <> C.serializeKey nKey
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
@@ -116,10 +119,10 @@ writeStoreLogRecord (WriteStoreLog _ h) r = do
 logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
 logCreateQueue s = writeStoreLogRecord s . CreateQueue
 
-logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SenderPublicKey -> IO ()
+logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicVerifyKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
 
-logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NotifierId -> NotifierPublicKey -> IO ()
+logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NotifierId -> NtfPublicVerifyKey -> IO ()
 logAddNotifier s qId nId nKey = writeStoreLogRecord s $ AddNotifier qId nId nKey
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()

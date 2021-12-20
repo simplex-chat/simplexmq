@@ -156,7 +156,13 @@ testPrivateDecryptKey :: C.APrivateDecryptKey
 testPrivateDecryptKey = C.APrivateDecryptKey C.SRSA testPrivateKey
 
 testPublicEncryptKey :: C.APublicEncryptKey
-testPublicEncryptKey = C.APublicEncryptKey C.SRSA $ C.PublicKeyRSA $ R.PublicKey 1 2 3
+testPublicEncryptKey = C.APublicEncryptKey C.SRSA testPublicKey
+
+testPublicKey :: C.PublicKey 'C.RSA
+testPublicKey = C.PublicKeyRSA $ R.PublicKey 1 2 3
+
+testDhSecret :: C.DhSecret 'C.X25519
+testDhSecret = "01234567890123456789012345678901"
 
 testPrivateKey :: C.PrivateKey 'C.RSA
 testPrivateKey =
@@ -182,6 +188,7 @@ rcvQueue1 =
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       rcvId = "1234",
       rcvPrivateKey = testPrivateSignKey,
+      rcvDhSecret = testDhSecret,
       sndId = Just "2345",
       decryptKey = testPrivateDecryptKey,
       verifyKey = Nothing,
@@ -354,6 +361,7 @@ testUpgradeSndConnToDuplex =
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               rcvId = "3456",
               rcvPrivateKey = testPrivateSignKey,
+              rcvDhSecret = testDhSecret,
               sndId = Just "4567",
               decryptKey = testPrivateDecryptKey,
               verifyKey = Nothing,

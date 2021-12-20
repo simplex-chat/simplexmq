@@ -116,8 +116,7 @@ The SMP queue URIs MUST include server identity, queue hostname, an optional por
 The [ABNF][8] syntax of the queue URI is:
 
 ```abnf
-queueURI = %s"smp://" smpServer "/" queueId "#" serverSignaturePublicKey
-; serverSignaturePublicKey syntax is defined below
+queueURI = %s"smp://" smpServer "/" queueId ["#"]
 smpServer = serverIdentity "@" srvHost [":" port] 
 srvHost = <hostname> ; RFC1123, RFC5891
 port = 1*DIGIT
@@ -353,7 +352,8 @@ Commands syntax below is provided using [ABNF][8] with [case-sensitive strings e
 Each transmission between the client and the server must have this format/syntax (after the decryption):
 
 ```abnf
-transmission = [signature] SP signed SP pad ; pad to the fixed block size
+transmission = [signature] SP signedSize SP signed SP pad ; pad to the fixed block size
+signedSize = 1*DIGIT
 signed = sessionIdentifier SP [corrId] SP [queueId] SP cmd ; corrId is required in client commands and server responses,
                                                            ; corrId is empty in server notifications.
 cmd = ping / recipientCmd / send / subscribeNotifications / serverMsg
@@ -425,10 +425,7 @@ x509encoded = <base64 X509 key encoding>
 If the queue is created successfully, the server must send `queueIds` response with the recipient's and sender's queue IDs and public keys to sign all responses and messages and to encrypt delivered message bodies:
 
 ```abnf
-queueIds = %s"IDS" SP recipientId SP senderId
-           SP serverSignaturePublicKey SP serverDhPublicKey
-serverSignaturePublicKey = signatureKey
-; the server's public key to verify responses and messages for this queue
+queueIds = %s"IDS" SP recipientId SP senderId SP srvDhPublicKey
 serverDhPublicKey = dhPublicKey
 ; the server's key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies to the recipient
@@ -440,7 +437,7 @@ Once the queue is created, the recipient gets automatically subscribed to receiv
 
 `NEW` transmission MUST be signed using the private part of the `recipientSignaturePublicKey` – this verifies that the client has the private key that will be used to sign subsequent commands for this queue.
 
-`IDS` response transmission MUST be sent signed with `serverSignaturePublicKey` – this verifies that the server has the private key that will be used to sign subsequent responses and messages for this queue.  This response should be sent with empty queue ID (the third part of the transmission).
+`IDS` response transmission MUST be sent with empty queue ID (the third part of the transmission).
 
 #### Subscribe to queue
 
