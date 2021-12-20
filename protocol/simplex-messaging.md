@@ -89,7 +89,7 @@ The simplex queue is the main unit of SMP protocol. It is used by:
 
 - Sender of the queue (who received out-of-band message) to send messages to the server using sender's queue ID, signed by sender's key.
 
-- Recipient of the queue (who created the queue and sent out-of-band message) will use it to retrieve messages from the server, signing the commands by the recipient key.
+- Recipient of the queue (who created the queue and sent out-of-band message) will use it to retrieve messages from the server, signing the commands by the recipient key and decrypting them with the key negotiated during the creation of the queue.
 
 - Participant identities are not shared with the server - new unique keys and queue IDs are used for each queue.
 
@@ -99,7 +99,7 @@ This approach is based on the concept of [unidirectional networks][4] that are u
 
 Access to each queue is controlled with unique (not shared with other queues) asymmetric key pairs, separate for the sender and the recipient. The sender and the receiver have private keys, and the server has associated public keys to authenticate participants' commands by verifying cryptographic signatures.
 
-The messages sent over the queue are encrypted and decrypted using another key pair that was shared via out-of-band message - the recipient has the private key and the sender has the associated public key.
+The messages sent over the queue are end-to-end encrypted using key negotiated via out-of-band message and SMP confirmation.
 
 **Simplex queue diagram:**
 
@@ -145,17 +145,21 @@ To create and start using a simplex queue Alice and Bob follow these steps:
 
     3. Generates another new random public/private key pair (recipient key - `RK`) that she did not use before for her to sign commands and to decrypt the transmissions received from the server.
 
-    4. Sends `"NEW"` command to the server to create a simplex queue (see `create` in [Create queue command](#create-queue-command)). This command contains previously generated unique "public" key `RK` that will be used to verify the following commands related to the same queue signed by its private counterpart, for example to subscribe to the messages received to this queue or to update the queue, e.g. by setting the key required to send the messages (initially Alice creates the queue that accepts unsigned messages, so anybody could send the message via this queue if they knew the queue sender's ID and server address).
+    4. Generates one more random key pair (recipient DH key - `RDHK`) to negotiate symmetric key that will be used by the server to encrypt message bodies delivered to Alice (to avoid shared cipher-text inside transport connection).
 
-    5. The server sends `"IDS"` response with queue IDs (`queueIds`):
+    5. Sends `"NEW"` command to the server to create a simplex queue (see `create` in [Create queue command](#create-queue-command)). This command contains previously generated unique "public" keys `RK` and `SK`. `RK` will be used to verify the following commands related to the same queue signed by its private counterpart, for example to subscribe to the messages received to this queue or to update the queue, e.g. by setting the key required to send the messages (initially Alice creates the queue that accepts unsigned messages, so anybody could send the message via this queue if they knew the queue sender's ID and server address).
+
+    6. The server sends `"IDS"` response with queue IDs (`queueIds`):
 
         - Recipient ID `RID` for Alice to manage the queue and to receive the messages.
 
         - Sender ID `SID` for Bob to send messages to the queue.
 
+        - Server public DH key (`SDHK`) to negotiate a shared secret for message body encryption, that Alice uses to derive a shared secret with the server `SS`.
+
 2. Alice sends an out-of-band message to Bob via the alternative channel that both Alice and Bob trust (see [protocol abstract](#simplex-messaging-protocol-abstract)). The message must include:
 
-    - Unique "public" key (`EK`) that Bob must use to encrypt messages.
+    - Unique "public" key (`EK`) that Bob must use for E2E key agreement.
 
     - SMP server hostname and information to open secure encrypted transport connection (see [Appendix A](#appendix-a)).
 
@@ -177,9 +181,11 @@ To create and start using a simplex queue Alice and Bob follow these steps:
 
 4. Alice receives Bob's message from the server using recipient queue ID `RID` (possibly, via the same transport connection she already has opened - see `message` in [Deliver queue message](#deliver-queue-message)):
 
-    1. She decrypts received message with "private" key `EK`.
+    1. She decrypts received message body with key `SS`.
 
-    2. Even though anybody could have sent the message to the queue with ID `SID` before it is secured (e.g. if communication is compromised), Alice would ignore all messages until the decryption succeeds (i.e. the result contains the expected message format). Optionally, in the client application, she also may identify Bob using the information provided, but it is out of scope of SMP protocol.
+    2. She decrypts received message with [key agreed with sender using] "private" key `EK`.
+
+    3. Even though anybody could have sent the message to the queue with ID `SID` before it is secured (e.g. if communication is compromised), Alice would ignore all messages until the decryption succeeds (i.e. the result contains the expected message format). Optionally, in the client application, she also may identify Bob using the information provided, but it is out of scope of SMP protocol.
 
 5. Alice secures the queue `RID` with `"KEY"` command so only Bob can send messages to it (see [Secure queue command](#secure-queue-command)):
 
@@ -205,7 +211,7 @@ Bob now can securely send messages to Alice:
 
     2. He signs `"SEND"` command to the server queue `SID` using the "private" key `SK` (that only he knows, used only for this queue).
 
-    3. He sends the command to the server (see `send` in [Send message](#send-message)), that the server will authenticate using the "public" key `SK` (that Alice earlier provided to the server).
+    3. He sends the command to the server (see `send` in [Send message](#send-message)), that the server will authenticate using the "public" key `SK` (that Alice earlier received from Bob and provided to the server via `"KEY"` command).
 
 2. Alice receives the message(s):
 
@@ -602,7 +608,7 @@ timestamp = <date-time defined in RFC3339>
 
 `timestamp` - the UTC time when the server received the message from the sender, must be in date-time format defined by [RFC 3339][10]
 
-`msgBody` - see syntax in [Send message](#send-message)
+`sentMessage` - see syntax in [Send message](#send-message)
 
 When server delivers the messages to the recipient, message body should be encrypted with the secret derived from DH exchange using the keys passed during the queue creation and returned with `queueIds` response.
 
