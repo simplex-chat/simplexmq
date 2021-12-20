@@ -252,7 +252,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 - prevent Alice from receiving all new messages sent to her - either surreptitiously by emptying the queues regularly or overtly by deleting them
 
-- send messages from the user to their contacts, detectable when  recipients will detect it as soon as the user sends the next message, because the previous message hash won’t match (and potentially won’t be able to decrypt them in case they don’t keep the previous ratchet keys).
+- send messages from the user to their contacts; recipients will detect it as soon as the user sends the next message, because the previous message hash won’t match (and potentially won’t be able to decrypt them in case they don’t keep the previous ratchet keys).
 
 *cannot:*
 
