@@ -416,8 +416,8 @@ dhPublicKey = encryptionScheme ":" x509encoded
 ; the recipient's key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies
 
-encryptionScheme = %s"x25519" | %s"x448"
-; TODO change to define the encryption scheme, e.g. "crypto_box"
+encryptionScheme = %s"x25519"
+; x25519 scheme means [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
 
 x509encoded = <base64 X509 key encoding>
 ```
@@ -689,7 +689,7 @@ The transport protocol should provide the following:
 - unique channel binding (`sessionIdentifier`) to include in the signed part of SMP transmissions.
 
 By default, the client and server communicate using [TLS 1.3 protocol][13] restricted to:
-- TLS_AES_256_GCM_SHA384 cypher suite,
+- TLS_CHACHA20_POLY1305_SHA256 cipher suite (for better performance on mobile devices),
 - ed25519 and ed448 EdDSA algorithms for signatures,
 - x25519 and x448 ECDHE groups for key exchange.
 - servers must send only one self-signed certificate in the handshake, clients must abort the connection in case more than one certificate is sent.
@@ -731,3 +731,4 @@ The communication party (client or server) that has the lower protocol version s
 [13]: https://datatracker.ietf.org/doc/html/rfc8446
 [14]: https://datatracker.ietf.org/doc/html/rfc5929#section-3
 [15]: https://www.rfc-editor.org/rfc/rfc8709.html
+[16]: https://nacl.cr.yp.to/box.html

@@ -8,15 +8,19 @@
 
 ## SimpleX objectives
 
-1. Provide messaging infrastructure for distributed applications. This infrastructure needs to have the following qualities:
+1. Provide messaging infrastructure for chat and other distributed applications, both applications other than chat and applications built on top of chat. This infrastructure needs to have the following qualities:
 
-   - Security against passive and active (man-in-the-middle) attacks: the parties should have reliable end-to-end encryption and be able to identify and to some extent compensate for the presence of the active attacker who may modify, delete or add messages.
+ABOVE IS CORRECTED BASED ON THE COMMENT: It's unclear to me if you mean that the _chat_ is the infrastructure that applications build on.  i.e. the chat layer (which is built on the agent layer (i think?) which is built on SimpleX Messaging queues) itself is intended to be built upon and used by applications like e.g. WhatsApp.
+
+   - Security against passive and active (man-in-the-middle) attacks: the parties should have reliable end-to-end encryption and be able to identify  the presence of the active attacker who modified, deleted or added messages.
   
-   - Privacy: network server operators should have no ability to read or modify messages without detection, and it should be impossible or hard to infer the contacts the users communicate with. Non-malicious network operators should retain no record of participants communications.
+   - Privacy: protect against traffic correlation attacks to determine the contacts that the users communicate with.
+
+ABOVE IS CORRECTED BASED ON THE COMMENT: If you're going to use a word like 'hard' it's a bit of a red flag because typically people have very different definitions of 'hard'.  And usually the protocol designer's version is much weaker than the critic's. Similarly "to some extent compensate".  This type of content really makes section better suited for a different location. Maybe a different document, maybe after the threat model.
   
    - Reliability: the messages should be delivered even if some participating network servers or receiving clients fail, with “at least once” delivery guarantee.
   
-   - Integrity: the messages should be delivered without alteration, in the same order, and any unauthorized message change should be detected by the recipient.
+   - Integrity: the messages sent in one direction are ordered in a way that sender and recipient agree on; the recipient can detect when a message was removed or changed.
   
    - Asynchronous delivery: it should not be required that both communicating parties (client devices, services or applications) are online for reliable message delivery.
   
@@ -40,7 +44,9 @@ The key differences of SimpleX network are:
 
 - message queues provided by network servers are used by the clients to create more complex communication scenarios, such as duplex one-to-one communication, transmitting files, group communication without central servers and content/communication channels (requiring a separate type of server to host them, which is out of scope of this document).
 
-- servers do not store any user information (no user profiles, contacts or messages, once they are delivered), and can use in-memory persistence only.
+- servers do not store any user information (no user profiles, contacts or messages, once they are delivered).
+
+ABOVE IS CORRECTED BASED ON THE COMMENT: This isn't really appropriate for this document.  Firstly, there's nothing technically limiting the server from _not_ using memory persistence. Secondly, even if you corrected it to "by default" - the point of this document isn't to describe how things works when everyone behaves honestly, it's to describe what the capabilities/limitations of an attacker are when they behave maliciously.
 
 - users can change server provider(s) without losing their communication contacts, simply by changing the configuration on which servers the new queues are created.
 
@@ -50,11 +56,19 @@ SimpleX network has design similar to P2P networks, but unlike most P2P networks
 
 - provide recipient anonymity, as the messaging queues do not identify the users, and different addresses of the same queue are used for senders and recipients to provide additional protection against server traffic correlation, in case transport connections are compromised.
 
+COMMENT TO THE ABOVE: Editorially, this paragraph is not helpful. At this point in the document we haven't really described enough to figure out what all of this means.  "recipient anonymity", "users", "addresses", "server traffic", "transport connections" - all of these are kind of ambiguous at this point in the document.
+
 Coincidentally, SimpleX network reminds [Pond messenger](https://github.com/agl/pond) design, the main differences are:
 
 - Clients can receive messages via multiple servers (in Pond users use one home server and it serves as a user permanent address),
 
 - Clients do not need to poll servers to receive messages, the messages from subscribed queues are delivered via an open transport connection as they are received by the servers, resulting in low latency of message delivery.
+
+The protocol has been designed to make traffic correlation attacks difficult, adapting ideas from Tor, remailers, and more general onion and mix networks. It does not try to replace Tor though, and Tor can be used both as a transport layer by the clients, and the servers can deployed as Tor hidden services to further improve participants privacy.
+
+By using fixed-size blocks, oversized for the expected content, the vast majority of traffic is uniform in nature. Traffic correlation is an attack that can be improved with machine learning models, trading false positives or false negatives. When enough traffic is transiting a server simultaneously, the server acts a (very) low-latency mix node.  We can't rely on this behavior to make a security claim, but we have engineered to take advantage of it when we can. This holds true even if the transport connection (TLS generally) is compromised as the incoming and outgoing traffic has no identifiers or cipher-text in common.
+
+The protocol does not protect against attacks targeted at particular users with known identities - e.g., if the attacker wants to prove that two known users are communicating, they can achieve it. At the same time, it substantially complicates large-scale traffic correlation, making determining the real user identities much less effective than with any alternative solution known to us.
 
 ### SimpleX servers
 
@@ -72,11 +86,13 @@ It is assumed that users have some degree of trust to the servers, for one of th
 
   - using SMP servers via an onion routing or mix network.
 
-- They use servers from the trusted commercial providers. The more clients the provider has, the less meta-data about the communication times is leaked to the network observers, and even if transport confidentiality is compromised it is not possible to correlate sent and received traffic without compromising the server, because the clients use different queue IDs to send and receive messages, and the message delivered to the recipient is additionally encrypted by the server.
+- They use servers from the trusted commercial providers. The more clients the provider has, the more ineffective it becomes to use the meta-data about the communication times to correlate the sent and received traffic of the server. Even if transport confidentiality is compromised, there is no additional meta-data to correlate by, as the incoming and outgoing traffic is uniform in nature, having fixed size blocks and no identifiers or cipher-text in common.
 
 - To some extent, users trust their contacts and the servers they chose that the users send messages to. The client applications could further improve user trust to the servers chosen by their contacts by supporting either the list of servers that are “allowed to send to” or “prohibited to send to” (e.g., known trusted or compromised servers, certain IP ranges, server geographical locations etc.).
 
-If users use the free servers deployed by the volunteers, there is a risk that the server code can maliciously record all queues and messages (even though encrypted) sent via the same transport connection and to gain a partial knowledge of the user’s communications graph and other meta-data. User clients can mitigate it by using some overlay network that protects the privacy of TCP connections, e.g., Tor, and by sending noise traffic between the end users.
+The servers can maliciously or for any other reason record queues and messages (even though encrypted) sent via the same transport connection to gain a partial knowledge of the user’s contacts graph and other meta-data. User clients can mitigate it by using some overlay network that protects the privacy of TCP connections, e.g., Tor, and by sending noise traffic between the end users.
+
+ABOVE IS CORRECTED BASED ON THE COMMENT: This risk is not unique to volunteers and indeed would not be a difficult request to make in a pen register from law enforcement.
 
 The servers authorize users to access (send/receive/etc.) their message queues via a digital signature of transmissions using a unique key pair different for each queue sender and recipient, so no information that is required for the server to authorize users allows to aggregate user communications across multiple queues.
 
@@ -92,7 +108,7 @@ After TCP transport connection is established, and the server is authenticated, 
 
 Client can terminate the server transport connection without losing any messages – removal of the message from the server and the delivery of the next message happens when the client acknowledges the message reception (normally, after it is persisted in the client’s database).
 
-Depending on the privacy requirements of the clients, the client can use a separate transport connection per queue, or receive messages from multiple queues via a single transport connection, for efficiency. In our implementations this configuration will be available to the end users.
+Depending on the privacy requirements of the users, the client can use a separate transport connection per queue, or receive messages from multiple queues via a single transport connection, for efficiency. In our implementations this configuration will be available to the end users. At the same time, we will aim to minimize available user choices that affect security and privacy, making all options as clear as possible, and present them under a single "privacy slider", analogous to Tor's security slider.
 
 ### Server implementation
 
@@ -103,6 +119,8 @@ Depending on the privacy requirements of the clients, the client can use a separ
 - permanently removes queues after they are deleted by the users
 
 - only stores messages in transit in server operating memory; as clients are expected to use multiple servers to deliver each message, the message loss in one of the servers is acceptable.
+
+AMENDED BASED ON THE COMMENT: Saying it's acceptable because they "can use" seems like a disconnect... If you're going to go so far as to say 'it's fine don't worry about it' then I would say you should really "expect" clients to use multiple servers to deliver a message.
 
 ### SimpleX clients and agents
 
@@ -158,15 +176,23 @@ User device is not compromised, excluding the scenarios below where it is explic
 
 Used cryptographic primitives are not compromised.
 
+The used servers are not directly tied to someone's identity or have and distinguishing information about the users.
+
 ### SimpleX Messaging Protocol server
 
 **can:**
 
+- learn a user's IP address, track them through other IP addresses they use to access to same queue, and infer information (e.g. employer) based on the IP addresses, as long as Tor is not used.
+
 - learn when a queue recipient or sender is online via transmission times.
+
+- lie about the state of a queue to the recipient and/or to the sender  (e.g. suspended or deleted when it is not).
+
+- prevent message delivery.
 
 - correlate multiple queues to a single user in case they are accessed via the same transport connection or from the same IP address.
 
-- correlate multiple queues to a single user based on the time they are accessed. Clients that use message notification servers can mitigate it by only subscribing to the queues after they receive the notifications and disconnecting after some time of inactivity.
+- correlate multiple queues to a single user based on the time they are accessed.
 
 - know how many messages is sent via the queue, clients can mitigate it with noise traffic.
 
@@ -178,7 +204,7 @@ Used cryptographic primitives are not compromised.
 
 - compromise e2e encryption with MITM attack (as server is only used to pass one of two keys in DH exchange, the first key is passed out-of-band)
 
-### A global passive adversary monitoring all Internet traffic
+### A passive adversary able to monitor a set of senders and recipients
 
 **can:**
 
@@ -188,7 +214,7 @@ Used cryptographic primitives are not compromised.
 
 - learn which SimpleX Messaging Protocol servers are used.
 
-- in case of low traffic on the servers, correlate senders and recipients by the time messages sent and received.
+- in case of low traffic on the servers, correlate senders and recipients within the monitored set by the time messages sent and received.
 
 - observe the approximate size of the files transmitted – to O(log log M) of file size precision.
 
@@ -196,11 +222,13 @@ Used cryptographic primitives are not compromised.
 
 - correlate senders and recipients by the content of messages (as different queue IDs are used for senders and recipients, with additional encryption layer in the delivered messages).
 
-### A local network attacker
+### A passive adversary able to monitor the traffic of one user
 
 **can:**
 
 - observe when a user is using SimpleX Chat.
+
+- learn when messages are sent and received.
 
 - block SimpleX Chat traffic.
 
@@ -220,7 +248,11 @@ Used cryptographic primitives are not compromised.
 
 - see shared profiles of contacts and groups
 
-- receive new user messages, but the user will detect it as the number and the hash of the previous message won’t match. Also, they will be instantly alerted that an unknown device is connected to their message queues, as long as they are online at the same time, as message queues only allow one active subscription.
+- receive new user messages, but the user will be alerted that an unknown device is connected to their message queues, as long as they are online at the same time, as message queues only allow one active subscription, and when any client subscribes to the queue, currently subscribed client is unsubscribed and notified.
+
+- remove user messages from the queue, but the user will detect it when they receive the next message, as the number and the hash of the previous message won’t match.
+
+- remove user messages from the queue continuously, preventing a user from receiving any messages and detecting that some messages are missing, but the user would detect it by the absence of status updates from their contacts that can be regularly sent even when no user-created messages are sent by their contacts.
 
 - delete user’s message queues, so the contacts won’t be able to send messages.
 
@@ -240,9 +272,9 @@ Used cryptographic primitives are not compromised.
 
 **cannot:**
 
-- prove to a third-party that a message came from a user (assuming a user’s device is not seized)
+- cryptographically prove to a third-party that a message came from a user (assuming a user’s device is not seized)
 
-- prove that two contacts they have is the same user.
+- prove that two contacts they have is the same user. Implementation should take care to only use correct cryptographic keys associated with a given queue (or connection, for E2E keys) for this claim to hold true.
 
 - two contacts cannot confirm if they are communicating with the same user.
 
