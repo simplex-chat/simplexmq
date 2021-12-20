@@ -137,7 +137,7 @@ The protocol does not protect against attacks targeted at particular users with 
 
 #### SimpleX Messaging Protocol
 
-SMP is initialized with an in-person or out-of-band introduction message, where Alice provides Bob with details of a server (including IP, port, and hash of the long-lived offline key), a queue ID, and Alice's public key for her receiving queue. These introductions are similar to the PANDA key-exchange, in that if observed, the adversary can race to establish the communication channel instead of the intended participant. [0]
+SMP is initialized with an in-person or out-of-band introduction message, where Alice provides Bob with details of a server (including IP, port, and hash of the long-lived offline certificate), a queue ID, and Alice's public key for her receiving queue. These introductions are similar to the PANDA key-exchange, in that if observed, the adversary can race to establish the communication channel instead of the intended participant. [0]
 
 Because queues are uni-directional, Bob provides an identically-formatted introduction message to Alice over Alice's now-established receiving queue.
 
@@ -174,7 +174,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
  - A user protects their local database and key material
  - The user's application is authentic, and no local malware is running
  - The cryptographic primitives in use are not broken
- - A user's choice of servers are not directly tied to their identity or otherwise represent distinguishing information about the user.
+ - A user's choice of servers is not directly tied to their identity or otherwise represent distinguishing information about the user.
 
 #### A passive adversary able to monitor the traffic of one user
 
@@ -196,7 +196,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
  *can:*
 
- - identify who and when users are using SimpleX
+ - identify who and when is using SimpleX
 
  - learn which SimpleX Messaging Protocol servers are used as receive queues for which users
 
@@ -220,7 +220,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 - perform queue correlation (matching multiple queues to a single user) via either a re-used transport connection, user's IP Address, or connection timing regularities
 
-- learn a user's IP address, track them through other IP addresses they use to access to same queue, and infer information (e.g. employer) based on the IP addresses, as long as Tor is not used.
+- learn a user's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on the IP addresses, as long as Tor is not used.
 
 - drop all future messages inserted into a queue, detectable only over other, redundant queues
 
