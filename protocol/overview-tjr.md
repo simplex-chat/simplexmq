@@ -256,11 +256,11 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 *cannot:*
 
-- impersonate a sender and send messages to the user whose database was stolen. Doing so requires also compromising the server (to place the message in the queue) or the user's device at a subsequent time (to place the message in the database).
+- impersonate a sender and send messages to the user whose database was stolen. Doing so requires also compromising the server (to place the message in the queue, that is possible until the Double-Ratchet advances forward) or the user's device at a subsequent time (to place the message in the database).
 
-- undetectably communicate at the same time as Alice with her contacts. Doing so would result in the contact getting different messages with repeated keys
+- undetectably communicate at the same time as Alice with her contacts. Doing so would result in the contact getting different messages with repeated IDs.
 
-- undetectably monitor message queues in realtime without alerting the user they are doing so, as a second subscription request unsubcribes the first and notifies the second
+- undetectably monitor message queues in realtime without alerting the user they are doing so, as a second subscription request unsubscribes the first and notifies the second.
 
 #### A user’s contact
 
