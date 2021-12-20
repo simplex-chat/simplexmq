@@ -163,7 +163,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 - Ed25519/Ed448 to sign/verify commands to SMP servers.
 - Curve25519/Curve448 for DH exchange to negotiate the shared secret between server and recipient.
-- [NaCl crypto_box][https://nacl.cr.yp.to/box.html] encryption scheme (curve25519xsalsa20poly1305) for message body encryption between server and recipient.
+- [NaCl crypto_box](https://nacl.cr.yp.to/box.html) encryption scheme (curve25519xsalsa20poly1305) for message body encryption between server and recipient.
 - SHA256 to validate server offline certificates.
 - primitives recommended in [double ratchet protocol](https://signal.org/docs/specifications/doubleratchet/#recommended-cryptographic-algorithms) for end-to-end message encryption between the agents.
 
@@ -307,4 +307,4 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 Efim Poberezkin contributed to the design and implementation of SimpleX Messaging Protocol and SimpleX Agent Protocol in 2019-2021.
 
-Adam Langley's [Pond][https://github.com/agl/pond] inspired some of the recent improvements and the structure of this document.
+Adam Langley's [Pond](https://github.com/agl/pond) inspired some of the recent improvements and the structure of this document.
