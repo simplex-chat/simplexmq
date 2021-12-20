@@ -17,7 +17,7 @@ srv =
   SMPServer
     { host = "smp.simplex.im",
       port = Just "5223",
-      keyHash = Just (C.KeyHash "\215m\248\251")
+      certificateHash = Just (C.CertificateHash "\215m\248\251")
     }
 
 queue :: SMPQueueUri
@@ -43,9 +43,9 @@ connectionRequestTests :: Spec
 connectionRequestTests = do
   describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
-      serializeSMPQueueUri queue {smpServer = srv {port = Nothing, keyHash = Nothing}}
+      serializeSMPQueueUri queue {smpServer = srv {port = Nothing, certificateHash = Nothing}}
         `shouldBe` "smp://smp.simplex.im/1234-w==#"
-      serializeSMPQueueUri queue {smpServer = srv {keyHash = Nothing}}
+      serializeSMPQueueUri queue {smpServer = srv {certificateHash = Nothing}}
         `shouldBe` "smp://smp.simplex.im:5223/1234-w==#"
       serializeSMPQueueUri queue {smpServer = srv {port = Nothing}}
         `shouldBe` "smp://1234-w==@smp.simplex.im/1234-w==#"
@@ -53,9 +53,9 @@ connectionRequestTests = do
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/1234-w==#"
     it "should parse SMP queue URIs" $ do
       parseAll smpQueueUriP "smp://smp.simplex.im/1234-w==#"
-        `shouldBe` Right queue {smpServer = srv {port = Nothing, keyHash = Nothing}}
+        `shouldBe` Right queue {smpServer = srv {port = Nothing, certificateHash = Nothing}}
       parseAll smpQueueUriP "smp://smp.simplex.im:5223/1234-w==#"
-        `shouldBe` Right queue {smpServer = srv {keyHash = Nothing}}
+        `shouldBe` Right queue {smpServer = srv {certificateHash = Nothing}}
       parseAll smpQueueUriP "smp://1234-w==@smp.simplex.im/1234-w==#"
         `shouldBe` Right queue {smpServer = srv {port = Nothing}}
       parseAll smpQueueUriP "smp://1234-w==@smp.simplex.im:5223/1234-w==#"

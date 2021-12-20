@@ -9,7 +9,6 @@ module Main where
 
 import Control.Monad.Except
 import Control.Monad.Trans.Except
-import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
 import Data.Ini (Ini, lookupValue, readIniFile)
@@ -17,11 +16,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Network.Socket (ServiceName)
 import Options.Applicative
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadEncodedCertificateHash)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
@@ -69,6 +67,9 @@ defaultPrivateKeyFile = combine cfgDir "server.key"
 defaultCertificateFile :: FilePath
 defaultCertificateFile = combine cfgDir "server.crt"
 
+certificateHashFile :: FilePath
+certificateHashFile = combine cfgDir "crt_hash"
+
 main :: IO ()
 main = do
   opts <- getServerOpts
@@ -113,7 +114,8 @@ makeConfig IniOpts {serverPort, enableWebsockets, serverPrivateKeyFile, serverCe
 
 printConfig :: ServerConfig -> IO ()
 printConfig ServerConfig {storeLog} = do
-  -- TODO print certificate hash
+  certificateHash <- readFile certificateHashFile
+  putStr $ "certificate hash: " <> certificateHash
   putStrLn $ case storeLog of
     Just s -> "store log: " <> storeLogFilePath s
     Nothing -> "store log disabled"
@@ -123,6 +125,7 @@ initializeServer opts = do
   createDirectoryIfMissing True cfgDir
   ini <- createIni opts
   createKeyAndCertificate ini opts
+  saveCertificateHash $ serverCertificateFile (ini :: IniOpts)
   storeLog <- openStoreLog opts ini
   pure $ makeConfig ini storeLog
 
@@ -142,10 +145,12 @@ deleteServer = do
       deleteIfExists storeLogFile
       deleteIfExists serverPrivateKeyFile
       deleteIfExists serverCertificateFile
+      deleteIfExists certificateHashFile
     Left _ -> do
       deleteIfExists defaultStoreLogFile
       deleteIfExists defaultPrivateKeyFile
       deleteIfExists defaultCertificateFile
+      deleteIfExists certificateHashFile
 
 data IniOpts = IniOpts
   { enableStoreLog :: Bool,
@@ -222,6 +227,11 @@ createKeyAndCertificate IniOpts {serverPrivateKeyFile, serverCertificateFile} Se
     csrPath :: String
     csrPath = combine cfgDir "localhost.csr"
 
+saveCertificateHash :: FilePath -> IO ()
+saveCertificateHash serverCertificateFile = do
+  certificateHash <- loadEncodedCertificateHash serverCertificateFile
+  writeFile certificateHashFile $ B.unpack certificateHash <> "\n"
+
 fileExists :: FilePath -> ExceptT String IO ()
 fileExists path = do
   exists <- liftIO $ doesFileExist path
@@ -236,9 +246,6 @@ confirm msg = do
   hFlush stdout
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
-
-serverKeyHash :: C.PrivateKey 'C.RSA -> B.ByteString
-serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey
 
 openStoreLog :: ServerOpts -> IniOpts -> IO (Maybe (StoreLog 'ReadMode))
 openStoreLog ServerOpts {enableStoreLog = l} IniOpts {enableStoreLog = l', storeLogFile = f}

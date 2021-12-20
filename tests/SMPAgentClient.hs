@@ -13,7 +13,7 @@ import qualified Data.List.NonEmpty as L
 import Network.Socket (HostName, ServiceName)
 import SMPClient
   ( serverBracket,
-    testKeyHash,
+    testCertificateHash,
     testPort,
     testPort2,
     withSmpServer,
@@ -156,7 +156,7 @@ cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      smpServers = L.fromList ["localhost:5001#KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="],
+      smpServers = L.fromList ["localhost:5001#J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
@@ -172,7 +172,7 @@ cfg =
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" (Just smpPort') testKeyHash]}
+  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" (Just smpPort') testCertificateHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg')
         afterProcess

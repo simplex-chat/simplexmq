@@ -35,11 +35,12 @@ module Simplex.Messaging.Transport
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
-    withTlsUnique,
+    loadEncodedCertificateHash,
 
     -- * TLS 1.2 Transport
     TLS (..),
     closeTLS,
+    withTlsUnique,
 
     -- * SMP transport
     THandle (..),
@@ -61,6 +62,7 @@ import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
+import qualified Crypto.Store.X509 as S
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -73,6 +75,7 @@ import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
+import Data.X509 (getCertificate)
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
@@ -80,6 +83,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parseAll, parseRead1, parseString)
 import Simplex.Messaging.Util (bshow)
 import System.Exit (exitFailure)
@@ -223,6 +227,12 @@ loadTLSServerParams certificateFile privateKeyFile =
           T.serverSupported = supportedParameters
         }
 
+loadEncodedCertificateHash :: FilePath -> IO ByteString
+loadEncodedCertificateHash certificateFile = do
+  x509 <- S.readSignedObject certificateFile
+  let certificate = getCertificate (head x509) -- we should have only one certificate
+  pure $ (encode . C.unCertificateHash) (C.certificateHash certificate)
+
 -- * TLS 1.2 Transport
 
 data TLS = TLS
@@ -333,7 +343,7 @@ trimCR :: ByteString -> ByteString
 trimCR "" = ""
 trimCR s = if B.last s == '\r' then B.init s else s
 
--- * SMP encrypted transport
+-- * SMP transport
 
 data SMPVersion = SMPVersion Int Int Int
   deriving (Eq, Ord)

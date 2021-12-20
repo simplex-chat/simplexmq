@@ -46,7 +46,7 @@ module Simplex.Messaging.Crypto
     DhSecret (..),
     ADhSecret (..),
     CryptoDhSecret (..),
-    KeyHash (..),
+    CertificateHash (..),
     generateKeyPair,
     generateKeyPair',
     generateSignatureKeyPair,
@@ -98,8 +98,8 @@ module Simplex.Messaging.Crypto
     cbDecrypt,
     cbNonce,
 
-    -- * Encoding of RSA keys
-    publicKeyHash,
+    -- * Encoding of X509 certificate
+    certificateHash,
 
     -- * SHA256 hash
     sha256Hash,
@@ -493,7 +493,7 @@ instance forall a. AlgorithmI a => CryptoKey (PublicKey a) where
     _ -> True
   serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
   serializeKeyUri k = algorithmPrefix k <> ":" <> U.encode (encodeKey k)
-  encodeKey = encodeASNKey . publicToX509
+  encodeKey = encodeASNObj . publicToX509
   strKeyP = pubKey' <$?> strKeyP
   strKeyUriP = pubKey' <$?> strKeyUriP
   binaryKeyP = pubKey' <$?> binaryKeyP
@@ -552,7 +552,7 @@ instance AlgorithmI a => CryptoKey (PrivateKey a) where
     _ -> True
   serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
   serializeKeyUri k = algorithmPrefix k <> ":" <> U.encode (encodeKey k)
-  encodeKey = encodeASNKey . privateToX509
+  encodeKey = encodeASNObj . privateToX509
   strKeyP = privKey' <$?> strKeyP
   strKeyUriP = privKey' <$?> strKeyUriP
   binaryKeyP = privKey' <$?> binaryKeyP
@@ -812,19 +812,19 @@ newtype Key = Key {unKey :: ByteString}
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
 
--- | Key hash newtype.
-newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
+-- | Certificate hash newtype.
+newtype CertificateHash = CertificateHash {unCertificateHash :: ByteString} deriving (Eq, Ord, Show)
 
-instance IsString KeyHash where
-  fromString = parseString . parseAll $ KeyHash <$> base64P
+instance IsString CertificateHash where
+  fromString = parseString . parseAll $ CertificateHash <$> base64P
 
-instance ToField KeyHash where toField = toField . encode . unKeyHash
+instance ToField CertificateHash where toField = toField . encode . unCertificateHash
 
-instance FromField KeyHash where fromField = blobFieldParser $ KeyHash <$> base64P
+instance FromField CertificateHash where fromField = blobFieldParser $ CertificateHash <$> base64P
 
--- | Digest (hash) of binary X509 encoding of RSA public key.
-publicKeyHash :: PublicKey RSA -> KeyHash
-publicKeyHash = KeyHash . sha256Hash . encodeKey
+-- | Digest (hash) of binary X509 certificate.
+certificateHash :: Certificate -> CertificateHash
+certificateHash = CertificateHash . sha256Hash . encodeASNObj
 
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString
@@ -1075,8 +1075,8 @@ privateToX509 = \case
   PrivateKeyX25519 k -> PrivKeyX25519 k
   PrivateKeyX448 k -> PrivKeyX448 k
 
-encodeASNKey :: ASN1Object a => a -> ByteString
-encodeASNKey k = toStrict . encodeASN1 DER $ toASN1 k []
+encodeASNObj :: ASN1Object a => a -> ByteString
+encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
 
 -- Decoding of binary X509 'PublicKey'.
 decodePubKey :: ByteString -> Either String APublicKey
