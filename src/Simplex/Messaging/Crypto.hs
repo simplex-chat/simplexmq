@@ -32,6 +32,7 @@ module Simplex.Messaging.Crypto
     SAlgorithm (..),
     Alg (..),
     SignAlg (..),
+    DhAlgorithm,
     PrivateKey (..),
     PublicKey (..),
     APrivateKey (..),
