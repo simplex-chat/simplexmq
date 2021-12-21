@@ -62,6 +62,7 @@ dependencies:
   - unliftio-core == 0.2.*
   - websockets == 0.12.*
   - x509 == 1.7.*
+  - x509-store == 1.6.*
   - x509-validation == 1.6.*
 
 library:

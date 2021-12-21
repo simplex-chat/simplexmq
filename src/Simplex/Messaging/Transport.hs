@@ -77,6 +77,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
 import qualified Data.X509 as X
+import qualified Data.X509.CertificateStore as XS
 import qualified Data.X509.Validation as XV
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
@@ -234,26 +235,43 @@ loadTLSServerParams certificateFile privateKeyFile =
         }
 
 mkTLSClientParams :: HostName -> ServiceName -> C.CertificateHash -> T.ClientParams
-mkTLSClientParams host port certificateHash =
-  (T.defaultParamsClient host (B.pack port))
+mkTLSClientParams host port certificateHash = do
+  let p = B.pack port
+  (T.defaultParamsClient host p)
     { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain certificateHash},
+      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain certificateHash host p},
       T.clientSupported = supportedParameters
     }
 
-validateCertificateChain :: C.CertificateHash -> X.CertificateChain -> IO [XV.FailedReason]
-validateCertificateChain _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain expectedHash (X.CertificateChain [cert]) = do
+validateCertificateChain :: C.CertificateHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
+validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
+validateCertificateChain expectedHash host port cc@(X.CertificateChain sc@[cert]) = do
   let certificateHash = C.certificateHash . X.getCertificate $ cert
+      fr = checkHash certificateHash
   -- putStrLn $ "certificate hash: " <> (B.unpack . encode . C.unCertificateHash) certificateHash
   -- putStrLn $ "expected hash: " <> (B.unpack . encode . C.unCertificateHash) expectedHash
-  pure $ checkHash certificateHash
+  if null fr
+    then x509validate
+    else pure fr
   where
     checkHash :: C.CertificateHash -> [XV.FailedReason]
     checkHash hash
       | hash == expectedHash = []
       | otherwise = [XV.UnknownCA]
-validateCertificateChain _ (X.CertificateChain (_ : _ : _)) = pure [XV.AuthorityTooDeep]
+    x509validate :: IO [XV.FailedReason]
+    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
+      where
+        hooks :: XV.ValidationHooks
+        hooks = XV.defaultHooks
+        checks :: XV.ValidationChecks
+        checks = XV.defaultChecks {XV.checkLeafV3 = False} -- TODO create v3 certificates? https://stackoverflow.com/a/18242720
+        certStore :: XS.CertificateStore
+        certStore = XS.makeCertificateStore sc
+        cache :: XV.ValidationCache
+        cache = XV.exceptionValidationCache [] -- we don't store certificate Fingerprints on clients
+        serviceID :: XV.ServiceID
+        serviceID = (host, port)
+validateCertificateChain _ _ _ (X.CertificateChain (_ : _ : _)) = pure [XV.AuthorityTooDeep]
 
 supportedParameters :: T.Supported
 supportedParameters =

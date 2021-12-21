@@ -103,6 +103,7 @@ library
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
     , x509-validation ==1.6.*
   default-language: Haskell2010
 
@@ -154,6 +155,7 @@ executable smp-agent
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
     , x509-validation ==1.6.*
   default-language: Haskell2010
 
@@ -208,6 +210,7 @@ executable smp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
     , x509-validation ==1.6.*
   default-language: Haskell2010
 
@@ -272,5 +275,6 @@ test-suite smp-server-test
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
     , x509-validation ==1.6.*
   default-language: Haskell2010
