@@ -51,7 +51,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTransportClient testHost testPort testCertificateHash $ \h ->
+  runTransportClient (PartyAlias "SMP client") testHost testPort testCertificateHash $ \h ->
     liftIO (runExceptT $ clientHandshake h testBlockSize) >>= \case
       Right th -> client th
       Left e -> error $ show e

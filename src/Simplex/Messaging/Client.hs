@@ -64,7 +64,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake, runTransportClient, PartyAlias (PartyAlias))
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.Timeout (timeout)
@@ -164,7 +164,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
       thVar <- newEmptyTMVarIO
       action <-
         async $
-          runTransportClient (host smpServer) port' (certificateHash smpServer) (client t c thVar)
+          runTransportClient (PartyAlias "SMP client") (host smpServer) port' (certificateHash smpServer) (client t c thVar)
             `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
       bSize <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case bSize of
