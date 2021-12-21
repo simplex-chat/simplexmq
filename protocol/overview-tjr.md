@@ -305,6 +305,8 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 ## Acknowledgements
 
+Tom Ritter edited this document and contributed to the design of the protocols pointing out several vulnerabilities in the original design (that are now fixed).
+
 Efim Poberezkin contributed to the design and implementation of SimpleX Messaging Protocol and SimpleX Agent Protocol in 2019-2021.
 
 Adam Langley's [Pond](https://github.com/agl/pond) inspired some of the recent improvements and the structure of this document.
