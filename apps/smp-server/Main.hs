@@ -80,13 +80,13 @@ main = do
       runExceptT (getConfig opts) >>= \case
         Right cfg -> do
           putStrLn "Error: server is already initialized. Start it with `smp-server start` command"
-          certificateHash <- loadCertificateHash certificateHashFile
+          certificateHash <- loadCertificateHash
           printConfig cfg certificateHash
           exitFailure
         Left _ -> do
           cfg <- initializeServer opts
           putStrLn "Server was initialized. Start it with `smp-server start` command"
-          certificateHash <- loadCertificateHash certificateHashFile
+          certificateHash <- loadCertificateHash
           printConfig cfg certificateHash
     ServerStart ->
       runExceptT (getConfig opts) >>= \case
@@ -133,7 +133,7 @@ initializeServer opts = do
 
 runServer :: ServerConfig -> IO ()
 runServer cfg = do
-  certificateHash <- loadCertificateHash certificateHashFile
+  certificateHash <- loadCertificateHash
   checkStoredHash certificateHash
   printConfig cfg certificateHash
   forM_ (transports cfg) $ \(port, ATransport t) ->
@@ -243,8 +243,8 @@ saveCertificateHash serverCertificateFile = do
   certificateHash <- getCertificateHash serverCertificateFile
   writeFile certificateHashFile $ B.unpack certificateHash <> "\n"
 
-loadCertificateHash :: FilePath -> IO String
-loadCertificateHash serverCertificateFile = do
+loadCertificateHash :: IO String
+loadCertificateHash = do
   certificateHash <- readFile certificateHashFile
   pure $ dropWhileEnd (== '\n') certificateHash
 

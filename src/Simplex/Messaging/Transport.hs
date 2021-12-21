@@ -75,7 +75,8 @@ import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
-import Data.X509 (getCertificate)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
@@ -232,9 +233,21 @@ mkTLSClientParams :: HostName -> ServiceName -> C.CertificateHash -> T.ClientPar
 mkTLSClientParams host port certificateHash =
   (T.defaultParamsClient host (B.pack port))
     { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ _ -> pure []},
+      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain certificateHash},
       T.clientSupported = supportedParameters
     }
+
+validateCertificateChain :: C.CertificateHash -> X.CertificateChain -> IO [XV.FailedReason]
+validateCertificateChain _ (X.CertificateChain []) = pure [XV.EmptyChain]
+validateCertificateChain expectedHash (X.CertificateChain [cert]) = do
+  let certificateHash = C.certificateHash . X.getCertificate $ cert
+  pure $ checkHash certificateHash
+  where
+    checkHash :: C.CertificateHash -> [XV.FailedReason]
+    checkHash hash
+      | hash == expectedHash = []
+      | otherwise = [XV.UnknownCA]
+validateCertificateChain _ (X.CertificateChain (_ : _ : _)) = pure [XV.AuthorityTooDeep]
 
 supportedParameters :: T.Supported
 supportedParameters =
@@ -249,7 +262,7 @@ supportedParameters =
 getCertificateHash :: FilePath -> IO ByteString
 getCertificateHash certificateFile = do
   x509 <- S.readSignedObject certificateFile
-  let certificate = getCertificate (head x509) -- we should have only one certificate
+  let certificate = X.getCertificate (head x509) -- we should have only one certificate
   pure $ (encode . C.unCertificateHash) (C.certificateHash certificate)
 
 -- * TLS 1.2 Transport

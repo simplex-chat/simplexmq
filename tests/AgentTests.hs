@@ -365,8 +365,11 @@ syntaxTests t = do
     describe "valid" $ do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
-      it "using same server as in invitation" $
-        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40localhost%3A5001%2F3456-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
+      xit "using same server as in invitation" $
+        -- to generate server URI run in ghci:
+        -- :l Simplex.Messaging.Agent.Protocol
+        -- Network.HTTP.Types.urlEncode True $ serializeServerUri SMPServer {host="localhost", port=(Just "5001"), certificateHash=(C.CertificateHash . B.pack $ "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA=")}
+        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2FSjl3TzhKR0JRdXA2alBPczdCbk5QdXRwS09lK0x1RmxhVDEwTTdCSzdKQT0%3D%40localhost%3A5001%2F3456-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" $ do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
