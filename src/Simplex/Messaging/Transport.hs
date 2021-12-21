@@ -63,7 +63,7 @@ import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
-import qualified Crypto.Store.X509 as S
+import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -285,7 +285,7 @@ supportedParameters =
 
 getCertificateHash :: FilePath -> IO ByteString
 getCertificateHash certificateFile = do
-  x509 <- S.readSignedObject certificateFile
+  x509 <- SX.readSignedObject certificateFile
   let certificate = X.getCertificate (head x509) -- we should have only one certificate
   pure $ (encode . C.unCertificateHash) (C.certificateHash certificate)
 
