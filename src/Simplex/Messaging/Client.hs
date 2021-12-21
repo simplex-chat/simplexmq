@@ -64,7 +64,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake, runTransportClient, PartyAlias (PartyAlias))
+import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.Timeout (timeout)
