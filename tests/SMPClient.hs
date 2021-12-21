@@ -37,14 +37,14 @@ testPort = "5001"
 testPort2 :: ServiceName
 testPort2 = "5002"
 
+testCertificateHash :: C.CertificateHash
+testCertificateHash = "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
+
 testCertificateHashStr :: ByteString
 testCertificateHashStr = "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
 
 testBlockSize :: Int
 testBlockSize = 16 * 1024 -- TODO move to Protocol
-
-testCertificateHash :: Maybe C.CertificateHash
-testCertificateHash = Just "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"

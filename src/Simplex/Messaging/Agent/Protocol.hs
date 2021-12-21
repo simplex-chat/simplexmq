@@ -351,7 +351,7 @@ agentMessageP =
 
 -- | SMP server location parser.
 smpServerP :: Parser SMPServer
-smpServerP = SMPServer <$> server <*> optional port <*> optional certHash
+smpServerP = SMPServer <$> server <*> optional port <*> certHash
   where
     server = B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
@@ -432,18 +432,18 @@ connReqP = do
 -- | Serialize SMP server location.
 serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, certificateHash} =
-  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . encode . C.unCertificateHash) certificateHash
+  B.pack $ host <> maybe "" (':' :) port <> (('#' :) . B.unpack . encode . C.unCertificateHash) certificateHash
 
 serializeServerUri :: SMPServer -> ByteString
 serializeServerUri SMPServer {host, port, certificateHash} = "smp://" <> certHash <> B.pack host <> p
   where
-    certHash = maybe "" ((<> "@") . U.encode . C.unCertificateHash) certificateHash
+    certHash = ((<> "@") . U.encode . C.unCertificateHash) certificateHash
     p = B.pack $ maybe "" (':' :) port
 
 smpServerUriP :: Parser SMPServer
 smpServerUriP = do
   _ <- "smp://"
-  certificateHash <- optional $ C.CertificateHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
+  certificateHash <- C.CertificateHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
   host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
   port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
   pure SMPServer {host, port, certificateHash}
@@ -472,7 +472,7 @@ connModeT = \case
 data SMPServer = SMPServer
   { host :: HostName,
     port :: Maybe ServiceName,
-    certificateHash :: Maybe C.CertificateHash -- TODO make non optional
+    certificateHash :: C.CertificateHash
   }
   deriving (Eq, Ord, Show)
 
