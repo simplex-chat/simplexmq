@@ -41,7 +41,7 @@ testCertificateHash :: C.CertificateHash
 testCertificateHash = "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
 
 testCertificateHashStr :: ByteString
-testCertificateHashStr = "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
+testCertificateHashStr = C.unCertificateHash testCertificateHash
 
 testBlockSize :: Int
 testBlockSize = 16 * 1024 -- TODO move to Protocol
@@ -51,7 +51,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTransportClient testHost testPort $ \h ->
+  runTransportClient testHost testPort testCertificateHash $ \h ->
     liftIO (runExceptT $ clientHandshake h testBlockSize) >>= \case
       Right th -> client th
       Left e -> error $ show e

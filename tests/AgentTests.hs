@@ -370,7 +370,7 @@ syntaxTests t = do
     describe "invalid" $ do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
-  whereпо
+  where
     -- simple test for one command with the expected response
     (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
     command >#> response = smpAgentTest t command `shouldReturn` response

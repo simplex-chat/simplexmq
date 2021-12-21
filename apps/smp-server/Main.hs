@@ -12,6 +12,7 @@ import Control.Monad.Trans.Except
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
 import Data.Ini (Ini, lookupValue, readIniFile)
+import Data.List (dropWhileEnd)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Network.Socket (ServiceName)
@@ -19,7 +20,7 @@ import Options.Applicative
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadEncodedCertificateHash)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), getCertificateHash)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
@@ -79,12 +80,14 @@ main = do
       runExceptT (getConfig opts) >>= \case
         Right cfg -> do
           putStrLn "Error: server is already initialized. Start it with `smp-server start` command"
-          printConfig cfg
+          certificateHash <- loadCertificateHash certificateHashFile
+          printConfig cfg certificateHash
           exitFailure
         Left _ -> do
           cfg <- initializeServer opts
           putStrLn "Server was initialized. Start it with `smp-server start` command"
-          printConfig cfg
+          certificateHash <- loadCertificateHash certificateHashFile
+          printConfig cfg certificateHash
     ServerStart ->
       runExceptT (getConfig opts) >>= \case
         Right cfg -> runServer cfg
@@ -112,10 +115,9 @@ makeConfig IniOpts {serverPort, enableWebsockets, serverPrivateKeyFile, serverCe
   let transports = (serverPort, transport @TLS) : [("80", transport @WS) | enableWebsockets]
    in serverConfig {transports, storeLog, serverPrivateKeyFile, serverCertificateFile}
 
-printConfig :: ServerConfig -> IO ()
-printConfig ServerConfig {storeLog} = do
-  certificateHash <- readFile certificateHashFile
-  putStr $ "certificate hash: " <> certificateHash
+printConfig :: ServerConfig -> String -> IO ()
+printConfig ServerConfig {storeLog} certificateHash = do
+  putStrLn $ "certificate hash: " <> certificateHash
   putStrLn $ case storeLog of
     Just s -> "store log: " <> storeLogFilePath s
     Nothing -> "store log disabled"
@@ -131,10 +133,19 @@ initializeServer opts = do
 
 runServer :: ServerConfig -> IO ()
 runServer cfg = do
-  printConfig cfg
+  certificateHash <- loadCertificateHash certificateHashFile
+  checkStoredHash certificateHash
+  printConfig cfg certificateHash
   forM_ (transports cfg) $ \(port, ATransport t) ->
     putStrLn $ "listening on port " <> port <> " (" <> transportName t <> ")"
   runSMPServer cfg
+  where
+    checkStoredHash :: String -> IO ()
+    checkStoredHash storedHash = do
+      computedHash <- getCertificateHash $ serverCertificateFile (cfg :: ServerConfig)
+      if storedHash == B.unpack computedHash
+        then putStrLn "stored certificate hash is valid"
+        else putStrLn "stored certificate hash is invalid" >> exitFailure
 
 deleteServer :: IO ()
 deleteServer = do
@@ -229,8 +240,13 @@ createKeyAndCertificate IniOpts {serverPrivateKeyFile, serverCertificateFile} Se
 
 saveCertificateHash :: FilePath -> IO ()
 saveCertificateHash serverCertificateFile = do
-  certificateHash <- loadEncodedCertificateHash serverCertificateFile
+  certificateHash <- getCertificateHash serverCertificateFile
   writeFile certificateHashFile $ B.unpack certificateHash <> "\n"
+
+loadCertificateHash :: FilePath -> IO String
+loadCertificateHash serverCertificateFile = do
+  certificateHash <- readFile certificateHashFile
+  pure $ dropWhileEnd (== '\n') certificateHash
 
 fileExists :: FilePath -> ExceptT String IO ()
 fileExists path = do

@@ -35,7 +35,7 @@ module Simplex.Messaging.Transport
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
-    loadEncodedCertificateHash,
+    getCertificateHash,
 
     -- * TLS 1.2 Transport
     TLS (..),
@@ -181,13 +181,14 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a
-runTransportClient host port client = do
-  c <- liftIO $ startTCPClient host port
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.CertificateHash -> (c -> m a) -> m a
+runTransportClient host port certificateHash client = do
+  let clientParams = mkTLSClientParams host port certificateHash
+  c <- liftIO $ startTCPClient host port clientParams
   client c `E.finally` liftIO (closeConnection c)
 
-startTCPClient :: forall c. Transport c => HostName -> ServiceName -> IO c
-startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
+startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> IO c
+startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
@@ -227,8 +228,26 @@ loadTLSServerParams certificateFile privateKeyFile =
           T.serverSupported = supportedParameters
         }
 
-loadEncodedCertificateHash :: FilePath -> IO ByteString
-loadEncodedCertificateHash certificateFile = do
+mkTLSClientParams :: HostName -> ServiceName -> C.CertificateHash -> T.ClientParams
+mkTLSClientParams host port certificateHash =
+  (T.defaultParamsClient host (B.pack port))
+    { T.clientShared = def,
+      T.clientHooks = def {T.onServerCertificate = \_ _ _ _ -> pure []},
+      T.clientSupported = supportedParameters
+    }
+
+supportedParameters :: T.Supported
+supportedParameters =
+  def
+    { T.supportedVersions = [T.TLS12],
+      T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
+      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
+      T.supportedSecureRenegotiation = False,
+      T.supportedGroups = [T.X448, T.X25519]
+    }
+
+getCertificateHash :: FilePath -> IO ByteString
+getCertificateHash certificateFile = do
   x509 <- S.readSignedObject certificateFile
   let certificate = getCertificate (head x509) -- we should have only one certificate
   pure $ (encode . C.unCertificateHash) (C.certificateHash certificate)
@@ -270,24 +289,6 @@ closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
-
-clientParams :: T.ClientParams
-clientParams =
-  (T.defaultParamsClient "localhost" "5223")
-    { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ _ -> pure []},
-      T.clientSupported = supportedParameters
-    }
-
-supportedParameters :: T.Supported
-supportedParameters =
-  def
-    { T.supportedVersions = [T.TLS12],
-      T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
-      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
-      T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448, T.X25519]
-    }
 
 instance Transport TLS where
   transportName _ = "TLS 1.2"
