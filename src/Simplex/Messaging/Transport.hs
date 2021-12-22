@@ -301,7 +301,7 @@ validateCertificateChain expectedHash host port cc@(X.CertificateChain sc@[cert]
         certStore = XS.makeCertificateStore sc
         cache = XV.exceptionValidationCache [] -- we don't store certificate Fingerprints on clients
         serviceID = (host, port)
-validateCertificateChain _ _ _ (X.CertificateChain (_ : _ : _)) = pure [XV.AuthorityTooDeep]
+validateCertificateChain _ _ _ (X.CertificateChain (_ : _)) = pure [XV.AuthorityTooDeep]
 
 supportedParameters :: T.Supported
 supportedParameters =
