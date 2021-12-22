@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -8,10 +9,14 @@ module Simplex.Messaging.Crypto.Ratchet where
 
 import Crypto.Hash (SHA512)
 import qualified Crypto.KDF.HKDF as H
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
+import Crypto.Random (getRandomBytes)
+import Data.Attoparsec.ByteString.Char8 (Parser)
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
+import Data.Type.Equality
 import Simplex.Messaging.Crypto
+import Simplex.Messaging.Util ((<$?>))
 
 data RatchetState a = RatchetState
   { rcDHRs :: KeyPair a,
@@ -86,19 +91,57 @@ initRcvRatchet' sKey rcDHRs@(_, pk) salt = do
         rcNHKr
       }
 
+data MsgHeader a = MsgHeader
+  { msgDHRs :: PublicKey a,
+    rcPN :: Int64,
+    rcNs :: Int64,
+    msgRndId :: ByteString,
+    msgIV :: IV
+  }
+
+data AMsgHeader
+  = forall a.
+    (AlgorithmI a, DhAlgorithm a) =>
+    AMsgHeader (SAlgorithm a) (MsgHeader a)
+
+serializeMsgHeader' :: MsgHeader a -> ByteString
+serializeMsgHeader' MsgHeader {} = ""
+
+msgHeaderP' :: AlgorithmI a => Parser (MsgHeader a)
+msgHeaderP' = msgHeader' <$?> msgHeaderP
+
+msgHeaderP :: Parser (AMsgHeader)
+msgHeaderP = fail "not implemented"
+
+msgHeader' :: forall a. AlgorithmI a => AMsgHeader -> Either String (MsgHeader a)
+msgHeader' (AMsgHeader a h) = case testEquality a $ sAlgorithm @a of
+  Just Refl -> Right h
+  _ -> Left "bad key algorithm"
+
+rcEncrypt' :: RatchetState a -> ByteString -> IO (ByteString)
+rcEncrypt' RatchetState {rcCKs = Nothing} _ = pure ""
+rcEncrypt' RatchetState {rcCKs = Just ck, rcDHRs = (msgDHRs, _), rcPN, rcNs} msg = do
+  msgRndId <- getRandomBytes 16
+  let (ck', mk, msgIV) = chainKdf ck msgRndId
+      header = MsgHeader {msgDHRs, rcPN, rcNs, msgRndId, msgIV}
+  pure ""
+
 initKdf :: (AlgorithmI a, DhAlgorithm a) => ByteString -> PublicKey a -> PrivateKey a -> (RatchetKey, Key, Key)
 initKdf salt k pk =
-  let (sk, hk, nhk) = hkdf3 salt k pk "SimpleXInitRatchet"
+  let dhOut = dhSecretBytes $ dh' k pk
+      (sk, hk, nhk) = split3 $ hkdf salt dhOut "SimpleXInitRatchet" 96
    in (RatchetKey sk, Key hk, Key nhk)
 
 rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> (RatchetKey, RatchetKey, Key)
 rootKdf (RatchetKey rk) k pk =
-  let (rk', ck, nhk) = hkdf3 rk k pk "SimpleXRootRatchet"
+  let dhOut = dhSecretBytes $ dh' k pk
+      (rk', ck, nhk) = split3 $ hkdf rk dhOut "SimpleXRootRatchet" 96
    in (RatchetKey rk', RatchetKey ck, Key nhk)
 
-hkdf3 :: (AlgorithmI a, DhAlgorithm a) => ByteString -> PublicKey a -> PrivateKey a -> ByteString -> (ByteString, ByteString, ByteString)
-hkdf3 salt k pk info =
-  split3 $ hkdf salt (dhSecretBytes $ dh' k pk) info 96
+chainKdf :: RatchetKey -> ByteString -> (RatchetKey, Key, IV)
+chainKdf (RatchetKey ck) msgRandomId =
+  let (ck', mk, iv) = split3 $ hkdf ck msgRandomId "SimpleXChainRatchet" 80
+   in (RatchetKey ck', Key mk, IV iv)
 
 hkdf :: ByteString -> ByteString -> ByteString -> Int -> ByteString
 hkdf salt ikm info len =
