@@ -247,17 +247,12 @@ validateCertificateChain :: C.CertificateHash -> HostName -> ByteString -> X.Cer
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
 validateCertificateChain expectedHash host port cc@(X.CertificateChain sc@[cert]) = do
   let certificateHash = C.certificateHash . X.getCertificate $ cert
-      fr = checkHash certificateHash
   -- putStrLn $ "certificate hash: " <> (B.unpack . encode . C.unCertificateHash) certificateHash
   -- putStrLn $ "expected hash: " <> (B.unpack . encode . C.unCertificateHash) expectedHash
-  if null fr
+  if certificateHash == expectedHash
     then x509validate
-    else pure fr
+    else pure [XV.UnknownCA]
   where
-    checkHash :: C.CertificateHash -> [XV.FailedReason]
-    checkHash hash
-      | hash == expectedHash = []
-      | otherwise = [XV.UnknownCA]
     x509validate :: IO [XV.FailedReason]
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
