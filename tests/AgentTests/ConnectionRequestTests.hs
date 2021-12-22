@@ -17,7 +17,7 @@ srv =
   SMPServer
     { host = "smp.simplex.im",
       port = Just "5223",
-      keyHash = C.KeyHash "\215m\248\251"
+      keyHash = Just (C.KeyHash "\215m\248\251")
     }
 
 queue :: SMPQueueUri

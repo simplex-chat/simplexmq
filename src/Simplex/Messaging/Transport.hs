@@ -72,6 +72,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Maybe (fromJust)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
@@ -183,9 +184,11 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> (c -> m a) -> m a
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
 runTransportClient host port keyHash client = do
-  let clientParams = mkTLSClientParams host port keyHash
+  -- fromJust is safe here because keyHash is parsed as non optional,
+  -- it is kept as optional for compatibility with earlier versions
+  let clientParams = mkTLSClientParams host port (fromJust keyHash)
   c <- liftIO $ startTCPClient host port clientParams
   client c `E.finally` liftIO (closeConnection c)
 

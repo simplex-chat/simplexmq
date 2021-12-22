@@ -37,14 +37,14 @@ testPort = "5001"
 testPort2 :: ServiceName
 testPort2 = "5002"
 
-testKeyHash :: C.KeyHash
-testKeyHash = "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
-
 testKeyHashStr :: ByteString
-testKeyHashStr = C.unKeyHash testKeyHash
+testKeyHashStr = "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
 
 testBlockSize :: Int
 testBlockSize = 16 * 1024 -- TODO move to Protocol
+
+testKeyHash :: Maybe C.KeyHash
+testKeyHash = Just "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
