@@ -772,7 +772,7 @@ data CryptoError
   | -- | failure parsing RSA-encrypted message header
     CryptoHeaderError String
   | -- | no sending chain key in ratchet state
-    CryptoRatchetNoCKs
+    CryptoRatchetState
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer

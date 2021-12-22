@@ -17,33 +17,40 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Type.Equality
-import Data.Word (Word16)
-import Network.Transport.Internal (decodeWord16, encodeWord16)
+import Data.Word (Word16, Word32)
+import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
-data RatchetState a = RatchetState
+data Ratchet a = Ratchet
   { rcVersion :: E2EEncryptionVersion,
     rcDHRs :: KeyPair a,
-    rcDHRr :: Maybe (PublicKey a), -- initialized as Nothing for the party receiving the first message
     rcRK :: RatchetKey,
-    rcCKs :: Maybe RatchetKey, -- initialized as Nothing for the party receiving the first message
-    rcCKr :: Maybe RatchetKey, -- initialized as Nothing for both
-    rcNs :: Word16,
-    rcNr :: Word16,
-    rcPN :: Word16,
-    rcHKs :: Maybe Key, -- initialized as Nothing for the party receiving the first message
-    rcHKr :: Maybe Key, -- initialized as Nothing for both
+    rcSnd :: Maybe (SndRatchet a),
+    rcRcv :: Maybe RcvRatchet,
+    rcPN :: Word32,
     rcNHKs :: Key,
     rcNHKr :: Key
   }
 
-data ARatchetState
+data SndRatchet a = SndRatchet
+  { rcDHRr :: PublicKey a,
+    rcCKs :: RatchetKey,
+    rcHKs :: Key,
+    rcNs :: Word32
+  }
+
+data RcvRatchet = RcvRatchet
+  { rcCKr :: RatchetKey,
+    rcHKr :: Key,
+    rcNr :: Word32
+  }
+
+data ARatchet
   = forall a.
     (AlgorithmI a, DhAlgorithm a) =>
-    ARatchetState (SAlgorithm a) (RatchetState a)
+    ARatchet (SAlgorithm a) (Ratchet a)
 
 -- | Input key material for double ratchet HKDF functions
 newtype RatchetKey = RatchetKey ByteString
@@ -53,24 +60,19 @@ newtype RatchetKey = RatchetKey ByteString
 -- Please note that sndPrivKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
 initSndRatchet' ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> ByteString -> IO (RatchetState a)
+  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> ByteString -> IO (Ratchet a)
 initSndRatchet' rKey sPKey salt = do
   rcDHRs@(_, pk) <- generateKeyPair' @a 0
-  let (sk, rcHKs', rcNHKr) = initKdf salt rKey sPKey
-      (rcRK, rcCKs', rcNHKs) = rootKdf sk rKey pk
+  let (sk, rcHKs, rcNHKr) = initKdf salt rKey sPKey
+      (rcRK, rcCKs, rcNHKs) = rootKdf sk rKey pk
   pure
-    RatchetState
+    Ratchet
       { rcVersion = currentE2EVersion,
         rcDHRs,
-        rcDHRr = Just rKey,
         rcRK,
-        rcCKs = Just rcCKs',
-        rcCKr = Nothing,
-        rcNs = 0,
-        rcNr = 0,
+        rcSnd = Just SndRatchet {rcDHRr = rKey, rcCKs, rcHKs, rcNs = 0},
+        rcRcv = Nothing,
         rcPN = 0,
-        rcHKs = Just rcHKs',
-        rcHKr = Nothing,
         rcNHKs,
         rcNHKr
       }
@@ -80,22 +82,17 @@ initSndRatchet' rKey sPKey salt = do
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet' ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> KeyPair a -> ByteString -> IO (RatchetState a)
+  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> KeyPair a -> ByteString -> IO (Ratchet a)
 initRcvRatchet' sKey rcDHRs@(_, pk) salt = do
   let (sk, rcNHKr, rcNHKs) = initKdf salt sKey pk
   pure
-    RatchetState
+    Ratchet
       { rcVersion = currentE2EVersion,
         rcDHRs,
-        rcDHRr = Nothing,
         rcRK = sk,
-        rcCKs = Nothing,
-        rcCKr = Nothing,
-        rcNs = 0,
-        rcNr = 0,
+        rcSnd = Nothing,
+        rcRcv = Nothing,
         rcPN = 0,
-        rcHKs = Nothing,
-        rcHKr = Nothing,
         rcNHKs,
         rcNHKr
       }
@@ -104,8 +101,8 @@ data MsgHeader a = MsgHeader
   { msgVersion :: E2EEncryptionVersion,
     msgLatestVersion :: E2EEncryptionVersion,
     msgDHR :: PublicKey a,
-    msgPN :: Word16,
-    msgN :: Word16,
+    msgPN :: Word32,
+    msgN :: Word32,
     msgRndId :: ByteString,
     msgIV :: IV,
     msgLen :: Word16
@@ -125,8 +122,8 @@ serializeMsgHeader' MsgHeader {msgVersion, msgLatestVersion, msgDHR, msgPN, msgN
     <> encodeWord16 msgLatestVersion
     <> encodeWord16 (fromIntegral $ B.length key)
     <> key
-    <> encodeWord16 msgPN
-    <> encodeWord16 msgN
+    <> encodeWord32 msgPN
+    <> encodeWord32 msgN
     <> msgRndId
     <> unIV msgIV
     <> encodeWord16 msgLen
@@ -139,14 +136,15 @@ msgHeaderP' = do
   msgLatestVersion <- word16
   keyLen <- fromIntegral <$> word16
   msgDHR <- parseAll binaryKeyP <$?> A.take keyLen
-  msgPN <- word16
-  msgN <- word16
+  msgPN <- word32
+  msgN <- word32
   msgRndId <- A.take 16
   msgIV <- ivP
   msgLen <- word16
   pure MsgHeader {msgVersion, msgLatestVersion, msgDHR, msgPN, msgN, msgRndId, msgIV, msgLen}
   where
     word16 = decodeWord16 <$> A.take 2
+    word32 = decodeWord32 <$> A.take 4
 
 data EncHeader = EncHeader
   { ehBody :: ByteString,
@@ -183,16 +181,17 @@ encMessageP = do
       emAuthTag = bsToAuthTag aTag
   pure EncMessage {emHeader, emBody, emAuthTag}
 
-rcEncrypt' :: AlgorithmI a => RatchetState a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, RatchetState a)
-rcEncrypt' rc@RatchetState {rcCKs = Just ck, rcHKs = Just hk} paddedMsgLen msg = do
+rcEncrypt' :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
+rcEncrypt' Ratchet {rcSnd = Nothing} _ _ = throwE CryptoRatchetState
+rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs, rcNs}} paddedMsgLen msg = do
   msgRndId <- liftIO $ getRandomBytes 16
-  let (ck', mk, msgIV, ehIV) = chainKdf ck msgRndId
+  let (ck', mk, msgIV, ehIV) = chainKdf rcCKs msgRndId
       header = serializeMsgHeader' $ mkMsgHeader msgRndId msgIV
-  (ehAuthTag, ehBody) <- encryptAES hk ehIV paddedHeaderLen header
+  (ehAuthTag, ehBody) <- encryptAES rcHKs ehIV paddedHeaderLen header
   (emAuthTag, emBody) <- encryptAES mk msgIV paddedMsgLen msg
   let emHeader = serializeEncHeader EncHeader {ehBody, ehAuthTag, ehIV}
       msg' = serializeEncMessage EncMessage {emHeader, emBody, emAuthTag}
-      rc' = rc {rcCKs = Just ck', rcNs = rcNs rc + 1}
+      rc' = rc {rcSnd = Just sr {rcCKs = ck', rcNs = rcNs + 1}}
   pure (msg', rc')
   where
     mkMsgHeader msgRndId msgIV =
@@ -201,12 +200,11 @@ rcEncrypt' rc@RatchetState {rcCKs = Just ck, rcHKs = Just hk} paddedMsgLen msg =
           msgLatestVersion = currentE2EVersion,
           msgDHR = fst $ rcDHRs rc,
           msgPN = rcPN rc,
-          msgN = rcNs rc,
+          msgN = rcNs,
           msgRndId,
           msgIV,
           msgLen = fromIntegral $ B.length msg
         }
-rcEncrypt' RatchetState {rcCKs = _, rcHKs = _} _ _ = throwE CryptoRatchetNoCKs
 
 initKdf :: (AlgorithmI a, DhAlgorithm a) => ByteString -> PublicKey a -> PrivateKey a -> (RatchetKey, Key, Key)
 initKdf salt k pk =
