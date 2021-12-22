@@ -38,20 +38,20 @@ testPort2 :: ServiceName
 testPort2 = "5002"
 
 testKeyHashStr :: ByteString
-testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHashStr = "f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="
 
 testBlockSize :: Int
 testBlockSize = 16 * 1024 -- TODO move to Protocol
 
 testKeyHash :: Maybe C.KeyHash
-testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHash = Just "f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTransportClient testHost testPort $ \h ->
+  runTransportClient testHost testPort testKeyHash $ \h ->
     liftIO (runExceptT $ clientHandshake h testBlockSize) >>= \case
       Right th -> client th
       Left e -> error $ show e

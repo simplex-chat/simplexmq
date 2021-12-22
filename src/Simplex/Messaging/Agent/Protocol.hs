@@ -351,11 +351,11 @@ agentMessageP =
 
 -- | SMP server location parser.
 smpServerP :: Parser SMPServer
-smpServerP = SMPServer <$> server <*> optional port <*> optional kHash
+smpServerP = SMPServer <$> server <*> optional port <*> kHash
   where
     server = B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
-    kHash = C.KeyHash <$> (A.char '#' *> base64P)
+    kHash = Just . C.KeyHash <$> (A.char '#' *> base64P)
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
@@ -443,10 +443,10 @@ serializeServerUri SMPServer {host, port, keyHash} = "smp://" <> kh <> B.pack ho
 smpServerUriP :: Parser SMPServer
 smpServerUriP = do
   _ <- "smp://"
-  keyHash <- optional $ C.KeyHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
+  keyHash <- C.KeyHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
   host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
   port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
-  pure SMPServer {host, port, keyHash}
+  pure SMPServer {host, port, keyHash = Just keyHash}
 
 serializeConnMode :: AConnectionMode -> ByteString
 serializeConnMode (ACM cMode) = serializeConnMode' $ connMode cMode
@@ -472,7 +472,7 @@ connModeT = \case
 data SMPServer = SMPServer
   { host :: HostName,
     port :: Maybe ServiceName,
-    keyHash :: Maybe C.KeyHash
+    keyHash :: Maybe C.KeyHash -- TODO make non optional
   }
   deriving (Eq, Ord, Show)
 

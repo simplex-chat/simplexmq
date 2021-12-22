@@ -9,19 +9,18 @@ module Main where
 
 import Control.Monad.Except
 import Control.Monad.Trans.Except
-import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
 import Data.Ini (Ini, lookupValue, readIniFile)
+import Data.List (dropWhileEnd)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Network.Socket (ServiceName)
 import Options.Applicative
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), encodeFingerprint, loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
@@ -69,6 +68,9 @@ defaultPrivateKeyFile = combine cfgDir "server.key"
 defaultCertificateFile :: FilePath
 defaultCertificateFile = combine cfgDir "server.crt"
 
+fingerprintFile :: FilePath
+fingerprintFile = combine cfgDir "fingerprint"
+
 main :: IO ()
 main = do
   opts <- getServerOpts
@@ -78,12 +80,14 @@ main = do
       runExceptT (getConfig opts) >>= \case
         Right cfg -> do
           putStrLn "Error: server is already initialized. Start it with `smp-server start` command"
-          printConfig cfg
+          fingerprint <- loadSavedFingerprint
+          printConfig cfg fingerprint
           exitFailure
         Left _ -> do
           cfg <- initializeServer opts
           putStrLn "Server was initialized. Start it with `smp-server start` command"
-          printConfig cfg
+          fingerprint <- loadSavedFingerprint
+          printConfig cfg fingerprint
     ServerStart ->
       runExceptT (getConfig opts) >>= \case
         Right cfg -> runServer cfg
@@ -111,9 +115,9 @@ makeConfig IniOpts {serverPort, enableWebsockets, serverPrivateKeyFile, serverCe
   let transports = (serverPort, transport @TLS) : [("80", transport @WS) | enableWebsockets]
    in serverConfig {transports, storeLog, serverPrivateKeyFile, serverCertificateFile}
 
-printConfig :: ServerConfig -> IO ()
-printConfig ServerConfig {storeLog} = do
-  -- TODO print certificate hash
+printConfig :: ServerConfig -> String -> IO ()
+printConfig ServerConfig {storeLog} fingerprint = do
+  putStrLn $ "fingerprint: " <> fingerprint
   putStrLn $ case storeLog of
     Just s -> "store log: " <> storeLogFilePath s
     Nothing -> "store log disabled"
@@ -123,15 +127,25 @@ initializeServer opts = do
   createDirectoryIfMissing True cfgDir
   ini <- createIni opts
   createKeyAndCertificate ini opts
+  saveFingerprint $ serverCertificateFile (ini :: IniOpts)
   storeLog <- openStoreLog opts ini
   pure $ makeConfig ini storeLog
 
 runServer :: ServerConfig -> IO ()
 runServer cfg = do
-  printConfig cfg
+  savedFingerprint <- loadSavedFingerprint
+  checkSavedFingerprint savedFingerprint
+  printConfig cfg savedFingerprint
   forM_ (transports cfg) $ \(port, ATransport t) ->
     putStrLn $ "listening on port " <> port <> " (" <> transportName t <> ")"
   runSMPServer cfg
+  where
+    checkSavedFingerprint :: String -> IO ()
+    checkSavedFingerprint savedFingerprint = do
+      fingerprint <- loadFingerprint $ serverCertificateFile (cfg :: ServerConfig)
+      if savedFingerprint == (B.unpack . encodeFingerprint) fingerprint
+        then putStrLn "stored fingerprint is valid"
+        else putStrLn "stored fingerprint is invalid" >> exitFailure
 
 deleteServer :: IO ()
 deleteServer = do
@@ -142,10 +156,12 @@ deleteServer = do
       deleteIfExists storeLogFile
       deleteIfExists serverPrivateKeyFile
       deleteIfExists serverCertificateFile
+      deleteIfExists fingerprintFile
     Left _ -> do
       deleteIfExists defaultStoreLogFile
       deleteIfExists defaultPrivateKeyFile
       deleteIfExists defaultCertificateFile
+      deleteIfExists fingerprintFile
 
 data IniOpts = IniOpts
   { enableStoreLog :: Bool,
@@ -222,6 +238,16 @@ createKeyAndCertificate IniOpts {serverPrivateKeyFile, serverCertificateFile} Se
     csrPath :: String
     csrPath = combine cfgDir "localhost.csr"
 
+saveFingerprint :: FilePath -> IO ()
+saveFingerprint serverCertificateFile = do
+  fingerprint <- loadFingerprint serverCertificateFile
+  writeFile fingerprintFile $ (B.unpack . encodeFingerprint) fingerprint <> "\n"
+
+loadSavedFingerprint :: IO String
+loadSavedFingerprint = do
+  fingerpint <- readFile fingerprintFile
+  pure $ dropWhileEnd (== '\n') fingerpint
+
 fileExists :: FilePath -> ExceptT String IO ()
 fileExists path = do
   exists <- liftIO $ doesFileExist path
@@ -236,9 +262,6 @@ confirm msg = do
   hFlush stdout
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
-
-serverKeyHash :: C.PrivateKey 'C.RSA -> B.ByteString
-serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey
 
 openStoreLog :: ServerOpts -> IniOpts -> IO (Maybe (StoreLog 'ReadMode))
 openStoreLog ServerOpts {enableStoreLog = l} IniOpts {enableStoreLog = l', storeLogFile = f}

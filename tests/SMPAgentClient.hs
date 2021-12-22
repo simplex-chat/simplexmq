@@ -156,7 +156,7 @@ cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      smpServers = L.fromList ["localhost:5001#KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="],
+      smpServers = L.fromList ["localhost:5001#f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
@@ -188,7 +188,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient agentTestHost port' $ \h -> do
+  runTransportClient agentTestHost port' testKeyHash $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> currentSMPVersionStr
       then client h
