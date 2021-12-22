@@ -355,7 +355,7 @@ smpServerP = SMPServer <$> server <*> optional port <*> kHash
   where
     server = B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
-    kHash = (Just . C.KeyHash) <$> (A.char '#' *> base64P)
+    kHash = Just . C.KeyHash <$> (A.char '#' *> base64P)
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
