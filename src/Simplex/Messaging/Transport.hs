@@ -186,8 +186,6 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
 -- | Connect to passed TCP host:port and pass handle to the client.
 runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
 runTransportClient host port keyHash client = do
-  -- fromJust is safe here because keyHash is parsed as non optional,
-  -- it is kept as optional for compatibility with earlier versions
   let clientParams = mkTLSClientParams host port keyHash
   c <- liftIO $ startTCPClient host port clientParams
   client c `E.finally` liftIO (closeConnection c)
