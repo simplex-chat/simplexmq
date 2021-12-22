@@ -35,7 +35,8 @@ module Simplex.Messaging.Transport
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
-    getKeyHash,
+    loadFingerprint,
+    encodeFingerprint,
 
     -- * TLS 1.2 Transport
     TLS (..),
@@ -233,11 +234,13 @@ loadTLSServerParams certificateFile privateKeyFile =
           T.serverSupported = supportedParameters
         }
 
-getKeyHash :: FilePath -> IO ByteString
-getKeyHash certificateFile = do
-  x509 <- SX.readSignedObject certificateFile
-  let certificate = X.getCertificate (head x509) -- we should have only one certificate
-  pure $ (encode . C.unKeyHash) (C.keyHash certificate)
+loadFingerprint :: FilePath -> IO XV.Fingerprint
+loadFingerprint certificateFile = do
+  (cert : _) <- SX.readSignedObject certificateFile
+  pure $ XV.getFingerprint (cert :: X.SignedExact X.Certificate) X.HashSHA256
+
+encodeFingerprint :: XV.Fingerprint -> ByteString
+encodeFingerprint (XV.Fingerprint bs) = encode bs
 
 -- * TLS 1.2 Transport
 
@@ -288,21 +291,20 @@ mkTLSClientParams host port keyHash = do
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain expectedHash host port cc@(X.CertificateChain sc@[cert]) = do
-  let keyHash = C.keyHash . X.getCertificate $ cert
-  -- putStrLn $ "certificate hash: " <> (B.unpack . encode . C.unKeyHash) keyHash
-  -- putStrLn $ "expected hash: " <> (B.unpack . encode . C.unKeyHash) expectedHash
-  if keyHash == expectedHash
+validateCertificateChain (C.KeyHash expectedFingerprint) host port cc@(X.CertificateChain sc@[cert]) = do
+  let fingerprint = XV.getFingerprint cert X.HashSHA256
+  if fromFingerprint fingerprint == expectedFingerprint
     then x509validate
     else pure [XV.UnknownCA]
   where
+    fromFingerprint (XV.Fingerprint bs) = bs
     x509validate :: IO [XV.FailedReason]
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
         hooks = XV.defaultHooks
         checks = XV.defaultChecks {XV.checkLeafV3 = False} -- TODO create v3 certificates? https://stackoverflow.com/a/18242720
         certStore = XS.makeCertificateStore sc
-        cache = XV.exceptionValidationCache [] -- we don't store certificate Fingerprints on clients
+        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the offline certificate (TODO 2 certificates)
         serviceID = (host, port)
 validateCertificateChain _ _ _ (X.CertificateChain (_ : _)) = pure [XV.AuthorityTooDeep]
 

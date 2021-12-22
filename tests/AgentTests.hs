@@ -367,7 +367,7 @@ syntaxTests t = do
       -- TODO: add tests with defined connection alias
       xit "using same server as in invitation" $
         -- URL encode key hash in ghci:
-        -- Network.HTTP.Types.urlEncode True $ B.pack "J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="
+        -- Network.HTTP.Types.urlEncode True $ B.pack "f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="
         ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2FJ9wO8JGBQup6jPOs7BnNPutpKOe%2BLuFlaT10M7BK7JA%3D%40localhost%3A5001%2F3456-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo")
           >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" $ do

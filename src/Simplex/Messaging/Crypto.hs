@@ -812,7 +812,7 @@ newtype Key = Key {unKey :: ByteString}
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
 
--- | Certificate hash newtype.
+-- | Certificate fingerpint newtype.
 -- 
 -- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)

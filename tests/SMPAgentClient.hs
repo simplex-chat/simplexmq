@@ -156,7 +156,7 @@ cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      smpServers = L.fromList ["localhost:5001#J9wO8JGBQup6jPOs7BnNPutpKOe+LuFlaT10M7BK7JA="],
+      smpServers = L.fromList ["localhost:5001#f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =

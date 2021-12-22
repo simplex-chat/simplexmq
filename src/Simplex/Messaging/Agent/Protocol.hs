@@ -472,7 +472,7 @@ connModeT = \case
 data SMPServer = SMPServer
   { host :: HostName,
     port :: Maybe ServiceName,
-    keyHash :: Maybe C.KeyHash
+    keyHash :: Maybe C.KeyHash -- TODO make non optional
   }
   deriving (Eq, Ord, Show)
 
