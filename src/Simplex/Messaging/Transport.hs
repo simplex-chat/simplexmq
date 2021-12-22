@@ -262,7 +262,6 @@ validateCertificateChain expectedHash host port cc@(X.CertificateChain sc@[cert]
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
         hooks = XV.defaultHooks
-        checks :: XV.ValidationChecks
         checks = XV.defaultChecks {XV.checkLeafV3 = False} -- TODO create v3 certificates? https://stackoverflow.com/a/18242720
         certStore = XS.makeCertificateStore sc
         cache :: XV.ValidationCache
