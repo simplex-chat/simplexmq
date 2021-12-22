@@ -265,7 +265,6 @@ validateCertificateChain expectedHash host port cc@(X.CertificateChain sc@[cert]
         hooks = XV.defaultHooks
         checks :: XV.ValidationChecks
         checks = XV.defaultChecks {XV.checkLeafV3 = False} -- TODO create v3 certificates? https://stackoverflow.com/a/18242720
-        certStore :: XS.CertificateStore
         certStore = XS.makeCertificateStore sc
         cache :: XV.ValidationCache
         cache = XV.exceptionValidationCache [] -- we don't store certificate Fingerprints on clients
