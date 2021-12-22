@@ -32,7 +32,6 @@ module Simplex.Messaging.Transport
     TransportPeer (..),
 
     -- * Transport over TLS 1.2
-    PartyAlias (..),
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
@@ -141,14 +140,11 @@ data ATransport = forall c. Transport c => ATransport (TProxy c)
 
 -- * Transport over TLS 1.2
 
--- | Party name to print on exception handling - for debugging.
-newtype PartyAlias = PartyAlias {partyAlias :: String} deriving (Show)
-
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => PartyAlias -> TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
-runTransportServer PartyAlias {partyAlias} started port serverParams server = do
+runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
+runTransportServer started port serverParams server = do
   clients <- newTVarIO S.empty
   E.bracket
     (liftIO $ startTCPServer started port)
@@ -168,7 +164,7 @@ runTransportServer PartyAlias {partyAlias} started port serverParams server = do
     acceptConnection :: Socket -> IO c
     acceptConnection sock = do
       (newSock, _) <- accept sock
-      ctx <- connectTLS partyAlias serverParams newSock
+      ctx <- connectTLS serverParams newSock
       getServerConnection ctx
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
@@ -187,14 +183,14 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => PartyAlias -> HostName -> ServiceName -> C.CertificateHash -> (c -> m a) -> m a
-runTransportClient partyAlias host port certificateHash client = do
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.CertificateHash -> (c -> m a) -> m a
+runTransportClient host port certificateHash client = do
   let clientParams = mkTLSClientParams host port certificateHash
-  c <- liftIO $ startTCPClient partyAlias host port clientParams
+  c <- liftIO $ startTCPClient host port clientParams
   client c `E.finally` liftIO (closeConnection c)
 
-startTCPClient :: forall c. Transport c => PartyAlias -> HostName -> ServiceName -> T.ClientParams -> IO c
-startTCPClient PartyAlias {partyAlias} host port clientParams = withSocketsDo $ resolve >>= tryOpen err
+startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> IO c
+startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
@@ -213,7 +209,7 @@ startTCPClient PartyAlias {partyAlias} host port clientParams = withSocketsDo $ 
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      ctx <- connectTLS partyAlias clientParams sock
+      ctx <- connectTLS clientParams sock
       getClientConnection ctx
 
 loadTLSServerParams :: FilePath -> FilePath -> IO T.ServerParams
@@ -289,11 +285,11 @@ data TLS = TLS
     getLock :: TMVar ()
   }
 
-connectTLS :: T.TLSParams p => String -> p -> Socket -> IO T.Context
-connectTLS party params sock =
+connectTLS :: T.TLSParams p => p -> Socket -> IO T.Context
+connectTLS params sock =
   E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
     T.handshake ctx
-      `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
+      `E.catch` \(e :: E.SomeException) -> putStrLn ("exception: " <> show e) >> E.throwIO e
     pure ctx
 
 getTLS :: TransportPeer -> T.Context -> IO TLS

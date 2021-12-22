@@ -84,7 +84,7 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
     runServer :: (MonadUnliftIO m', MonadReader Env m') => (ServiceName, ATransport) -> m' ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
-      runTransportServer (PartyAlias "SMP server") started tcpPort serverParams (runClient t)
+      runTransportServer started tcpPort serverParams (runClient t)
 
     serverThread ::
       forall m' s.

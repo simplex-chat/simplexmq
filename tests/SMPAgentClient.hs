@@ -188,7 +188,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient (PartyAlias "SMP agent client") agentTestHost port' testCertificateHash $ \h -> do
+  runTransportClient agentTestHost port' testCertificateHash $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> currentSMPVersionStr
       then client h
