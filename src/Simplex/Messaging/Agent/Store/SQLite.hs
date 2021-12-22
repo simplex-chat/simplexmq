@@ -603,18 +603,18 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
 -- * Server upsert helper
 
 upsertServer_ :: DB.Connection -> SMPServer -> IO ()
-upsertServer_ dbConn SMPServer {host, port, certificateHash} = do
+upsertServer_ dbConn SMPServer {host, port, keyHash} = do
   let port_ = serializePort_ port
   DB.executeNamed
     dbConn
     [sql|
-      INSERT INTO servers (host, port, certificate_hash) VALUES (:host,:port,:certificate_hash)
+      INSERT INTO servers (host, port, key_hash) VALUES (:host,:port,:key_hash)
       ON CONFLICT (host, port) DO UPDATE SET
         host=excluded.host,
         port=excluded.port,
-        certificate_hash=excluded.certificate_hash;
+        key_hash=excluded.key_hash;
     |]
-    [":host" := host, ":port" := port_, ":certificate_hash" := certificateHash]
+    [":host" := host, ":port" := port_, ":key_hash" := keyHash]
 
 -- * createRcvConn helpers
 
@@ -731,7 +731,7 @@ getRcvQueueByConnAlias_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.certificate_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
+        SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
           q.snd_id, q.decrypt_key, q.verify_key, q.status
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
@@ -739,8 +739,8 @@ getRcvQueueByConnAlias_ dbConn connId =
       |]
       (Only connId)
   where
-    rcvQueue [(certificateHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, sndId, decryptKey, verifyKey, status)] =
-      let server = SMPServer host (deserializePort_ port) certificateHash
+    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, sndId, decryptKey, verifyKey, status)] =
+      let server = SMPServer host (deserializePort_ port) keyHash
        in Just $
             RcvQueue
               { server,
@@ -760,15 +760,15 @@ getSndQueueByConnAlias_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.certificate_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.encrypt_key, q.sign_key, q.status
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.encrypt_key, q.sign_key, q.status
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    sndQueue [(certificateHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] =
-      let server = SMPServer host (deserializePort_ port) certificateHash
+    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] =
+      let server = SMPServer host (deserializePort_ port) keyHash
        in Just $ SndQueue {server, sndId, sndPrivateKey, encryptKey, signKey, status}
     sndQueue _ = Nothing
 

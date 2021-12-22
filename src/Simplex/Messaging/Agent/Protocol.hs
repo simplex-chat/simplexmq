@@ -351,11 +351,11 @@ agentMessageP =
 
 -- | SMP server location parser.
 smpServerP :: Parser SMPServer
-smpServerP = SMPServer <$> server <*> optional port <*> certHash
+smpServerP = SMPServer <$> server <*> optional port <*> kHash
   where
     server = B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
-    certHash = C.CertificateHash <$> (A.char '#' *> base64P)
+    kHash = C.KeyHash <$> (A.char '#' *> base64P)
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
@@ -431,22 +431,22 @@ connReqP = do
 
 -- | Serialize SMP server location.
 serializeServer :: SMPServer -> ByteString
-serializeServer SMPServer {host, port, certificateHash} =
-  B.pack $ host <> maybe "" (':' :) port <> (('#' :) . B.unpack . encode . C.unCertificateHash) certificateHash
+serializeServer SMPServer {host, port, keyHash} =
+  B.pack $ host <> maybe "" (':' :) port <> (('#' :) . B.unpack . encode . C.unKeyHash) keyHash
 
 serializeServerUri :: SMPServer -> ByteString
-serializeServerUri SMPServer {host, port, certificateHash} = "smp://" <> certHash <> B.pack host <> p
+serializeServerUri SMPServer {host, port, keyHash} = "smp://" <> kh <> B.pack host <> p
   where
-    certHash = ((<> "@") . U.encode . C.unCertificateHash) certificateHash
+    kh = ((<> "@") . U.encode . C.unKeyHash) keyHash
     p = B.pack $ maybe "" (':' :) port
 
 smpServerUriP :: Parser SMPServer
 smpServerUriP = do
   _ <- "smp://"
-  certificateHash <- C.CertificateHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
+  keyHash <- C.KeyHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
   host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
   port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
-  pure SMPServer {host, port, certificateHash}
+  pure SMPServer {host, port, keyHash}
 
 serializeConnMode :: AConnectionMode -> ByteString
 serializeConnMode (ACM cMode) = serializeConnMode' $ connMode cMode
@@ -472,7 +472,7 @@ connModeT = \case
 data SMPServer = SMPServer
   { host :: HostName,
     port :: Maybe ServiceName,
-    certificateHash :: C.CertificateHash
+    keyHash :: C.KeyHash
   }
   deriving (Eq, Ord, Show)
 

@@ -35,7 +35,7 @@ module Simplex.Messaging.Transport
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
-    getCertificateHash,
+    getKeyHash,
 
     -- * TLS 1.2 Transport
     TLS (..),
@@ -183,9 +183,9 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.CertificateHash -> (c -> m a) -> m a
-runTransportClient host port certificateHash client = do
-  let clientParams = mkTLSClientParams host port certificateHash
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> (c -> m a) -> m a
+runTransportClient host port keyHash client = do
+  let clientParams = mkTLSClientParams host port keyHash
   c <- liftIO $ startTCPClient host port clientParams
   client c `E.finally` liftIO (closeConnection c)
 
@@ -230,50 +230,11 @@ loadTLSServerParams certificateFile privateKeyFile =
           T.serverSupported = supportedParameters
         }
 
-mkTLSClientParams :: HostName -> ServiceName -> C.CertificateHash -> T.ClientParams
-mkTLSClientParams host port certificateHash = do
-  let p = B.pack port
-  (T.defaultParamsClient host p)
-    { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain certificateHash host p},
-      T.clientSupported = supportedParameters
-    }
-
-validateCertificateChain :: C.CertificateHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
-validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain expectedHash host port cc@(X.CertificateChain sc@[cert]) = do
-  let certificateHash = C.certificateHash . X.getCertificate $ cert
-  -- putStrLn $ "certificate hash: " <> (B.unpack . encode . C.unCertificateHash) certificateHash
-  -- putStrLn $ "expected hash: " <> (B.unpack . encode . C.unCertificateHash) expectedHash
-  if certificateHash == expectedHash
-    then x509validate
-    else pure [XV.UnknownCA]
-  where
-    x509validate :: IO [XV.FailedReason]
-    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
-      where
-        hooks = XV.defaultHooks
-        checks = XV.defaultChecks {XV.checkLeafV3 = False} -- TODO create v3 certificates? https://stackoverflow.com/a/18242720
-        certStore = XS.makeCertificateStore sc
-        cache = XV.exceptionValidationCache [] -- we don't store certificate Fingerprints on clients
-        serviceID = (host, port)
-validateCertificateChain _ _ _ (X.CertificateChain (_ : _ : _)) = pure [XV.AuthorityTooDeep]
-
-supportedParameters :: T.Supported
-supportedParameters =
-  def
-    { T.supportedVersions = [T.TLS12],
-      T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
-      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
-      T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448, T.X25519]
-    }
-
-getCertificateHash :: FilePath -> IO ByteString
-getCertificateHash certificateFile = do
+getKeyHash :: FilePath -> IO ByteString
+getKeyHash certificateFile = do
   x509 <- SX.readSignedObject certificateFile
   let certificate = X.getCertificate (head x509) -- we should have only one certificate
-  pure $ (encode . C.unCertificateHash) (C.certificateHash certificate)
+  pure $ (encode . C.unKeyHash) (C.keyHash certificate)
 
 -- * TLS 1.2 Transport
 
@@ -312,6 +273,45 @@ closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
+
+mkTLSClientParams :: HostName -> ServiceName -> C.KeyHash -> T.ClientParams
+mkTLSClientParams host port keyHash = do
+  let p = B.pack port
+  (T.defaultParamsClient host p)
+    { T.clientShared = def,
+      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p},
+      T.clientSupported = supportedParameters
+    }
+
+validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
+validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
+validateCertificateChain expectedHash host port cc@(X.CertificateChain sc@[cert]) = do
+  let keyHash = C.keyHash . X.getCertificate $ cert
+  -- putStrLn $ "certificate hash: " <> (B.unpack . encode . C.unKeyHash) keyHash
+  -- putStrLn $ "expected hash: " <> (B.unpack . encode . C.unKeyHash) expectedHash
+  if keyHash == expectedHash
+    then x509validate
+    else pure [XV.UnknownCA]
+  where
+    x509validate :: IO [XV.FailedReason]
+    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
+      where
+        hooks = XV.defaultHooks
+        checks = XV.defaultChecks {XV.checkLeafV3 = False} -- TODO create v3 certificates? https://stackoverflow.com/a/18242720
+        certStore = XS.makeCertificateStore sc
+        cache = XV.exceptionValidationCache [] -- we don't store certificate Fingerprints on clients
+        serviceID = (host, port)
+validateCertificateChain _ _ _ (X.CertificateChain (_ : _ : _)) = pure [XV.AuthorityTooDeep]
+
+supportedParameters :: T.Supported
+supportedParameters =
+  def
+    { T.supportedVersions = [T.TLS12],
+      T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
+      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
+      T.supportedSecureRenegotiation = False,
+      T.supportedGroups = [T.X448, T.X25519]
+    }
 
 instance Transport TLS where
   transportName _ = "TLS 1.2"

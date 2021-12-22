@@ -33,8 +33,6 @@ SimpleXMQ is implemented in Haskell - it benefits from robust software transacti
 
 To enable the queue logging, uncomment `enable: on` option in `smp-server.ini` configuration file that is created the first time the server is started.
 
-<!-- TODO certificate -->
-
 On the first start the server generates an RSA key pair for encrypted transport handshake and outputs hash of the public key every time it runs - this hash should be used as part of the server address: `<hostname>:5223#<key hash>`.
 
 SMP server implements [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md).
@@ -96,11 +94,9 @@ Deployment on Linode is performed via StackScripts, which serve as recipes for L
 - Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".
 - You can optionally configure the following parameters:
     - [SMP Server store log](#SMP-server) flag for queue persistence on server restart (recommended).
-    <!-- TODO certificate --> 
     - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server address, public key hash, version) and adding A record to your 2nd level domain (Note: 2nd level e.g. `example.com` domain should be [created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access to "linodes" (to update linode tags - you need them), and "domains" (to add A record for the 3rd level domain, e.g. `smp`).
     - Domain name to use instead of Linode ip address, e.g. `smp.example.com`.
 - Choose the region and plan according to your requirements (for regular use Shared CPU Nanode should be sufficient).
-<!-- TODO rename file -->
 - Provide ssh key to be able to connect to your Linode via ssh. This step is required if you haven't provided a Linode API token, because you will need to login to your Linode and get a public key hash either from the welcome message or from the file `/etc/opt/simplex/pub_key_hash` on your Linode after SMP server starts.
 - Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode. Connecting Linode IP address to provided domain name may take some additional time.
 - Get `hostname` and `hash` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh. Linode has a good [guide](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) about ssh.
@@ -117,8 +113,7 @@ You can deploy SMP server using [SimpleX Server 1-click app](https://marketplace
 - Create a DigitalOcean account or login with an already existing one.
 - Click 'Create SimpleX server Droplet' button.
 - Choose the region and plan according to your requirements (cheapest Regular plan should be sufficient).
-- Provide ssh key and confirm Droplet creation.
-<!-- TODO rename file -->
+- Provide ssh key and confirm Droplet creation. 
 - SSH to created Droplet (`ssh root@<droplet_ip_address>`) to get SMP server public key hash - either from the welcome message or from `/etc/opt/simplex/pub_key_hash`. DigitalOcean has a good guide on [how to login to Droplet via ssh](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
 - Great, your own SMP server is ready! Use `ip_address#hash` as SMP server address in the client.
 

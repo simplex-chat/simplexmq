@@ -20,7 +20,7 @@ import Options.Applicative
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), getCertificateHash)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), getKeyHash)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
@@ -142,7 +142,7 @@ runServer cfg = do
   where
     checkStoredHash :: String -> IO ()
     checkStoredHash storedHash = do
-      computedHash <- getCertificateHash $ serverCertificateFile (cfg :: ServerConfig)
+      computedHash <- getKeyHash $ serverCertificateFile (cfg :: ServerConfig)
       if storedHash == B.unpack computedHash
         then putStrLn "stored certificate hash is valid"
         else putStrLn "stored certificate hash is invalid" >> exitFailure
@@ -240,7 +240,7 @@ createKeyAndCertificate IniOpts {serverPrivateKeyFile, serverCertificateFile} Se
 
 saveCertificateHash :: FilePath -> IO ()
 saveCertificateHash serverCertificateFile = do
-  certificateHash <- getCertificateHash serverCertificateFile
+  certificateHash <- getKeyHash serverCertificateFile
   writeFile certificateHashFile $ B.unpack certificateHash <> "\n"
 
 loadCertificateHash :: IO String

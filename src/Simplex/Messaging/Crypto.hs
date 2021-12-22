@@ -46,7 +46,7 @@ module Simplex.Messaging.Crypto
     DhSecret (..),
     ADhSecret (..),
     CryptoDhSecret (..),
-    CertificateHash (..),
+    KeyHash (..),
     generateKeyPair,
     generateKeyPair',
     generateSignatureKeyPair,
@@ -99,7 +99,7 @@ module Simplex.Messaging.Crypto
     cbNonce,
 
     -- * Encoding of X509 certificate
-    certificateHash,
+    keyHash,
 
     -- * SHA256 hash
     sha256Hash,
@@ -813,18 +813,20 @@ newtype Key = Key {unKey :: ByteString}
 newtype IV = IV {unIV :: ByteString}
 
 -- | Certificate hash newtype.
-newtype CertificateHash = CertificateHash {unCertificateHash :: ByteString} deriving (Eq, Ord, Show)
+-- 
+-- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
+newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
-instance IsString CertificateHash where
-  fromString = parseString . parseAll $ CertificateHash <$> base64P
+instance IsString KeyHash where
+  fromString = parseString . parseAll $ KeyHash <$> base64P
 
-instance ToField CertificateHash where toField = toField . encode . unCertificateHash
+instance ToField KeyHash where toField = toField . encode . unKeyHash
 
-instance FromField CertificateHash where fromField = blobFieldParser $ CertificateHash <$> base64P
+instance FromField KeyHash where fromField = blobFieldParser $ KeyHash <$> base64P
 
 -- | Digest (hash) of binary X509 certificate.
-certificateHash :: Certificate -> CertificateHash
-certificateHash = CertificateHash . sha256Hash . encodeASNObj
+keyHash :: Certificate -> KeyHash
+keyHash = KeyHash . sha256Hash . encodeASNObj
 
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString

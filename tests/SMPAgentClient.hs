@@ -13,7 +13,7 @@ import qualified Data.List.NonEmpty as L
 import Network.Socket (HostName, ServiceName)
 import SMPClient
   ( serverBracket,
-    testCertificateHash,
+    testKeyHash,
     testPort,
     testPort2,
     withSmpServer,
@@ -172,7 +172,7 @@ cfg =
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" (Just smpPort') testCertificateHash]}
+  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" (Just smpPort') testKeyHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg')
         afterProcess
@@ -188,7 +188,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient agentTestHost port' testCertificateHash $ \h -> do
+  runTransportClient agentTestHost port' testKeyHash $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> currentSMPVersionStr
       then client h

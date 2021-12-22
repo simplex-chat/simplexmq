@@ -21,7 +21,7 @@ import Data.Time
 import Data.Word (Word32)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
-import SMPClient (testCertificateHash)
+import SMPClient (testKeyHash)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
@@ -185,7 +185,7 @@ testPrivateKey =
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
   RcvQueue
-    { server = SMPServer "smp.simplex.im" (Just "5223") testCertificateHash,
+    { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       rcvId = "1234",
       rcvPrivateKey = testPrivateSignKey,
       rcvDhSecret = testDhSecret,
@@ -198,7 +198,7 @@ rcvQueue1 =
 sndQueue1 :: SndQueue
 sndQueue1 =
   SndQueue
-    { server = SMPServer "smp.simplex.im" (Just "5223") testCertificateHash,
+    { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
       sndPrivateKey = testPrivateSignKey,
       encryptKey = testPublicEncryptKey,
@@ -284,7 +284,7 @@ testGetAllConnIds =
 testGetRcvConn :: SpecWith SQLiteStore
 testGetRcvConn =
   it "should get connection using rcv queue id and server" $ \store -> do
-    let smpServer = SMPServer "smp.simplex.im" (Just "5223") testCertificateHash
+    let smpServer = SMPServer "smp.simplex.im" (Just "5223") testKeyHash
     let recipientId = "1234"
     g <- newTVarIO =<< drgNew
     _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
@@ -338,7 +338,7 @@ testUpgradeRcvConnToDuplex =
     _ <- runExceptT $ createSndConn store g cData1 sndQueue1
     let anotherSndQueue =
           SndQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") testCertificateHash,
+            { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               sndId = "2345",
               sndPrivateKey = testPrivateSignKey,
               encryptKey = testPublicEncryptKey,
@@ -358,7 +358,7 @@ testUpgradeSndConnToDuplex =
     _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     let anotherRcvQueue =
           RcvQueue
-            { server = SMPServer "smp.simplex.im" (Just "5223") testCertificateHash,
+            { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               rcvId = "3456",
               rcvPrivateKey = testPrivateSignKey,
               rcvDhSecret = testDhSecret,
