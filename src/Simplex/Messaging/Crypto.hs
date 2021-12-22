@@ -55,6 +55,8 @@ module Simplex.Messaging.Crypto
     privateToX509,
 
     -- * E2E hybrid encryption scheme
+    E2EEncryptionVersion,
+    currentE2EVersion,
     encrypt,
     encrypt',
     decrypt,
@@ -147,6 +149,7 @@ import Data.Kind (Constraint, Type)
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Typeable)
+import Data.Word (Word16)
 import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -154,6 +157,11 @@ import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord32, encodeWord32)
 import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
+
+type E2EEncryptionVersion = Word16
+
+currentE2EVersion :: E2EEncryptionVersion
+currentE2EVersion = 1
 
 -- | Cryptographic algorithms.
 data Algorithm = RSA | Ed25519 | Ed448 | X25519 | X448
@@ -763,6 +771,8 @@ data CryptoError
     CryptoLargeMsgError
   | -- | failure parsing RSA-encrypted message header
     CryptoHeaderError String
+  | -- | no sending chain key in ratchet state
+    CryptoRatchetNoCKs
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
@@ -898,7 +908,7 @@ encryptAES aesKey ivBytes paddedSize msg = do
   where
     len = B.length msg
     paddedMsg
-      | len >= paddedSize = throwE CryptoLargeMsgError
+      | len > paddedSize = throwE CryptoLargeMsgError
       | otherwise = return (msg <> B.replicate (paddedSize - len) '#')
 
 -- | AEAD-GCM decryption.
