@@ -98,9 +98,6 @@ module Simplex.Messaging.Crypto
     cbDecrypt,
     cbNonce,
 
-    -- * Encoding of X509 certificate
-    keyHash,
-
     -- * SHA256 hash
     sha256Hash,
 
@@ -813,7 +810,7 @@ newtype Key = Key {unKey :: ByteString}
 newtype IV = IV {unIV :: ByteString}
 
 -- | Certificate fingerpint newtype.
--- 
+--
 -- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
@@ -823,10 +820,6 @@ instance IsString KeyHash where
 instance ToField KeyHash where toField = toField . encode . unKeyHash
 
 instance FromField KeyHash where fromField = blobFieldParser $ KeyHash <$> base64P
-
--- | Digest (hash) of binary X509 certificate.
-keyHash :: Certificate -> KeyHash
-keyHash = KeyHash . sha256Hash . encodeASNObj
 
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString
