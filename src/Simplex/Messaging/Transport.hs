@@ -73,7 +73,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
-import Data.Maybe (fromJust)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
@@ -189,7 +188,7 @@ runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName 
 runTransportClient host port keyHash client = do
   -- fromJust is safe here because keyHash is parsed as non optional,
   -- it is kept as optional for compatibility with earlier versions
-  let clientParams = mkTLSClientParams host port (fromJust keyHash)
+  let clientParams = mkTLSClientParams host port keyHash
   c <- liftIO $ startTCPClient host port clientParams
   client c `E.finally` liftIO (closeConnection c)
 
@@ -280,7 +279,7 @@ closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
 
-mkTLSClientParams :: HostName -> ServiceName -> C.KeyHash -> T.ClientParams
+mkTLSClientParams :: HostName -> ServiceName -> Maybe C.KeyHash -> T.ClientParams
 mkTLSClientParams host port keyHash = do
   let p = B.pack port
   (T.defaultParamsClient host p)
@@ -289,15 +288,15 @@ mkTLSClientParams host port keyHash = do
       T.clientSupported = supportedParameters
     }
 
-validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
+validateCertificateChain :: Maybe C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain (C.KeyHash expectedFingerprint) host port cc@(X.CertificateChain sc@[cert]) = do
-  let fingerprint = XV.getFingerprint cert X.HashSHA256
-  if fromFingerprint fingerprint == expectedFingerprint
-    then x509validate
-    else pure [XV.UnknownCA]
+validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[cert]) =
+  let fp = XV.getFingerprint cert X.HashSHA256
+   in if maybe True (sameFingerprint fp) keyHash
+        then x509validate
+        else pure [XV.UnknownCA]
   where
-    fromFingerprint (XV.Fingerprint bs) = bs
+    sameFingerprint (XV.Fingerprint s) (C.KeyHash s') = s == s'
     x509validate :: IO [XV.FailedReason]
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
