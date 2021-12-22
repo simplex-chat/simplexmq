@@ -351,11 +351,11 @@ agentMessageP =
 
 -- | SMP server location parser.
 smpServerP :: Parser SMPServer
-smpServerP = do
-  host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
-  port <- optional $ A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
-  kHash <- C.KeyHash <$> (A.char '#' *> base64P)
-  pure SMPServer {host, port, keyHash = Just kHash}
+smpServerP = SMPServer <$> server <*> optional port <*> kHash
+  where
+    server = B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
+    port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
+    kHash <- (Just . C.KeyHash) <$> (A.char '#' *> base64P)
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
