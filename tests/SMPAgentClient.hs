@@ -156,7 +156,7 @@ cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      smpServers = L.fromList ["localhost:5001#wOmEvBNRhWt9nq/DSrhA/dDzGIGQfdbwdfEZzd1FDFY="],
+      smpServers = L.fromList ["localhost:5001#e3BPez97/b1D2jhwd5CjsYelGEZLR2pDGl1kuuJlWWY="],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
@@ -166,6 +166,7 @@ cfg =
             tcpTimeout = 500_000
           },
       retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000},
+      caCertificateFile = "tests/fixtures/ca.crt",
       agentPrivateKeyFile = "tests/fixtures/server.key",
       agentCertificateFile = "tests/fixtures/server.crt"
     }

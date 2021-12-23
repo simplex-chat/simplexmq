@@ -22,7 +22,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), encodeFingerprint, loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..), hFlush, stdout)
@@ -43,6 +43,7 @@ serverConfig =
       -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini
       transports = undefined,
       storeLog = undefined,
+      caCertificateFile = undefined,
       serverPrivateKeyFile = undefined,
       serverCertificateFile = undefined
     }
@@ -56,11 +57,18 @@ cfgDir = "/etc/opt/simplex"
 logDir :: FilePath
 logDir = "/var/opt/simplex"
 
+-- TODO remove file paths from ini
 defaultStoreLogFile :: FilePath
 defaultStoreLogFile = combine logDir "smp-server-store.log"
 
 iniFile :: FilePath
 iniFile = combine cfgDir "smp-server.ini"
+
+caPrivateKeyFile :: FilePath
+caPrivateKeyFile = combine cfgDir "ca.key"
+
+defaultCACertificateFile :: FilePath
+defaultCACertificateFile = combine cfgDir "ca.crt"
 
 defaultPrivateKeyFile :: FilePath
 defaultPrivateKeyFile = combine cfgDir "server.key"
@@ -82,12 +90,14 @@ main = do
           putStrLn "Error: server is already initialized. Start it with `smp-server start` command"
           fingerprint <- loadSavedFingerprint
           printConfig cfg fingerprint
+          checkCAPrivateKeyFile
           exitFailure
         Left _ -> do
           cfg <- initializeServer opts
           putStrLn "Server was initialized. Start it with `smp-server start` command"
           fingerprint <- loadSavedFingerprint
           printConfig cfg fingerprint
+          warnCAPrivateKeyFile
     ServerStart ->
       runExceptT (getConfig opts) >>= \case
         Right cfg -> runServer cfg
@@ -111,9 +121,9 @@ getConfig opts = do
   pure $ makeConfig ini storeLog
 
 makeConfig :: IniOpts -> Maybe (StoreLog 'ReadMode) -> ServerConfig
-makeConfig IniOpts {serverPort, enableWebsockets, serverPrivateKeyFile, serverCertificateFile} storeLog =
+makeConfig IniOpts {serverPort, enableWebsockets, caCertificateFile, serverPrivateKeyFile, serverCertificateFile} storeLog =
   let transports = (serverPort, transport @TLS) : [("80", transport @WS) | enableWebsockets]
-   in serverConfig {transports, storeLog, serverPrivateKeyFile, serverCertificateFile}
+   in serverConfig {transports, storeLog, caCertificateFile, serverPrivateKeyFile, serverCertificateFile}
 
 printConfig :: ServerConfig -> String -> IO ()
 printConfig ServerConfig {storeLog} fingerprint = do
@@ -126,8 +136,8 @@ initializeServer :: ServerOpts -> IO ServerConfig
 initializeServer opts = do
   createDirectoryIfMissing True cfgDir
   ini <- createIni opts
-  createKeyAndCertificate ini opts
-  saveFingerprint $ serverCertificateFile (ini :: IniOpts)
+  createX509 ini opts
+  saveFingerprint $ caCertificateFile (ini :: IniOpts)
   storeLog <- openStoreLog opts ini
   pure $ makeConfig ini storeLog
 
@@ -136,38 +146,59 @@ runServer cfg = do
   savedFingerprint <- loadSavedFingerprint
   checkSavedFingerprint savedFingerprint
   printConfig cfg savedFingerprint
+  checkCAPrivateKeyFile
   forM_ (transports cfg) $ \(port, ATransport t) ->
     putStrLn $ "listening on port " <> port <> " (" <> transportName t <> ")"
   runSMPServer cfg
   where
     checkSavedFingerprint :: String -> IO ()
     checkSavedFingerprint savedFingerprint = do
-      fingerprint <- loadFingerprint $ serverCertificateFile (cfg :: ServerConfig)
+      fingerprint <- loadFingerprint $ caCertificateFile (cfg :: ServerConfig)
       if savedFingerprint == (B.unpack . encodeFingerprint) fingerprint
         then putStrLn "stored fingerprint is valid"
         else putStrLn "stored fingerprint is invalid" >> exitFailure
+
+checkCAPrivateKeyFile :: IO ()
+checkCAPrivateKeyFile =
+  doesFileExist caPrivateKeyFile >>= (`when` (alert >> warnCAPrivateKeyFile))
+  where
+    alert = putStrLn $ "WARNING: " <> caPrivateKeyFile <> " is present on the server!"
+
+warnCAPrivateKeyFile :: IO ()
+warnCAPrivateKeyFile =
+  putStrLn $
+    "----------\n\
+    \We highly recommend to remove CA private key file from the server and keep it securely in place of your choosing.\n\
+    \In case server's TLS credential is compromised you will be able to regenerate it using this key,\n\
+    \thus keeping server's identity and allowing clients to keep established connections. Key location:\n"
+      <> caPrivateKeyFile
+      <> "\n----------"
 
 deleteServer :: IO ()
 deleteServer = do
   ini <- runExceptT readIni
   deleteIfExists iniFile
   case ini of
-    Right IniOpts {storeLogFile, serverPrivateKeyFile, serverCertificateFile} -> do
+    -- TODO delete only cfgDir and logDir once file paths are removed from ini
+    Right IniOpts {storeLogFile, caCertificateFile, serverPrivateKeyFile, serverCertificateFile} -> do
+      deleteDirIfExists cfgDir
       deleteIfExists storeLogFile
+      deleteIfExists caCertificateFile
       deleteIfExists serverPrivateKeyFile
       deleteIfExists serverCertificateFile
-      deleteIfExists fingerprintFile
     Left _ -> do
+      deleteDirIfExists cfgDir
       deleteIfExists defaultStoreLogFile
+      deleteIfExists defaultCACertificateFile
       deleteIfExists defaultPrivateKeyFile
       deleteIfExists defaultCertificateFile
-      deleteIfExists fingerprintFile
 
 data IniOpts = IniOpts
   { enableStoreLog :: Bool,
     storeLogFile :: FilePath,
     serverPort :: ServiceName,
     enableWebsockets :: Bool,
+    caCertificateFile :: FilePath,
     serverPrivateKeyFile :: FilePath,
     serverCertificateFile :: FilePath
   }
@@ -180,9 +211,10 @@ readIni = do
       storeLogFile = opt defaultStoreLogFile "STORE_LOG" "file" ini
       serverPort = opt defaultServerPort "TRANSPORT" "port" ini
       enableWebsockets = (== Right "on") $ lookupValue "TRANSPORT" "websockets" ini
+      caCertificateFile = opt defaultCACertificateFile "TRANSPORT" "ca_certificate_file" ini
       serverPrivateKeyFile = opt defaultPrivateKeyFile "TRANSPORT" "private_key_file" ini
       serverCertificateFile = opt defaultCertificateFile "TRANSPORT" "certificate_file" ini
-  pure IniOpts {enableStoreLog, storeLogFile, serverPort, enableWebsockets, serverPrivateKeyFile, serverCertificateFile}
+  pure IniOpts {enableStoreLog, storeLogFile, serverPort, enableWebsockets, caCertificateFile, serverPrivateKeyFile, serverCertificateFile}
   where
     opt :: String -> Text -> Text -> Ini -> String
     opt def section key ini = either (const def) T.unpack $ lookupValue section key ini
@@ -203,6 +235,9 @@ createIni ServerOpts {enableStoreLog} = do
       <> defaultStoreLogFile
       <> "\n\n\
          \[TRANSPORT]\n\n\
+         \# ca_certificate_file: "
+      <> defaultCACertificateFile
+      <> "\n\
          \# private_key_file: "
       <> defaultPrivateKeyFile
       <> "\n\
@@ -219,28 +254,47 @@ createIni ServerOpts {enableStoreLog} = do
         storeLogFile = defaultStoreLogFile,
         serverPort = defaultServerPort,
         enableWebsockets = True,
+        caCertificateFile = defaultCACertificateFile,
         serverPrivateKeyFile = defaultPrivateKeyFile,
         serverCertificateFile = defaultCertificateFile
       }
 
--- To generate self-signed certificate:
--- https://blog.pinterjann.is/ed25519-certificates.html
-
-createKeyAndCertificate :: IniOpts -> ServerOpts -> IO ()
-createKeyAndCertificate IniOpts {serverPrivateKeyFile, serverCertificateFile} ServerOpts {pubkeyAlgorihtm} = do
+createX509 :: IniOpts -> ServerOpts -> IO ()
+createX509 IniOpts {caCertificateFile, serverPrivateKeyFile, serverCertificateFile} ServerOpts {pubkeyAlgorihtm} = do
+  createOpensslConf
+  -- CA certificate (identity/offline)
+  run $ "openssl genpkey -algorithm " <> pubkeyAlgorihtm <> " -out " <> caPrivateKeyFile
+  run $ "openssl req -new -x509 -days 999999 -config " <> opensslConfFile <> " -extensions v3_ca -key " <> caPrivateKeyFile <> " -out " <> caCertificateFile
+  -- server certificate (online)
   run $ "openssl genpkey -algorithm " <> pubkeyAlgorihtm <> " -out " <> serverPrivateKeyFile
-  run $ "openssl req -new -key " <> serverPrivateKeyFile <> " -subj \"/CN=localhost\" -out " <> csrPath
-  run $ "openssl x509 -req -days 999999 -in " <> csrPath <> " -signkey " <> serverPrivateKeyFile <> " -out " <> serverCertificateFile
-  run $ "rm " <> csrPath
+  run $ "openssl req -new -config " <> opensslConfFile <> " -reqexts v3_req -key " <> serverPrivateKeyFile <> " -out " <> serverCsrFile
+  run $ "openssl x509 -req -days 999999 -copy_extensions copy -in " <> serverCsrFile <> " -CA " <> caCertificateFile <> " -CAkey " <> caPrivateKeyFile <> " -out " <> serverCertificateFile
   where
-    run :: String -> IO ()
     run cmd = void $ readCreateProcess (shell cmd) ""
-    csrPath :: String
-    csrPath = combine cfgDir "localhost.csr"
+    opensslConfFile = combine cfgDir "openssl.cnf"
+    serverCsrFile = combine cfgDir "server.csr"
+    createOpensslConf :: IO ()
+    createOpensslConf =
+      -- TODO revise https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3, https://www.rfc-editor.org/rfc/rfc3279#section-2.3.5
+      writeFile
+        opensslConfFile
+        "[req]\n\
+        \distinguished_name = req_distinguished_name\n\
+        \prompt = no\n\n\
+        \[req_distinguished_name]\n\
+        \CN = localhost\n\n\
+        \[v3_ca]\n\
+        \subjectKeyIdentifier = hash\n\
+        \authorityKeyIdentifier = keyid:always\n\
+        \basicConstraints = critical,CA:true\n\n\
+        \[v3_req]\n\
+        \basicConstraints = CA:FALSE\n\
+        \keyUsage = digitalSignature, nonRepudiation, keyAgreement\n\
+        \extendedKeyUsage = serverAuth\n"
 
 saveFingerprint :: FilePath -> IO ()
-saveFingerprint serverCertificateFile = do
-  fingerprint <- loadFingerprint serverCertificateFile
+saveFingerprint caCertificateFile = do
+  fingerprint <- loadFingerprint caCertificateFile
   writeFile fingerprintFile $ (B.unpack . encodeFingerprint) fingerprint <> "\n"
 
 loadSavedFingerprint :: IO String
@@ -255,6 +309,9 @@ fileExists path = do
 
 deleteIfExists :: FilePath -> IO ()
 deleteIfExists path = doesFileExist path >>= (`when` removeFile path)
+
+deleteDirIfExists :: FilePath -> IO ()
+deleteDirIfExists path = doesDirectoryExist path >>= (`when` removeDirectoryRecursive path)
 
 confirm :: String -> IO ()
 confirm msg = do
