@@ -38,13 +38,13 @@ testPort2 :: ServiceName
 testPort2 = "5002"
 
 testKeyHashStr :: ByteString
-testKeyHashStr = "f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="
+testKeyHashStr = "JGjNj5pWmlfrnMPxEwr6xjyEonjUOQDw1ymt3iwWOjs="
 
 testBlockSize :: Int
 testBlockSize = 16 * 1024 -- TODO move to Protocol
 
 testKeyHash :: Maybe C.KeyHash
-testKeyHash = Just "f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="
+testKeyHash = Just "JGjNj5pWmlfrnMPxEwr6xjyEonjUOQDw1ymt3iwWOjs="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
@@ -67,8 +67,8 @@ cfg =
       msgIdBytes = 24,
       storeLog = Nothing,
       blockSize = testBlockSize,
-      serverPrivateKeyFile = "tests/fixtures/example.key",
-      serverCertificateFile = "tests/fixtures/example.crt"
+      serverPrivateKeyFile = "tests/fixtures/server.key",
+      serverCertificateFile = "tests/fixtures/server.crt"
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a

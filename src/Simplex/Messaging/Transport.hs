@@ -219,7 +219,7 @@ loadTLSServerParams certificateFile privateKeyFile =
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
-      T.credentialLoadX509 certificateFile privateKeyFile >>= \case
+      T.credentialLoadX509Chain certificateFile ["tests/fixtures/ca.crt"] privateKeyFile >>= \case
         Right credential -> pure credential
         Left _ -> putStrLn "invalid credential" >> exitFailure
     fromCredential :: T.Credential -> T.ServerParams
@@ -288,8 +288,9 @@ mkTLSClientParams host port keyHash = do
 
 validateCertificateChain :: Maybe C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[cert]) =
-  let fp = XV.getFingerprint cert X.HashSHA256
+validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
+validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[caCert, _]) =
+  let fp = XV.getFingerprint caCert X.HashSHA256
    in if maybe True (sameFingerprint fp) keyHash
         then x509validate
         else pure [XV.UnknownCA]
@@ -301,9 +302,9 @@ validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[cert]) =
         hooks = XV.defaultHooks
         checks = XV.defaultChecks {XV.checkLeafV3 = False} -- TODO create v3 certificates? https://stackoverflow.com/a/18242720
         certStore = XS.makeCertificateStore sc
-        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the offline certificate (TODO 2 certificates)
+        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the offline certificate (ca.crt)
         serviceID = (host, port)
-validateCertificateChain _ _ _ (X.CertificateChain (_ : _)) = pure [XV.AuthorityTooDeep]
+validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
 
 supportedParameters :: T.Supported
 supportedParameters =
