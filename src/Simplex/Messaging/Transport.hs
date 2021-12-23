@@ -289,7 +289,7 @@ mkTLSClientParams host port keyHash = do
 validateCertificateChain :: Maybe C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
 validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[caCert, _]) =
+validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[_, caCert]) =
   let fp = XV.getFingerprint caCert X.HashSHA256
    in if maybe True (sameFingerprint fp) keyHash
         then x509validate
@@ -300,9 +300,9 @@ validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[caCert, _]
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
         hooks = XV.defaultHooks
-        checks = XV.defaultChecks {XV.checkLeafV3 = False} -- TODO create v3 certificates? https://stackoverflow.com/a/18242720
+        checks = XV.defaultChecks
         certStore = XS.makeCertificateStore sc
-        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the offline certificate (ca.crt)
+        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
         serviceID = (host, port)
 validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
 

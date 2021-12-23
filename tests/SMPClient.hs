@@ -38,13 +38,13 @@ testPort2 :: ServiceName
 testPort2 = "5002"
 
 testKeyHashStr :: ByteString
-testKeyHashStr = "JGjNj5pWmlfrnMPxEwr6xjyEonjUOQDw1ymt3iwWOjs="
+testKeyHashStr = "wOmEvBNRhWt9nq/DSrhA/dDzGIGQfdbwdfEZzd1FDFY="
 
 testBlockSize :: Int
 testBlockSize = 16 * 1024 -- TODO move to Protocol
 
 testKeyHash :: Maybe C.KeyHash
-testKeyHash = Just "JGjNj5pWmlfrnMPxEwr6xjyEonjUOQDw1ymt3iwWOjs="
+testKeyHash = Just "wOmEvBNRhWt9nq/DSrhA/dDzGIGQfdbwdfEZzd1FDFY="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
