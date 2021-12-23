@@ -95,6 +95,7 @@ module Simplex.Messaging.Crypto
     randomIV,
     aesKeyP,
     ivP,
+    ivSize,
 
     -- * NaCl crypto_box
     cbEncrypt,
@@ -155,7 +156,7 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString)
+import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseE, parseString)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
 type E2EEncryptionVersion = Word16
@@ -769,10 +770,12 @@ data CryptoError
     CBDecryptError
   | -- | message does not fit in SMP block
     CryptoLargeMsgError
-  | -- | failure parsing RSA-encrypted message header
+  | -- | failure parsing message header
     CryptoHeaderError String
   | -- | no sending chain key in ratchet state
-    CryptoRatchetState
+    CERatchetState
+  | -- | header decryption error (could indicate that another key should be tried)
+    CERatchetHeader
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
@@ -819,6 +822,7 @@ data Header = Header
 
 -- | AES key newtype.
 newtype Key = Key {unKey :: ByteString}
+  deriving (Eq, Ord)
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
@@ -861,8 +865,8 @@ aesKeyP = Key <$> A.take aesKeySize
 ivP :: Parser IV
 ivP = IV <$> A.take (ivSize @AES256)
 
-parseHeader :: ByteString -> Either CryptoError Header
-parseHeader = first CryptoHeaderError . parseAll headerP
+parseHeader :: ByteString -> ExceptT CryptoError IO Header
+parseHeader = parseE CryptoHeaderError headerP
 
 -- * E2E hybrid encryption scheme
 
@@ -886,7 +890,7 @@ decrypt' :: PrivateKey a -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt' pk@(PrivateKeyRSA _) msg'' = do
   let (encHeader, msg') = B.splitAt (keySize pk) msg''
   header <- decryptOAEP pk encHeader
-  Header {aesKey, ivBytes, authTag, msgSize} <- except $ parseHeader header
+  Header {aesKey, ivBytes, authTag, msgSize} <- parseHeader header
   msg <- decryptAES aesKey ivBytes msg' authTag
   return $ B.take msgSize msg
 decrypt' _ _ = throwE UnsupportedAlgorithm
