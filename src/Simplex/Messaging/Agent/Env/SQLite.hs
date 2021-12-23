@@ -65,7 +65,7 @@ defaultAgentConfig =
             maxInterval = 10_000_000
           },
       -- ! we do not generate these
-      caCertificateFile = "/etc/opt/simplex-agent/ca.key",
+      caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       agentPrivateKeyFile = "/etc/opt/simplex-agent/agent.key",
       agentCertificateFile = "/etc/opt/simplex-agent/agent.crt"
     }
