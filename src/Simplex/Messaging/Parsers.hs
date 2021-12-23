@@ -57,6 +57,9 @@ parseAll parser = A.parseOnly (parser <* A.endOfInput)
 parseE :: (String -> e) -> Parser a -> (ByteString -> ExceptT e IO a)
 parseE err parser = except . first err . parseAll parser
 
+parseE' :: (String -> e) -> Parser a -> (ByteString -> ExceptT e IO a)
+parseE' err parser = except . first err . A.parseOnly parser
+
 parseRead :: Read a => Parser ByteString -> Parser a
 parseRead = (>>= maybe (fail "cannot read") pure . readMaybe . B.unpack)
 

@@ -40,7 +40,7 @@ connectionRequest =
       }
 
 connectionRequestTests :: Spec
-connectionRequestTests = do
+connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
       serializeSMPQueueUri queue {smpServer = srv {port = Nothing, keyHash = Nothing}}

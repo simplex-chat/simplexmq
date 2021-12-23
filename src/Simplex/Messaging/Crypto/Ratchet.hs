@@ -25,7 +25,7 @@ import Data.Maybe (fromMaybe)
 import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
 import Simplex.Messaging.Crypto
-import Simplex.Messaging.Parsers (parseAll, parseE)
+import Simplex.Messaging.Parsers (parseAll, parseE, parseE')
 import Simplex.Messaging.Util (tryE, (<$?>))
 
 data Ratchet a = Ratchet
@@ -126,6 +126,7 @@ data MsgHeader a = MsgHeader
     msgNs :: Word32,
     msgLen :: Word16
   }
+  deriving (Eq, Show)
 
 data AMsgHeader
   = forall a.
@@ -169,6 +170,7 @@ data EncHeader = EncHeader
     ehAuthTag :: AES.AuthTag,
     ehIV :: IV
   }
+  deriving (Show)
 
 serializeEncHeader :: EncHeader -> ByteString
 serializeEncHeader EncHeader {ehBody, ehAuthTag, ehIV} =
@@ -186,6 +188,7 @@ data EncMessage = EncMessage
     emBody :: ByteString,
     emAuthTag :: AES.AuthTag
   }
+  deriving (Show)
 
 serializeEncMessage :: EncMessage -> ByteString
 serializeEncMessage EncMessage {emHeader, emBody, emAuthTag} =
@@ -358,7 +361,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped} msg' = do
     decryptNextHeader hdr = (AdvanceRatchet,) <$> decryptHeader (rcNHKr rc) hdr
     decryptHeader k EncHeader {ehBody, ehAuthTag, ehIV} = do
       header <- decryptAES k ehIV ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
-      parseE CryptoHeaderError msgHeaderP' header
+      parseE' CryptoHeaderError msgHeaderP' header
     decryptMessage :: MessageKey -> MsgHeader a -> EncMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
     decryptMessage (MessageKey mk iv) MsgHeader {msgLen} EncMessage {emBody, emAuthTag} =
       -- DECRYPT(mk, ciphertext, CONCAT(AD, enc_header))

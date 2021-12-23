@@ -830,6 +830,7 @@ newtype Key = Key {unKey :: ByteString}
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
+  deriving (Show)
 
 -- | Key hash newtype.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
