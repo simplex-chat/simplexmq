@@ -13,6 +13,8 @@ import AgentTests.ConnectionRequestTests
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
+import Data.ByteString.Base64 (decodeLenient)
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network.HTTP.Types (urlEncode)
@@ -365,10 +367,8 @@ syntaxTests t = do
     describe "valid" $ do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
-      xit "using same server as in invitation" $
-        -- URL encode key hash in ghci:
-        -- Network.HTTP.Types.urlEncode True $ B.pack "f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="
-        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2FJ9wO8JGBQup6jPOs7BnNPutpKOe%2BLuFlaT10M7BK7JA%3D%40localhost%3A5001%2F3456-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo")
+      it "using same server as in invitation" $
+        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F" <> (U.encode . decodeLenient) "f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU=" <> "%40localhost%3A5001%2F3456-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo")
           >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" $ do
       -- TODO: JOIN is not merged yet - to be added
