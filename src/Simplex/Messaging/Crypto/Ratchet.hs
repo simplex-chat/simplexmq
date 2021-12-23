@@ -36,6 +36,8 @@ data Ratchet a = Ratchet
     rcSnd :: Maybe (SndRatchet a),
     rcRcv :: Maybe RcvRatchet,
     rcMKSkipped :: Map HeaderKey SkippedMsgKeys,
+    rcNs :: Word32,
+    rcNr :: Word32,
     rcPN :: Word32,
     rcNHKs :: Key,
     rcNHKr :: Key
@@ -44,14 +46,12 @@ data Ratchet a = Ratchet
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
     rcCKs :: RatchetKey,
-    rcHKs :: Key,
-    rcNs :: Word32
+    rcHKs :: Key
   }
 
 data RcvRatchet = RcvRatchet
   { rcCKr :: RatchetKey,
-    rcHKr :: Key,
-    rcNr :: Word32
+    rcHKr :: Key
   }
 
 type SkippedMsgKeys = Map Word32 MessageKey
@@ -83,10 +83,12 @@ initSndRatchet' rKey sPKey salt = do
       { rcVersion = currentE2EVersion,
         rcDHRs,
         rcRK,
-        rcSnd = Just SndRatchet {rcDHRr = rKey, rcCKs, rcHKs, rcNs = 0},
+        rcSnd = Just SndRatchet {rcDHRr = rKey, rcCKs, rcHKs},
         rcRcv = Nothing,
         rcMKSkipped = M.empty,
         rcPN = 0,
+        rcNs = 0,
+        rcNr = 0,
         rcNHKs,
         rcNHKr
       }
@@ -108,6 +110,8 @@ initRcvRatchet' sKey rcDHRs@(_, pk) salt = do
         rcRcv = Nothing,
         rcMKSkipped = M.empty,
         rcPN = 0,
+        rcNs = 0,
+        rcNr = 0,
         rcNHKs,
         rcNHKr
       }
@@ -118,7 +122,6 @@ data MsgHeader a = MsgHeader
     msgDHR :: PublicKey a,
     msgPN :: Word32,
     msgN :: Word32,
-    msgRndId :: ByteString,
     msgLen :: Word16
   }
 
@@ -134,14 +137,13 @@ fullHeaderLen :: Int
 fullHeaderLen = paddedHeaderLen + authTagSize + ivSize @AES256
 
 serializeMsgHeader' :: AlgorithmI a => MsgHeader a -> ByteString
-serializeMsgHeader' MsgHeader {msgVersion, msgLatestVersion, msgDHR, msgPN, msgN, msgRndId, msgLen} =
+serializeMsgHeader' MsgHeader {msgVersion, msgLatestVersion, msgDHR, msgPN, msgN, msgLen} =
   encodeWord16 msgVersion
     <> encodeWord16 msgLatestVersion
     <> encodeWord16 (fromIntegral $ B.length key)
     <> key
     <> encodeWord32 msgPN
     <> encodeWord32 msgN
-    <> msgRndId
     <> encodeWord16 msgLen
   where
     key = encodeKey msgDHR
@@ -154,9 +156,8 @@ msgHeaderP' = do
   msgDHR <- parseAll binaryKeyP <$?> A.take keyLen
   msgPN <- word32
   msgN <- word32
-  msgRndId <- A.take 16
   msgLen <- word16
-  pure MsgHeader {msgVersion, msgLatestVersion, msgDHR, msgPN, msgN, msgRndId, msgLen}
+  pure MsgHeader {msgVersion, msgLatestVersion, msgDHR, msgPN, msgN, msgLen}
   where
     word16 = decodeWord16 <$> A.take 2
     word32 = decodeWord32 <$> A.take 4
@@ -199,27 +200,25 @@ encMessageP = do
 
 rcEncrypt' :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt' Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
-rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs, rcNs}} paddedMsgLen msg = do
-  msgRndId <- liftIO $ getRandomBytes 16
-  let (ck', mk, iv, ehIV) = chainKdf rcCKs msgRndId
-      header = serializeMsgHeader' $ mkMsgHeader msgRndId
-  (ehAuthTag, ehBody) <- encryptAES rcHKs ehIV paddedHeaderLen header
+rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs} paddedMsgLen msg = do
+  let (ck', mk, iv, ehIV) = chainKdf rcCKs
+  (ehAuthTag, ehBody) <- encryptAES rcHKs ehIV paddedHeaderLen msgHeader
   (emAuthTag, emBody) <- encryptAES mk iv paddedMsgLen msg
   let emHeader = serializeEncHeader EncHeader {ehBody, ehAuthTag, ehIV}
       msg' = serializeEncMessage EncMessage {emHeader, emBody, emAuthTag}
-      rc' = rc {rcSnd = Just sr {rcCKs = ck', rcNs = rcNs + 1}}
+      rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1}
   pure (msg', rc')
   where
-    mkMsgHeader msgRndId =
-      MsgHeader
-        { msgVersion = rcVersion rc,
-          msgLatestVersion = currentE2EVersion,
-          msgDHR = fst $ rcDHRs rc,
-          msgPN = rcPN rc,
-          msgN = rcNs,
-          msgRndId,
-          msgLen = fromIntegral $ B.length msg
-        }
+    msgHeader =
+      serializeMsgHeader'
+        MsgHeader
+          { msgVersion = rcVersion rc,
+            msgLatestVersion = currentE2EVersion,
+            msgDHR = fst $ rcDHRs rc,
+            msgPN = rcPN rc,
+            msgN = rcNs,
+            msgLen = fromIntegral $ B.length msg
+          }
 
 data SkippedMessage a
   = SMMessage (Either CryptoError ByteString) (Ratchet a)
@@ -229,8 +228,18 @@ data SkippedMessage a
 data RatchetStep = AdvanceRatchet | SameRatchet
   deriving (Eq)
 
-rcDecrypt' :: forall a. AlgorithmI a => Ratchet a -> ByteString -> ExceptT CryptoError IO (Either CryptoError ByteString, Ratchet a)
-rcDecrypt' rc@Ratchet {rcRcv, rcNHKr, rcMKSkipped} msg' = do
+type DecryptResult a = (Either CryptoError ByteString, Ratchet a)
+
+maxSkip :: Word32
+maxSkip = 256
+
+rcDecrypt' ::
+  forall a.
+  (AlgorithmI a, DhAlgorithm a) =>
+  Ratchet a ->
+  ByteString ->
+  ExceptT CryptoError IO (DecryptResult a)
+rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped} msg' = do
   encMsg@EncMessage {emHeader} <- parseE CryptoHeaderError encMessageP msg'
   encHdr <- parseE CryptoHeaderError encHeaderP emHeader
   decryptSkipped encHdr encMsg >>= \case
@@ -243,22 +252,51 @@ rcDecrypt' rc@Ratchet {rcRcv, rcNHKr, rcMKSkipped} msg' = do
         Nothing -> throwE CERatchetHeader
     SMMessage msg rc' -> pure (msg, rc')
   where
-    decryptRcMessage :: RatchetStep -> MsgHeader a -> EncMessage -> ExceptT CryptoError IO (Either CryptoError ByteString, Ratchet a)
-    decryptRcMessage rcStep MsgHeader {} encMsg = do
-      rc' <- ratchetStep rcStep
+    decryptRcMessage :: RatchetStep -> MsgHeader a -> EncMessage -> ExceptT CryptoError IO (DecryptResult a)
+    decryptRcMessage rcStep MsgHeader {msgDHR, msgPN} encMsg = do
+      rc' <- ratchetStep rcStep rc
       pure (Right "", rc')
-    ratchetStep AdvanceRatchet = pure rc
-    ratchetStep SameRatchet = pure rc
-    skipMessageKeys :: Int -> Ratchet a -> Ratchet a
-    skipMessageKeys _ r@Ratchet {rcRcv = Nothing} = r
-    skipMessageKeys n r@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr, rcHKr, rcNr}, rcMKSkipped = mkSkipped} =
-      let mks = fromMaybe M.empty $ M.lookup rcHKr mkSkipped
-          (rcNr', mks') = advanceRcvRatchet n rcCKr rcNr mks
-       in r {rcRcv = Just rr {rcNr = rcNr'}, rcMKSkipped = M.insert rcHKr mks' mkSkipped}
-    advanceRcvRatchet :: Int -> RatchetKey -> Word32 -> SkippedMsgKeys -> (Word32, SkippedMsgKeys)
-    advanceRcvRatchet 0 _ msgN mks = (msgN, mks)
+      where
+        ratchetStep :: RatchetStep -> Ratchet a -> ExceptT CryptoError IO (Ratchet a)
+        ratchetStep SameRatchet rc' = pure rc'
+        ratchetStep AdvanceRatchet Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr} = do
+          case skipMessageKeys msgPN rc of
+            Left e -> throwE e
+            Right rc' -> do
+              rcDHRs' <- liftIO $ generateKeyPair' @a 0
+              let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHR (snd rcDHRs)
+                  (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHR (snd rcDHRs')
+              pure
+                rc'
+                  { rcDHRs = rcDHRs',
+                    rcRK = rcRK'',
+                    rcSnd = Just SndRatchet {rcDHRr = msgDHR, rcCKs = rcCKs', rcHKs = rcNHKs},
+                    rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
+                    rcPN = rcNs rc,
+                    rcNs = 0,
+                    rcNr = 0,
+                    rcNHKs = rcNHKs',
+                    rcNHKr = rcNHKr'
+                  }
+    skipMessageKeys :: Word32 -> Ratchet a -> Either CryptoError (Ratchet a)
+    skipMessageKeys _ r@Ratchet {rcRcv = Nothing} = Right r
+    skipMessageKeys untilN r@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr, rcHKr}, rcNr, rcMKSkipped = mkSkipped}
+      | rcNr > untilN = Left CERatchetSkippedMessage
+      | rcNr + maxSkip < untilN = Left CERatchetTooManySkipped
+      | rcNr == untilN = Right r
+      | otherwise =
+        let mks = fromMaybe M.empty $ M.lookup rcHKr mkSkipped
+            (rcCKr', rcNr', mks') = advanceRcvRatchet (untilN - rcNr) rcCKr rcNr mks
+         in Right
+              r
+                { rcRcv = Just rr {rcCKr = rcCKr'},
+                  rcNr = rcNr',
+                  rcMKSkipped = M.insert rcHKr mks' mkSkipped
+                }
+    advanceRcvRatchet :: Word32 -> RatchetKey -> Word32 -> SkippedMsgKeys -> (RatchetKey, Word32, SkippedMsgKeys)
+    advanceRcvRatchet 0 ck msgN mks = (ck, msgN, mks)
     advanceRcvRatchet n ck msgN mks =
-      let (ck', mk, iv, _) = chainKdf ck "" -- TODO doesn't match sending
+      let (ck', mk, iv, _) = chainKdf ck
           mks' = M.insert msgN (MessageKey mk iv) mks
        in advanceRcvRatchet (n - 1) ck' (msgN + 1) mks'
     decryptSkipped :: EncHeader -> EncMessage -> ExceptT CryptoError IO (SkippedMessage a)
@@ -274,7 +312,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcNHKr, rcMKSkipped} msg' = do
                 Nothing ->
                   let nextRc
                         | Just hk == (rcHKr <$> rcRcv) = Just SameRatchet
-                        | hk == rcNHKr = Just AdvanceRatchet
+                        | hk == rcNHKr rc = Just AdvanceRatchet
                         | otherwise = Nothing
                    in pure $ SMHeader nextRc hdr
                 Just mk -> do
@@ -292,7 +330,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcNHKr, rcMKSkipped} msg' = do
       ((SameRatchet,) <$> decryptHeader rcHKr h) `catchE` \case
         CERatchetHeader -> decryptNextHeader h
         e -> throwE e
-    decryptNextHeader h = (AdvanceRatchet,) <$> decryptHeader rcNHKr h
+    decryptNextHeader h = (AdvanceRatchet,) <$> decryptHeader (rcNHKr rc) h
     decryptHeader k EncHeader {ehBody, ehAuthTag, ehIV} = do
       header <- decryptAES k ehIV ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
       parseE CryptoHeaderError msgHeaderP' header
@@ -312,9 +350,9 @@ rootKdf (RatchetKey rk) k pk =
       (rk', ck, nhk) = hkdf3 rk dhOut "SimpleXRootRatchet"
    in (RatchetKey rk', RatchetKey ck, Key nhk)
 
-chainKdf :: RatchetKey -> ByteString -> (RatchetKey, Key, IV, IV)
-chainKdf (RatchetKey ck) msgRandomId =
-  let (ck', mk, ivs) = hkdf3 ck msgRandomId "SimpleXChainRatchet"
+chainKdf :: RatchetKey -> (RatchetKey, Key, IV, IV)
+chainKdf (RatchetKey ck) =
+  let (ck', mk, ivs) = hkdf3 "" ck "SimpleXChainRatchet"
       (iv1, iv2) = B.splitAt 16 ivs
    in (RatchetKey ck', Key mk, IV iv1, IV iv2)
 

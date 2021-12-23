@@ -776,6 +776,10 @@ data CryptoError
     CERatchetState
   | -- | header decryption error (could indicate that another key should be tried)
     CERatchetHeader
+  | -- | too many skipped messages
+    CERatchetTooManySkipped
+  | -- | skipped message was not decrypted in decryptSkipped
+    CERatchetSkippedMessage
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
