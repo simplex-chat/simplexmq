@@ -156,7 +156,7 @@ cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      smpServers = L.fromList ["localhost:5001#f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU="],
+      smpServers = L.fromList ["localhost:5001#9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
@@ -166,8 +166,9 @@ cfg =
             tcpTimeout = 500_000
           },
       retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000},
-      agentPrivateKeyFile = "tests/fixtures/example.key",
-      agentCertificateFile = "tests/fixtures/example.crt"
+      caCertificateFile = "tests/fixtures/ca.crt",
+      agentPrivateKeyFile = "tests/fixtures/server.key",
+      agentCertificateFile = "tests/fixtures/server.crt"
     }
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
