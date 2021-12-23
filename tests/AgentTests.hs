@@ -367,7 +367,7 @@ syntaxTests t = do
     describe "valid" $ do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
-      fit "using same server as in invitation" $
+      it "using same server as in invitation" $
         ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F" <> (U.encode . decodeLenient) "f80NoyPgNXR5n/fRVfmRTtkRps6/xDrQLmiuz9qFUJU=" <> "%40localhost%3A5001%2F3456-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo")
           >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" $ do
