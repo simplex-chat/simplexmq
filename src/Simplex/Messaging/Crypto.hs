@@ -777,8 +777,8 @@ data CryptoError
     CERatchetHeader
   | -- | too many skipped messages
     CERatchetTooManySkipped
-  | -- | skipped message was not decrypted in decryptSkipped
-    CERatchetSkippedMessage
+  | -- | duplicate message number (or, possibly, skipped message that failed to decrypt?)
+    CERatchetDuplicateMessage
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
@@ -829,7 +829,6 @@ newtype Key = Key {unKey :: ByteString}
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
-  deriving (Show)
 
 -- | Certificate fingerpint newtype.
 --

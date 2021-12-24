@@ -70,6 +70,7 @@ testSkippedMessages alice bob = do
   Right msg2 <- encrypt bob "hello there again"
   Right msg3 <- encrypt bob "are you there?"
   Decrypted "are you there?" <- decrypt alice msg3
+  Right (Left C.CERatchetDuplicateMessage) <- decrypt alice msg3
   Decrypted "hello there again" <- decrypt alice msg2
   Decrypted "hello alice" <- decrypt alice msg1
   pure ()

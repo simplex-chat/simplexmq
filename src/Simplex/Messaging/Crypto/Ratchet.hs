@@ -175,7 +175,6 @@ data EncHeader = EncHeader
     ehAuthTag :: AES.AuthTag,
     ehIV :: IV
   }
-  deriving (Show)
 
 serializeEncHeader :: EncHeader -> ByteString
 serializeEncHeader EncHeader {ehBody, ehAuthTag, ehIV} =
@@ -193,7 +192,6 @@ data EncMessage = EncMessage
     emBody :: ByteString,
     emAuthTag :: AES.AuthTag
   }
-  deriving (Show)
 
 serializeEncMessage :: EncMessage -> ByteString
 serializeEncMessage EncMessage {emHeader, emBody, emAuthTag} =
@@ -311,7 +309,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
     skipMessageKeys :: Word32 -> Ratchet a -> Either CryptoError (Ratchet a)
     skipMessageKeys _ r@Ratchet {rcRcv = Nothing} = Right r
     skipMessageKeys untilN r@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr, rcHKr}, rcNr, rcMKSkipped = mkSkipped}
-      | rcNr > untilN = Left CERatchetSkippedMessage
+      | rcNr > untilN = Left CERatchetDuplicateMessage
       | rcNr + maxSkip < untilN = Left CERatchetTooManySkipped
       | rcNr == untilN = Right r
       | otherwise =
@@ -341,7 +339,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
               case M.lookup msgNs mks of
                 Nothing ->
                   let nextRc
-                        | Just hk == (rcHKr <$> rcRcv) = Just SameRatchet
+                        | maybe False ((== hk) . rcHKr) rcRcv = Just SameRatchet
                         | hk == rcNHKr rc = Just AdvanceRatchet
                         | otherwise = Nothing
                    in pure $ SMHeader nextRc hdr
