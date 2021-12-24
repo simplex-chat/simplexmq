@@ -166,8 +166,8 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
         async $
           runTransportClient (host smpServer) port' (keyHash smpServer) (client t c thVar)
             `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
-      bSize <- tcpTimeout `timeout` atomically (takeTMVar thVar)
-      pure $ case bSize of
+      th_ <- tcpTimeout `timeout` atomically (takeTMVar thVar)
+      pure $ case th_ of
         Just (Right THandle {sessionId, blockSize}) ->
           Right c {action, sessionId, blockSize}
         Just (Left e) -> Left e
@@ -183,11 +183,12 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
     client _ c thVar h =
       runExceptT (clientHandshake h smpBlockSize) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
-        Right th -> do
+        Right th@THandle {sessionId, blockSize} -> do
           atomically $ do
             writeTVar (connected c) True
             putTMVar thVar $ Right th
-          raceAny_ [send c th, process c, receive c th, ping c]
+          let c' = c {sessionId, blockSize} :: SMPClient
+          raceAny_ [send c' th, process c', receive c' th, ping c']
             `finally` disconnected
 
     send :: Transport c => SMPClient -> THandle c -> IO ()
