@@ -77,6 +77,7 @@ library
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
     , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
@@ -102,6 +103,8 @@ library
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010
 
 executable smp-agent
@@ -125,6 +128,7 @@ executable smp-agent
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
     , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
@@ -151,6 +155,8 @@ executable smp-agent
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010
 
 executable smp-server
@@ -204,6 +210,8 @@ executable smp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010
 
 test-suite smp-server-test
@@ -238,6 +246,7 @@ test-suite smp-server-test
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
     , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
@@ -267,4 +276,6 @@ test-suite smp-server-test
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010

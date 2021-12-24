@@ -35,11 +35,13 @@ module Simplex.Messaging.Transport
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
-    withTlsUnique,
+    loadFingerprint,
+    encodeFingerprint,
 
     -- * TLS 1.2 Transport
     TLS (..),
     closeTLS,
+    withTlsUnique,
 
     -- * SMP transport
     THandle (..),
@@ -61,6 +63,7 @@ import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
+import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -73,6 +76,9 @@ import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.String
+import qualified Data.X509 as X
+import qualified Data.X509.CertificateStore as XS
+import qualified Data.X509.Validation as XV
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
@@ -80,6 +86,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parseAll, parseRead1, parseString)
 import Simplex.Messaging.Util (bshow)
 import System.Exit (exitFailure)
@@ -158,7 +165,7 @@ runTransportServer started port serverParams server = do
     acceptConnection :: Socket -> IO c
     acceptConnection sock = do
       (newSock, _) <- accept sock
-      ctx <- connectTLS "server" serverParams newSock
+      ctx <- connectTLS serverParams newSock
       getServerConnection ctx
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
@@ -177,13 +184,14 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a
-runTransportClient host port client = do
-  c <- liftIO $ startTCPClient host port
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
+runTransportClient host port keyHash client = do
+  let clientParams = mkTLSClientParams host port keyHash
+  c <- liftIO $ startTCPClient host port clientParams
   client c `E.finally` liftIO (closeConnection c)
 
-startTCPClient :: forall c. Transport c => HostName -> ServiceName -> IO c
-startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
+startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> IO c
+startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
@@ -202,16 +210,16 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      ctx <- connectTLS "client" clientParams sock
+      ctx <- connectTLS clientParams sock
       getClientConnection ctx
 
-loadTLSServerParams :: FilePath -> FilePath -> IO T.ServerParams
-loadTLSServerParams certificateFile privateKeyFile =
+loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
+loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
   fromCredential <$> loadServerCredential
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
-      T.credentialLoadX509 certificateFile privateKeyFile >>= \case
+      T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
         Right credential -> pure credential
         Left _ -> putStrLn "invalid credential" >> exitFailure
     fromCredential :: T.Credential -> T.ServerParams
@@ -223,6 +231,14 @@ loadTLSServerParams certificateFile privateKeyFile =
           T.serverSupported = supportedParameters
         }
 
+loadFingerprint :: FilePath -> IO XV.Fingerprint
+loadFingerprint certificateFile = do
+  (cert : _) <- SX.readSignedObject certificateFile
+  pure $ XV.getFingerprint (cert :: X.SignedExact X.Certificate) X.HashSHA256
+
+encodeFingerprint :: XV.Fingerprint -> ByteString
+encodeFingerprint (XV.Fingerprint bs) = encode bs
+
 -- * TLS 1.2 Transport
 
 data TLS = TLS
@@ -233,11 +249,11 @@ data TLS = TLS
     getLock :: TMVar ()
   }
 
-connectTLS :: T.TLSParams p => String -> p -> Socket -> IO T.Context
-connectTLS party params sock =
+connectTLS :: T.TLSParams p => p -> Socket -> IO T.Context
+connectTLS params sock =
   E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
     T.handshake ctx
-      `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
+      `E.catch` \(e :: E.SomeException) -> putStrLn ("exception: " <> show e) >> E.throwIO e
     pure ctx
 
 getTLS :: TransportPeer -> T.Context -> IO TLS
@@ -261,13 +277,34 @@ closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
 
-clientParams :: T.ClientParams
-clientParams =
-  (T.defaultParamsClient "localhost" "5223")
+mkTLSClientParams :: HostName -> ServiceName -> Maybe C.KeyHash -> T.ClientParams
+mkTLSClientParams host port keyHash = do
+  let p = B.pack port
+  (T.defaultParamsClient host p)
     { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ _ -> pure []},
+      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p},
       T.clientSupported = supportedParameters
     }
+
+validateCertificateChain :: Maybe C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
+validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
+validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
+validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[_, caCert]) =
+  let fp = XV.getFingerprint caCert X.HashSHA256
+   in if maybe True (sameFingerprint fp) keyHash
+        then x509validate
+        else pure [XV.UnknownCA]
+  where
+    sameFingerprint (XV.Fingerprint s) (C.KeyHash s') = s == s'
+    x509validate :: IO [XV.FailedReason]
+    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
+      where
+        hooks = XV.defaultHooks
+        checks = XV.defaultChecks
+        certStore = XS.makeCertificateStore sc
+        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
+        serviceID = (host, port)
+validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
 
 supportedParameters :: T.Supported
 supportedParameters =
@@ -333,7 +370,7 @@ trimCR :: ByteString -> ByteString
 trimCR "" = ""
 trimCR s = if B.last s == '\r' then B.init s else s
 
--- * SMP encrypted transport
+-- * SMP transport
 
 data SMPVersion = SMPVersion Int Int Int
   deriving (Eq, Ord)

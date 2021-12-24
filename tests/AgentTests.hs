@@ -14,6 +14,8 @@ import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
+import Data.ByteString.Base64 (decodeLenient)
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network.HTTP.Types (urlEncode)
@@ -368,7 +370,8 @@ syntaxTests t = do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
-        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5001%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
+        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F" <> (U.encode . decodeLenient) "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20=" <> "%40localhost%3A5001%2F3456-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo")
+          >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" $ do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")

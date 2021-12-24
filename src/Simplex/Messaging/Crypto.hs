@@ -104,9 +104,6 @@ module Simplex.Messaging.Crypto
     cbDecrypt,
     cbNonce,
 
-    -- * Encoding of RSA keys
-    publicKeyHash,
-
     -- * SHA256 hash
     sha256Hash,
 
@@ -505,7 +502,7 @@ instance forall a. AlgorithmI a => CryptoKey (PublicKey a) where
     _ -> True
   serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
   serializeKeyUri k = algorithmPrefix k <> ":" <> U.encode (encodeKey k)
-  encodeKey = encodeASNKey . publicToX509
+  encodeKey = encodeASNObj . publicToX509
   strKeyP = pubKey' <$?> strKeyP
   strKeyUriP = pubKey' <$?> strKeyUriP
   binaryKeyP = pubKey' <$?> binaryKeyP
@@ -564,7 +561,7 @@ instance AlgorithmI a => CryptoKey (PrivateKey a) where
     _ -> True
   serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
   serializeKeyUri k = algorithmPrefix k <> ":" <> U.encode (encodeKey k)
-  encodeKey = encodeASNKey . privateToX509
+  encodeKey = encodeASNObj . privateToX509
   strKeyP = privKey' <$?> strKeyP
   strKeyUriP = privKey' <$?> strKeyUriP
   binaryKeyP = privKey' <$?> binaryKeyP
@@ -834,7 +831,9 @@ newtype Key = Key {unKey :: ByteString}
 newtype IV = IV {unIV :: ByteString}
   deriving (Show)
 
--- | Key hash newtype.
+-- | Certificate fingerpint newtype.
+--
+-- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
 instance IsString KeyHash where
@@ -843,10 +842,6 @@ instance IsString KeyHash where
 instance ToField KeyHash where toField = toField . encode . unKeyHash
 
 instance FromField KeyHash where fromField = blobFieldParser $ KeyHash <$> base64P
-
--- | Digest (hash) of binary X509 encoding of RSA public key.
-publicKeyHash :: PublicKey RSA -> KeyHash
-publicKeyHash = KeyHash . sha256Hash . encodeKey
 
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString
@@ -1109,8 +1104,8 @@ privateToX509 = \case
   PrivateKeyX25519 k -> PrivKeyX25519 k
   PrivateKeyX448 k -> PrivKeyX448 k
 
-encodeASNKey :: ASN1Object a => a -> ByteString
-encodeASNKey k = toStrict . encodeASN1 DER $ toASN1 k []
+encodeASNObj :: ASN1Object a => a -> ByteString
+encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
 
 -- Decoding of binary X509 'PublicKey'.
 decodePubKey :: ByteString -> Either String APublicKey

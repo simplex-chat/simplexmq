@@ -32,6 +32,7 @@ data AgentConfig = AgentConfig
     smpCfg :: SMPClientConfig,
     retryInterval :: RetryInterval,
     reconnectInterval :: RetryInterval,
+    caCertificateFile :: FilePath,
     agentPrivateKeyFile :: FilePath,
     agentCertificateFile :: FilePath
   }
@@ -63,7 +64,8 @@ defaultAgentConfig =
             increaseAfter = 10_000_000,
             maxInterval = 10_000_000
           },
-      -- ! we do not generate these key and certificate
+      -- ! we do not generate these
+      caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       agentPrivateKeyFile = "/etc/opt/simplex-agent/agent.key",
       agentCertificateFile = "/etc/opt/simplex-agent/agent.crt"
     }

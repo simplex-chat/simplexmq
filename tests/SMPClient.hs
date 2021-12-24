@@ -38,20 +38,20 @@ testPort2 :: ServiceName
 testPort2 = "5002"
 
 testKeyHashStr :: ByteString
-testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHashStr = "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
 
 testBlockSize :: Int
 testBlockSize = 16 * 1024 -- TODO move to Protocol
 
 testKeyHash :: Maybe C.KeyHash
-testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHash = Just "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTransportClient testHost testPort $ \h ->
+  runTransportClient testHost testPort testKeyHash $ \h ->
     liftIO (runExceptT $ clientHandshake h testBlockSize) >>= \case
       Right th -> client th
       Left e -> error $ show e
@@ -67,8 +67,9 @@ cfg =
       msgIdBytes = 24,
       storeLog = Nothing,
       blockSize = testBlockSize,
-      serverPrivateKeyFile = "tests/fixtures/example.key",
-      serverCertificateFile = "tests/fixtures/example.crt"
+      caCertificateFile = "tests/fixtures/ca.crt",
+      serverPrivateKeyFile = "tests/fixtures/server.key",
+      serverCertificateFile = "tests/fixtures/server.crt"
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
