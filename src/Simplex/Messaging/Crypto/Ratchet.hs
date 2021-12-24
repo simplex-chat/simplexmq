@@ -242,7 +242,7 @@ data RatchetStep = AdvanceRatchet | SameRatchet
 type DecryptResult a = (Either CryptoError ByteString, Ratchet a)
 
 maxSkip :: Word32
-maxSkip = 256
+maxSkip = 512
 
 rcDecrypt' ::
   forall a.
