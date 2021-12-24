@@ -145,8 +145,8 @@ initRatchets = do
   salt <- getRandomBytes 16
   (ak, apk) <- C.generateKeyPair' 0
   (bk, bpk) <- C.generateKeyPair' 0
-  bob <- initSndRatchet' ak bpk salt
-  alice <- initRcvRatchet' bk (ak, apk) salt
+  bob <- initSndRatchet' ak bpk salt "bob -> alice"
+  alice <- initRcvRatchet' bk (ak, apk) salt "bob -> alice"
   pure (alice, bob)
 
 encrypt_ :: AlgorithmI a => Ratchet a -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a))

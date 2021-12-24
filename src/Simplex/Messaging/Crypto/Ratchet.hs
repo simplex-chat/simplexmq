@@ -29,7 +29,10 @@ import Simplex.Messaging.Parsers (parseAll, parseE, parseE')
 import Simplex.Messaging.Util (tryE, (<$?>))
 
 data Ratchet a = Ratchet
-  { rcVersion :: E2EEncryptionVersion,
+  { -- current ratchet version
+    rcVersion :: E2EEncryptionVersion,
+    -- associated data - must be the same in both parties ratchets
+    rcAD :: ByteString,
     rcDHRs :: KeyPair a,
     rcRK :: RatchetKey,
     rcSnd :: Maybe (SndRatchet a),
@@ -72,8 +75,8 @@ newtype RatchetKey = RatchetKey ByteString
 -- Please note that sndPrivKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
 initSndRatchet' ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> ByteString -> IO (Ratchet a)
-initSndRatchet' rcDHRr sPKey salt = do
+  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> ByteString -> ByteString -> IO (Ratchet a)
+initSndRatchet' rcDHRr sPKey salt rcAD = do
   rcDHRs@(_, pk) <- generateKeyPair' @a 0
   let (sk, rcHKs, rcNHKr) = initKdf salt rcDHRr sPKey
       -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
@@ -81,6 +84,7 @@ initSndRatchet' rcDHRr sPKey salt = do
   pure
     Ratchet
       { rcVersion = currentE2EVersion,
+        rcAD,
         rcDHRs,
         rcRK,
         rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs},
@@ -98,12 +102,13 @@ initSndRatchet' rcDHRr sPKey salt = do
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet' ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> KeyPair a -> ByteString -> IO (Ratchet a)
-initRcvRatchet' sKey rcDHRs@(_, pk) salt = do
+  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> KeyPair a -> ByteString -> ByteString -> IO (Ratchet a)
+initRcvRatchet' sKey rcDHRs@(_, pk) salt rcAD = do
   let (sk, rcNHKr, rcNHKs) = initKdf salt sKey pk
   pure
     Ratchet
       { rcVersion = currentE2EVersion,
+        rcAD,
         rcDHRs,
         rcRK = sk,
         rcSnd = Nothing,
@@ -205,16 +210,15 @@ encMessageP = do
 
 rcEncrypt' :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt' Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
-rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs} paddedMsgLen msg = do
+rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs, rcAD} paddedMsgLen msg = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
-  (ehAuthTag, ehBody) <- encryptAES rcHKs ehIV paddedHeaderLen msgHeader
+  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV paddedHeaderLen rcAD msgHeader
   -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
-  -- TODO use header as associated data
-  (emAuthTag, emBody) <- encryptAES mk iv paddedMsgLen msg
   let emHeader = serializeEncHeader EncHeader {ehBody, ehAuthTag, ehIV}
-      msg' = serializeEncMessage EncMessage {emHeader, emBody, emAuthTag}
+  (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
+  let msg' = serializeEncMessage EncMessage {emHeader, emBody, emAuthTag}
       -- state.Ns += 1
       rc' = rc {rcSnd = Just sr {rcCKs = ck'}, rcNs = rcNs + 1}
   pure (msg', rc')
@@ -250,7 +254,7 @@ rcDecrypt' ::
   Ratchet a ->
   ByteString ->
   ExceptT CryptoError IO (DecryptResult a)
-rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped} msg' = do
+rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
   encMsg@EncMessage {emHeader} <- parseE CryptoHeaderError encMessageP msg'
   encHdr <- parseE CryptoHeaderError encHeaderP emHeader
   -- plaintext = TrySkippedMessageKeysHE(state, enc_header, ciphertext, AD)
@@ -360,13 +364,13 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped} msg' = do
     -- header = HDECRYPT(state.NHKr, enc_header)
     decryptNextHeader hdr = (AdvanceRatchet,) <$> decryptHeader (rcNHKr rc) hdr
     decryptHeader k EncHeader {ehBody, ehAuthTag, ehIV} = do
-      header <- decryptAES k ehIV ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
+      header <- decryptAEAD k ehIV rcAD ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
       parseE' CryptoHeaderError msgHeaderP' header
     decryptMessage :: MessageKey -> MsgHeader a -> EncMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
-    decryptMessage (MessageKey mk iv) MsgHeader {msgLen} EncMessage {emBody, emAuthTag} =
+    decryptMessage (MessageKey mk iv) MsgHeader {msgLen} EncMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, ciphertext, CONCAT(AD, enc_header))
       -- TODO add associated data
-      tryE (B.take (fromIntegral msgLen) <$> decryptAES mk iv emBody emAuthTag)
+      tryE (B.take (fromIntegral msgLen) <$> decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag)
 
 initKdf :: (AlgorithmI a, DhAlgorithm a) => ByteString -> PublicKey a -> PrivateKey a -> (RatchetKey, Key, Key)
 initKdf salt k pk =

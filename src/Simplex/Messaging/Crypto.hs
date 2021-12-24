@@ -88,6 +88,8 @@ module Simplex.Messaging.Crypto
     IV (..),
     encryptAES,
     decryptAES,
+    encryptAEAD,
+    decryptAEAD,
     authTagSize,
     authTagToBS,
     bsToAuthTag,
@@ -906,27 +908,39 @@ encrypt (APublicEncryptKey _ k) = encrypt' k
 decrypt :: APrivateDecryptKey -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt (APrivateDecryptKey _ pk) = decrypt' pk
 
--- | AEAD-GCM encryption.
+-- | AEAD-GCM encryption with empty associated data.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
 encryptAES :: Key -> IV -> Int -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
-encryptAES aesKey ivBytes paddedSize msg = do
+encryptAES key iv paddedLen = encryptAEAD key iv paddedLen ""
+
+-- | AEAD-GCM encryption.
+--
+-- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
+encryptAEAD :: Key -> IV -> Int -> ByteString -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
+encryptAEAD aesKey ivBytes paddedSize ad msg = do
   aead <- initAEAD @AES256 aesKey ivBytes
   msg' <- paddedMsg
-  return $ AES.aeadSimpleEncrypt aead B.empty msg' authTagSize
+  return $ AES.aeadSimpleEncrypt aead ad msg' authTagSize
   where
     len = B.length msg
     paddedMsg
       | len > paddedSize = throwE CryptoLargeMsgError
       | otherwise = return (msg <> B.replicate (paddedSize - len) '#')
 
--- | AEAD-GCM decryption.
+-- | AEAD-GCM decryption with empty associated data.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
 decryptAES :: Key -> IV -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
-decryptAES aesKey ivBytes msg authTag = do
+decryptAES key iv = decryptAEAD key iv ""
+
+-- | AEAD-GCM decryption.
+--
+-- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
+decryptAEAD :: Key -> IV -> ByteString -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
+decryptAEAD aesKey ivBytes ad msg authTag = do
   aead <- initAEAD @AES256 aesKey ivBytes
-  maybeError AESDecryptError $ AES.aeadSimpleDecrypt aead B.empty msg authTag
+  maybeError AESDecryptError $ AES.aeadSimpleDecrypt aead ad msg authTag
 
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (Key aesKey) (IV ivBytes) = do
