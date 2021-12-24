@@ -1,5 +1,5 @@
 #!/bin/bash
-# receives pubkey_hash file location as the first parameter
+# receives fingerprint file location as the first parameter
 
 ip_address=$(hostname -I | awk '{print$1}')
 hash=$(cat $1)
