@@ -382,7 +382,6 @@ rootKdf (RatchetKey rk) k pk =
       (rk', ck, nhk) = hkdf3 rk dhOut "SimpleXRootRatchet"
    in (RatchetKey rk', RatchetKey ck, Key nhk)
 
--- TODO revise using HKDF instead of HMAC as the chain key KDF (KDF_CK), https://signal.org/docs/specifications/doubleratchet/#recommended-cryptographic-algorithms
 chainKdf :: RatchetKey -> (RatchetKey, Key, IV, IV)
 chainKdf (RatchetKey ck) =
   let (ck', mk, ivs) = hkdf3 "" ck "SimpleXChainRatchet"
