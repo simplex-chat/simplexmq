@@ -93,7 +93,7 @@ testManyMessages alice bob = do
   (bob, "b15") #> alice
   (bob, "b16") #> alice
 
-testSkippedAfterRatchetAdvance :: TestRachets a
+testSkippedAfterRatchetAdvance :: TestRatchets a
 testSkippedAfterRatchetAdvance alice bob = do
   (bob, "b1") #> alice
   Right b2 <- encrypt bob "b2"
