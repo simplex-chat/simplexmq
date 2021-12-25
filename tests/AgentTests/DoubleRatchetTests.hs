@@ -30,9 +30,6 @@ doubleRatchetTests = do
     it "should encrypt and decrypt skipped messages" $ do
       withRatchets @X25519 testSkippedMessages
       withRatchets @X448 testSkippedMessages
-    it "should encrypt and decrypt skipped messages in same step" $ do
-      withRatchets @X25519 testInTheSameRatchetStep
-      withRatchets @X448 testInTheSameRatchetStep
     it "should encrypt and decrypt many messages" $ do
       withRatchets @X25519 testManyMessages
     it "should allow skipped after ratchet advance" $ do
@@ -57,18 +54,6 @@ type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a) -> TVar 
 
 testEncryptDecrypt :: TestRatchets a
 testEncryptDecrypt alice bob = do
-  Right msg1 <- encrypt bob "hello alice"
-  Decrypted "hello alice" <- decrypt alice msg1
-  Right msg2 <- encrypt bob "hello there again"
-  Decrypted "hello there again" <- decrypt alice msg2
-  Right msg3 <- encrypt alice "hello bob"
-  Decrypted "hello bob" <- decrypt bob msg3
-  Right msg4 <- encrypt alice "hello bob again"
-  Decrypted "hello bob again" <- decrypt bob msg4
-  pure ()
-
-testInTheSameRatchetStep :: TestRatchets a
-testInTheSameRatchetStep alice bob = do
   (bob, "hello alice") #> alice
   (alice, "hello bob") #> bob
   Right b1 <- encrypt bob "how are you, alice?"
