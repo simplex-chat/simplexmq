@@ -75,7 +75,7 @@ testSkippedMessages alice bob = do
   Decrypted "hello alice" <- decrypt alice msg1
   pure ()
 
-testManyMessages :: TestRachets a
+testManyMessages :: TestRatchets a
 testManyMessages alice bob = do
   (bob, "b1") #> alice
   (bob, "b2") #> alice
