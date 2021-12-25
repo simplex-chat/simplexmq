@@ -32,6 +32,7 @@ module Simplex.Messaging.Crypto
     SAlgorithm (..),
     Alg (..),
     SignAlg (..),
+    DhAlgorithm,
     PrivateKey (..),
     PublicKey (..),
     APrivateKey (..),
@@ -54,6 +55,8 @@ module Simplex.Messaging.Crypto
     privateToX509,
 
     -- * E2E hybrid encryption scheme
+    E2EEncryptionVersion,
+    currentE2EVersion,
     encrypt,
     encrypt',
     decrypt,
@@ -85,6 +88,8 @@ module Simplex.Messaging.Crypto
     IV (..),
     encryptAES,
     decryptAES,
+    encryptAEAD,
+    decryptAEAD,
     authTagSize,
     authTagToBS,
     bsToAuthTag,
@@ -92,6 +97,7 @@ module Simplex.Messaging.Crypto
     randomIV,
     aesKeyP,
     ivP,
+    ivSize,
 
     -- * NaCl crypto_box
     cbEncrypt,
@@ -143,13 +149,19 @@ import Data.Kind (Constraint, Type)
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Typeable)
+import Data.Word (Word16)
 import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString)
+import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseE, parseString)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
+
+type E2EEncryptionVersion = Word16
+
+currentE2EVersion :: E2EEncryptionVersion
+currentE2EVersion = 1
 
 -- | Cryptographic algorithms.
 data Algorithm = RSA | Ed25519 | Ed448 | X25519 | X448
@@ -757,8 +769,16 @@ data CryptoError
     CBDecryptError
   | -- | message does not fit in SMP block
     CryptoLargeMsgError
-  | -- | failure parsing RSA-encrypted message header
+  | -- | failure parsing message header
     CryptoHeaderError String
+  | -- | no sending chain key in ratchet state
+    CERatchetState
+  | -- | header decryption error (could indicate that another key should be tried)
+    CERatchetHeader
+  | -- | too many skipped messages
+    CERatchetTooManySkipped
+  | -- | duplicate message number (or, possibly, skipped message that failed to decrypt?)
+    CERatchetDuplicateMessage
   deriving (Eq, Show, Exception)
 
 pubExpRange :: Integer
@@ -805,6 +825,7 @@ data Header = Header
 
 -- | AES key newtype.
 newtype Key = Key {unKey :: ByteString}
+  deriving (Eq, Ord)
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
@@ -845,8 +866,8 @@ aesKeyP = Key <$> A.take aesKeySize
 ivP :: Parser IV
 ivP = IV <$> A.take (ivSize @AES256)
 
-parseHeader :: ByteString -> Either CryptoError Header
-parseHeader = first CryptoHeaderError . parseAll headerP
+parseHeader :: ByteString -> ExceptT CryptoError IO Header
+parseHeader = parseE CryptoHeaderError headerP
 
 -- * E2E hybrid encryption scheme
 
@@ -870,7 +891,7 @@ decrypt' :: PrivateKey a -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt' pk@(PrivateKeyRSA _) msg'' = do
   let (encHeader, msg') = B.splitAt (keySize pk) msg''
   header <- decryptOAEP pk encHeader
-  Header {aesKey, ivBytes, authTag, msgSize} <- except $ parseHeader header
+  Header {aesKey, ivBytes, authTag, msgSize} <- parseHeader header
   msg <- decryptAES aesKey ivBytes msg' authTag
   return $ B.take msgSize msg
 decrypt' _ _ = throwE UnsupportedAlgorithm
@@ -881,27 +902,39 @@ encrypt (APublicEncryptKey _ k) = encrypt' k
 decrypt :: APrivateDecryptKey -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt (APrivateDecryptKey _ pk) = decrypt' pk
 
--- | AEAD-GCM encryption.
+-- | AEAD-GCM encryption with empty associated data.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
 encryptAES :: Key -> IV -> Int -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
-encryptAES aesKey ivBytes paddedSize msg = do
+encryptAES key iv paddedLen = encryptAEAD key iv paddedLen ""
+
+-- | AEAD-GCM encryption.
+--
+-- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
+encryptAEAD :: Key -> IV -> Int -> ByteString -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
+encryptAEAD aesKey ivBytes paddedSize ad msg = do
   aead <- initAEAD @AES256 aesKey ivBytes
   msg' <- paddedMsg
-  return $ AES.aeadSimpleEncrypt aead B.empty msg' authTagSize
+  return $ AES.aeadSimpleEncrypt aead ad msg' authTagSize
   where
     len = B.length msg
     paddedMsg
-      | len >= paddedSize = throwE CryptoLargeMsgError
+      | len > paddedSize = throwE CryptoLargeMsgError
       | otherwise = return (msg <> B.replicate (paddedSize - len) '#')
+
+-- | AEAD-GCM decryption with empty associated data.
+--
+-- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
+decryptAES :: Key -> IV -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
+decryptAES key iv = decryptAEAD key iv ""
 
 -- | AEAD-GCM decryption.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
-decryptAES :: Key -> IV -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
-decryptAES aesKey ivBytes msg authTag = do
+decryptAEAD :: Key -> IV -> ByteString -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
+decryptAEAD aesKey ivBytes ad msg authTag = do
   aead <- initAEAD @AES256 aesKey ivBytes
-  maybeError AESDecryptError $ AES.aeadSimpleDecrypt aead B.empty msg authTag
+  maybeError AESDecryptError $ AES.aeadSimpleDecrypt aead ad msg authTag
 
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (Key aesKey) (IV ivBytes) = do
