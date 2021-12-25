@@ -72,7 +72,7 @@ newtype RatchetKey = RatchetKey ByteString
 
 -- | Sending ratchet initialization, equivalent to RatchetInitAliceHE in double ratchet spec
 --
--- Please note that sndPrivKey is not stored, and its public part together with random salt
+-- Please note that sPKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
 initSndRatchet' ::
   forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> ByteString -> ByteString -> IO (Ratchet a)
