@@ -52,7 +52,7 @@ pattern Decrypted msg <- Right (Right msg)
 
 type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a) -> TVar (Ratchet a) -> IO ()
 
-testEncryptDecrypt :: TestRachets a
+testEncryptDecrypt :: TestRatchets a
 testEncryptDecrypt alice bob = do
   Right msg1 <- encrypt bob "hello alice"
   Decrypted "hello alice" <- decrypt alice msg1
