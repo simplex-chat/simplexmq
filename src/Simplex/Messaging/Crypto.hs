@@ -40,6 +40,8 @@ module Simplex.Messaging.Crypto
     APublicVerifyKey (..),
     APrivateDecryptKey (..),
     APublicEncryptKey (..),
+    APrivateDhKey (..),
+    APublicDhKey (..),
     CryptoKey (..),
     CryptoPrivateKey (..),
     KeyPair,
@@ -348,6 +350,30 @@ instance Eq APublicEncryptKey where
 
 deriving instance Show APublicEncryptKey
 
+data APrivateDhKey
+  = forall a.
+    (AlgorithmI a, DhAlgorithm a) =>
+    APrivateDhKey (SAlgorithm a) (PrivateKey a)
+
+instance Eq APrivateDhKey where
+  APrivateDhKey a k == APrivateDhKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APrivateDhKey
+
+data APublicDhKey
+  = forall a.
+    (AlgorithmI a, DhAlgorithm a) =>
+    APublicDhKey (SAlgorithm a) (PublicKey a)
+
+instance Eq APublicDhKey where
+  APublicDhKey a k == APublicDhKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+deriving instance Show APublicDhKey
+
 data DhSecret (a :: Algorithm) where
   DhSecretX25519 :: X25519.DhSecret -> DhSecret X25519
   DhSecretX448 :: X448.DhSecret -> DhSecret X448
@@ -477,6 +503,17 @@ instance CryptoKey APublicEncryptKey where
   strKeyUriP = pubEncryptKey <$?> strKeyUriP
   binaryKeyP = pubEncryptKey <$?> binaryKeyP
 
+-- | X509 encoding of DH public key.
+instance CryptoKey APublicDhKey where
+  keySize (APublicDhKey _ k) = keySize k
+  validKeySize (APublicDhKey _ k) = validKeySize k
+  serializeKey (APublicDhKey _ k) = serializeKey k
+  serializeKeyUri (APublicDhKey _ k) = serializeKeyUri k
+  encodeKey (APublicDhKey _ k) = encodeKey k
+  strKeyP = pubDhKey <$?> strKeyP
+  strKeyUriP = pubDhKey <$?> strKeyUriP
+  binaryKeyP = pubDhKey <$?> binaryKeyP
+
 -- | X509 encoding of 'PublicKey'.
 instance forall a. AlgorithmI a => CryptoKey (PublicKey a) where
   keySize = \case
@@ -535,6 +572,17 @@ instance CryptoKey APrivateDecryptKey where
   strKeyP = privDecryptKey <$?> strKeyP
   strKeyUriP = privDecryptKey <$?> strKeyUriP
   binaryKeyP = privDecryptKey <$?> binaryKeyP
+
+-- | X509 encoding of encryption private key.
+instance CryptoKey APrivateDhKey where
+  keySize (APrivateDhKey _ k) = keySize k
+  validKeySize (APrivateDhKey _ k) = validKeySize k
+  serializeKey (APrivateDhKey _ k) = serializeKey k
+  serializeKeyUri (APrivateDhKey _ k) = serializeKeyUri k
+  encodeKey (APrivateDhKey _ k) = encodeKey k
+  strKeyP = privDhKey <$?> strKeyP
+  strKeyUriP = privDhKey <$?> strKeyUriP
+  binaryKeyP = privDhKey <$?> binaryKeyP
 
 -- | X509 encoding of 'PrivateKey'.
 instance AlgorithmI a => CryptoKey (PrivateKey a) where
@@ -1034,6 +1082,11 @@ pubEncryptKey (APublicKey a k) = case encryptionAlgorithm a of
   Just Dict -> Right $ APublicEncryptKey a k
   _ -> Left "key does not support encryption algorithms"
 
+pubDhKey :: APublicKey -> Either String APublicDhKey
+pubDhKey (APublicKey a k) = case dhAlgorithm a of
+  Just Dict -> Right $ APublicDhKey a k
+  _ -> Left "key does not support DH algorithms"
+
 pubKey' :: forall a. AlgorithmI a => APublicKey -> Either String (PublicKey a)
 pubKey' (APublicKey a k) = case testEquality a $ sAlgorithm @a of
   Just Refl -> Right k
@@ -1048,6 +1101,11 @@ privDecryptKey :: APrivateKey -> Either String APrivateDecryptKey
 privDecryptKey (APrivateKey a k) = case encryptionAlgorithm a of
   Just Dict -> Right $ APrivateDecryptKey a k
   _ -> Left "key does not support encryption algorithms"
+
+privDhKey :: APrivateKey -> Either String APrivateDhKey
+privDhKey (APrivateKey a k) = case dhAlgorithm a of
+  Just Dict -> Right $ APrivateDhKey a k
+  _ -> Left "key does not support DH algorithms"
 
 privKey' :: forall a. AlgorithmI a => APrivateKey -> Either String (PrivateKey a)
 privKey' (APrivateKey a k) = case testEquality a $ sAlgorithm @a of

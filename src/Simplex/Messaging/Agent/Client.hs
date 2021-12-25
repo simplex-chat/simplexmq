@@ -255,7 +255,7 @@ newRcvQueue_ a c srv = do
             verifyKey = Nothing,
             status = New
           }
-  pure (rq, SMPQueueUri srv sndId, encryptKey)
+  pure (rq, SMPQueueUri srv sndId Nothing, encryptKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do

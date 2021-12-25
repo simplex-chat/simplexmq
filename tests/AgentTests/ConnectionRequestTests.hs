@@ -24,8 +24,12 @@ queue :: SMPQueueUri
 queue =
   SMPQueueUri
     { smpServer = srv,
-      senderId = "\223\142z\251"
+      senderId = "\223\142z\251",
+      dhPublicKey = Nothing
     }
+
+testDhKey :: C.APublicDhKey
+testDhKey = C.APublicDhKey C.SX25519 "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 appServer :: ConnReqScheme
 appServer = CRSAppServer "simplex.chat" Nothing
@@ -47,11 +51,17 @@ connectionRequestTests = do
         `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#"
       serializeSMPQueueUri queue
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#"
+      serializeSMPQueueUri queue {dhPublicKey = Just testDhKey}
+        `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#x25519:MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
     it "should parse SMP queue URIs" $ do
       parseAll smpQueueUriP "smp://1234-w==@smp.simplex.im/3456-w==#"
         `shouldBe` Right queue {smpServer = srv {port = Nothing}}
       parseAll smpQueueUriP "smp://1234-w==@smp.simplex.im:5223/3456-w==#"
         `shouldBe` Right queue
+      parseAll smpQueueUriP "smp://1234-w==@smp.simplex.im:5223/3456-w=="
+        `shouldBe` Right queue
+      parseAll smpQueueUriP ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> C.serializeKeyUri testDhKey)
+        `shouldBe` Right queue {dhPublicKey = Just testDhKey}
     it "should serialize connection requests" $ do
       serializeConnReq connectionRequest
         `shouldBe` "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23&e2e=rsa%3AMBowDQYJKoZIhvcNAQEBBQADCQAwBgIBAAIBAA%3D%3D"
