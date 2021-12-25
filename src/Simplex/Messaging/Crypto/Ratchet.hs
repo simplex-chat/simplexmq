@@ -41,19 +41,19 @@ data Ratchet a = Ratchet
     rcNs :: Word32,
     rcNr :: Word32,
     rcPN :: Word32,
-    rcNHKs :: Key,
-    rcNHKr :: Key
+    rcNHKs :: HeaderKey,
+    rcNHKr :: HeaderKey
   }
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
     rcCKs :: RatchetKey,
-    rcHKs :: Key
+    rcHKs :: HeaderKey
   }
 
 data RcvRatchet = RcvRatchet
   { rcCKr :: RatchetKey,
-    rcHKr :: Key
+    rcHKr :: HeaderKey
   }
 
 type SkippedMsgKeys = Map Word32 MessageKey
