@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -36,6 +37,7 @@ module Simplex.Messaging.Agent.Protocol
     MsgHash,
     MsgMeta (..),
     SMPMessage (..),
+    SMPConfMsg (..),
     AMessage (..),
     SMPServer (..),
     SMPQueueUri (..),
@@ -264,16 +266,21 @@ data MsgMeta = MsgMeta
   }
   deriving (Eq, Show)
 
+data SMPConfMsg = SMPConfMsg
+  { -- | sender's public key to use for authentication of sender's commands at the recepient's server
+    senderKey :: SndPublicVerifyKey,
+    -- | V1: sender's DH public key for simple per-queue e2e encryption
+    e2ePubDhKey :: Maybe (C.PublicKey 'C.X25519),
+    -- | sender's information to be associated with the connection, e.g. sender's profile information
+    connInfo :: ConnInfo
+  }
+  deriving (Show)
+
 -- | SMP message formats.
 data SMPMessage
   = -- | SMP confirmation
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message SMP protocol>)
-    SMPConfirmation
-      { -- | sender's public key to use for authentication of sender's commands at the recepient's server
-        senderKey :: SndPublicVerifyKey,
-        -- | sender's information to be associated with the connection, e.g. sender's profile information
-        connInfo :: ConnInfo
-      }
+    SMPConfirmation SMPConfMsg
   | -- | Agent message header and envelope for client messages
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents SMP agent protocol>)
     SMPMessage
@@ -310,7 +317,21 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
     smpMessageP = A.endOfLine *> smpClientMessageP <|> smpConfirmationP
 
     smpConfirmationP :: Parser SMPMessage
-    smpConfirmationP = "KEY " *> (SMPConfirmation <$> C.strKeyP <* A.endOfLine <* A.endOfLine <*> binaryBodyP <* A.endOfLine)
+    smpConfirmationP = SMPConfirmation <$> (v1conf <|> legacyConf)
+
+    v1conf = do
+      _ <- "V=1"
+      senderKey <- " KEY=" *> C.strKeyP
+      e2ePubDhKey <- Just <$> (" E2EDH=" *> C.strKeyP)
+      connInfo <- connInfoP
+      pure SMPConfMsg {senderKey, e2ePubDhKey, connInfo}
+
+    legacyConf = do
+      senderKey <- "KEY " *> C.strKeyP
+      connInfo <- connInfoP
+      pure SMPConfMsg {senderKey, e2ePubDhKey = Nothing, connInfo}
+
+    connInfoP = A.endOfLine *> A.endOfLine *> binaryBodyP <* A.endOfLine
 
     smpClientMessageP :: Parser SMPMessage
     smpClientMessageP =
@@ -325,7 +346,8 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
 -- | Serialize SMP message.
 serializeSMPMessage :: SMPMessage -> ByteString
 serializeSMPMessage = \case
-  SMPConfirmation sKey cInfo -> smpMessage ("KEY " <> C.serializeKey sKey) "" (serializeBinary cInfo) <> "\n"
+  SMPConfirmation conf ->
+    smpMessage (smpConfHeader conf) "" (serializeBinary $ connInfo conf) <> "\n"
   SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
     let header = messageHeader senderMsgId senderTimestamp previousMsgHash
         body = serializeAgentMessage agentMessage
@@ -333,6 +355,9 @@ serializeSMPMessage = \case
   where
     messageHeader msgId ts prevMsgHash =
       B.unwords [bshow msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
+    smpConfHeader (SMPConfMsg sKey e2eDhKey_ _) = case e2eDhKey_ of
+      Nothing -> "KEY " <> C.serializeKey sKey
+      Just e2eDhKey -> "V=1 KEY=" <> C.serializeKey sKey <> " E2EDH=" <> C.serializeKey e2eDhKey
     smpMessage smpHeader aHeader aBody = B.intercalate "\n" [smpHeader, aHeader, aBody, ""]
 
 agentMessageP :: Parser AMessage
@@ -435,6 +460,7 @@ serializeServer :: SMPServer -> ByteString
 serializeServer SMPServer {host, port, keyHash} =
   B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . encode . C.unKeyHash) keyHash
 
+-- | Serialize SMP server URI.
 serializeServerUri :: SMPServer -> ByteString
 serializeServerUri SMPServer {host, port, keyHash} = "smp://" <> kh <> B.pack host <> p
   where
@@ -499,7 +525,7 @@ newtype AckMode = AckMode OnOff deriving (Eq, Show)
 data SMPQueueUri = SMPQueueUri
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    dhPublicKey :: Maybe C.APublicDhKey
+    dhPublicKey :: Maybe (C.PublicKey 'C.X25519)
   }
   deriving (Eq, Show)
 

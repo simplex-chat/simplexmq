@@ -239,6 +239,7 @@ newRcvQueue_ a c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
   (dhKey, privDhKey) <- liftIO $ C.generateKeyPair' 0
+  (e2eDhKey, e2ePrivDhKey) <- liftIO $ C.generateKeyPair' 0
   logServer "-->" c srv "" "NEW"
   QIK {rcvId, sndId, rcvPublicDHKey} <-
     withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
@@ -250,14 +251,14 @@ newRcvQueue_ a c srv = do
             rcvId,
             rcvPrivateKey,
             rcvDhSecret = C.dh' rcvPublicDHKey privDhKey,
-            e2ePrivateDhKey = Nothing,
+            e2ePrivDhKey = Just e2ePrivDhKey,
             e2eDhSecret = Nothing,
             sndId = Just sndId,
             decryptKey,
             verifyKey = Nothing,
             status = New
           }
-  pure (rq, SMPQueueUri srv sndId Nothing, encryptKey)
+  pure (rq, SMPQueueUri srv sndId (Just e2eDhKey), encryptKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
@@ -306,14 +307,14 @@ showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SndPublicVerifyKey -> ConnInfo -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfMsg -> m ()
+sendConfirmation c sq@SndQueue {server, sndId} smpConf =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation smp
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: SMPClient -> m MsgBody
-    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
+    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation smpConf
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =

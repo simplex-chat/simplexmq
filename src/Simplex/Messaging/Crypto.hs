@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -32,6 +33,7 @@ module Simplex.Messaging.Crypto
     SAlgorithm (..),
     Alg (..),
     SignAlg (..),
+    DhAlg (..),
     PrivateKey (..),
     PublicKey (..),
     APrivateKey (..),
@@ -53,6 +55,7 @@ module Simplex.Messaging.Crypto
     generateKeyPair',
     generateSignatureKeyPair,
     generateEncryptionKeyPair,
+    generateDhKeyPair,
     privateToX509,
 
     -- * E2E hybrid encryption scheme
@@ -78,6 +81,7 @@ module Simplex.Messaging.Crypto
     validSignatureSize,
 
     -- * DH derivation
+    DhAlgorithm,
     dh',
     dhSecret,
     dhSecret',
@@ -174,6 +178,11 @@ data SignAlg
   = forall a.
     (AlgorithmI a, SignatureAlgorithm a) =>
     SignAlg (SAlgorithm a)
+
+data DhAlg
+  = forall a.
+    (AlgorithmI a, DhAlgorithm a) =>
+    DhAlg (SAlgorithm a)
 
 class AlgorithmI (a :: Algorithm) where sAlgorithm :: SAlgorithm a
 
@@ -642,6 +651,8 @@ type ASignatureKeyPair = (APublicVerifyKey, APrivateSignKey)
 
 type AnEncryptionKeyPair = (APublicEncryptKey, APrivateDecryptKey)
 
+type ADhKeyPair = (APublicDhKey, APrivateDhKey)
+
 generateKeyPair :: AlgorithmI a => Int -> SAlgorithm a -> IO AKeyPair
 generateKeyPair size a = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair' size
 
@@ -654,6 +665,11 @@ generateEncryptionKeyPair ::
   (AlgorithmI a, EncryptionAlgorithm a) => Int -> SAlgorithm a -> IO AnEncryptionKeyPair
 generateEncryptionKeyPair size a =
   bimap (APublicEncryptKey a) (APrivateDecryptKey a) <$> generateKeyPair' size
+
+generateDhKeyPair ::
+  (AlgorithmI a, DhAlgorithm a) => Int -> SAlgorithm a -> IO ADhKeyPair
+generateDhKeyPair size a =
+  bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair' size
 
 generateKeyPair' :: forall a. AlgorithmI a => Int -> IO (KeyPair a)
 generateKeyPair' size = case sAlgorithm @a of
@@ -687,6 +703,10 @@ instance ToField APrivateDhKey where toField = toField . encodeKey
 
 instance ToField APublicDhKey where toField = toField . encodeKey
 
+instance (Typeable a, AlgorithmI a) => ToField (PrivateKey a) where toField = toField . encodeKey
+
+instance (Typeable a, AlgorithmI a) => ToField (PublicKey a) where toField = toField . encodeKey
+
 instance (Typeable a, AlgorithmI a) => ToField (DhSecret a) where toField = toField . dhSecretBytes
 
 instance FromField APrivateSignKey where fromField = blobFieldParser binaryKeyP
@@ -700,6 +720,10 @@ instance FromField APublicEncryptKey where fromField = blobFieldParser binaryKey
 instance FromField APrivateDhKey where fromField = blobFieldParser binaryKeyP
 
 instance FromField APublicDhKey where fromField = blobFieldParser binaryKeyP
+
+instance (Typeable a, AlgorithmI a) => FromField (PrivateKey a) where fromField = blobFieldParser binaryKeyP
+
+instance (Typeable a, AlgorithmI a) => FromField (PublicKey a) where fromField = blobFieldParser binaryKeyP
 
 instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldParser dhSecretP
 

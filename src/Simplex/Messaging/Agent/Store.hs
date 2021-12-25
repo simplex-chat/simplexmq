@@ -25,7 +25,6 @@ import Simplex.Messaging.Protocol
     RcvDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
-    SndPublicVerifyKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 
@@ -44,6 +43,7 @@ class Monad m => MonadAgentStore s m where
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueActive :: s -> RcvQueue -> C.APublicVerifyKey -> m ()
+  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecret 'C.X25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Confirmations
@@ -82,7 +82,7 @@ data RcvQueue = RcvQueue
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
     rcvDhSecret :: RcvDhSecret,
     -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
-    e2ePrivateDhKey :: Maybe C.APrivateDhKey,
+    e2ePrivDhKey :: Maybe (C.PrivateKey 'C.X25519),
     -- | shared DH secret agreed for simple per-queue e2e encryption
     e2eDhSecret :: Maybe RcvDhSecret,
     -- | sender queue ID
@@ -102,7 +102,7 @@ data SndQueue = SndQueue
     -- | key used by the sender to sign transmissions
     sndPrivateKey :: SndPrivateSignKey,
     -- | public DH key that was (or needs to be) sent to the recipient in SMP confirmation (to agree simple per-queue e2e)
-    e2ePublicDhKey :: Maybe C.APublicDhKey,
+    e2ePubDhKey :: Maybe (C.PublicKey 'C.X25519),
     -- | shared DH secret agreed for simple per-queue e2e encryption
     e2eDhSecret :: Maybe RcvDhSecret,
     -- | TODO keys used for E2E encryption - these will change with double ratchet
@@ -178,15 +178,13 @@ newtype ConnData = ConnData {connId :: ConnId}
 
 data NewConfirmation = NewConfirmation
   { connId :: ConnId,
-    senderKey :: SndPublicVerifyKey,
-    senderConnInfo :: ConnInfo
+    senderConf :: SMPConfMsg
   }
 
 data AcceptedConfirmation = AcceptedConfirmation
   { confirmationId :: ConfirmationId,
     connId :: ConnId,
-    senderKey :: SndPublicVerifyKey,
-    senderConnInfo :: ConnInfo,
+    senderConf :: SMPConfMsg,
     ownConnInfo :: ConnInfo
   }
 

@@ -556,9 +556,13 @@ The body should be encrypted with the recipient's "public" key (`EK`); once decr
 
 ```abnf
 decryptedBody = [clientHeader] CRLF clientBody CRLF
-clientHeader = senderKeyMsg
-senderKeyMsg = %s"KEY" SP senderKey
-senderKey = signatureScheme ":" x509encoded ; the sender's public key to sign SEND commands for this queue
+clientHeader = senderConfirmation
+senderConfirmation = legacyConf / v1Conf
+legacyConf = %s"KEY" SP senderKey
+v1Conf = %s"V=1" SP %s"KEY=" senderKey SP %s"E2EDH=" e2ePublicDfKey
+senderKey = signatureScheme ":" x509encoded ; the sender's public key to sign SEND 
+e2ePublicDfKey = dhPublicKey
+commands for this queue
 clientBody = *OCTET
 ```
 

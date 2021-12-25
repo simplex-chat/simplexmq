@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -28,8 +29,8 @@ queue =
       dhPublicKey = Nothing
     }
 
-testDhKey :: C.APublicDhKey
-testDhKey = C.APublicDhKey C.SX25519 "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
+testDhKey :: C.PublicKey 'C.X25519
+testDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 appServer :: ConnReqScheme
 appServer = CRSAppServer "simplex.chat" Nothing

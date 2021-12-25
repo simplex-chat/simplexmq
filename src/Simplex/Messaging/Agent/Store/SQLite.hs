@@ -268,6 +268,26 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           ":rcv_id" := rcvId
         ]
 
+  setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.DhSecret 'C.X25519 -> m ()
+  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eDhSecret =
+    liftIO . withTransaction st $ \db ->
+      DB.executeNamed
+        db
+        [sql|
+          UPDATE rcv_queues
+          SET e2e_priv_dh_key = :e2e_priv_dh_key,
+              e2e_dh_secret = :e2e_dh_secret,
+              status = :status
+          WHERE host = :host AND port = :port AND rcv_id = :rcv_id
+        |]
+        [ ":status" := Confirmed,
+          ":e2e_priv_dh_key" := (Nothing :: Maybe (C.PrivateKey 'C.X25519)),
+          ":e2e_dh_secret" := e2eDhSecret,
+          ":host" := host,
+          ":port" := serializePort_ port,
+          ":rcv_id" := rcvId
+        ]
+
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
   setSndQueueStatus st SndQueue {sndId, server = SMPServer {host, port}} status =
     -- ? throw error if queue does not exist?
@@ -282,16 +302,16 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  createConfirmation st gVar NewConfirmation {connId, senderKey, senderConnInfo} =
+  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfMsg {senderKey, e2ePubDhKey, connInfo}} =
     liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \confirmationId ->
         DB.execute
           db
           [sql|
             INSERT INTO conn_confirmations
-            (confirmation_id, conn_alias, sender_key, sender_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
+            (confirmation_id, conn_alias, sender_key, e2e_pub_dh_key, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
           |]
-          (confirmationId, connId, senderKey, senderConnInfo)
+          (confirmationId, connId, senderKey, e2ePubDhKey, connInfo)
 
   acceptConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
   acceptConfirmation st confirmationId ownConnInfo =
@@ -311,14 +331,20 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         <$> DB.query
           db
           [sql|
-            SELECT conn_alias, sender_key, sender_conn_info
+            SELECT conn_alias, sender_key, e2e_pub_dh_key, sender_conn_info
             FROM conn_confirmations
             WHERE confirmation_id = ?;
           |]
           (Only confirmationId)
     where
-      confirmation [(connId, senderKey, senderConnInfo)] =
-        Right $ AcceptedConfirmation {confirmationId, connId, senderKey, senderConnInfo, ownConnInfo}
+      confirmation [(connId, senderKey, e2ePubDhKey, connInfo)] =
+        Right
+          AcceptedConfirmation
+            { confirmationId,
+              connId,
+              senderConf = SMPConfMsg {senderKey, e2ePubDhKey, connInfo},
+              ownConnInfo
+            }
       confirmation _ = Left SEConfirmationNotFound
 
   getAcceptedConfirmation :: SQLiteStore -> ConnId -> m AcceptedConfirmation
@@ -328,14 +354,20 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         <$> DB.query
           db
           [sql|
-            SELECT confirmation_id, sender_key, sender_conn_info, own_conn_info
+            SELECT confirmation_id, sender_key, e2e_pub_dh_key, sender_conn_info, own_conn_info
             FROM conn_confirmations
             WHERE conn_alias = ? AND accepted = 1;
           |]
           (Only connId)
     where
-      confirmation [(confirmationId, senderKey, senderConnInfo, ownConnInfo)] =
-        Right $ AcceptedConfirmation {confirmationId, connId, senderKey, senderConnInfo, ownConnInfo}
+      confirmation [(confirmationId, senderKey, e2ePubDhKey, connInfo, ownConnInfo)] =
+        Right
+          AcceptedConfirmation
+            { confirmationId,
+              connId,
+              senderConf = SMPConfMsg {senderKey, e2ePubDhKey, connInfo},
+              ownConnInfo
+            }
       confirmation _ = Left SEConfirmationNotFound
 
   removeConfirmations :: SQLiteStore -> ConnId -> m ()
@@ -625,9 +657,9 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, e2e_private_dh_key, e2e_dh_secret, snd_id, decrypt_key, verify_key, status)
+        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, e2e_priv_dh_key, e2e_dh_secret, snd_id, decrypt_key, verify_key, status)
       VALUES
-        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_private_dh_key,:e2e_dh_secret,:snd_id,:decrypt_key,:verify_key,:status);
+        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_priv_dh_key,:e2e_dh_secret,:snd_id,:decrypt_key,:verify_key,:status);
     |]
     [ ":host" := host server,
       ":port" := port_,
@@ -635,7 +667,7 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":conn_alias" := connId,
       ":rcv_private_key" := rcvPrivateKey,
       ":rcv_dh_secret" := rcvDhSecret,
-      ":e2e_private_dh_key" := e2ePrivateDhKey,
+      ":e2e_priv_dh_key" := e2ePrivDhKey,
       ":e2e_dh_secret" := e2eDhSecret,
       ":snd_id" := sndId,
       ":decrypt_key" := decryptKey,
@@ -672,16 +704,16 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     dbConn
     [sql|
       INSERT INTO snd_queues
-        ( host, port, snd_id, conn_alias, snd_private_key, e2e_public_dh_key, e2e_dh_secret, encrypt_key, sign_key, status)
+        ( host, port, snd_id, conn_alias, snd_private_key, e2e_pub_dh_key, e2e_dh_secret, encrypt_key, sign_key, status)
       VALUES
-        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_public_dh_key,:e2e_dh_secret,:encrypt_key,:sign_key,:status);
+        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_pub_dh_key,:e2e_dh_secret,:encrypt_key,:sign_key,:status);
     |]
     [ ":host" := host server,
       ":port" := port_,
       ":snd_id" := sndId,
       ":conn_alias" := connId,
       ":snd_private_key" := sndPrivateKey,
-      ":e2e_public_dh_key" := e2ePublicDhKey,
+      ":e2e_pub_dh_key" := e2ePubDhKey,
       ":e2e_dh_secret" := e2eDhSecret,
       ":encrypt_key" := encryptKey,
       ":sign_key" := signKey,
@@ -736,14 +768,14 @@ getRcvQueueByConnAlias_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.e2e_private_dh_key, q.e2e_dh_secret, q.snd_id, q.decrypt_key, q.verify_key, q.status
+          q.e2e_priv_dh_key, q.e2e_dh_secret, q.snd_id, q.decrypt_key, q.verify_key, q.status
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivateDhKey, e2eDhSecret, sndId, decryptKey, verifyKey, status)] =
+    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivDhKey, e2eDhSecret, sndId, decryptKey, verifyKey, status)] =
       let server = SMPServer host (deserializePort_ port) keyHash
        in Just $
             RcvQueue
@@ -751,7 +783,7 @@ getRcvQueueByConnAlias_ dbConn connId =
                 rcvId,
                 rcvPrivateKey,
                 rcvDhSecret,
-                e2ePrivateDhKey,
+                e2ePrivDhKey,
                 e2eDhSecret,
                 sndId,
                 decryptKey,
@@ -767,21 +799,21 @@ getSndQueueByConnAlias_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key,
-          q.e2e_public_dh_key, q.e2e_dh_secret, q.encrypt_key, q.sign_key, q.status
+          q.e2e_pub_dh_key, q.e2e_dh_secret, q.encrypt_key, q.sign_key, q.status
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2ePublicDhKey, e2eDhSecret, encryptKey, signKey, status)] =
+    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2ePubDhKey, e2eDhSecret, encryptKey, signKey, status)] =
       let server = SMPServer host (deserializePort_ port) keyHash
        in Just
             SndQueue
               { server,
                 sndId,
                 sndPrivateKey,
-                e2ePublicDhKey,
+                e2ePubDhKey,
                 e2eDhSecret,
                 encryptKey,
                 signKey,
