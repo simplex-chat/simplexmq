@@ -50,7 +50,7 @@ testMessageHeader = do
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
 pattern Decrypted msg <- Right (Right msg)
 
-type TestRachets a = (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a) -> TVar (Ratchet a) -> IO ()
+type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a) -> TVar (Ratchet a) -> IO ()
 
 testEncryptDecrypt :: TestRachets a
 testEncryptDecrypt alice bob = do
