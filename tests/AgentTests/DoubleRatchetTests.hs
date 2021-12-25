@@ -30,6 +30,9 @@ doubleRatchetTests = do
     it "should encrypt and decrypt skipped messages" $ do
       withRatchets @X25519 testSkippedMessages
       withRatchets @X448 testSkippedMessages
+    it "should encrypt and decrypt skipped messages in same step" $ do
+      withRatchets @X25519 testInTheSameRatchetStep
+      withRatchets @X448 testInTheSameRatchetStep
     it "should encrypt and decrypt many messages" $ do
       withRatchets @X25519 testManyMessages
     it "should allow skipped after ratchet advance" $ do
@@ -62,6 +65,26 @@ testEncryptDecrypt alice bob = do
   Decrypted "hello bob" <- decrypt bob msg3
   Right msg4 <- encrypt alice "hello bob again"
   Decrypted "hello bob again" <- decrypt bob msg4
+  pure ()
+
+testInTheSameRatchetStep :: TestRatchets a
+testInTheSameRatchetStep alice bob = do
+  (bob, "hello alice") #> alice
+  (alice, "hello bob") #> bob
+  Right b1 <- encrypt bob "how are you, alice?"
+  Right b2 <- encrypt bob "are you there?"
+  Right b3 <- encrypt bob "hey?"
+  Right a1 <- encrypt alice "how are you, bob?"
+  Right a2 <- encrypt alice "are you there?"
+  Right a3 <- encrypt alice "hey?"
+  Decrypted "how are you, alice?" <- decrypt alice b1
+  Decrypted "are you there?" <- decrypt alice b2
+  Decrypted "hey?" <- decrypt alice b3
+  Decrypted "how are you, bob?" <- decrypt bob a1
+  Decrypted "are you there?" <- decrypt bob a2
+  Decrypted "hey?" <- decrypt bob a3
+  (bob, "I'm here, all good") #> alice
+  (alice, "I'm here too, same") #> bob
   pure ()
 
 testSkippedMessages :: TestRatchets a
