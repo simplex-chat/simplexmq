@@ -683,6 +683,10 @@ instance ToField APrivateDecryptKey where toField = toField . encodeKey
 
 instance ToField APublicEncryptKey where toField = toField . encodeKey
 
+instance ToField APrivateDhKey where toField = toField . encodeKey
+
+instance ToField APublicDhKey where toField = toField . encodeKey
+
 instance (Typeable a, AlgorithmI a) => ToField (DhSecret a) where toField = toField . dhSecretBytes
 
 instance FromField APrivateSignKey where fromField = blobFieldParser binaryKeyP
@@ -692,6 +696,10 @@ instance FromField APublicVerifyKey where fromField = blobFieldParser binaryKeyP
 instance FromField APrivateDecryptKey where fromField = blobFieldParser binaryKeyP
 
 instance FromField APublicEncryptKey where fromField = blobFieldParser binaryKeyP
+
+instance FromField APrivateDhKey where fromField = blobFieldParser binaryKeyP
+
+instance FromField APublicDhKey where fromField = blobFieldParser binaryKeyP
 
 instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldParser dhSecretP
 

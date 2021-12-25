@@ -81,6 +81,10 @@ data RcvQueue = RcvQueue
     rcvPrivateKey :: RcvPrivateSignKey,
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
     rcvDhSecret :: RcvDhSecret,
+    -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
+    e2ePrivateDhKey :: Maybe C.APrivateDhKey,
+    -- | shared DH secret agreed for simple per-queue e2e encryption
+    e2eDhSecret :: Maybe RcvDhSecret,
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
     -- | TODO keys used for E2E encryption - these will change with double ratchet
@@ -93,8 +97,15 @@ data RcvQueue = RcvQueue
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue
   { server :: SMPServer,
+    -- | sender queue ID
     sndId :: SMP.SenderId,
+    -- | key used by the sender to sign transmissions
     sndPrivateKey :: SndPrivateSignKey,
+    -- | public DH key that was (or needs to be) sent to the recipient in SMP confirmation (to agree simple per-queue e2e)
+    e2ePublicDhKey :: Maybe C.APublicDhKey,
+    -- | shared DH secret agreed for simple per-queue e2e encryption
+    e2eDhSecret :: Maybe RcvDhSecret,
+    -- | TODO keys used for E2E encryption - these will change with double ratchet
     encryptKey :: C.APublicEncryptKey,
     signKey :: C.APrivateSignKey,
     status :: QueueStatus

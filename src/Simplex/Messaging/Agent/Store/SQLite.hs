@@ -625,9 +625,9 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, snd_id, decrypt_key, verify_key, status)
+        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, e2e_private_dh_key, e2e_dh_secret, snd_id, decrypt_key, verify_key, status)
       VALUES
-        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:snd_id,:decrypt_key,:verify_key,:status);
+        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_private_dh_key,:e2e_dh_secret,:snd_id,:decrypt_key,:verify_key,:status);
     |]
     [ ":host" := host server,
       ":port" := port_,
@@ -635,6 +635,8 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":conn_alias" := connId,
       ":rcv_private_key" := rcvPrivateKey,
       ":rcv_dh_secret" := rcvDhSecret,
+      ":e2e_private_dh_key" := e2ePrivateDhKey,
+      ":e2e_dh_secret" := e2eDhSecret,
       ":snd_id" := sndId,
       ":decrypt_key" := decryptKey,
       ":verify_key" := verifyKey,
@@ -670,15 +672,17 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     dbConn
     [sql|
       INSERT INTO snd_queues
-        ( host, port, snd_id, conn_alias, snd_private_key, encrypt_key, sign_key, status)
+        ( host, port, snd_id, conn_alias, snd_private_key, e2e_public_dh_key, e2e_dh_secret, encrypt_key, sign_key, status)
       VALUES
-        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:encrypt_key,:sign_key,:status);
+        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_public_dh_key,:e2e_dh_secret,:encrypt_key,:sign_key,:status);
     |]
     [ ":host" := host server,
       ":port" := port_,
       ":snd_id" := sndId,
       ":conn_alias" := connId,
       ":snd_private_key" := sndPrivateKey,
+      ":e2e_public_dh_key" := e2ePublicDhKey,
+      ":e2e_dh_secret" := e2eDhSecret,
       ":encrypt_key" := encryptKey,
       ":sign_key" := signKey,
       ":status" := status
@@ -732,14 +736,14 @@ getRcvQueueByConnAlias_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.snd_id, q.decrypt_key, q.verify_key, q.status
+          q.e2e_private_dh_key, q.e2e_dh_secret, q.snd_id, q.decrypt_key, q.verify_key, q.status
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, sndId, decryptKey, verifyKey, status)] =
+    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivateDhKey, e2eDhSecret, sndId, decryptKey, verifyKey, status)] =
       let server = SMPServer host (deserializePort_ port) keyHash
        in Just $
             RcvQueue
@@ -747,6 +751,8 @@ getRcvQueueByConnAlias_ dbConn connId =
                 rcvId,
                 rcvPrivateKey,
                 rcvDhSecret,
+                e2ePrivateDhKey,
+                e2eDhSecret,
                 sndId,
                 decryptKey,
                 verifyKey,
@@ -760,16 +766,27 @@ getSndQueueByConnAlias_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.encrypt_key, q.sign_key, q.status
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key,
+          q.e2e_public_dh_key, q.e2e_dh_secret, q.encrypt_key, q.sign_key, q.status
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, encryptKey, signKey, status)] =
+    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2ePublicDhKey, e2eDhSecret, encryptKey, signKey, status)] =
       let server = SMPServer host (deserializePort_ port) keyHash
-       in Just $ SndQueue {server, sndId, sndPrivateKey, encryptKey, signKey, status}
+       in Just
+            SndQueue
+              { server,
+                sndId,
+                sndPrivateKey,
+                e2ePublicDhKey,
+                e2eDhSecret,
+                encryptKey,
+                signKey,
+                status
+              }
     sndQueue _ = Nothing
 
 -- * upgradeRcvConnToDuplex helpers

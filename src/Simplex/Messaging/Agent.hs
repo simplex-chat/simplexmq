@@ -680,6 +680,8 @@ newSndQueue_ a (SMPQueueUri smpServer senderId _) encryptKey = do
           { server = smpServer,
             sndId = senderId,
             sndPrivateKey,
+            e2ePublicDhKey = Nothing,
+            e2eDhSecret = Nothing,
             encryptKey,
             signKey,
             status = New

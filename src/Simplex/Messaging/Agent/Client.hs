@@ -250,6 +250,8 @@ newRcvQueue_ a c srv = do
             rcvId,
             rcvPrivateKey,
             rcvDhSecret = C.dh' rcvPublicDHKey privDhKey,
+            e2ePrivateDhKey = Nothing,
+            e2eDhSecret = Nothing,
             sndId = Just sndId,
             decryptKey,
             verifyKey = Nothing,
