@@ -64,7 +64,7 @@ testEncryptDecrypt alice bob = do
   Decrypted "hello bob again" <- decrypt bob msg4
   pure ()
 
-testSkippedMessages :: TestRachets a
+testSkippedMessages :: TestRatchets a
 testSkippedMessages alice bob = do
   Right msg1 <- encrypt bob "hello alice"
   Right msg2 <- encrypt bob "hello there again"
