@@ -46,6 +46,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations
       Simplex.Messaging.Client
       Simplex.Messaging.Crypto
+      Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server
@@ -220,6 +221,7 @@ test-suite smp-server-test
   other-modules:
       AgentTests
       AgentTests.ConnectionRequestTests
+      AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
       AgentTests.SQLiteTests
       ProtocolErrorTests

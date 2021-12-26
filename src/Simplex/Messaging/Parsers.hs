@@ -3,6 +3,7 @@
 
 module Simplex.Messaging.Parsers where
 
+import Control.Monad.Trans.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -52,6 +53,12 @@ parse parser err = first (const err) . parseAll parser
 
 parseAll :: Parser a -> (ByteString -> Either String a)
 parseAll parser = A.parseOnly (parser <* A.endOfInput)
+
+parseE :: (String -> e) -> Parser a -> (ByteString -> ExceptT e IO a)
+parseE err parser = except . first err . parseAll parser
+
+parseE' :: (String -> e) -> Parser a -> (ByteString -> ExceptT e IO a)
+parseE' err parser = except . first err . A.parseOnly parser
 
 parseRead :: Read a => Parser ByteString -> Parser a
 parseRead = (>>= maybe (fail "cannot read") pure . readMaybe . B.unpack)
