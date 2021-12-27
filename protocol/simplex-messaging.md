@@ -602,20 +602,20 @@ SMP transmission structure for sent messages:
 ------- transmission (= 16384 bytes)
     2 | originalLength
  398- | signature SP sessionId SP corrId SP queueId SP %s"SEND" SP
-      ------- SMPEncMessage (= 15968 bytes)
+      ....... SMPEncMessage (= 15968 bytes)
        126- | publicMessageHeader
             ------- SMPMessage (E2E encrypted, = 15842 bytes)
                 2 | originalLength
               16- | privateMsgHeader
-                  -------
+                  .......
                         | client message (<= 15784 bytes)
-                  -------
+                  .......
                16 | auth tag
                24 | nonce
                0+ | E2E encrypted pad
             ------- E2E encrypted end
             |
-      ------- SMPEncMessage end
+      ....... SMPEncMessage end
   16+ | transmission pad
 ------- transmission end
 ```
@@ -628,36 +628,36 @@ SMP transmission structure for received messages:
  398- | signature SP sessionId SP corrId SP queueId SP %s"MSG" SP msgId SP timestamp SP
       ------- serverEncryptedMsg (= 15986 bytes)
           2 | originalLength
-            ------- SMPEncMessage (= 15968 bytes)
+            ....... SMPEncMessage (= 15968 bytes)
              126- | publicMessageHeader
                   ------- SMPMessage (E2E encrypted, = 15842 bytes)
                       2 | originalLength
                     16- | privateMsgHeader
-                        ------- client message (<= 15784 bytes) -- TODO move to agent protocol
+                        ....... client message (<= 15784 bytes) -- TODO move to agent protocol
                           16- | agentPublicHeader
-                              ------- E2E doubleRatchetEncrypted (<= 15768)
-                                 96 | doubleRatchetHeader
-                                 16 | doubleRatchetHeader auth tag
-                                 24 | doubleRatchetHeader iv
+                              ....... E2E double-ratchet encrypted (<= 15768)
+                                 96 | double-ratchet header
+                                 16 | double-ratchet header auth tag
+                                 24 | double-ratchet header iv
                                     ------- encrypted agent message (= 15616 bytes)
                                         2 | originalLength
                                  122 (90) | agentHeader
                                         4 | %s"MSG" SP
-                                          -------
+                                          .......
                                                 | application message (<= 15488 bytes)
-                                          -------
+                                          .......
                                        0+ | encrypted agent message pad
                                     ------- encrypted agent message end
                                  16 | auth tag (IV generated from chain ratchet)
-                              ------- E2E doubleRatchetEncrypted end
-                           0+ | E2E doubleRatchetEncrypted pad
-                        ------- client message end
+                              ....... E2E double-ratchet encrypted end
+                              |
+                        ....... client message end
                      16 | auth tag
                      24 | nonce
                      0+ | SMPMessage pad
                   ------- SMPMessage end
                   |
-            ------- SMPEncMessage end
+            ....... SMPEncMessage end
          16 | auth tag (msgId is used as nonce)
          0+ | serverEncryptedMsg pad
       ------- serverEncryptedMsg end
