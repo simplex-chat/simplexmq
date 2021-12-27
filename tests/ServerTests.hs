@@ -75,7 +75,7 @@ testCreateSecure (ATransport t) =
       let dec = C.cbDecrypt $ C.dh' srvDh dhPriv
       (rId1, "") #== "creates queue"
 
-      Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND 5 hello ")
+      Resp "bcda" sId1 ok1 <- sendRecv h ("", "bcda", sId, "SEND hello")
       (ok1, OK) #== "accepts unsigned SEND"
       (sId1, sId) #== "same queue ID in response 1"
 
@@ -89,7 +89,7 @@ testCreateSecure (ATransport t) =
       (err6, ERR NO_MSG) #== "replies ERR when message acknowledged without messages"
 
       (sPub, sKey) <- C.generateSignatureKeyPair 0 C.SEd448
-      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND 5 hello ")
+      Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND hello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
 
@@ -107,7 +107,7 @@ testCreateSecure (ATransport t) =
       Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, keyCmd)
       (err4, ERR AUTH) #== "rejects KEY if already secured"
 
-      Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, "SEND 11 hello again ")
+      Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, "SEND hello again")
       (ok3, OK) #== "accepts signed SEND"
 
       Resp "" _ (MSG mId2 _ msg2) <- tGet fromServer h
@@ -116,7 +116,7 @@ testCreateSecure (ATransport t) =
       Resp "cdab" _ ok5 <- signSendRecv h rKey ("cdab", rId, "ACK")
       (ok5, OK) #== "replies OK when message acknowledged 2"
 
-      Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, "SEND 5 hello ")
+      Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, "SEND hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
 testCreateDelete :: ATransport -> Spec
@@ -133,10 +133,10 @@ testCreateDelete (ATransport t) =
       Resp "bcda" _ ok1 <- signSendRecv rh rKey ("bcda", rId, "KEY " <> C.serializeKey sPub)
       (ok1, OK) #== "secures queue"
 
-      Resp "cdab" _ ok2 <- signSendRecv sh sKey ("cdab", sId, "SEND 5 hello ")
+      Resp "cdab" _ ok2 <- signSendRecv sh sKey ("cdab", sId, "SEND hello")
       (ok2, OK) #== "accepts signed SEND"
 
-      Resp "dabc" _ ok7 <- signSendRecv sh sKey ("dabc", sId, "SEND 7 hello 2 ")
+      Resp "dabc" _ ok7 <- signSendRecv sh sKey ("dabc", sId, "SEND hello 2")
       (ok7, OK) #== "accepts signed SEND 2 - this message is not delivered because the first is not ACKed"
 
       Resp "" _ (MSG mId1 _ msg1) <- tGet fromServer rh
@@ -152,10 +152,10 @@ testCreateDelete (ATransport t) =
       (ok3, OK) #== "suspends queue"
       (rId2, rId) #== "same queue ID in response 2"
 
-      Resp "dabc" _ err3 <- signSendRecv sh sKey ("dabc", sId, "SEND 5 hello ")
+      Resp "dabc" _ err3 <- signSendRecv sh sKey ("dabc", sId, "SEND hello")
       (err3, ERR AUTH) #== "rejects signed SEND"
 
-      Resp "abcd" _ err4 <- sendRecv sh ("", "abcd", sId, "SEND 5 hello ")
+      Resp "abcd" _ err4 <- sendRecv sh ("", "abcd", sId, "SEND hello")
       (err4, ERR AUTH) #== "reject unsigned SEND too"
 
       Resp "bcda" _ ok4 <- signSendRecv rh rKey ("bcda", rId, "OFF")
@@ -174,10 +174,10 @@ testCreateDelete (ATransport t) =
       (ok6, OK) #== "deletes queue"
       (rId3, rId) #== "same queue ID in response 3"
 
-      Resp "cdab" _ err7 <- signSendRecv sh sKey ("cdab", sId, "SEND 5 hello ")
+      Resp "cdab" _ err7 <- signSendRecv sh sKey ("cdab", sId, "SEND hello")
       (err7, ERR AUTH) #== "rejects signed SEND when deleted"
 
-      Resp "dabc" _ err8 <- sendRecv sh ("", "dabc", sId, "SEND 5 hello ")
+      Resp "dabc" _ err8 <- sendRecv sh ("", "dabc", sId, "SEND hello")
       (err8, ERR AUTH) #== "rejects unsigned SEND too when deleted"
 
       Resp "abcd" _ err11 <- signSendRecv rh rKey ("abcd", rId, "ACK")
@@ -248,7 +248,7 @@ testDuplex (ATransport t) =
       (aliceKey, C.serializeKey asPub) #== "key received from Alice"
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, "KEY " <> aliceKey)
 
-      Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, "SEND 8 hi alice ")
+      Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, "SEND hi alice")
 
       Resp "" _ (MSG mId4 _ msg4) <- tGet fromServer alice
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, "ACK")
@@ -268,7 +268,7 @@ testSwitchSub (ATransport t) =
       (dhPub, dhPriv :: C.PrivateKey 'C.X25519) <- C.generateKeyPair' 0
       Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", "", B.unwords ["NEW", C.serializeKey rPub, C.serializeKey dhPub])
       let dec = C.cbDecrypt $ C.dh' srvDh dhPriv
-      Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND 5 test1 ")
+      Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND test1")
       (ok1, OK) #== "sent test message 1"
       Resp "cdab" _ ok2 <- sendRecv sh ("", "cdab", sId, cmdSEND "test2, no ACK")
       (ok2, OK) #== "sent test message 2"
@@ -285,7 +285,7 @@ testSwitchSub (ATransport t) =
       Resp "" _ end <- tGet fromServer rh1
       (end, END) #== "unsubscribed the 1st TCP connection"
 
-      Resp "dabc" _ OK <- sendRecv sh ("", "dabc", sId, "SEND 5 test3 ")
+      Resp "dabc" _ OK <- sendRecv sh ("", "dabc", sId, "SEND test3")
 
       Resp "" _ (MSG mId3 _ msg3) <- tGet fromServer rh2
       (dec mId3 msg3, Right "test3") #== "delivered to the 2nd TCP connection"
@@ -323,14 +323,14 @@ testWithStoreLog at@(ATransport t) =
         writeTVar senderId1 sId1
         writeTVar notifierId nId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, "NSUB")
-      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND hello")
       Resp "" _ (MSG mId1 _ msg1) <- tGet fromServer h
       (C.cbDecrypt dhShared mId1 msg1, Right "hello") #== "delivered from queue 1"
       Resp "" _ NMSG <- tGet fromServer h1
 
       (sId2, rId2, rKey2, dhShared2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
-      Resp "cdab" _ OK <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
+      Resp "cdab" _ OK <- signSendRecv h sKey2 ("cdab", sId2, "SEND hello too")
       Resp "" _ (MSG mId2 _ msg2) <- tGet fromServer h
       (C.cbDecrypt dhShared2 mId2 msg2, Right "hello too") #== "delivered from queue 2"
 
@@ -342,7 +342,7 @@ testWithStoreLog at@(ATransport t) =
     withSmpServerThreadOn at testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
       -- fails if store log is disabled
-      Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, "SEND hello")
       pure ()
 
     withSmpServerStoreLogOn at testPort . runTest t $ \h -> runClient t $ \h1 -> do
@@ -353,13 +353,13 @@ testWithStoreLog at@(ATransport t) =
       sId1 <- readTVarIO senderId1
       nId <- readTVarIO notifierId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, "NSUB")
-      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND 5 hello ")
+      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, "SEND hello")
       Resp "cdab" _ (MSG mId3 _ msg3) <- signSendRecv h rKey1 ("cdab", rId1, "SUB")
       (C.cbDecrypt dh1 mId3 msg3, Right "hello") #== "delivered from restored queue"
       Resp "" _ NMSG <- tGet fromServer h1
       -- this queue is removed - not restored
       sId2 <- readTVarIO senderId2
-      Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, "SEND 9 hello too ")
+      Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, "SEND hello too")
       pure ()
 
     logSize `shouldReturn` 1
@@ -441,11 +441,11 @@ testTiming (ATransport t) =
       let keyCmd = "KEY " <> C.serializeKey sPub
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, keyCmd)
 
-      Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, "SEND 5 hello ")
+      Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, "SEND hello")
       Resp "" _ (MSG mId _ msg) <- tGet fromServer rh
       (dec mId msg, Right "hello") #== "delivered from queue"
 
-      runTimingTest sh badKey sId "SEND 5 hello "
+      runTimingTest sh badKey sId "SEND hello"
       where
         generateKeys = \case
           32 -> C.generateSignatureKeyPair 0 C.SEd25519
@@ -476,14 +476,14 @@ testMessageNotifications (ATransport t) =
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
       Resp "1" _ (NID nId) <- signSendRecv rh rKey ("1", rId, "NKEY " <> C.serializeKey nPub)
       Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, "NSUB")
-      Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, "SEND 5 hello ")
+      Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, "SEND hello")
       Resp "" _ (MSG mId1 _ msg1) <- tGet fromServer rh
       (C.cbDecrypt dhShared mId1 msg1, Right "hello") #== "delivered from queue"
       Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, "ACK")
       Resp "" _ NMSG <- tGet fromServer nh1
       Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, "NSUB")
       Resp "" _ END <- tGet fromServer nh1
-      Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, "SEND 11 hello again ")
+      Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, "SEND hello again")
       Resp "" _ (MSG mId2 _ msg2) <- tGet fromServer rh
       (C.cbDecrypt dhShared mId2 msg2, Right "hello again") #== "delivered from queue again"
       Resp "" _ NMSG <- tGet fromServer nh2
@@ -519,13 +519,10 @@ syntaxTests (ATransport t) = do
   noParamsSyntaxTest "OFF"
   noParamsSyntaxTest "DEL"
   describe "SEND" $ do
-    it "valid syntax 1" $ (sampleSig, "cdab", "12345678", "SEND 5 hello ") >#> ("", "cdab", "12345678", "ERR AUTH")
-    it "valid syntax 2" $ (sampleSig, "dabc", "12345678", "SEND 11 hello there ") >#> ("", "dabc", "12345678", "ERR AUTH")
+    it "valid syntax 1" $ (sampleSig, "cdab", "12345678", "SEND hello") >#> ("", "cdab", "12345678", "ERR AUTH")
+    it "valid syntax 2" $ (sampleSig, "dabc", "12345678", "SEND hello there") >#> ("", "dabc", "12345678", "ERR AUTH")
     it "no parameters" $ (sampleSig, "abcd", "12345678", "SEND") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
-    it "no queue ID" $ (sampleSig, "bcda", "", "SEND 5 hello ") >#> ("", "bcda", "", "ERR CMD NO_QUEUE")
-    it "bad message body 1" $ (sampleSig, "cdab", "12345678", "SEND 11 hello ") >#> ("", "cdab", "12345678", "ERR CMD SYNTAX")
-    it "bad message body 2" $ (sampleSig, "dabc", "12345678", "SEND hello ") >#> ("", "dabc", "12345678", "ERR CMD SYNTAX")
-    it "bigger body" $ (sampleSig, "abcd", "12345678", "SEND 4 hello ") >#> ("", "abcd", "12345678", "ERR CMD SYNTAX")
+    it "no queue ID" $ (sampleSig, "bcda", "", "SEND hello") >#> ("", "bcda", "", "ERR CMD NO_QUEUE")
   describe "PING" $ do
     it "valid syntax" $ ("", "abcd", "", "PING") >#> ("", "abcd", "", "PONG")
   describe "broker response not allowed" $ do

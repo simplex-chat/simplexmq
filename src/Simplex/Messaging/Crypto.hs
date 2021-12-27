@@ -59,6 +59,10 @@ module Simplex.Messaging.Crypto
     generateDhKeyPair,
     privateToX509,
 
+    -- * key encoding/decoding
+    encodeLenKey,
+    binaryLenKeyP,
+
     -- * E2E hybrid encryption scheme
     E2EEncryptionVersion,
     currentE2EVersion,
@@ -84,7 +88,6 @@ module Simplex.Messaging.Crypto
     validSignatureSize,
 
     -- * DH derivation
-    DhAlgorithm,
     dh',
     dhSecret,
     dhSecret',
@@ -112,6 +115,10 @@ module Simplex.Messaging.Crypto
 
     -- * SHA256 hash
     sha256Hash,
+
+    -- * Message padding / un-padding
+    pad,
+    unPad,
 
     -- * Cryptography error type
     CryptoError (..),
@@ -150,6 +157,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
 import Data.ByteString.Lazy (fromStrict, toStrict)
+import Data.Composition ((.:))
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import Data.String
@@ -160,8 +168,8 @@ import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), TypeError)
-import Network.Transport.Internal (decodeWord32, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseE, parseString)
+import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
+import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseE, parseString, word16P)
 import Simplex.Messaging.Util (liftEitherError, (<$?>))
 
 type E2EEncryptionVersion = Word16
@@ -458,6 +466,18 @@ dhSecret' :: forall a. AlgorithmI a => ADhSecret -> Either String (DhSecret a)
 dhSecret' (ADhSecret a s) = case testEquality a $ sAlgorithm @a of
   Just Refl -> Right s
   _ -> Left "bad DH secret algorithm"
+
+encodeLenKey :: CryptoKey k => k -> ByteString
+encodeLenKey k =
+  let s = encodeKey k
+      len = fromIntegral $ B.length s
+   in encodeWord16 len <> s
+{-# INLINE encodeLenKey #-}
+
+binaryLenKeyP :: CryptoKey k => Parser k
+binaryLenKeyP = do
+  len <- fromIntegral <$> word16P
+  parseAll binaryKeyP <$?> A.take len
 
 -- | Class for all key types
 class CryptoKey k where
@@ -847,7 +867,8 @@ data CryptoError
     AESDecryptError
   | -- CryptoBox decryption error
     CBDecryptError
-  | -- | message does not fit in SMP block
+  | -- | message is larger that allowed padded length minus 2 (to prepend message length)
+    -- (or required un-padded length is larger than the message length)
     CryptoLargeMsgError
   | -- | failure parsing message header
     CryptoHeaderError String
@@ -971,9 +992,8 @@ decrypt' :: PrivateKey a -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt' pk@(PrivateKeyRSA _) msg'' = do
   let (encHeader, msg') = B.splitAt (keySize pk) msg''
   header <- decryptOAEP pk encHeader
-  Header {aesKey, ivBytes, authTag, msgSize} <- parseHeader header
-  msg <- decryptAES aesKey ivBytes msg' authTag
-  return $ B.take msgSize msg
+  Header {aesKey, ivBytes, authTag} <- parseHeader header
+  decryptAES aesKey ivBytes msg' authTag
 decrypt' _ _ = throwE UnsupportedAlgorithm
 
 encrypt :: APublicEncryptKey -> Int -> ByteString -> ExceptT CryptoError IO ByteString
@@ -992,15 +1012,10 @@ encryptAES key iv paddedLen = encryptAEAD key iv paddedLen ""
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
 encryptAEAD :: Key -> IV -> Int -> ByteString -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
-encryptAEAD aesKey ivBytes paddedSize ad msg = do
+encryptAEAD aesKey ivBytes paddedLen ad msg = do
   aead <- initAEAD @AES256 aesKey ivBytes
-  msg' <- paddedMsg
+  msg' <- liftEither $ pad msg paddedLen
   return $ AES.aeadSimpleEncrypt aead ad msg' authTagSize
-  where
-    len = B.length msg
-    paddedMsg
-      | len > paddedSize = throwE CryptoLargeMsgError
-      | otherwise = return (msg <> B.replicate (paddedSize - len) '#')
 
 -- | AEAD-GCM decryption with empty associated data.
 --
@@ -1014,7 +1029,23 @@ decryptAES key iv = decryptAEAD key iv ""
 decryptAEAD :: Key -> IV -> ByteString -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
 decryptAEAD aesKey ivBytes ad msg authTag = do
   aead <- initAEAD @AES256 aesKey ivBytes
-  maybeError AESDecryptError $ AES.aeadSimpleDecrypt aead ad msg authTag
+  liftEither . unPad =<< maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
+
+pad :: ByteString -> Int -> Either CryptoError ByteString
+pad msg paddedLen
+  | padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
+  | otherwise = Left CryptoLargeMsgError
+  where
+    len = B.length msg
+    padLen = paddedLen - len - 2
+
+unPad :: ByteString -> Either CryptoError ByteString
+unPad padded
+  | B.length rest >= len = Right $ B.take len rest
+  | otherwise = Left CryptoLargeMsgError
+  where
+    (lenWrd, rest) = B.splitAt 2 padded
+    len = fromIntegral $ decodeWord16 lenWrd
 
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (Key aesKey) (IV ivBytes) = do
@@ -1102,17 +1133,19 @@ dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
 dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
-cbEncrypt :: DhSecret X25519 -> ByteString -> ByteString -> ByteString
-cbEncrypt secret nonce msg = BA.convert tag `B.append` c
+cbEncrypt :: DhSecret X25519 -> ByteString -> ByteString -> Int -> Either CryptoError ByteString
+cbEncrypt secret nonce msg paddedLen = cryptoBox <$> pad msg paddedLen
   where
-    (rs, c) = xSalsa20 secret nonce msg
-    tag = Poly1305.auth rs c
+    cryptoBox s = BA.convert tag `B.append` c
+      where
+        (rs, c) = xSalsa20 secret nonce s
+        tag = Poly1305.auth rs c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> ByteString -> ByteString -> Either CryptoError ByteString
 cbDecrypt secret nonce packet
   | B.length packet < 16 = Left CBDecryptError
-  | BA.constEq tag' tag = Right msg
+  | BA.constEq tag' tag = unPad msg
   | otherwise = Left CBDecryptError
   where
     (tag', c) = B.splitAt 16 packet

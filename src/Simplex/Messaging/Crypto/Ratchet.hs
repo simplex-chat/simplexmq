@@ -22,11 +22,11 @@ import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
-import Data.Word (Word16, Word32)
+import Data.Word (Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
 import Simplex.Messaging.Crypto
-import Simplex.Messaging.Parsers (parseAll, parseE, parseE')
-import Simplex.Messaging.Util (tryE, (<$?>))
+import Simplex.Messaging.Parsers (parseAll, parseE, parseE', word16P, word32P)
+import Simplex.Messaging.Util (tryE)
 
 data Ratchet a = Ratchet
   { -- current ratchet version
@@ -128,8 +128,7 @@ data MsgHeader a = MsgHeader
     msgLatestVersion :: E2EEncryptionVersion,
     msgDHRs :: PublicKey a,
     msgPN :: Word32,
-    msgNs :: Word32,
-    msgLen :: Word16
+    msgNs :: Word32
   }
   deriving (Eq, Show)
 
@@ -145,30 +144,21 @@ fullHeaderLen :: Int
 fullHeaderLen = paddedHeaderLen + authTagSize + ivSize @AES256
 
 serializeMsgHeader' :: AlgorithmI a => MsgHeader a -> ByteString
-serializeMsgHeader' MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs, msgLen} =
+serializeMsgHeader' MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs} =
   encodeWord16 msgVersion
     <> encodeWord16 msgLatestVersion
-    <> encodeWord16 (fromIntegral $ B.length key)
-    <> key
+    <> encodeLenKey msgDHRs
     <> encodeWord32 msgPN
     <> encodeWord32 msgNs
-    <> encodeWord16 msgLen
-  where
-    key = encodeKey msgDHRs
 
 msgHeaderP' :: AlgorithmI a => Parser (MsgHeader a)
 msgHeaderP' = do
-  msgVersion <- word16
-  msgLatestVersion <- word16
-  keyLen <- fromIntegral <$> word16
-  msgDHRs <- parseAll binaryKeyP <$?> A.take keyLen
-  msgPN <- word32
-  msgNs <- word32
-  msgLen <- word16
-  pure MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs, msgLen}
-  where
-    word16 = decodeWord16 <$> A.take 2
-    word32 = decodeWord32 <$> A.take 4
+  msgVersion <- word16P
+  msgLatestVersion <- word16P
+  msgDHRs <- binaryLenKeyP
+  msgPN <- word32P
+  msgNs <- word32P
+  pure MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs}
 
 data EncHeader = EncHeader
   { ehBody :: ByteString,
@@ -229,8 +219,7 @@ rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs, rcAD} pa
             msgLatestVersion = currentE2EVersion,
             msgDHRs = fst $ rcDHRs rc,
             msgPN = rcPN rc,
-            msgNs = rcNs,
-            msgLen = fromIntegral $ B.length msg
+            msgNs = rcNs
           }
 
 data SkippedMessage a
@@ -365,10 +354,10 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
       header <- decryptAEAD k ehIV rcAD ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
       parseE' CryptoHeaderError msgHeaderP' header
     decryptMessage :: MessageKey -> MsgHeader a -> EncMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
-    decryptMessage (MessageKey mk iv) MsgHeader {msgLen} EncMessage {emHeader, emBody, emAuthTag} =
+    decryptMessage (MessageKey mk iv) MsgHeader {} EncMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, ciphertext, CONCAT(AD, enc_header))
       -- TODO add associated data
-      tryE (B.take (fromIntegral msgLen) <$> decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag)
+      tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
 
 initKdf :: (AlgorithmI a, DhAlgorithm a) => ByteString -> PublicKey a -> PrivateKey a -> (RatchetKey, Key, Key)
 initKdf salt k pk =

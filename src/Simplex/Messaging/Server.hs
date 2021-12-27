@@ -118,9 +118,8 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
           atomically . stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
 
 runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
-runClient _ h = do
-  ServerConfig {blockSize} <- asks config
-  liftIO (runExceptT $ serverHandshake h blockSize) >>= \case
+runClient _ h =
+  liftIO (runExceptT $ serverHandshake h) >>= \case
     Right th -> runClientTransport th
     Left _ -> pure ()
 
@@ -361,30 +360,34 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         withSub rId f = readTVar subscriptions >>= mapM f . M.lookup rId
 
         sendMessage :: QueueStore -> MsgBody -> m BrokerTransmission
-        sendMessage st msgBody = do
-          qr <- atomically $ getQueue st (CP SSender) queueId
-          either (return . err) storeMessage qr
+        sendMessage st msgBody
+          | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
+          | otherwise = do
+            qr <- atomically $ getQueue st (CP SSender) queueId
+            either (return . err) storeMessage qr
           where
             storeMessage :: QueueRec -> m BrokerTransmission
             storeMessage qr = case status qr of
               QueueOff -> return $ err AUTH
-              QueueActive -> do
-                ms <- asks msgStore
-                msg <- mkMessage
-                quota <- asks $ msgQueueQuota . config
-                atomically $ do
-                  q <- getMsgQueue ms (recipientId qr) quota
-                  ifM (isFull q) (pure $ err QUOTA) $ do
-                    trySendNotification
-                    writeMsg q msg
-                    pure ok
+              QueueActive ->
+                mkMessage >>= \case
+                  Left _ -> pure $ err LARGE_MSG
+                  Right msg -> do
+                    ms <- asks msgStore
+                    quota <- asks $ msgQueueQuota . config
+                    atomically $ do
+                      q <- getMsgQueue ms (recipientId qr) quota
+                      ifM (isFull q) (pure $ err QUOTA) $ do
+                        trySendNotification
+                        writeMsg q msg
+                        pure ok
               where
-                mkMessage :: m Message
+                mkMessage :: m (Either C.CryptoError Message)
                 mkMessage = do
                   msgId <- randomId =<< asks (msgIdBytes . config)
                   ts <- liftIO getCurrentTime
-                  let c = C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId) msgBody
-                  return $ Message {msgId, ts, msgBody = c}
+                  let c = C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId) msgBody (maxMessageLength + 2)
+                  pure $ Message msgId ts <$> c
 
                 trySendNotification :: STM ()
                 trySendNotification =

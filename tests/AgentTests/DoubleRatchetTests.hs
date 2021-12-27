@@ -44,7 +44,7 @@ fullMsgLen = fullHeaderLen + paddedMsgLen + C.authTagSize
 testMessageHeader :: Expectation
 testMessageHeader = do
   (k, _) <- C.generateKeyPair' @X25519 0
-  let hdr = MsgHeader {msgVersion = 1, msgLatestVersion = 1, msgDHRs = k, msgPN = 0, msgNs = 0, msgLen = 11}
+  let hdr = MsgHeader {msgVersion = 1, msgLatestVersion = 1, msgDHRs = k, msgPN = 0, msgNs = 0}
   parseAll (msgHeaderP' @X25519) (serializeMsgHeader' hdr) `shouldBe` Right hdr
 
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)

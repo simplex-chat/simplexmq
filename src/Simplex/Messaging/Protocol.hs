@@ -27,7 +27,10 @@
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Protocol
-  ( -- * SMP protocol types
+  ( -- * SMP protocol parameters
+    maxMessageLength,
+
+    -- * SMP protocol types
     Command (..),
     CommandI (..),
     Party (..),
@@ -91,14 +94,22 @@ import Data.String
 import Data.Time.Clock
 import Data.Time.ISO8601
 import Data.Type.Equality
+import Data.Word (Word16)
 import GHC.Generics (Generic)
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Generic.Random (genericArbitraryU)
+import Network.Transport.Internal (encodeWord16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
+import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), smpBlockSize, tGetBlock, tPutBlock)
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
+
+clientVersion :: Word16
+clientVersion = 1
+
+maxMessageLength :: Int
+maxMessageLength = 15968
 
 -- | SMP protocol participants.
 data Party = Broker | Recipient | Sender | Notifier
@@ -227,6 +238,50 @@ isClient = \case
   SNotifier -> Just Dict
   _ -> Nothing
 
+-- | SMP message body format
+data SMPEncMessage = SMPEncMessage SMPPubHeader ByteString
+
+data SMPPubHeader = SMPPubHeader
+  { sphVersion :: Word16,
+    sphE2ePubDhKey :: C.PublicKey 'C.X25519
+  }
+
+serializeSMPPubHeader :: SMPPubHeader -> ByteString
+serializeSMPPubHeader (SMPPubHeader v k) = encodeWord16 v <> C.encodeLenKey k
+
+smpPubHeaderP :: Parser SMPPubHeader
+smpPubHeaderP = SMPPubHeader <$> word16P <*> C.binaryLenKeyP
+
+serializeSMPEncMessage :: SMPEncMessage -> ByteString
+serializeSMPEncMessage (SMPEncMessage h msg) = serializeSMPPubHeader h <> msg
+
+smpEncMessageP :: Parser SMPEncMessage
+smpEncMessageP = SMPEncMessage <$> smpPubHeaderP <*> A.takeByteString
+
+data SMPMessage = SMPMessage SMPPrivHeader ByteString
+
+data SMPPrivHeader
+  = SMPConfHeader SndPublicVerifyKey
+  | SMPEmptyHeader
+
+serializeSMPPrivHeader :: SMPPrivHeader -> ByteString
+serializeSMPPrivHeader = \case
+  SMPEmptyHeader -> " "
+  SMPConfHeader k -> "K" <> C.encodeLenKey k
+
+smpPrivHeaderP :: Parser SMPPrivHeader
+smpPrivHeaderP =
+  A.anyChar >>= \case
+    ' ' -> pure SMPEmptyHeader
+    'K' -> SMPConfHeader <$> C.binaryLenKeyP
+    _ -> fail "invalid SMPPrivHeader"
+
+serializeSMPMessage :: SMPMessage -> ByteString
+serializeSMPMessage (SMPMessage h msg) = serializeSMPPrivHeader h <> msg
+
+smpMessageP :: Parser SMPMessage
+smpMessageP = SMPMessage <$> smpPrivHeaderP <*> A.takeByteString
+
 -- | Base-64 encoded string.
 type Encoded = ByteString
 
@@ -292,6 +347,8 @@ data ErrorType
     QUOTA
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
+  | -- | sent message is too large (> maxMessageLength = 15968 bytes)
+    LARGE_MSG
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -322,8 +379,7 @@ instance Arbitrary CommandError where arbitrary = genericArbitraryU
 transmissionP :: Parser RawTransmission
 transmissionP = do
   signature <- segment
-  len <- A.decimal <* A.space
-  signed <- A.take len <* A.space
+  signed <- A.takeByteString
   either fail pure $ parseAll (trn signature signed) signed
   where
     segment = A.takeTill (== ' ') <* A.space
@@ -333,6 +389,11 @@ transmissionP = do
       queueId <- segment
       command <- A.takeByteString
       pure RawTransmission {signature, signed, sessId, corrId, queueId, command}
+
+-- cmd <- A.takeByteString
+-- if B.last cmd == ' '
+--   then pure RawTransmission {signature, signed, sessId, corrId, queueId, command = B.init cmd}
+--   else fail "no terminating space"
 
 instance CommandI Cmd where
   serializeCommand (Cmd _ cmd) = serializeCommand cmd
@@ -362,14 +423,11 @@ instance CommandI Cmd where
       nIdsResp = Cmd SBroker . NID <$> base64P
       keyCmd = Cmd SRecipient . KEY <$> C.strKeyP
       nKeyCmd = Cmd SRecipient . NKEY <$> C.strKeyP
-      sendCmd = do
-        size <- A.decimal <* A.space
-        Cmd SSender . SEND <$> A.take size <* A.space
+      sendCmd = Cmd SSender . SEND <$> A.takeByteString
       message = do
         msgId <- base64P <* A.space
         ts <- tsISO8601P <* A.space
-        size <- A.decimal <* A.space
-        Cmd SBroker . MSG msgId ts <$> A.take size <* A.space
+        Cmd SBroker . MSG msgId ts <$> A.takeByteString
       serverError = Cmd SBroker . ERR <$> errorTypeP
 
 instance CommandI ClientCmd where
@@ -400,11 +458,11 @@ instance PartyI p => CommandI (Command p) where
     ACK -> "ACK"
     OFF -> "OFF"
     DEL -> "DEL"
-    SEND msgBody -> "SEND " <> serializeBody msgBody
+    SEND msgBody -> "SEND " <> msgBody
     PING -> "PING"
     NSUB -> "NSUB"
     MSG msgId ts msgBody ->
-      B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, serializeBody msgBody]
+      B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, msgBody]
     IDS (QIK rcvId sndId srvDh) ->
       B.unwords ["IDS", encode rcvId, encode sndId, C.serializeKey srvDh]
     NID nId -> "NID " <> encode nId
@@ -413,9 +471,6 @@ instance PartyI p => CommandI (Command p) where
     END -> "END"
     OK -> "OK"
     PONG -> "PONG"
-
-serializeBody :: ByteString -> ByteString
-serializeBody s = bshow (B.length s) <> " " <> s <> " "
 
 -- | SMP error parser.
 errorTypeP :: Parser ErrorType
@@ -427,7 +482,7 @@ serializeErrorType = bshow
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
-tPut th (sig, t) = tPutBlock th $ C.serializeSignature sig <> " " <> serializeBody t
+tPut th (sig, t) = tPutBlock th $ C.serializeSignature sig <> " " <> t
 
 serializeTransmission :: CommandI c => ByteString -> Transmission c -> ByteString
 serializeTransmission sessionId (CorrId corrId, queueId, command) =
@@ -447,7 +502,9 @@ fromServer = \case
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (Either TransportError RawTransmission)
-tGetParse th = first (const TEBadBlock) . A.parseOnly transmissionP <$> tGetBlock th
+tGetParse th = (parseTransmission =<<) <$> tGetBlock th
+  where
+    parseTransmission = first (const TEBadBlock) . A.parseOnly transmissionP
 
 -- | Receive client and server transmissions.
 --

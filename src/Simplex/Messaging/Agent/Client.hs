@@ -60,6 +60,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Transport (smpBlockSize)
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -314,7 +315,7 @@ sendConfirmation c sq@SndQueue {server, sndId} smpConf =
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: SMPClient -> m MsgBody
-    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation smpConf
+    mkConfirmation smp = encryptAndSign smp sq . serializeASMPMessage $ SMPConfirmation smpConf
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
@@ -328,8 +329,8 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
     mkHello :: SMPClient -> AckMode -> m ByteString
     mkHello smp ackMode = do
       senderTimestamp <- liftIO getCurrentTime
-      encryptAndSign smp sq . serializeSMPMessage $
-        SMPMessage
+      encryptAndSign smp sq . serializeASMPMessage $
+        ASMPMessage
           { senderMsgId = 0,
             senderTimestamp,
             previousMsgHash = "",
@@ -345,8 +346,8 @@ sendInvitation c SMPQueueUri {smpServer, senderId} encryptKey cReq connInfo = do
     mkInvitation :: SMPClient -> m ByteString
     mkInvitation smp = do
       senderTimestamp <- liftIO getCurrentTime
-      encryptUnsigned smp encryptKey . serializeSMPMessage $
-        SMPMessage
+      encryptUnsigned smp encryptKey . serializeASMPMessage $
+        ASMPMessage
           { senderMsgId = 0,
             senderTimestamp,
             previousMsgHash = "",
@@ -381,7 +382,7 @@ sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
 
 encryptAndSign :: AgentMonad m => SMPClient -> SndQueue -> ByteString -> m ByteString
 encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
-  paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
+  paddedSize <- asks $ (smpBlockSize -) . reservedMsgSize
   liftError cryptoError $ do
     enc <- C.encrypt encryptKey paddedSize msg
     sig <- C.sign signKey enc
@@ -394,7 +395,7 @@ decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
 
 encryptUnsigned :: AgentMonad m => SMPClient -> C.APublicEncryptKey -> ByteString -> m ByteString
 encryptUnsigned smp encryptKey msg = do
-  paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
+  paddedSize <- asks $ (smpBlockSize -) . reservedMsgSize
   size <- asks $ rsaKeySize . config
   liftError cryptoError $ do
     enc <- C.encrypt encryptKey paddedSize msg

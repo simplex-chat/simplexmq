@@ -86,7 +86,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody, SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, loadTLSServerParams, runTransportServer)
-import Simplex.Messaging.Util (bshow, tryError, unlessM)
+import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
@@ -391,8 +391,8 @@ sendMessage' c connId msg =
           withStore $ \st -> do
             (internalId, internalSndId, previousMsgHash) <- updateSndIds st connId
             let msgBody =
-                  serializeSMPMessage
-                    SMPMessage
+                  serializeASMPMessage
+                    ASMPMessage
                       { senderMsgId = unSndId internalSndId,
                         senderTimestamp = internalTs,
                         previousMsgHash,
@@ -509,8 +509,8 @@ getSMPServer =
 sendControlMessage :: AgentMonad m => AgentClient -> SndQueue -> AMessage -> m ()
 sendControlMessage c sq agentMessage = do
   senderTimestamp <- liftIO getCurrentTime
-  sendAgentMessage c sq . serializeSMPMessage $
-    SMPMessage
+  sendAgentMessage c sq . serializeASMPMessage $
+    ASMPMessage
       { senderMsgId = 0,
         senderTimestamp,
         previousMsgHash = "",
@@ -537,13 +537,15 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
       case cmd of
         SMP.MSG srvMsgId srvTs msgBody' -> do
           -- TODO deduplicate with previously received
-          msgBody <- liftEither . first cryptoError $ C.cbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
+          msgBody <-
+            liftEither . first cryptoError $
+              C.cbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
           msg <- decryptAndVerify rq msgBody
           let msgHash = C.sha256Hash msg
-          case parseSMPMessage msg of
+          case parseASMPMessage msg of
             Left e -> notify (ERR e) >> sendAck c rq
             Right (SMPConfirmation smpConf) -> smpConfirmation smpConf >> sendAck c rq
-            Right SMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
+            Right ASMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
               case agentMessage of
                 HELLO verifyKey _ -> helloMsg verifyKey msgBody >> sendAck c rq
                 REPLY cReq -> replyMsg cReq >> sendAck c rq

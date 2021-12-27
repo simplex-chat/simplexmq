@@ -36,7 +36,7 @@ module Simplex.Messaging.Agent.Protocol
     SAParty (..),
     MsgHash,
     MsgMeta (..),
-    SMPMessage (..),
+    ASMPMessage (..),
     SMPConfMsg (..),
     AMessage (..),
     SMPServer (..),
@@ -73,7 +73,7 @@ module Simplex.Messaging.Agent.Protocol
 
     -- * Parse and serialize
     serializeCommand,
-    serializeSMPMessage,
+    serializeASMPMessage,
     serializeMsgIntegrity,
     serializeSMPQueueUri,
     reservedServerKey, -- TODO remove
@@ -85,7 +85,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeConnReq',
     serializeAgentError,
     commandP,
-    parseSMPMessage,
+    parseASMPMessage,
     smpServerP,
     smpQueueUriP,
     connModeT,
@@ -277,13 +277,13 @@ data SMPConfMsg = SMPConfMsg
   deriving (Show)
 
 -- | SMP message formats.
-data SMPMessage
-  = -- | SMP confirmation
+data ASMPMessage
+  = -- | SMP initial message with key agreement (for per-queue e2e encryption)
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message SMP protocol>)
     SMPConfirmation SMPConfMsg
   | -- | Agent message header and envelope for client messages
     -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents SMP agent protocol>)
-    SMPMessage
+    ASMPMessage
       { -- | sequential ID assigned by the sending agent
         senderMsgId :: AgentMsgId,
         -- | timestamp from the sending agent
@@ -310,13 +310,13 @@ data AMessage where
   deriving (Show)
 
 -- | Parse SMP message.
-parseSMPMessage :: ByteString -> Either AgentErrorType SMPMessage
-parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
+parseASMPMessage :: ByteString -> Either AgentErrorType ASMPMessage
+parseASMPMessage = parse (smpAMessageP <* A.endOfLine) $ AGENT A_MESSAGE
   where
-    smpMessageP :: Parser SMPMessage
-    smpMessageP = A.endOfLine *> smpClientMessageP <|> smpConfirmationP
+    smpAMessageP :: Parser ASMPMessage
+    smpAMessageP = A.endOfLine *> smpClientMessageP <|> smpConfirmationP
 
-    smpConfirmationP :: Parser SMPMessage
+    smpConfirmationP :: Parser ASMPMessage
     smpConfirmationP = SMPConfirmation <$> (v1conf <|> legacyConf)
 
     v1conf = do
@@ -333,9 +333,9 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
 
     connInfoP = A.endOfLine *> A.endOfLine *> binaryBodyP <* A.endOfLine
 
-    smpClientMessageP :: Parser SMPMessage
+    smpClientMessageP :: Parser ASMPMessage
     smpClientMessageP =
-      SMPMessage
+      ASMPMessage
         <$> A.decimal <* A.space
         <*> tsISO8601P <* A.space
         -- TODO previous message hash should become mandatory when we support HELLO and REPLY
@@ -344,11 +344,11 @@ parseSMPMessage = parse (smpMessageP <* A.endOfLine) $ AGENT A_MESSAGE
         <*> agentMessageP
 
 -- | Serialize SMP message.
-serializeSMPMessage :: SMPMessage -> ByteString
-serializeSMPMessage = \case
+serializeASMPMessage :: ASMPMessage -> ByteString
+serializeASMPMessage = \case
   SMPConfirmation conf ->
     smpMessage (smpConfHeader conf) "" (serializeBinary $ connInfo conf) <> "\n"
-  SMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
+  ASMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
     let header = messageHeader senderMsgId senderTimestamp previousMsgHash
         body = serializeAgentMessage agentMessage
      in smpMessage "" header body
