@@ -5,6 +5,8 @@
 module AgentTests.ConnectionRequestTests where
 
 import qualified Crypto.PubKey.RSA as R
+import Data.ByteString (ByteString)
+import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers (parseAll)
@@ -26,11 +28,17 @@ queue =
   SMPQueueUri
     { smpServer = srv,
       senderId = "\223\142z\251",
-      dhPublicKey = Nothing
+      dhPublicKey = testDhKey
     }
 
-testDhKey :: C.PublicKey 'C.X25519
+testDhKey :: C.PublicKeyX25519
 testDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
+
+testDhKeyStr :: ByteString
+testDhKeyStr = C.serializeKeyUri testDhKey
+
+testDhKeyStrUri :: ByteString
+testDhKeyStrUri = urlEncode True testDhKeyStr
 
 appServer :: ConnReqScheme
 appServer = CRSAppServer "simplex.chat" Nothing
@@ -49,23 +57,24 @@ connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
       serializeSMPQueueUri queue {smpServer = srv {port = Nothing}}
-        `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#"
+        `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr
       serializeSMPQueueUri queue
-        `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#"
-      serializeSMPQueueUri queue {dhPublicKey = Just testDhKey}
-        `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#x25519:MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
+        `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
     it "should parse SMP queue URIs" $ do
-      parseAll smpQueueUriP "smp://1234-w==@smp.simplex.im/3456-w==#"
+      parseAll smpQueueUriP ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queue {smpServer = srv {port = Nothing}}
-      parseAll smpQueueUriP "smp://1234-w==@smp.simplex.im:5223/3456-w==#"
+      parseAll smpQueueUriP ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queue
-      parseAll smpQueueUriP "smp://1234-w==@smp.simplex.im:5223/3456-w=="
-        `shouldBe` Right queue
-      parseAll smpQueueUriP ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> C.serializeKeyUri testDhKey)
-        `shouldBe` Right queue {dhPublicKey = Just testDhKey}
     it "should serialize connection requests" $ do
       serializeConnReq connectionRequest
-        `shouldBe` "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23&e2e=rsa%3AMBowDQYJKoZIhvcNAQEBBQADCQAwBgIBAAIBAA%3D%3D"
+        `shouldBe` "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
+        <> testDhKeyStrUri
+        <> "&e2e=rsa%3AMBowDQYJKoZIhvcNAQEBBQADCQAwBgIBAAIBAA%3D%3D"
     it "should parse connection requests" $ do
-      parseAll connReqP "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23&e2e=rsa%3AMBowDQYJKoZIhvcNAQEBBQADCQAwBgIBAAIBAA%3D%3D"
+      parseAll
+        connReqP
+        ( "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
+            <> testDhKeyStrUri
+            <> "&e2e=rsa%3AMBowDQYJKoZIhvcNAQEBBQADCQAwBgIBAAIBAA%3D%3D"
+        )
         `shouldBe` Right connectionRequest

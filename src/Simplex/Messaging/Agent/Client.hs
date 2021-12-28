@@ -240,9 +240,9 @@ newRcvQueue_ a c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
   (dhKey, privDhKey) <- liftIO $ C.generateKeyPair' 0
-  (e2eDhKey, e2ePrivDhKey) <- liftIO $ C.generateKeyPair' 0
+  (e2eDhKey, e2ePrivKey) <- liftIO $ C.generateKeyPair' 0
   logServer "-->" c srv "" "NEW"
-  QIK {rcvId, sndId, rcvPublicDHKey} <-
+  QIK {rcvId, sndId, rcvPublicDhKey} <-
     withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   (encryptKey, decryptKey) <- liftIO $ C.generateEncryptionKeyPair size C.SRSA
@@ -251,15 +251,15 @@ newRcvQueue_ a c srv = do
           { server = srv,
             rcvId,
             rcvPrivateKey,
-            rcvDhSecret = C.dh' rcvPublicDHKey privDhKey,
-            e2ePrivDhKey = Just e2ePrivDhKey,
-            e2eDhSecret = Nothing,
+            rcvDhSecret = C.dh' rcvPublicDhKey privDhKey,
+            e2ePrivKey,
+            e2eShared = Nothing,
             sndId = Just sndId,
             decryptKey,
             verifyKey = Nothing,
             status = New
           }
-  pure (rq, SMPQueueUri srv sndId (Just e2eDhKey), encryptKey)
+  pure (rq, SMPQueueUri srv sndId e2eDhKey, encryptKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
@@ -311,25 +311,25 @@ logSecret bs = encode $ B.take 3 bs
 sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfMsg -> m ()
 sendConfirmation c sq@SndQueue {server, sndId} smpConf =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
-    msg <- mkConfirmation smp
+    msg <- mkConfirmation
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
-    mkConfirmation :: SMPClient -> m MsgBody
-    mkConfirmation smp = encryptAndSign smp sq . serializeASMPMessage $ SMPConfirmation smpConf
+    mkConfirmation :: m MsgBody
+    mkConfirmation = encryptAndSign sq . serializeASMPMessage $ SMPConfirmation smpConf
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
   withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
-    msg <- mkHello smp $ AckMode On
+    msg <- mkHello $ AckMode On
     liftSMP . withRetryInterval ri $ \loop ->
       sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
         SMPServerError AUTH -> loop
         e -> throwE e
   where
-    mkHello :: SMPClient -> AckMode -> m ByteString
-    mkHello smp ackMode = do
+    mkHello :: AckMode -> m ByteString
+    mkHello ackMode = do
       senderTimestamp <- liftIO getCurrentTime
-      encryptAndSign smp sq . serializeASMPMessage $
+      encryptAndSign sq . serializeASMPMessage $
         ASMPMessage
           { senderMsgId = 0,
             senderTimestamp,
@@ -340,13 +340,13 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
 sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> C.APublicEncryptKey -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c SMPQueueUri {smpServer, senderId} encryptKey cReq connInfo = do
   withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
-    msg <- mkInvitation smp
+    msg <- mkInvitation
     liftSMP $ sendSMPMessage smp Nothing senderId msg
   where
-    mkInvitation :: SMPClient -> m ByteString
-    mkInvitation smp = do
+    mkInvitation :: m ByteString
+    mkInvitation = do
       senderTimestamp <- liftIO getCurrentTime
-      encryptUnsigned smp encryptKey . serializeASMPMessage $
+      encryptUnsigned encryptKey . serializeASMPMessage $
         ASMPMessage
           { senderMsgId = 0,
             senderTimestamp,
@@ -377,11 +377,11 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
 sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
 sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
   withLogSMP_ c server sndId "SEND <message>" $ \smp -> do
-    msg' <- encryptAndSign smp sq msg
+    msg' <- encryptAndSign sq msg
     liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg'
 
-encryptAndSign :: AgentMonad m => SMPClient -> SndQueue -> ByteString -> m ByteString
-encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
+encryptAndSign :: AgentMonad m => SndQueue -> ByteString -> m ByteString
+encryptAndSign SndQueue {encryptKey, signKey} msg = do
   paddedSize <- asks $ (smpBlockSize -) . reservedMsgSize
   liftError cryptoError $ do
     enc <- C.encrypt encryptKey paddedSize msg
@@ -393,8 +393,8 @@ decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
   verifyMessage verifyKey msg
     >>= liftError cryptoError . C.decrypt decryptKey
 
-encryptUnsigned :: AgentMonad m => SMPClient -> C.APublicEncryptKey -> ByteString -> m ByteString
-encryptUnsigned smp encryptKey msg = do
+encryptUnsigned :: AgentMonad m => C.APublicEncryptKey -> ByteString -> m ByteString
+encryptUnsigned encryptKey msg = do
   paddedSize <- asks $ (smpBlockSize -) . reservedMsgSize
   size <- asks $ rsaKeySize . config
   liftError cryptoError $ do

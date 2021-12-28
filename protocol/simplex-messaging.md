@@ -117,13 +117,22 @@ The SMP queue URIs MUST include server identity, queue hostname, an optional por
 The [ABNF][8] syntax of the queue URI is:
 
 ```abnf
-queueURI = %s"smp://" smpServer "/" queueId ["#"]
-smpServer = serverIdentity "@" srvHost [":" port] 
+queueURI = %s"smp://" smpServer "/" queueId "#" recipientDhPublicKey
+smpServer = serverIdentity "@" srvHost [":" port]
 srvHost = <hostname> ; RFC1123, RFC5891
 port = 1*DIGIT
 serverIdentity = base64url
 queueId = base64url
 base64url = <base64url encoded binary> ; RFC4648, section 5
+recipientDhPublicKey = dhPublicKey
+dhPublicKey = encryptionScheme ":" x509UrlEncoded
+; the recipient's key for DH exchange to derive the secret
+; that the sender will use to encrypt delivered messages
+
+encryptionScheme = %s"x25519"
+; x25519 scheme means [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
+
+x509UrlEncoded = <base64url X509 key encoding>
 ```
 
 `hostname` can be IP address or domain name, as defined in RFC 1123, section 2.1.

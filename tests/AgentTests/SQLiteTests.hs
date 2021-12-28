@@ -161,7 +161,13 @@ testPublicEncryptKey = C.APublicEncryptKey C.SRSA testPublicKey
 testPublicKey :: C.PublicKey 'C.RSA
 testPublicKey = C.PublicKeyRSA $ R.PublicKey 1 2 3
 
-testDhSecret :: C.DhSecret 'C.X25519
+testPubDhKey :: C.PublicKeyX25519
+testPubDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
+
+testPrivDhKey :: C.PrivateKeyX25519
+testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk"
+
+testDhSecret :: C.DhSecretX25519
 testDhSecret = "01234567890123456789012345678901"
 
 testPrivateKey :: C.PrivateKey 'C.RSA
@@ -189,8 +195,8 @@ rcvQueue1 =
       rcvId = "1234",
       rcvPrivateKey = testPrivateSignKey,
       rcvDhSecret = testDhSecret,
-      e2ePrivDhKey = Nothing,
-      e2eDhSecret = Nothing,
+      e2ePrivKey = testPrivDhKey,
+      e2eShared = Nothing,
       sndId = Just "2345",
       decryptKey = testPrivateDecryptKey,
       verifyKey = Nothing,
@@ -203,8 +209,8 @@ sndQueue1 =
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
       sndPrivateKey = testPrivateSignKey,
-      e2ePubDhKey = Nothing,
-      e2eDhSecret = Nothing,
+      e2ePubKey = testPubDhKey,
+      e2eDhSecret = testDhSecret,
       encryptKey = testPublicEncryptKey,
       signKey = testPrivateSignKey,
       status = New
@@ -345,8 +351,8 @@ testUpgradeRcvConnToDuplex =
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               sndId = "2345",
               sndPrivateKey = testPrivateSignKey,
-              e2ePubDhKey = Nothing,
-              e2eDhSecret = Nothing,
+              e2ePubKey = testPubDhKey,
+              e2eDhSecret = testDhSecret,
               encryptKey = testPublicEncryptKey,
               signKey = testPrivateSignKey,
               status = New
@@ -368,8 +374,8 @@ testUpgradeSndConnToDuplex =
               rcvId = "3456",
               rcvPrivateKey = testPrivateSignKey,
               rcvDhSecret = testDhSecret,
-              e2ePrivDhKey = Nothing,
-              e2eDhSecret = Nothing,
+              e2ePrivKey = testPrivDhKey,
+              e2eShared = Nothing,
               sndId = Just "4567",
               decryptKey = testPrivateDecryptKey,
               verifyKey = Nothing,

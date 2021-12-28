@@ -62,7 +62,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
-import Data.Bifunctor (bimap, first, second)
+import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.))
@@ -86,7 +86,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (MsgBody, SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, loadTLSServerParams, runTransportServer)
-import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
+import Simplex.Messaging.Util (bshow, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
@@ -327,10 +327,9 @@ rejectContact' _ contactConnId invId =
   withStore $ \st -> deleteInvitation st contactConnId invId
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SMPConfMsg -> m ()
-processConfirmation c rq@RcvQueue {e2ePrivDhKey} SMPConfMsg {senderKey, e2ePubDhKey} = do
-  withStore $ \st -> case C.dh' <$> e2ePubDhKey <*> e2ePrivDhKey of
-    Just dhSecret -> setRcvQueueConfirmedE2E st rq dhSecret
-    Nothing -> setRcvQueueStatus st rq Confirmed
+processConfirmation c rq@RcvQueue {e2ePrivKey} SMPConfMsg {senderKey, e2ePubKey} = do
+  let dhSecret = C.dh' e2ePubKey e2ePrivKey
+  withStore $ \st -> setRcvQueueConfirmedE2E st rq e2ePubKey dhSecret
   secureQueue c rq senderKey
   withStore $ \st -> setRcvQueueStatus st rq Secured
 
@@ -540,6 +539,8 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           msgBody <-
             liftEither . first cryptoError $
               C.cbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
+          -- SMPEncMessage (SMPPubHeader v e2ePubDhKey) encMsg <-
+
           msg <- decryptAndVerify rq msgBody
           let msgHash = C.sha256Hash msg
           case parseASMPMessage msg of
@@ -685,23 +686,16 @@ newSndQueue_ a (SMPQueueUri smpServer senderId rcvE2ePubDhKey) encryptKey cInfo 
   size <- asks $ rsaKeySize . config
   (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
   (verifyKey, signKey) <- liftIO $ C.generateSignatureKeyPair size C.SRSA
-  (e2ePubDhKey, e2eDhSecret) <- liftIO $ case rcvE2ePubDhKey of
-    Just k -> bimap Just Just <$> dhAgreement k
-    Nothing -> pure (Nothing, Nothing)
+  (e2ePubKey, e2ePrivKey) <- liftIO $ C.generateKeyPair' 0
   let sndQueue =
         SndQueue
           { server = smpServer,
             sndId = senderId,
             sndPrivateKey,
-            e2ePubDhKey,
-            e2eDhSecret,
+            e2ePubKey,
+            e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
             encryptKey,
             signKey,
             status = New
           }
-  pure (sndQueue, SMPConfMsg senderKey e2ePubDhKey cInfo, verifyKey)
-  where
-    dhAgreement :: C.PublicKey 'C.X25519 -> IO (C.PublicKey 'C.X25519, C.DhSecret 'C.X25519)
-    dhAgreement k = do
-      (k', pk') <- liftIO $ C.generateKeyPair' 0
-      pure (k', C.dh' k pk')
+  pure (sndQueue, SMPConfMsg senderKey e2ePubKey cInfo, verifyKey)

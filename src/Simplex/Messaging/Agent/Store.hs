@@ -43,7 +43,7 @@ class Monad m => MonadAgentStore s m where
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueActive :: s -> RcvQueue -> C.APublicVerifyKey -> m ()
-  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecret 'C.X25519 -> m ()
+  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.PublicKeyX25519 -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Confirmations
@@ -82,9 +82,9 @@ data RcvQueue = RcvQueue
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
     rcvDhSecret :: RcvDhSecret,
     -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
-    e2ePrivDhKey :: Maybe (C.PrivateKey 'C.X25519),
-    -- | shared DH secret agreed for simple per-queue e2e encryption
-    e2eDhSecret :: Maybe RcvDhSecret,
+    e2ePrivKey :: C.PrivateKeyX25519,
+    -- | public sender's DH key and agreed shared DH secret for simple per-queue e2e
+    e2eShared :: Maybe (C.PublicKeyX25519, C.DhSecretX25519),
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
     -- | TODO keys used for E2E encryption - these will change with double ratchet
@@ -102,9 +102,9 @@ data SndQueue = SndQueue
     -- | key used by the sender to sign transmissions
     sndPrivateKey :: SndPrivateSignKey,
     -- | public DH key that was (or needs to be) sent to the recipient in SMP confirmation (to agree simple per-queue e2e)
-    e2ePubDhKey :: Maybe (C.PublicKey 'C.X25519),
+    e2ePubKey :: C.PublicKeyX25519,
     -- | shared DH secret agreed for simple per-queue e2e encryption
-    e2eDhSecret :: Maybe RcvDhSecret,
+    e2eDhSecret :: C.DhSecretX25519,
     -- | TODO keys used for E2E encryption - these will change with double ratchet
     encryptKey :: C.APublicEncryptKey,
     signKey :: C.APrivateSignKey,

@@ -23,9 +23,9 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
-import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
+import Network.Transport.Internal (encodeWord16, encodeWord32)
 import Simplex.Messaging.Crypto
-import Simplex.Messaging.Parsers (parseAll, parseE, parseE', word16P, word32P)
+import Simplex.Messaging.Parsers (parseE, parseE', word16P, word32P)
 import Simplex.Messaging.Util (tryE)
 
 data Ratchet a = Ratchet

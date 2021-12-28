@@ -269,8 +269,8 @@ data MsgMeta = MsgMeta
 data SMPConfMsg = SMPConfMsg
   { -- | sender's public key to use for authentication of sender's commands at the recepient's server
     senderKey :: SndPublicVerifyKey,
-    -- | V1: sender's DH public key for simple per-queue e2e encryption
-    e2ePubDhKey :: Maybe (C.PublicKey 'C.X25519),
+    -- | sender's DH public key for simple per-queue e2e encryption
+    e2ePubKey :: C.PublicKeyX25519,
     -- | sender's information to be associated with the connection, e.g. sender's profile information
     connInfo :: ConnInfo
   }
@@ -317,19 +317,13 @@ parseASMPMessage = parse (smpAMessageP <* A.endOfLine) $ AGENT A_MESSAGE
     smpAMessageP = A.endOfLine *> smpClientMessageP <|> smpConfirmationP
 
     smpConfirmationP :: Parser ASMPMessage
-    smpConfirmationP = SMPConfirmation <$> (v1conf <|> legacyConf)
-
-    v1conf = do
-      _ <- "V=1"
-      senderKey <- " KEY=" *> C.strKeyP
-      e2ePubDhKey <- Just <$> (" E2EDH=" *> C.strKeyP)
-      connInfo <- connInfoP
-      pure SMPConfMsg {senderKey, e2ePubDhKey, connInfo}
-
-    legacyConf = do
-      senderKey <- "KEY " *> C.strKeyP
-      connInfo <- connInfoP
-      pure SMPConfMsg {senderKey, e2ePubDhKey = Nothing, connInfo}
+    smpConfirmationP =
+      SMPConfirmation <$> do
+        _ <- "V=1"
+        senderKey <- " KEY=" *> C.strKeyP
+        e2ePubKey <- " E2EDH=" *> C.strKeyP
+        connInfo <- connInfoP
+        pure SMPConfMsg {senderKey, e2ePubKey, connInfo}
 
     connInfoP = A.endOfLine *> A.endOfLine *> binaryBodyP <* A.endOfLine
 
@@ -355,9 +349,8 @@ serializeASMPMessage = \case
   where
     messageHeader msgId ts prevMsgHash =
       B.unwords [bshow msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
-    smpConfHeader (SMPConfMsg sKey e2eDhKey_ _) = case e2eDhKey_ of
-      Nothing -> "KEY " <> C.serializeKey sKey
-      Just e2eDhKey -> "V=1 KEY=" <> C.serializeKey sKey <> " E2EDH=" <> C.serializeKey e2eDhKey
+    smpConfHeader (SMPConfMsg sKey e2eDhKey _) =
+      "V=1 KEY=" <> C.serializeKey sKey <> " E2EDH=" <> C.serializeKey e2eDhKey
     smpMessage smpHeader aHeader aBody = B.intercalate "\n" [smpHeader, aHeader, aBody, ""]
 
 agentMessageP :: Parser AMessage
@@ -391,14 +384,12 @@ serializeAgentMessage = \case
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSMPQueueUri :: SMPQueueUri -> ByteString
 serializeSMPQueueUri (SMPQueueUri srv qId dhKey) =
-  serializeServerUri srv <> "/" <> U.encode qId <> "#" <> maybe "" C.serializeKeyUri dhKey
+  serializeServerUri srv <> "/" <> U.encode qId <> "#" <> C.serializeKeyUri dhKey
 
 -- | SMP queue information parser.
 smpQueueUriP :: Parser SMPQueueUri
 smpQueueUriP =
-  SMPQueueUri <$> smpServerUriP <* A.char '/' <*> base64UriP <*> dhKey
-  where
-    dhKey = A.char '#' *> optional C.strKeyUriP <|> pure Nothing
+  SMPQueueUri <$> smpServerUriP <* A.char '/' <*> base64UriP <* A.char '#' <*> C.strKeyUriP
 
 reservedServerKey :: C.APublicVerifyKey
 reservedServerKey = C.APublicVerifyKey C.SRSA (C.PublicKeyRSA $ R.PublicKey 1 0 0)
@@ -525,7 +516,7 @@ newtype AckMode = AckMode OnOff deriving (Eq, Show)
 data SMPQueueUri = SMPQueueUri
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    dhPublicKey :: Maybe (C.PublicKey 'C.X25519)
+    dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)
 

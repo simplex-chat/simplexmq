@@ -101,7 +101,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Transport.Internal (encodeWord16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), smpBlockSize, tGetBlock, tPutBlock)
+import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
 import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
@@ -243,7 +243,7 @@ data SMPEncMessage = SMPEncMessage SMPPubHeader ByteString
 
 data SMPPubHeader = SMPPubHeader
   { sphVersion :: Word16,
-    sphE2ePubDhKey :: C.PublicKey 'C.X25519
+    sphE2ePubDhKey :: C.PublicKeyX25519
   }
 
 serializeSMPPubHeader :: SMPPubHeader -> ByteString
@@ -295,7 +295,7 @@ instance IsString CorrId where
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
     sndId :: SenderId,
-    rcvPublicDHKey :: RcvPublicDhKey
+    rcvPublicDhKey :: RcvPublicDhKey
   }
   deriving (Eq, Show)
 
@@ -308,10 +308,10 @@ type RcvPrivateSignKey = C.APrivateSignKey
 type RcvPublicVerifyKey = C.APublicVerifyKey
 
 -- | Public key used for DH exchange to encrypt message bodies from server to recipient
-type RcvPublicDhKey = C.PublicKey C.X25519
+type RcvPublicDhKey = C.PublicKeyX25519
 
 -- | DH Secret used to encrypt message bodies from server to recipient
-type RcvDhSecret = C.DhSecret C.X25519
+type RcvDhSecret = C.DhSecretX25519
 
 -- | Sender's private key used by the recipient to authorize (sign) SMP commands.
 --

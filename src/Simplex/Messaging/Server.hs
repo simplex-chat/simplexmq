@@ -256,9 +256,9 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
       where
         createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> m BrokerTransmission
         createQueue st recipientKey dhKey = checkKeySize recipientKey $ do
-          (rcvPublicDHKey, privDhKey) <- liftIO $ C.generateKeyPair' 0
+          (rcvPublicDhKey, privDhKey) <- liftIO $ C.generateKeyPair' 0
           let rcvDhSecret = C.dh' dhKey privDhKey
-              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDHKey}
+              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
               qRec (recipientId, senderId) =
                 QueueRec
                   { recipientId,

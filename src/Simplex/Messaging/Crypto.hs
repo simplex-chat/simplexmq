@@ -37,6 +37,8 @@ module Simplex.Messaging.Crypto
     DhAlgorithm,
     PrivateKey (..),
     PublicKey (..),
+    PrivateKeyX25519,
+    PublicKeyX25519,
     APrivateKey (..),
     APublicKey (..),
     APrivateSignKey (..),
@@ -49,6 +51,7 @@ module Simplex.Messaging.Crypto
     CryptoPrivateKey (..),
     KeyPair,
     DhSecret (..),
+    DhSecretX25519,
     ADhSecret (..),
     CryptoDhSecret (..),
     KeyHash (..),
@@ -248,6 +251,8 @@ instance Eq APublicKey where
 
 deriving instance Show APublicKey
 
+type PublicKeyX25519 = PublicKey X25519
+
 -- | GADT for private keys.
 data PrivateKey (a :: Algorithm) where
   PrivateKeyRSA :: {privateKeyRSA :: R.PrivateKey} -> PrivateKey RSA
@@ -271,6 +276,8 @@ instance Eq APrivateKey where
     Nothing -> False
 
 deriving instance Show APrivateKey
+
+type PrivateKeyX25519 = PrivateKey X25519
 
 class AlgorithmPrefix k where
   algorithmPrefix :: k -> ByteString
@@ -415,6 +422,8 @@ data ADhSecret
   = forall a.
     (AlgorithmI a, DhAlgorithm a) =>
     ADhSecret (SAlgorithm a) (DhSecret a)
+
+type DhSecretX25519 = DhSecret X25519
 
 type family DhAlgorithm (a :: Algorithm) :: Constraint where
   DhAlgorithm X25519 = ()
