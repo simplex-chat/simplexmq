@@ -47,7 +47,7 @@ module Simplex.Messaging.Crypto
     APublicEncryptKey (..),
     APrivateDhKey (..),
     APublicDhKey (..),
-    CryptoKey (..),
+    CryptoPublicKey (..),
     CryptoPrivateKey (..),
     KeyPair,
     DhSecret (..),
@@ -63,8 +63,18 @@ module Simplex.Messaging.Crypto
     privateToX509,
 
     -- * key encoding/decoding
+    serializePubKey,
+    serializePubKey',
+    serializePubKeyUri,
+    serializePubKeyUri',
+    strPubKeyP,
+    strPubKeyUriP,
+    encodeLenKey',
     encodeLenKey,
     binaryLenKeyP,
+    encodePubKey,
+    encodePubKey',
+    binaryPubKeyP,
 
     -- * E2E hybrid encryption scheme
     E2EEncryptionVersion,
@@ -476,52 +486,85 @@ dhSecret' (ADhSecret a s) = case testEquality a $ sAlgorithm @a of
   Just Refl -> Right s
   _ -> Left "bad DH secret algorithm"
 
-encodeLenKey :: CryptoKey k => k -> ByteString
-encodeLenKey k =
-  let s = encodeKey k
-      len = fromIntegral $ B.length s
-   in encodeWord16 len <> s
-{-# INLINE encodeLenKey #-}
-
-binaryLenKeyP :: CryptoKey k => Parser k
-binaryLenKeyP = do
-  len <- fromIntegral <$> word16P
-  parseAll binaryKeyP <$?> A.take len
-
 -- | Class for all key types
-class CryptoKey k where
-  keySize :: k -> Int
+class CryptoPublicKey k where
+  aPubKey :: k -> APublicKey
+  pubKey :: APublicKey -> Either String k
 
+  -- TODO remove once RSA is removed
   validKeySize :: k -> Bool
 
-  -- | base64 X509 key encoding with algorithm prefix
-  serializeKey :: k -> ByteString
-
-  -- | base64url X509 key encoding with algorithm prefix
-  serializeKeyUri :: k -> ByteString
-
-  -- | binary X509 key encoding
-  encodeKey :: k -> ByteString
-
-  -- | base64 X509 (with algorithm prefix) key parser
-  strKeyP :: Parser k
-
-  -- | base64url X509 (with algorithm prefix) key parser
-  strKeyUriP :: Parser k
-
-  -- | binary X509 key parser
-  binaryKeyP :: Parser k
-
 -- | X509 encoding of any public key.
-instance CryptoKey APublicKey where
-  keySize (APublicKey _ k) = keySize k
+instance CryptoPublicKey APublicKey where
+  aPubKey = id
+  pubKey = Right
   validKeySize (APublicKey _ k) = validKeySize k
-  serializeKey (APublicKey _ k) = serializeKey k
-  serializeKeyUri (APublicKey _ k) = serializeKeyUri k
-  encodeKey (APublicKey _ k) = encodeKey k
-  strKeyP = strPublicKeyP_ base64P
-  strKeyUriP = strPublicKeyP_ base64UriP
-  binaryKeyP = decodePubKey <$?> A.takeByteString
+
+-- | X509 encoding of signature public key.
+instance CryptoPublicKey APublicVerifyKey where
+  aPubKey (APublicVerifyKey a k) = APublicKey a k
+  pubKey (APublicKey a k) = case signatureAlgorithm a of
+    Just Dict -> Right $ APublicVerifyKey a k
+    _ -> Left "key does not support signature algorithms"
+  validKeySize (APublicVerifyKey _ k) = validKeySize k
+
+-- | X509 encoding of encryption public key.
+instance CryptoPublicKey APublicEncryptKey where
+  aPubKey (APublicEncryptKey a k) = APublicKey a k
+  pubKey (APublicKey a k) = case encryptionAlgorithm a of
+    Just Dict -> Right $ APublicEncryptKey a k
+    _ -> Left "key does not support encryption algorithms"
+  validKeySize (APublicEncryptKey _ k) = validKeySize k
+
+-- | X509 encoding of DH public key.
+instance CryptoPublicKey APublicDhKey where
+  aPubKey (APublicDhKey a k) = APublicKey a k
+  pubKey (APublicKey a k) = case dhAlgorithm a of
+    Just Dict -> Right $ APublicDhKey a k
+    _ -> Left "key does not support DH algorithms"
+  validKeySize (APublicDhKey _ k) = validKeySize k
+
+-- | X509 encoding of 'PublicKey'.
+instance forall a. AlgorithmI a => CryptoPublicKey (PublicKey a) where
+  aPubKey k = APublicKey (sAlgorithm @a) k
+  pubKey (APublicKey a k) = case testEquality a $ sAlgorithm @a of
+    Just Refl -> Right k
+    _ -> Left "bad key algorithm"
+  validKeySize = \case
+    PublicKeyRSA k -> validRSAKeySize $ R.public_size k
+    _ -> True
+
+-- | base64 X509 key encoding with algorithm prefix
+serializePubKey :: CryptoPublicKey k => k -> ByteString
+serializePubKey k = case aPubKey k of APublicKey _ k' -> serializePubKey' k'
+{-# INLINE serializePubKey #-}
+
+-- | base64url X509 key encoding with algorithm prefix
+serializePubKeyUri :: CryptoPublicKey k => k -> ByteString
+serializePubKeyUri k = case aPubKey k of APublicKey _ k' -> serializePubKeyUri' k'
+{-# INLINE serializePubKeyUri #-}
+
+serializePubKey' :: AlgorithmI a => PublicKey a -> ByteString
+serializePubKey' k = algorithmPrefix k <> ":" <> encode (encodePubKey' k)
+
+serializePubKeyUri' :: AlgorithmI a => PublicKey a -> ByteString
+serializePubKeyUri' k = algorithmPrefix k <> ":" <> U.encode (encodePubKey' k)
+
+-- | base64 X509 (with algorithm prefix) key parser
+strPubKeyP :: CryptoPublicKey k => Parser k
+strPubKeyP = pubKey <$?> aStrPubKeyP
+{-# INLINE strPubKeyP #-}
+
+-- | base64url X509 (with algorithm prefix) key parser
+strPubKeyUriP :: CryptoPublicKey k => Parser k
+strPubKeyUriP = pubKey <$?> aStrPubKeyUriP
+{-# INLINE strPubKeyUriP #-}
+
+aStrPubKeyP :: Parser APublicKey
+aStrPubKeyP = strPublicKeyP_ base64P
+
+aStrPubKeyUriP :: Parser APublicKey
+aStrPubKeyUriP = strPublicKeyP_ base64UriP
 
 strPublicKeyP_ :: Parser ByteString -> Parser APublicKey
 strPublicKeyP_ b64P = do
@@ -531,145 +574,81 @@ strPublicKeyP_ b64P = do
     Just Refl -> pure k
     _ -> fail $ "public key algorithm " <> show a <> " does not match prefix"
 
--- | X509 encoding of signature public key.
-instance CryptoKey APublicVerifyKey where
-  keySize (APublicVerifyKey _ k) = keySize k
-  validKeySize (APublicVerifyKey _ k) = validKeySize k
-  serializeKey (APublicVerifyKey _ k) = serializeKey k
-  serializeKeyUri (APublicVerifyKey _ k) = serializeKeyUri k
-  encodeKey (APublicVerifyKey _ k) = encodeKey k
-  strKeyP = pubVerifyKey <$?> strKeyP
-  strKeyUriP = pubVerifyKey <$?> strKeyUriP
-  binaryKeyP = pubVerifyKey <$?> binaryKeyP
+encodeLenKey :: CryptoPublicKey k => k -> ByteString
+encodeLenKey k = case aPubKey k of APublicKey _ k' -> encodeLenKey' k'
+{-# INLINE encodeLenKey #-}
 
--- | X509 encoding of encryption public key.
-instance CryptoKey APublicEncryptKey where
-  keySize (APublicEncryptKey _ k) = keySize k
-  validKeySize (APublicEncryptKey _ k) = validKeySize k
-  serializeKey (APublicEncryptKey _ k) = serializeKey k
-  serializeKeyUri (APublicEncryptKey _ k) = serializeKeyUri k
-  encodeKey (APublicEncryptKey _ k) = encodeKey k
-  strKeyP = pubEncryptKey <$?> strKeyP
-  strKeyUriP = pubEncryptKey <$?> strKeyUriP
-  binaryKeyP = pubEncryptKey <$?> binaryKeyP
+-- | binary X509 key encoding with 2-bytes length prefix
+encodeLenKey' :: PublicKey a -> ByteString
+encodeLenKey' k =
+  let s = encodePubKey' k
+      len = fromIntegral $ B.length s
+   in encodeWord16 len <> s
+{-# INLINE encodeLenKey' #-}
 
--- | X509 encoding of DH public key.
-instance CryptoKey APublicDhKey where
-  keySize (APublicDhKey _ k) = keySize k
-  validKeySize (APublicDhKey _ k) = validKeySize k
-  serializeKey (APublicDhKey _ k) = serializeKey k
-  serializeKeyUri (APublicDhKey _ k) = serializeKeyUri k
-  encodeKey (APublicDhKey _ k) = encodeKey k
-  strKeyP = pubDhKey <$?> strKeyP
-  strKeyUriP = pubDhKey <$?> strKeyUriP
-  binaryKeyP = pubDhKey <$?> binaryKeyP
+-- | binary X509 key parser with 2-bytes length prefix
+binaryLenKeyP :: CryptoPublicKey k => Parser k
+binaryLenKeyP = do
+  len <- fromIntegral <$> word16P
+  parseAll binaryPubKeyP <$?> A.take len
 
--- | X509 encoding of 'PublicKey'.
-instance forall a. AlgorithmI a => CryptoKey (PublicKey a) where
-  keySize = \case
-    PublicKeyRSA k -> R.public_size k
-    PublicKeyEd25519 _ -> Ed25519.publicKeySize
-    PublicKeyEd448 _ -> Ed448.publicKeySize
-    PublicKeyX25519 _ -> x25519_size
-    PublicKeyX448 _ -> x448_size
-  validKeySize = \case
-    PublicKeyRSA k -> validRSAKeySize $ R.public_size k
-    _ -> True
-  serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
-  serializeKeyUri k = algorithmPrefix k <> ":" <> U.encode (encodeKey k)
-  encodeKey = encodeASNObj . publicToX509
-  strKeyP = pubKey' <$?> strKeyP
-  strKeyUriP = pubKey' <$?> strKeyUriP
-  binaryKeyP = pubKey' <$?> binaryKeyP
+encodePubKey :: CryptoPublicKey pk => pk -> ByteString
+encodePubKey k = case aPubKey k of APublicKey _ k' -> encodePubKey' k'
+{-# INLINE encodePubKey #-}
 
--- | X509 encoding of any private key.
-instance CryptoKey APrivateKey where
-  keySize (APrivateKey _ k) = keySize k
-  validKeySize (APrivateKey _ k) = validKeySize k
-  serializeKey (APrivateKey _ k) = serializeKey k
-  serializeKeyUri (APrivateKey _ k) = serializeKeyUri k
-  encodeKey (APrivateKey _ k) = encodeKey k
-  strKeyP = strPrivateKeyP_ base64P
-  strKeyUriP = strPrivateKeyP_ base64UriP
-  binaryKeyP = decodePrivKey <$?> A.takeByteString
+encodePubKey' :: PublicKey a -> ByteString
+encodePubKey' = encodeASNObj . publicToX509
 
-strPrivateKeyP_ :: Parser ByteString -> Parser APrivateKey
-strPrivateKeyP_ b64P = do
-  Alg a <- algP <* A.char ':'
-  k@(APrivateKey a' _) <- decodePrivKey <$?> b64P
-  case testEquality a a' of
-    Just Refl -> pure k
-    _ -> fail $ "private key algorithm " <> show a <> " does not match prefix"
+binaryPubKeyP :: CryptoPublicKey pk => Parser pk
+binaryPubKeyP = pubKey <$?> aBinaryPubKeyP
+{-# INLINE binaryPubKeyP #-}
 
--- | X509 encoding of signature private key.
-instance CryptoKey APrivateSignKey where
-  keySize (APrivateSignKey _ k) = keySize k
-  validKeySize (APrivateSignKey _ k) = validKeySize k
-  serializeKey (APrivateSignKey _ k) = serializeKey k
-  serializeKeyUri (APrivateSignKey _ k) = serializeKeyUri k
-  encodeKey (APrivateSignKey _ k) = encodeKey k
-  strKeyP = privSignKey <$?> strKeyP
-  strKeyUriP = privSignKey <$?> strKeyUriP
-  binaryKeyP = privSignKey <$?> binaryKeyP
-
--- | X509 encoding of encryption private key.
-instance CryptoKey APrivateDecryptKey where
-  keySize (APrivateDecryptKey _ k) = keySize k
-  validKeySize (APrivateDecryptKey _ k) = validKeySize k
-  serializeKey (APrivateDecryptKey _ k) = serializeKey k
-  serializeKeyUri (APrivateDecryptKey _ k) = serializeKeyUri k
-  encodeKey (APrivateDecryptKey _ k) = encodeKey k
-  strKeyP = privDecryptKey <$?> strKeyP
-  strKeyUriP = privDecryptKey <$?> strKeyUriP
-  binaryKeyP = privDecryptKey <$?> binaryKeyP
-
--- | X509 encoding of encryption private key.
-instance CryptoKey APrivateDhKey where
-  keySize (APrivateDhKey _ k) = keySize k
-  validKeySize (APrivateDhKey _ k) = validKeySize k
-  serializeKey (APrivateDhKey _ k) = serializeKey k
-  serializeKeyUri (APrivateDhKey _ k) = serializeKeyUri k
-  encodeKey (APrivateDhKey _ k) = encodeKey k
-  strKeyP = privDhKey <$?> strKeyP
-  strKeyUriP = privDhKey <$?> strKeyUriP
-  binaryKeyP = privDhKey <$?> binaryKeyP
-
--- | X509 encoding of 'PrivateKey'.
-instance AlgorithmI a => CryptoKey (PrivateKey a) where
-  keySize = \case
-    PrivateKeyRSA k -> rsaPrivateKeySize k
-    PrivateKeyEd25519 _ _ -> Ed25519.secretKeySize
-    PrivateKeyEd448 _ _ -> Ed448.secretKeySize
-    PrivateKeyX25519 _ -> x25519_size
-    PrivateKeyX448 _ -> x448_size
-  validKeySize = \case
-    PrivateKeyRSA k -> validRSAKeySize $ rsaPrivateKeySize k
-    _ -> True
-  serializeKey k = algorithmPrefix k <> ":" <> encode (encodeKey k)
-  serializeKeyUri k = algorithmPrefix k <> ":" <> U.encode (encodeKey k)
-  encodeKey = encodeASNObj . privateToX509
-  strKeyP = privKey' <$?> strKeyP
-  strKeyUriP = privKey' <$?> strKeyUriP
-  binaryKeyP = privKey' <$?> binaryKeyP
+aBinaryPubKeyP :: Parser APublicKey
+aBinaryPubKeyP = decodePubKey <$?> A.takeByteString
 
 type family PublicKeyType pk where
   PublicKeyType APrivateKey = APublicKey
   PublicKeyType APrivateSignKey = APublicVerifyKey
   PublicKeyType APrivateDecryptKey = APublicEncryptKey
+  PublicKeyType APrivateDhKey = APublicDhKey
   PublicKeyType (PrivateKey a) = PublicKey a
 
-class CryptoPrivateKey pk where publicKey :: pk -> PublicKeyType pk
+class CryptoPrivateKey pk where
+  publicKey :: pk -> PublicKeyType pk
+  aPrivKey :: pk -> APrivateKey
+  privKey :: APrivateKey -> Either String pk
 
 instance CryptoPrivateKey APrivateKey where
   publicKey (APrivateKey a k) = APublicKey a $ publicKey k
+  aPrivKey = id
+  privKey = Right
 
 instance CryptoPrivateKey APrivateSignKey where
   publicKey (APrivateSignKey a k) = APublicVerifyKey a $ publicKey k
+  aPrivKey (APrivateSignKey a k) = APrivateKey a k
+  privKey (APrivateKey a k) = case signatureAlgorithm a of
+    Just Dict -> Right $ APrivateSignKey a k
+    _ -> Left "key does not support signature algorithms"
 
 instance CryptoPrivateKey APrivateDecryptKey where
   publicKey (APrivateDecryptKey a k) = APublicEncryptKey a $ publicKey k
+  aPrivKey (APrivateDecryptKey a k) = APrivateKey a k
+  privKey (APrivateKey a k) = case encryptionAlgorithm a of
+    Just Dict -> Right $ APrivateDecryptKey a k
+    _ -> Left "key does not support encryption algorithms"
 
-instance CryptoPrivateKey (PrivateKey a) where
+instance CryptoPrivateKey APrivateDhKey where
+  publicKey (APrivateDhKey a k) = APublicDhKey a $ publicKey k
+  aPrivKey (APrivateDhKey a k) = APrivateKey a k
+  privKey (APrivateKey a k) = case dhAlgorithm a of
+    Just Dict -> Right $ APrivateDhKey a k
+    _ -> Left "key does not support DH algorithm"
+
+instance AlgorithmI a => CryptoPrivateKey (PrivateKey a) where
+  aPrivKey k = APrivateKey (sAlgorithm @a) k
+  privKey (APrivateKey a k) = case testEquality a $ sAlgorithm @a of
+    Just Refl -> Right k
+    _ -> Left "bad key algorithm"
   publicKey = \case
     PrivateKeyRSA k -> PublicKeyRSA $ R.private_pub k
     PrivateKeyEd25519 _ k -> PublicKeyEd25519 k
@@ -677,11 +656,31 @@ instance CryptoPrivateKey (PrivateKey a) where
     PrivateKeyX25519 k -> PublicKeyX25519 $ X25519.toPublic k
     PrivateKeyX448 k -> PublicKeyX448 $ X448.toPublic k
 
+privKeySize' :: PrivateKey a -> Int
+privKeySize' = \case
+  PrivateKeyRSA k -> rsaPrivateKeySize k
+  PrivateKeyEd25519 _ _ -> Ed25519.secretKeySize
+  PrivateKeyEd448 _ _ -> Ed448.secretKeySize
+  PrivateKeyX25519 _ -> x25519_size
+  PrivateKeyX448 _ -> x448_size
+
+encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
+encodePrivKey k = case aPrivKey k of APrivateKey _ k' -> encodePrivKey' k'
+
+encodePrivKey' :: PrivateKey a -> ByteString
+encodePrivKey' = encodeASNObj . privateToX509
+
+binaryPrivKeyP :: CryptoPrivateKey pk => Parser pk
+binaryPrivKeyP = privKey <$?> aBinaryPrivKeyP
+
+aBinaryPrivKeyP :: Parser APrivateKey
+aBinaryPrivKeyP = decodePrivKey <$?> A.takeByteString
+
 instance AlgorithmI a => IsString (PrivateKey a) where
-  fromString = parseString $ decode >=> decodePrivKey >=> privKey'
+  fromString = parseString $ decode >=> decodePrivKey >=> privKey
 
 instance AlgorithmI a => IsString (PublicKey a) where
-  fromString = parseString $ decode >=> decodePubKey >=> pubKey'
+  fromString = parseString $ decode >=> decodePubKey >=> pubKey
 
 -- | Tuple of RSA 'PublicKey' and 'PrivateKey'.
 type KeyPair a = (PublicKey a, PrivateKey a)
@@ -732,39 +731,39 @@ generateKeyPair' size = case sAlgorithm @a of
       let k = X448.toPublic pk
        in pure (PublicKeyX448 k, PrivateKeyX448 pk)
 
-instance ToField APrivateSignKey where toField = toField . encodeKey
+instance ToField APrivateSignKey where toField = toField . encodePrivKey
 
-instance ToField APublicVerifyKey where toField = toField . encodeKey
+instance ToField APublicVerifyKey where toField = toField . encodePubKey
 
-instance ToField APrivateDecryptKey where toField = toField . encodeKey
+instance ToField APrivateDecryptKey where toField = toField . encodePrivKey
 
-instance ToField APublicEncryptKey where toField = toField . encodeKey
+instance ToField APublicEncryptKey where toField = toField . encodePubKey
 
-instance ToField APrivateDhKey where toField = toField . encodeKey
+instance ToField APrivateDhKey where toField = toField . encodePrivKey
 
-instance ToField APublicDhKey where toField = toField . encodeKey
+instance ToField APublicDhKey where toField = toField . encodePubKey
 
-instance (Typeable a, AlgorithmI a) => ToField (PrivateKey a) where toField = toField . encodeKey
+instance (Typeable a, AlgorithmI a) => ToField (PrivateKey a) where toField = toField . encodePrivKey'
 
-instance (Typeable a, AlgorithmI a) => ToField (PublicKey a) where toField = toField . encodeKey
+instance (Typeable a, AlgorithmI a) => ToField (PublicKey a) where toField = toField . encodePubKey'
 
 instance (Typeable a, AlgorithmI a) => ToField (DhSecret a) where toField = toField . dhSecretBytes
 
-instance FromField APrivateSignKey where fromField = blobFieldParser binaryKeyP
+instance FromField APrivateSignKey where fromField = blobFieldParser binaryPrivKeyP
 
-instance FromField APublicVerifyKey where fromField = blobFieldParser binaryKeyP
+instance FromField APublicVerifyKey where fromField = blobFieldParser binaryPubKeyP
 
-instance FromField APrivateDecryptKey where fromField = blobFieldParser binaryKeyP
+instance FromField APrivateDecryptKey where fromField = blobFieldParser binaryPrivKeyP
 
-instance FromField APublicEncryptKey where fromField = blobFieldParser binaryKeyP
+instance FromField APublicEncryptKey where fromField = blobFieldParser binaryPubKeyP
 
-instance FromField APrivateDhKey where fromField = blobFieldParser binaryKeyP
+instance FromField APrivateDhKey where fromField = blobFieldParser binaryPrivKeyP
 
-instance FromField APublicDhKey where fromField = blobFieldParser binaryKeyP
+instance FromField APublicDhKey where fromField = blobFieldParser binaryPubKeyP
 
-instance (Typeable a, AlgorithmI a) => FromField (PrivateKey a) where fromField = blobFieldParser binaryKeyP
+instance (Typeable a, AlgorithmI a) => FromField (PrivateKey a) where fromField = blobFieldParser binaryPrivKeyP
 
-instance (Typeable a, AlgorithmI a) => FromField (PublicKey a) where fromField = blobFieldParser binaryKeyP
+instance (Typeable a, AlgorithmI a) => FromField (PublicKey a) where fromField = blobFieldParser binaryPubKeyP
 
 instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldParser dhSecretP
 
@@ -999,7 +998,7 @@ encrypt' _ _ _ = throwE UnsupportedAlgorithm
 -- https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-01-26-crypto.md#e2e-encryption
 decrypt' :: PrivateKey a -> ByteString -> ExceptT CryptoError IO ByteString
 decrypt' pk@(PrivateKeyRSA _) msg'' = do
-  let (encHeader, msg') = B.splitAt (keySize pk) msg''
+  let (encHeader, msg') = B.splitAt (privKeySize' pk) msg''
   header <- decryptOAEP pk encHeader
   Header {aesKey, ivBytes, authTag} <- parseHeader header
   decryptAES aesKey ivBytes msg' authTag
@@ -1178,46 +1177,6 @@ xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')
     state1 = XSalsa.derive state0 iv1
     (rs, state2) = XSalsa.generate state1 32
     (msg', _) = XSalsa.combine state2 msg
-
-pubVerifyKey :: APublicKey -> Either String APublicVerifyKey
-pubVerifyKey (APublicKey a k) = case signatureAlgorithm a of
-  Just Dict -> Right $ APublicVerifyKey a k
-  _ -> Left "key does not support signature algorithms"
-
-pubEncryptKey :: APublicKey -> Either String APublicEncryptKey
-pubEncryptKey (APublicKey a k) = case encryptionAlgorithm a of
-  Just Dict -> Right $ APublicEncryptKey a k
-  _ -> Left "key does not support encryption algorithms"
-
-pubDhKey :: APublicKey -> Either String APublicDhKey
-pubDhKey (APublicKey a k) = case dhAlgorithm a of
-  Just Dict -> Right $ APublicDhKey a k
-  _ -> Left "key does not support DH algorithms"
-
-pubKey' :: forall a. AlgorithmI a => APublicKey -> Either String (PublicKey a)
-pubKey' (APublicKey a k) = case testEquality a $ sAlgorithm @a of
-  Just Refl -> Right k
-  _ -> Left "bad key algorithm"
-
-privSignKey :: APrivateKey -> Either String APrivateSignKey
-privSignKey (APrivateKey a k) = case signatureAlgorithm a of
-  Just Dict -> Right $ APrivateSignKey a k
-  _ -> Left "key does not support signature algorithms"
-
-privDecryptKey :: APrivateKey -> Either String APrivateDecryptKey
-privDecryptKey (APrivateKey a k) = case encryptionAlgorithm a of
-  Just Dict -> Right $ APrivateDecryptKey a k
-  _ -> Left "key does not support encryption algorithms"
-
-privDhKey :: APrivateKey -> Either String APrivateDhKey
-privDhKey (APrivateKey a k) = case dhAlgorithm a of
-  Just Dict -> Right $ APrivateDhKey a k
-  _ -> Left "key does not support DH algorithms"
-
-privKey' :: forall a. AlgorithmI a => APrivateKey -> Either String (PrivateKey a)
-privKey' (APrivateKey a k) = case testEquality a $ sAlgorithm @a of
-  Just Refl -> Right k
-  _ -> Left "bad key algorithm"
 
 publicToX509 :: PublicKey a -> PubKey
 publicToX509 = \case

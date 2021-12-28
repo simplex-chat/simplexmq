@@ -247,7 +247,7 @@ data SMPPubHeader = SMPPubHeader
   }
 
 serializeSMPPubHeader :: SMPPubHeader -> ByteString
-serializeSMPPubHeader (SMPPubHeader v k) = encodeWord16 v <> C.encodeLenKey k
+serializeSMPPubHeader (SMPPubHeader v k) = encodeWord16 v <> C.encodeLenKey' k
 
 smpPubHeaderP :: Parser SMPPubHeader
 smpPubHeaderP = SMPPubHeader <$> word16P <*> C.binaryLenKeyP
@@ -261,13 +261,13 @@ smpEncMessageP = SMPEncMessage <$> smpPubHeaderP <*> A.takeByteString
 data SMPMessage = SMPMessage SMPPrivHeader ByteString
 
 data SMPPrivHeader
-  = SMPConfHeader SndPublicVerifyKey
+  = SMPConfHeader C.PublicKeyX25519
   | SMPEmptyHeader
 
 serializeSMPPrivHeader :: SMPPrivHeader -> ByteString
 serializeSMPPrivHeader = \case
   SMPEmptyHeader -> " "
-  SMPConfHeader k -> "K" <> C.encodeLenKey k
+  SMPConfHeader k -> "K" <> C.encodeLenKey' k
 
 smpPrivHeaderP :: Parser SMPPrivHeader
 smpPrivHeaderP =
@@ -417,12 +417,12 @@ instance CommandI Cmd where
       <|> "ERR " *> serverError
       <|> "PONG" $> Cmd SBroker PONG
     where
-      newCmd = Cmd SRecipient <$> (NEW <$> C.strKeyP <* A.space <*> C.strKeyP)
+      newCmd = Cmd SRecipient <$> (NEW <$> C.strPubKeyP <* A.space <*> C.strPubKeyP)
       idsResp = Cmd SBroker . IDS <$> qik
-      qik = QIK <$> base64P <* A.space <*> base64P <* A.space <*> C.strKeyP
+      qik = QIK <$> base64P <* A.space <*> base64P <* A.space <*> C.strPubKeyP
       nIdsResp = Cmd SBroker . NID <$> base64P
-      keyCmd = Cmd SRecipient . KEY <$> C.strKeyP
-      nKeyCmd = Cmd SRecipient . NKEY <$> C.strKeyP
+      keyCmd = Cmd SRecipient . KEY <$> C.strPubKeyP
+      nKeyCmd = Cmd SRecipient . NKEY <$> C.strPubKeyP
       sendCmd = Cmd SSender . SEND <$> A.takeByteString
       message = do
         msgId <- base64P <* A.space
@@ -451,9 +451,9 @@ instance PartyI p => CommandI (Command p) where
         Just Refl -> Right cmd
         _ -> Left "bad command party"
   serializeCommand = \case
-    NEW rKey dhKey -> B.unwords ["NEW", C.serializeKey rKey, C.serializeKey dhKey]
-    KEY sKey -> "KEY " <> C.serializeKey sKey
-    NKEY nKey -> "NKEY " <> C.serializeKey nKey
+    NEW rKey dhKey -> B.unwords ["NEW", C.serializePubKey rKey, C.serializePubKey' dhKey]
+    KEY sKey -> "KEY " <> C.serializePubKey sKey
+    NKEY nKey -> "NKEY " <> C.serializePubKey nKey
     SUB -> "SUB"
     ACK -> "ACK"
     OFF -> "OFF"
@@ -464,7 +464,7 @@ instance PartyI p => CommandI (Command p) where
     MSG msgId ts msgBody ->
       B.unwords ["MSG", encode msgId, B.pack $ formatISO8601Millis ts, msgBody]
     IDS (QIK rcvId sndId srvDh) ->
-      B.unwords ["IDS", encode rcvId, encode sndId, C.serializeKey srvDh]
+      B.unwords ["IDS", encode rcvId, encode sndId, C.serializePubKey' srvDh]
     NID nId -> "NID " <> encode nId
     ERR err -> "ERR " <> serializeErrorType err
     NMSG -> "NMSG"

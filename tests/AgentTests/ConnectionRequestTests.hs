@@ -35,7 +35,7 @@ testDhKey :: C.PublicKeyX25519
 testDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 testDhKeyStr :: ByteString
-testDhKeyStr = C.serializeKeyUri testDhKey
+testDhKeyStr = C.serializePubKeyUri' testDhKey
 
 testDhKeyStrUri :: ByteString
 testDhKeyStrUri = urlEncode True testDhKeyStr

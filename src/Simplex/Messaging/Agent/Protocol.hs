@@ -320,8 +320,8 @@ parseASMPMessage = parse (smpAMessageP <* A.endOfLine) $ AGENT A_MESSAGE
     smpConfirmationP =
       SMPConfirmation <$> do
         _ <- "V=1"
-        senderKey <- " KEY=" *> C.strKeyP
-        e2ePubKey <- " E2EDH=" *> C.strKeyP
+        senderKey <- " KEY=" *> C.strPubKeyP
+        e2ePubKey <- " E2EDH=" *> C.strPubKeyP
         connInfo <- connInfoP
         pure SMPConfMsg {senderKey, e2ePubKey, connInfo}
 
@@ -350,7 +350,7 @@ serializeASMPMessage = \case
     messageHeader msgId ts prevMsgHash =
       B.unwords [bshow msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
     smpConfHeader (SMPConfMsg sKey e2eDhKey _) =
-      "V=1 KEY=" <> C.serializeKey sKey <> " E2EDH=" <> C.serializeKey e2eDhKey
+      "V=1 KEY=" <> C.serializePubKey sKey <> " E2EDH=" <> C.serializePubKey' e2eDhKey
     smpMessage smpHeader aHeader aBody = B.intercalate "\n" [smpHeader, aHeader, aBody, ""]
 
 agentMessageP :: Parser AMessage
@@ -360,7 +360,7 @@ agentMessageP =
     <|> "MSG " *> a_msg
     <|> "INV " *> a_inv
   where
-    hello = HELLO <$> C.strKeyP <*> ackMode
+    hello = HELLO <$> C.strPubKeyP <*> ackMode
     reply = REPLY <$> connReqP'
     a_msg = A_MSG <$> binaryBodyP <* A.endOfLine
     a_inv = A_INV <$> connReqP' <* A.space <*> binaryBodyP <* A.endOfLine
@@ -376,7 +376,7 @@ smpServerP = SMPServer <$> server <*> optional port <*> kHash
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
-  HELLO verifyKey ackMode -> "HELLO " <> C.serializeKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
+  HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
   REPLY cReq -> "REPLY " <> serializeConnReq' cReq
   A_MSG body -> "MSG " <> serializeBinary body <> "\n"
   A_INV cReq cInfo -> B.unwords ["INV", serializeConnReq' cReq, serializeBinary cInfo] <> "\n"
@@ -384,12 +384,12 @@ serializeAgentMessage = \case
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSMPQueueUri :: SMPQueueUri -> ByteString
 serializeSMPQueueUri (SMPQueueUri srv qId dhKey) =
-  serializeServerUri srv <> "/" <> U.encode qId <> "#" <> C.serializeKeyUri dhKey
+  serializeServerUri srv <> "/" <> U.encode qId <> "#" <> C.serializePubKeyUri' dhKey
 
 -- | SMP queue information parser.
 smpQueueUriP :: Parser SMPQueueUri
 smpQueueUriP =
-  SMPQueueUri <$> smpServerUriP <* A.char '/' <*> base64UriP <* A.char '#' <*> C.strKeyUriP
+  SMPQueueUri <$> smpServerUriP <* A.char '/' <*> base64UriP <* A.char '#' <*> C.strPubKeyUriP
 
 reservedServerKey :: C.APublicVerifyKey
 reservedServerKey = C.APublicVerifyKey C.SRSA (C.PublicKeyRSA $ R.PublicKey 1 0 0)
@@ -413,7 +413,7 @@ serializeConnReq' = \case
           CMContact -> "contact"
         queryStr = renderSimpleQuery True [("smp", queues), ("e2e", key)]
         queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList crSmpQueues
-        key = C.serializeKeyUri crEncryptKey
+        key = C.serializePubKeyUri crEncryptKey
 
 connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
 connReqP' = do
@@ -428,7 +428,7 @@ connReqP = do
   crMode <- "/" *> mode <* "#/?"
   query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
   crSmpQueues <- paramP "smp" smpQueues query
-  crEncryptKey <- paramP "e2e" C.strKeyUriP query
+  crEncryptKey <- paramP "e2e" C.strPubKeyUriP query
   let cReq = ConnReqData {crScheme, crSmpQueues, crEncryptKey}
   pure $ case crMode of
     CMInvitation -> ACR SCMInvitation $ CRInvitation cReq
