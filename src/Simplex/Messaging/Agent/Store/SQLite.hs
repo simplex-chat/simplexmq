@@ -779,15 +779,7 @@ getSndQueueByConnAlias_ dbConn connId =
   where
     sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, status)] =
       let server = SMPServer host (deserializePort_ port) keyHash
-       in Just
-            SndQueue
-              { server,
-                sndId,
-                sndPrivateKey,
-                e2ePubKey,
-                e2eDhSecret,
-                status
-              }
+       in Just SndQueue {server, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, status}
     sndQueue _ = Nothing
 
 -- * upgradeRcvConnToDuplex helpers

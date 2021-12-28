@@ -408,11 +408,6 @@ transmissionP = do
       command <- A.takeByteString
       pure RawTransmission {signature, signed, sessId, corrId, queueId, command}
 
--- cmd <- A.takeByteString
--- if B.last cmd == ' '
---   then pure RawTransmission {signature, signed, sessId, corrId, queueId, command = B.init cmd}
---   else fail "no terminating space"
-
 instance CommandI Cmd where
   serializeCommand (Cmd _ cmd) = serializeCommand cmd
   commandP =
