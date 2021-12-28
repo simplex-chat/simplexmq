@@ -746,7 +746,6 @@ No further messages should be delivered to unsubscribed transport connection.
 - command errors (`CMD`):
   - error parsing command (`SYNTAX`)
   - prohibited command (`PROHIBITED`) - any server response sent from client or `ACK` sent without active subscription or without message delivery.
-  - incorrect RSA key size in `NEW` or `KEY` commands - only 1024, 2048 and 4096-bit keys are allowed (`KEY_SIZE`).
   - transmission has no required signature or queue ID (`NO_AUTH`)
   - transmission has unexpected credentials (`HAS_AUTH`)
   - transmission has no required queue ID (`NO_QUEUE`)
@@ -760,7 +759,7 @@ The syntax for error responses:
 ```abnf
 error = %s"ERR" SP errorType
 errorType = %s"BLOCK" / %s"CMD" SP cmdError / %s"AUTH" / %s"SIZE" /%s"INTERNAL"
-cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"KEY_SIZE" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_QUEUE"
+cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_QUEUE"
 ```
 
 Server implementations must aim to respond within the same time for each command in all cases when `"ERR AUTH"` response is required to prevent timing attacks (e.g., the server should perform signature verification even when the queue does not exist on the server or the signature of different size is sent, using any RSA key with the same size as the signature size).

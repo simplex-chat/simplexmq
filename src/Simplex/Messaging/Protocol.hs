@@ -377,8 +377,6 @@ data ErrorType
 data CommandError
   = -- | server response sent from client or vice versa
     PROHIBITED
-  | -- | bad RSA key size in NEW or KEY commands (only 1024, 2048 and 4096 bits keys are allowed)
-    KEY_SIZE
   | -- | error parsing command
     SYNTAX
   | -- | transmission has no required credentials (signature or queue ID)

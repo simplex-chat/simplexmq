@@ -237,7 +237,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             DEL -> delQueueAndMsgs st
       where
         createQueue :: QueueStore -> RcvPublicVerifyKey -> RcvPublicDhKey -> m BrokerTransmission
-        createQueue st recipientKey dhKey = checkKeySize recipientKey $ do
+        createQueue st recipientKey dhKey = do
           (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
@@ -251,7 +251,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                     notifier = Nothing,
                     status = QueueActive
                   }
-          addQueueRetry 3 qik qRec
+          (corrId,queueId,) <$> addQueueRetry 3 qik qRec
           where
             addQueueRetry ::
               Int -> ((RecipientId, SenderId) -> QueueIdsKeys) -> ((RecipientId, SenderId) -> QueueRec) -> m (Command 'Broker)
@@ -280,10 +280,10 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         secureQueue_ :: QueueStore -> SndPublicVerifyKey -> m BrokerTransmission
         secureQueue_ st sKey = do
           withLog $ \s -> logSecureQueue s queueId sKey
-          atomically . checkKeySize sKey $ either ERR (const OK) <$> secureQueue st queueId sKey
+          atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> m BrokerTransmission
-        addQueueNotifier_ st nKey = checkKeySize nKey $ addNotifierRetry 3
+        addQueueNotifier_ st nKey = (corrId,queueId,) <$> addNotifierRetry 3
           where
             addNotifierRetry :: Int -> m (Command 'Broker)
             addNotifierRetry 0 = pure $ ERR INTERNAL
@@ -295,13 +295,6 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 Right _ -> do
                   withLog $ \s -> logAddNotifier s queueId nId nKey
                   pure $ NID nId
-
-        checkKeySize :: Monad m' => C.APublicVerifyKey -> m' (Command 'Broker) -> m' BrokerTransmission
-        checkKeySize key action =
-          (corrId,queueId,)
-            <$> if C.validKeySize key
-              then action
-              else pure . ERR $ CMD KEY_SIZE
 
         suspendQueue_ :: QueueStore -> m BrokerTransmission
         suspendQueue_ st = do

@@ -6,7 +6,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -138,8 +137,6 @@ import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), hash)
 import qualified Crypto.MAC.Poly1305 as Poly1305
-import Crypto.Number.Generate (generateMax)
-import Crypto.Number.Prime (findPrimeFrom)
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
 import qualified Crypto.PubKey.Ed25519 as Ed25519
@@ -168,9 +165,9 @@ import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), TypeError)
-import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
-import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseE, parseString, word16P)
-import Simplex.Messaging.Util (liftEitherError, (<$?>))
+import Network.Transport.Internal (decodeWord16, encodeWord16)
+import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString, word16P)
+import Simplex.Messaging.Util ((<$?>))
 
 type E2EEncryptionVersion = Word16
 
@@ -434,10 +431,6 @@ class CryptoPublicKey k where
   aPubKey :: k -> APublicKey
   pubKey :: APublicKey -> Either String k
 
-  -- TODO remove once RSA is removed
-  validKeySize :: k -> Bool
-  validKeySize _ = True
-
 -- | X509 encoding of any public key.
 instance CryptoPublicKey APublicKey where
   aPubKey = id
@@ -536,31 +529,21 @@ binaryPubKeyP = pubKey <$?> aBinaryPubKeyP
 aBinaryPubKeyP :: Parser APublicKey
 aBinaryPubKeyP = decodePubKey <$?> A.takeByteString
 
-type family PublicKeyType pk where
-  PublicKeyType APrivateKey = APublicKey
-  PublicKeyType APrivateSignKey = APublicVerifyKey
-  PublicKeyType APrivateDhKey = APublicDhKey
-  PublicKeyType (PrivateKey a) = PublicKey a
-
 class CryptoPrivateKey pk where
-  publicKey :: pk -> PublicKeyType pk
   aPrivKey :: pk -> APrivateKey
   privKey :: APrivateKey -> Either String pk
 
 instance CryptoPrivateKey APrivateKey where
-  publicKey (APrivateKey a k) = APublicKey a $ publicKey k
   aPrivKey = id
   privKey = Right
 
 instance CryptoPrivateKey APrivateSignKey where
-  publicKey (APrivateSignKey a k) = APublicVerifyKey a $ publicKey k
   aPrivKey (APrivateSignKey a k) = APrivateKey a k
   privKey (APrivateKey a k) = case signatureAlgorithm a of
     Just Dict -> Right $ APrivateSignKey a k
     _ -> Left "key does not support signature algorithms"
 
 instance CryptoPrivateKey APrivateDhKey where
-  publicKey (APrivateDhKey a k) = APublicDhKey a $ publicKey k
   aPrivKey (APrivateDhKey a k) = APrivateKey a k
   privKey (APrivateKey a k) = case dhAlgorithm a of
     Just Dict -> Right $ APrivateDhKey a k
@@ -571,18 +554,6 @@ instance AlgorithmI a => CryptoPrivateKey (PrivateKey a) where
   privKey (APrivateKey a k) = case testEquality a $ sAlgorithm @a of
     Just Refl -> Right k
     _ -> Left "bad key algorithm"
-  publicKey = \case
-    PrivateKeyEd25519 _ k -> PublicKeyEd25519 k
-    PrivateKeyEd448 _ k -> PublicKeyEd448 k
-    PrivateKeyX25519 k -> PublicKeyX25519 $ X25519.toPublic k
-    PrivateKeyX448 k -> PublicKeyX448 $ X448.toPublic k
-
-privKeySize' :: PrivateKey a -> Int
-privKeySize' = \case
-  PrivateKeyEd25519 _ _ -> Ed25519.secretKeySize
-  PrivateKeyEd448 _ _ -> Ed448.secretKeySize
-  PrivateKeyX25519 _ -> x25519_size
-  PrivateKeyX448 _ -> x448_size
 
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
 encodePrivKey k = case aPrivKey k of APrivateKey _ k' -> encodePrivKey' k'
@@ -647,11 +618,11 @@ instance ToField APrivateDhKey where toField = toField . encodePrivKey
 
 instance ToField APublicDhKey where toField = toField . encodePubKey
 
-instance (Typeable a, AlgorithmI a) => ToField (PrivateKey a) where toField = toField . encodePrivKey'
+instance ToField (PrivateKey a) where toField = toField . encodePrivKey'
 
-instance (Typeable a, AlgorithmI a) => ToField (PublicKey a) where toField = toField . encodePubKey'
+instance ToField (PublicKey a) where toField = toField . encodePubKey'
 
-instance (Typeable a, AlgorithmI a) => ToField (DhSecret a) where toField = toField . dhSecretBytes
+instance AlgorithmI a => ToField (DhSecret a) where toField = toField . dhSecretBytes
 
 instance FromField APrivateSignKey where fromField = blobFieldParser binaryPrivKeyP
 
@@ -770,9 +741,6 @@ data CryptoError
   | -- | duplicate message number (or, possibly, skipped message that failed to decrypt?)
     CERatchetDuplicateMessage
   deriving (Eq, Show, Exception)
-
-pubExpRange :: Integer
-pubExpRange = 2 ^ (1024 :: Int)
 
 aesKeySize :: Int
 aesKeySize = 256 `div` 8
