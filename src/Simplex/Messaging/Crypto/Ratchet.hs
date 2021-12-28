@@ -77,7 +77,7 @@ newtype RatchetKey = RatchetKey ByteString
 initSndRatchet' ::
   forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> ByteString -> ByteString -> IO (Ratchet a)
 initSndRatchet' rcDHRr sPKey salt rcAD = do
-  rcDHRs@(_, pk) <- generateKeyPair' @a 0
+  rcDHRs@(_, pk) <- generateKeyPair' @a
   let (sk, rcHKs, rcNHKr) = initKdf salt rcDHRr sPKey
       -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
       (rcRK, rcCKs, rcNHKs) = rootKdf sk rcDHRr pk
@@ -278,7 +278,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
             Left e -> throwE e
             Right rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr} -> do
               -- DHRatchetHE(state, header)
-              rcDHRs' <- liftIO $ generateKeyPair' @a 0
+              rcDHRs' <- liftIO $ generateKeyPair' @a
               -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))
               let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs (snd rcDHRs)
                   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))

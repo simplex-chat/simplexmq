@@ -100,10 +100,7 @@ data SMPClientConfig = SMPClientConfig
     -- | timeout of TCP commands (microseconds)
     tcpTimeout :: Int,
     -- | period for SMP ping commands (microseconds)
-    smpPing :: Int,
-    -- | estimated maximum size of SMP command excluding message body,
-    -- determines the maximum allowed message size
-    smpCommandSize :: Int
+    smpPing :: Int
   }
 
 -- | Default SMP client configuration.
@@ -113,8 +110,7 @@ smpDefaultConfig =
     { qSize = 16,
       defaultTransport = ("5223", transport @TLS),
       tcpTimeout = 4_000_000,
-      smpPing = 30_000_000,
-      smpCommandSize = 256
+      smpPing = 30_000_000
     }
 
 data Request = Request

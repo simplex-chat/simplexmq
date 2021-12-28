@@ -237,10 +237,9 @@ newRcvQueue_ ::
   SMPServer ->
   m (RcvQueue, SMPQueueUri)
 newRcvQueue_ a c srv = do
-  size <- asks $ rsaKeySize . config
-  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
-  (dhKey, privDhKey) <- liftIO $ C.generateKeyPair' 0
-  (e2eDhKey, e2ePrivKey) <- liftIO $ C.generateKeyPair' 0
+  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
+  (dhKey, privDhKey) <- liftIO C.generateKeyPair'
+  (e2eDhKey, e2ePrivKey) <- liftIO C.generateKeyPair'
   logServer "-->" c srv "" "NEW"
   QIK {rcvId, sndId, rcvPublicDhKey} <-
     withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
@@ -389,7 +388,7 @@ agentCbEncrypt SndQueue {e2ePubKey, e2eDhSecret} msg = do
 
 agentCbEncryptOnce :: AgentMonad m => C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncryptOnce dhRcvPubKey msg = do
-  (dhSndPubKey, dhSndPrivKey) <- liftIO $ C.generateKeyPair' 0
+  (dhSndPubKey, dhSndPrivKey) <- liftIO C.generateKeyPair'
   let e2eDhSecret = C.dh' dhRcvPubKey dhSndPrivKey
   emNonce <- liftIO C.randomCbNonce
   emBody <-
@@ -407,7 +406,6 @@ agentCbDecrypt dhSecret nonce msg =
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE
-  C.RSADecryptError _ -> AGENT A_ENCRYPTION
   C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
   C.AESDecryptError -> AGENT A_ENCRYPTION
   C.CBDecryptError -> AGENT A_ENCRYPTION

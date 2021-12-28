@@ -69,8 +69,8 @@ testCreateSecure :: ATransport -> Spec
 testCreateSecure (ATransport t) =
   it "should create (NEW) and secure (KEY) queue" $
     smpTest t $ \h -> do
-      (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd448
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair' 0
+      (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
       Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", B.unwords ["NEW", C.serializePubKey rPub, C.serializePubKey dhPub])
       let dec nonce = C.cbDecrypt (C.dh' srvDh dhPriv) (C.cbNonce nonce)
       (rId1, "") #== "creates queue"
@@ -88,7 +88,7 @@ testCreateSecure (ATransport t) =
       Resp "dabc" _ err6 <- signSendRecv h rKey ("dabc", rId, "ACK")
       (err6, ERR NO_MSG) #== "replies ERR when message acknowledged without messages"
 
-      (sPub, sKey) <- C.generateSignatureKeyPair 0 C.SEd448
+      (sPub, sKey) <- C.generateSignatureKeyPair C.SEd448
       Resp "abcd" sId2 err1 <- signSendRecv h sKey ("abcd", sId, "SEND hello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
@@ -123,13 +123,13 @@ testCreateDelete :: ATransport -> Spec
 testCreateDelete (ATransport t) =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 t $ \rh sh -> do
-      (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd25519
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair' 0
+      (rPub, rKey) <- C.generateSignatureKeyPair C.SEd25519
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
       Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", B.unwords ["NEW", C.serializePubKey rPub, C.serializePubKey dhPub])
       let dec nonce = C.cbDecrypt (C.dh' srvDh dhPriv) (C.cbNonce nonce)
       (rId1, "") #== "creates queue"
 
-      (sPub, sKey) <- C.generateSignatureKeyPair 0 C.SEd25519
+      (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
       Resp "bcda" _ ok1 <- signSendRecv rh rKey ("bcda", rId, "KEY " <> C.serializePubKey sPub)
       (ok1, OK) #== "secures queue"
 
@@ -193,8 +193,8 @@ stressTest :: ATransport -> Spec
 stressTest (ATransport t) =
   it "should create many queues, disconnect and re-connect" $
     smpTest3 t $ \h1 h2 h3 -> do
-      (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd25519
-      (dhPub, _ :: C.PrivateKeyX25519) <- C.generateKeyPair' 0
+      (rPub, rKey) <- C.generateSignatureKeyPair C.SEd25519
+      (dhPub, _ :: C.PrivateKeyX25519) <- C.generateKeyPair'
       rIds <- forM [1 .. 50 :: Int] . const $ do
         Resp "" "" (Ids rId _ _) <- signSendRecv h1 rKey ("", "", B.unwords ["NEW", C.serializePubKey rPub, C.serializePubKey dhPub])
         pure rId
@@ -210,13 +210,13 @@ testDuplex :: ATransport -> Spec
 testDuplex (ATransport t) =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 t $ \alice bob -> do
-      (arPub, arKey) <- C.generateSignatureKeyPair 0 C.SEd448
-      (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair' 0
+      (arPub, arKey) <- C.generateSignatureKeyPair C.SEd448
+      (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
       Resp "abcd" _ (Ids aRcv aSnd aSrvDh) <- signSendRecv alice arKey ("abcd", "", B.unwords ["NEW", C.serializePubKey arPub, C.serializePubKey aDhPub])
       let aDec nonce = C.cbDecrypt (C.dh' aSrvDh aDhPriv) (C.cbNonce nonce)
       -- aSnd ID is passed to Bob out-of-band
 
-      (bsPub, bsKey) <- C.generateSignatureKeyPair 0 C.SEd448
+      (bsPub, bsKey) <- C.generateSignatureKeyPair C.SEd448
       Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, cmdSEND $ "key " <> C.serializePubKey bsPub)
       -- "key ..." is ad-hoc, different from SMP protocol
 
@@ -226,8 +226,8 @@ testDuplex (ATransport t) =
       (bobKey, C.serializePubKey bsPub) #== "key received from Bob"
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, "KEY " <> bobKey)
 
-      (brPub, brKey) <- C.generateSignatureKeyPair 0 C.SEd448
-      (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair' 0
+      (brPub, brKey) <- C.generateSignatureKeyPair C.SEd448
+      (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
       Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", "", B.unwords ["NEW", C.serializePubKey brPub, C.serializePubKey bDhPub])
       let bDec nonce = C.cbDecrypt (C.dh' bSrvDh bDhPriv) (C.cbNonce nonce)
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, cmdSEND $ "reply_id " <> encode bSnd)
@@ -238,7 +238,7 @@ testDuplex (ATransport t) =
       Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
       (bId, encode bSnd) #== "reply queue ID received from Bob"
 
-      (asPub, asKey) <- C.generateSignatureKeyPair 0 C.SEd448
+      (asPub, asKey) <- C.generateSignatureKeyPair C.SEd448
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, cmdSEND $ "key " <> C.serializePubKey asPub)
       -- "key ..." is ad-hoc, different from SMP protocol
 
@@ -264,8 +264,8 @@ testSwitchSub :: ATransport -> Spec
 testSwitchSub (ATransport t) =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 t $ \rh1 rh2 sh -> do
-      (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd448
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair' 0
+      (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
       Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", "", B.unwords ["NEW", C.serializePubKey rPub, C.serializePubKey dhPub])
       let dec nonce = C.cbDecrypt (C.dh' srvDh dhPriv) (C.cbNonce nonce)
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, "SEND test1")
@@ -303,9 +303,9 @@ testSwitchSub (ATransport t) =
 testWithStoreLog :: ATransport -> Spec
 testWithStoreLog at@(ATransport t) =
   it "should store simplex queues to log and restore them after server restart" $ do
-    (sPub1, sKey1) <- C.generateSignatureKeyPair 0 C.SEd25519
-    (sPub2, sKey2) <- C.generateSignatureKeyPair 0 C.SEd25519
-    (nPub, nKey) <- C.generateSignatureKeyPair 0 C.SEd25519
+    (sPub1, sKey1) <- C.generateSignatureKeyPair C.SEd25519
+    (sPub2, sKey2) <- C.generateSignatureKeyPair C.SEd25519
+    (nPub, nKey) <- C.generateSignatureKeyPair C.SEd25519
     recipientId1 <- newTVarIO ""
     recipientKey1 <- newTVarIO Nothing
     dhShared1 <- newTVarIO Nothing
@@ -381,8 +381,8 @@ testWithStoreLog at@(ATransport t) =
 
 createAndSecureQueue :: Transport c => THandle c -> SndPublicVerifyKey -> IO (SenderId, RecipientId, RcvPrivateSignKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
-  (rPub, rKey) <- C.generateSignatureKeyPair 0 C.SEd448
-  (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair' 0
+  (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
+  (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
   Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", B.unwords ["NEW", C.serializePubKey rPub, C.serializePubKey dhPub])
   let dhShared = C.dh' srvDh dhPriv
   let keyCmd = "KEY " <> C.serializePubKey sPub
@@ -407,7 +407,7 @@ testTiming (ATransport t) =
     testSameTiming :: Transport c => THandle c -> THandle c -> (Int, Int, Int) -> Expectation
     testSameTiming rh sh (goodKeySize, badKeySize, n) = do
       (rPub, rKey) <- generateKeys goodKeySize
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair' 0
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
       Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", B.unwords ["NEW", C.serializePubKey rPub, C.serializePubKey dhPub])
       let dec nonce = C.cbDecrypt (C.dh' srvDh dhPriv) (C.cbNonce nonce)
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, "SUB")
@@ -426,9 +426,9 @@ testTiming (ATransport t) =
       runTimingTest sh badKey sId "SEND hello"
       where
         generateKeys = \case
-          32 -> C.generateSignatureKeyPair 0 C.SEd25519
-          57 -> C.generateSignatureKeyPair 0 C.SEd448
-          size -> C.generateSignatureKeyPair size C.SRSA
+          32 -> C.generateSignatureKeyPair C.SEd25519
+          57 -> C.generateSignatureKeyPair C.SEd448
+          _ -> error "unsupported key size"
         runTimingTest h badKey qId cmd = do
           timeWrongKey <- timeRepeat n $ do
             Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
@@ -448,8 +448,8 @@ testTiming (ATransport t) =
 testMessageNotifications :: ATransport -> Spec
 testMessageNotifications (ATransport t) =
   it "should create simplex connection, subscribe notifier and deliver notifications" $ do
-    (sPub, sKey) <- C.generateSignatureKeyPair 0 C.SEd25519
-    (nPub, nKey) <- C.generateSignatureKeyPair 0 C.SEd25519
+    (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
+    (nPub, nKey) <- C.generateSignatureKeyPair C.SEd25519
     smpTest4 t $ \rh sh nh1 nh2 -> do
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
       let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
@@ -477,7 +477,7 @@ sampleDhPubKey :: ByteString
 sampleDhPubKey = "x25519:MCowBQYDK2VuAyEAriy+HcARIhqsgSjVnjKqoft+y6pxrxdY68zn4+LjYhQ="
 
 sampleSig :: Maybe C.ASignature
-sampleSig = "gM8qn2Vx3GkhIp2hgrji9uhfXKpgtKDmc0maxdP8GvbORUxMCTlLG8Q/gNcl3pQVOzmbZqTZZfKcGDn9DaquJ3fT5D/NKdeW//d6ETE1EXsIbpENS0QsS+bKZDjpp3w3eQlfUxn4BNisp2S14CmJBm/FaiNj2fPkLqfkzZALcoY="
+sampleSig = "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
 
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do

@@ -667,25 +667,20 @@ activateQueue c connId sq retryInterval afterActivation =
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
-newSndQueue ::
-  (MonadUnliftIO m, MonadReader Env m) =>
-  SMPQueueUri ->
-  ConnInfo ->
-  m (SndQueue, SMPConfMsg)
+newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => SMPQueueUri -> ConnInfo -> m (SndQueue, SMPConfMsg)
 newSndQueue qUri cInfo =
   asks (cmdSignAlg . config) >>= \case
     C.SignAlg a -> newSndQueue_ a qUri cInfo
 
 newSndQueue_ ::
-  (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m, MonadReader Env m) =>
+  (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m) =>
   C.SAlgorithm a ->
   SMPQueueUri ->
   ConnInfo ->
   m (SndQueue, SMPConfMsg)
 newSndQueue_ a (SMPQueueUri smpServer senderId rcvE2ePubDhKey) cInfo = do
-  size <- asks $ rsaKeySize . config
-  (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
-  (e2ePubKey, e2ePrivKey) <- liftIO $ C.generateKeyPair' 0
+  (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
+  (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
   let sndQueue =
         SndQueue
           { server = smpServer,

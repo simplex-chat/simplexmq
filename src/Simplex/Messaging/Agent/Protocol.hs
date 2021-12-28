@@ -75,7 +75,6 @@ module Simplex.Messaging.Agent.Protocol
     serializeASMPMessage,
     serializeMsgIntegrity,
     serializeSMPQueueUri,
-    reservedServerKey, -- TODO remove
     serializeConnMode,
     serializeConnMode',
     connMode,
@@ -104,7 +103,6 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad.IO.Class
-import qualified Crypto.PubKey.RSA as R
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
@@ -387,9 +385,6 @@ serializeSMPQueueUri (SMPQueueUri srv qId dhKey) =
 smpQueueUriP :: Parser SMPQueueUri
 smpQueueUriP =
   SMPQueueUri <$> smpServerUriP <* A.char '/' <*> base64UriP <* A.char '#' <*> C.strPubKeyUriP
-
-reservedServerKey :: C.APublicVerifyKey
-reservedServerKey = C.APublicVerifyKey C.SRSA (C.PublicKeyRSA $ R.PublicKey 1 0 0)
 
 serializeConnReq :: AConnectionRequest -> ByteString
 serializeConnReq (ACR _ cr) = serializeConnReq' cr
