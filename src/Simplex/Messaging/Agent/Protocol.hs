@@ -36,9 +36,10 @@ module Simplex.Messaging.Agent.Protocol
     SAParty (..),
     MsgHash,
     MsgMeta (..),
-    ASMPMessage (..),
-    SMPConfMsg (..),
-    AMessage (..),
+    SMPConfMsg (..), -- TODO remove
+    AgentMessage (..),
+    AHeader (..),
+    AMessage (..), -- remove tick
     SMPServer (..),
     SMPQueueUri (..),
     ConnectionMode (..),
@@ -72,7 +73,9 @@ module Simplex.Messaging.Agent.Protocol
 
     -- * Parse and serialize
     serializeCommand,
-    serializeASMPMessage,
+    clientToAgentMsg,
+    agentToClientMsg,
+    -- serializeASMPMessage,
     serializeMsgIntegrity,
     serializeSMPQueueUri,
     serializeConnMode,
@@ -83,7 +86,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeConnReq',
     serializeAgentError,
     commandP,
-    parseASMPMessage,
+    -- parseASMPMessage,
     smpServerP,
     smpQueueUriP,
     connModeT,
@@ -91,7 +94,7 @@ module Simplex.Messaging.Agent.Protocol
     connReqP',
     msgIntegrityP,
     agentErrorTypeP,
-    agentMessageP,
+    -- agentMessageP,
 
     -- * TCP transport functions
     tPut,
@@ -128,9 +131,11 @@ import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
-  ( ErrorType,
+  ( ClientMessage (..),
+    ErrorType,
     MsgBody,
     MsgId,
+    PrivHeader (..),
     SndPublicVerifyKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -273,93 +278,70 @@ data SMPConfMsg = SMPConfMsg
   }
   deriving (Show)
 
--- | SMP message formats.
-data ASMPMessage
-  = -- | SMP initial message with key agreement (for per-queue e2e encryption)
-    -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message SMP protocol>)
-    SMPConfirmation SMPConfMsg
-  | -- | Agent message header and envelope for client messages
-    -- (see <https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents SMP agent protocol>)
-    ASMPMessage
-      { -- | sequential ID assigned by the sending agent
-        senderMsgId :: AgentMsgId,
-        -- | timestamp from the sending agent
-        senderTimestamp :: SenderTimestamp,
-        -- | digest of the previous message
-        previousMsgHash :: MsgHash,
-        -- | messages sent between agents once queue is secured
-        agentMessage :: AMessage
-      }
-  deriving (Show)
+-- SMP agent message formats
+data AgentMessage
+  = AgentConfirmation C.APublicVerifyKey ConnInfo -- TODO add double ratchet E2E settings
+  | AgentInvitation (ConnectionRequest CMInvitation) ConnInfo
+  | AgentMessage AHeader AMessage
+
+data AHeader = AHeader
+  { -- | sequential ID assigned by the sending agent
+    sndMsgId :: AgentMsgId,
+    -- | digest of the previous message
+    prevMsgHash :: MsgHash
+  }
+
+serializeAHeader :: AHeader -> ByteString
+serializeAHeader AHeader {sndMsgId, prevMsgHash} =
+  bshow sndMsgId <> " " <> encode prevMsgHash <> "\n"
+
+emptyAHeader :: ByteString
+emptyAHeader = "\n"
+
+aHeaderP :: Parser AHeader
+aHeaderP = AHeader <$> A.decimal <* A.space <*> (base64P <|> pure "") <* A.endOfLine
+
+emptyAHeaderP :: Parser ()
+emptyAHeaderP = A.endOfLine $> ()
 
 -- | Messages sent between SMP agents once SMP queue is secured.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents
-data AMessage where
-  -- | the first message in the queue to validate it is secured
-  HELLO :: AMessage
-  -- | reply queue information
-  REPLY :: ConnectionRequest CMInvitation -> AMessage
-  -- | agent envelope for the client message
-  A_MSG :: MsgBody -> AMessage
-  -- | connection request with the invitation to connect
-  A_INV :: ConnectionRequest CMInvitation -> ConnInfo -> AMessage
+data AMessage
+  = -- | the first message in the queue to validate it is secured
+    HELLO
+  | -- | reply queue information
+    REPLY (ConnectionRequest CMInvitation)
+  | -- | agent envelope for the client message
+    A_MSG MsgBody
   deriving (Show)
 
--- | Parse SMP message.
-parseASMPMessage :: ByteString -> Either AgentErrorType ASMPMessage
-parseASMPMessage = parse (smpAMessageP <* A.endOfLine) $ AGENT A_MESSAGE
+agentToClientMsg :: AgentMessage -> ClientMessage
+agentToClientMsg = \case
+  AgentConfirmation senderKey cInfo ->
+    ClientMessage (PHConfirmation senderKey) $ emptyAHeader <> cInfo
+  AgentInvitation cReq cInfo ->
+    ClientMessage PHEmpty $ emptyAHeader <> serializeConnReq' cReq <> "\n" <> cInfo
+  AgentMessage header aMsg ->
+    ClientMessage PHEmpty $ serializeAHeader header <> serializeAMessage aMsg
+
+clientToAgentMsg :: ClientMessage -> Either AgentErrorType AgentMessage
+clientToAgentMsg (ClientMessage header body) = parse parser (AGENT A_MESSAGE) body
   where
-    smpAMessageP :: Parser ASMPMessage
-    smpAMessageP = A.endOfLine *> smpClientMessageP <|> smpConfirmationP
+    parser = case header of
+      PHConfirmation senderKey -> AgentConfirmation senderKey <$> (emptyAHeaderP *> A.takeByteString)
+      PHEmpty -> invitationP <|> messageP
+    invitationP = AgentInvitation <$> (emptyAHeaderP *> connReqP' <* A.endOfLine) <*> A.takeByteString
+    messageP = AgentMessage <$> aHeaderP <*> aMessageP
 
-    smpConfirmationP :: Parser ASMPMessage
-    smpConfirmationP =
-      SMPConfirmation <$> do
-        _ <- "V=1"
-        senderKey <- " KEY=" *> C.strPubKeyP
-        e2ePubKey <- " E2EDH=" *> C.strPubKeyP
-        connInfo <- connInfoP
-        pure SMPConfMsg {senderKey, e2ePubKey, connInfo}
-
-    connInfoP = A.endOfLine *> A.endOfLine *> binaryBodyP <* A.endOfLine
-
-    smpClientMessageP :: Parser ASMPMessage
-    smpClientMessageP =
-      ASMPMessage
-        <$> A.decimal <* A.space
-        <*> tsISO8601P <* A.space
-        -- TODO previous message hash should become mandatory when we support HELLO and REPLY
-        -- (for HELLO it would be the hash of SMPConfirmation)
-        <*> (base64P <|> pure "") <* A.endOfLine
-        <*> agentMessageP
-
--- | Serialize SMP message.
-serializeASMPMessage :: ASMPMessage -> ByteString
-serializeASMPMessage = \case
-  SMPConfirmation conf ->
-    smpMessage (smpConfHeader conf) "" (serializeBinary $ connInfo conf) <> "\n"
-  ASMPMessage {senderMsgId, senderTimestamp, previousMsgHash, agentMessage} ->
-    let header = messageHeader senderMsgId senderTimestamp previousMsgHash
-        body = serializeAgentMessage agentMessage
-     in smpMessage "" header body
-  where
-    messageHeader msgId ts prevMsgHash =
-      B.unwords [bshow msgId, B.pack $ formatISO8601Millis ts, encode prevMsgHash]
-    smpConfHeader (SMPConfMsg sKey e2eDhKey _) =
-      "V=1 KEY=" <> C.serializePubKey sKey <> " E2EDH=" <> C.serializePubKey' e2eDhKey
-    smpMessage smpHeader aHeader aBody = B.intercalate "\n" [smpHeader, aHeader, aBody, ""]
-
-agentMessageP :: Parser AMessage
-agentMessageP =
+aMessageP :: Parser AMessage
+aMessageP =
   "HELLO" $> HELLO
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
-    <|> "INV " *> a_inv
   where
     reply = REPLY <$> connReqP'
-    a_msg = A_MSG <$> binaryBodyP <* A.endOfLine
-    a_inv = A_INV <$> connReqP' <* A.space <*> binaryBodyP <* A.endOfLine
+    a_msg = A_MSG <$> A.takeByteString
 
 -- | SMP server location parser.
 smpServerP :: Parser SMPServer
@@ -369,12 +351,11 @@ smpServerP = SMPServer <$> server <*> optional port <*> kHash
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
     kHash = Just . C.KeyHash <$> (A.char '#' *> base64P)
 
-serializeAgentMessage :: AMessage -> ByteString
-serializeAgentMessage = \case
+serializeAMessage :: AMessage -> ByteString
+serializeAMessage = \case
   HELLO -> "HELLO"
   REPLY cReq -> "REPLY " <> serializeConnReq' cReq
-  A_MSG body -> "MSG " <> serializeBinary body <> "\n"
-  A_INV cReq cInfo -> B.unwords ["INV", serializeConnReq' cReq, serializeBinary cInfo] <> "\n"
+  A_MSG body -> "MSG " <> body
 
 -- | Serialize SMP queue information that is sent out-of-band.
 serializeSMPQueueUri :: SMPQueueUri -> ByteString
@@ -436,11 +417,6 @@ connReqP = do
       maybe (fail "no SMP queues") pure . L.nonEmpty
         =<< (smpQueue `A.sepBy1'` A.char ',')
     smpQueue = parseAll smpQueueUriP <$?> A.takeTill (== ',')
-
--- | Serialize SMP server location.
-serializeServer :: SMPServer -> ByteString
-serializeServer SMPServer {host, port, keyHash} =
-  B.pack $ host <> maybe "" (':' :) port <> maybe "" (('#' :) . B.unpack . encode . C.unKeyHash) keyHash
 
 -- | Serialize SMP server URI.
 serializeServerUri :: SMPServer -> ByteString
@@ -557,7 +533,7 @@ data QueueStatus
 
 type AgentMsgId = Int64
 
-type SenderTimestamp = UTCTime
+-- type SenderTimestamp = UTCTime
 
 -- | Result of received message integrity validation.
 data MsgIntegrity = MsgOk | MsgError MsgErrorType
@@ -623,14 +599,12 @@ data BrokerErrorType
 
 -- | Errors of another SMP agent.
 data SMPAgentError
-  = -- | possibly should include bytestring that failed to parse
+  = -- | client or agent message that failed to parse
     A_MESSAGE
-  | -- | possibly should include the prohibited SMP/agent message
+  | -- | prohibited SMP/agent message
     A_PROHIBITED
-  | -- | cannot RSA/AES-decrypt or parse decrypted header
+  | -- | cannot decrypt message
     A_ENCRYPTION
-  | -- | invalid signature
-    A_SIGNATURE -- TODO remove
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
@@ -776,10 +750,10 @@ serializeAgentError = \case
   BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
   e -> bshow e
 
-binaryBodyP :: Parser ByteString
-binaryBodyP = do
-  size :: Int <- A.decimal <* A.endOfLine
-  A.take size
+-- binaryBodyP :: Parser ByteString
+-- binaryBodyP = do
+--   size :: Int <- A.decimal <* A.endOfLine
+--   A.take size
 
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body

@@ -452,7 +452,7 @@ mkSndMsgData internalId internalSndId internalHash =
       internalTs = ts,
       msgBody = hw,
       internalHash,
-      previousMsgHash = internalHash
+      prevMsgHash = internalHash
     }
 
 testCreateSndMsg' :: SQLiteStore -> PrevSndMsgHash -> ConnId -> SndMsgData -> Expectation

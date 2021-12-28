@@ -87,7 +87,7 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, loadTLSServerParams, runTransportServer)
-import Simplex.Messaging.Util (bshow, tryError, unlessM)
+import Simplex.Messaging.Util (bshow, handleError, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
@@ -387,15 +387,10 @@ sendMessage' c connId msg =
         storeSentMsg = do
           internalTs <- liftIO getCurrentTime
           withStore $ \st -> do
-            (internalId, internalSndId, previousMsgHash) <- updateSndIds st connId
+            (internalId, internalSndId, prevMsgHash) <- updateSndIds st connId
             let msgBody =
-                  serializeASMPMessage
-                    ASMPMessage
-                      { senderMsgId = unSndId internalSndId,
-                        senderTimestamp = internalTs,
-                        previousMsgHash,
-                        agentMessage = A_MSG msg
-                      }
+                  SMP.serializeClientMessage . agentToClientMsg $
+                    AgentMessage (AHeader (unSndId internalSndId) prevMsgHash) (A_MSG msg)
                 internalHash = C.sha256Hash msgBody
                 msgData = SndMsgData {..}
             createSndMsg st connId msgData
@@ -506,20 +501,15 @@ getSMPServer =
 
 sendControlMessage :: AgentMonad m => AgentClient -> SndQueue -> AMessage -> m ()
 sendControlMessage c sq agentMessage = do
-  senderTimestamp <- liftIO getCurrentTime
-  sendAgentMessage c sq . serializeASMPMessage $
-    ASMPMessage
-      { senderMsgId = 0,
-        senderTimestamp,
-        previousMsgHash = "",
-        agentMessage
-      }
+  sendAgentMessage c sq . SMP.serializeClientMessage . agentToClientMsg $
+    AgentMessage (AHeader 0 "") agentMessage
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
   withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
-    Left e -> liftIO $ print e
+    Left e -> do
+      liftIO $ print e
     Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTransmission -> m ()
@@ -533,28 +523,39 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
     processSMP :: SConnType c -> ConnData -> RcvQueue -> m ()
     processSMP cType ConnData {connId} rq@RcvQueue {rcvDhSecret, e2ePrivKey, e2eShared, status} =
       case cmd of
-        SMP.MSG srvMsgId srvTs msgBody' -> do
-          -- TODO deduplicate with previously received
-          msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
-          SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey, emNonce, emBody} <-
-            liftEither $ parse SMP.encMessageP (AGENT A_MESSAGE) msgBody
-          msg <- case e2eShared of
-            Nothing -> do
-              let e2eDhSecret = C.dh' e2ePubKey e2ePrivKey
-              agentCbDecrypt e2eDhSecret emNonce emBody
-            Just (e2eSndPubKey, e2eDhSecret)
-              | e2eSndPubKey == e2ePubKey -> agentCbDecrypt e2eDhSecret emNonce emBody
-              | otherwise -> throwError (AGENT A_MESSAGE)
-          let msgHash = C.sha256Hash msg
-          case parseASMPMessage msg of
-            Left e -> notify (ERR e) >> sendAck c rq
-            Right (SMPConfirmation smpConf) -> smpConfirmation smpConf >> sendAck c rq
-            Right ASMPMessage {agentMessage, senderMsgId, senderTimestamp, previousMsgHash} ->
-              case agentMessage of
-                HELLO -> helloMsg >> sendAck c rq
-                REPLY cReq -> replyMsg cReq >> sendAck c rq
-                A_MSG body -> agentClientMsg previousMsgHash (senderMsgId, senderTimestamp) (srvMsgId, srvTs) body msgHash
-                A_INV cReq cInfo -> smpInvitation cReq cInfo >> sendAck c rq
+        SMP.MSG srvMsgId srvTs msgBody' ->
+          notifyAndAck `handleError` do
+            -- TODO deduplicate with previously received
+            msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
+            encMessage@SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey} <-
+              liftEither $ parse SMP.encMessageP (AGENT A_MESSAGE) msgBody
+            case e2eShared of
+              Nothing -> do
+                let e2eDhSecret = C.dh' e2ePubKey e2ePrivKey
+                (_, agentMessage) <-
+                  decryptAgentMessage e2eDhSecret encMessage
+                case agentMessage of
+                  AgentConfirmation senderKey connInfo -> do
+                    smpConfirmation SMPConfMsg {senderKey, e2ePubKey, connInfo}
+                    ack
+                  AgentInvitation cReq cInfo -> smpInvitation cReq cInfo >> ack
+                  _ -> prohibitedAndAck
+              Just (e2eSndPubKey, e2eDhSecret)
+                | e2eSndPubKey /= e2ePubKey -> prohibitedAndAck
+                | otherwise -> do
+                  (msg, agentMessage) <-
+                    decryptAgentMessage e2eDhSecret encMessage
+                  case agentMessage of
+                    AgentMessage AHeader {sndMsgId, prevMsgHash} aMsg -> case aMsg of
+                      HELLO -> helloMsg >> ack
+                      REPLY cReq -> replyMsg cReq >> ack
+                      A_MSG body -> do
+                        -- note that there is no ACK sent here, it is sent with agent's user ACK command
+                        -- TODO add hash to other messages
+                        let msgHash = C.sha256Hash msg
+                        -- TODO remove first timestamp
+                        agentClientMsg prevMsgHash (sndMsgId, srvTs) (srvMsgId, srvTs) body msgHash
+                    _ -> prohibitedAndAck
         SMP.END -> do
           removeSubscription c connId
           logServer "<--" c srv rId "END"
@@ -566,8 +567,24 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         notify :: ACommand 'Agent -> m ()
         notify msg = atomically $ writeTBQueue subQ ("", connId, msg)
 
+        notifyAndAck :: AgentErrorType -> m ()
+        notifyAndAck e = notify (ERR e) >> ack
+
         prohibited :: m ()
         prohibited = notify . ERR $ AGENT A_PROHIBITED
+
+        ack :: m ()
+        ack = sendAck c rq
+
+        prohibitedAndAck :: m ()
+        prohibitedAndAck = prohibited >> ack
+
+        decryptAgentMessage :: C.DhSecretX25519 -> SMP.EncMessage -> m (ByteString, AgentMessage)
+        decryptAgentMessage e2eDhSecret SMP.EncMessage {emNonce, emBody} = do
+          msg <- agentCbDecrypt e2eDhSecret emNonce emBody
+          agentMessage <-
+            liftEither $ clientToAgentMsg =<< parse SMP.clientMessageP (AGENT A_MESSAGE) msg
+          pure (msg, agentMessage)
 
         smpConfirmation :: SMPConfMsg -> m ()
         smpConfirmation senderConf@SMPConfMsg {connInfo} = do

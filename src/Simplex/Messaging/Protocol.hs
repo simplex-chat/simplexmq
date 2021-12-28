@@ -50,6 +50,8 @@ module Simplex.Messaging.Protocol
     SignedRawTransmission,
     EncMessage (..),
     PubHeader (..),
+    ClientMessage (..),
+    PrivHeader (..),
     CorrId (..),
     QueueId,
     RecipientId,
@@ -74,6 +76,8 @@ module Simplex.Messaging.Protocol
     errorTypeP,
     serializeEncMessage,
     encMessageP,
+    serializeClientMessage,
+    clientMessageP,
 
     -- * TCP transport functions
     tPut,
@@ -276,29 +280,29 @@ encMessageP = do
   emBody <- A.takeByteString
   pure EncMessage {emHeader, emNonce, emBody}
 
-data SMPMessage = SMPMessage SMPPrivHeader ByteString
+data ClientMessage = ClientMessage PrivHeader ByteString
 
-data SMPPrivHeader
-  = SMPConfHeader C.PublicKeyX25519
-  | SMPEmptyHeader
+data PrivHeader
+  = PHConfirmation C.APublicVerifyKey
+  | PHEmpty
 
-serializeSMPPrivHeader :: SMPPrivHeader -> ByteString
-serializeSMPPrivHeader = \case
-  SMPEmptyHeader -> " "
-  SMPConfHeader k -> "K" <> C.encodeLenKey' k
+serializePrivHeader :: PrivHeader -> ByteString
+serializePrivHeader = \case
+  PHConfirmation k -> "K" <> C.encodeLenKey k
+  PHEmpty -> " "
 
-smpPrivHeaderP :: Parser SMPPrivHeader
-smpPrivHeaderP =
+privHeaderP :: Parser PrivHeader
+privHeaderP =
   A.anyChar >>= \case
-    ' ' -> pure SMPEmptyHeader
-    'K' -> SMPConfHeader <$> C.binaryLenKeyP
-    _ -> fail "invalid SMPPrivHeader"
+    'K' -> PHConfirmation <$> C.binaryLenKeyP
+    ' ' -> pure PHEmpty
+    _ -> fail "invalid PrivHeader"
 
-serializeSMPMessage :: SMPMessage -> ByteString
-serializeSMPMessage (SMPMessage h msg) = serializeSMPPrivHeader h <> msg
+serializeClientMessage :: ClientMessage -> ByteString
+serializeClientMessage (ClientMessage h msg) = serializePrivHeader h <> msg
 
-smpMessageP :: Parser SMPMessage
-smpMessageP = SMPMessage <$> smpPrivHeaderP <*> A.takeByteString
+clientMessageP :: Parser ClientMessage
+clientMessageP = ClientMessage <$> privHeaderP <*> A.takeByteString
 
 -- | Base-64 encoded string.
 type Encoded = ByteString

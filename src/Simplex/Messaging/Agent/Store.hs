@@ -229,7 +229,7 @@ data SndMsgData = SndMsgData
     internalTs :: InternalTs,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
-    previousMsgHash :: MsgHash
+    prevMsgHash :: MsgHash
   }
 
 data PendingMsg = PendingMsg
@@ -237,10 +237,6 @@ data PendingMsg = PendingMsg
     msgId :: InternalId
   }
   deriving (Show)
-
--- * Broadcast types
-
-type BroadcastId = ByteString
 
 -- * Message types
 

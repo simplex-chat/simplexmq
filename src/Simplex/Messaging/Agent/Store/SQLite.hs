@@ -970,7 +970,7 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
       ":internal_id" := internalId,
       ":snd_status" := SndMsgCreated,
       ":internal_hash" := internalHash,
-      ":previous_msg_hash" := previousMsgHash
+      ":previous_msg_hash" := prevMsgHash
     ]
 
 updateHashSnd_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()

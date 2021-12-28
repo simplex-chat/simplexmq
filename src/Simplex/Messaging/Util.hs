@@ -67,6 +67,10 @@ tryError :: MonadError e m => m a -> m (Either e a)
 tryError action = (Right <$> action) `catchError` (pure . Left)
 {-# INLINE tryError #-}
 
+handleError :: MonadError e m => (e -> m a) -> m a -> m a
+handleError = flip catchError
+{-# INLINE handleError #-}
+
 tryE :: Monad m => ExceptT e m a -> ExceptT e m (Either e a)
 tryE m = (Right <$> m) `catchE` (pure . Left)
 {-# INLINE tryE #-}

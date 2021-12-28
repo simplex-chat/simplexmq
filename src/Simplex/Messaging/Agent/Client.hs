@@ -51,7 +51,6 @@ import Data.Maybe (isNothing)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
-import Data.Time.Clock
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -305,13 +304,15 @@ logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
 sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfMsg -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} smpConf =
+sendConfirmation c sq@SndQueue {server, sndId} SMPConfMsg {senderKey, connInfo} =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: m MsgBody
-    mkConfirmation = agentCbEncrypt sq . serializeASMPMessage $ SMPConfirmation smpConf
+    mkConfirmation =
+      agentCbEncrypt sq . SMP.serializeClientMessage . agentToClientMsg $
+        AgentConfirmation senderKey connInfo
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> RetryInterval -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
@@ -324,14 +325,8 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
   where
     mkHello :: m ByteString
     mkHello = do
-      senderTimestamp <- liftIO getCurrentTime
-      agentCbEncrypt sq . serializeASMPMessage $
-        ASMPMessage
-          { senderMsgId = 0,
-            senderTimestamp,
-            previousMsgHash = "",
-            agentMessage = HELLO
-          }
+      agentCbEncrypt sq . SMP.serializeClientMessage . agentToClientMsg $
+        AgentMessage (AHeader 0 "") HELLO
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} cReq connInfo = do
@@ -340,15 +335,9 @@ sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} cReq connInfo = 
     liftSMP $ sendSMPMessage smp Nothing senderId msg
   where
     mkInvitation :: m ByteString
-    mkInvitation = do
-      senderTimestamp <- liftIO getCurrentTime
-      agentCbEncryptOnce dhPublicKey . serializeASMPMessage $
-        ASMPMessage
-          { senderMsgId = 0,
-            senderTimestamp,
-            previousMsgHash = "",
-            agentMessage = A_INV cReq connInfo
-          }
+    mkInvitation =
+      agentCbEncryptOnce dhPublicKey . SMP.serializeClientMessage . agentToClientMsg $
+        AgentInvitation cReq connInfo
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
 secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
