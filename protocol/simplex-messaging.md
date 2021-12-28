@@ -613,17 +613,16 @@ SMP transmission structure for sent messages:
  398- | signature SP sessionId SP corrId SP queueId SP %s"SEND" SP
       ....... SMPEncMessage (= 15968 bytes)
        126- | publicMessageHeader
+         24 | nonce for SMPMessage
             ------- SMPMessage (E2E encrypted, = 15842 bytes)
                 2 | originalLength
               16- | privateMsgHeader
                   .......
                         | client message (<= 15784 bytes)
                   .......
-               16 | auth tag
-               24 | nonce
                0+ | E2E encrypted pad
             ------- E2E encrypted end
-            |
+         16 | auth tag for SMPMessage
       ....... SMPEncMessage end
   16+ | transmission pad
 ------- transmission end
@@ -639,6 +638,7 @@ SMP transmission structure for received messages:
           2 | originalLength
             ....... SMPEncMessage (= 15968 bytes)
              126- | publicMessageHeader
+               24 | nonce for SMPMessage
                   ------- SMPMessage (E2E encrypted, = 15842 bytes)
                       2 | originalLength
                     16- | privateMsgHeader
@@ -661,11 +661,9 @@ SMP transmission structure for received messages:
                               ....... E2E double-ratchet encrypted end
                               |
                         ....... client message end
-                     16 | auth tag
-                     24 | nonce
                      0+ | SMPMessage pad
                   ------- SMPMessage end
-                  |
+               16 | auth tag for SMPMessage
             ....... SMPEncMessage end
          16 | auth tag (msgId is used as nonce)
          0+ | serverEncryptedMsg pad

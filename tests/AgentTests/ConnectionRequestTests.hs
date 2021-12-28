@@ -4,7 +4,6 @@
 
 module AgentTests.ConnectionRequestTests where
 
-import qualified Crypto.PubKey.RSA as R
 import Data.ByteString (ByteString)
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
@@ -49,7 +48,7 @@ connectionRequest =
     ConnReqData
       { crScheme = appServer,
         crSmpQueues = [queue],
-        crEncryptKey = C.APublicEncryptKey C.SRSA (C.PublicKeyRSA $ R.PublicKey 1 0 0)
+        crEncryption = ConnectionEncryption
       }
 
 connectionRequestTests :: Spec
@@ -69,12 +68,12 @@ connectionRequestTests =
       serializeConnReq connectionRequest
         `shouldBe` "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
         <> testDhKeyStrUri
-        <> "&e2e=rsa%3AMBowDQYJKoZIhvcNAQEBBQADCQAwBgIBAAIBAA%3D%3D"
+        <> "&e2e="
     it "should parse connection requests" $ do
       parseAll
         connReqP
         ( "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
             <> testDhKeyStrUri
-            <> "&e2e=rsa%3AMBowDQYJKoZIhvcNAQEBBQADCQAwBgIBAAIBAA%3D%3D"
+            <> "&e2e="
         )
         `shouldBe` Right connectionRequest

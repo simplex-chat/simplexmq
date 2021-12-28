@@ -51,6 +51,7 @@ module Simplex.Messaging.Agent.Protocol
     AConnectionRequest (..),
     ConnReqData (..),
     ConnReqScheme (..),
+    ConnectionEncryption (..),
     simplexChat,
     AgentErrorType (..),
     CommandErrorType (..),
@@ -63,8 +64,6 @@ module Simplex.Messaging.Agent.Protocol
     ConnId,
     ConfirmationId,
     InvitationId,
-    AckMode (..),
-    OnOff (..),
     MsgIntegrity (..),
     MsgErrorType (..),
     QueueStatus (..),
@@ -300,7 +299,7 @@ data ASMPMessage
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents
 data AMessage where
   -- | the first message in the queue to validate it is secured
-  HELLO :: C.APublicVerifyKey -> AckMode -> AMessage
+  HELLO :: AMessage
   -- | reply queue information
   REPLY :: ConnectionRequest CMInvitation -> AMessage
   -- | agent envelope for the client message
@@ -355,16 +354,14 @@ serializeASMPMessage = \case
 
 agentMessageP :: Parser AMessage
 agentMessageP =
-  "HELLO " *> hello
+  "HELLO" $> HELLO
     <|> "REPLY " *> reply
     <|> "MSG " *> a_msg
     <|> "INV " *> a_inv
   where
-    hello = HELLO <$> C.strPubKeyP <*> ackMode
     reply = REPLY <$> connReqP'
     a_msg = A_MSG <$> binaryBodyP <* A.endOfLine
     a_inv = A_INV <$> connReqP' <* A.space <*> binaryBodyP <* A.endOfLine
-    ackMode = AckMode <$> (" NO_ACK" $> Off <|> pure On)
 
 -- | SMP server location parser.
 smpServerP :: Parser SMPServer
@@ -376,7 +373,7 @@ smpServerP = SMPServer <$> server <*> optional port <*> kHash
 
 serializeAgentMessage :: AMessage -> ByteString
 serializeAgentMessage = \case
-  HELLO verifyKey ackMode -> "HELLO " <> C.serializePubKey verifyKey <> if ackMode == AckMode Off then " NO_ACK" else ""
+  HELLO -> "HELLO"
   REPLY cReq -> "REPLY " <> serializeConnReq' cReq
   A_MSG body -> "MSG " <> serializeBinary body <> "\n"
   A_INV cReq cInfo -> B.unwords ["INV", serializeConnReq' cReq, serializeBinary cInfo] <> "\n"
@@ -402,7 +399,7 @@ serializeConnReq' = \case
   CRInvitation crData -> serialize CMInvitation crData
   CRContact crData -> serialize CMContact crData
   where
-    serialize crMode ConnReqData {crScheme, crSmpQueues, crEncryptKey} =
+    serialize crMode ConnReqData {crScheme, crSmpQueues, crEncryption = _} =
       sch <> "/" <> m <> "#/" <> queryStr
       where
         sch = case crScheme of
@@ -411,9 +408,8 @@ serializeConnReq' = \case
         m = case crMode of
           CMInvitation -> "invitation"
           CMContact -> "contact"
-        queryStr = renderSimpleQuery True [("smp", queues), ("e2e", key)]
+        queryStr = renderSimpleQuery True [("smp", queues), ("e2e", "")]
         queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList crSmpQueues
-        key = C.serializePubKeyUri crEncryptKey
 
 connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
 connReqP' = do
@@ -428,8 +424,8 @@ connReqP = do
   crMode <- "/" *> mode <* "#/?"
   query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
   crSmpQueues <- paramP "smp" smpQueues query
-  crEncryptKey <- paramP "e2e" C.strPubKeyUriP query
-  let cReq = ConnReqData {crScheme, crSmpQueues, crEncryptKey}
+  let crEncryption = ConnectionEncryption
+      cReq = ConnReqData {crScheme, crSmpQueues, crEncryption}
   pure $ case crMode of
     CMInvitation -> ACR SCMInvitation $ CRInvitation cReq
     CMContact -> ACR SCMContact $ CRContact cReq
@@ -504,12 +500,6 @@ type ConfirmationId = ByteString
 
 type InvitationId = ByteString
 
--- | Connection modes.
-data OnOff = On | Off deriving (Eq, Show, Read)
-
--- | Message acknowledgement mode of the connection.
-newtype AckMode = AckMode OnOff deriving (Eq, Show)
-
 -- | SMP queue information sent out-of-band.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
@@ -540,11 +530,15 @@ deriving instance Show AConnectionRequest
 data ConnReqData = ConnReqData
   { crScheme :: ConnReqScheme,
     crSmpQueues :: L.NonEmpty SMPQueueUri,
-    crEncryptKey :: C.APublicEncryptKey
+    crEncryption :: ConnectionEncryption
   }
   deriving (Eq, Show)
 
 data ConnReqScheme = CRSSimplex | CRSAppServer HostName (Maybe ServiceName)
+  deriving (Eq, Show)
+
+-- TODO this is a stub for double ratchet E2E encryption parameters (2 public DH keys)
+data ConnectionEncryption = ConnectionEncryption
   deriving (Eq, Show)
 
 simplexChat :: ConnReqScheme
@@ -641,7 +635,7 @@ data SMPAgentError
   | -- | cannot RSA/AES-decrypt or parse decrypted header
     A_ENCRYPTION
   | -- | invalid signature
-    A_SIGNATURE
+    A_SIGNATURE -- TODO remove
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU

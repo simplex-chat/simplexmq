@@ -75,6 +75,7 @@ module Simplex.Messaging.Crypto
     encodePubKey,
     encodePubKey',
     binaryPubKeyP,
+    encodePrivKey,
 
     -- * E2E hybrid encryption scheme
     E2EEncryptionVersion,
@@ -122,9 +123,11 @@ module Simplex.Messaging.Crypto
     ivSize,
 
     -- * NaCl crypto_box
+    CbNonce (unCbNonce),
     cbEncrypt,
     cbDecrypt,
     cbNonce,
+    randomCbNonce,
 
     -- * SHA256 hash
     sha256Hash,
@@ -170,7 +173,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
 import Data.ByteString.Lazy (fromStrict, toStrict)
-import Data.Composition ((.:))
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import Data.String
@@ -1141,8 +1143,8 @@ dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
 dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
-cbEncrypt :: DhSecret X25519 -> ByteString -> ByteString -> Int -> Either CryptoError ByteString
-cbEncrypt secret nonce msg paddedLen = cryptoBox <$> pad msg paddedLen
+cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
+cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox <$> pad msg paddedLen
   where
     cryptoBox s = BA.convert tag `B.append` c
       where
@@ -1150,8 +1152,8 @@ cbEncrypt secret nonce msg paddedLen = cryptoBox <$> pad msg paddedLen
         tag = Poly1305.auth rs c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
-cbDecrypt :: DhSecret X25519 -> ByteString -> ByteString -> Either CryptoError ByteString
-cbDecrypt secret nonce packet
+cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
+cbDecrypt secret (CbNonce nonce) packet
   | B.length packet < 16 = Left CBDecryptError
   | BA.constEq tag' tag = unPad msg
   | otherwise = Left CBDecryptError
@@ -1160,13 +1162,18 @@ cbDecrypt secret nonce packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
 
-cbNonce :: ByteString -> ByteString
+newtype CbNonce = CbNonce {unCbNonce :: ByteString}
+
+cbNonce :: ByteString -> CbNonce
 cbNonce s
-  | len == 24 = s
-  | len > 24 = fst $ B.splitAt 24 s
-  | otherwise = s <> B.replicate (24 - len) (toEnum 0)
+  | len == 24 = CbNonce s
+  | len > 24 = CbNonce . fst $ B.splitAt 24 s
+  | otherwise = CbNonce $ s <> B.replicate (24 - len) (toEnum 0)
   where
     len = B.length s
+
+randomCbNonce :: IO CbNonce
+randomCbNonce = CbNonce <$> getRandomBytes 24
 
 xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')

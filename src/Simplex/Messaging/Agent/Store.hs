@@ -42,7 +42,6 @@ class Monad m => MonadAgentStore s m where
   upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueActive :: s -> RcvQueue -> C.APublicVerifyKey -> m ()
   setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.PublicKeyX25519 -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
@@ -87,9 +86,7 @@ data RcvQueue = RcvQueue
     e2eShared :: Maybe (C.PublicKeyX25519, C.DhSecretX25519),
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
-    -- | TODO keys used for E2E encryption - these will change with double ratchet
-    decryptKey :: C.APrivateDecryptKey,
-    verifyKey :: Maybe C.APublicVerifyKey,
+    -- | queue status
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -105,9 +102,7 @@ data SndQueue = SndQueue
     e2ePubKey :: C.PublicKeyX25519,
     -- | shared DH secret agreed for simple per-queue e2e encryption
     e2eDhSecret :: C.DhSecretX25519,
-    -- | TODO keys used for E2E encryption - these will change with double ratchet
-    encryptKey :: C.APublicEncryptKey,
-    signKey :: C.APrivateSignKey,
+    -- | queue status
     status :: QueueStatus
   }
   deriving (Eq, Show)

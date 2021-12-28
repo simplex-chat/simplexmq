@@ -12,7 +12,6 @@ import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Monad (replicateM_)
 import Control.Monad.Except (ExceptT, runExceptT)
-import qualified Crypto.PubKey.RSA as R
 import Crypto.Random (drgNew)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Text as T
@@ -150,16 +149,7 @@ cData1 :: ConnData
 cData1 = ConnData {connId = "conn1"}
 
 testPrivateSignKey :: C.APrivateSignKey
-testPrivateSignKey = C.APrivateSignKey C.SRSA testPrivateKey
-
-testPrivateDecryptKey :: C.APrivateDecryptKey
-testPrivateDecryptKey = C.APrivateDecryptKey C.SRSA testPrivateKey
-
-testPublicEncryptKey :: C.APublicEncryptKey
-testPublicEncryptKey = C.APublicEncryptKey C.SRSA testPublicKey
-
-testPublicKey :: C.PublicKey 'C.RSA
-testPublicKey = C.PublicKeyRSA $ R.PublicKey 1 2 3
+testPrivateSignKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
 testPubDhKey :: C.PublicKeyX25519
 testPubDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
@@ -169,24 +159,6 @@ testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOp
 
 testDhSecret :: C.DhSecretX25519
 testDhSecret = "01234567890123456789012345678901"
-
-testPrivateKey :: C.PrivateKey 'C.RSA
-testPrivateKey =
-  C.PrivateKeyRSA
-    R.PrivateKey
-      { private_pub =
-          R.PublicKey
-            { public_size = 1,
-              public_n = 2,
-              public_e = 0
-            },
-        private_d = 3,
-        private_p = 0,
-        private_q = 0,
-        private_dP = 0,
-        private_dQ = 0,
-        private_qinv = 0
-      }
 
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
@@ -198,8 +170,6 @@ rcvQueue1 =
       e2ePrivKey = testPrivDhKey,
       e2eShared = Nothing,
       sndId = Just "2345",
-      decryptKey = testPrivateDecryptKey,
-      verifyKey = Nothing,
       status = New
     }
 
@@ -211,8 +181,6 @@ sndQueue1 =
       sndPrivateKey = testPrivateSignKey,
       e2ePubKey = testPubDhKey,
       e2eDhSecret = testDhSecret,
-      encryptKey = testPublicEncryptKey,
-      signKey = testPrivateSignKey,
       status = New
     }
 
@@ -353,8 +321,6 @@ testUpgradeRcvConnToDuplex =
               sndPrivateKey = testPrivateSignKey,
               e2ePubKey = testPubDhKey,
               e2eDhSecret = testDhSecret,
-              encryptKey = testPublicEncryptKey,
-              signKey = testPrivateSignKey,
               status = New
             }
     upgradeRcvConnToDuplex store "conn1" anotherSndQueue
@@ -377,8 +343,6 @@ testUpgradeSndConnToDuplex =
               e2ePrivKey = testPrivDhKey,
               e2eShared = Nothing,
               sndId = Just "4567",
-              decryptKey = testPrivateDecryptKey,
-              verifyKey = Nothing,
               status = New
             }
     upgradeSndConnToDuplex store "conn1" anotherRcvQueue

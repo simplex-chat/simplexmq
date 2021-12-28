@@ -250,24 +250,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
 
-  setRcvQueueActive :: SQLiteStore -> RcvQueue -> C.APublicVerifyKey -> m ()
-  setRcvQueueActive st RcvQueue {rcvId, server = SMPServer {host, port}} verifyKey =
-    -- ? throw error if queue does not exist?
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE rcv_queues
-          SET verify_key = :verify_key, status = :status
-          WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
-        |]
-        [ ":verify_key" := Just verifyKey,
-          ":status" := Active,
-          ":host" := host,
-          ":port" := serializePort_ port,
-          ":rcv_id" := rcvId
-        ]
-
   setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.PublicKeyX25519 -> C.DhSecretX25519 -> m ()
   setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eSndPubKey e2eDhSecret =
     liftIO . withTransaction st $ \db ->
@@ -631,24 +613,6 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
       toField g, toField h, toField i, toField j, toField k, toField l
     ]
 
--- TODO remove two instances below when encrypt/decrypt sign/verify keys are removed from queues
-
-instance (FromField a, FromField b, FromField c, FromField d, FromField e,
-          FromField f, FromField g, FromField h, FromField i, FromField j,
-          FromField k, FromField l, FromField m) =>
-  FromRow (a,b,c,d,e,f,g,h,i,j,k,l,m) where
-  fromRow = (,,,,,,,,,,,,) <$> field <*> field <*> field <*> field <*> field
-                          <*> field <*> field <*> field <*> field <*> field
-                          <*> field <*> field <*> field
-
-instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
-          ToField g, ToField h, ToField i, ToField j, ToField k, ToField l, ToField m) =>
-  ToRow (a,b,c,d,e,f,g,h,i,j,k,l,m) where
-  toRow (a,b,c,d,e,f,g,h,i,j,k,l,m) =
-    [ toField a, toField b, toField c, toField d, toField e, toField f,
-      toField g, toField h, toField i, toField j, toField k, toField l, toField m
-    ]
-
 {- ORMOLU_ENABLE -}
 
 -- * Server upsert helper
@@ -678,9 +642,9 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_snd_pub_key, e2e_dh_secret, snd_id, decrypt_key, verify_key, status)
+        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_snd_pub_key, e2e_dh_secret, snd_id, status)
       VALUES
-        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_snd_pub_key,:e2e_dh_secret,:snd_id,:decrypt_key,:verify_key,:status);
+        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_snd_pub_key,:e2e_dh_secret,:snd_id,:status);
     |]
     [ ":host" := host server,
       ":port" := port_,
@@ -692,8 +656,6 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":e2e_snd_pub_key" := e2eSndPubKey,
       ":e2e_dh_secret" := e2eDhSecret,
       ":snd_id" := sndId,
-      ":decrypt_key" := decryptKey,
-      ":verify_key" := verifyKey,
       ":status" := status
     ]
 
@@ -726,9 +688,9 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     dbConn
     [sql|
       INSERT INTO snd_queues
-        ( host, port, snd_id, conn_alias, snd_private_key, e2e_pub_key, e2e_dh_secret, encrypt_key, sign_key, status)
+        ( host, port, snd_id, conn_alias, snd_private_key, e2e_pub_key, e2e_dh_secret, status)
       VALUES
-        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_pub_key,:e2e_dh_secret,:encrypt_key,:sign_key,:status);
+        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_pub_key,:e2e_dh_secret,:status);
     |]
     [ ":host" := host server,
       ":port" := port_,
@@ -737,8 +699,6 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
       ":snd_private_key" := sndPrivateKey,
       ":e2e_pub_key" := e2ePubKey,
       ":e2e_dh_secret" := e2eDhSecret,
-      ":encrypt_key" := encryptKey,
-      ":sign_key" := signKey,
       ":status" := status
     ]
 
@@ -790,17 +750,17 @@ getRcvQueueByConnAlias_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.e2e_priv_key, q.e2e_snd_pub_key, q.e2e_dh_secret, q.snd_id, q.decrypt_key, q.verify_key, q.status
+          q.e2e_priv_key, q.e2e_snd_pub_key, q.e2e_dh_secret, q.snd_id, q.status
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eSndPubKey, e2eDhSecret, sndId, decryptKey, verifyKey, status)] =
+    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eSndPubKey, e2eDhSecret, sndId, status)] =
       let server = SMPServer host (deserializePort_ port) keyHash
           e2eShared = (,) <$> e2eSndPubKey <*> e2eDhSecret
-       in Just RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eShared, sndId, decryptKey, verifyKey, status}
+       in Just RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eShared, sndId, status}
     rcvQueue _ = Nothing
 
 getSndQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
@@ -810,14 +770,14 @@ getSndQueueByConnAlias_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key,
-          q.e2e_pub_key, q.e2e_dh_secret, q.encrypt_key, q.sign_key, q.status
+          q.e2e_pub_key, q.e2e_dh_secret, q.status
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, encryptKey, signKey, status)] =
+    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, status)] =
       let server = SMPServer host (deserializePort_ port) keyHash
        in Just
             SndQueue
@@ -826,8 +786,6 @@ getSndQueueByConnAlias_ dbConn connId =
                 sndPrivateKey,
                 e2ePubKey,
                 e2eDhSecret,
-                encryptKey,
-                signKey,
                 status
               }
     sndQueue _ = Nothing

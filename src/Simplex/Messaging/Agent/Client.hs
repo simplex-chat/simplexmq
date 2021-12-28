@@ -22,14 +22,12 @@ module Simplex.Messaging.Agent.Client
     sendHello,
     secureQueue,
     sendAgentMessage,
-    decryptAndVerify,
-    verifyMessage,
+    agentCbDecrypt,
     sendAck,
     suspendQueue,
     deleteQueue,
     logServer,
     removeSubscription,
-    cryptoError,
     addActivation,
     getActivation,
     removeActivation,
@@ -43,6 +41,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
+import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -60,7 +59,8 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
-import Simplex.Messaging.Transport (smpBlockSize)
+import qualified Simplex.Messaging.Protocol as SMP
+-- import Simplex.Messaging.Transport (smpBlockSize)
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -225,7 +225,7 @@ smpClientError = \case
   SMPTransportError e -> BROKER $ TRANSPORT e
   e -> INTERNAL $ show e
 
-newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri, C.APublicEncryptKey)
+newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri)
 newRcvQueue c srv =
   asks (cmdSignAlg . config) >>= \case
     C.SignAlg a -> newRcvQueue_ a c srv
@@ -235,7 +235,7 @@ newRcvQueue_ ::
   C.SAlgorithm a ->
   AgentClient ->
   SMPServer ->
-  m (RcvQueue, SMPQueueUri, C.APublicEncryptKey)
+  m (RcvQueue, SMPQueueUri)
 newRcvQueue_ a c srv = do
   size <- asks $ rsaKeySize . config
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair size a
@@ -245,7 +245,6 @@ newRcvQueue_ a c srv = do
   QIK {rcvId, sndId, rcvPublicDhKey} <-
     withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
-  (encryptKey, decryptKey) <- liftIO $ C.generateEncryptionKeyPair size C.SRSA
   let rq =
         RcvQueue
           { server = srv,
@@ -255,11 +254,9 @@ newRcvQueue_ a c srv = do
             e2ePrivKey,
             e2eShared = Nothing,
             sndId = Just sndId,
-            decryptKey,
-            verifyKey = Nothing,
             status = New
           }
-  pure (rq, SMPQueueUri srv sndId e2eDhKey, encryptKey)
+  pure (rq, SMPQueueUri srv sndId e2eDhKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
@@ -315,30 +312,30 @@ sendConfirmation c sq@SndQueue {server, sndId} smpConf =
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: m MsgBody
-    mkConfirmation = encryptAndSign sq . serializeASMPMessage $ SMPConfirmation smpConf
+    mkConfirmation = agentCbEncrypt sq . serializeASMPMessage $ SMPConfirmation smpConf
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> C.APublicVerifyKey -> RetryInterval -> m ()
-sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
+sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> RetryInterval -> m ()
+sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
   withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
-    msg <- mkHello $ AckMode On
+    msg <- mkHello
     liftSMP . withRetryInterval ri $ \loop ->
       sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
         SMPServerError AUTH -> loop
         e -> throwE e
   where
-    mkHello :: AckMode -> m ByteString
-    mkHello ackMode = do
+    mkHello :: m ByteString
+    mkHello = do
       senderTimestamp <- liftIO getCurrentTime
-      encryptAndSign sq . serializeASMPMessage $
+      agentCbEncrypt sq . serializeASMPMessage $
         ASMPMessage
           { senderMsgId = 0,
             senderTimestamp,
             previousMsgHash = "",
-            agentMessage = HELLO verifyKey ackMode
+            agentMessage = HELLO
           }
 
-sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> C.APublicEncryptKey -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
-sendInvitation c SMPQueueUri {smpServer, senderId} encryptKey cReq connInfo = do
+sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
+sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} cReq connInfo = do
   withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
     msg <- mkInvitation
     liftSMP $ sendSMPMessage smp Nothing senderId msg
@@ -346,7 +343,7 @@ sendInvitation c SMPQueueUri {smpServer, senderId} encryptKey cReq connInfo = do
     mkInvitation :: m ByteString
     mkInvitation = do
       senderTimestamp <- liftIO getCurrentTime
-      encryptUnsigned encryptKey . serializeASMPMessage $
+      agentCbEncryptOnce dhPublicKey . serializeASMPMessage $
         ASMPMessage
           { senderMsgId = 0,
             senderTimestamp,
@@ -377,44 +374,35 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
 sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
 sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
   withLogSMP_ c server sndId "SEND <message>" $ \smp -> do
-    msg' <- encryptAndSign sq msg
+    msg' <- agentCbEncrypt sq msg
     liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg'
 
-encryptAndSign :: AgentMonad m => SndQueue -> ByteString -> m ByteString
-encryptAndSign SndQueue {encryptKey, signKey} msg = do
-  paddedSize <- asks $ (smpBlockSize -) . reservedMsgSize
-  liftError cryptoError $ do
-    enc <- C.encrypt encryptKey paddedSize msg
-    sig <- C.sign signKey enc
-    pure $ C.signatureBytes sig <> enc
+agentCbEncrypt :: AgentMonad m => SndQueue -> ByteString -> m ByteString
+agentCbEncrypt SndQueue {e2ePubKey, e2eDhSecret} msg = do
+  emNonce <- liftIO C.randomCbNonce
+  emBody <-
+    liftEither . first cryptoError $
+      C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
+  -- TODO per-queue client version
+  let emHeader = SMP.PubHeader SMP.clientVersion e2ePubKey
+  pure $ SMP.serializeEncMessage SMP.EncMessage {emHeader, emNonce, emBody}
 
-decryptAndVerify :: AgentMonad m => RcvQueue -> MsgBody -> m ByteString
-decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
-  verifyMessage verifyKey msg
-    >>= liftError cryptoError . C.decrypt decryptKey
+agentCbEncryptOnce :: AgentMonad m => C.PublicKeyX25519 -> ByteString -> m ByteString
+agentCbEncryptOnce dhRcvPubKey msg = do
+  (dhSndPubKey, dhSndPrivKey) <- liftIO $ C.generateKeyPair' 0
+  let e2eDhSecret = C.dh' dhRcvPubKey dhSndPrivKey
+  emNonce <- liftIO C.randomCbNonce
+  emBody <-
+    liftEither . first cryptoError $
+      C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
+  -- TODO per-queue client version
+  let emHeader = SMP.PubHeader SMP.clientVersion dhSndPubKey
+  pure $ SMP.serializeEncMessage SMP.EncMessage {emHeader, emNonce, emBody}
 
-encryptUnsigned :: AgentMonad m => C.APublicEncryptKey -> ByteString -> m ByteString
-encryptUnsigned encryptKey msg = do
-  paddedSize <- asks $ (smpBlockSize -) . reservedMsgSize
-  size <- asks $ rsaKeySize . config
-  liftError cryptoError $ do
-    enc <- C.encrypt encryptKey paddedSize msg
-    let sig = B.replicate size ' '
-    pure $ sig <> enc
-
-verifyMessage :: AgentMonad m => Maybe C.APublicVerifyKey -> ByteString -> m ByteString
-verifyMessage verifyKey msg = do
-  sigSize <- asks $ rsaKeySize . config
-  let (s, enc) = B.splitAt sigSize msg
-  case verifyKey of
-    Nothing -> pure enc
-    Just k ->
-      case C.decodeSignature $ B.take (C.signatureSize k) s of
-        Left _ -> throwError $ AGENT A_SIGNATURE
-        Right sig ->
-          if C.verify k sig enc
-            then pure enc
-            else throwError $ AGENT A_SIGNATURE
+agentCbDecrypt :: AgentMonad m => C.DhSecretX25519 -> C.CbNonce -> ByteString -> m ByteString
+agentCbDecrypt dhSecret nonce msg =
+  liftEither . first cryptoError $
+    C.cbDecrypt dhSecret nonce msg
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
@@ -422,4 +410,5 @@ cryptoError = \case
   C.RSADecryptError _ -> AGENT A_ENCRYPTION
   C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
   C.AESDecryptError -> AGENT A_ENCRYPTION
+  C.CBDecryptError -> AGENT A_ENCRYPTION
   e -> INTERNAL $ show e

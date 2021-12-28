@@ -28,7 +28,9 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Protocol
   ( -- * SMP protocol parameters
+    clientVersion,
     maxMessageLength,
+    e2eEncMessageLength,
 
     -- * SMP protocol types
     Command (..),
@@ -46,6 +48,8 @@ module Simplex.Messaging.Protocol
     SignedTransmission,
     SentRawTransmission,
     SignedRawTransmission,
+    EncMessage (..),
+    PubHeader (..),
     CorrId (..),
     QueueId,
     RecipientId,
@@ -68,6 +72,8 @@ module Simplex.Messaging.Protocol
     serializeErrorType,
     transmissionP,
     errorTypeP,
+    serializeEncMessage,
+    encMessageP,
 
     -- * TCP transport functions
     tPut,
@@ -110,6 +116,9 @@ clientVersion = 1
 
 maxMessageLength :: Int
 maxMessageLength = 15968
+
+e2eEncMessageLength :: Int
+e2eEncMessageLength = 15842
 
 -- | SMP protocol participants.
 data Party = Broker | Recipient | Sender | Notifier
@@ -239,24 +248,33 @@ isClient = \case
   _ -> Nothing
 
 -- | SMP message body format
-data SMPEncMessage = SMPEncMessage SMPPubHeader ByteString
+data EncMessage = EncMessage
+  { emHeader :: PubHeader,
+    emNonce :: C.CbNonce,
+    emBody :: ByteString
+  }
 
-data SMPPubHeader = SMPPubHeader
+data PubHeader = PubHeader
   { sphVersion :: Word16,
     sphE2ePubDhKey :: C.PublicKeyX25519
   }
 
-serializeSMPPubHeader :: SMPPubHeader -> ByteString
-serializeSMPPubHeader (SMPPubHeader v k) = encodeWord16 v <> C.encodeLenKey' k
+serializePubHeader :: PubHeader -> ByteString
+serializePubHeader (PubHeader v k) = encodeWord16 v <> C.encodeLenKey' k
 
-smpPubHeaderP :: Parser SMPPubHeader
-smpPubHeaderP = SMPPubHeader <$> word16P <*> C.binaryLenKeyP
+pubHeaderP :: Parser PubHeader
+pubHeaderP = PubHeader <$> word16P <*> C.binaryLenKeyP
 
-serializeSMPEncMessage :: SMPEncMessage -> ByteString
-serializeSMPEncMessage (SMPEncMessage h msg) = serializeSMPPubHeader h <> msg
+serializeEncMessage :: EncMessage -> ByteString
+serializeEncMessage EncMessage {emHeader, emNonce, emBody} =
+  serializePubHeader emHeader <> C.unCbNonce emNonce <> emBody
 
-smpEncMessageP :: Parser SMPEncMessage
-smpEncMessageP = SMPEncMessage <$> smpPubHeaderP <*> A.takeByteString
+encMessageP :: Parser EncMessage
+encMessageP = do
+  emHeader <- pubHeaderP
+  emNonce <- C.cbNonce <$> A.take 24
+  emBody <- A.takeByteString
+  pure EncMessage {emHeader, emNonce, emBody}
 
 data SMPMessage = SMPMessage SMPPrivHeader ByteString
 
