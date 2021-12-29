@@ -302,8 +302,8 @@ showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfMsg -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} SMPConfMsg {senderKey, connInfo} =
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> m ()
+sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, connInfo} =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation
     liftSMP $ sendSMPMessage smp Nothing sndId msg

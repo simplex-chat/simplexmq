@@ -284,7 +284,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfMsg {senderKey, e2ePubKey, connInfo}} =
+  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}} =
     liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \confirmationId ->
         DB.execute
@@ -324,7 +324,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           AcceptedConfirmation
             { confirmationId,
               connId,
-              senderConf = SMPConfMsg {senderKey, e2ePubKey, connInfo},
+              senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
               ownConnInfo
             }
       confirmation _ = Left SEConfirmationNotFound
@@ -347,7 +347,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           AcceptedConfirmation
             { confirmationId,
               connId,
-              senderConf = SMPConfMsg {senderKey, e2ePubKey, connInfo},
+              senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
               ownConnInfo
             }
       confirmation _ = Left SEConfirmationNotFound

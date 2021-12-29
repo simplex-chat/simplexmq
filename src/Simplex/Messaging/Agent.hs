@@ -327,8 +327,8 @@ rejectContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> m ()
 rejectContact' _ contactConnId invId =
   withStore $ \st -> deleteInvitation st contactConnId invId
 
-processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SMPConfMsg -> m ()
-processConfirmation c rq@RcvQueue {e2ePrivKey} SMPConfMsg {senderKey, e2ePubKey} = do
+processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SMPConfirmation -> m ()
+processConfirmation c rq@RcvQueue {e2ePrivKey} SMPConfirmation {senderKey, e2ePubKey} = do
   let dhSecret = C.dh' e2ePubKey e2ePrivKey
   withStore $ \st -> setRcvQueueConfirmedE2E st rq e2ePubKey dhSecret
   secureQueue c rq senderKey
@@ -342,7 +342,7 @@ subscribeConnection' c connId =
       resumeMsgDelivery c connId sq
       case status (sq :: SndQueue) of
         Confirmed -> do
-          AcceptedConfirmation {senderConf = SMPConfMsg {senderKey}} <-
+          AcceptedConfirmation {senderConf = SMPConfirmation {senderKey}} <-
             withStore (`getAcceptedConfirmation` connId)
           secureQueue c rq senderKey
           withStore $ \st -> setRcvQueueStatus st rq Secured
@@ -535,7 +535,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                   decryptAgentMessage e2eDhSecret encMessage
                 case agentMessage of
                   AgentConfirmation senderKey connInfo -> do
-                    smpConfirmation SMPConfMsg {senderKey, e2ePubKey, connInfo}
+                    smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
                     ack
                   AgentInvitation cReq cInfo -> smpInvitation cReq cInfo >> ack
                   _ -> prohibitedAndAck
@@ -584,8 +584,8 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
             liftEither $ clientToAgentMsg =<< parse SMP.clientMessageP (AGENT A_MESSAGE) msg
           pure (msg, agentMessage)
 
-        smpConfirmation :: SMPConfMsg -> m ()
-        smpConfirmation senderConf@SMPConfMsg {connInfo} = do
+        smpConfirmation :: SMPConfirmation -> m ()
+        smpConfirmation senderConf@SMPConfirmation {connInfo} = do
           logServer "<--" c srv rId "MSG <KEY>"
           case status of
             New -> case cType of
@@ -657,7 +657,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
 
-confirmQueue :: AgentMonad m => AgentClient -> SndQueue -> SMPConfMsg -> m ()
+confirmQueue :: AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> m ()
 confirmQueue c sq smpConf = do
   sendConfirmation c sq smpConf
   withStore $ \st -> setSndQueueStatus st sq Confirmed
@@ -682,7 +682,7 @@ activateQueue c connId sq retryInterval afterActivation =
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
-newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => SMPQueueUri -> ConnInfo -> m (SndQueue, SMPConfMsg)
+newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => SMPQueueUri -> ConnInfo -> m (SndQueue, SMPConfirmation)
 newSndQueue qUri cInfo =
   asks (cmdSignAlg . config) >>= \case
     C.SignAlg a -> newSndQueue_ a qUri cInfo
@@ -692,7 +692,7 @@ newSndQueue_ ::
   C.SAlgorithm a ->
   SMPQueueUri ->
   ConnInfo ->
-  m (SndQueue, SMPConfMsg)
+  m (SndQueue, SMPConfirmation)
 newSndQueue_ a (SMPQueueUri smpServer senderId rcvE2ePubDhKey) cInfo = do
   (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
@@ -705,4 +705,4 @@ newSndQueue_ a (SMPQueueUri smpServer senderId rcvE2ePubDhKey) cInfo = do
             e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
             status = New
           }
-  pure (sndQueue, SMPConfMsg senderKey e2ePubKey cInfo)
+  pure (sndQueue, SMPConfirmation senderKey e2ePubKey cInfo)

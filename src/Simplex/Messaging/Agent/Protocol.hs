@@ -36,7 +36,7 @@ module Simplex.Messaging.Agent.Protocol
     SAParty (..),
     MsgHash,
     MsgMeta (..),
-    SMPConfMsg (..), -- TODO remove
+    SMPConfirmation (..),
     AgentMessage (..),
     AHeader (..),
     AMessage (..),
@@ -266,7 +266,7 @@ data MsgMeta = MsgMeta
   }
   deriving (Eq, Show)
 
-data SMPConfMsg = SMPConfMsg
+data SMPConfirmation = SMPConfirmation
   { -- | sender's public key to use for authentication of sender's commands at the recepient's server
     senderKey :: SndPublicVerifyKey,
     -- | sender's DH public key for simple per-queue e2e encryption
