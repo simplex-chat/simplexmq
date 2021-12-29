@@ -462,10 +462,12 @@ instance AlgorithmI a => CryptoPublicKey (PublicKey a) where
 -- | base64 X509 key encoding with algorithm prefix
 serializePubKey :: CryptoPublicKey k => k -> ByteString
 serializePubKey = toPubKey serializePubKey'
+{-# INLINE serializePubKey #-}
 
 -- | base64url X509 key encoding with algorithm prefix
 serializePubKeyUri :: CryptoPublicKey k => k -> ByteString
 serializePubKeyUri = toPubKey serializePubKeyUri'
+{-# INLINE serializePubKeyUri #-}
 
 serializePubKey' :: AlgorithmI a => PublicKey a -> ByteString
 serializePubKey' k = algorithmPrefix k <> ":" <> encode (encodePubKey' k)
