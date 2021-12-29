@@ -30,7 +30,8 @@ CREATE TABLE rcv_queues (
   snd_key BLOB,
   status TEXT NOT NULL,
   PRIMARY KEY (host, port, rcv_id),
-  FOREIGN KEY (host, port) REFERENCES servers,
+  FOREIGN KEY (host, port) REFERENCES servers
+    ON DELETE RESTRICT ON UPDATE CASCADE,
   UNIQUE (host, port, snd_id)
 ) WITHOUT ROWID;
 
@@ -45,6 +46,7 @@ CREATE TABLE snd_queues (
   status TEXT NOT NULL,
   PRIMARY KEY (host, port, snd_id),
   FOREIGN KEY (host, port) REFERENCES servers
+    ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;
 
 CREATE TABLE messages (
