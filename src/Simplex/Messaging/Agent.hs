@@ -87,7 +87,7 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, loadTLSServerParams, runTransportServer)
-import Simplex.Messaging.Util (bshow, handleError, tryError, unlessM)
+import Simplex.Messaging.Util (bshow, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
@@ -522,38 +522,37 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
     processSMP :: SConnType c -> ConnData -> RcvQueue -> m ()
     processSMP cType ConnData {connId} rq@RcvQueue {rcvDhSecret, e2ePrivKey, e2eShared, status} =
       case cmd of
-        SMP.MSG srvMsgId srvTs msgBody' ->
-          notifyAndAck `handleError` do
-            -- TODO deduplicate with previously received
-            msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
-            encMessage@SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey} <-
-              liftEither $ parse SMP.encMessageP (AGENT A_MESSAGE) msgBody
-            case e2eShared of
-              Nothing -> do
-                let e2eDhSecret = C.dh' e2ePubKey e2ePrivKey
-                (_, agentMessage) <-
+        SMP.MSG srvMsgId srvTs msgBody' -> handleNotifyAck $ do
+          -- TODO deduplicate with previously received
+          msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
+          encMessage@SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey} <-
+            liftEither $ parse SMP.encMessageP (AGENT A_MESSAGE) msgBody
+          case e2eShared of
+            Nothing -> do
+              let e2eDhSecret = C.dh' e2ePubKey e2ePrivKey
+              (_, agentMessage) <-
+                decryptAgentMessage e2eDhSecret encMessage
+              case agentMessage of
+                AgentConfirmation senderKey connInfo -> do
+                  smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
+                  ack
+                AgentInvitation cReq cInfo -> smpInvitation cReq cInfo >> ack
+                _ -> prohibited >> ack
+            Just (e2eSndPubKey, e2eDhSecret)
+              | e2eSndPubKey /= e2ePubKey -> prohibited >> ack
+              | otherwise -> do
+                (msg, agentMessage) <-
                   decryptAgentMessage e2eDhSecret encMessage
                 case agentMessage of
-                  AgentConfirmation senderKey connInfo -> do
-                    smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
-                    ack
-                  AgentInvitation cReq cInfo -> smpInvitation cReq cInfo >> ack
-                  _ -> prohibitedAndAck
-              Just (e2eSndPubKey, e2eDhSecret)
-                | e2eSndPubKey /= e2ePubKey -> prohibitedAndAck
-                | otherwise -> do
-                  (msg, agentMessage) <-
-                    decryptAgentMessage e2eDhSecret encMessage
-                  case agentMessage of
-                    AgentMessage AHeader {sndMsgId, prevMsgHash} aMsg -> case aMsg of
-                      HELLO -> helloMsg >> ack
-                      REPLY cReq -> replyMsg cReq >> ack
-                      A_MSG body -> do
-                        -- note that there is no ACK sent here, it is sent with agent's user ACK command
-                        -- TODO add hash to other messages
-                        let msgHash = C.sha256Hash msg
-                        agentClientMsg prevMsgHash sndMsgId (srvMsgId, srvTs) body msgHash
-                    _ -> prohibitedAndAck
+                  AgentMessage AHeader {sndMsgId, prevMsgHash} aMsg -> case aMsg of
+                    HELLO -> helloMsg >> ack
+                    REPLY cReq -> replyMsg cReq >> ack
+                    A_MSG body -> do
+                      -- note that there is no ACK sent here, it is sent with agent's user ACK command
+                      -- TODO add hash to other messages
+                      let msgHash = C.sha256Hash msg
+                      agentClientMsg prevMsgHash sndMsgId (srvMsgId, srvTs) body msgHash
+                  _ -> prohibited >> ack
         SMP.END -> do
           removeSubscription c connId
           logServer "<--" c srv rId "END"
@@ -565,17 +564,14 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         notify :: ACommand 'Agent -> m ()
         notify msg = atomically $ writeTBQueue subQ ("", connId, msg)
 
-        notifyAndAck :: AgentErrorType -> m ()
-        notifyAndAck e = notify (ERR e) >> ack
+        handleNotifyAck :: m () -> m ()
+        handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
 
         prohibited :: m ()
         prohibited = notify . ERR $ AGENT A_PROHIBITED
 
         ack :: m ()
         ack = sendAck c rq
-
-        prohibitedAndAck :: m ()
-        prohibitedAndAck = prohibited >> ack
 
         decryptAgentMessage :: C.DhSecretX25519 -> SMP.EncMessage -> m (ByteString, AgentMessage)
         decryptAgentMessage e2eDhSecret SMP.EncMessage {emNonce, emBody} = do

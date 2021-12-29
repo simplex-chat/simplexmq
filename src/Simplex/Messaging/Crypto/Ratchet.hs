@@ -256,7 +256,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
     SMMessage msg rc' -> pure (msg, rc')
   where
     decryptRcMessage :: RatchetStep -> MsgHeader a -> EncMessage -> ExceptT CryptoError IO (DecryptResult a)
-    decryptRcMessage rcStep hdr@MsgHeader {msgDHRs, msgPN, msgNs} encMsg = do
+    decryptRcMessage rcStep MsgHeader {msgDHRs, msgPN, msgNs} encMsg = do
       -- if dh_ratchet:
       rc' <- ratchetStep rcStep
       case skipMessageKeys msgNs rc' of
