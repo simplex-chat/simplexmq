@@ -37,7 +37,6 @@ import Data.ByteString.Base64 (encode)
 import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.List (find)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
@@ -48,7 +47,6 @@ import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
-import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
@@ -195,7 +193,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           FROM rcv_queues q
           WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
         |]
-        [":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
+        [":host" := host, ":port" := port, ":rcv_id" := rcvId]
         >>= \case
           [Only connId] -> getConn_ db connId
           _ -> pure $ Left SEConnNotFound
@@ -241,7 +239,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           SET status = :status
           WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
         |]
-        [":status" := status, ":host" := host, ":port" := serializePort_ port, ":rcv_id" := rcvId]
+        [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
   setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.PublicKeyX25519 -> C.DhSecretX25519 -> m ()
   setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eSndPubKey e2eDhSecret =
@@ -259,7 +257,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           ":e2e_snd_pub_key" := e2eSndPubKey,
           ":e2e_dh_secret" := e2eDhSecret,
           ":host" := host,
-          ":port" := serializePort_ port,
+          ":port" := port,
           ":rcv_id" := rcvId
         ]
 
@@ -274,7 +272,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           SET status = :status
           WHERE host = :host AND port = :port AND snd_id = :snd_id;
         |]
-        [":status" := status, ":host" := host, ":port" := serializePort_ port, ":snd_id" := sndId]
+        [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}} =
@@ -520,14 +518,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
 -- * Auxiliary helpers
 
--- ? replace with ToField? - it's easy to forget to use this
-serializePort_ :: Maybe ServiceName -> ServiceName
-serializePort_ = fromMaybe "_"
-
-deserializePort_ :: ServiceName -> Maybe ServiceName
-deserializePort_ "_" = Nothing
-deserializePort_ port = Just port
-
 -- TODO make status conversion explicit
 instance ToField QueueStatus where toField = toField . show
 
@@ -615,7 +605,6 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
 
 upsertServer_ :: DB.Connection -> SMPServer -> IO ()
 upsertServer_ dbConn SMPServer {host, port, keyHash} = do
-  let port_ = serializePort_ port
   DB.executeNamed
     dbConn
     [sql|
@@ -625,14 +614,13 @@ upsertServer_ dbConn SMPServer {host, port, keyHash} = do
         port=excluded.port,
         key_hash=excluded.key_hash;
     |]
-    [":host" := host, ":port" := port_, ":key_hash" := keyHash]
+    [":host" := host, ":port" := port, ":key_hash" := keyHash]
 
 -- * createRcvConn helpers
 
 insertRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 insertRcvQueue_ dbConn connId RcvQueue {..} = do
-  let port_ = serializePort_ $ port server
-      e2eSndPubKey = fst <$> e2eShared :: Maybe C.PublicKeyX25519
+  let e2eSndPubKey = fst <$> e2eShared :: Maybe C.PublicKeyX25519
       e2eDhSecret = snd <$> e2eShared :: Maybe C.DhSecretX25519
   DB.executeNamed
     dbConn
@@ -643,7 +631,7 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
         (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_snd_pub_key,:e2e_dh_secret,:snd_id,:status);
     |]
     [ ":host" := host server,
-      ":port" := port_,
+      ":port" := port server,
       ":rcv_id" := rcvId,
       ":conn_alias" := connId,
       ":rcv_private_key" := rcvPrivateKey,
@@ -659,7 +647,6 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
 
 insertSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO ()
 insertSndQueue_ dbConn connId SndQueue {..} = do
-  let port_ = serializePort_ $ port server
   DB.executeNamed
     dbConn
     [sql|
@@ -669,7 +656,7 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
         (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_pub_key,:e2e_dh_secret,:status);
     |]
     [ ":host" := host server,
-      ":port" := port_,
+      ":port" := port server,
       ":snd_id" := sndId,
       ":conn_alias" := connId,
       ":snd_private_key" := sndPrivateKey,
@@ -717,7 +704,7 @@ getRcvQueueByConnAlias_ dbConn connId =
       (Only connId)
   where
     rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eSndPubKey, e2eDhSecret, sndId, status)] =
-      let server = SMPServer host (deserializePort_ port) keyHash
+      let server = SMPServer host port keyHash
           e2eShared = (,) <$> e2eSndPubKey <*> e2eDhSecret
        in Just RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eShared, sndId, status}
     rcvQueue _ = Nothing
@@ -737,7 +724,7 @@ getSndQueueByConnAlias_ dbConn connId =
       (Only connId)
   where
     sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, status)] =
-      let server = SMPServer host (deserializePort_ port) keyHash
+      let server = SMPServer host port keyHash
        in Just SndQueue {server, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, status}
     sndQueue _ = Nothing
 

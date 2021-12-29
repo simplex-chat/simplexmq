@@ -1,6 +1,6 @@
 CREATE TABLE servers (
   host TEXT NOT NULL,
-  port TEXT NOT NULL,
+  port TEXT,
   key_hash BLOB,
   PRIMARY KEY (host, port)
 ) WITHOUT ROWID;
@@ -18,7 +18,7 @@ CREATE TABLE connections (
 
 CREATE TABLE rcv_queues (
   host TEXT NOT NULL,
-  port TEXT NOT NULL,
+  port TEXT,
   rcv_id BLOB NOT NULL,
   conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   rcv_private_key BLOB NOT NULL,
@@ -37,7 +37,7 @@ CREATE TABLE rcv_queues (
 
 CREATE TABLE snd_queues (
   host TEXT NOT NULL,
-  port TEXT NOT NULL,
+  port TEXT,
   snd_id BLOB NOT NULL,
   conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   snd_private_key BLOB NOT NULL,
