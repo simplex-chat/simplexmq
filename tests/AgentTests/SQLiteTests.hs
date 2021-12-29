@@ -418,7 +418,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
         MsgMeta
           { integrity = MsgOk,
             recipient = (unId internalId, ts),
-            sender = (externalSndId, ts),
+            sndMsgId = externalSndId,
             broker = (brokerId, ts)
           },
       msgBody = hw,

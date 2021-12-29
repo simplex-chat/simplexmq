@@ -553,8 +553,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                         -- note that there is no ACK sent here, it is sent with agent's user ACK command
                         -- TODO add hash to other messages
                         let msgHash = C.sha256Hash msg
-                        -- TODO remove first timestamp
-                        agentClientMsg prevMsgHash (sndMsgId, srvTs) (srvMsgId, srvTs) body msgHash
+                        agentClientMsg prevMsgHash sndMsgId (srvMsgId, srvTs) body msgHash
                     _ -> prohibitedAndAck
         SMP.END -> do
           removeSubscription c connId
@@ -627,15 +626,15 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               activateQueueInitiating c connId sq $ retryInterval cfg
             _ -> prohibited
 
-        agentClientMsg :: PrevRcvMsgHash -> (ExternalSndId, ExternalSndTs) -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
-        agentClientMsg externalPrevSndHash sender broker msgBody internalHash = do
+        agentClientMsg :: PrevRcvMsgHash -> ExternalSndId -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
+        agentClientMsg externalPrevSndHash sndMsgId broker msgBody internalHash = do
           logServer "<--" c srv rId "MSG <MSG>"
           internalTs <- liftIO getCurrentTime
           (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore (`updateRcvIds` connId)
-          let integrity = checkMsgIntegrity prevExtSndId (fst sender) prevRcvMsgHash externalPrevSndHash
+          let integrity = checkMsgIntegrity prevExtSndId sndMsgId prevRcvMsgHash externalPrevSndHash
               recipient = (unId internalId, internalTs)
-              msgMeta = MsgMeta {integrity, recipient, sender, broker}
-              rcvMsg = RcvMsgData {..}
+              msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId}
+              rcvMsg = RcvMsgData {msgMeta, msgBody, internalRcvId, internalHash, externalPrevSndHash}
           withStore $ \st -> createRcvMsg st connId rcvMsg
           notify $ MSG msgMeta msgBody
 

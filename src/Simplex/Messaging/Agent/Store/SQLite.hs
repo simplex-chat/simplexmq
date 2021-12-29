@@ -862,24 +862,23 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgBody, internalRcvId} = d
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
 insertRcvMsgDetails_ dbConn connId RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash} = do
-  let MsgMeta {integrity, recipient, sender, broker} = msgMeta
+  let MsgMeta {integrity, recipient, broker, sndMsgId} = msgMeta
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO rcv_messages
-        ( conn_alias, internal_rcv_id, internal_id, external_snd_id, external_snd_ts,
+        ( conn_alias, internal_rcv_id, internal_id, external_snd_id,
           broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts,
           internal_hash, external_prev_snd_hash, integrity)
       VALUES
-        (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,:external_snd_ts,
+        (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,
          :broker_id,:broker_ts,:rcv_status,           NULL,          NULL,
          :internal_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_alias" := connId,
       ":internal_rcv_id" := internalRcvId,
       ":internal_id" := fst recipient,
-      ":external_snd_id" := fst sender,
-      ":external_snd_ts" := snd sender,
+      ":external_snd_id" := sndMsgId,
       ":broker_id" := fst broker,
       ":broker_ts" := snd broker,
       ":rcv_status" := Received,
@@ -900,7 +899,7 @@ updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =
       WHERE conn_alias = :conn_alias
         AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
-    [ ":last_external_snd_msg_id" := fst (sender msgMeta),
+    [ ":last_external_snd_msg_id" := sndMsgId (msgMeta :: MsgMeta),
       ":last_rcv_msg_hash" := internalHash,
       ":conn_alias" := connId,
       ":last_internal_rcv_msg_id" := internalRcvId

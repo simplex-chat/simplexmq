@@ -264,7 +264,7 @@ data MsgMeta = MsgMeta
   { integrity :: MsgIntegrity,
     recipient :: (AgentMsgId, UTCTime),
     broker :: (MsgId, UTCTime),
-    sender :: (AgentMsgId, UTCTime)
+    sndMsgId :: AgentMsgId
   }
   deriving (Eq, Show)
 
@@ -664,8 +664,8 @@ commandP =
       integrity <- msgIntegrityP
       recipient <- " R=" *> partyMeta A.decimal
       broker <- " B=" *> partyMeta base64P
-      sender <- " S=" *> partyMeta A.decimal
-      pure MsgMeta {integrity, recipient, broker, sender}
+      sndMsgId <- " S=" *> A.decimal
+      pure MsgMeta {integrity, recipient, broker, sndMsgId}
     partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
@@ -713,12 +713,12 @@ serializeCommand = \case
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
     serializeMsgMeta :: MsgMeta -> ByteString
-    serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sender = (smId, sTs)} =
+    serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
       B.unwords
         [ serializeMsgIntegrity integrity,
           "R=" <> bshow rmId <> "," <> showTs rTs,
           "B=" <> encode bmId <> "," <> showTs bTs,
-          "S=" <> bshow smId <> "," <> showTs sTs
+          "S=" <> bshow sndMsgId
         ]
 
 -- | Serialize message integrity validation result.

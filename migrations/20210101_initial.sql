@@ -88,7 +88,6 @@ CREATE TABLE IF NOT EXISTS rcv_messages(
   internal_rcv_id INTEGER NOT NULL,
   internal_id INTEGER NOT NULL,
   external_snd_id INTEGER NOT NULL,
-  external_snd_ts TEXT NOT NULL,
   broker_id BLOB NOT NULL,
   broker_ts TEXT NOT NULL,
   rcv_status TEXT NOT NULL,
