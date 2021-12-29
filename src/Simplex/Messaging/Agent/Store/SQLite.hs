@@ -167,36 +167,17 @@ createConn_ st gVar cData create =
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
-  createRcvConn st gVar cData q@RcvQueue {server, rcvId} cMode =
+  createRcvConn st gVar cData q@RcvQueue {server} cMode =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      let port_ = serializePort_ $ port server
-      DB.execute
-        db
-        [sql|
-          INSERT INTO connections
-            (conn_alias, conn_mode, rcv_host, rcv_port, rcv_id,
-             snd_host, snd_port, snd_id)
-          VALUES
-            (?, ?, ?, ?, ?, NULL, NULL, NULL)
-        |]
-        (connId, cMode, host server, port_, rcvId)
+      DB.execute db "INSERT INTO connections (conn_alias, conn_mode) VALUES (?, ?)" (connId, cMode)
       insertRcvQueue_ db connId q
 
   createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
-  createSndConn st gVar cData q@SndQueue {server, sndId} =
+  createSndConn st gVar cData q@SndQueue {server} =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      let port_ = serializePort_ $ port server
-      DB.execute
-        db
-        [sql|
-          INSERT INTO connections
-            (conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
-          VALUES
-            (?, NULL, NULL, NULL, ?, ?, ?);
-        |]
-        (connId, host server, port_, sndId)
+      DB.execute db "INSERT INTO connections (conn_alias, conn_mode) VALUES (?, ?)" (connId, SCMInvitation)
       insertSndQueue_ db connId q
 
   getConn :: SQLiteStore -> ConnId -> m SomeConn
@@ -234,7 +215,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         Right (SomeConn _ RcvConnection {}) -> do
           upsertServer_ db server
           insertSndQueue_ db connId sq
-          updateConnWithSndQueue_ db connId sq
           pure $ Right ()
         Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
         _ -> pure $ Left SEConnNotFound
@@ -246,7 +226,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         Right (SomeConn _ SndConnection {}) -> do
           upsertServer_ db server
           insertRcvQueue_ db connId rq
-          updateConnWithRcvQueue_ db connId rq
           pure $ Right ()
         Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
         _ -> pure $ Left SEConnNotFound
@@ -761,34 +740,6 @@ getSndQueueByConnAlias_ dbConn connId =
       let server = SMPServer host (deserializePort_ port) keyHash
        in Just SndQueue {server, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, status}
     sndQueue _ = Nothing
-
--- * upgradeRcvConnToDuplex helpers
-
-updateConnWithSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO ()
-updateConnWithSndQueue_ dbConn connId SndQueue {server, sndId} = do
-  let port_ = serializePort_ $ port server
-  DB.executeNamed
-    dbConn
-    [sql|
-      UPDATE connections
-      SET snd_host = :snd_host, snd_port = :snd_port, snd_id = :snd_id
-      WHERE conn_alias = :conn_alias;
-    |]
-    [":snd_host" := host server, ":snd_port" := port_, ":snd_id" := sndId, ":conn_alias" := connId]
-
--- * upgradeSndConnToDuplex helpers
-
-updateConnWithRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO ()
-updateConnWithRcvQueue_ dbConn connId RcvQueue {server, rcvId} = do
-  let port_ = serializePort_ $ port server
-  DB.executeNamed
-    dbConn
-    [sql|
-      UPDATE connections
-      SET rcv_host = :rcv_host, rcv_port = :rcv_port, rcv_id = :rcv_id
-      WHERE conn_alias = :conn_alias;
-    |]
-    [":rcv_host" := host server, ":rcv_port" := port_, ":rcv_id" := rcvId, ":conn_alias" := connId]
 
 -- * updateRcvIds helpers
 
