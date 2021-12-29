@@ -23,7 +23,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
-    SMPClient (blockSize),
+    SMPClient,
     getSMPClient,
     closeSMPClient,
 
@@ -85,8 +85,7 @@ data SMPClient = SMPClient
     sentCommands :: TVar (Map CorrId Request),
     sndQ :: TBQueue SentRawTransmission,
     rcvQ :: TBQueue (SignedTransmission (Command 'Broker)),
-    msgQ :: TBQueue SMPServerTransmission,
-    blockSize :: Int
+    msgQ :: TBQueue SMPServerTransmission
   }
 
 -- | Type synonym for transmission from some SPM server queue.
@@ -101,12 +100,7 @@ data SMPClientConfig = SMPClientConfig
     -- | timeout of TCP commands (microseconds)
     tcpTimeout :: Int,
     -- | period for SMP ping commands (microseconds)
-    smpPing :: Int,
-    -- | SMP transport block size
-    smpBlockSize :: Int,
-    -- | estimated maximum size of SMP command excluding message body,
-    -- determines the maximum allowed message size
-    smpCommandSize :: Int
+    smpPing :: Int
   }
 
 -- | Default SMP client configuration.
@@ -116,9 +110,7 @@ smpDefaultConfig =
     { qSize = 16,
       defaultTransport = ("5223", transport @TLS),
       tcpTimeout = 4_000_000,
-      smpPing = 30_000_000,
-      smpBlockSize = 16 * 1024, -- TODO move to Protocol
-      smpCommandSize = 256
+      smpPing = 30_000_000
     }
 
 data Request = Request
@@ -134,7 +126,7 @@ type Response = Either SMPClientError (Command 'Broker)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO (Either SMPClientError SMPClient)
-getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlockSize} msgQ disconnected =
+getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ disconnected =
   atomically mkSMPClient >>= runClient useTransport
   where
     mkSMPClient :: STM SMPClient
@@ -148,7 +140,6 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
         SMPClient
           { action = undefined,
             sessionId = undefined,
-            blockSize = undefined,
             connected,
             smpServer,
             tcpTimeout,
@@ -168,8 +159,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
             `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
       th_ <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case th_ of
-        Just (Right THandle {sessionId, blockSize}) ->
-          Right c {action, sessionId, blockSize}
+        Just (Right THandle {sessionId}) -> Right c {action, sessionId}
         Just (Left e) -> Left e
         Nothing -> Left SMPNetworkError
 
@@ -181,13 +171,13 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing, smpBlock
 
     client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =
-      runExceptT (clientHandshake h smpBlockSize) >>= \case
+      runExceptT (clientHandshake h) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
-        Right th@THandle {sessionId, blockSize} -> do
+        Right th@THandle {sessionId} -> do
           atomically $ do
             writeTVar (connected c) True
             putTMVar thVar $ Right th
-          let c' = c {sessionId, blockSize} :: SMPClient
+          let c' = c {sessionId} :: SMPClient
           raceAny_ [send c' th, process c', receive c' th, ping c']
             `finally` disconnected
 

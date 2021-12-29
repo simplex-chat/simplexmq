@@ -25,7 +25,6 @@ import Simplex.Messaging.Protocol
     RcvDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
-    SndPublicVerifyKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 
@@ -43,7 +42,7 @@ class Monad m => MonadAgentStore s m where
   upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueActive :: s -> RcvQueue -> C.APublicVerifyKey -> m ()
+  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.PublicKeyX25519 -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Confirmations
@@ -81,11 +80,13 @@ data RcvQueue = RcvQueue
     rcvPrivateKey :: RcvPrivateSignKey,
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
     rcvDhSecret :: RcvDhSecret,
+    -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
+    e2ePrivKey :: C.PrivateKeyX25519,
+    -- | public sender's DH key and agreed shared DH secret for simple per-queue e2e
+    e2eShared :: Maybe (C.PublicKeyX25519, C.DhSecretX25519),
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
-    -- | TODO keys used for E2E encryption - these will change with double ratchet
-    decryptKey :: C.APrivateDecryptKey,
-    verifyKey :: Maybe C.APublicVerifyKey,
+    -- | queue status
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -93,10 +94,15 @@ data RcvQueue = RcvQueue
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue
   { server :: SMPServer,
+    -- | sender queue ID
     sndId :: SMP.SenderId,
+    -- | key used by the sender to sign transmissions
     sndPrivateKey :: SndPrivateSignKey,
-    encryptKey :: C.APublicEncryptKey,
-    signKey :: C.APrivateSignKey,
+    -- | public DH key that was (or needs to be) sent to the recipient in SMP confirmation (to agree simple per-queue e2e)
+    e2ePubKey :: C.PublicKeyX25519,
+    -- | shared DH secret agreed for simple per-queue e2e encryption
+    e2eDhSecret :: C.DhSecretX25519,
+    -- | queue status
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -167,15 +173,13 @@ newtype ConnData = ConnData {connId :: ConnId}
 
 data NewConfirmation = NewConfirmation
   { connId :: ConnId,
-    senderKey :: SndPublicVerifyKey,
-    senderConnInfo :: ConnInfo
+    senderConf :: SMPConfirmation
   }
 
 data AcceptedConfirmation = AcceptedConfirmation
   { confirmationId :: ConfirmationId,
     connId :: ConnId,
-    senderKey :: SndPublicVerifyKey,
-    senderConnInfo :: ConnInfo,
+    senderConf :: SMPConfirmation,
     ownConnInfo :: ConnInfo
   }
 
@@ -225,7 +229,7 @@ data SndMsgData = SndMsgData
     internalTs :: InternalTs,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
-    previousMsgHash :: MsgHash
+    prevMsgHash :: MsgHash
   }
 
 data PendingMsg = PendingMsg
@@ -233,10 +237,6 @@ data PendingMsg = PendingMsg
     msgId :: InternalId
   }
   deriving (Show)
-
--- * Broadcast types
-
-type BroadcastId = ByteString
 
 -- * Message types
 

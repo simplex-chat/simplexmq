@@ -25,7 +25,10 @@
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
-  ( -- * Transport connection class
+  ( -- * SMP transport parameters
+    smpBlockSize,
+
+    -- * Transport connection class
     Transport (..),
     TProxy (..),
     ATransport (..),
@@ -67,6 +70,7 @@ import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
+import Data.Bitraversable (bimapM)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -96,6 +100,9 @@ import UnliftIO.Concurrent
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+
+smpBlockSize :: Int
+smpBlockSize = 16384
 
 -- * Transport connection class
 
@@ -395,8 +402,7 @@ smpVersionP =
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
-    sessionId :: ByteString,
-    blockSize :: Int
+    sessionId :: ByteString
   }
 
 data Handshake = Handshake
@@ -453,25 +459,23 @@ serializeTransportError = \case
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
-tPutBlock THandle {connection = c, blockSize} block
-  | len > blockSize = pure $ Left TELargeMsg
-  | otherwise = Right <$> cPut c (block <> B.replicate (blockSize - len) '#')
-  where
-    len = B.length block
+tPutBlock THandle {connection = c} block =
+  bimapM (const $ pure TELargeMsg) (cPut c) $
+    C.pad block smpBlockSize
 
 -- | Receive block from SMP transport.
-tGetBlock :: Transport c => THandle c -> IO ByteString
-tGetBlock THandle {connection = c, blockSize} =
-  cGet c blockSize >>= \case
+tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
+tGetBlock THandle {connection = c} =
+  cGet c smpBlockSize >>= \case
     "" -> ioe_EOF
-    msg -> pure msg
+    msg -> pure . first (const TELargeMsg) $ C.unPad msg
 
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-serverHandshake :: Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
-serverHandshake c blockSize = do
-  let th@THandle {sessionId} = tHandle c blockSize
+serverHandshake :: Transport c => c -> ExceptT TransportError IO (THandle c)
+serverHandshake c = do
+  let th@THandle {sessionId} = tHandle c
   _ <- getPeerHello th
   sendHelloToPeer th sessionId
   pure th
@@ -479,9 +483,9 @@ serverHandshake c blockSize = do
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-clientHandshake :: forall c. Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
-clientHandshake c blockSize = do
-  let th@THandle {sessionId} = tHandle c blockSize
+clientHandshake :: forall c. Transport c => c -> ExceptT TransportError IO (THandle c)
+clientHandshake c = do
+  let th@THandle {sessionId} = tHandle c
   sendHelloToPeer th ""
   Handshake {sessionId = sessId} <- getPeerHello th
   if sessionId == sessId
@@ -494,11 +498,11 @@ sendHelloToPeer th sessionId =
    in ExceptT . tPutBlock th $ serializeHandshake handshake
 
 getPeerHello :: Transport c => THandle c -> ExceptT TransportError IO Handshake
-getPeerHello th = ExceptT $ parseHandshake <$> tGetBlock th
+getPeerHello th = ExceptT $ (parseHandshake =<<) <$> tGetBlock th
   where
     parseHandshake :: ByteString -> Either TransportError Handshake
     parseHandshake = first (const $ TEHandshake PARSE) . A.parseOnly handshakeP
 
-tHandle :: Transport c => c -> Int -> THandle c
-tHandle c blockSize =
-  THandle {connection = c, sessionId = encode $ tlsUnique c, blockSize}
+tHandle :: Transport c => c -> THandle c
+tHandle c =
+  THandle {connection = c, sessionId = encode $ tlsUnique c}

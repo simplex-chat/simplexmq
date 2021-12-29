@@ -40,9 +40,6 @@ testPort2 = "5002"
 testKeyHashStr :: ByteString
 testKeyHashStr = "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
 
-testBlockSize :: Int
-testBlockSize = 16 * 1024 -- TODO move to Protocol
-
 testKeyHash :: Maybe C.KeyHash
 testKeyHash = Just "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
 
@@ -52,7 +49,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
   runTransportClient testHost testPort testKeyHash $ \h ->
-    liftIO (runExceptT $ clientHandshake h testBlockSize) >>= \case
+    liftIO (runExceptT $ clientHandshake h) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -66,7 +63,6 @@ cfg =
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLog = Nothing,
-      blockSize = testBlockSize,
       caCertificateFile = "tests/fixtures/ca.crt",
       serverPrivateKeyFile = "tests/fixtures/server.key",
       serverCertificateFile = "tests/fixtures/server.crt"

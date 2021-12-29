@@ -31,7 +31,6 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
-    blockSize :: Int,
     caCertificateFile :: FilePath,
     serverPrivateKeyFile :: FilePath,
     serverCertificateFile :: FilePath

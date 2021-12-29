@@ -43,8 +43,8 @@ fullMsgLen = fullHeaderLen + paddedMsgLen + C.authTagSize
 
 testMessageHeader :: Expectation
 testMessageHeader = do
-  (k, _) <- C.generateKeyPair' @X25519 0
-  let hdr = MsgHeader {msgVersion = 1, msgLatestVersion = 1, msgDHRs = k, msgPN = 0, msgNs = 0, msgLen = 11}
+  (k, _) <- C.generateKeyPair' @X25519
+  let hdr = MsgHeader {msgVersion = 1, msgLatestVersion = 1, msgDHRs = k, msgPN = 0, msgNs = 0}
   parseAll (msgHeaderP' @X25519) (serializeMsgHeader' hdr) `shouldBe` Right hdr
 
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
@@ -152,8 +152,8 @@ withRatchets test = do
 initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
 initRatchets = do
   salt <- getRandomBytes 16
-  (ak, apk) <- C.generateKeyPair' 0
-  (bk, bpk) <- C.generateKeyPair' 0
+  (ak, apk) <- C.generateKeyPair'
+  (bk, bpk) <- C.generateKeyPair'
   bob <- initSndRatchet' ak bpk salt "bob -> alice"
   alice <- initRcvRatchet' bk (ak, apk) salt "bob -> alice"
   pure (alice, bob)

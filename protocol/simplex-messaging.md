@@ -14,6 +14,7 @@
 - [Simplex queue IDs](#simplex-queue-ids)
 - [Server security requirements](#server-security-requirements)
 - [Message delivery notifications](#message-delivery-notifications)
+- [SMP Transmission structure](#smp-transmission-structure)
 - [SMP commands](#smp-commands)
   - [Correlating responses with commands](#correlating-responses-with-commands)
   - [Command authentication](#command-authentication)
@@ -116,13 +117,22 @@ The SMP queue URIs MUST include server identity, queue hostname, an optional por
 The [ABNF][8] syntax of the queue URI is:
 
 ```abnf
-queueURI = %s"smp://" smpServer "/" queueId ["#"]
-smpServer = serverIdentity "@" srvHost [":" port] 
+queueURI = %s"smp://" smpServer "/" queueId "#" recipientDhPublicKey
+smpServer = serverIdentity "@" srvHost [":" port]
 srvHost = <hostname> ; RFC1123, RFC5891
 port = 1*DIGIT
 serverIdentity = base64url
 queueId = base64url
 base64url = <base64url encoded binary> ; RFC4648, section 5
+recipientDhPublicKey = dhPublicKey
+dhPublicKey = encryptionScheme ":" x509UrlEncoded
+; the recipient's key for DH exchange to derive the secret
+; that the sender will use to encrypt delivered messages
+
+encryptionScheme = %s"x25519"
+; x25519 scheme means [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
+
+x509UrlEncoded = <base64url X509 key encoding>
 ```
 
 `hostname` can be IP address or domain name, as defined in RFC 1123, section 2.1.
@@ -345,24 +355,35 @@ The clients can optionally instruct a dedicated push notification server to subs
 - `subscribeNotifications` (`"NSUB"`) - see [Subscribe to queue notifications](#subscribe-to-queue-notifications).
 - `messageNotification` (`"NMSG"`) - see [Deliver message notification](#deliver-message-notification).
 
-## SMP commands
+## SMP Transmission structure
 
-Commands syntax below is provided using [ABNF][8] with [case-sensitive strings extension][8a].
+Each transport block (SMP transmission) has a fixed size of 16384 bytes for traffic uniformity.
 
-Each transmission between the client and the server must have this format/syntax (after the decryption):
+Some parts of SMP transmission are padded to a fixed size; this padding is uniformly added as a word16 encoded in network byte order - see `paddedString` syntax.
 
-```abnf
-transmission = [signature] SP signedSize SP signed SP pad ; pad to the fixed block size
-signedSize = 1*DIGIT
-signed = sessionIdentifier SP [corrId] SP [queueId] SP cmd ; corrId is required in client commands and server responses,
-                                                           ; corrId is empty in server notifications.
-cmd = ping / recipientCmd / send / subscribeNotifications / serverMsg
-recipientCmd = create / subscribe / secure / enableNotifications /
-               acknowledge / suspend / delete
-serverMsg = queueIds / message / notifierId / messageNotification /
-            unsubscribed / ok / error
-corrId = 1*(%x21-7F) ; any characters other than control/whitespace
-queueId = encoded ; empty queue ID is used with "create" command
+In places where some part of the transmission should be padded, the syntax for `paddedNotation` is used:
+
+```
+paddedString = originalLength string pad
+originalLength = 2*2 OCTET
+pad = N*N"#" ; where N = paddedLength - originalLength - 2
+
+paddedNotation = <padded(string, paddedLength)>
+; string - un-padded string
+; paddedLength - required length after padding, including 2 bytes for originalLength
+```
+
+Each transmission between the client and the server must have this format/syntax:
+
+```
+paddedTransmission = <padded(transmission), 16384>
+transmission = [signature] SP signed
+signed = sessionIdentifier SP [corrId] SP [queueId] SP smpCommand
+; corrId is required in client commands and server responses,
+; it is empty in server notifications.
+corrId = 1*32(%x21-7F) ; any characters other than control/whitespace
+queueId = encoded ; max 32 bytes when decoded (24 bytes is used),
+; empty queue ID is used with "create" command and in some server responses
 signature = encoded
 ; empty signature can be used with "send" before the queue is secured with secure command
 ; signature is always empty with "ping" and "serverMsg"
@@ -370,6 +391,18 @@ encoded = <base64 encoded binary>
 ```
 
 `base64` encoding should be used with padding, as defined in section 4 of [RFC 4648][9]
+
+## SMP commands
+
+Commands syntax below is provided using [ABNF][8] with [case-sensitive strings extension][8a].
+
+```abnf
+smpCommand = ping / recipientCmd / send / subscribeNotifications / serverMsg
+recipientCmd = create / subscribe / secure / enableNotifications /
+               acknowledge / suspend / delete
+serverMsg = queueIds / message / notifierId / messageNotification /
+            unsubscribed / ok / error
+```
 
 The syntax of specific commands and responses is defined below.
 
@@ -534,10 +567,16 @@ Currently SMP defines only one command that can be used by senders - `send` mess
 This command is sent to the server by the sender both to confirm the queue after the sender received out-of-band message from the recipient and to send messages after the queue is secured:
 
 ```abnf
-send = %s"SEND" SP size SP msgBody SP
-; the last SP is in addition to SP in the transmission
-size = 1*DIGIT ; size in bytes
-msgBody = *OCTET ; any binary content of specified size
+send = %s"SEND" SP smpEncMessage
+smpEncMessage = smpPubHeader sentMsgBody ; message up to 15968 bytes
+smpPubHeader = smpClientVersion encodedLenKey
+smpClientVersion = word16
+encodedLenKey = keyLen x509binary
+keyLen = word16
+x509binary = <binary X509 key encoding>
+sentMsgBody = 15842*15842 OCTET
+; E2E-encrypted smpClientMessage padded to 15842 bytes before encryption
+word16 = 2*2 OCTET
 ```
 
 The first message is sent to confirm the queue - it should contain sender's server key (see decrypted message syntax below) - this first message must be sent without signature.
@@ -555,14 +594,84 @@ Until the queue is secured, the server should accept any number of unsigned mess
 The body should be encrypted with the recipient's "public" key (`EK`); once decrypted it must have this format:
 
 ```abnf
-decryptedBody = [clientHeader] CRLF clientBody CRLF
-clientHeader = senderKeyMsg
-senderKeyMsg = %s"KEY" SP senderKey
-senderKey = signatureScheme ":" x509encoded ; the sender's public key to sign SEND commands for this queue
-clientBody = *OCTET
+sentMsgBody = <encrypted padded(smpClientMessage, 15842)>
+smpClientMessage = smpPrivHeader clientMsgBody
+smpPrivHeader = emptyHeader / smpConfirmationHeader
+emptyHeader = " "
+smpConfirmationHeader = %s"K" senderKey
+senderKey = encodedLenKey ; the sender's public key to sign SEND commands for this queue
+clientMsgBody = *OCTET ; up to 15784 in case of emptyHeader
 ```
 
 `clientHeader` in the initial unsigned message is used to transmit sender's server key and can be used in the future revisions of SMP protocol for other purposes.
+
+SMP transmission structure for sent messages:
+
+```
+------- transmission (= 16384 bytes)
+    2 | originalLength
+ 398- | signature SP sessionId SP corrId SP queueId SP %s"SEND" SP
+      ....... smpEncMessage (= 15968 bytes)
+       126- | smpPubHeader
+         24 | nonce for smpClientMessage
+            ------- smpClientMessage (E2E encrypted, = 15842 bytes)
+                2 | originalLength
+              16- | smpPrivHeader
+                  .......
+                        | clientMsgBody (<= 15784 bytes)
+                  .......
+               0+ | smpClientMessage pad
+            ------- smpClientMessage end
+         16 | auth tag for smpClientMessage
+      ....... smpEncMessage end
+  16+ | transmission pad
+------- transmission end
+```
+
+SMP transmission structure for received messages:
+
+```
+------- transmission (= 16384 bytes)
+    2 | originalLength
+ 398- | signature SP sessionId SP corrId SP queueId SP %s"MSG" SP msgId SP timestamp SP
+      ------- serverEncryptedMsg (= 15986 bytes)
+          2 | originalLength
+            ....... smpEncMessage (= 15968 bytes)
+             126- | smpPubHeader
+               24 | nonce for smpClientMessage
+                  ------- smpClientMessage (E2E encrypted, = 15842 bytes)
+                      2 | originalLength
+                    16- | smpPrivHeader
+                        ....... clientMsgBody (<= 15784 bytes)
+                              -- TODO move internal structure to agent protocol
+                          16- | agentPublicHeader
+                              ....... E2E double-ratchet encrypted (= 15768)
+                                 96 | double-ratchet header
+                                 16 | double-ratchet header auth tag
+                                 24 | double-ratchet header iv
+                                    ------- encrypted agent message (= 15616 bytes)
+                                        2 | originalLength
+                                 122 (90) | agentHeader
+                                        4 | %s"MSG" SP
+                                          .......
+                                                | application message (<= 15488 bytes)
+                                          .......
+                                       0+ | encrypted agent message pad
+                                    ------- encrypted agent message end
+                                 16 | auth tag (IV generated from chain ratchet)
+                              ....... E2E double-ratchet encrypted end
+                              |
+                        ....... clientMsgBody end
+                     0+ | smpClientMessage pad
+                  ------- smpClientMessage end
+               16 | auth tag for smpClientMessage
+            ....... smpEncMessage end
+         16 | auth tag (msgId is used as nonce)
+         0+ | serverEncryptedMsg pad
+      ------- serverEncryptedMsg end
+   0+ | transmission pad
+------- transmission end
+```
 
 ### Notifier commands
 
@@ -591,9 +700,9 @@ See its syntax in [Create queue command](#create-queue-command)
 The server must deliver messages to all subscribed simplex queues on the currently open transport connection. The syntax for the message delivery is:
 
 ```abnf
-message = %s"MSG" SP encryptedMessage
-encryptedMessage = <encrypt sentMessage>
-sentMessage = msgId SP timestamp SP size SP msgBody SP
+message = %s"MSG" SP msgId SP timestamp SP encryptedMsgBody
+encryptedMsgBody = <encrypt paddedSentMsgBody> ; server-encrypted padded sent msgBody
+paddedSentMsgBody = <padded(sentMsgBody, maxMessageLength + 2)> ; maxMessageLength = 15968
 msgId = encoded
 timestamp = <date-time defined in RFC3339>
 ```
@@ -601,8 +710,6 @@ timestamp = <date-time defined in RFC3339>
 `msgId` - unique message ID generated by the server based on cryptographically strong random bytes. It should be used by the clients to detect messages that were delivered more than once (in case the transport connection was interrupted and the server did not receive the message delivery acknowledgement).
 
 `timestamp` - the UTC time when the server received the message from the sender, must be in date-time format defined by [RFC 3339][10]
-
-`msgBody` - see syntax in [Send message](#send-message)
 
 When server delivers the messages to the recipient, message body should be encrypted with the secret derived from DH exchange using the keys passed during the queue creation and returned with `queueIds` response.
 
@@ -637,24 +744,24 @@ No further messages should be delivered to unsubscribed transport connection.
 #### Error responses
 
 - incorrect block format, encoding or signature size (`BLOCK`).
+- missing or different session ID - tls-unique binding of TLS transport (`SESSION`)
 - command errors (`CMD`):
   - error parsing command (`SYNTAX`)
   - prohibited command (`PROHIBITED`) - any server response sent from client or `ACK` sent without active subscription or without message delivery.
-  - incorrect RSA key size in `NEW` or `KEY` commands - only 1024, 2048 and 4096-bit keys are allowed (`KEY_SIZE`).
   - transmission has no required signature or queue ID (`NO_AUTH`)
   - transmission has unexpected credentials (`HAS_AUTH`)
   - transmission has no required queue ID (`NO_QUEUE`)
 - authentication error (`AUTH`) - incorrect signature, unknown (or suspended) queue, sender's ID is used in place of recipient's and vice versa, and some other cases (see [Send message](#send-message) command).
 - message queue quota exceeded error (`QUOTA`) - too many messages were sent to the message queue. Further messages can only be sent after the recipient retrieves the messages.
-- incorrect message body size (`SIZE`).
+- sent message is too large (> 15968) to be delivered (`LARGE_MSG`).
 - internal server error (`INTERNAL`).
 
 The syntax for error responses:
 
 ```abnf
 error = %s"ERR" SP errorType
-errorType = %s"BLOCK" / %s"CMD" SP cmdError / %s"AUTH" / %s"SIZE" /%s"INTERNAL"
-cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"KEY_SIZE" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_QUEUE"
+errorType = %s"BLOCK" / %s"SESSION" / %s"CMD" SP cmdError / %s"AUTH" / %s"LARGE_MSG" /%s"INTERNAL"
+cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_QUEUE"
 ```
 
 Server implementations must aim to respond within the same time for each command in all cases when `"ERR AUTH"` response is required to prevent timing attacks (e.g., the server should perform signature verification even when the queue does not exist on the server or the signature of different size is sent, using any RSA key with the same size as the signature size).
