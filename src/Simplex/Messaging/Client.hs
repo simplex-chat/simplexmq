@@ -257,7 +257,6 @@ createSMPQueue ::
   RcvPublicDhKey ->
   ExceptT SMPClientError IO QueueIdsKeys
 createSMPQueue c rpKey rKey dhKey =
-  -- TODO add signing this request too - requires changes in the server
   sendSMPCommand c (Just rpKey) "" (ClientCmd SRecipient $ NEW rKey dhKey) >>= \case
     IDS qik -> pure qik
     _ -> throwE SMPUnexpectedResponse
@@ -334,6 +333,7 @@ okSMPCommand cmd c pKey qId =
     _ -> throwE SMPUnexpectedResponse
 
 -- | Send any SMP command ('ClientCmd' type).
+-- TODO sign all requests (SEND of SMP confirmation would be signed with the same key that is passed to the recipient)
 sendSMPCommand :: SMPClient -> Maybe C.APrivateSignKey -> QueueId -> ClientCmd -> ExceptT SMPClientError IO (Command 'Broker)
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId

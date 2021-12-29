@@ -5,12 +5,30 @@ CREATE TABLE servers (
   PRIMARY KEY (host, port)
 ) WITHOUT ROWID;
 
+CREATE TABLE connections (
+  conn_alias BLOB NOT NULL PRIMARY KEY,
+  conn_mode TEXT NOT NULL DEFAULT 'INV',
+  -- TODO remove
+  rcv_host TEXT,
+  rcv_port TEXT,
+  rcv_id BLOB,
+  snd_host TEXT,
+  snd_port TEXT,
+  snd_id BLOB,
+  -- TODO remove until here
+  last_internal_msg_id INTEGER NOT NULL DEFAULT 0,
+  last_internal_rcv_msg_id INTEGER NOT NULL DEFAULT 0,
+  last_internal_snd_msg_id INTEGER NOT NULL DEFAULT 0,
+  last_external_snd_msg_id INTEGER NOT NULL DEFAULT 0,
+  last_rcv_msg_hash BLOB NOT NULL DEFAULT x'',
+  last_snd_msg_hash BLOB NOT NULL DEFAULT x''
+) WITHOUT ROWID;
+
 CREATE TABLE rcv_queues (
   host TEXT NOT NULL,
   port TEXT NOT NULL,
   rcv_id BLOB NOT NULL,
-  conn_alias BLOB NOT NULL REFERENCES connections
-    ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   rcv_private_key BLOB NOT NULL,
   rcv_dh_secret BLOB NOT NULL,
   e2e_priv_key BLOB NOT NULL,
@@ -28,33 +46,13 @@ CREATE TABLE snd_queues (
   host TEXT NOT NULL,
   port TEXT NOT NULL,
   snd_id BLOB NOT NULL,
-  conn_alias BLOB NOT NULL REFERENCES connections
-    ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+  conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   snd_private_key BLOB NOT NULL,
   e2e_pub_key BLOB NOT NULL,
   e2e_dh_secret BLOB NOT NULL,
   status TEXT NOT NULL,
   PRIMARY KEY (host, port, snd_id),
   FOREIGN KEY (host, port) REFERENCES servers
-) WITHOUT ROWID;
-
-CREATE TABLE connections (
-  conn_alias BLOB NOT NULL PRIMARY KEY,
-  conn_mode TEXT NOT NULL DEFAULT 'INV',
-  rcv_host TEXT,
-  rcv_port TEXT,
-  rcv_id BLOB,
-  snd_host TEXT,
-  snd_port TEXT,
-  snd_id BLOB,
-  last_internal_msg_id INTEGER NOT NULL DEFAULT 0,
-  last_internal_rcv_msg_id INTEGER NOT NULL DEFAULT 0,
-  last_internal_snd_msg_id INTEGER NOT NULL DEFAULT 0,
-  last_external_snd_msg_id INTEGER NOT NULL DEFAULT 0,
-  last_rcv_msg_hash BLOB NOT NULL DEFAULT x'',
-  last_snd_msg_hash BLOB NOT NULL DEFAULT x'',
-  FOREIGN KEY (rcv_host, rcv_port, rcv_id) REFERENCES rcv_queues (host, port, rcv_id),
-  FOREIGN KEY (snd_host, snd_port, snd_id) REFERENCES snd_queues (host, port, snd_id)
 ) WITHOUT ROWID;
 
 CREATE TABLE messages (

@@ -35,6 +35,7 @@ import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 (encode)
 import Data.Char (toLower)
+import Data.Functor (($>))
 import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -151,44 +152,38 @@ withTransaction st action = withConnection st $ loop 100 100_000
             loop (t * 9 `div` 8) (tLim - t) db
           else E.throwIO e
 
+createConn_ ::
+  (MonadUnliftIO m, MonadError StoreError m) =>
+  SQLiteStore ->
+  TVar ChaChaDRG ->
+  ConnData ->
+  (DB.Connection -> ByteString -> IO ()) ->
+  m ByteString
+createConn_ st gVar cData create =
+  liftIOEither . checkConstraint SEConnDuplicate . withTransaction st $ \db ->
+    case cData of
+      ConnData {connId = ""} -> createWithRandomId gVar $ create db
+      ConnData {connId} -> create db connId $> Right connId
+
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createRcvConn st gVar cData q@RcvQueue {server} cMode =
-    -- TODO if schema has to be restarted, this function can be refactored
-    -- to create connection first using createWithRandomId
-    liftIOEither . checkConstraint SEConnDuplicate . withTransaction st $ \db ->
-      getConnId_ db gVar cData >>= traverse (create db)
-    where
-      create :: DB.Connection -> ConnId -> IO ConnId
-      create db connId = do
-        upsertServer_ db server
-        insertRcvQueue_ db connId q
-        insertRcvConnection_ db cData {connId} q cMode
-        pure connId
+    createConn_ st gVar cData $ \db connId -> do
+      upsertServer_ db server
+      insertRcvConnection_ db cData {connId} q cMode
+      insertRcvQueue_ db connId q
 
   createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   createSndConn st gVar cData q@SndQueue {server} =
-    -- TODO if schema has to be restarted, this function can be refactored
-    -- to create connection first using createWithRandomId
-    liftIOEither . checkConstraint SEConnDuplicate . withTransaction st $ \db ->
-      getConnId_ db gVar cData >>= traverse (create db)
-    where
-      create :: DB.Connection -> ConnId -> IO ConnId
-      create db connId = do
-        upsertServer_ db server
-        insertSndQueue_ db connId q
-        insertSndConnection_ db cData {connId} q
-        pure connId
+    createConn_ st gVar cData $ \db connId -> do
+      upsertServer_ db server
+      insertSndConnection_ db cData {connId} q
+      insertSndQueue_ db connId q
 
   getConn :: SQLiteStore -> ConnId -> m SomeConn
   getConn st connId =
     liftIOEither . withTransaction st $ \db ->
       getConn_ db connId
-
-  getAllConnIds :: SQLiteStore -> m [ConnId]
-  getAllConnIds st =
-    liftIO . withTransaction st $ \db ->
-      concat <$> (DB.query_ db "SELECT conn_alias FROM connections;" :: IO [[ConnId]])
 
   getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
   getRcvConn st SMPServer {host, port} rcvId =
@@ -535,6 +530,7 @@ deserializePort_ :: ServiceName -> Maybe ServiceName
 deserializePort_ "_" = Nothing
 deserializePort_ port = Just port
 
+-- TODO make status conversion explicit
 instance ToField QueueStatus where toField = toField . show
 
 instance FromField QueueStatus where fromField = fromTextField_ $ readMaybe . T.unpack
@@ -551,8 +547,10 @@ instance ToField InternalId where toField (InternalId x) = toField x
 
 instance FromField InternalId where fromField x = InternalId <$> fromField x
 
+-- TODO make status conversion explicit
 instance ToField RcvMsgStatus where toField = toField . show
 
+-- TODO make status conversion explicit
 instance ToField SndMsgStatus where toField = toField . show
 
 instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
@@ -987,22 +985,6 @@ updateHashSnd_ dbConn connId SndMsgData {..} =
     ]
 
 -- create record with a random ID
-
-getConnId_ :: DB.Connection -> TVar ChaChaDRG -> ConnData -> IO (Either StoreError ConnId)
-getConnId_ dbConn gVar ConnData {connId = ""} = getUniqueRandomId gVar $ getConnData_ dbConn
-getConnId_ _ _ ConnData {connId} = pure $ Right connId
-
-getUniqueRandomId :: TVar ChaChaDRG -> (ByteString -> IO (Maybe a)) -> IO (Either StoreError ByteString)
-getUniqueRandomId gVar get = tryGet 3
-  where
-    tryGet :: Int -> IO (Either StoreError ByteString)
-    tryGet 0 = pure $ Left SEUniqueID
-    tryGet n = do
-      id' <- randomId gVar 12
-      get id' >>= \case
-        Nothing -> pure $ Right id'
-        Just _ -> tryGet (n - 1)
-
 createWithRandomId :: TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
 createWithRandomId gVar create = tryCreate 3
   where
