@@ -310,7 +310,7 @@ sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, connI
   where
     mkConfirmation :: m MsgBody
     mkConfirmation =
-      agentCbEncrypt sq . SMP.serializeClientMessage . agentToClientMsg $
+      agentCbEncrypt sq . serializeAgentMessage $
         AgentConfirmation senderKey connInfo
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> RetryInterval -> m ()
@@ -324,7 +324,7 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
   where
     mkHello :: m ByteString
     mkHello = do
-      agentCbEncrypt sq . SMP.serializeClientMessage . agentToClientMsg $
+      agentCbEncrypt sq . serializeAgentMessage $
         AgentMessage (AHeader 0 "") HELLO
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
@@ -335,7 +335,7 @@ sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} cReq connInfo = 
   where
     mkInvitation :: m ByteString
     mkInvitation =
-      agentCbEncryptOnce dhPublicKey . SMP.serializeClientMessage . agentToClientMsg $
+      agentCbEncryptOnce dhPublicKey . serializeAgentMessage $
         AgentInvitation cReq connInfo
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()

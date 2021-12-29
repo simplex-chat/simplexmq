@@ -74,8 +74,7 @@ module Simplex.Messaging.Agent.Protocol
     -- * Parse and serialize
     serializeCommand,
     clientToAgentMsg,
-    agentToClientMsg,
-    -- serializeASMPMessage,
+    serializeAgentMessage,
     serializeMsgIntegrity,
     serializeSMPQueueUri,
     serializeConnMode,
@@ -135,6 +134,7 @@ import Simplex.Messaging.Protocol
     MsgId,
     PrivHeader (..),
     SndPublicVerifyKey,
+    serializeClientMessage,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
@@ -313,6 +313,9 @@ data AMessage
   | -- | agent envelope for the client message
     A_MSG MsgBody
   deriving (Show)
+
+serializeAgentMessage :: AgentMessage -> ByteString
+serializeAgentMessage = serializeClientMessage . agentToClientMsg
 
 agentToClientMsg :: AgentMessage -> ClientMessage
 agentToClientMsg = \case

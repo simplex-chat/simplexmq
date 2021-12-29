@@ -389,7 +389,7 @@ sendMessage' c connId msg =
           withStore $ \st -> do
             (internalId, internalSndId, prevMsgHash) <- updateSndIds st connId
             let msgBody =
-                  SMP.serializeClientMessage . agentToClientMsg $
+                  serializeAgentMessage $
                     AgentMessage (AHeader (unSndId internalSndId) prevMsgHash) (A_MSG msg)
                 internalHash = C.sha256Hash msgBody
                 msgData = SndMsgData {..}
@@ -501,7 +501,7 @@ getSMPServer =
 
 sendControlMessage :: AgentMonad m => AgentClient -> SndQueue -> AMessage -> m ()
 sendControlMessage c sq agentMessage = do
-  sendAgentMessage c sq . SMP.serializeClientMessage . agentToClientMsg $
+  sendAgentMessage c sq . serializeAgentMessage $
     AgentMessage (AHeader 0 "") agentMessage
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
