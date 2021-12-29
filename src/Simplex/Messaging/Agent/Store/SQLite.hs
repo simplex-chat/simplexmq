@@ -167,17 +167,36 @@ createConn_ st gVar cData create =
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
-  createRcvConn st gVar cData q@RcvQueue {server} cMode =
+  createRcvConn st gVar cData q@RcvQueue {server, rcvId} cMode =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      insertRcvConnection_ db cData {connId} q cMode
+      let port_ = serializePort_ $ port server
+      DB.execute
+        db
+        [sql|
+          INSERT INTO connections
+            (conn_alias, conn_mode, rcv_host, rcv_port, rcv_id,
+             snd_host, snd_port, snd_id)
+          VALUES
+            (?, ?, ?, ?, ?, NULL, NULL, NULL)
+        |]
+        (connId, cMode, host server, port_, rcvId)
       insertRcvQueue_ db connId q
 
   createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
-  createSndConn st gVar cData q@SndQueue {server} =
+  createSndConn st gVar cData q@SndQueue {server, sndId} =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      insertSndConnection_ db cData {connId} q
+      let port_ = serializePort_ $ port server
+      DB.execute
+        db
+        [sql|
+          INSERT INTO connections
+            (conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
+          VALUES
+            (?, NULL, NULL, NULL, ?, ?, ?);
+        |]
+        (connId, host server, port_, sndId)
       insertSndQueue_ db connId q
 
   getConn :: SQLiteStore -> ConnId -> m SomeConn
@@ -657,24 +676,6 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":status" := status
     ]
 
-insertRcvConnection_ :: DB.Connection -> ConnData -> RcvQueue -> SConnectionMode c -> IO ()
-insertRcvConnection_ dbConn ConnData {connId} RcvQueue {server, rcvId} cMode = do
-  let port_ = serializePort_ $ port server
-  DB.executeNamed
-    dbConn
-    [sql|
-      INSERT INTO connections
-        ( conn_alias, conn_mode, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
-      VALUES
-        (:conn_alias,:conn_mode,:rcv_host,:rcv_port,:rcv_id, NULL,     NULL,     NULL);
-    |]
-    [ ":conn_alias" := connId,
-      ":rcv_host" := host server,
-      ":rcv_port" := port_,
-      ":rcv_id" := rcvId,
-      ":conn_mode" := cMode
-    ]
-
 -- * createSndConn helpers
 
 insertSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO ()
@@ -696,23 +697,6 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
       ":e2e_pub_key" := e2ePubKey,
       ":e2e_dh_secret" := e2eDhSecret,
       ":status" := status
-    ]
-
-insertSndConnection_ :: DB.Connection -> ConnData -> SndQueue -> IO ()
-insertSndConnection_ dbConn ConnData {connId} SndQueue {server, sndId} = do
-  let port_ = serializePort_ $ port server
-  DB.executeNamed
-    dbConn
-    [sql|
-      INSERT INTO connections
-        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
-      VALUES
-        (:conn_alias, NULL,     NULL,     NULL,  :snd_host,:snd_port,:snd_id);
-    |]
-    [ ":conn_alias" := connId,
-      ":snd_host" := host server,
-      ":snd_port" := port_,
-      ":snd_id" := sndId
     ]
 
 -- * getConn helpers
