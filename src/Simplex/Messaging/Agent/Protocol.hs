@@ -39,7 +39,7 @@ module Simplex.Messaging.Agent.Protocol
     SMPConfMsg (..), -- TODO remove
     AgentMessage (..),
     AHeader (..),
-    AMessage (..), -- remove tick
+    AMessage (..),
     SMPServer (..),
     SMPQueueUri (..),
     ConnectionMode (..),
@@ -86,7 +86,6 @@ module Simplex.Messaging.Agent.Protocol
     serializeConnReq',
     serializeAgentError,
     commandP,
-    -- parseASMPMessage,
     smpServerP,
     smpQueueUriP,
     connModeT,
@@ -94,7 +93,6 @@ module Simplex.Messaging.Agent.Protocol
     connReqP',
     msgIntegrityP,
     agentErrorTypeP,
-    -- agentMessageP,
 
     -- * TCP transport functions
     tPut,
@@ -533,8 +531,6 @@ data QueueStatus
 
 type AgentMsgId = Int64
 
--- type SenderTimestamp = UTCTime
-
 -- | Result of received message integrity validation.
 data MsgIntegrity = MsgOk | MsgError MsgErrorType
   deriving (Eq, Show)
@@ -749,11 +745,6 @@ serializeAgentError = \case
   BROKER (RESPONSE e) -> "BROKER RESPONSE " <> SMP.serializeErrorType e
   BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
   e -> bshow e
-
--- binaryBodyP :: Parser ByteString
--- binaryBodyP = do
---   size :: Int <- A.decimal <* A.endOfLine
---   A.take size
 
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body

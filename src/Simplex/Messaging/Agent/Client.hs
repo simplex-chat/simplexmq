@@ -59,7 +59,6 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
--- import Simplex.Messaging.Transport (smpBlockSize)
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E

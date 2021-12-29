@@ -265,7 +265,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
           -- state.CKr, mk = KDF_CK(state.CKr)
           let (rcCKr', mk, iv, _) = chainKdf rcCKr
           -- return DECRYPT (mk, ciphertext, CONCAT (AD, enc_header))
-          msg <- decryptMessage (MessageKey mk iv) hdr encMsg
+          msg <- decryptMessage (MessageKey mk iv) encMsg
           -- state . Nr += 1
           pure (msg, rc'' {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr + 1})
         Right rc'' -> pure (Left CERatchetState, rc'')
@@ -338,7 +338,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
                         | M.null mks' = M.delete hk rcMKSkipped
                         | otherwise = M.insert hk mks' rcMKSkipped
                       rc' = rc {rcMKSkipped = mksSkipped}
-                  msg <- decryptMessage mk hdr encMsg
+                  msg <- decryptMessage mk encMsg
                   pure $ SMMessage msg rc'
         tryDecryptSkipped r _ = pure r
     decryptRcHeader :: Maybe RcvRatchet -> EncHeader -> ExceptT CryptoError IO (RatchetStep, MsgHeader a)
@@ -353,8 +353,8 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
     decryptHeader k EncHeader {ehBody, ehAuthTag, ehIV} = do
       header <- decryptAEAD k ehIV rcAD ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
       parseE' CryptoHeaderError msgHeaderP' header
-    decryptMessage :: MessageKey -> MsgHeader a -> EncMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
-    decryptMessage (MessageKey mk iv) MsgHeader {} EncMessage {emHeader, emBody, emAuthTag} =
+    decryptMessage :: MessageKey -> EncMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
+    decryptMessage (MessageKey mk iv) EncMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, ciphertext, CONCAT(AD, enc_header))
       -- TODO add associated data
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag

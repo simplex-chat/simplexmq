@@ -259,8 +259,8 @@ data EncMessage = EncMessage
   }
 
 data PubHeader = PubHeader
-  { sphVersion :: Word16,
-    sphE2ePubDhKey :: C.PublicKeyX25519
+  { phVersion :: Word16,
+    phE2ePubDhKey :: C.PublicKeyX25519
   }
 
 serializePubHeader :: PubHeader -> ByteString
@@ -276,7 +276,7 @@ serializeEncMessage EncMessage {emHeader, emNonce, emBody} =
 encMessageP :: Parser EncMessage
 encMessageP = do
   emHeader <- pubHeaderP
-  emNonce <- C.cbNonce <$> A.take 24
+  emNonce <- C.cbNonceP
   emBody <- A.takeByteString
   pure EncMessage {emHeader, emNonce, emBody}
 

@@ -115,6 +115,7 @@ module Simplex.Messaging.Crypto
     cbDecrypt,
     cbNonce,
     randomCbNonce,
+    cbNonceP,
 
     -- * SHA256 hash
     sha256Hash,
@@ -923,6 +924,9 @@ cbNonce s
 
 randomCbNonce :: IO CbNonce
 randomCbNonce = CbNonce <$> getRandomBytes 24
+
+cbNonceP :: Parser CbNonce
+cbNonceP = CbNonce <$> A.take 24
 
 xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')
