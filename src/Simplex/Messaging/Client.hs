@@ -185,7 +185,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ dis
     send SMPClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h
 
     receive :: Transport c => SMPClient -> THandle c -> IO ()
-    receive SMPClient {rcvQ} h = forever $ tGet fromServer h >>= atomically . writeTBQueue rcvQ
+    receive SMPClient {rcvQ} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
 
     ping :: SMPClient -> IO ()
     ping c = forever $ do
@@ -337,7 +337,7 @@ okSMPCommand cmd c pKey qId =
 sendSMPCommand :: SMPClient -> Maybe C.APrivateSignKey -> QueueId -> ClientCmd -> ExceptT SMPClientError IO (Command 'Broker)
 sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
-  t <- signTransmission $ serializeTransmission sessionId (corrId, qId, cmd)
+  t <- signTransmission $ encodeTransmission sessionId (corrId, qId, cmd)
   ExceptT $ sendRecv corrId t
   where
     lift_ :: STM a -> ExceptT SMPClientError IO a

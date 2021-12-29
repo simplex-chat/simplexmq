@@ -154,7 +154,7 @@ cancelSub = \case
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Client -> m ()
 receive th Client {rcvQ, sndQ} = forever $ do
-  (sig, signed, (corrId, queueId, cmdOrError)) <- tGet fromClient th
+  (sig, signed, (corrId, queueId, cmdOrError)) <- tGet th
   case cmdOrError of
     Left e -> write sndQ (corrId, queueId, ERR e)
     Right cmd -> do
@@ -168,7 +168,7 @@ receive th Client {rcvQ, sndQ} = forever $ do
 send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
 send h Client {sndQ, sessionId} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  liftIO $ tPut h (Nothing, serializeTransmission sessionId t)
+  liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
 
 verifyTransmission ::
   forall m. (MonadUnliftIO m, MonadReader Env m) => Maybe C.ASignature -> ByteString -> QueueId -> ClientCmd -> m Bool

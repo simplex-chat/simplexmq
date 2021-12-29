@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -145,5 +146,5 @@ tPutRaw h@THandle {sessionId} (sig, corrId, queueId, command) = do
 
 tGetRaw :: Transport c => THandle c -> IO SignedRawTransmission
 tGetRaw h = do
-  (Nothing, _, (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
-  pure (Nothing, corrId, encode qId, serializeCommand cmd)
+  (Nothing, _, (CorrId corrId, qId, Right (cmd :: Command 'Broker))) <- tGet h
+  pure (Nothing, corrId, encode qId, encodeCommand cmd)

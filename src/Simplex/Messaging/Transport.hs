@@ -505,4 +505,4 @@ getPeerHello th = ExceptT $ (parseHandshake =<<) <$> tGetBlock th
 
 tHandle :: Transport c => c -> THandle c
 tHandle c =
-  THandle {connection = c, sessionId = encode $ tlsUnique c}
+  THandle {connection = c, sessionId = tlsUnique c}
