@@ -575,7 +575,7 @@ encodedLenKey = keyLen x509binary
 keyLen = word16
 x509binary = <binary X509 key encoding>
 sentMsgBody = 15842*15842 OCTET
-; E2E-encrypted smpMessage padded to 15842 bytes before encryption
+; E2E-encrypted smpClientMessage padded to 15842 bytes before encryption
 word16 = 2*2 OCTET
 ```
 
@@ -594,13 +594,13 @@ Until the queue is secured, the server should accept any number of unsigned mess
 The body should be encrypted with the recipient's "public" key (`EK`); once decrypted it must have this format:
 
 ```abnf
-sentMsgBody = <encrypted padded(smpMessage, 15842)>
-smpMessage = smpPrivHeader clientMsg
+sentMsgBody = <encrypted padded(smpClientMessage, 15842)>
+smpClientMessage = smpPrivHeader clientMsgBody
 smpPrivHeader = emptyHeader / smpConfirmationHeader
 emptyHeader = " "
 smpConfirmationHeader = %s"K" senderKey
 senderKey = encodedLenKey ; the sender's public key to sign SEND commands for this queue
-clientBody = *OCTET ; up to 15784 in case of emptyHeader
+clientMsgBody = *OCTET ; up to 15784 in case of emptyHeader
 ```
 
 `clientHeader` in the initial unsigned message is used to transmit sender's server key and can be used in the future revisions of SMP protocol for other purposes.
@@ -611,19 +611,19 @@ SMP transmission structure for sent messages:
 ------- transmission (= 16384 bytes)
     2 | originalLength
  398- | signature SP sessionId SP corrId SP queueId SP %s"SEND" SP
-      ....... SMPEncMessage (= 15968 bytes)
-       126- | publicMessageHeader
-         24 | nonce for SMPMessage
-            ------- SMPMessage (E2E encrypted, = 15842 bytes)
+      ....... smpEncMessage (= 15968 bytes)
+       126- | smpPubHeader
+         24 | nonce for smpClientMessage
+            ------- smpClientMessage (E2E encrypted, = 15842 bytes)
                 2 | originalLength
-              16- | privateMsgHeader
+              16- | smpPrivHeader
                   .......
-                        | client message (<= 15784 bytes)
+                        | clientMsgBody (<= 15784 bytes)
                   .......
-               0+ | E2E encrypted pad
-            ------- E2E encrypted end
-         16 | auth tag for SMPMessage
-      ....... SMPEncMessage end
+               0+ | smpClientMessage pad
+            ------- smpClientMessage end
+         16 | auth tag for smpClientMessage
+      ....... smpEncMessage end
   16+ | transmission pad
 ------- transmission end
 ```
@@ -636,15 +636,16 @@ SMP transmission structure for received messages:
  398- | signature SP sessionId SP corrId SP queueId SP %s"MSG" SP msgId SP timestamp SP
       ------- serverEncryptedMsg (= 15986 bytes)
           2 | originalLength
-            ....... SMPEncMessage (= 15968 bytes)
-             126- | publicMessageHeader
-               24 | nonce for SMPMessage
-                  ------- SMPMessage (E2E encrypted, = 15842 bytes)
+            ....... smpEncMessage (= 15968 bytes)
+             126- | smpPubHeader
+               24 | nonce for smpClientMessage
+                  ------- smpClientMessage (E2E encrypted, = 15842 bytes)
                       2 | originalLength
-                    16- | privateMsgHeader
-                        ....... client message (<= 15784 bytes) -- TODO move to agent protocol
+                    16- | smpPrivHeader
+                        ....... clientMsgBody (<= 15784 bytes)
+                              -- TODO move internal structure to agent protocol
                           16- | agentPublicHeader
-                              ....... E2E double-ratchet encrypted (<= 15768)
+                              ....... E2E double-ratchet encrypted (= 15768)
                                  96 | double-ratchet header
                                  16 | double-ratchet header auth tag
                                  24 | double-ratchet header iv
@@ -660,11 +661,11 @@ SMP transmission structure for received messages:
                                  16 | auth tag (IV generated from chain ratchet)
                               ....... E2E double-ratchet encrypted end
                               |
-                        ....... client message end
-                     0+ | SMPMessage pad
-                  ------- SMPMessage end
-               16 | auth tag for SMPMessage
-            ....... SMPEncMessage end
+                        ....... clientMsgBody end
+                     0+ | smpClientMessage pad
+                  ------- smpClientMessage end
+               16 | auth tag for smpClientMessage
+            ....... smpEncMessage end
          16 | auth tag (msgId is used as nonce)
          0+ | serverEncryptedMsg pad
       ------- serverEncryptedMsg end
@@ -743,6 +744,7 @@ No further messages should be delivered to unsubscribed transport connection.
 #### Error responses
 
 - incorrect block format, encoding or signature size (`BLOCK`).
+- missing or different session ID - tls-unique binding of TLS transport (`SESSION`)
 - command errors (`CMD`):
   - error parsing command (`SYNTAX`)
   - prohibited command (`PROHIBITED`) - any server response sent from client or `ACK` sent without active subscription or without message delivery.
@@ -751,14 +753,14 @@ No further messages should be delivered to unsubscribed transport connection.
   - transmission has no required queue ID (`NO_QUEUE`)
 - authentication error (`AUTH`) - incorrect signature, unknown (or suspended) queue, sender's ID is used in place of recipient's and vice versa, and some other cases (see [Send message](#send-message) command).
 - message queue quota exceeded error (`QUOTA`) - too many messages were sent to the message queue. Further messages can only be sent after the recipient retrieves the messages.
-- incorrect message body size (`SIZE`).
+- sent message is too large (> 15968) to be delivered (`LARGE_MSG`).
 - internal server error (`INTERNAL`).
 
 The syntax for error responses:
 
 ```abnf
 error = %s"ERR" SP errorType
-errorType = %s"BLOCK" / %s"CMD" SP cmdError / %s"AUTH" / %s"SIZE" /%s"INTERNAL"
+errorType = %s"BLOCK" / %s"SESSION" / %s"CMD" SP cmdError / %s"AUTH" / %s"LARGE_MSG" /%s"INTERNAL"
 cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_QUEUE"
 ```
 

@@ -142,17 +142,15 @@ agentMessage = helloMsg / replyQueueMsg /
 
 msgPadding = *OCTET ; optional random bytes to get messages to the same size (as defined in SMP message size)
 
-helloMsg = %s"HELLO" SP signatureVerificationKey [SP %s"NO_ACK"]
-; NO_ACK means that acknowledgements to client messages will NOT be sent in this connection by the agent that sent `HELLO` message.
-signatureVerificationKey = encoded
+helloMsg = %s"HELLO"
 
 replyQueueMsg = %s"REPLY" SP connectionRequest ; `connectionRequest` is defined below
 ; this message can only be sent by the second connection party
 
-clientMsg = %s"MSG" SP size CRLF clientMsgBody CRLF ; CRLF is in addition to CRLF in decryptedSmpMessageBody
-size = 1*DIGIT
+clientMsg = %s"MSG" SP clientMsgBody
 clientMsgBody = *OCTET
 
+; TODO remove and move to "public" header
 invitationMsg = %s"INV" SP connReqInvitation SP connInfo
 ; `connReqInvitation` and `connInfo` are defined below
 
@@ -303,7 +301,7 @@ messageError = %s"MERR" SP agentMsgId SP <errorType>
 message = %s"MSG" SP msgIntegrity SP recipientMeta SP brokerMeta SP senderMeta SP binaryMsg
 recipientMeta = %s"R=" agentMsgId "," agentTimestamp ; receiving agent message metadata 
 brokerMeta = %s"B=" brokerMsgId "," brokerTimestamp ; broker (server) message metadata
-senderMeta = %s"S=" agentMsgId "," agentTimestamp ; sending agent message metadata 
+senderMeta = %s"S=" agentMsgId ; sending agent message ID 
 brokerMsgId = encoded
 brokerTimestamp = <date-time>
 msgIntegrity = ok / msgIntegrityError
