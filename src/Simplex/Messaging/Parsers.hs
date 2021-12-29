@@ -11,16 +11,17 @@ import Data.ByteString.Base64
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.ByteString.Internal (c2w, w2c)
 import Data.Char (isAlphaNum)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (formatISO8601Millis, parseISO8601)
 import Data.Typeable (Typeable)
-import Data.Word (Word16, Word32)
+import Data.Word (Word16, Word32, Word8)
 import Database.SQLite.Simple (ResultError (..), SQLData (..))
 import Database.SQLite.Simple.FromField (FieldParser, returnError)
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
-import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16)
+import Network.Transport.Internal (decodeWord16, decodeWord32)
 import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
 
@@ -66,11 +67,11 @@ word32P = decodeWord32 <$> A.take 4
 
 encodeLenBytes :: ByteString -> ByteString
 encodeLenBytes s =
-  let len = fromIntegral $ B.length s
-   in encodeWord16 len <> s
+  let len = fromIntegral $ B.length s :: Word8
+   in B.cons (w2c len) s
 
 lenBytesP :: Parser ByteString
-lenBytesP = A.take . fromIntegral =<< word16P
+lenBytesP = A.take . fromIntegral . c2w =<< A.anyChar
 
 parse :: Parser a -> e -> (ByteString -> Either e a)
 parse parser err = first (const err) . parseAll parser

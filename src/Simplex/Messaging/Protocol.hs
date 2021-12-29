@@ -72,7 +72,9 @@ module Simplex.Messaging.Protocol
 
     -- * Parse and serialize
     encodeTransmission,
+    serializeErrorType,
     transmissionP,
+    errorTypeP,
     serializeEncMessage,
     encMessageP,
     serializeClientMessage,
@@ -465,15 +467,23 @@ commandP =
     'M' -> Cmd SBroker <$> (MSG <$> lenBytesP <*> binaryTsISO8601P <*> A.takeByteString)
     'I' -> Cmd SBroker <$> (IDS <$> (QIK <$> lenBytesP <*> lenBytesP <*> C.binaryLenKeyP))
     'i' -> Cmd SBroker <$> (NID <$> lenBytesP)
-    '!' -> Cmd SBroker <$> (ERR <$> errorTypeP)
+    '!' -> Cmd SBroker <$> (ERR <$> errorTypeP')
     'm' -> pure $ Cmd SBroker NMSG
     'E' -> pure $ Cmd SBroker END
     'O' -> pure $ Cmd SBroker OK
     'G' -> pure $ Cmd SBroker PONG
     _ -> fail "bad command"
 
+-- | SMP error parser.
 errorTypeP :: Parser ErrorType
-errorTypeP =
+errorTypeP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
+
+-- | Serialize SMP error.
+serializeErrorType :: ErrorType -> ByteString
+serializeErrorType = bshow
+
+errorTypeP' :: Parser ErrorType
+errorTypeP' =
   A.anyChar >>= \case
     'B' -> pure BLOCK
     'S' -> pure SESSION
