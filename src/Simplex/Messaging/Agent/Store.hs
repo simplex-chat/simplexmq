@@ -36,7 +36,6 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   getConn :: s -> ConnId -> m SomeConn
-  getAllConnIds :: s -> m [ConnId] -- TODO remove - hack for subscribing to all
   getRcvConn :: s -> SMPServer -> SMP.RecipientId -> m SomeConn
   deleteConn :: s -> ConnId -> m ()
   upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()

@@ -85,7 +85,6 @@ storeTests = do
           testCreateSndConn
           testCreateSndConnRandomID
           testCreateSndConnDuplicate
-        describe "getAllConnIds" testGetAllConnIds
         describe "getRcvConn" testGetRcvConn
         describe "deleteConn" $ do
           testDeleteRcvConn
@@ -137,10 +136,10 @@ testForeignKeysEnabled =
   it "foreign keys should be enabled" . withStoreConnection $ \db -> do
     let inconsistentQuery =
           [sql|
-            INSERT INTO connections
-              (conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
+            INSERT INTO snd_queues
+              ( host, port, snd_id, conn_alias, snd_private_key, e2e_pub_key, e2e_dh_secret, status)
             VALUES
-              ("conn1", "smp.simplex.im", "5223", "1234", "smp.simplex.im", "5223", "2345");
+              ('smp.simplex.im', '5223', '1234', '2345', x'', x'', x'', 'new');
           |]
     DB.execute_ db inconsistentQuery
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
@@ -249,15 +248,6 @@ testCreateSndConnDuplicate =
     _ <- runExceptT $ createSndConn store g cData1 sndQueue1
     createSndConn store g cData1 sndQueue1
       `throwsError` SEConnDuplicate
-
-testGetAllConnIds :: SpecWith SQLiteStore
-testGetAllConnIds =
-  it "should get all conn aliases" $ \store -> do
-    g <- newTVarIO =<< drgNew
-    _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
-    _ <- runExceptT $ createSndConn store g cData1 {connId = "conn2"} sndQueue1
-    getAllConnIds store
-      `returnsResult` ["conn1" :: ConnId, "conn2" :: ConnId]
 
 testGetRcvConn :: SpecWith SQLiteStore
 testGetRcvConn =

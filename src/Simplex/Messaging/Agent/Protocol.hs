@@ -808,7 +808,6 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       INFO cInfo -> INFO <$$> getBody cInfo
       cmd -> pure $ Right cmd
 
-    -- TODO refactor with server
     getBody :: ByteString -> m (Either AgentErrorType ByteString)
     getBody binary =
       case B.unpack binary of
