@@ -666,11 +666,9 @@ insertRcvConnection_ dbConn ConnData {connId} RcvQueue {server, rcvId} cMode = d
     dbConn
     [sql|
       INSERT INTO connections
-        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash,
-          conn_mode )
+        ( conn_alias, conn_mode, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
       VALUES
-        (:conn_alias,:rcv_host,:rcv_port,:rcv_id, NULL,     NULL,     NULL, 0, 0, 0, 0, x'', x'',
-         :conn_mode );
+        (:conn_alias,:conn_mode,:rcv_host,:rcv_port,:rcv_id, NULL,     NULL,     NULL);
     |]
     [ ":conn_alias" := connId,
       ":rcv_host" := host server,
@@ -709,9 +707,9 @@ insertSndConnection_ dbConn ConnData {connId} SndQueue {server, sndId} = do
     dbConn
     [sql|
       INSERT INTO connections
-        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id, last_internal_msg_id, last_internal_rcv_msg_id, last_internal_snd_msg_id, last_external_snd_msg_id, last_rcv_msg_hash, last_snd_msg_hash)
+        ( conn_alias, rcv_host, rcv_port, rcv_id, snd_host, snd_port, snd_id)
       VALUES
-        (:conn_alias, NULL,     NULL,     NULL,  :snd_host,:snd_port,:snd_id, 0, 0, 0, 0, x'', x'');
+        (:conn_alias, NULL,     NULL,     NULL,  :snd_host,:snd_port,:snd_id);
     |]
     [ ":conn_alias" := connId,
       ":snd_host" := host server,
@@ -849,9 +847,9 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgBody, internalRcvId} = d
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, body, msg_body)
+        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,   '',:msg_body);
+        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:msg_body);
     |]
     [ ":conn_alias" := connId,
       ":internal_id" := internalId,
@@ -943,9 +941,9 @@ insertSndMsgBase_ dbConn connId SndMsgData {..} = do
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, body, msg_body)
+        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,            NULL,:internal_snd_id,   '',:msg_body);
+        (:conn_alias,:internal_id,:internal_ts,            NULL,:internal_snd_id,:msg_body);
     |]
     [ ":conn_alias" := connId,
       ":internal_id" := internalId,
