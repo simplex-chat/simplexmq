@@ -60,7 +60,6 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import Text.Read (readMaybe)
 import qualified UnliftIO.Exception as E
 
 -- * SQLite Store implementation
@@ -514,14 +513,13 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           SET rcv_status = ?, ack_brocker_ts = datetime('now')
           WHERE conn_alias = ? AND internal_id = ?
         |]
-        (AcknowledgedToBroker, connId, msgId)
+        (Acknowledged, connId, msgId)
 
 -- * Auxiliary helpers
 
--- TODO make status conversion explicit
-instance ToField QueueStatus where toField = toField . show
+instance ToField QueueStatus where toField = toField . serializeQueueStatus
 
-instance FromField QueueStatus where fromField = fromTextField_ $ readMaybe . T.unpack
+instance FromField QueueStatus where fromField = fromTextField_ queueStatusT
 
 instance ToField InternalRcvId where toField (InternalRcvId x) = toField x
 
@@ -535,11 +533,13 @@ instance ToField InternalId where toField (InternalId x) = toField x
 
 instance FromField InternalId where fromField x = InternalId <$> fromField x
 
--- TODO make status conversion explicit
-instance ToField RcvMsgStatus where toField = toField . show
+instance ToField RcvMsgStatus where toField = toField . serializeRcvMsgStatus
 
--- TODO make status conversion explicit
-instance ToField SndMsgStatus where toField = toField . show
+instance FromField RcvMsgStatus where fromField = fromTextField_ rcvMsgStatusT
+
+instance ToField SndMsgStatus where toField = toField . serializeSndMsgStatus
+
+instance FromField SndMsgStatus where fromField = fromTextField_ sndMsgStatusT
 
 instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
 
@@ -786,11 +786,11 @@ insertRcvMsgDetails_ dbConn connId RcvMsgData {msgMeta, internalRcvId, internalH
     [sql|
       INSERT INTO rcv_messages
         ( conn_alias, internal_rcv_id, internal_id, external_snd_id,
-          broker_id, broker_ts, rcv_status, ack_brocker_ts, ack_sender_ts,
+          broker_id, broker_ts, rcv_status,
           internal_hash, external_prev_snd_hash, integrity)
       VALUES
         (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,
-         :broker_id,:broker_ts,:rcv_status,           NULL,          NULL,
+         :broker_id,:broker_ts,:rcv_status,
          :internal_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_alias" := connId,
@@ -878,9 +878,9 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_alias, internal_snd_id, internal_id, snd_status, sent_ts, delivered_ts, internal_hash, previous_msg_hash)
+        ( conn_alias, internal_snd_id, internal_id, snd_status, internal_hash, previous_msg_hash)
       VALUES
-        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,    NULL,         NULL,:internal_hash,:previous_msg_hash);
+        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,:internal_hash,:previous_msg_hash);
     |]
     [ ":conn_alias" := connId,
       ":internal_snd_id" := internalSndId,

@@ -92,6 +92,8 @@ module Simplex.Messaging.Agent.Protocol
     connReqP',
     msgIntegrityP,
     agentErrorTypeP,
+    serializeQueueStatus,
+    queueStatusT,
 
     -- * TCP transport functions
     tPut,
@@ -531,6 +533,23 @@ data QueueStatus
   | -- | queue is disabled (only used by the queue recipient)
     Disabled
   deriving (Eq, Show, Read)
+
+serializeQueueStatus :: QueueStatus -> Text
+serializeQueueStatus = \case
+  New -> "new"
+  Confirmed -> "confirmed"
+  Secured -> "secured"
+  Active -> "active"
+  Disabled -> "disabled"
+
+queueStatusT :: Text -> Maybe QueueStatus
+queueStatusT = \case
+  "new" -> Just New
+  "confirmed" -> Just Confirmed
+  "secured" -> Just Secured
+  "active" -> Just Active
+  "disabled" -> Just Disabled
+  _ -> Nothing
 
 type AgentMsgId = Int64
 
