@@ -508,8 +508,7 @@ subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
   withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
-    Left e -> do
-      liftIO $ print e
+    Left e -> liftIO $ print e
     Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTransmission -> m ()
