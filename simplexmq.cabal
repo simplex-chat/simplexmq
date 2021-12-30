@@ -55,6 +55,7 @@ library
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
+      Simplex.Messaging.Version
   other-modules:
       Paths_simplexmq
   hs-source-dirs:
@@ -224,6 +225,7 @@ test-suite smp-server-test
       ServerTests
       SMPAgentClient
       SMPClient
+      VersionRangeTests
       Paths_simplexmq
   hs-source-dirs:
       tests

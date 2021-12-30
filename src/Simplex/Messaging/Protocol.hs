@@ -30,7 +30,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Protocol
   ( -- * SMP protocol parameters
-    smpClientProtocolVersion,
+    smpClientVersion,
     maxMessageLength,
     e2eEncMessageLength,
 
@@ -110,10 +110,11 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
 import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
-smpClientProtocolVersion :: Word16
-smpClientProtocolVersion = 1
+smpClientVersion :: VersionRange
+smpClientVersion = mkVersionRange 1 1
 
 maxMessageLength :: Int
 maxMessageLength = 15968

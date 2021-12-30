@@ -27,7 +27,7 @@
 module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
     smpBlockSize,
-    smpServerProtocolVersion,
+    supportedSMPVersions,
     simplexMQVersion,
 
     -- * Transport connection class
@@ -95,6 +95,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseRead1)
 import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Version
 import System.Exit (exitFailure)
 import System.IO.Error
 import Test.QuickCheck (Arbitrary (..))
@@ -108,8 +109,8 @@ import UnliftIO.STM
 smpBlockSize :: Int
 smpBlockSize = 16384
 
-smpServerProtocolVersion :: Word16
-smpServerProtocolVersion = 1
+supportedSMPVersions :: VersionRange
+supportedSMPVersions = mkVersionRange 1 1
 
 simplexMQVersion :: String
 simplexMQVersion = "0.5.1"
@@ -392,17 +393,28 @@ trimCR s = if B.last s == '\r' then B.init s else s
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
+    sessionId :: ByteString,
+    -- | agreed SMP server protocol version
+    smpVersion :: Word16
+  }
+
+data ServerHandshake = ServerHandshake
+  { smpVersionRange :: VersionRange,
     sessionId :: ByteString
   }
 
-data Handshake = Handshake
-  { sessionId :: ByteString,
-    smpVersion :: Word16 -- SMP server protocol version
+newtype ClientHandshake = ClientHandshake
+  { -- | agreed SMP server protocol version
+    smpVersion :: Word16
   }
 
-instance Encoding Handshake where
-  smpEncode (Handshake sessId v) = smpEncode (sessId, v)
-  smpP = Handshake <$> smpP <*> smpP
+instance Encoding ClientHandshake where
+  smpEncode ClientHandshake {smpVersion} = smpEncode smpVersion
+  smpP = ClientHandshake <$> smpP
+
+instance Encoding ServerHandshake where
+  smpEncode (ServerHandshake sessId v) = smpEncode (sessId, v)
+  smpP = ServerHandshake <$> smpP <*> smpP
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -460,12 +472,14 @@ tGetBlock THandle {connection = c} =
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-serverHandshake :: Transport c => c -> ExceptT TransportError IO (THandle c)
+serverHandshake :: forall c. Transport c => c -> ExceptT TransportError IO (THandle c)
 serverHandshake c = do
   let th@THandle {sessionId} = tHandle c
-  _ <- getPeerHello th
-  sendHelloToPeer th sessionId
-  pure th
+  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
+  ClientHandshake smpVersion <- getHandshake th
+  if smpVersion `isCompatible` supportedSMPVersions
+    then pure (th :: THandle c) {smpVersion}
+    else throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
@@ -473,23 +487,21 @@ serverHandshake c = do
 clientHandshake :: forall c. Transport c => c -> ExceptT TransportError IO (THandle c)
 clientHandshake c = do
   let th@THandle {sessionId} = tHandle c
-  sendHelloToPeer th ""
-  Handshake {sessionId = sessId} <- getPeerHello th
+  ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
   if sessionId == sessId
-    then pure th
+    then case smpVersionRange `compatibleVersion` supportedSMPVersions of
+      Just smpVersion -> do
+        sendHandshake th $ ClientHandshake smpVersion
+        pure (th :: THandle c) {smpVersion}
+      Nothing -> throwE $ TEHandshake VERSION
     else throwE TEBadSession
 
-sendHelloToPeer :: Transport c => THandle c -> ByteString -> ExceptT TransportError IO ()
-sendHelloToPeer th sessionId =
-  let handshake = Handshake {sessionId, smpVersion = smpServerProtocolVersion}
-   in ExceptT . tPutBlock th $ smpEncode handshake
+sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
+sendHandshake th = ExceptT . tPutBlock th . smpEncode
 
-getPeerHello :: Transport c => THandle c -> ExceptT TransportError IO Handshake
-getPeerHello th = ExceptT $ (parseHandshake =<<) <$> tGetBlock th
-  where
-    parseHandshake :: ByteString -> Either TransportError Handshake
-    parseHandshake = first (const $ TEHandshake PARSE) . A.parseOnly smpP
+getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
+getHandshake th = ExceptT $ (first (const $ TEHandshake PARSE) . A.parseOnly smpP =<<) <$> tGetBlock th
 
 tHandle :: Transport c => c -> THandle c
 tHandle c =
-  THandle {connection = c, sessionId = tlsUnique c}
+  THandle {connection = c, sessionId = tlsUnique c, smpVersion = 0}

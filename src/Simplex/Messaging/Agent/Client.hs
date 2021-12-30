@@ -61,6 +61,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
+import Simplex.Messaging.Version
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -372,7 +373,7 @@ agentCbEncrypt SndQueue {e2ePubKey, e2eDhSecret} msg = do
     liftEither . first cryptoError $
       C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let emHeader = SMP.PubHeader SMP.smpClientProtocolVersion e2ePubKey
+  let emHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) e2ePubKey
   pure $ smpEncode SMP.EncMessage {emHeader, emNonce, emBody}
 
 agentCbEncryptOnce :: AgentMonad m => C.PublicKeyX25519 -> ByteString -> m ByteString
@@ -384,7 +385,7 @@ agentCbEncryptOnce dhRcvPubKey msg = do
     liftEither . first cryptoError $
       C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let emHeader = SMP.PubHeader SMP.smpClientProtocolVersion dhSndPubKey
+  let emHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) dhSndPubKey
   pure $ smpEncode SMP.EncMessage {emHeader, emNonce, emBody}
 
 agentCbDecrypt :: AgentMonad m => C.DhSecretX25519 -> C.CbNonce -> ByteString -> m ByteString
