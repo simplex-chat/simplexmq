@@ -30,7 +30,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Protocol
   ( -- * SMP protocol parameters
-    clientVersion,
+    smpClientProtocolVersion,
     maxMessageLength,
     e2eEncMessageLength,
 
@@ -42,6 +42,7 @@ module Simplex.Messaging.Protocol
     Cmd (..),
     ClientCmd (..),
     SParty (..),
+    PartyI,
     QueueIdsKeys (..),
     ErrorType (..),
     CommandError (..),
@@ -79,6 +80,11 @@ module Simplex.Messaging.Protocol
     -- * TCP transport functions
     tPut,
     tGet,
+
+    -- * Command tags (for tests)
+    pattern NEW_,
+    pattern KEY_,
+    pattern SEND_,
   )
 where
 
@@ -103,10 +109,11 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
+import Simplex.Messaging.Util ((<$?>))
 import Test.QuickCheck (Arbitrary (..))
 
-clientVersion :: Word16
-clientVersion = 1
+smpClientProtocolVersion :: Word16
+smpClientProtocolVersion = 1
 
 maxMessageLength :: Int
 maxMessageLength = 15968
@@ -523,6 +530,10 @@ instance PartyI p => CommandI (Command p) where
 
 encodeCommand :: CommandI c => c -> ByteString
 encodeCommand c = withCommand c encodeCommand'
+
+instance PartyI p => Encoding (Command p) where
+  smpEncode = encodeCommand'
+  smpP = toCommand <$?> commandP
 
 encodeCommand' :: Command p -> ByteString
 encodeCommand' = \case

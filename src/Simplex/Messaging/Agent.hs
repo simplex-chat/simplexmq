@@ -87,7 +87,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionStr, loadTLSServerParams, runTransportServer)
+import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), loadTLSServerParams, runTransportServer, simplexMQVersion)
 import Simplex.Messaging.Util (bshow, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
@@ -115,7 +115,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, caCertifica
       -- tlsServerParams not in env to avoid breaking functional api w/t key and certificate generation
       tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile agentCertificateFile agentPrivateKeyFile
       runTransportServer started tcpPort tlsServerParams $ \(h :: c) -> do
-        liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionStr
+        liftIO . putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
         c <- getAgentClient
         logConnection c True
         race_ (connectClient h c) (runAgentClient c)

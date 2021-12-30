@@ -372,7 +372,7 @@ agentCbEncrypt SndQueue {e2ePubKey, e2eDhSecret} msg = do
     liftEither . first cryptoError $
       C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let emHeader = SMP.PubHeader SMP.clientVersion e2ePubKey
+  let emHeader = SMP.PubHeader SMP.smpClientProtocolVersion e2ePubKey
   pure $ smpEncode SMP.EncMessage {emHeader, emNonce, emBody}
 
 agentCbEncryptOnce :: AgentMonad m => C.PublicKeyX25519 -> ByteString -> m ByteString
@@ -384,7 +384,7 @@ agentCbEncryptOnce dhRcvPubKey msg = do
     liftEither . first cryptoError $
       C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let emHeader = SMP.PubHeader SMP.clientVersion dhSndPubKey
+  let emHeader = SMP.PubHeader SMP.smpClientProtocolVersion dhSndPubKey
   pure $ smpEncode SMP.EncMessage {emHeader, emNonce, emBody}
 
 agentCbDecrypt :: AgentMonad m => C.DhSecretX25519 -> C.CbNonce -> ByteString -> m ByteString

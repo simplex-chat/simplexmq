@@ -20,7 +20,7 @@ import Options.Applicative
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), currentSMPVersionStr, encodeFingerprint, loadFingerprint)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), encodeFingerprint, loadFingerprint, simplexMQVersion)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.Exit (exitFailure)
@@ -126,7 +126,7 @@ makeConfig IniOpts {serverPort, enableWebsockets, caCertificateFile, serverPriva
 
 printConfig :: ServerConfig -> String -> IO ()
 printConfig ServerConfig {storeLog} fingerprint = do
-  putStrLn $ "SMP server version: " <> B.unpack currentSMPVersionStr
+  putStrLn $ "SMP server v" <> simplexMQVersion
   putStrLn $ "fingerprint: " <> fingerprint
   putStrLn $ case storeLog of
     Just s -> "store log: " <> storeLogFilePath s

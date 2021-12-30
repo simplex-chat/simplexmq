@@ -27,6 +27,8 @@
 module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
     smpBlockSize,
+    smpServerProtocolVersion,
+    simplexMQVersion,
 
     -- * Transport connection class
     Transport (..),
@@ -55,7 +57,6 @@ module Simplex.Messaging.Transport
     tGetBlock,
     serializeTransportError,
     transportErrorP,
-    currentSMPVersionStr,
 
     -- * Trim trailing CR
     trimCR,
@@ -79,7 +80,7 @@ import Data.Default (def)
 import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.String
+import Data.Word (Word16)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import qualified Data.X509.Validation as XV
@@ -91,7 +92,8 @@ import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (parseAll, parseRead1, parseString)
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Parsers (parseRead1)
 import Simplex.Messaging.Util (bshow)
 import System.Exit (exitFailure)
 import System.IO.Error
@@ -101,8 +103,16 @@ import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
+-- * Transport parameters
+
 smpBlockSize :: Int
 smpBlockSize = 16384
+
+smpServerProtocolVersion :: Word16
+smpServerProtocolVersion = 1
+
+simplexMQVersion :: String
+simplexMQVersion = "0.5.1"
 
 -- * Transport connection class
 
@@ -379,26 +389,6 @@ trimCR s = if B.last s == '\r' then B.init s else s
 
 -- * SMP transport
 
-data SMPVersion = SMPVersion Int Int Int
-  deriving (Eq, Ord)
-
-instance IsString SMPVersion where
-  fromString = parseString $ parseAll smpVersionP
-
-currentSMPVersion :: SMPVersion
-currentSMPVersion = "0.5.1"
-
-currentSMPVersionStr :: ByteString
-currentSMPVersionStr = serializeSMPVersion currentSMPVersion
-
-serializeSMPVersion :: SMPVersion -> ByteString
-serializeSMPVersion (SMPVersion a b c) = B.intercalate "." [bshow a, bshow b, bshow c]
-
-smpVersionP :: Parser SMPVersion
-smpVersionP =
-  let ver = A.decimal <* A.char '.'
-   in SMPVersion <$> ver <*> ver <*> A.decimal
-
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
@@ -407,15 +397,12 @@ data THandle c = THandle
 
 data Handshake = Handshake
   { sessionId :: ByteString,
-    smpVersion :: SMPVersion
+    smpVersion :: Word16 -- SMP server protocol version
   }
 
-serializeHandshake :: Handshake -> ByteString
-serializeHandshake Handshake {sessionId, smpVersion} =
-  sessionId <> " " <> serializeSMPVersion smpVersion <> " "
-
-handshakeP :: Parser Handshake
-handshakeP = Handshake <$> A.takeWhile (/= ' ') <* A.space <*> smpVersionP <* A.space
+instance Encoding Handshake where
+  smpEncode (Handshake sessId v) = smpEncode (sessId, v)
+  smpP = Handshake <$> smpP <*> smpP
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -494,14 +481,14 @@ clientHandshake c = do
 
 sendHelloToPeer :: Transport c => THandle c -> ByteString -> ExceptT TransportError IO ()
 sendHelloToPeer th sessionId =
-  let handshake = Handshake {sessionId, smpVersion = currentSMPVersion}
-   in ExceptT . tPutBlock th $ serializeHandshake handshake
+  let handshake = Handshake {sessionId, smpVersion = smpServerProtocolVersion}
+   in ExceptT . tPutBlock th $ smpEncode handshake
 
 getPeerHello :: Transport c => THandle c -> ExceptT TransportError IO Handshake
 getPeerHello th = ExceptT $ (parseHandshake =<<) <$> tGetBlock th
   where
     parseHandshake :: ByteString -> Either TransportError Handshake
-    parseHandshake = first (const $ TEHandshake PARSE) . A.parseOnly handshakeP
+    parseHandshake = first (const $ TEHandshake PARSE) . A.parseOnly smpP
 
 tHandle :: Transport c => c -> THandle c
 tHandle c =
