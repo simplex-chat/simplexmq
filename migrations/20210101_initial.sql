@@ -13,7 +13,9 @@ CREATE TABLE connections (
   last_internal_snd_msg_id INTEGER NOT NULL DEFAULT 0,
   last_external_snd_msg_id INTEGER NOT NULL DEFAULT 0,
   last_rcv_msg_hash BLOB NOT NULL DEFAULT x'',
-  last_snd_msg_hash BLOB NOT NULL DEFAULT x''
+  last_snd_msg_hash BLOB NOT NULL DEFAULT x'',
+  smp_agent_version INTEGER NOT NULL DEFAULT 1,
+  e2e_version INTEGER NOT NULL DEFAULT 1
 ) WITHOUT ROWID;
 
 CREATE TABLE rcv_queues (
@@ -29,6 +31,8 @@ CREATE TABLE rcv_queues (
   snd_id BLOB NOT NULL,
   snd_key BLOB,
   status TEXT NOT NULL,
+  smp_server_version INTEGER NOT NULL DEFAULT 1,
+  smp_client_version INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (host, port, rcv_id),
   FOREIGN KEY (host, port) REFERENCES servers
     ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -44,6 +48,8 @@ CREATE TABLE snd_queues (
   e2e_pub_key BLOB NOT NULL,
   e2e_dh_secret BLOB NOT NULL,
   status TEXT NOT NULL,
+  smp_server_version INTEGER NOT NULL DEFAULT 1,
+  smp_client_version INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (host, port, snd_id),
   FOREIGN KEY (host, port) REFERENCES servers
     ON DELETE RESTRICT ON UPDATE CASCADE
