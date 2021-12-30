@@ -175,12 +175,12 @@ verifyTransmission ::
 verifyTransmission sig_ signed queueId cmd = do
   case cmd of
     ClientCmd SRecipient (NEW k _) -> pure $ verifySignature k
-    ClientCmd SRecipient _ -> verifyCmd (CP SRecipient) $ verifySignature . recipientKey
-    ClientCmd SSender (SEND _) -> verifyCmd (CP SSender) $ verifyMaybe . senderKey
+    ClientCmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
+    ClientCmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe . senderKey
     ClientCmd SSender PING -> pure True
-    ClientCmd SNotifier NSUB -> verifyCmd (CP SNotifier) $ verifyMaybe . fmap snd . notifier
+    ClientCmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap snd . notifier
   where
-    verifyCmd :: ClientParty -> (QueueRec -> Bool) -> m Bool
+    verifyCmd :: IsClient p => SParty p -> (QueueRec -> Bool) -> m Bool
     verifyCmd party f = do
       st <- asks queueStore
       q <- atomically $ getQueue st party queueId
@@ -268,7 +268,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
             logCreateById s rId =
-              atomically (getQueue st (CP SRecipient) rId) >>= \case
+              atomically (getQueue st SRecipient rId) >>= \case
                 Right q -> logCreateQueue s q
                 _ -> pure ()
 
@@ -338,7 +338,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         sendMessage st msgBody
           | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
           | otherwise = do
-            qr <- atomically $ getQueue st (CP SSender) queueId
+            qr <- atomically $ getQueue st SSender queueId
             either (return . err) storeMessage qr
           where
             storeMessage :: QueueRec -> m BrokerTransmission

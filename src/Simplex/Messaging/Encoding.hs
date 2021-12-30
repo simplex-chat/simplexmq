@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -15,6 +16,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (formatISO8601Millis, parseISO8601)
 import Data.Word (Word16, Word32, Word8)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
+import Simplex.Messaging.Util (ifM)
 
 class Encoding a where
   smpEncode :: a -> ByteString
@@ -51,6 +53,13 @@ instance Encoding UTCTime where
   smpEncode = B.pack . formatISO8601Millis
   {-# INLINE smpEncode #-}
   smpP = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.take 24
+
+instance forall a. Encoding a => Encoding [a] where
+  smpEncode = mconcat . map smpEncode
+  smpP = listP []
+    where
+      listP :: [a] -> Parser [a]
+      listP xs = ifM A.atEnd (pure $ reverse xs) (smpP >>= listP . (: xs))
 
 instance (Encoding a, Encoding b) => Encoding (a, b) where
   smpEncode (a, b) = smpEncode a <> smpEncode b

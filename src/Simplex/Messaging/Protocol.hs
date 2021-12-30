@@ -38,11 +38,11 @@ module Simplex.Messaging.Protocol
     Command (..),
     CommandI (..),
     Party (..),
-    ClientParty (..),
+    IsClient,
     Cmd (..),
     ClientCmd (..),
     SParty (..),
-    PartyI,
+    PartyI (..),
     QueueIdsKeys (..),
     ErrorType (..),
     CommandError (..),
@@ -75,7 +75,11 @@ module Simplex.Messaging.Protocol
     -- * Parse and serialize
     encodeTransmission,
     transmissionP,
-    encodeCommand,
+    -- below exports are for tests only
+    encodeCommand',
+    clientParty,
+    clientCommandP,
+    brokerCommandP,
 
     -- * TCP transport functions
     tPut,
@@ -85,17 +89,18 @@ module Simplex.Messaging.Protocol
     pattern NEW_,
     pattern KEY_,
     pattern SEND_,
+    pattern Recipient_,
+    pattern Sender_,
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Constraint (Dict (..))
-import Data.Functor (($>))
 import Data.Kind
 import Data.Maybe (isNothing)
 import Data.String
@@ -109,7 +114,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
-import Simplex.Messaging.Util ((<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
@@ -152,10 +156,6 @@ instance PartyI Notifier where sParty = SNotifier
 
 instance PartyI Broker where sParty = SBroker
 
-data ClientParty = forall p. IsClient p => CP (SParty p)
-
-deriving instance Show ClientParty
-
 -- | Type for command or response of any participant.
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
 
@@ -165,8 +165,7 @@ deriving instance Show Cmd
 data ClientCmd = forall p. (PartyI p, IsClient p) => ClientCmd (SParty p) (Command p)
 
 class CommandI c where
-  toCommand :: Cmd -> Either String c
-  withCommand :: c -> (forall p. Command p -> a) -> a
+  toCommand :: (forall p. PartyI p => Command p -> a) -> c -> a
 
 -- | Parsed SMP transmission without signature, size and session ID.
 type Transmission c = (CorrId, QueueId, c)
@@ -309,13 +308,6 @@ type family IsClient p :: Constraint where
   IsClient Notifier = ()
   IsClient p =
     (Int ~ Bool, TypeError (Text "Party " :<>: ShowType p :<>: Text " is not a Client"))
-
-isClient :: SParty p -> Maybe (Dict (IsClient p))
-isClient = \case
-  SRecipient -> Just Dict
-  SSender -> Just Dict
-  SNotifier -> Just Dict
-  _ -> Nothing
 
 -- | SMP message body format
 data EncMessage = EncMessage
@@ -461,9 +453,14 @@ pattern LARGE_MSG_ = '\x56'
 pattern INTERNAL_ :: Char
 pattern INTERNAL_ = '\x57'
 
+pattern DUPLICATE__ :: Char
+pattern DUPLICATE__ = '\x58'
+
 -- | SMP command error type.
 data CommandError
-  = -- | server response sent from client or vice versa
+  = -- | unknown command
+    UNKNOWN
+  | -- | server response sent from client or vice versa
     PROHIBITED
   | -- | error parsing command
     SYNTAX
@@ -476,20 +473,23 @@ data CommandError
   deriving (Eq, Generic, Read, Show)
 
 -- CommandError tags
+pattern UNKNOWN_ :: Char
+pattern UNKNOWN_ = '\x60'
+
 pattern PROHIBITED_ :: Char
-pattern PROHIBITED_ = '\x60'
+pattern PROHIBITED_ = '\x61'
 
 pattern SYNTAX_ :: Char
-pattern SYNTAX_ = '\x61'
+pattern SYNTAX_ = '\x62'
 
 pattern NO_AUTH_ :: Char
-pattern NO_AUTH_ = '\x62'
+pattern NO_AUTH_ = '\x63'
 
 pattern HAS_AUTH_ :: Char
-pattern HAS_AUTH_ = '\x63'
+pattern HAS_AUTH_ = '\x64'
 
 pattern NO_QUEUE_ :: Char
-pattern NO_QUEUE_ = '\x64'
+pattern NO_QUEUE_ = '\x65'
 
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
@@ -509,32 +509,46 @@ transmissionP = do
       command <- A.takeByteString
       pure RawTransmission {signature, signed, sessId, corrId, queueId, command}
 
-instance CommandI Cmd where
-  withCommand (Cmd _ c) f = f c
-  toCommand = Right
-
 instance CommandI ClientCmd where
-  withCommand (ClientCmd _ c) f = f c
-  toCommand (Cmd p cmd) = case isClient p of
-    Just Dict -> Right (ClientCmd p cmd)
-    _ -> Left "not a client command"
-
--- | Parse SMP command.
-parseCommand :: ByteString -> Either ErrorType Cmd
-parseCommand = parse commandP $ CMD SYNTAX
+  toCommand f (ClientCmd _ c) = f c
 
 instance PartyI p => CommandI (Command p) where
-  withCommand c f = f c
-  toCommand (Cmd p cmd) = case testEquality p $ sParty @p of
-    Just Refl -> Right cmd
-    _ -> Left "bad command party"
+  toCommand = id
 
-encodeCommand :: CommandI c => c -> ByteString
-encodeCommand c = withCommand c encodeCommand'
+-- TODO these patterns allow to get protocol errors from parser string errors.
+-- It would be more efficient to have a parser that uses correct type for errors.
+pattern CMD_PROHIBITED :: String
+pattern CMD_PROHIBITED <- "Failed reading: PARTY" where CMD_PROHIBITED = "PARTY"
 
-instance PartyI p => Encoding (Command p) where
+pattern CMD_UNKNOWN :: String
+pattern CMD_UNKNOWN <- "Failed reading: UNKNOWN" where CMD_UNKNOWN = "UNKNOWN"
+
+-- | Parse SMP command.
+parseCommand :: Encoding cmd => ByteString -> Either ErrorType cmd
+parseCommand = first errorType . parseAll smpP
+  where
+    errorType = \case
+      CMD_PROHIBITED -> CMD PROHIBITED
+      CMD_UNKNOWN -> CMD UNKNOWN
+      _ -> CMD SYNTAX
+
+instance Encoding (Command Broker) where
   smpEncode = encodeCommand'
-  smpP = toCommand <$?> commandP
+  smpP = brokerCommandP
+
+instance Encoding ClientCmd where
+  smpEncode (ClientCmd _ c) = encodeCommand' c
+  smpP = clientCommandP
+
+-- this instance is for tests only
+instance Encoding Cmd where
+  smpEncode (Cmd _ c) = encodeCommand' c
+  smpP = (Cmd SBroker <$> brokerCommandP) <|> ((\(ClientCmd p c) -> Cmd p c) <$> clientCommandP)
+
+clientParty :: forall p. PartyI p => ClientCmd -> Either String (Command p)
+clientParty (ClientCmd p c) = case testEquality p (sParty @p) of
+  Just Refl -> Right c
+  Nothing -> Left CMD_PROHIBITED
 
 encodeCommand' :: Command p -> ByteString
 encodeCommand' = \case
@@ -560,14 +574,14 @@ encodeCommand' = \case
     e :: Encoding a => a -> ByteString
     e = smpEncode
 
-commandP :: Parser Cmd
-commandP =
+clientCommandP :: Parser ClientCmd
+clientCommandP =
   smpP >>= \case
-    Recipient_ -> Cmd SRecipient <$> recipient
-    Sender_ -> Cmd SSender <$> sender
-    Notifier_ -> A.char NSUB_ $> Cmd SNotifier NSUB
-    Broker_ -> Cmd SBroker <$> broker
-    _ -> fail "bad party"
+    Recipient_ -> ClientCmd SRecipient <$> recipient
+    Sender_ -> ClientCmd SSender <$> sender
+    Notifier_ -> ClientCmd SNotifier <$> notifier
+    Broker_ -> fail CMD_PROHIBITED
+    _ -> fail CMD_UNKNOWN
   where
     recipient =
       smpP >>= \case
@@ -578,13 +592,21 @@ commandP =
         ACK_ -> pure ACK
         OFF_ -> pure OFF
         DEL_ -> pure DEL
-        _ -> fail "bad command"
+        _ -> fail CMD_UNKNOWN
     sender =
       smpP >>= \case
         SEND_ -> SEND . unLargeBS <$> smpP
         PING_ -> pure PING
-        _ -> fail "bad command"
-    broker =
+        _ -> fail CMD_UNKNOWN
+    notifier =
+      smpP >>= \case
+        NSUB_ -> pure NSUB
+        _ -> fail CMD_UNKNOWN
+
+brokerCommandP :: Parser (Command Broker)
+brokerCommandP =
+  smpP >>= \case
+    Broker_ ->
       smpP >>= \case
         MSG_ -> MSG <$> smpP <*> smpP <*> (unLargeBS <$> smpP)
         IDS_ -> IDS <$> (QIK <$> smpP <*> smpP <*> smpP)
@@ -594,7 +616,11 @@ commandP =
         END_ -> pure END
         OK_ -> pure OK
         PONG_ -> pure PONG
-        _ -> fail "bad command"
+        _ -> fail CMD_UNKNOWN
+    Recipient_ -> fail CMD_PROHIBITED
+    Sender_ -> fail CMD_PROHIBITED
+    Notifier_ -> fail CMD_PROHIBITED
+    _ -> fail CMD_UNKNOWN
 
 instance Encoding ErrorType where
   smpEncode = \case
@@ -606,7 +632,7 @@ instance Encoding ErrorType where
     NO_MSG -> e NO_MSG_
     LARGE_MSG -> e LARGE_MSG_
     INTERNAL -> e INTERNAL_
-    DUPLICATE_ -> "_"
+    DUPLICATE_ -> e DUPLICATE__
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -621,11 +647,12 @@ instance Encoding ErrorType where
       NO_MSG_ -> pure NO_MSG
       LARGE_MSG_ -> pure LARGE_MSG
       INTERNAL_ -> pure INTERNAL
-      '_' -> pure DUPLICATE_
+      DUPLICATE__ -> pure DUPLICATE_
       _ -> fail "bad error type"
 
 instance Encoding CommandError where
   smpEncode e = smpEncode $ case e of
+    UNKNOWN -> UNKNOWN_
     PROHIBITED -> PROHIBITED_
     SYNTAX -> SYNTAX_
     NO_AUTH -> NO_AUTH_
@@ -633,6 +660,7 @@ instance Encoding CommandError where
     NO_QUEUE -> NO_QUEUE_
   smpP =
     A.anyChar >>= \case
+      UNKNOWN_ -> pure UNKNOWN
       PROHIBITED_ -> pure PROHIBITED
       SYNTAX_ -> pure SYNTAX
       NO_AUTH_ -> pure NO_AUTH
@@ -644,9 +672,9 @@ instance Encoding CommandError where
 tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut th (sig, t) = tPutBlock th $ smpEncode (C.signatureBytes sig) <> t
 
-encodeTransmission :: CommandI c => ByteString -> Transmission c -> ByteString
+encodeTransmission :: Encoding c => ByteString -> Transmission c -> ByteString
 encodeTransmission sessionId (CorrId corrId, queueId, command) =
-  smpEncode (sessionId, corrId, queueId) <> encodeCommand command
+  smpEncode (sessionId, corrId, queueId, command)
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (Either TransportError RawTransmission)
@@ -656,7 +684,11 @@ tGetParse th = (parse transmissionP TEBadBlock =<<) <$> tGetBlock th
 --
 -- The first argument is used to limit allowed senders.
 -- 'fromClient' or 'fromServer' should be used here.
-tGet :: forall cmd c m. (CommandI cmd, Transport c, MonadIO m) => THandle c -> m (SignedTransmission cmd)
+tGet ::
+  forall cmd c m.
+  (Encoding cmd, CommandI cmd, Transport c, MonadIO m) =>
+  THandle c ->
+  m (SignedTransmission cmd)
 tGet th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m (SignedTransmission cmd)
@@ -673,40 +705,42 @@ tGet th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
 
     tParseValidate :: ByteString -> SignedRawTransmission -> m (SignedTransmission cmd)
     tParseValidate signed t@(sig, corrId, queueId, command) = do
-      let cmd = parseCommand command >>= tCredentials t >>= fromParty
+      let cmd = parseCommand command >>= tCredentials t
       return (sig, signed, (CorrId corrId, queueId, cmd))
 
-    fromParty :: Cmd -> Either ErrorType cmd
-    fromParty = first (const $ CMD PROHIBITED) . toCommand
-
-    tCredentials :: SignedRawTransmission -> Cmd -> Either ErrorType Cmd
-    tCredentials (sig, _, queueId, _) cmd = case cmd of
-      -- IDS response must not have queue ID
-      Cmd SBroker (IDS _) -> Right cmd
-      -- ERR response does not always have queue ID
-      Cmd SBroker (ERR _) -> Right cmd
-      -- PONG response must not have queue ID
-      Cmd SBroker PONG
-        | B.null queueId -> Right cmd
-        | otherwise -> Left $ CMD HAS_AUTH
-      -- other responses must have queue ID
-      Cmd SBroker _
-        | B.null queueId -> Left $ CMD NO_QUEUE
-        | otherwise -> Right cmd
-      -- NEW must have signature but NOT queue ID
-      Cmd SRecipient NEW {}
-        | isNothing sig -> Left $ CMD NO_AUTH
-        | not (B.null queueId) -> Left $ CMD HAS_AUTH
-        | otherwise -> Right cmd
-      -- SEND must have queue ID, signature is not always required
-      Cmd SSender (SEND _)
-        | B.null queueId -> Left $ CMD NO_QUEUE
-        | otherwise -> Right cmd
-      -- PING must not have queue ID or signature
-      Cmd SSender PING
-        | isNothing sig && B.null queueId -> Right cmd
-        | otherwise -> Left $ CMD HAS_AUTH
-      -- other client commands must have both signature and queue ID
-      Cmd _ _
-        | isNothing sig || B.null queueId -> Left $ CMD NO_AUTH
-        | otherwise -> Right cmd
+    tCredentials :: SignedRawTransmission -> cmd -> Either ErrorType cmd
+    tCredentials (sig, _, queueId, _) cmd = toCommand partyCredentials cmd
+      where
+        partyCredentials :: forall p. PartyI p => Command p -> Either ErrorType cmd
+        partyCredentials c = case sParty @p of
+          SBroker -> case c of
+            -- IDS response must not have queue ID
+            IDS _ -> Right cmd
+            -- ERR response does not always have queue ID
+            ERR _ -> Right cmd
+            -- PONG response must not have queue ID
+            PONG
+              | B.null queueId -> Right cmd
+              | otherwise -> Left $ CMD HAS_AUTH
+            -- other broker responses must have queue ID
+            _
+              | B.null queueId -> Left $ CMD NO_QUEUE
+              | otherwise -> Right cmd
+          _ -> case c of
+            -- NEW must have signature but NOT queue ID
+            NEW {}
+              | isNothing sig -> Left $ CMD NO_AUTH
+              | not (B.null queueId) -> Left $ CMD HAS_AUTH
+              | otherwise -> Right cmd
+            -- SEND must have queue ID, signature is not always required
+            SEND _
+              | B.null queueId -> Left $ CMD NO_QUEUE
+              | otherwise -> Right cmd
+            -- PING must not have queue ID or signature
+            PING
+              | isNothing sig && B.null queueId -> Right cmd
+              | otherwise -> Left $ CMD HAS_AUTH
+            -- other client commands must have both signature and queue ID
+            _
+              | isNothing sig || B.null queueId -> Left $ CMD NO_AUTH
+              | otherwise -> Right cmd
