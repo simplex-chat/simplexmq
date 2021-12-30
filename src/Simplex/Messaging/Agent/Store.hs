@@ -280,20 +280,18 @@ type BrokerId = MsgId
 
 type BrokerTs = UTCTime
 
-data RcvMsgStatus
-  = Received
-  | Acknowledged
+data RcvMsgStatus = RcvMsgReceived | RcvMsgAcknowledged
   deriving (Eq, Show)
 
 serializeRcvMsgStatus :: RcvMsgStatus -> Text
 serializeRcvMsgStatus = \case
-  Received -> "rcvd"
-  Acknowledged -> "ackd"
+  RcvMsgReceived -> "rcvd"
+  RcvMsgAcknowledged -> "ackd"
 
 rcvMsgStatusT :: Text -> Maybe RcvMsgStatus
 rcvMsgStatusT = \case
-  "rcvd" -> Just Received
-  "ackd" -> Just Acknowledged
+  "rcvd" -> Just RcvMsgReceived
+  "ackd" -> Just RcvMsgAcknowledged
   _ -> Nothing
 
 type AckBrokerTs = UTCTime

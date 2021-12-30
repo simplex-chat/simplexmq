@@ -513,7 +513,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           SET rcv_status = ?, ack_brocker_ts = datetime('now')
           WHERE conn_alias = ? AND internal_id = ?
         |]
-        (Acknowledged, connId, msgId)
+        (RcvMsgAcknowledged, connId, msgId)
 
 -- * Auxiliary helpers
 
@@ -799,7 +799,7 @@ insertRcvMsgDetails_ dbConn connId RcvMsgData {msgMeta, internalRcvId, internalH
       ":external_snd_id" := sndMsgId,
       ":broker_id" := fst broker,
       ":broker_ts" := snd broker,
-      ":rcv_status" := Received,
+      ":rcv_status" := RcvMsgReceived,
       ":internal_hash" := internalHash,
       ":external_prev_snd_hash" := externalPrevSndHash,
       ":integrity" := integrity
