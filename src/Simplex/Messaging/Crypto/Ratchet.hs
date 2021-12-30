@@ -23,9 +23,9 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
-import Network.Transport.Internal (encodeWord16, encodeWord32)
 import Simplex.Messaging.Crypto
-import Simplex.Messaging.Parsers (parseE, parseE', word16P, word32P)
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Parsers (parseE, parseE')
 import Simplex.Messaging.Util (tryE)
 
 data Ratchet a = Ratchet
@@ -145,19 +145,15 @@ fullHeaderLen = paddedHeaderLen + authTagSize + ivSize @AES256
 
 serializeMsgHeader' :: AlgorithmI a => MsgHeader a -> ByteString
 serializeMsgHeader' MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs} =
-  encodeWord16 msgVersion
-    <> encodeWord16 msgLatestVersion
-    <> encodeLenKey msgDHRs
-    <> encodeWord32 msgPN
-    <> encodeWord32 msgNs
+  smpEncode (msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs)
 
 msgHeaderP' :: AlgorithmI a => Parser (MsgHeader a)
 msgHeaderP' = do
-  msgVersion <- word16P
-  msgLatestVersion <- word16P
-  msgDHRs <- binaryLenKeyP
-  msgPN <- word32P
-  msgNs <- word32P
+  msgVersion <- smpP
+  msgLatestVersion <- smpP
+  msgDHRs <- smpP
+  msgPN <- smpP
+  msgNs <- smpP
   pure MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs}
 
 data EncHeader = EncHeader

@@ -84,6 +84,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeConnReq,
     serializeConnReq',
     serializeAgentError,
+    serializeSmpErrorType,
     commandP,
     smpServerP,
     smpQueueUriP,
@@ -92,6 +93,7 @@ module Simplex.Messaging.Agent.Protocol
     connReqP',
     msgIntegrityP,
     agentErrorTypeP,
+    smpErrorTypeP,
     serializeQueueStatus,
     queueStatusT,
 
@@ -128,6 +130,7 @@ import Generic.Random (genericArbitraryU)
 import Network.HTTP.Types (parseSimpleQuery, renderSimpleQuery)
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( ClientMessage (..),
@@ -136,7 +139,6 @@ import Simplex.Messaging.Protocol
     MsgId,
     PrivHeader (..),
     SndPublicVerifyKey,
-    serializeClientMessage,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
@@ -317,7 +319,7 @@ data AMessage
   deriving (Show)
 
 serializeAgentMessage :: AgentMessage -> ByteString
-serializeAgentMessage = serializeClientMessage . agentToClientMsg
+serializeAgentMessage = smpEncode . agentToClientMsg
 
 agentToClientMsg :: AgentMessage -> ClientMessage
 agentToClientMsg = \case
@@ -754,8 +756,8 @@ serializeMsgIntegrity = \case
 -- | SMP agent protocol error parser.
 agentErrorTypeP :: Parser AgentErrorType
 agentErrorTypeP =
-  "SMP " *> (SMP <$> SMP.errorTypeP)
-    <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> SMP.errorTypeP)
+  "SMP " *> (SMP <$> smpErrorTypeP)
+    <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> smpErrorTypeP)
     <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
     <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
     <|> parseRead2
@@ -763,10 +765,18 @@ agentErrorTypeP =
 -- | Serialize SMP agent protocol error.
 serializeAgentError :: AgentErrorType -> ByteString
 serializeAgentError = \case
-  SMP e -> "SMP " <> SMP.serializeErrorType e
-  BROKER (RESPONSE e) -> "BROKER RESPONSE " <> SMP.serializeErrorType e
+  SMP e -> "SMP " <> serializeSmpErrorType e
+  BROKER (RESPONSE e) -> "BROKER RESPONSE " <> serializeSmpErrorType e
   BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
   e -> bshow e
+
+-- | SMP error parser.
+smpErrorTypeP :: Parser ErrorType
+smpErrorTypeP = "CMD " *> (SMP.CMD <$> parseRead1) <|> parseRead1
+
+-- | Serialize SMP error.
+serializeSmpErrorType :: ErrorType -> ByteString
+serializeSmpErrorType = bshow
 
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body

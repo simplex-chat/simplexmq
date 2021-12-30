@@ -83,6 +83,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -526,7 +527,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           -- TODO deduplicate with previously received
           msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
           encMessage@SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey} <-
-            liftEither $ parse SMP.encMessageP (AGENT A_MESSAGE) msgBody
+            liftEither $ parse smpP (AGENT A_MESSAGE) msgBody
           case e2eShared of
             Nothing -> do
               let e2eDhSecret = C.dh' e2ePubKey e2ePrivKey
@@ -577,7 +578,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         decryptAgentMessage e2eDhSecret SMP.EncMessage {emNonce, emBody} = do
           msg <- agentCbDecrypt e2eDhSecret emNonce emBody
           agentMessage <-
-            liftEither $ clientToAgentMsg =<< parse SMP.clientMessageP (AGENT A_MESSAGE) msg
+            liftEither $ clientToAgentMsg =<< parse smpP (AGENT A_MESSAGE) msg
           pure (msg, agentMessage)
 
         smpConfirmation :: SMPConfirmation -> m ()

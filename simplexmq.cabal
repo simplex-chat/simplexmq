@@ -42,6 +42,7 @@ library
       Simplex.Messaging.Client
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Encoding
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server

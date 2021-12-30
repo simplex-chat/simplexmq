@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -72,13 +73,7 @@ module Simplex.Messaging.Protocol
 
     -- * Parse and serialize
     encodeTransmission,
-    serializeErrorType,
     transmissionP,
-    errorTypeP,
-    serializeEncMessage,
-    encMessageP,
-    serializeClientMessage,
-    clientMessageP,
     encodeCommand,
 
     -- * TCP transport functions
@@ -87,7 +82,6 @@ module Simplex.Messaging.Protocol
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -95,6 +89,7 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Constraint (Dict (..))
+import Data.Functor (($>))
 import Data.Kind
 import Data.Maybe (isNothing)
 import Data.String
@@ -104,11 +99,10 @@ import Data.Word (Word16)
 import GHC.Generics (Generic)
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Generic.Random (genericArbitraryU)
-import Network.Transport.Internal (encodeWord16)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
-import Simplex.Messaging.Util
 import Test.QuickCheck (Arbitrary (..))
 
 clientVersion :: Word16
@@ -121,34 +115,34 @@ e2eEncMessageLength :: Int
 e2eEncMessageLength = 15842
 
 -- | SMP protocol participants.
-data Party = Broker | Recipient | Sender | Notifier
+data Party = Recipient | Sender | Notifier | Broker
   deriving (Show)
 
 -- | Singleton types for SMP protocol participants.
 data SParty :: Party -> Type where
-  SBroker :: SParty Broker
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
   SNotifier :: SParty Notifier
+  SBroker :: SParty Broker
 
 instance TestEquality SParty where
-  testEquality SBroker SBroker = Just Refl
   testEquality SRecipient SRecipient = Just Refl
   testEquality SSender SSender = Just Refl
   testEquality SNotifier SNotifier = Just Refl
+  testEquality SBroker SBroker = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Show (SParty p)
 
 class PartyI (p :: Party) where sParty :: SParty p
 
-instance PartyI Broker where sParty = SBroker
-
 instance PartyI Recipient where sParty = SRecipient
 
 instance PartyI Sender where sParty = SSender
 
 instance PartyI Notifier where sParty = SNotifier
+
+instance PartyI Broker where sParty = SBroker
 
 data ClientParty = forall p. IsClient p => CP (SParty p)
 
@@ -233,6 +227,74 @@ deriving instance Show (Command a)
 
 deriving instance Eq (Command a)
 
+-- * SMP command tags
+
+pattern Recipient_ :: Char
+pattern Recipient_ = '\x01'
+
+pattern Sender_ :: Char
+pattern Sender_ = '\x02'
+
+pattern Notifier_ :: Char
+pattern Notifier_ = '\x03'
+
+pattern Broker_ :: Char
+pattern Broker_ = '\x04'
+
+pattern NEW_ :: Char
+pattern NEW_ = '\x10'
+
+pattern SUB_ :: Char
+pattern SUB_ = '\x11'
+
+pattern KEY_ :: Char
+pattern KEY_ = '\x12'
+
+pattern NKEY_ :: Char
+pattern NKEY_ = '\x13'
+
+pattern ACK_ :: Char
+pattern ACK_ = '\x14'
+
+pattern OFF_ :: Char
+pattern OFF_ = '\x15'
+
+pattern DEL_ :: Char
+pattern DEL_ = '\x16'
+
+pattern SEND_ :: Char
+pattern SEND_ = '\x20'
+
+pattern PING_ :: Char
+pattern PING_ = '\x21'
+
+pattern NSUB_ :: Char
+pattern NSUB_ = '\x30'
+
+pattern IDS_ :: Char
+pattern IDS_ = '\x40'
+
+pattern MSG_ :: Char
+pattern MSG_ = '\x41'
+
+pattern NID_ :: Char
+pattern NID_ = '\x42'
+
+pattern NMSG_ :: Char
+pattern NMSG_ = '\x43'
+
+pattern END_ :: Char
+pattern END_ = '\x44'
+
+pattern OK_ :: Char
+pattern OK_ = '\x45'
+
+pattern ERR_ :: Char
+pattern ERR_ = '\x46'
+
+pattern PONG_ :: Char
+pattern PONG_ = '\x47'
+
 type family IsClient p :: Constraint where
   IsClient Recipient = ()
   IsClient Sender = ()
@@ -259,22 +321,18 @@ data PubHeader = PubHeader
     phE2ePubDhKey :: C.PublicKeyX25519
   }
 
-serializePubHeader :: PubHeader -> ByteString
-serializePubHeader (PubHeader v k) = encodeWord16 v <> C.encodeLenKey' k
+instance Encoding PubHeader where
+  smpEncode (PubHeader v k) = smpEncode (v, k)
+  smpP = PubHeader <$> smpP <*> smpP
 
-pubHeaderP :: Parser PubHeader
-pubHeaderP = PubHeader <$> word16P <*> C.binaryLenKeyP
-
-serializeEncMessage :: EncMessage -> ByteString
-serializeEncMessage EncMessage {emHeader, emNonce, emBody} =
-  serializePubHeader emHeader <> C.unCbNonce emNonce <> emBody
-
-encMessageP :: Parser EncMessage
-encMessageP = do
-  emHeader <- pubHeaderP
-  emNonce <- C.cbNonceP
-  emBody <- A.takeByteString
-  pure EncMessage {emHeader, emNonce, emBody}
+instance Encoding EncMessage where
+  smpEncode EncMessage {emHeader, emNonce, emBody} =
+    smpEncode emHeader <> smpEncode emNonce <> emBody
+  smpP = do
+    emHeader <- smpP
+    emNonce <- smpP
+    emBody <- A.takeByteString
+    pure EncMessage {emHeader, emNonce, emBody}
 
 data ClientMessage = ClientMessage PrivHeader ByteString
 
@@ -282,23 +340,19 @@ data PrivHeader
   = PHConfirmation C.APublicVerifyKey
   | PHEmpty
 
-serializePrivHeader :: PrivHeader -> ByteString
-serializePrivHeader = \case
-  PHConfirmation k -> "K" <> C.encodeLenKey k
-  PHEmpty -> " "
+instance Encoding PrivHeader where
+  smpEncode = \case
+    PHConfirmation k -> "K" <> smpEncode k
+    PHEmpty -> " "
+  smpP =
+    A.anyChar >>= \case
+      'K' -> PHConfirmation <$> smpP
+      ' ' -> pure PHEmpty
+      _ -> fail "invalid PrivHeader"
 
-privHeaderP :: Parser PrivHeader
-privHeaderP =
-  A.anyChar >>= \case
-    'K' -> PHConfirmation <$> C.binaryLenKeyP
-    ' ' -> pure PHEmpty
-    _ -> fail "invalid PrivHeader"
-
-serializeClientMessage :: ClientMessage -> ByteString
-serializeClientMessage (ClientMessage h msg) = serializePrivHeader h <> msg
-
-clientMessageP :: Parser ClientMessage
-clientMessageP = ClientMessage <$> privHeaderP <*> A.takeByteString
+instance Encoding ClientMessage where
+  smpEncode (ClientMessage h msg) = smpEncode h <> msg
+  smpP = ClientMessage <$> smpP <*> A.takeByteString
 
 -- | Base-64 encoded string.
 type Encoded = ByteString
@@ -373,6 +427,32 @@ data ErrorType
     DUPLICATE_ -- TODO remove, not part of SMP protocol
   deriving (Eq, Generic, Read, Show)
 
+-- * ErrorType tags
+
+pattern BLOCK_ :: Char
+pattern BLOCK_ = '\x50'
+
+pattern SESSION_ :: Char
+pattern SESSION_ = '\x51'
+
+pattern CMD_ :: Char
+pattern CMD_ = '\x52'
+
+pattern AUTH_ :: Char
+pattern AUTH_ = '\x53'
+
+pattern QUOTA_ :: Char
+pattern QUOTA_ = '\x54'
+
+pattern NO_MSG_ :: Char
+pattern NO_MSG_ = '\x55'
+
+pattern LARGE_MSG_ :: Char
+pattern LARGE_MSG_ = '\x56'
+
+pattern INTERNAL_ :: Char
+pattern INTERNAL_ = '\x57'
+
 -- | SMP command error type.
 data CommandError
   = -- | server response sent from client or vice versa
@@ -387,6 +467,22 @@ data CommandError
     NO_QUEUE
   deriving (Eq, Generic, Read, Show)
 
+-- CommandError tags
+pattern PROHIBITED_ :: Char
+pattern PROHIBITED_ = '\x60'
+
+pattern SYNTAX_ :: Char
+pattern SYNTAX_ = '\x61'
+
+pattern NO_AUTH_ :: Char
+pattern NO_AUTH_ = '\x62'
+
+pattern HAS_AUTH_ :: Char
+pattern HAS_AUTH_ = '\x63'
+
+pattern NO_QUEUE_ :: Char
+pattern NO_QUEUE_ = '\x64'
+
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary CommandError where arbitrary = genericArbitraryU
@@ -394,14 +490,14 @@ instance Arbitrary CommandError where arbitrary = genericArbitraryU
 -- | SMP transmission parser.
 transmissionP :: Parser RawTransmission
 transmissionP = do
-  signature <- lenBytesP
+  signature <- smpP
   signed <- A.takeByteString
   either fail pure $ parseAll (trn signature signed) signed
   where
     trn signature signed = do
-      sessId <- lenBytesP
-      corrId <- lenBytesP
-      queueId <- lenBytesP
+      sessId <- smpP
+      corrId <- smpP
+      queueId <- smpP
       command <- A.takeByteString
       pure RawTransmission {signature, signed, sessId, corrId, queueId, command}
 
@@ -430,108 +526,115 @@ encodeCommand c = withCommand c encodeCommand'
 
 encodeCommand' :: Command p -> ByteString
 encodeCommand' = \case
-  NEW rKey dhKey -> "N" <> C.encodeLenKey rKey <> C.encodeLenKey' dhKey
-  KEY sKey -> "K" <> C.encodeLenKey sKey
-  NKEY nKey -> "k" <> C.encodeLenKey nKey
-  SUB -> "S"
-  ACK -> "A"
-  OFF -> "F"
-  DEL -> "D"
-  SEND msgBody -> ">" <> msgBody
-  PING -> "P"
-  NSUB -> "s"
-  MSG msgId ts msgBody ->
-    "M" <> encodeLenBytes msgId <> serializeTsISO8601 ts <> msgBody
-  IDS (QIK rcvId sndId srvDh) ->
-    "I" <> encodeLenBytes rcvId <> encodeLenBytes sndId <> C.encodeLenKey' srvDh
-  NID nId -> "i" <> encodeLenBytes nId
-  ERR err -> "!" <> encodeErrorType err
-  NMSG -> "m"
-  END -> "E"
-  OK -> "O"
-  PONG -> "G"
+  NEW rKey dhKey -> e (Recipient_, NEW_, rKey, dhKey)
+  SUB -> e (Recipient_, SUB_)
+  KEY k -> e (Recipient_, KEY_, k)
+  NKEY k -> e (Recipient_, NKEY_, k)
+  ACK -> e (Recipient_, ACK_)
+  OFF -> e (Recipient_, OFF_)
+  DEL -> e (Recipient_, DEL_)
+  SEND msgBody -> e (Sender_, SEND_, LargeBS msgBody)
+  PING -> e (Sender_, PING_)
+  NSUB -> e (Notifier_, NSUB_)
+  IDS (QIK rcvId sndId srvDh) -> e (Broker_, IDS_, rcvId, sndId, srvDh)
+  MSG msgId ts msgBody -> e (Broker_, MSG_, msgId, ts, LargeBS msgBody)
+  NID nId -> e (Broker_, NID_, nId)
+  ERR err -> e (Broker_, ERR_, err)
+  NMSG -> e (Broker_, NMSG_)
+  END -> e (Broker_, END_)
+  OK -> e (Broker_, OK_)
+  PONG -> e (Broker_, PONG_)
+  where
+    e :: Encoding a => a -> ByteString
+    e = smpEncode
 
 commandP :: Parser Cmd
 commandP =
-  A.anyChar >>= \case
-    'N' -> Cmd SRecipient <$> (NEW <$> C.binaryLenKeyP <*> C.binaryLenKeyP)
-    'K' -> Cmd SRecipient <$> (KEY <$> C.binaryLenKeyP)
-    'k' -> Cmd SRecipient <$> (NKEY <$> C.binaryLenKeyP)
-    'S' -> pure $ Cmd SRecipient SUB
-    'A' -> pure $ Cmd SRecipient ACK
-    'F' -> pure $ Cmd SRecipient OFF
-    'D' -> pure $ Cmd SRecipient DEL
-    '>' -> Cmd SSender <$> (SEND <$> A.takeByteString)
-    'P' -> pure $ Cmd SSender PING
-    's' -> pure $ Cmd SNotifier NSUB
-    'M' -> Cmd SBroker <$> (MSG <$> lenBytesP <*> binaryTsISO8601P <*> A.takeByteString)
-    'I' -> Cmd SBroker <$> (IDS <$> (QIK <$> lenBytesP <*> lenBytesP <*> C.binaryLenKeyP))
-    'i' -> Cmd SBroker <$> (NID <$> lenBytesP)
-    '!' -> Cmd SBroker <$> (ERR <$> errorTypeP')
-    'm' -> pure $ Cmd SBroker NMSG
-    'E' -> pure $ Cmd SBroker END
-    'O' -> pure $ Cmd SBroker OK
-    'G' -> pure $ Cmd SBroker PONG
-    _ -> fail "bad command"
+  smpP >>= \case
+    Recipient_ -> Cmd SRecipient <$> recipient
+    Sender_ -> Cmd SSender <$> sender
+    Notifier_ -> A.char NSUB_ $> Cmd SNotifier NSUB
+    Broker_ -> Cmd SBroker <$> broker
+    _ -> fail "bad party"
+  where
+    recipient =
+      smpP >>= \case
+        NEW_ -> NEW <$> smpP <*> smpP
+        SUB_ -> pure SUB
+        KEY_ -> KEY <$> smpP
+        NKEY_ -> NKEY <$> smpP
+        ACK_ -> pure ACK
+        OFF_ -> pure OFF
+        DEL_ -> pure DEL
+        _ -> fail "bad command"
+    sender =
+      smpP >>= \case
+        SEND_ -> SEND . unLargeBS <$> smpP
+        PING_ -> pure PING
+        _ -> fail "bad command"
+    broker =
+      smpP >>= \case
+        MSG_ -> MSG <$> smpP <*> smpP <*> (unLargeBS <$> smpP)
+        IDS_ -> IDS <$> (QIK <$> smpP <*> smpP <*> smpP)
+        NID_ -> NID <$> smpP
+        ERR_ -> ERR <$> smpP
+        NMSG_ -> pure NMSG
+        END_ -> pure END
+        OK_ -> pure OK
+        PONG_ -> pure PONG
+        _ -> fail "bad command"
 
--- | SMP error parser.
-errorTypeP :: Parser ErrorType
-errorTypeP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
+instance Encoding ErrorType where
+  smpEncode = \case
+    BLOCK -> e BLOCK_
+    SESSION -> e SESSION_
+    CMD err -> e (CMD_, err)
+    AUTH -> e AUTH_
+    QUOTA -> e QUOTA_
+    NO_MSG -> e NO_MSG_
+    LARGE_MSG -> e LARGE_MSG_
+    INTERNAL -> e INTERNAL_
+    DUPLICATE_ -> "_"
+    where
+      e :: Encoding a => a -> ByteString
+      e = smpEncode
 
--- | Serialize SMP error.
-serializeErrorType :: ErrorType -> ByteString
-serializeErrorType = bshow
+  smpP =
+    smpP >>= \case
+      BLOCK_ -> pure BLOCK
+      SESSION_ -> pure SESSION
+      CMD_ -> CMD <$> smpP
+      AUTH_ -> pure AUTH
+      QUOTA_ -> pure QUOTA
+      NO_MSG_ -> pure NO_MSG
+      LARGE_MSG_ -> pure LARGE_MSG
+      INTERNAL_ -> pure INTERNAL
+      '_' -> pure DUPLICATE_
+      _ -> fail "bad error type"
 
-errorTypeP' :: Parser ErrorType
-errorTypeP' =
-  A.anyChar >>= \case
-    'B' -> pure BLOCK
-    'S' -> pure SESSION
-    'C' ->
-      A.anyChar >>= \case
-        'P' -> pure $ CMD PROHIBITED
-        'S' -> pure $ CMD SYNTAX
-        'A' -> pure $ CMD NO_AUTH
-        'a' -> pure $ CMD HAS_AUTH
-        'Q' -> pure $ CMD NO_QUEUE
-        _ -> fail "bad command error type"
-    'A' -> pure AUTH
-    'Q' -> pure QUOTA
-    'm' -> pure NO_MSG
-    'M' -> pure LARGE_MSG
-    'I' -> pure INTERNAL
-    '_' -> pure DUPLICATE_
-    _ -> fail "bad error type"
-
--- | encode SMP error
-encodeErrorType :: ErrorType -> ByteString
-encodeErrorType = \case
-  BLOCK -> "B"
-  SESSION -> "S"
-  CMD e ->
-    "C" <> case e of
-      PROHIBITED -> "P"
-      SYNTAX -> "S"
-      NO_AUTH -> "A"
-      HAS_AUTH -> "a"
-      NO_QUEUE -> "Q"
-  AUTH -> "A"
-  QUOTA -> "Q"
-  NO_MSG -> "m"
-  LARGE_MSG -> "M"
-  INTERNAL -> "I"
-  DUPLICATE_ -> "_"
+instance Encoding CommandError where
+  smpEncode e = smpEncode $ case e of
+    PROHIBITED -> PROHIBITED_
+    SYNTAX -> SYNTAX_
+    NO_AUTH -> NO_AUTH_
+    HAS_AUTH -> HAS_AUTH_
+    NO_QUEUE -> NO_QUEUE_
+  smpP =
+    A.anyChar >>= \case
+      PROHIBITED_ -> pure PROHIBITED
+      SYNTAX_ -> pure SYNTAX
+      NO_AUTH_ -> pure NO_AUTH
+      HAS_AUTH_ -> pure HAS_AUTH
+      NO_QUEUE_ -> pure NO_QUEUE
+      _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
-tPut th (sig, t) = tPutBlock th $ encodeLenBytes (C.signatureBytes sig) <> t
+tPut th (sig, t) = tPutBlock th $ smpEncode (C.signatureBytes sig) <> t
 
 encodeTransmission :: CommandI c => ByteString -> Transmission c -> ByteString
 encodeTransmission sessionId (CorrId corrId, queueId, command) =
-  encodeLenBytes sessionId
-    <> encodeLenBytes corrId
-    <> encodeLenBytes queueId
-    <> encodeCommand command
+  smpEncode (sessionId, corrId, queueId) <> encodeCommand command
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (Either TransportError RawTransmission)
