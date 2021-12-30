@@ -614,7 +614,7 @@ SMP transmission structure for sent messages:
       ....... smpEncMessage (= 15968 bytes)
        126- | smpPubHeader
          24 | nonce for smpClientMessage
-            ------- smpClientMessage (E2E encrypted, = 15802 bytes)
+            ------- smpClientMessage (E2E encrypted, = 15802 bytes) -- TODO 15800
                 2 | originalLength
               16- | smpPrivHeader
                   .......
