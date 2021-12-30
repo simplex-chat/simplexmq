@@ -651,7 +651,7 @@ SMP transmission structure for received messages:
                                  24 | double-ratchet header iv
                                     ------- encrypted agent message (= 15614 bytes)
                                         2 | originalLength
-                                 122 (90) | agentHeader
+                 122 reserved (90 actual) | agentHeader
                                         4 | %s"MSG" SP
                                           .......
                                                 | application message (<= 15486 bytes)
