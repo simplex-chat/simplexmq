@@ -7,6 +7,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
@@ -429,43 +430,43 @@ dhSecret' (ADhSecret a s) = case testEquality a $ sAlgorithm @a of
 
 -- | Class for all key types
 class CryptoPublicKey k where
-  aPubKey :: k -> APublicKey
+  toPubKey :: (forall a. AlgorithmI a => PublicKey a -> b) -> k -> b
   pubKey :: APublicKey -> Either String k
 
 -- | X509 encoding of any public key.
 instance CryptoPublicKey APublicKey where
-  aPubKey = id
+  toPubKey f (APublicKey _ k) = f k
   pubKey = Right
 
 -- | X509 encoding of signature public key.
 instance CryptoPublicKey APublicVerifyKey where
-  aPubKey (APublicVerifyKey a k) = APublicKey a k
+  toPubKey f (APublicVerifyKey _ k) = f k
   pubKey (APublicKey a k) = case signatureAlgorithm a of
     Just Dict -> Right $ APublicVerifyKey a k
     _ -> Left "key does not support signature algorithms"
 
 -- | X509 encoding of DH public key.
 instance CryptoPublicKey APublicDhKey where
-  aPubKey (APublicDhKey a k) = APublicKey a k
+  toPubKey f (APublicDhKey _ k) = f k
   pubKey (APublicKey a k) = case dhAlgorithm a of
     Just Dict -> Right $ APublicDhKey a k
     _ -> Left "key does not support DH algorithms"
 
 -- | X509 encoding of 'PublicKey'.
-instance forall a. AlgorithmI a => CryptoPublicKey (PublicKey a) where
-  aPubKey k = APublicKey (sAlgorithm @a) k
+instance AlgorithmI a => CryptoPublicKey (PublicKey a) where
+  toPubKey = id
   pubKey (APublicKey a k) = case testEquality a $ sAlgorithm @a of
     Just Refl -> Right k
     _ -> Left "bad key algorithm"
 
 -- | base64 X509 key encoding with algorithm prefix
 serializePubKey :: CryptoPublicKey k => k -> ByteString
-serializePubKey k = case aPubKey k of APublicKey _ k' -> serializePubKey' k'
+serializePubKey = toPubKey serializePubKey'
 {-# INLINE serializePubKey #-}
 
 -- | base64url X509 key encoding with algorithm prefix
 serializePubKeyUri :: CryptoPublicKey k => k -> ByteString
-serializePubKeyUri k = case aPubKey k of APublicKey _ k' -> serializePubKeyUri' k'
+serializePubKeyUri = toPubKey serializePubKeyUri'
 {-# INLINE serializePubKeyUri #-}
 
 serializePubKey' :: AlgorithmI a => PublicKey a -> ByteString
@@ -499,7 +500,7 @@ strPublicKeyP_ b64P = do
     _ -> fail $ "public key algorithm " <> show a <> " does not match prefix"
 
 encodeLenKey :: CryptoPublicKey k => k -> ByteString
-encodeLenKey k = case aPubKey k of APublicKey _ k' -> encodeLenKey' k'
+encodeLenKey = toPubKey encodeLenKey'
 {-# INLINE encodeLenKey #-}
 
 -- | binary X509 key encoding with 2-bytes length prefix
@@ -517,7 +518,7 @@ binaryLenKeyP = do
   parseAll binaryPubKeyP <$?> A.take len
 
 encodePubKey :: CryptoPublicKey pk => pk -> ByteString
-encodePubKey k = case aPubKey k of APublicKey _ k' -> encodePubKey' k'
+encodePubKey = toPubKey encodePubKey'
 {-# INLINE encodePubKey #-}
 
 encodePubKey' :: PublicKey a -> ByteString
@@ -531,33 +532,33 @@ aBinaryPubKeyP :: Parser APublicKey
 aBinaryPubKeyP = decodePubKey <$?> A.takeByteString
 
 class CryptoPrivateKey pk where
-  aPrivKey :: pk -> APrivateKey
+  toPrivKey :: (forall a. AlgorithmI a => PrivateKey a -> b) -> pk -> b
   privKey :: APrivateKey -> Either String pk
 
 instance CryptoPrivateKey APrivateKey where
-  aPrivKey = id
+  toPrivKey f (APrivateKey _ k) = f k
   privKey = Right
 
 instance CryptoPrivateKey APrivateSignKey where
-  aPrivKey (APrivateSignKey a k) = APrivateKey a k
+  toPrivKey f (APrivateSignKey _ k) = f k
   privKey (APrivateKey a k) = case signatureAlgorithm a of
     Just Dict -> Right $ APrivateSignKey a k
     _ -> Left "key does not support signature algorithms"
 
 instance CryptoPrivateKey APrivateDhKey where
-  aPrivKey (APrivateDhKey a k) = APrivateKey a k
+  toPrivKey f (APrivateDhKey _ k) = f k
   privKey (APrivateKey a k) = case dhAlgorithm a of
     Just Dict -> Right $ APrivateDhKey a k
     _ -> Left "key does not support DH algorithm"
 
 instance AlgorithmI a => CryptoPrivateKey (PrivateKey a) where
-  aPrivKey k = APrivateKey (sAlgorithm @a) k
+  toPrivKey = id
   privKey (APrivateKey a k) = case testEquality a $ sAlgorithm @a of
     Just Refl -> Right k
     _ -> Left "bad key algorithm"
 
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
-encodePrivKey k = case aPrivKey k of APrivateKey _ k' -> encodePrivKey' k'
+encodePrivKey = toPrivKey encodePrivKey'
 
 encodePrivKey' :: PrivateKey a -> ByteString
 encodePrivKey' = encodeASNObj . privateToX509
