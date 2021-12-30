@@ -3,7 +3,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -15,6 +17,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.Text (Text)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -257,13 +260,9 @@ data RcvMsg = RcvMsg
     brokerId :: BrokerId,
     brokerTs :: BrokerTs,
     rcvMsgStatus :: RcvMsgStatus,
-    -- | Timestamp of acknowledgement to broker, corresponds to `AcknowledgedToBroker` status.
-    -- Do not mix up with `brokerTs` - timestamp created at broker after it receives the message from sender.
+    -- | Timestamp of acknowledgement to broker, corresponds to `Acknowledged` status.
+    -- Don't confuse with `brokerTs` - timestamp created at broker after it receives the message from sender.
     ackBrokerTs :: AckBrokerTs,
-    -- | Timestamp of acknowledgement to sender, corresponds to `AcknowledgedToSender` status.
-    -- Do not mix up with `externalSndTs` - timestamp created at sender before sending,
-    -- which in its turn corresponds to `internalTs` in sending agent.
-    ackSenderTs :: AckSenderTs,
     -- | Hash of previous message as received from sender - stored for integrity forensics.
     externalPrevSndHash :: MsgHash,
     msgIntegrity :: MsgIntegrity
@@ -281,11 +280,19 @@ type BrokerId = MsgId
 
 type BrokerTs = UTCTime
 
-data RcvMsgStatus
-  = Received
-  | AcknowledgedToBroker
-  | AcknowledgedToSender
+data RcvMsgStatus = RcvMsgReceived | RcvMsgAcknowledged
   deriving (Eq, Show)
+
+serializeRcvMsgStatus :: RcvMsgStatus -> Text
+serializeRcvMsgStatus = \case
+  RcvMsgReceived -> "rcvd"
+  RcvMsgAcknowledged -> "ackd"
+
+rcvMsgStatusT :: Text -> Maybe RcvMsgStatus
+rcvMsgStatusT = \case
+  "rcvd" -> Just RcvMsgReceived
+  "ackd" -> Just RcvMsgAcknowledged
+  _ -> Nothing
 
 type AckBrokerTs = UTCTime
 
@@ -298,19 +305,25 @@ data SndMsg = SndMsg
     internalSndId :: InternalSndId,
     sndMsgStatus :: SndMsgStatus,
     -- | Timestamp of the message received by broker, corresponds to `Sent` status.
-    sentTs :: SentTs,
-    -- | Timestamp of the message received by recipient, corresponds to `Delivered` status.
-    deliveredTs :: DeliveredTs
+    sentTs :: SentTs
   }
   deriving (Eq, Show)
 
 newtype InternalSndId = InternalSndId {unSndId :: Int64} deriving (Eq, Show)
 
-data SndMsgStatus
-  = SndMsgCreated
-  | SndMsgSent
-  | SndMsgDelivered
+data SndMsgStatus = SndMsgCreated | SndMsgSent
   deriving (Eq, Show)
+
+serializeSndMsgStatus :: SndMsgStatus -> Text
+serializeSndMsgStatus = \case
+  SndMsgCreated -> "created"
+  SndMsgSent -> "sent"
+
+sndMsgStatusT :: Text -> Maybe SndMsgStatus
+sndMsgStatusT = \case
+  "created" -> Just SndMsgCreated
+  "sent" -> Just SndMsgSent
+  _ -> Nothing
 
 type SentTs = UTCTime
 

@@ -1,6 +1,6 @@
 CREATE TABLE servers (
   host TEXT NOT NULL,
-  port TEXT NOT NULL,
+  port TEXT,
   key_hash BLOB,
   PRIMARY KEY (host, port)
 ) WITHOUT ROWID;
@@ -18,7 +18,7 @@ CREATE TABLE connections (
 
 CREATE TABLE rcv_queues (
   host TEXT NOT NULL,
-  port TEXT NOT NULL,
+  port TEXT,
   rcv_id BLOB NOT NULL,
   conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   rcv_private_key BLOB NOT NULL,
@@ -37,7 +37,7 @@ CREATE TABLE rcv_queues (
 
 CREATE TABLE snd_queues (
   host TEXT NOT NULL,
-  port TEXT NOT NULL,
+  port TEXT,
   snd_id BLOB NOT NULL,
   conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   snd_private_key BLOB NOT NULL,
@@ -73,7 +73,6 @@ CREATE TABLE rcv_messages (
   broker_ts TEXT NOT NULL,
   rcv_status TEXT NOT NULL,
   ack_brocker_ts TEXT,
-  ack_sender_ts TEXT,
   internal_hash BLOB NOT NULL,
   external_prev_snd_hash BLOB NOT NULL,
   integrity BLOB NOT NULL,
@@ -88,7 +87,6 @@ CREATE TABLE snd_messages (
   internal_id INTEGER NOT NULL,
   snd_status TEXT NOT NULL,
   sent_ts TEXT,
-  delivered_ts TEXT,
   internal_hash BLOB NOT NULL,
   previous_msg_hash BLOB NOT NULL DEFAULT x'',
   PRIMARY KEY (conn_alias, internal_snd_id),
