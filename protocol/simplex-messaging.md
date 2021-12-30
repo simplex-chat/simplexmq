@@ -614,7 +614,7 @@ SMP transmission structure for sent messages:
       ....... smpEncMessage (= 15968 bytes)
        126- | smpPubHeader
          24 | nonce for smpClientMessage
-            ------- smpClientMessage (E2E encrypted, = 15842 bytes)
+            ------- smpClientMessage (E2E encrypted, = 15802 bytes)
                 2 | originalLength
               16- | smpPrivHeader
                   .......
@@ -634,27 +634,27 @@ SMP transmission structure for received messages:
 ------- transmission (= 16384 bytes)
     2 | originalLength
  398- | signature SP sessionId SP corrId SP queueId SP %s"MSG" SP msgId SP timestamp SP
-      ------- serverEncryptedMsg (= 15986 bytes)
+      ------- serverEncryptedMsg (= 15984 bytes)
           2 | originalLength
-            ....... smpEncMessage (= 15968 bytes)
+            ....... smpEncMessage (= 15966 bytes)
              126- | smpPubHeader
                24 | nonce for smpClientMessage
-                  ------- smpClientMessage (E2E encrypted, = 15842 bytes)
+                  ------- smpClientMessage (E2E encrypted, = 15800 bytes)
                       2 | originalLength
                     16- | smpPrivHeader
-                        ....... clientMsgBody (<= 15784 bytes)
+                        ....... clientMsgBody (<= 15782 bytes)
                               -- TODO move internal structure to agent protocol
                           16- | agentPublicHeader
-                              ....... E2E double-ratchet encrypted (= 15768)
+                              ....... E2E double-ratchet encrypted (= 15766)
                                  96 | double-ratchet header
                                  16 | double-ratchet header auth tag
                                  24 | double-ratchet header iv
-                                    ------- encrypted agent message (= 15616 bytes)
+                                    ------- encrypted agent message (= 15614 bytes)
                                         2 | originalLength
                                  122 (90) | agentHeader
                                         4 | %s"MSG" SP
                                           .......
-                                                | application message (<= 15488 bytes)
+                                                | application message (<= 15486 bytes)
                                           .......
                                        0+ | encrypted agent message pad
                                     ------- encrypted agent message end
