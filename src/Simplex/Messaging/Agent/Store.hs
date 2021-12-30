@@ -261,7 +261,7 @@ data RcvMsg = RcvMsg
     brokerTs :: BrokerTs,
     rcvMsgStatus :: RcvMsgStatus,
     -- | Timestamp of acknowledgement to broker, corresponds to `Acknowledged` status.
-    -- Do not mix up with `brokerTs` - timestamp created at broker after it receives the message from sender.
+    -- Don't confuse with `brokerTs` - timestamp created at broker after it receives the message from sender.
     ackBrokerTs :: AckBrokerTs,
     -- | Hash of previous message as received from sender - stored for integrity forensics.
     externalPrevSndHash :: MsgHash,
