@@ -71,72 +71,87 @@ fingerprintFile = combine cfgDir "fingerprint"
 
 main :: IO ()
 main = do
-  cliOptions <- getCliOptions
-  checkPubkeyAlgorithm cliOptions -- TODO check during parsing
-  case serverCommand cliOptions of
-    ServerInit ->
+  getCliOptions >>= \opts -> case optCommand opts of
+    Init pubKeyAlgorithm -> do
+      checkChoiceOption "pubkey-algorithm" pubKeyAlgorithm ["ED25519", "ED448"]
       doesFileExist iniFile >>= \case
         True -> iniAlreadyExistsErr >> exitFailure
-        False -> initializeServer cliOptions
-    ServerStart ->
+        False -> initializeServer pubKeyAlgorithm
+    Start enableStoreLog -> do
+      checkChoiceOption "store-log" enableStoreLog ["on", "off", "ini"]
       doesFileExist iniFile >>= \case
         False -> iniDoesNotExistErr >> exitFailure
-        True -> readIniFile iniFile >>= either (\e -> putStrLn e >> exitFailure) (runServer cliOptions . mkIniOptions) -- TODO resolve opts and print ResolvedOpts
-    ServerDelete -> cleanup >> putStrLn "Server configuration and log files deleted"
+        True ->
+          readIniFile iniFile
+            >>= either
+              (\e -> putStrLn e >> exitFailure)
+              ( \ini -> do
+                  let resolvedOptions = resolveOptions enableStoreLog $ mkIniOptions ini
+                  runServer resolvedOptions
+              )
+    Delete -> cleanup >> putStrLn "Deleted configuration and log files"
   where
-    checkPubkeyAlgorithm CliOptions {pubkeyAlgorithm}
-      | pubkeyAlgorithm == "ED448" || pubkeyAlgorithm == "ED25519" = pure ()
-      | otherwise = putStrLn ("unsupported public-key algorithm " <> pubkeyAlgorithm) >> exitFailure
+    -- TODO check choice options during parsing
+    checkChoiceOption optionName val choice
+      | val `elem` choice = pure ()
+      | otherwise = putStrLn ("Unsupported choice for option " <> optionName <> ": " <> val) >> exitFailure
     iniAlreadyExistsErr = putStrLn $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `smp-server start`."
     iniDoesNotExistErr = putStrLn $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `smp-server init`."
 
-data CliOptions = CliOptions
-  { serverCommand :: ServerCommand,
-    enableStoreLog :: Bool,
-    pubkeyAlgorithm :: String
-  }
+newtype CliOptions = CliOptions {optCommand :: Command}
 
-data ServerCommand = ServerInit | ServerStart | ServerDelete
+-- TODO parse into <Command>Options, e.g. StartOptions, use StartOptions when resolving options
+data Command
+  = Init PubKeyAlgorithm
+  | Start EnableStoreLog
+  | Delete
+
+type PubKeyAlgorithm = String
+
+type EnableStoreLog = String
 
 getCliOptions :: IO CliOptions
-getCliOptions = customExecParser p opts
-  where
-    p = prefs showHelpOnEmpty
-    opts =
-      info
+getCliOptions =
+  customExecParser
+    (prefs showHelpOnEmpty)
+    ( info
         (cliOptionsP <**> helper)
-        ( fullDesc
-            <> header "Simplex Messaging Protocol (SMP) Server"
-        )
+        (fullDesc <> header ("Simplex Messaging Protocol (SMP) Server, version " <> B.unpack currentSMPVersionStr))
+    )
 
--- TODO parameters should be conditional on command
 cliOptionsP :: Parser CliOptions
 cliOptionsP =
   CliOptions
     <$> subparser
-      ( command "init" (info (pure ServerInit) (progDesc "Initialize server: generate server key and ini file"))
-          <> command "start" (info (pure ServerStart) (progDesc "Start server (ini: /etc/opt/simplex/smp-server.ini)"))
-          <> command "delete" (info (pure ServerDelete) (progDesc "Delete server key, ini file and store log"))
+      ( command "init" (info (initOptionsP <**> helper) (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
+          <> command "start" (info (startOptionsP <**> helper) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+          <> command "delete" (info (pure Delete <**> helper) (progDesc "Delete configuration and log files"))
       )
-    <*> switch
-      ( long "store-log"
-          <> short 'l'
-          <> help "enable store log for SMP queues persistence"
-      )
-    <*> strOption
-      ( long "pubkey-algorithm"
-          <> short 'a'
-          <> help
-            ( "public-key algorithm used for certificate generation,"
-                <> "\nsupported algorithms: ED448 (default) and ED25519"
-            )
-          <> value "ED448"
-      )
+  where
+    initOptionsP :: Parser Command
+    initOptionsP =
+      Init
+        <$> strOption
+          ( long "pubkey-algorithm"
+              <> short 'a'
+              <> help "Public key algorithm used for certificate generation: ED25519 or ED448 (default)"
+              <> value "ED448"
+          )
+    startOptionsP :: Parser Command
+    startOptionsP =
+      Start
+        <$> strOption
+          ( long "store-log"
+              <> short 'l'
+              <> help "Enable store log for SMP queues persistence: on, off or ini (default)"
+              <> value "ini"
+          )
 
-initializeServer :: CliOptions -> IO ()
-initializeServer CliOptions {pubkeyAlgorithm} = do
+initializeServer :: PubKeyAlgorithm -> IO ()
+initializeServer pubKeyAlgorithm = do
   cleanup
   createDirectoryIfMissing True cfgDir
+  createDirectoryIfMissing True logDir
   createX509
   saveFingerprint
   createIni
@@ -147,17 +162,16 @@ initializeServer CliOptions {pubkeyAlgorithm} = do
     createX509 = do
       createOpensslConf
       -- CA certificate (identity/offline)
-      run $ "openssl genpkey -algorithm " <> pubkeyAlgorithm <> " -out " <> caKeyFile
+      run $ "openssl genpkey -algorithm " <> pubKeyAlgorithm <> " -out " <> caKeyFile
       run $ "openssl req -new -x509 -days 999999 -config " <> opensslCnfFile <> " -extensions v3_ca -key " <> caKeyFile <> " -out " <> caCrtFile
       -- server certificate (online)
-      run $ "openssl genpkey -algorithm " <> pubkeyAlgorithm <> " -out " <> serverKeyFile
+      run $ "openssl genpkey -algorithm " <> pubKeyAlgorithm <> " -out " <> serverKeyFile
       run $ "openssl req -new -config " <> opensslCnfFile <> " -reqexts v3_req -key " <> serverKeyFile <> " -out " <> serverCsrFile
       run $ "openssl x509 -req -days 999999 -copy_extensions copy -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -out " <> serverCrtFile
       where
         run cmd = void $ readCreateProcess (shell cmd) ""
         opensslCnfFile = combine cfgDir "openssl.cnf"
         serverCsrFile = combine cfgDir "server.csr"
-        createOpensslConf :: IO ()
         createOpensslConf =
           -- TODO revise https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3, https://www.rfc-editor.org/rfc/rfc3279#section-2.3.5
           writeFile
@@ -180,7 +194,6 @@ initializeServer CliOptions {pubkeyAlgorithm} = do
       fingerprint <- loadFingerprint caCrtFile
       writeFile fingerprintFile $ (B.unpack . encodeFingerprint) fingerprint <> "\n"
 
-    createIni :: IO ()
     createIni = do
       writeFile iniFile $
         "[PERSISTENCE]\n\
@@ -212,8 +225,26 @@ mkIniOptions ini =
   where
     strict section key = fromRight (error "no key " <> key <> " in section " <> section) $ lookupValue section key ini
 
-runServer :: CliOptions -> IniOptions -> IO () -- TODO should take ResolvedOpts as parameter
-runServer cliOptions iniOptions@IniOptions {port, enableWebsockets} = do
+data ResolvedOptions = ResolvedOptions
+  { enableStoreLog :: Bool,
+    port :: ServiceName,
+    enableWebsockets :: Bool
+  }
+
+resolveOptions :: EnableStoreLog -> IniOptions -> ResolvedOptions
+resolveOptions cliLog IniOptions {enableStoreLog = iniLog, port, enableWebsockets} =
+  ResolvedOptions
+    { enableStoreLog = resolveStoreLogOption,
+      port,
+      enableWebsockets
+    }
+  where
+    resolveStoreLogOption
+      | cliLog == "ini" = iniLog
+      | otherwise = cliLog == "on"
+
+runServer :: ResolvedOptions -> IO ()
+runServer ResolvedOptions {enableStoreLog, port, enableWebsockets} = do
   checkSavedFingerprint
   printServiceInfo
   checkCAPrivateKeyFile
@@ -233,16 +264,13 @@ runServer cliOptions iniOptions@IniOptions {port, enableWebsockets} = do
         alert = putStrLn $ "WARNING: " <> caKeyFile <> " is present on the server!"
 
     setupServerConfig = do
-      storeLog <- openStoreLog cliOptions iniOptions
+      storeLog <- openStoreLog
       let transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets]
       pure serverConfig {transports, storeLog}
       where
-        openStoreLog :: CliOptions -> IniOptions -> IO (Maybe (StoreLog 'ReadMode))
-        openStoreLog CliOptions {enableStoreLog = l} IniOptions {enableStoreLog = l'}
-          -- TODO should be defined by ResolvedOpts instead
-          | l || l' = do
-            createDirectoryIfMissing True logDir
-            Just <$> openReadStoreLog storeLogFile
+        openStoreLog :: IO (Maybe (StoreLog 'ReadMode))
+        openStoreLog
+          | enableStoreLog = Just <$> openReadStoreLog storeLogFile
           | otherwise = pure Nothing
 
     printServerConfig ServerConfig {storeLog, transports} = do
