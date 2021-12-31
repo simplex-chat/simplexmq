@@ -55,7 +55,7 @@ module Simplex.Messaging.Transport
     tGetBlock,
     serializeTransportError,
     transportErrorP,
-    currentSMPVersionStr,
+    currentSMPVersionBS,
 
     -- * Trim trailing CR
     trimCR,
@@ -388,8 +388,8 @@ instance IsString SMPVersion where
 currentSMPVersion :: SMPVersion
 currentSMPVersion = "0.5.1"
 
-currentSMPVersionStr :: ByteString
-currentSMPVersionStr = serializeSMPVersion currentSMPVersion
+currentSMPVersionBS :: ByteString
+currentSMPVersionBS = serializeSMPVersion currentSMPVersion
 
 serializeSMPVersion :: SMPVersion -> ByteString
 serializeSMPVersion (SMPVersion a b c) = B.intercalate "." [bshow a, bshow b, bshow c]

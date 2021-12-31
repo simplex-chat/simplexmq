@@ -12,13 +12,14 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (dropWhileEnd)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (ServiceName)
 import Options.Applicative
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), currentSMPVersionStr, encodeFingerprint, loadFingerprint)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), currentSMPVersionBS, encodeFingerprint, loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
@@ -72,13 +73,13 @@ fingerprintFile = combine cfgDir "fingerprint"
 main :: IO ()
 main = do
   getCliOptions >>= \opts -> case optCommand opts of
-    Init pubKeyAlgorithm -> do
-      checkChoiceOption "pubkey-algorithm" pubKeyAlgorithm ["ED25519", "ED448"]
+    Init initOptions@InitOptions {pubkeyAlgorithm} -> do
+      checkChoiceOption "pubkey-algorithm" pubkeyAlgorithm ["ED25519", "ED448"]
       doesFileExist iniFile >>= \case
         True -> iniAlreadyExistsErr >> exitFailure
-        False -> initializeServer pubKeyAlgorithm
-    Start enableStoreLog -> do
-      checkChoiceOption "store-log" enableStoreLog ["on", "off", "ini"]
+        False -> initializeServer initOptions
+    Start startOptions -> do
+      -- checkChoiceOption "store-log" (enableStoreLog startOptions) ["on", "off", "ini"]
       doesFileExist iniFile >>= \case
         False -> iniDoesNotExistErr >> exitFailure
         True ->
@@ -86,7 +87,7 @@ main = do
             >>= either
               (\e -> putStrLn e >> exitFailure)
               ( \ini -> do
-                  let resolvedOptions = resolveOptions enableStoreLog $ mkIniOptions ini
+                  let resolvedOptions = resolveOptions startOptions $ mkIniOptions ini
                   runServer resolvedOptions
               )
     Delete -> cleanup >> putStrLn "Deleted configuration and log files"
@@ -100,55 +101,57 @@ main = do
 
 newtype CliOptions = CliOptions {optCommand :: Command}
 
--- TODO parse into <Command>Options, e.g. StartOptions, use StartOptions when resolving options
 data Command
-  = Init PubKeyAlgorithm
-  | Start EnableStoreLog
+  = Init InitOptions
+  | Start StartOptions
   | Delete
 
-type PubKeyAlgorithm = String
+newtype InitOptions = InitOptions {pubkeyAlgorithm :: String}
 
-type EnableStoreLog = String
+newtype StartOptions = StartOptions {enableStoreLog :: Maybe Bool}
 
 getCliOptions :: IO CliOptions
 getCliOptions =
   customExecParser
     (prefs showHelpOnEmpty)
     ( info
-        (cliOptionsP <**> helper)
-        (fullDesc <> header ("Simplex Messaging Protocol (SMP) Server, version " <> B.unpack currentSMPVersionStr))
+        (helper <*> versionOption <*> cliOptionsP)
+        (header version <> fullDesc)
     )
+  where
+    versionOption = infoOption version (long "version" <> short 'v' <> help "Show version")
 
 cliOptionsP :: Parser CliOptions
 cliOptionsP =
   CliOptions
     <$> subparser
-      ( command "init" (info (initOptionsP <**> helper) (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
-          <> command "start" (info (startOptionsP <**> helper) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
-          <> command "delete" (info (pure Delete <**> helper) (progDesc "Delete configuration and log files"))
+      ( command "init" (info (helper <*> initOptionsP) (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
+          -- <> command "start" (info (helper <*> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+          <> command "delete" (info (helper <*> pure Delete) (progDesc "Delete configuration and log files"))
       )
   where
     initOptionsP :: Parser Command
     initOptionsP =
-      Init
+      Init . InitOptions
         <$> strOption
           ( long "pubkey-algorithm"
               <> short 'a'
               <> help "Public key algorithm used for certificate generation: ED25519 or ED448 (default)"
               <> value "ED448"
           )
-    startOptionsP :: Parser Command
-    startOptionsP =
-      Start
-        <$> strOption
-          ( long "store-log"
-              <> short 'l'
-              <> help "Enable store log for SMP queues persistence: on, off or ini (default)"
-              <> value "ini"
-          )
 
-initializeServer :: PubKeyAlgorithm -> IO ()
-initializeServer pubKeyAlgorithm = do
+-- startOptionsP :: Parser Command
+-- startOptionsP =
+--   Start . StartOptions
+--     <$> strOption
+--       ( long "store-log"
+--           <> short 'l'
+--           <> help "Enable store log for SMP queues persistence: on, off or ini (default)"
+--           <> value "ini"
+--       )
+
+initializeServer :: InitOptions -> IO ()
+initializeServer InitOptions {pubkeyAlgorithm} = do
   cleanup
   createDirectoryIfMissing True cfgDir
   createDirectoryIfMissing True logDir
@@ -162,10 +165,10 @@ initializeServer pubKeyAlgorithm = do
     createX509 = do
       createOpensslConf
       -- CA certificate (identity/offline)
-      run $ "openssl genpkey -algorithm " <> pubKeyAlgorithm <> " -out " <> caKeyFile
+      run $ "openssl genpkey -algorithm " <> pubkeyAlgorithm <> " -out " <> caKeyFile
       run $ "openssl req -new -x509 -days 999999 -config " <> opensslCnfFile <> " -extensions v3_ca -key " <> caKeyFile <> " -out " <> caCrtFile
       -- server certificate (online)
-      run $ "openssl genpkey -algorithm " <> pubKeyAlgorithm <> " -out " <> serverKeyFile
+      run $ "openssl genpkey -algorithm " <> pubkeyAlgorithm <> " -out " <> serverKeyFile
       run $ "openssl req -new -config " <> opensslCnfFile <> " -reqexts v3_req -key " <> serverKeyFile <> " -out " <> serverCsrFile
       run $ "openssl x509 -req -days 999999 -copy_extensions copy -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -out " <> serverCrtFile
       where
@@ -234,17 +237,13 @@ data ResolvedOptions = ResolvedOptions
     enableWebsockets :: Bool
   }
 
-resolveOptions :: EnableStoreLog -> IniOptions -> ResolvedOptions
-resolveOptions cliLog IniOptions {enableStoreLog = iniLog, port, enableWebsockets} =
+resolveOptions :: StartOptions -> IniOptions -> ResolvedOptions
+resolveOptions StartOptions {enableStoreLog = cliLog} IniOptions {enableStoreLog = iniLog, port, enableWebsockets} =
   ResolvedOptions
-    { enableStoreLog = resolveStoreLogOption,
+    { enableStoreLog = fromMaybe iniLog cliLog,
       port,
       enableWebsockets
     }
-  where
-    resolveStoreLogOption
-      | cliLog == "ini" = iniLog
-      | otherwise = cliLog == "on"
 
 runServer :: ResolvedOptions -> IO ()
 runServer ResolvedOptions {enableStoreLog, port, enableWebsockets} = do
@@ -292,9 +291,12 @@ cleanup = do
 
 printServiceInfo :: IO ()
 printServiceInfo = do
-  putStrLn $ "Server version: " <> B.unpack currentSMPVersionStr
+  putStrLn version
   fingerprint <- loadSavedFingerprint
   putStrLn $ "Fingerprint: " <> fingerprint
+
+version :: String
+version = "SMP server v" <> B.unpack currentSMPVersionBS
 
 warnCAPrivateKeyFile :: IO ()
 warnCAPrivateKeyFile =
