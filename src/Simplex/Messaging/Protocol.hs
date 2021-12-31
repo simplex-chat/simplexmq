@@ -91,6 +91,7 @@ module Simplex.Messaging.Protocol
     pattern SEND_,
     pattern Recipient_,
     pattern Sender_,
+    protocolTags,
   )
 where
 
@@ -301,6 +302,47 @@ pattern ERR_ = '\x46'
 
 pattern PONG_ :: Char
 pattern PONG_ = '\x47'
+
+protocolTags :: [Char]
+protocolTags =
+  [ Recipient_,
+    Sender_,
+    Notifier_,
+    Broker_,
+    NEW_,
+    SUB_,
+    KEY_,
+    NKEY_,
+    ACK_,
+    OFF_,
+    DEL_,
+    SEND_,
+    PING_,
+    NSUB_,
+    IDS_,
+    MSG_,
+    NID_,
+    NMSG_,
+    END_,
+    OK_,
+    ERR_,
+    PONG_,
+    BLOCK_,
+    SESSION_,
+    CMD_,
+    AUTH_,
+    QUOTA_,
+    NO_MSG_,
+    LARGE_MSG_,
+    INTERNAL_,
+    DUPLICATE__,
+    UNKNOWN_,
+    PROHIBITED_,
+    SYNTAX_,
+    NO_AUTH_,
+    HAS_AUTH_,
+    NO_QUEUE_
+  ]
 
 type family IsClient p :: Constraint where
   IsClient Recipient = ()

@@ -1,7 +1,7 @@
 {-# LANGUAGE TypeApplications #-}
 
 import AgentTests (agentTests)
-import ProtocolErrorTests
+import ProtocolTests
 import ServerTests
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -13,7 +13,7 @@ main :: IO ()
 main = do
   createDirectoryIfMissing False "tests/tmp"
   hspec $ do
-    describe "Protocol errors" protocolErrorTests
+    describe "Protocol tests" protocolTests
     describe "Version range" versionRangeTests
     describe "SMP server via TLS 1.3" $ serverTests (transport @TLS)
     describe "SMP server via WebSockets" $ serverTests (transport @WS)
