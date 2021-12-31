@@ -223,7 +223,10 @@ mkIniOptions ini =
       enableWebsockets = (== "on") $ strict "TRANSPORT" "websockets"
     }
   where
-    strict section key = fromRight (error "no key " <> key <> " in section " <> section) $ lookupValue section key ini
+    strict :: String -> String -> T.Text
+    strict section key =
+      fromRight (error ("no key " <> key <> " in section " <> section)) $
+        lookupValue (T.pack section) (T.pack key) ini
 
 data ResolvedOptions = ResolvedOptions
   { enableStoreLog :: Bool,
