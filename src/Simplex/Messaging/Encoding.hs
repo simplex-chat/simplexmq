@@ -5,7 +5,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Simplex.Messaging.Encoding where
+module Simplex.Messaging.Encoding (Encoding (..), Tail (..)) where
 
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -14,9 +14,8 @@ import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (formatISO8601Millis, parseISO8601)
-import Data.Word (Word16, Word32, Word8)
+import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
-import Simplex.Messaging.Util (ifM)
 
 class Encoding a where
   smpEncode :: a -> ByteString
@@ -36,30 +35,18 @@ instance Encoding Word32 where
 
 -- ByteStrings are assumed no longer than 255 bytes
 instance Encoding ByteString where
-  smpEncode s =
-    let len = fromIntegral $ B.length s :: Word8
-     in B.cons (w2c len) s
+  smpEncode s = B.cons (w2c len) s where len = fromIntegral $ B.length s
   smpP = A.take . fromIntegral . c2w =<< A.anyChar
 
-newtype LargeBS = LargeBS {unLargeBS :: ByteString}
+newtype Tail = Tail {unTail :: ByteString}
 
-instance Encoding LargeBS where
-  smpEncode (LargeBS s) =
-    let len = fromIntegral $ B.length s :: Word16
-     in smpEncode len <> s
-  smpP = LargeBS <$> (A.take . fromIntegral . decodeWord16 =<< A.take 2)
+instance Encoding Tail where
+  smpEncode = unTail
+  smpP = Tail <$> A.takeByteString
 
 instance Encoding UTCTime where
-  smpEncode = B.pack . formatISO8601Millis
-  {-# INLINE smpEncode #-}
-  smpP = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.take 24
-
-instance forall a. Encoding a => Encoding [a] where
-  smpEncode = mconcat . map smpEncode
-  smpP = listP []
-    where
-      listP :: [a] -> Parser [a]
-      listP xs = ifM A.atEnd (pure $ reverse xs) (smpP >>= listP . (: xs))
+  smpEncode = smpEncode . B.pack . formatISO8601Millis
+  smpP = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< smpP
 
 instance (Encoding a, Encoding b) => Encoding (a, b) where
   smpEncode (a, b) = smpEncode a <> smpEncode b

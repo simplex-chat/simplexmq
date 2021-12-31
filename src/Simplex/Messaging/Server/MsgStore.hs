@@ -4,10 +4,10 @@ module Simplex.Messaging.Server.MsgStore where
 
 import Data.Time.Clock
 import Numeric.Natural
-import Simplex.Messaging.Protocol (Encoded, MsgBody, RecipientId)
+import Simplex.Messaging.Protocol (MsgBody, MsgId, RecipientId)
 
 data Message = Message
-  { msgId :: Encoded,
+  { msgId :: MsgId,
     ts :: UTCTime,
     msgBody :: MsgBody
   }

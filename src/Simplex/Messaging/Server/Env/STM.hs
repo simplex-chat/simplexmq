@@ -56,8 +56,8 @@ data Server = Server
 data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
     ntfSubscriptions :: TVar (Map NotifierId ()),
-    rcvQ :: TBQueue (Transmission ClientCmd),
-    sndQ :: TBQueue BrokerTransmission,
+    rcvQ :: TBQueue (Transmission Cmd),
+    sndQ :: TBQueue (Transmission BrokerMsg),
     sessionId :: ByteString,
     connected :: TVar Bool
   }

@@ -41,24 +41,24 @@ serverTests t = do
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
 
-pattern Resp :: CorrId -> QueueId -> Command 'Broker -> SignedTransmission (Command 'Broker)
+pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission BrokerMsg
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
-pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> Command 'Broker
+pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
 pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
 
-sendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> (Maybe C.ASignature, ByteString, ByteString, Command p) -> IO (SignedTransmission (Command 'Broker))
+sendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> (Maybe C.ASignature, ByteString, ByteString, Command p) -> IO (SignedTransmission BrokerMsg)
 sendRecv h@THandle {sessionId} (sgn, corrId, qId, cmd) = do
-  let t = smpEncode (sessionId, corrId, qId, Cmd (sParty @p) cmd)
+  let t = encodeTransmission sessionId (CorrId corrId, qId, cmd)
   Right () <- tPut h (sgn, t)
-  tGetFromServer h
+  tGet h
 
-signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission (Command 'Broker))
+signSendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission BrokerMsg)
 signSendRecv h@THandle {sessionId} pk (corrId, qId, cmd) = do
-  let t = smpEncode (sessionId, (corrId, qId, Cmd (sParty @p) cmd))
+  let t = encodeTransmission sessionId (CorrId corrId, qId, cmd)
   Right sig <- runExceptT $ C.sign pk t
   Right () <- tPut h (Just sig, t)
-  tGetFromServer h
+  tGet h
 
 (#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion
 (actual, expected) #== message = assertEqual message expected actual
@@ -77,7 +77,7 @@ testCreateSecure (ATransport t) =
       (ok1, OK) #== "accepts unsigned SEND"
       (sId1, sId) #== "same queue ID in response 1"
 
-      Resp "" _ (MSG mId1 _ msg1) <- tGetFromServer h
+      Resp "" _ (MSG mId1 _ msg1) <- tGet h
       (dec mId1 msg1, Right "hello") #== "delivers message"
 
       Resp "cdab" _ ok4 <- signSendRecv h rKey ("cdab", rId, ACK)
@@ -107,7 +107,7 @@ testCreateSecure (ATransport t) =
       Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, SEND "hello again")
       (ok3, OK) #== "accepts signed SEND"
 
-      Resp "" _ (MSG mId2 _ msg2) <- tGetFromServer h
+      Resp "" _ (MSG mId2 _ msg2) <- tGet h
       (dec mId2 msg2, Right "hello again") #== "delivers message 2"
 
       Resp "cdab" _ ok5 <- signSendRecv h rKey ("cdab", rId, ACK)
@@ -136,7 +136,7 @@ testCreateDelete (ATransport t) =
       Resp "dabc" _ ok7 <- signSendRecv sh sKey ("dabc", sId, SEND "hello 2")
       (ok7, OK) #== "accepts signed SEND 2 - this message is not delivered because the first is not ACKed"
 
-      Resp "" _ (MSG mId1 _ msg1) <- tGetFromServer rh
+      Resp "" _ (MSG mId1 _ msg1) <- tGet rh
       (dec mId1 msg1, Right "hello") #== "delivers message"
 
       Resp "abcd" _ err1 <- sendRecv rh (sampleSig, "abcd", rId, OFF)
@@ -217,7 +217,7 @@ testDuplex (ATransport t) =
       Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, SEND $ "key " <> C.serializePubKey bsPub)
       -- "key ..." is ad-hoc, not a part of SMP protocol
 
-      Resp "" _ (MSG mId1 _ msg1) <- tGetFromServer alice
+      Resp "" _ (MSG mId1 _ msg1) <- tGet alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK)
       Right ["key", bobKey] <- pure $ B.words <$> aDec mId1 msg1
       (bobKey, C.serializePubKey bsPub) #== "key received from Bob"
@@ -230,7 +230,7 @@ testDuplex (ATransport t) =
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, SEND $ "reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
 
-      Resp "" _ (MSG mId2 _ msg2) <- tGetFromServer alice
+      Resp "" _ (MSG mId2 _ msg2) <- tGet alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK)
       Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
       (bId, encode bSnd) #== "reply queue ID received from Bob"
@@ -239,7 +239,7 @@ testDuplex (ATransport t) =
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, SEND $ "key " <> C.serializePubKey asPub)
       -- "key ..." is ad-hoc, not a part of  SMP protocol
 
-      Resp "" _ (MSG mId3 _ msg3) <- tGetFromServer bob
+      Resp "" _ (MSG mId3 _ msg3) <- tGet bob
       Resp "abcd" _ OK <- signSendRecv bob brKey ("abcd", bRcv, ACK)
       Right ["key", aliceKey] <- pure $ B.words <$> bDec mId3 msg3
       (aliceKey, C.serializePubKey asPub) #== "key received from Alice"
@@ -247,13 +247,13 @@ testDuplex (ATransport t) =
 
       Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, SEND "hi alice")
 
-      Resp "" _ (MSG mId4 _ msg4) <- tGetFromServer alice
+      Resp "" _ (MSG mId4 _ msg4) <- tGet alice
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, ACK)
       (aDec mId4 msg4, Right "hi alice") #== "message received from Bob"
 
       Resp "abcd" _ OK <- signSendRecv alice asKey ("abcd", bSnd, SEND "how are you bob")
 
-      Resp "" _ (MSG mId5 _ msg5) <- tGetFromServer bob
+      Resp "" _ (MSG mId5 _ msg5) <- tGet bob
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, ACK)
       (bDec mId5 msg5, Right "how are you bob") #== "message received from alice"
 
@@ -270,7 +270,7 @@ testSwitchSub (ATransport t) =
       Resp "cdab" _ ok2 <- sendRecv sh ("", "cdab", sId, SEND "test2, no ACK")
       (ok2, OK) #== "sent test message 2"
 
-      Resp "" _ (MSG mId1 _ msg1) <- tGetFromServer rh1
+      Resp "" _ (MSG mId1 _ msg1) <- tGet rh1
       (dec mId1 msg1, Right "test1") #== "test message 1 delivered to the 1st TCP connection"
       Resp "abcd" _ (MSG mId2 _ msg2) <- signSendRecv rh1 rKey ("abcd", rId, ACK)
       (dec mId2 msg2, Right "test2, no ACK") #== "test message 2 delivered, no ACK"
@@ -279,12 +279,12 @@ testSwitchSub (ATransport t) =
       (dec mId2' msg2', Right "test2, no ACK") #== "same simplex queue via another TCP connection, tes2 delivered again (no ACK in 1st queue)"
       Resp "cdab" _ OK <- signSendRecv rh2 rKey ("cdab", rId, ACK)
 
-      Resp "" _ end <- tGetFromServer rh1
+      Resp "" _ end <- tGet rh1
       (end, END) #== "unsubscribed the 1st TCP connection"
 
       Resp "dabc" _ OK <- sendRecv sh ("", "dabc", sId, SEND "test3")
 
-      Resp "" _ (MSG mId3 _ msg3) <- tGetFromServer rh2
+      Resp "" _ (MSG mId3 _ msg3) <- tGet rh2
       (dec mId3 msg3, Right "test3") #== "delivered to the 2nd TCP connection"
 
       Resp "abcd" _ err <- signSendRecv rh1 rKey ("abcd", rId, ACK)
@@ -293,7 +293,7 @@ testSwitchSub (ATransport t) =
       Resp "bcda" _ ok3 <- signSendRecv rh2 rKey ("bcda", rId, ACK)
       (ok3, OK) #== "accepts ACK from the 2nd TCP connection"
 
-      1000 `timeout` tGetFromServer rh1 >>= \case
+      1000 `timeout` tGet @BrokerMsg rh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
@@ -321,14 +321,14 @@ testWithStoreLog at@(ATransport t) =
         writeTVar notifierId nId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, SEND "hello")
-      Resp "" _ (MSG mId1 _ msg1) <- tGetFromServer h
+      Resp "" _ (MSG mId1 _ msg1) <- tGet h
       (C.cbDecrypt dhShared (C.cbNonce mId1) msg1, Right "hello") #== "delivered from queue 1"
-      Resp "" _ NMSG <- tGetFromServer h1
+      Resp "" _ NMSG <- tGet h1
 
       (sId2, rId2, rKey2, dhShared2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
       Resp "cdab" _ OK <- signSendRecv h sKey2 ("cdab", sId2, SEND "hello too")
-      Resp "" _ (MSG mId2 _ msg2) <- tGetFromServer h
+      Resp "" _ (MSG mId2 _ msg2) <- tGet h
       (C.cbDecrypt dhShared2 (C.cbNonce mId2) msg2, Right "hello too") #== "delivered from queue 2"
 
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, DEL)
@@ -353,7 +353,7 @@ testWithStoreLog at@(ATransport t) =
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, SEND "hello")
       Resp "cdab" _ (MSG mId3 _ msg3) <- signSendRecv h rKey1 ("cdab", rId1, SUB)
       (C.cbDecrypt dh1 (C.cbNonce mId3) msg3, Right "hello") #== "delivered from restored queue"
-      Resp "" _ NMSG <- tGetFromServer h1
+      Resp "" _ NMSG <- tGet h1
       -- this queue is removed - not restored
       sId2 <- readTVarIO senderId2
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, SEND "hello too")
@@ -415,7 +415,7 @@ testTiming (ATransport t) =
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, KEY sPub)
 
       Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, SEND "hello")
-      Resp "" _ (MSG mId _ msg) <- tGetFromServer rh
+      Resp "" _ (MSG mId _ msg) <- tGet rh
       (dec mId msg, Right "hello") #== "delivered from queue"
 
       runTimingTest sh badKey sId $ SEND "hello"
@@ -451,22 +451,19 @@ testMessageNotifications (ATransport t) =
       Resp "1" _ (NID nId) <- signSendRecv rh rKey ("1", rId, NKEY nPub)
       Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, NSUB)
       Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, SEND "hello")
-      Resp "" _ (MSG mId1 _ msg1) <- tGetFromServer rh
+      Resp "" _ (MSG mId1 _ msg1) <- tGet rh
       (dec mId1 msg1, Right "hello") #== "delivered from queue"
       Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, ACK)
-      Resp "" _ NMSG <- tGetFromServer nh1
+      Resp "" _ NMSG <- tGet nh1
       Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, NSUB)
-      Resp "" _ END <- tGetFromServer nh1
+      Resp "" _ END <- tGet nh1
       Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, SEND "hello again")
-      Resp "" _ (MSG mId2 _ msg2) <- tGetFromServer rh
+      Resp "" _ (MSG mId2 _ msg2) <- tGet rh
       (dec mId2 msg2, Right "hello again") #== "delivered from queue again"
-      Resp "" _ NMSG <- tGetFromServer nh2
-      1000 `timeout` tGetFromServer nh1 >>= \case
+      Resp "" _ NMSG <- tGet nh2
+      1000 `timeout` tGet @BrokerMsg nh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
-
-tGetFromServer :: Transport c => THandle c -> IO (SignedTransmission (Command 'Broker))
-tGetFromServer = tGet
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="
@@ -479,42 +476,40 @@ sampleSig = "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw
 
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do
-  it "unknown command" $ ("", "abcd", "1234", (Recipient_, '\x20')) >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)
+  it "unknown command" $ ("", "abcd", "1234", ProtocolTag "UNKNOWN") >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)
   describe "NEW" $ do
-    it "no parameters" $ (sampleSig, "bcda", "", (Recipient_, NEW_)) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
-    it "many parameters" $ (sampleSig, "cdab", "", ([Recipient_, NEW_, '\x01', 'A'], samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "dabc", "", Cmd SRecipient $ NEW samplePubKey sampleDhPubKey) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
-    it "queue ID" $ (sampleSig, "abcd", "12345678", Cmd SRecipient $ NEW samplePubKey sampleDhPubKey) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
+    it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
+    it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
+    it "no signature" $ ("", "dabc", "", (NEW_, ' ', samplePubKey, sampleDhPubKey)) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
+    it "queue ID" $ (sampleSig, "abcd", "12345678", (NEW_, ' ', samplePubKey, sampleDhPubKey)) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
   describe "KEY" $ do
-    it "valid syntax" $ (sampleSig, "bcda", "12345678", (Recipient_, KEY_, samplePubKey)) >#> ("", "bcda", "12345678", ERR AUTH)
-    it "no parameters" $ (sampleSig, "cdab", "12345678", (Recipient_, KEY_)) >#> ("", "cdab", "12345678", ERR $ CMD SYNTAX)
-    it "many parameters" $ (sampleSig, "dabc", "12345678", (Recipient_, KEY_, '\x01', 'A', samplePubKey)) >#> ("", "dabc", "12345678", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "abcd", "12345678", (Recipient_, KEY_, samplePubKey)) >#> ("", "abcd", "12345678", ERR $ CMD NO_AUTH)
-    it "no queue ID" $ (sampleSig, "bcda", "", (Recipient_, KEY_, samplePubKey)) >#> ("", "bcda", "", ERR $ CMD NO_AUTH)
-  noParamsSyntaxTest "SUB" SUB
-  noParamsSyntaxTest "ACK" ACK
-  noParamsSyntaxTest "OFF" OFF
-  noParamsSyntaxTest "DEL" DEL
+    it "valid syntax" $ (sampleSig, "bcda", "12345678", (KEY_, ' ', samplePubKey)) >#> ("", "bcda", "12345678", ERR AUTH)
+    it "no parameters" $ (sampleSig, "cdab", "12345678", KEY_) >#> ("", "cdab", "12345678", ERR $ CMD SYNTAX)
+    it "many parameters" $ (sampleSig, "dabc", "12345678", (KEY_, ' ', ('\x01', 'A'), samplePubKey)) >#> ("", "dabc", "12345678", ERR $ CMD SYNTAX)
+    it "no signature" $ ("", "abcd", "12345678", (KEY_, ' ', samplePubKey)) >#> ("", "abcd", "12345678", ERR $ CMD NO_AUTH)
+    it "no queue ID" $ (sampleSig, "bcda", "", (KEY_, ' ', samplePubKey)) >#> ("", "bcda", "", ERR $ CMD NO_AUTH)
+  noParamsSyntaxTest "SUB" SUB_
+  noParamsSyntaxTest "ACK" ACK_
+  noParamsSyntaxTest "OFF" OFF_
+  noParamsSyntaxTest "DEL" DEL_
   describe "SEND" $ do
-    it "valid syntax 1" $ (sampleSig, "cdab", "12345678", Cmd SSender $ SEND "hello") >#> ("", "cdab", "12345678", ERR AUTH)
-    it "valid syntax 2" $ (sampleSig, "dabc", "12345678", Cmd SSender $ SEND "hello there") >#> ("", "dabc", "12345678", ERR AUTH)
-    it "no parameters" $ (sampleSig, "abcd", "12345678", (Sender_, SEND_)) >#> ("", "abcd", "12345678", ERR $ CMD SYNTAX)
-    it "no queue ID" $ (sampleSig, "bcda", "", Cmd SSender $ SEND "hello") >#> ("", "bcda", "", ERR $ CMD NO_QUEUE)
+    it "valid syntax" $ (sampleSig, "cdab", "12345678", (SEND_, ' ', "hello" :: ByteString)) >#> ("", "cdab", "12345678", ERR AUTH)
+    it "no parameters" $ (sampleSig, "abcd", "12345678", SEND_) >#> ("", "abcd", "12345678", ERR $ CMD SYNTAX)
+    it "no queue ID" $ (sampleSig, "bcda", "", (SEND_, ' ', "hello" :: ByteString)) >#> ("", "bcda", "", ERR $ CMD NO_QUEUE)
   describe "PING" $ do
-    it "valid syntax" $ ("", "abcd", "", Cmd SSender PING) >#> ("", "abcd", "", PONG)
+    it "valid syntax" $ ("", "abcd", "", PING_) >#> ("", "abcd", "", PONG)
   describe "broker response not allowed" $ do
-    it "OK" $ (sampleSig, "bcda", "12345678", OK) >#> ("", "bcda", "12345678", ERR $ CMD PROHIBITED)
+    it "OK" $ (sampleSig, "bcda", "12345678", OK_) >#> ("", "bcda", "12345678", ERR $ CMD UNKNOWN)
   where
-    noParamsSyntaxTest :: String -> Command 'Recipient -> Spec
-    noParamsSyntaxTest description c = describe description $ do
-      let cmd = Cmd SRecipient c
+    noParamsSyntaxTest :: PartyI p => String -> CommandTag p -> Spec
+    noParamsSyntaxTest description cmd = describe description $ do
       it "valid syntax" $ (sampleSig, "abcd", "12345678", cmd) >#> ("", "abcd", "12345678", ERR AUTH)
-      it "wrong terminator" $ (sampleSig, "bcda", "12345678", (cmd, '=')) >#> ("", "bcda", "12345678", ERR $ CMD SYNTAX)
+      it "wrong terminator" $ (sampleSig, "bcda", "12345678", (cmd, '=')) >#> ("", "bcda", "12345678", ERR $ CMD UNKNOWN)
       it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", ERR $ CMD NO_AUTH)
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
     (>#>) ::
       Encoding smp =>
       (Maybe C.ASignature, ByteString, ByteString, smp) ->
-      (Maybe C.ASignature, ByteString, ByteString, Command 'Broker) ->
+      (Maybe C.ASignature, ByteString, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = smpServerTest t command `shouldReturn` response

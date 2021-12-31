@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -115,7 +115,7 @@ smpServerTest ::
   (Transport c, Encoding smp) =>
   TProxy c ->
   (Maybe C.ASignature, ByteString, ByteString, smp) ->
-  IO (Maybe C.ASignature, ByteString, ByteString, Command 'Broker)
+  IO (Maybe C.ASignature, ByteString, ByteString, BrokerMsg)
 smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
     tPut' h (sig, corrId, queueId, smp) = do

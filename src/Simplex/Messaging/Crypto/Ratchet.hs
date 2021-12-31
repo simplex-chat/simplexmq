@@ -143,18 +143,16 @@ paddedHeaderLen = 128
 fullHeaderLen :: Int
 fullHeaderLen = paddedHeaderLen + authTagSize + ivSize @AES256
 
-serializeMsgHeader' :: AlgorithmI a => MsgHeader a -> ByteString
-serializeMsgHeader' MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs} =
-  smpEncode (msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs)
-
-msgHeaderP' :: AlgorithmI a => Parser (MsgHeader a)
-msgHeaderP' = do
-  msgVersion <- smpP
-  msgLatestVersion <- smpP
-  msgDHRs <- smpP
-  msgPN <- smpP
-  msgNs <- smpP
-  pure MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs}
+instance AlgorithmI a => Encoding (MsgHeader a) where
+  smpEncode MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs} =
+    smpEncode (msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs)
+  smpP = do
+    msgVersion <- smpP
+    msgLatestVersion <- smpP
+    msgDHRs <- smpP
+    msgPN <- smpP
+    msgNs <- smpP
+    pure MsgHeader {msgVersion, msgLatestVersion, msgDHRs, msgPN, msgNs}
 
 data EncHeader = EncHeader
   { ehBody :: ByteString,
@@ -209,7 +207,7 @@ rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs, rcAD} pa
   where
     -- header = HEADER(state.DHRs, state.PN, state.Ns)
     msgHeader =
-      serializeMsgHeader'
+      smpEncode
         MsgHeader
           { msgVersion = rcVersion rc,
             msgLatestVersion = currentE2EVersion,
@@ -348,7 +346,7 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
     decryptNextHeader hdr = (AdvanceRatchet,) <$> decryptHeader (rcNHKr rc) hdr
     decryptHeader k EncHeader {ehBody, ehAuthTag, ehIV} = do
       header <- decryptAEAD k ehIV rcAD ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
-      parseE' CryptoHeaderError msgHeaderP' header
+      parseE' CryptoHeaderError smpP header
     decryptMessage :: MessageKey -> EncMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
     decryptMessage (MessageKey mk iv) EncMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, ciphertext, CONCAT(AD, enc_header))

@@ -221,7 +221,7 @@ test-suite smp-server-test
       AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
       AgentTests.SQLiteTests
-      ProtocolTests
+      ProtocolErrorTests
       ServerTests
       SMPAgentClient
       SMPClient

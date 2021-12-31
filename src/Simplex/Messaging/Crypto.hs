@@ -760,10 +760,6 @@ newtype IV = IV {unIV :: ByteString}
 -- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
-instance Encoding KeyHash where
-  smpEncode (KeyHash kh) = smpEncode kh
-  smpP = KeyHash <$> smpP
-
 instance IsString KeyHash where
   fromString = parseString . parseAll $ KeyHash <$> base64P
 
@@ -919,7 +915,7 @@ randomCbNonce :: IO CbNonce
 randomCbNonce = CbNonce <$> getRandomBytes 24
 
 instance Encoding CbNonce where
-  smpEncode (CbNonce s) = s
+  smpEncode = unCbNonce
   smpP = CbNonce <$> A.take 24
 
 xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
