@@ -23,16 +23,10 @@ import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
 
 base64P :: Parser ByteString
-base64P = decode <$?> base64StringP
-
-base64StringP :: Parser ByteString
-base64StringP = paddedBase64 rawBase64P
+base64P = decode <$?> paddedBase64 rawBase64P
 
 base64UriP :: Parser ByteString
-base64UriP = U.decode <$?> base64UriStringP
-
-base64UriStringP :: Parser ByteString
-base64UriStringP = paddedBase64 rawBase64UriP
+base64UriP = U.decode <$?> paddedBase64 rawBase64UriP
 
 paddedBase64 :: Parser ByteString -> Parser ByteString
 paddedBase64 raw = (<>) <$> raw <*> pad

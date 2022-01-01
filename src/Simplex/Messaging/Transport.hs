@@ -201,7 +201,7 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> (c -> m a) -> m a
 runTransportClient host port keyHash client = do
   let clientParams = mkTLSClientParams host port keyHash
   c <- liftIO $ startTCPClient host port clientParams
@@ -294,7 +294,7 @@ closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
 
-mkTLSClientParams :: HostName -> ServiceName -> Maybe C.KeyHash -> T.ClientParams
+mkTLSClientParams :: HostName -> ServiceName -> C.KeyHash -> T.ClientParams
 mkTLSClientParams host port keyHash = do
   let p = B.pack port
   (T.defaultParamsClient host p)
@@ -303,12 +303,12 @@ mkTLSClientParams host port keyHash = do
       T.clientSupported = supportedParameters
     }
 
-validateCertificateChain :: Maybe C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
+validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
 validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
 validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[_, caCert]) =
   let fp = XV.getFingerprint caCert X.HashSHA256
-   in if maybe True (sameFingerprint fp) keyHash
+   in if sameFingerprint fp keyHash
         then x509validate
         else pure [XV.UnknownCA]
   where

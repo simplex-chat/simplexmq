@@ -35,6 +35,7 @@ import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (base64P, parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (QueueRec (..), QueueStatus (..))
@@ -62,36 +63,36 @@ storeLogRecordP =
     <|> "DELETE " *> (DeleteQueue <$> base64P)
   where
     createQueueP = CreateQueue <$> queueRecP
-    secureQueueP = SecureQueue <$> base64P <* A.space <*> C.strPubKeyP
+    secureQueueP = SecureQueue <$> base64P <* A.space <*> smpStrP
     addNotifierP =
-      AddNotifier <$> base64P <* A.space <*> base64P <* A.space <*> C.strPubKeyP
+      AddNotifier <$> base64P <* A.space <*> base64P <* A.space <*> smpStrP
     queueRecP = do
       recipientId <- "rid=" *> base64P
-      recipientKey <- " rk=" *> C.strPubKeyP
+      recipientKey <- " rk=" *> smpStrP
       rcvDhSecret <- " rdh=" *> C.strDhSecretP
       senderId <- " sid=" *> base64P
-      senderKey <- " sk=" *> optional C.strPubKeyP
-      notifier <- optional $ (,) <$> (" nid=" *> base64P) <*> (" nk=" *> C.strPubKeyP)
+      senderKey <- " sk=" *> optional smpStrP
+      notifier <- optional $ (,) <$> (" nid=" *> base64P) <*> (" nk=" *> smpStrP)
       pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
 
 serializeStoreLogRecord :: StoreLogRecord -> ByteString
 serializeStoreLogRecord = \case
   CreateQueue q -> "CREATE " <> serializeQueue q
-  SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> C.serializePubKey sKey
-  AddNotifier rId nId nKey -> B.unwords ["NOTIFIER", encode rId, encode nId, C.serializePubKey nKey]
+  SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> smpStrEncode sKey
+  AddNotifier rId nId nKey -> B.unwords ["NOTIFIER", encode rId, encode nId, smpStrEncode nKey]
   DeleteQueue rId -> "DELETE " <> encode rId
   where
     serializeQueue
       QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
         B.unwords
           [ "rid=" <> encode recipientId,
-            "rk=" <> C.serializePubKey recipientKey,
+            "rk=" <> smpStrEncode recipientKey,
             "rdh=" <> C.serializeDhSecret rcvDhSecret,
             "sid=" <> encode senderId,
-            "sk=" <> maybe "" C.serializePubKey senderKey
+            "sk=" <> maybe "" smpStrEncode senderKey
           ]
           <> maybe "" serializeNotifier notifier
-    serializeNotifier (nId, nKey) = " nid=" <> encode nId <> " nk=" <> C.serializePubKey nKey
+    serializeNotifier (nId, nKey) = " nid=" <> encode nId <> " nk=" <> smpStrEncode nKey
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode

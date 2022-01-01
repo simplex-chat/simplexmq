@@ -18,10 +18,23 @@ import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
+import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Util ((<$?>))
 
+-- | SMP protocol encoding
 class Encoding a where
+  {-# MINIMAL smpEncode, (smpDecode | smpP) #-}
+
+  -- | protocol encoding of type (default implementation uses protocol ByteString encoding)
   smpEncode :: a -> ByteString
+
+  -- | decoding of type (default implementation uses parser)
+  smpDecode :: ByteString -> Either String a
+  smpDecode = parseAll smpP
+
+  -- | protocol parser of type (default implementation parses protocol ByteString encoding)
   smpP :: Parser a
+  smpP = smpDecode <$?> smpP
 
 instance Encoding Char where
   smpEncode = B.singleton

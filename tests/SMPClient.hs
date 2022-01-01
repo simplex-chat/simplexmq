@@ -39,8 +39,8 @@ testPort2 = "5002"
 testKeyHashStr :: ByteString
 testKeyHashStr = "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
 
-testKeyHash :: Maybe C.KeyHash
-testKeyHash = Just "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
+testKeyHash :: C.KeyHash
+testKeyHash = "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"

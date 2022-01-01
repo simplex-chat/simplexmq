@@ -76,7 +76,6 @@ module Simplex.Messaging.Agent.Protocol
     clientToAgentMsg,
     serializeAgentMessage,
     serializeMsgIntegrity,
-    serializeSMPQueueUri,
     serializeConnMode,
     serializeConnMode',
     connMode,
@@ -87,7 +86,6 @@ module Simplex.Messaging.Agent.Protocol
     serializeSmpErrorType,
     commandP,
     smpServerP,
-    smpQueueUriP,
     connModeT,
     connReqP,
     connReqP',
@@ -131,6 +129,7 @@ import Network.HTTP.Types (parseSimpleQuery, renderSimpleQuery)
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( ClientMessage (..),
@@ -143,6 +142,7 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
 import Simplex.Messaging.Util
+import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception (Exception)
@@ -354,7 +354,7 @@ smpServerP = SMPServer <$> server <*> optional port <*> kHash
   where
     server = B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
     port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
-    kHash = Just . C.KeyHash <$> (A.char '#' *> base64P)
+    kHash = C.KeyHash <$> (A.char '#' *> base64P)
 
 serializeAMessage :: AMessage -> ByteString
 serializeAMessage = \case
@@ -362,15 +362,15 @@ serializeAMessage = \case
   REPLY cReq -> "REPLY " <> serializeConnReq' cReq
   A_MSG body -> "MSG " <> body
 
--- | Serialize SMP queue information that is sent out-of-band.
-serializeSMPQueueUri :: SMPQueueUri -> ByteString
-serializeSMPQueueUri (SMPQueueUri srv qId dhKey) =
-  serializeServerUri srv <> "/" <> U.encode qId <> "#" <> C.serializePubKeyUri' dhKey
-
--- | SMP queue information parser.
-smpQueueUriP :: Parser SMPQueueUri
-smpQueueUriP =
-  SMPQueueUri <$> smpServerUriP <* A.char '/' <*> base64UriP <* A.char '#' <*> C.strPubKeyUriP
+instance StrEncoding SMPQueueUri where
+  smpStrEncode SMPQueueUri {smpServer = srv, senderId = qId, smpVersionRange = vr, dhPublicKey = k} =
+    smpStrEncode srv <> "/" <> U.encode qId <> "#" <> smpStrEncode k
+  smpStrP = do
+    smpServer <- smpStrP <* A.char '/'
+    senderId <- smpStrP <* A.char '#'
+    let smpVersionRange = SMP.smpClientVersion
+    dhPublicKey <- smpStrP
+    pure SMPQueueUri {smpServer, senderId, smpVersionRange, dhPublicKey}
 
 serializeConnReq :: AConnectionRequest -> ByteString
 serializeConnReq (ACR _ cr) = serializeConnReq' cr
@@ -390,7 +390,7 @@ serializeConnReq' = \case
           CMInvitation -> "invitation"
           CMContact -> "contact"
         queryStr = renderSimpleQuery True [("smp", queues), ("e2e", "")]
-        queues = B.intercalate "," . map serializeSMPQueueUri $ L.toList crSmpQueues
+        queues = B.intercalate "," . map smpStrEncode $ L.toList crSmpQueues
 
 connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
 connReqP' = do
@@ -421,22 +421,19 @@ connReqP = do
     smpQueues =
       maybe (fail "no SMP queues") pure . L.nonEmpty
         =<< (smpQueue `A.sepBy1'` A.char ',')
-    smpQueue = parseAll smpQueueUriP <$?> A.takeTill (== ',')
+    smpQueue = smpStrDecode <$?> A.takeTill (== ',')
 
--- | Serialize SMP server URI.
-serializeServerUri :: SMPServer -> ByteString
-serializeServerUri SMPServer {host, port, keyHash} = "smp://" <> kh <> B.pack host <> p
-  where
-    kh = maybe "" ((<> "@") . U.encode . C.unKeyHash) keyHash
-    p = B.pack $ maybe "" (':' :) port
-
-smpServerUriP :: Parser SMPServer
-smpServerUriP = do
-  _ <- "smp://"
-  keyHash <- C.KeyHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
-  host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
-  port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
-  pure SMPServer {host, port, keyHash = Just keyHash}
+instance StrEncoding SMPServer where
+  smpStrEncode SMPServer {host, port, keyHash} = "smp://" <> kh <> B.pack host <> p
+    where
+      kh = ((<> "@") . U.encode . C.unKeyHash) keyHash
+      p = B.pack $ maybe "" (':' :) port
+  smpStrP = do
+    _ <- "smp://"
+    keyHash <- C.KeyHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
+    host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
+    port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
+    pure SMPServer {host, port, keyHash}
 
 serializeConnMode :: AConnectionMode -> ByteString
 serializeConnMode (ACM cMode) = serializeConnMode' $ connMode cMode
@@ -462,7 +459,7 @@ connModeT = \case
 data SMPServer = SMPServer
   { host :: HostName,
     port :: Maybe ServiceName,
-    keyHash :: Maybe C.KeyHash -- TODO make non optional
+    keyHash :: C.KeyHash
   }
   deriving (Eq, Ord, Show)
 
@@ -482,6 +479,7 @@ type InvitationId = ByteString
 data SMPQueueUri = SMPQueueUri
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
+    smpVersionRange :: VersionRange,
     dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)

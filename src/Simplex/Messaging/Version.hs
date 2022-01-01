@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.Messaging.Version
@@ -10,8 +11,11 @@ module Simplex.Messaging.Version
   )
 where
 
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Word (Word16)
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Util (bshow)
 
 pattern VersionRange :: Word16 -> Word16 -> VersionRange
 pattern VersionRange v1 v2 <- VRange v1 v2
@@ -40,6 +44,12 @@ instance Encoding VersionRange where
   smpP =
     maybe (fail "invalid version range") pure
       =<< versionRange <$> smpP <*> smpP
+
+instance StrEncoding VersionRange where
+  smpStrEncode (VRange v1 v2) = bshow v1 <> "-" <> bshow v2
+  smpStrP =
+    maybe (fail "invalid version range") pure
+      =<< versionRange <$> A.decimal <* A.char '-' <*> A.decimal
 
 compatibleVersion :: VersionRange -> VersionRange -> Maybe Word16
 compatibleVersion (VersionRange min1 max1) (VersionRange min2 max2)

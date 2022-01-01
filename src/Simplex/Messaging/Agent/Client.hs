@@ -255,7 +255,7 @@ newRcvQueue_ a c srv = do
             sndId = Just sndId,
             status = New
           }
-  pure (rq, SMPQueueUri srv sndId e2eDhKey)
+  pure (rq, SMPQueueUri srv sndId SMP.smpClientVersion e2eDhKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do

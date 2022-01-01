@@ -61,14 +61,7 @@ module Simplex.Messaging.Crypto
     privateToX509,
 
     -- * key encoding/decoding
-    serializePubKey,
-    serializePubKey',
-    serializePubKeyUri,
-    serializePubKeyUri',
-    strPubKeyP,
-    strPubKeyUriP,
     encodePubKey,
-    encodePubKey',
     binaryPubKeyP,
     encodePrivKey,
 
@@ -166,7 +159,8 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString)
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
 
 type E2EEncryptionVersion = Word16
@@ -433,91 +427,74 @@ class CryptoPublicKey k where
 
 instance CryptoPublicKey APublicKey where
   toPubKey f (APublicKey _ k) = f k
+  {-# INLINE toPubKey #-}
   pubKey = Right
+  {-# INLINE pubKey #-}
 
 instance CryptoPublicKey APublicVerifyKey where
   toPubKey f (APublicVerifyKey _ k) = f k
+  {-# INLINE toPubKey #-}
   pubKey (APublicKey a k) = case signatureAlgorithm a of
     Just Dict -> Right $ APublicVerifyKey a k
     _ -> Left "key does not support signature algorithms"
 
 instance CryptoPublicKey APublicDhKey where
   toPubKey f (APublicDhKey _ k) = f k
+  {-# INLINE toPubKey #-}
   pubKey (APublicKey a k) = case dhAlgorithm a of
     Just Dict -> Right $ APublicDhKey a k
     _ -> Left "key does not support DH algorithms"
 
 instance AlgorithmI a => CryptoPublicKey (PublicKey a) where
   toPubKey = id
+  {-# INLINE toPubKey #-}
   pubKey (APublicKey a k) = case testEquality a $ sAlgorithm @a of
     Just Refl -> Right k
     _ -> Left "bad key algorithm"
 
 instance Encoding APublicVerifyKey where
-  smpEncode k = smpEncode $ encodePubKey k
-  smpP = parseAll binaryPubKeyP <$?> smpP
+  smpEncode = smpEncode . encodePubKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePubKey
+  {-# INLINE smpDecode #-}
 
 instance Encoding APublicDhKey where
-  smpEncode k = smpEncode $ encodePubKey k
-  smpP = parseAll binaryPubKeyP <$?> smpP
+  smpEncode = smpEncode . encodePubKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePubKey
+  {-# INLINE smpDecode #-}
 
 instance AlgorithmI a => Encoding (PublicKey a) where
-  smpEncode k = smpEncode $ encodePubKey' k
-  smpP = parseAll binaryPubKeyP <$?> smpP
+  smpEncode = smpEncode . encodePubKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePubKey
+  {-# INLINE smpDecode #-}
 
--- | base64 X509 key encoding with algorithm prefix
-serializePubKey :: CryptoPublicKey k => k -> ByteString
-serializePubKey = toPubKey serializePubKey'
-{-# INLINE serializePubKey #-}
+instance StrEncoding APublicVerifyKey where
+  smpStrEncode = smpStrEncode . encodePubKey
+  {-# INLINE smpStrEncode #-}
+  smpStrDecode = decodePubKey
+  {-# INLINE smpStrDecode #-}
 
--- | base64url X509 key encoding with algorithm prefix
-serializePubKeyUri :: CryptoPublicKey k => k -> ByteString
-serializePubKeyUri = toPubKey serializePubKeyUri'
-{-# INLINE serializePubKeyUri #-}
+instance StrEncoding APublicDhKey where
+  smpStrEncode = smpStrEncode . encodePubKey
+  {-# INLINE smpStrEncode #-}
+  smpStrDecode = decodePubKey
+  {-# INLINE smpStrDecode #-}
 
-serializePubKey' :: AlgorithmI a => PublicKey a -> ByteString
-serializePubKey' k = algorithmPrefix k <> ":" <> encode (encodePubKey' k)
-
-serializePubKeyUri' :: AlgorithmI a => PublicKey a -> ByteString
-serializePubKeyUri' k = algorithmPrefix k <> ":" <> U.encode (encodePubKey' k)
-
--- | base64 X509 (with algorithm prefix) key parser
-strPubKeyP :: CryptoPublicKey k => Parser k
-strPubKeyP = pubKey <$?> aStrPubKeyP
-{-# INLINE strPubKeyP #-}
-
--- | base64url X509 (with algorithm prefix) key parser
-strPubKeyUriP :: CryptoPublicKey k => Parser k
-strPubKeyUriP = pubKey <$?> aStrPubKeyUriP
-{-# INLINE strPubKeyUriP #-}
-
-aStrPubKeyP :: Parser APublicKey
-aStrPubKeyP = strPublicKeyP_ base64P
-
-aStrPubKeyUriP :: Parser APublicKey
-aStrPubKeyUriP = strPublicKeyP_ base64UriP
-
-strPublicKeyP_ :: Parser ByteString -> Parser APublicKey
-strPublicKeyP_ b64P = do
-  Alg a <- algP <* A.char ':'
-  k@(APublicKey a' _) <- decodePubKey <$?> b64P
-  case testEquality a a' of
-    Just Refl -> pure k
-    _ -> fail $ "public key algorithm " <> show a <> " does not match prefix"
+instance AlgorithmI a => StrEncoding (PublicKey a) where
+  smpStrEncode = smpStrEncode . encodePubKey
+  {-# INLINE smpStrEncode #-}
+  smpStrDecode = decodePubKey
+  {-# INLINE smpStrDecode #-}
 
 encodePubKey :: CryptoPublicKey pk => pk -> ByteString
-encodePubKey = toPubKey encodePubKey'
+encodePubKey = toPubKey $ encodeASNObj . publicToX509
 {-# INLINE encodePubKey #-}
 
-encodePubKey' :: PublicKey a -> ByteString
-encodePubKey' = encodeASNObj . publicToX509
-
 binaryPubKeyP :: CryptoPublicKey pk => Parser pk
-binaryPubKeyP = pubKey <$?> aBinaryPubKeyP
+binaryPubKeyP = decodePubKey <$?> A.takeByteString
 {-# INLINE binaryPubKeyP #-}
-
-aBinaryPubKeyP :: Parser APublicKey
-aBinaryPubKeyP = decodePubKey <$?> A.takeByteString
 
 class CryptoPrivateKey pk where
   toPrivKey :: (forall a. AlgorithmI a => PrivateKey a -> b) -> pk -> b
@@ -525,43 +502,42 @@ class CryptoPrivateKey pk where
 
 instance CryptoPrivateKey APrivateKey where
   toPrivKey f (APrivateKey _ k) = f k
+  {-# INLINE toPrivKey #-}
   privKey = Right
+  {-# INLINE privKey #-}
 
 instance CryptoPrivateKey APrivateSignKey where
   toPrivKey f (APrivateSignKey _ k) = f k
+  {-# INLINE toPrivKey #-}
   privKey (APrivateKey a k) = case signatureAlgorithm a of
     Just Dict -> Right $ APrivateSignKey a k
     _ -> Left "key does not support signature algorithms"
 
 instance CryptoPrivateKey APrivateDhKey where
   toPrivKey f (APrivateDhKey _ k) = f k
+  {-# INLINE toPrivKey #-}
   privKey (APrivateKey a k) = case dhAlgorithm a of
     Just Dict -> Right $ APrivateDhKey a k
     _ -> Left "key does not support DH algorithm"
 
 instance AlgorithmI a => CryptoPrivateKey (PrivateKey a) where
   toPrivKey = id
+  {-# INLINE toPrivKey #-}
   privKey (APrivateKey a k) = case testEquality a $ sAlgorithm @a of
     Just Refl -> Right k
     _ -> Left "bad key algorithm"
 
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
-encodePrivKey = toPrivKey encodePrivKey'
-
-encodePrivKey' :: PrivateKey a -> ByteString
-encodePrivKey' = encodeASNObj . privateToX509
+encodePrivKey = toPrivKey $ encodeASNObj . privateToX509
 
 binaryPrivKeyP :: CryptoPrivateKey pk => Parser pk
-binaryPrivKeyP = privKey <$?> aBinaryPrivKeyP
-
-aBinaryPrivKeyP :: Parser APrivateKey
-aBinaryPrivKeyP = decodePrivKey <$?> A.takeByteString
+binaryPrivKeyP = decodePrivKey <$?> A.takeByteString
 
 instance AlgorithmI a => IsString (PrivateKey a) where
-  fromString = parseString $ decode >=> decodePrivKey >=> privKey
+  fromString = parseString $ decode >=> decodePrivKey
 
 instance AlgorithmI a => IsString (PublicKey a) where
-  fromString = parseString $ decode >=> decodePubKey >=> pubKey
+  fromString = parseString $ decode >=> decodePubKey
 
 -- | Tuple of RSA 'PublicKey' and 'PrivateKey'.
 type KeyPair a = (PublicKey a, PrivateKey a)
@@ -608,9 +584,9 @@ instance ToField APrivateDhKey where toField = toField . encodePrivKey
 
 instance ToField APublicDhKey where toField = toField . encodePubKey
 
-instance ToField (PrivateKey a) where toField = toField . encodePrivKey'
+instance AlgorithmI a => ToField (PrivateKey a) where toField = toField . encodePrivKey
 
-instance ToField (PublicKey a) where toField = toField . encodePubKey'
+instance AlgorithmI a => ToField (PublicKey a) where toField = toField . encodePubKey
 
 instance AlgorithmI a => ToField (DhSecret a) where toField = toField . dhSecretBytes
 
@@ -945,25 +921,29 @@ privateToX509 = \case
 encodeASNObj :: ASN1Object a => a -> ByteString
 encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
 
--- Decoding of binary X509 'PublicKey'.
-decodePubKey :: ByteString -> Either String APublicKey
-decodePubKey =
-  decodeKey >=> \case
-    (PubKeyEd25519 k, []) -> Right . APublicKey SEd25519 $ PublicKeyEd25519 k
-    (PubKeyEd448 k, []) -> Right . APublicKey SEd448 $ PublicKeyEd448 k
-    (PubKeyX25519 k, []) -> Right . APublicKey SX25519 $ PublicKeyX25519 k
-    (PubKeyX448 k, []) -> Right . APublicKey SX448 $ PublicKeyX448 k
-    r -> keyError r
+-- Decoding of binary X509 'CryptoPublicKey'.
+decodePubKey :: CryptoPublicKey k => ByteString -> Either String k
+decodePubKey = decodeKey >=> x509ToPublic >=> pubKey
 
 -- Decoding of binary PKCS8 'PrivateKey'.
-decodePrivKey :: ByteString -> Either String APrivateKey
-decodePrivKey =
-  decodeKey >=> \case
-    (PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
-    (PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 . PrivateKeyEd448 k $ Ed448.toPublic k
-    (PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 $ PrivateKeyX25519 k
-    (PrivKeyX448 k, []) -> Right . APrivateKey SX448 $ PrivateKeyX448 k
-    r -> keyError r
+decodePrivKey :: CryptoPrivateKey k => ByteString -> Either String k
+decodePrivKey = decodeKey >=> x509ToPrivate >=> privKey
+
+x509ToPublic :: (PubKey, [ASN1]) -> Either String APublicKey
+x509ToPublic = \case
+  (PubKeyEd25519 k, []) -> Right . APublicKey SEd25519 $ PublicKeyEd25519 k
+  (PubKeyEd448 k, []) -> Right . APublicKey SEd448 $ PublicKeyEd448 k
+  (PubKeyX25519 k, []) -> Right . APublicKey SX25519 $ PublicKeyX25519 k
+  (PubKeyX448 k, []) -> Right . APublicKey SX448 $ PublicKeyX448 k
+  r -> keyError r
+
+x509ToPrivate :: (PrivKey, [ASN1]) -> Either String APrivateKey
+x509ToPrivate = \case
+  (PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
+  (PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 . PrivateKeyEd448 k $ Ed448.toPublic k
+  (PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 $ PrivateKeyX25519 k
+  (PrivKeyX448 k, []) -> Right . APrivateKey SX448 $ PrivateKeyX448 k
+  r -> keyError r
 
 decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
 decodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict

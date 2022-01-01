@@ -349,11 +349,8 @@ connect (h1, name1) (h2, name2) = do
 --   h1 <# ("", conn2, CON)
 --   pure (conn1, conn2)
 
-samplePublicKey :: ByteString
-samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj-toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP-Tm4sokaFDTIG3QJFzOjC-_9nW4MUjAOFll9PCp9kaEFHJ_YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju_f6kAayvYKW3_lbJNXCmyinAccBosO08_0sUxvtuniIo18kfYJE0UmP1ReCjhMP-O-yOmwZJini_QelJk_Pez8IIDDWnY1qYQsN_q7ocjakOYrpGG7mig6JMFpDJtD6istR"
-
 sampleDhKey :: ByteString
-sampleDhKey = "x25519:MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
+sampleDhKey = "MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
@@ -378,7 +375,6 @@ syntaxTests t = do
             <> "%40localhost%3A5001%2F3456-w%3D%3D%23"
             <> urlEncode True sampleDhKey
             <> "&e2e="
-            <> urlEncode True samplePublicKey
             <> " 14\nbob's connInfo"
         )
           >#> ("311", "a", "ERR SMP AUTH")

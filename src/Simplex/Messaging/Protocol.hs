@@ -330,7 +330,7 @@ instance Encoding PubHeader where
 
 instance Encoding EncMessage where
   smpEncode EncMessage {emHeader, emNonce, emBody} =
-    smpEncode emHeader <> smpEncode emNonce <> emBody
+    smpEncode (emHeader, emNonce, Tail emBody)
   smpP = do
     emHeader <- smpP
     emNonce <- smpP

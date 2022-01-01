@@ -1,7 +1,7 @@
 CREATE TABLE servers (
   host TEXT NOT NULL,
   port TEXT,
-  key_hash BLOB,
+  key_hash BLOB NOT NULL,
   PRIMARY KEY (host, port)
 ) WITHOUT ROWID;
 

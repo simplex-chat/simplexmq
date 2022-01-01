@@ -19,6 +19,7 @@ import qualified Data.ByteString.Char8 as B
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
 import System.Directory (removeFile)
@@ -214,13 +215,13 @@ testDuplex (ATransport t) =
       -- aSnd ID is passed to Bob out-of-band
 
       (bsPub, bsKey) <- C.generateSignatureKeyPair C.SEd448
-      Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, SEND $ "key " <> C.serializePubKey bsPub)
+      Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, SEND $ "key " <> smpStrEncode bsPub)
       -- "key ..." is ad-hoc, not a part of SMP protocol
 
       Resp "" _ (MSG mId1 _ msg1) <- tGet alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK)
       Right ["key", bobKey] <- pure $ B.words <$> aDec mId1 msg1
-      (bobKey, C.serializePubKey bsPub) #== "key received from Bob"
+      (bobKey, smpStrEncode bsPub) #== "key received from Bob"
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, KEY bsPub)
 
       (brPub, brKey) <- C.generateSignatureKeyPair C.SEd448
@@ -236,13 +237,13 @@ testDuplex (ATransport t) =
       (bId, encode bSnd) #== "reply queue ID received from Bob"
 
       (asPub, asKey) <- C.generateSignatureKeyPair C.SEd448
-      Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, SEND $ "key " <> C.serializePubKey asPub)
+      Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, SEND $ "key " <> smpStrEncode asPub)
       -- "key ..." is ad-hoc, not a part of  SMP protocol
 
       Resp "" _ (MSG mId3 _ msg3) <- tGet bob
       Resp "abcd" _ OK <- signSendRecv bob brKey ("abcd", bRcv, ACK)
       Right ["key", aliceKey] <- pure $ B.words <$> bDec mId3 msg3
-      (aliceKey, C.serializePubKey asPub) #== "key received from Alice"
+      (aliceKey, smpStrEncode asPub) #== "key received from Alice"
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, KEY asPub)
 
       Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, SEND "hi alice")

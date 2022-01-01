@@ -8,7 +8,9 @@ import Data.ByteString (ByteString)
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Protocol (smpClientVersion)
 import Test.Hspec
 
 uri :: String
@@ -19,7 +21,7 @@ srv =
   SMPServer
     { host = "smp.simplex.im",
       port = Just "5223",
-      keyHash = Just (C.KeyHash "\215m\248\251")
+      keyHash = C.KeyHash "\215m\248\251"
     }
 
 queue :: SMPQueueUri
@@ -27,6 +29,7 @@ queue =
   SMPQueueUri
     { smpServer = srv,
       senderId = "\223\142z\251",
+      smpVersionRange = smpClientVersion,
       dhPublicKey = testDhKey
     }
 
@@ -34,7 +37,7 @@ testDhKey :: C.PublicKeyX25519
 testDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 testDhKeyStr :: ByteString
-testDhKeyStr = C.serializePubKeyUri' testDhKey
+testDhKeyStr = smpStrEncode testDhKey
 
 testDhKeyStrUri :: ByteString
 testDhKeyStrUri = urlEncode True testDhKeyStr
@@ -55,14 +58,14 @@ connectionRequestTests :: Spec
 connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
-      serializeSMPQueueUri queue {smpServer = srv {port = Nothing}}
+      smpStrEncode queue {smpServer = srv {port = Nothing}}
         `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr
-      serializeSMPQueueUri queue
+      smpStrEncode queue
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
     it "should parse SMP queue URIs" $ do
-      parseAll smpQueueUriP ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
+      smpStrDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queue {smpServer = srv {port = Nothing}}
-      parseAll smpQueueUriP ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
+      smpStrDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queue
     it "should serialize connection requests" $ do
       serializeConnReq connectionRequest

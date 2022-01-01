@@ -40,7 +40,7 @@ infixl 4 <$$>, <$?>
 {-# INLINE (<$$>) #-}
 
 (<$?>) :: MonadFail m => (a -> Either String b) -> m a -> m b
-f <$?> m = m >>= either fail pure . f
+f <$?> m = either fail pure . f =<< m
 {-# INLINE (<$?>) #-}
 
 bshow :: Show a => a -> ByteString
