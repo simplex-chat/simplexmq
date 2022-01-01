@@ -1,4 +1,4 @@
-Revision 1, 2021-12-20
+Revision 1, 2022-01-01
 
 Evgeny Poberezkin
 
@@ -151,21 +151,24 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 - Managing sets of bi-directional, redundant queues for communication partners
 
-- Providing end-to-end encryption of messages[0]
+- Providing end-to-end encryption of messages
 
 - Rotating queues periodically with communication partners
 
 - Noise traffic
 
-[0] The current prototype uses RSA cryptography with ad-hoc hybrid encryption scheme, we are currently switching it to X3DH for key exchange and double ratchet protocol for E2E encryption.
-
 #### Encryption Primitives Used
 
-- Ed25519/Ed448 to sign/verify commands to SMP servers.
-- Curve25519/Curve448 for DH exchange to negotiate the shared secret between server and recipient.
-- [NaCl crypto_box](https://nacl.cr.yp.to/box.html) encryption scheme (curve25519xsalsa20poly1305) for message body encryption between server and recipient.
+- Ed448 to sign/verify commands to SMP servers (Ed25519 is also supported via client/server configuration).
+- Curve25519 for DH exchange to agree:
+  - the shared secret between server and recipient (to encrypt message bodies - it avoids shared cipher-text in sender and recipient traffic)
+  - the shared secret between sender and recipient (to encrypt messages end-to-end in each queue - it avoids shared cipher-text in redundant queues).
+- [NaCl crypto_box](https://nacl.cr.yp.to/box.html) encryption scheme (curve25519xsalsa20poly1305) for message body encryption between server and recipient and for E2E per-queue encryption.
 - SHA256 to validate server offline certificates.
-- primitives recommended in [double ratchet protocol](https://signal.org/docs/specifications/doubleratchet/#recommended-cryptographic-algorithms) for end-to-end message encryption between the agents.
+- [double ratchet](https://signal.org/docs/specifications/doubleratchet/) protocol for end-to-end message encryption between the agents:
+  - Curve448 keys to agree shared secrets required for double ratchet initialization (using [X3DH](https://signal.org/docs/specifications/x3dh/) key agreement with 2 ephemeral keys for each side),
+  - AES-GCM AEAD cipher,
+  - SHA512-based HKDF for key derivation.
 
 ## Threat Model
 
@@ -304,8 +307,6 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 
 ## Acknowledgements
-
-Tom Ritter edited this document and contributed to the design of the protocols pointing out several vulnerabilities in the original design (that are now fixed).
 
 Efim Poberezkin contributed to the design and implementation of SimpleX Messaging Protocol and SimpleX Agent Protocol in 2019-2021.
 
