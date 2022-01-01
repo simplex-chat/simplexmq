@@ -23,9 +23,9 @@ Evgeny Poberezkin
 
 #### What is SimpleX
 
-SimpleX as a whole is a platform upon which applications can be built.  SimpleX Chat is one such application that also serves as an example and reference application.
+SimpleX as a whole is a platform upon which applications can be built. [SimpleX Chat](https://github.com/simplex-chat/simplex-chat) is one such application that also serves as an example and reference application.
 
- - SimpleX Messaging Protocol (SMP) is a protocol to send messages in one direction to a recipient, relying on a server in-between. The messages are delivered via uni-directional queues created by recipients.
+ - [SimpleX Messaging Protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md) (SMP) is a protocol to send messages in one direction to a recipient, relying on a server in-between. The messages are delivered via uni-directional queues created by recipients.
 
  - SMP runs over a transport protocol (shown below as TLS) that provides integrity, server authentication, confidentiality, and transport channel binding.
 
@@ -308,6 +308,6 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 ## Acknowledgements
 
-Efim Poberezkin contributed to the design and implementation of SimpleX Messaging Protocol and SimpleX Agent Protocol in 2019-2021.
+Efim Poberezkin contributed to the design and implementation of [SimpleX Messaging Protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md) and [SimpleX Agent Protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md) since 2019.
 
 Adam Langley's [Pond](https://github.com/agl/pond) inspired some of the recent improvements and the structure of this document.
