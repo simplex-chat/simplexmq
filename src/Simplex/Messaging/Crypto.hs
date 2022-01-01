@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -66,9 +67,6 @@ module Simplex.Messaging.Crypto
     serializePubKeyUri',
     strPubKeyP,
     strPubKeyUriP,
-    encodeLenKey',
-    encodeLenKey,
-    binaryLenKeyP,
     encodePubKey,
     encodePubKey',
     binaryPubKeyP,
@@ -116,7 +114,6 @@ module Simplex.Messaging.Crypto
     cbDecrypt,
     cbNonce,
     randomCbNonce,
-    cbNonceP,
 
     -- * SHA256 hash
     sha256Hash,
@@ -168,7 +165,8 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord16, encodeWord16)
-import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString, word16P)
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Parsers (base64P, base64UriP, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
 
 type E2EEncryptionVersion = Word16
@@ -428,36 +426,44 @@ dhSecret' (ADhSecret a s) = case testEquality a $ sAlgorithm @a of
   Just Refl -> Right s
   _ -> Left "bad DH secret algorithm"
 
--- | Class for all key types
+-- | Class for public key types
 class CryptoPublicKey k where
   toPubKey :: (forall a. AlgorithmI a => PublicKey a -> b) -> k -> b
   pubKey :: APublicKey -> Either String k
 
--- | X509 encoding of any public key.
 instance CryptoPublicKey APublicKey where
   toPubKey f (APublicKey _ k) = f k
   pubKey = Right
 
--- | X509 encoding of signature public key.
 instance CryptoPublicKey APublicVerifyKey where
   toPubKey f (APublicVerifyKey _ k) = f k
   pubKey (APublicKey a k) = case signatureAlgorithm a of
     Just Dict -> Right $ APublicVerifyKey a k
     _ -> Left "key does not support signature algorithms"
 
--- | X509 encoding of DH public key.
 instance CryptoPublicKey APublicDhKey where
   toPubKey f (APublicDhKey _ k) = f k
   pubKey (APublicKey a k) = case dhAlgorithm a of
     Just Dict -> Right $ APublicDhKey a k
     _ -> Left "key does not support DH algorithms"
 
--- | X509 encoding of 'PublicKey'.
 instance AlgorithmI a => CryptoPublicKey (PublicKey a) where
   toPubKey = id
   pubKey (APublicKey a k) = case testEquality a $ sAlgorithm @a of
     Just Refl -> Right k
     _ -> Left "bad key algorithm"
+
+instance Encoding APublicVerifyKey where
+  smpEncode k = smpEncode $ encodePubKey k
+  smpP = parseAll binaryPubKeyP <$?> smpP
+
+instance Encoding APublicDhKey where
+  smpEncode k = smpEncode $ encodePubKey k
+  smpP = parseAll binaryPubKeyP <$?> smpP
+
+instance AlgorithmI a => Encoding (PublicKey a) where
+  smpEncode k = smpEncode $ encodePubKey' k
+  smpP = parseAll binaryPubKeyP <$?> smpP
 
 -- | base64 X509 key encoding with algorithm prefix
 serializePubKey :: CryptoPublicKey k => k -> ByteString
@@ -498,24 +504,6 @@ strPublicKeyP_ b64P = do
   case testEquality a a' of
     Just Refl -> pure k
     _ -> fail $ "public key algorithm " <> show a <> " does not match prefix"
-
-encodeLenKey :: CryptoPublicKey k => k -> ByteString
-encodeLenKey = toPubKey encodeLenKey'
-{-# INLINE encodeLenKey #-}
-
--- | binary X509 key encoding with 2-bytes length prefix
-encodeLenKey' :: PublicKey a -> ByteString
-encodeLenKey' k =
-  let s = encodePubKey' k
-      len = fromIntegral $ B.length s
-   in encodeWord16 len <> s
-{-# INLINE encodeLenKey' #-}
-
--- | binary X509 key parser with 2-bytes length prefix
-binaryLenKeyP :: CryptoPublicKey k => Parser k
-binaryLenKeyP = do
-  len <- fromIntegral <$> word16P
-  parseAll binaryPubKeyP <$?> A.take len
 
 encodePubKey :: CryptoPublicKey pk => pk -> ByteString
 encodePubKey = toPubKey encodePubKey'
@@ -926,8 +914,9 @@ cbNonce s
 randomCbNonce :: IO CbNonce
 randomCbNonce = CbNonce <$> getRandomBytes 24
 
-cbNonceP :: Parser CbNonce
-cbNonceP = CbNonce <$> A.take 24
+instance Encoding CbNonce where
+  smpEncode = unCbNonce
+  smpP = CbNonce <$> A.take 24
 
 xSalsa20 :: DhSecret X25519 -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 (DhSecretX25519 shared) nonce msg = (rs, msg')
