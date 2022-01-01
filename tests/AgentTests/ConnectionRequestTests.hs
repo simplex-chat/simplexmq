@@ -63,9 +63,9 @@ connectionRequestTests =
       strEncode queue
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
     it "should parse SMP queue URIs" $ do
-      smpStrDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
+      strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queue {smpServer = srv {port = Nothing}}
-      smpStrDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
+      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queue
     it "should serialize connection requests" $ do
       serializeConnReq connectionRequest

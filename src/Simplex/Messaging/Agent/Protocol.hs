@@ -412,7 +412,7 @@ connReqP = do
     smpQueues =
       maybe (fail "no SMP queues") pure . L.nonEmpty
         =<< (smpQueue `A.sepBy1'` A.char ',')
-    smpQueue = smpStrDecode <$?> A.takeTill (== ',')
+    smpQueue = strDecode <$?> A.takeTill (== ',')
 
 instance StrEncoding SMPServer where
   strEncode SMPServer {host, port, keyHash} = "smp://" <> kh <> "@" <> B.pack host <> p
@@ -455,7 +455,7 @@ data SMPServer = SMPServer
   deriving (Eq, Ord, Show)
 
 instance IsString SMPServer where
-  fromString = parseString smpStrDecode
+  fromString = parseString strDecode
 
 -- | SMP agent connection alias.
 type ConnId = ByteString

@@ -20,12 +20,12 @@ import Simplex.Messaging.Util ((<$?>))
 
 -- | Serializing human-readable and (where possible) URI-friendly strings for SMP and SMP agent protocols
 class StrEncoding a where
-  {-# MINIMAL strEncode, (smpStrDecode | strP) #-}
+  {-# MINIMAL strEncode, (strDecode | strP) #-}
   strEncode :: a -> ByteString
-  smpStrDecode :: ByteString -> Either String a
-  smpStrDecode = parseAll strP
+  strDecode :: ByteString -> Either String a
+  strDecode = parseAll strP
   strP :: Parser a
-  strP = smpStrDecode <$?> base64urlP
+  strP = strDecode <$?> base64urlP
 
 -- base64url encoding/decoding of ByteStrings - the parser only allows non-empty strings
 instance StrEncoding ByteString where
