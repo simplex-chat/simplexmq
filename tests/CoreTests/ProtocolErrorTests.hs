@@ -1,4 +1,4 @@
-module ProtocolErrorTests where
+module CoreTests.ProtocolErrorTests where
 
 import Simplex.Messaging.Agent.Protocol (AgentErrorType, agentErrorTypeP, serializeAgentError, serializeSmpErrorType, smpErrorTypeP)
 import Simplex.Messaging.Parsers (parseAll)

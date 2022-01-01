@@ -36,7 +36,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
-import Data.Time.Clock
+import Data.Time.Clock.System (getSystemTime)
 import Data.Type.Equality
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -360,7 +360,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 mkMessage :: m (Either C.CryptoError Message)
                 mkMessage = do
                   msgId <- randomId =<< asks (msgIdBytes . config)
-                  ts <- liftIO getCurrentTime
+                  ts <- liftIO getSystemTime
                   let c = C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId) msgBody (maxMessageLength + 2)
                   pure $ Message msgId ts <$> c
 

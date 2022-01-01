@@ -2,13 +2,13 @@
 
 module Simplex.Messaging.Server.MsgStore where
 
-import Data.Time.Clock
+import Data.Time.Clock.System (SystemTime)
 import Numeric.Natural
 import Simplex.Messaging.Protocol (MsgBody, MsgId, RecipientId)
 
 data Message = Message
   { msgId :: MsgId,
-    ts :: UTCTime,
+    ts :: SystemTime,
     msgBody :: MsgBody
   }
 

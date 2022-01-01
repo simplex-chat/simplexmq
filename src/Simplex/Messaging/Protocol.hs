@@ -93,7 +93,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.Maybe (isNothing)
 import Data.String
-import Data.Time.Clock
+import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
 import Data.Word (Word16)
 import GHC.Generics (Generic)
@@ -205,7 +205,7 @@ deriving instance Eq (Command p)
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
-  MSG :: MsgId -> UTCTime -> MsgBody -> BrokerMsg
+  MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   NID :: NotifierId -> BrokerMsg
   NMSG :: BrokerMsg
   END :: BrokerMsg

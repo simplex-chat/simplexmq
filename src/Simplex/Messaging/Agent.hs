@@ -74,6 +74,7 @@ import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
+import Data.Time.Clock.System (systemToUTCTime)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -552,7 +553,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                       -- note that there is no ACK sent here, it is sent with agent's user ACK command
                       -- TODO add hash to other messages
                       let msgHash = C.sha256Hash msg
-                      agentClientMsg prevMsgHash sndMsgId (srvMsgId, srvTs) body msgHash
+                      agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) body msgHash
                   _ -> prohibited >> ack
         SMP.END -> do
           removeSubscription c connId

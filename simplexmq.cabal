@@ -221,11 +221,12 @@ test-suite smp-server-test
       AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
       AgentTests.SQLiteTests
-      ProtocolErrorTests
+      CoreTests.EncodingTests
+      CoreTests.ProtocolErrorTests
+      CoreTests.VersionRangeTests
       ServerTests
       SMPAgentClient
       SMPClient
-      VersionRangeTests
       Paths_simplexmq
   hs-source-dirs:
       tests

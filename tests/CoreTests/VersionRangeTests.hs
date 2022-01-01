@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module VersionRangeTests where
+module CoreTests.VersionRangeTests where
 
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
@@ -37,15 +37,13 @@ versionRangeTests = modifyMaxSuccess (const 1000) $ do
       isCompatible 1 (vr 2 2) `shouldBe` False
     it "compatibleVersion should pass isCompatible check" . property $
       \((min1, max1) :: (V, V)) ((min2, max2) :: (V, V)) ->
-        if min1 > max1 || min2 > max2
-          then True
-          else
-            let w = fromIntegral . fromEnum
-                vr1 = mkVersionRange (w min1) (w max1)
-                vr2 = mkVersionRange (w min2) (w max2)
-             in case compatibleVersion vr1 vr2 of
-                  Just v -> v `isCompatible` vr1 && v `isCompatible` vr2
-                  _ -> True
+        min1 > max1 || min2 > max2 -- one of ranges is invalid, skip testing it
+          || let w = fromIntegral . fromEnum
+                 vr1 = mkVersionRange (w min1) (w max1)
+                 vr2 = mkVersionRange (w min2) (w max2)
+              in case compatibleVersion vr1 vr2 of
+                   Just v -> v `isCompatible` vr1 && v `isCompatible` vr2
+                   _ -> True
   where
     vr = mkVersionRange
     (vr1, vr2) `compatible` v = do

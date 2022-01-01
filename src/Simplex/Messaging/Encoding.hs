@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -9,11 +10,12 @@ module Simplex.Messaging.Encoding (Encoding (..), Tail (..)) where
 
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bits (shiftL, shiftR, (.|.))
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
-import Data.Time.Clock (UTCTime)
-import Data.Time.ISO8601 (formatISO8601Millis, parseISO8601)
+import Data.Int (Int64)
+import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
 
@@ -33,6 +35,19 @@ instance Encoding Word32 where
   smpEncode = encodeWord32
   smpP = decodeWord32 <$> A.take 4
 
+instance Encoding Int64 where
+  smpEncode i = w32 (i `shiftR` 32) <> w32 i
+  smpP = do
+    l <- w32P
+    r <- w32P
+    pure $ (l `shiftL` 32) .|. r
+
+w32 :: Int64 -> ByteString
+w32 = smpEncode @Word32 . fromIntegral
+
+w32P :: Parser Int64
+w32P = fromIntegral <$> smpP @Word32
+
 -- ByteStrings are assumed no longer than 255 bytes
 instance Encoding ByteString where
   smpEncode s = B.cons (w2c len) s where len = fromIntegral $ B.length s
@@ -44,9 +59,9 @@ instance Encoding Tail where
   smpEncode = unTail
   smpP = Tail <$> A.takeByteString
 
-instance Encoding UTCTime where
-  smpEncode = smpEncode . B.pack . formatISO8601Millis
-  smpP = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< smpP
+instance Encoding SystemTime where
+  smpEncode = smpEncode . systemSeconds
+  smpP = MkSystemTime <$> smpP <*> pure 0
 
 instance (Encoding a, Encoding b) => Encoding (a, b) where
   smpEncode (a, b) = smpEncode a <> smpEncode b
