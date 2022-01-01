@@ -1,7 +1,7 @@
 #!/bin/bash
 # <UDF name="enable_store_log" label="Store log - persists SMP queues to append only log and restores them upon server restart." default="on" oneof="on, off" />
-# <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server domain/ip address, transport key hash and server version. Use `domain#hash` or `ip#hash` as SMP server address in the client. Note: minimal permissions token should have are - read/write access to `linodes` (to update linode tags - you need them) and `domains` (to add A record for the chosen 3rd level domain)" default="" />
-# <UDF name="fqdn" label="FQDN (Fully qualified domain name) - provide third level domain name (ex: smp.example.com). If provided can be used instead of ip address." default="" />
+# <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server FQDN / IP address, CA certificate fingerprint and server version. Use `fqdn#fingerprint` or `ip#fingerprint` as SMP server address in the client. Note: minimal permissions token should have are - read/write access to `linodes` (to update linode tags) and `domains` (to add A record for the chosen 3rd level domain)" default="" />
+# <UDF name="fqdn" label="FQDN (Fully qualified domain name) - provide third level domain name (ex: smp.example.com). If provided can be used instead of IP address." default="" />
 
 # log all stdout output to stackscript.log
 exec &> >(tee -i /var/log/stackscript.log)
@@ -48,15 +48,17 @@ source /etc/profile.d/simplex.sh
 # initialize SMP server
 init_opts=()
 [[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
-hash_file="$conf_dir/pubkey_hash"
-smp-server init "${init_opts[@]}" | grep "transport key hash:" | cut -f2 -d":" | xargs > $hash_file
+smp-server init "${init_opts[@]}"
+# CA certificate (identity/offline) fingerprint
+hash_file="$conf_dir/fingerprint"
 # turn off websockets support
 sed -e '/websockets/s/^/# /g' -i $conf_dir/smp-server.ini
+
 # create script that will run on login
 on_login_script="/opt/simplex/on_login.sh"
 cat <<EOT >> $on_login_script
 #!/bin/bash
-# receives pubkey_hash file location as the first parameter
+# receives fingerprint file location as the first parameter
 
 ip_address=\$(hostname -I | awk '{print\$1}')
 hash=\$(cat \$1)

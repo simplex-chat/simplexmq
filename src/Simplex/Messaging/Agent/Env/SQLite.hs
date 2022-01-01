@@ -23,7 +23,6 @@ import UnliftIO.STM
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     smpServers :: NonEmpty SMPServer,
-    rsaKeySize :: Int,
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
@@ -32,6 +31,7 @@ data AgentConfig = AgentConfig
     smpCfg :: SMPClientConfig,
     retryInterval :: RetryInterval,
     reconnectInterval :: RetryInterval,
+    caCertificateFile :: FilePath,
     agentPrivateKeyFile :: FilePath,
     agentCertificateFile :: FilePath
   }
@@ -44,7 +44,6 @@ defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
       smpServers = undefined,
-      rsaKeySize = 2048 `div` 8,
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 16,
@@ -63,7 +62,8 @@ defaultAgentConfig =
             increaseAfter = 10_000_000,
             maxInterval = 10_000_000
           },
-      -- ! we do not generate these key and certificate
+      -- ! we do not generate these
+      caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       agentPrivateKeyFile = "/etc/opt/simplex-agent/agent.key",
       agentCertificateFile = "/etc/opt/simplex-agent/agent.crt"
     }
@@ -73,7 +73,6 @@ data Env = Env
     store :: SQLiteStore,
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
-    reservedMsgSize :: Int,
     randomServer :: TVar StdGen
   }
 
@@ -83,10 +82,4 @@ newSMPAgentEnv cfg = do
   store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  return Env {config = cfg, store, idsDrg, clientCounter, reservedMsgSize, randomServer}
-  where
-    -- 1st rsaKeySize is used by the RSA signature in each command,
-    -- 2nd - by encrypted message body header
-    -- 3rd - by message signature
-    -- smpCommandSize - is the estimated max size for SMP command, queueId, corrId
-    reservedMsgSize = 3 * rsaKeySize cfg + smpCommandSize (smpCfg cfg)
+  return Env {config = cfg, store, idsDrg, clientCounter, randomServer}

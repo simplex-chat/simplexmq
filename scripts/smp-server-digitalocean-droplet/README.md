@@ -1,10 +1,10 @@
 # Server image for DigitalOcean
 
+<!-- TODO tested on a fresh DO droplet and this seems to be wrong - we have to update the image to behave as described.
+
 The current image used for 1-click deployment on DigitalOcean does not contain the source or binary of SMP Server - it downloads the compiled binary of the latest release (rather than a particular release) from GitHub.
 
-The upside is that the new image does not have to be created and approved by DigitalOcean every time when the new release is created.
-
-The downside is that while the release is being prepared in CI, when the release object is already created in GitHub but the server binary is not attached yet, the attempt to install the server would fail - it can last anything from several to 20 minutes, depending on whether the cached dependencies were used or everything was recompiled. Currently, when there is a small number of users, it is not a big problem, but we should consider some possible solutions in the future. Linode StackScript has the same issue.
+The upside is that the new image does not have to be created and approved by DigitalOcean every time when the new release is created. -->
 
 ## How to build an image
 

@@ -3,7 +3,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -15,6 +17,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.Text (Text)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -25,7 +28,6 @@ import Simplex.Messaging.Protocol
     RcvDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
-    SndPublicVerifyKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 
@@ -37,13 +39,12 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   getConn :: s -> ConnId -> m SomeConn
-  getAllConnIds :: s -> m [ConnId] -- TODO remove - hack for subscribing to all
   getRcvConn :: s -> SMPServer -> SMP.RecipientId -> m SomeConn
   deleteConn :: s -> ConnId -> m ()
   upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueActive :: s -> RcvQueue -> C.APublicVerifyKey -> m ()
+  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.PublicKeyX25519 -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Confirmations
@@ -81,11 +82,13 @@ data RcvQueue = RcvQueue
     rcvPrivateKey :: RcvPrivateSignKey,
     -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
     rcvDhSecret :: RcvDhSecret,
+    -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
+    e2ePrivKey :: C.PrivateKeyX25519,
+    -- | public sender's DH key and agreed shared DH secret for simple per-queue e2e
+    e2eShared :: Maybe (C.PublicKeyX25519, C.DhSecretX25519),
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
-    -- | TODO keys used for E2E encryption - these will change with double ratchet
-    decryptKey :: C.APrivateDecryptKey,
-    verifyKey :: Maybe C.APublicVerifyKey,
+    -- | queue status
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -93,10 +96,15 @@ data RcvQueue = RcvQueue
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue
   { server :: SMPServer,
+    -- | sender queue ID
     sndId :: SMP.SenderId,
+    -- | key used by the sender to sign transmissions
     sndPrivateKey :: SndPrivateSignKey,
-    encryptKey :: C.APublicEncryptKey,
-    signKey :: C.APrivateSignKey,
+    -- | public DH key that was (or needs to be) sent to the recipient in SMP confirmation (to agree simple per-queue e2e)
+    e2ePubKey :: C.PublicKeyX25519,
+    -- | shared DH secret agreed for simple per-queue e2e encryption
+    e2eDhSecret :: C.DhSecretX25519,
+    -- | queue status
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -167,15 +175,13 @@ newtype ConnData = ConnData {connId :: ConnId}
 
 data NewConfirmation = NewConfirmation
   { connId :: ConnId,
-    senderKey :: SndPublicVerifyKey,
-    senderConnInfo :: ConnInfo
+    senderConf :: SMPConfirmation
   }
 
 data AcceptedConfirmation = AcceptedConfirmation
   { confirmationId :: ConfirmationId,
     connId :: ConnId,
-    senderKey :: SndPublicVerifyKey,
-    senderConnInfo :: ConnInfo,
+    senderConf :: SMPConfirmation,
     ownConnInfo :: ConnInfo
   }
 
@@ -225,7 +231,7 @@ data SndMsgData = SndMsgData
     internalTs :: InternalTs,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
-    previousMsgHash :: MsgHash
+    prevMsgHash :: MsgHash
   }
 
 data PendingMsg = PendingMsg
@@ -233,10 +239,6 @@ data PendingMsg = PendingMsg
     msgId :: InternalId
   }
   deriving (Show)
-
--- * Broadcast types
-
-type BroadcastId = ByteString
 
 -- * Message types
 
@@ -258,13 +260,9 @@ data RcvMsg = RcvMsg
     brokerId :: BrokerId,
     brokerTs :: BrokerTs,
     rcvMsgStatus :: RcvMsgStatus,
-    -- | Timestamp of acknowledgement to broker, corresponds to `AcknowledgedToBroker` status.
-    -- Do not mix up with `brokerTs` - timestamp created at broker after it receives the message from sender.
+    -- | Timestamp of acknowledgement to broker, corresponds to `Acknowledged` status.
+    -- Don't confuse with `brokerTs` - timestamp created at broker after it receives the message from sender.
     ackBrokerTs :: AckBrokerTs,
-    -- | Timestamp of acknowledgement to sender, corresponds to `AcknowledgedToSender` status.
-    -- Do not mix up with `externalSndTs` - timestamp created at sender before sending,
-    -- which in its turn corresponds to `internalTs` in sending agent.
-    ackSenderTs :: AckSenderTs,
     -- | Hash of previous message as received from sender - stored for integrity forensics.
     externalPrevSndHash :: MsgHash,
     msgIntegrity :: MsgIntegrity
@@ -282,11 +280,19 @@ type BrokerId = MsgId
 
 type BrokerTs = UTCTime
 
-data RcvMsgStatus
-  = Received
-  | AcknowledgedToBroker
-  | AcknowledgedToSender
+data RcvMsgStatus = RcvMsgReceived | RcvMsgAcknowledged
   deriving (Eq, Show)
+
+serializeRcvMsgStatus :: RcvMsgStatus -> Text
+serializeRcvMsgStatus = \case
+  RcvMsgReceived -> "rcvd"
+  RcvMsgAcknowledged -> "ackd"
+
+rcvMsgStatusT :: Text -> Maybe RcvMsgStatus
+rcvMsgStatusT = \case
+  "rcvd" -> Just RcvMsgReceived
+  "ackd" -> Just RcvMsgAcknowledged
+  _ -> Nothing
 
 type AckBrokerTs = UTCTime
 
@@ -299,19 +305,25 @@ data SndMsg = SndMsg
     internalSndId :: InternalSndId,
     sndMsgStatus :: SndMsgStatus,
     -- | Timestamp of the message received by broker, corresponds to `Sent` status.
-    sentTs :: SentTs,
-    -- | Timestamp of the message received by recipient, corresponds to `Delivered` status.
-    deliveredTs :: DeliveredTs
+    sentTs :: SentTs
   }
   deriving (Eq, Show)
 
 newtype InternalSndId = InternalSndId {unSndId :: Int64} deriving (Eq, Show)
 
-data SndMsgStatus
-  = SndMsgCreated
-  | SndMsgSent
-  | SndMsgDelivered
+data SndMsgStatus = SndMsgCreated | SndMsgSent
   deriving (Eq, Show)
+
+serializeSndMsgStatus :: SndMsgStatus -> Text
+serializeSndMsgStatus = \case
+  SndMsgCreated -> "created"
+  SndMsgSent -> "sent"
+
+sndMsgStatusT :: Text -> Maybe SndMsgStatus
+sndMsgStatusT = \case
+  "created" -> Just SndMsgCreated
+  "sent" -> Just SndMsgSent
+  _ -> Nothing
 
 type SentTs = UTCTime
 

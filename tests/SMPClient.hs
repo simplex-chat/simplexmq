@@ -1,6 +1,7 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -8,15 +9,13 @@
 
 module SMPClient where
 
-import Control.Monad (void)
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Network.Socket
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
@@ -38,21 +37,18 @@ testPort2 :: ServiceName
 testPort2 = "5002"
 
 testKeyHashStr :: ByteString
-testKeyHashStr = "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
-
-testBlockSize :: Int
-testBlockSize = 16 * 1024 -- TODO move to Protocol
+testKeyHashStr = "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
 
 testKeyHash :: Maybe C.KeyHash
-testKeyHash = Just "KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="
+testKeyHash = Just "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTransportClient testHost testPort $ \h ->
-    liftIO (runExceptT $ clientHandshake h testBlockSize) >>= \case
+  runTransportClient testHost testPort testKeyHash $ \h ->
+    liftIO (runExceptT $ clientHandshake h) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -66,9 +62,9 @@ cfg =
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLog = Nothing,
-      blockSize = testBlockSize,
-      serverPrivateKeyFile = "tests/fixtures/example.key",
-      serverCertificateFile = "tests/fixtures/example.crt"
+      caCertificateFile = "tests/fixtures/ca.crt",
+      serverPrivateKeyFile = "tests/fixtures/server.key",
+      serverCertificateFile = "tests/fixtures/server.crt"
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
@@ -114,8 +110,21 @@ runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
     run 0 hs = test hs
     run n hs = testSMPClient $ \h -> run (n - 1) (h : hs)
 
-smpServerTest :: forall c. Transport c => TProxy c -> SignedRawTransmission -> IO SignedRawTransmission
-smpServerTest _ t = runSmpTest $ \(h :: THandle c) -> tPutRaw h t >> tGetRaw h
+smpServerTest ::
+  forall c smp.
+  (Transport c, Encoding smp) =>
+  TProxy c ->
+  (Maybe C.ASignature, ByteString, ByteString, smp) ->
+  IO (Maybe C.ASignature, ByteString, ByteString, BrokerMsg)
+smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
+  where
+    tPut' h (sig, corrId, queueId, smp) = do
+      let t' = smpEncode (sessionId (h :: THandle c), corrId, queueId, smp)
+      Right () <- tPut h (sig, t')
+      pure ()
+    tGet' h = do
+      (Nothing, _, (CorrId corrId, qId, Right cmd)) <- tGet h
+      pure (Nothing, corrId, qId, cmd)
 
 smpTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
 smpTest _ test' = runSmpTest test' `shouldReturn` ()
@@ -140,13 +149,3 @@ smpTest4 _ test' = smpTestN 4 _test
   where
     _test [h1, h2, h3, h4] = test' h1 h2 h3 h4
     _test _ = error "expected 4 handles"
-
-tPutRaw :: Transport c => THandle c -> SignedRawTransmission -> IO ()
-tPutRaw h@THandle {sessionId} (sig, corrId, queueId, command) = do
-  let t = B.unwords [sessionId, corrId, queueId, command]
-  void $ tPut h (sig, t)
-
-tGetRaw :: Transport c => THandle c -> IO SignedRawTransmission
-tGetRaw h = do
-  (Nothing, _, (CorrId corrId, qId, Right cmd)) <- tGet fromServer h
-  pure (Nothing, corrId, encode qId, serializeCommand cmd)

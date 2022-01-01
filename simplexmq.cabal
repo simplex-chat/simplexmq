@@ -27,10 +27,6 @@ extra-source-files:
     README.md
     CHANGELOG.md
     migrations/20210101_initial.sql
-    migrations/20210624_confirmations.sql
-    migrations/20210809_snd_messages.sql
-    migrations/20211202_connection_mode.sql
-    migrations/20211215_rcv_dh_secret.sql
     migrations/README.md
 
 library
@@ -45,6 +41,8 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations
       Simplex.Messaging.Client
       Simplex.Messaging.Crypto
+      Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Encoding
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server
@@ -57,6 +55,7 @@ library
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
+      Simplex.Messaging.Version
   other-modules:
       Paths_simplexmq
   hs-source-dirs:
@@ -76,6 +75,7 @@ library
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
     , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
@@ -101,6 +101,8 @@ library
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010
 
 executable smp-agent
@@ -124,6 +126,7 @@ executable smp-agent
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
     , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
@@ -150,6 +153,8 @@ executable smp-agent
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010
 
 executable smp-server
@@ -203,6 +208,8 @@ executable smp-server
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010
 
 test-suite smp-server-test
@@ -211,9 +218,12 @@ test-suite smp-server-test
   other-modules:
       AgentTests
       AgentTests.ConnectionRequestTests
+      AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
       AgentTests.SQLiteTests
-      ProtocolErrorTests
+      CoreTests.EncodingTests
+      CoreTests.ProtocolErrorTests
+      CoreTests.VersionRangeTests
       ServerTests
       SMPAgentClient
       SMPClient
@@ -236,6 +246,7 @@ test-suite smp-server-test
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
     , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
@@ -265,4 +276,6 @@ test-suite smp-server-test
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010
