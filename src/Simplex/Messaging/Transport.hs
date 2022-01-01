@@ -412,7 +412,8 @@ instance Encoding ClientHandshake where
   smpP = ClientHandshake <$> smpP
 
 instance Encoding ServerHandshake where
-  smpEncode (ServerHandshake sessId v) = smpEncode (sessId, v)
+  smpEncode ServerHandshake {smpVersionRange, sessionId} =
+    smpEncode (smpVersionRange, sessionId)
   smpP = ServerHandshake <$> smpP <*> smpP
 
 -- | Error of SMP encrypted transport over TCP.
