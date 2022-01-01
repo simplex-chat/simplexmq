@@ -69,7 +69,6 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
 import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
-import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
 import Data.ByteString.Base64
@@ -93,7 +92,7 @@ import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (parseRead1)
+import Simplex.Messaging.Parsers (parse, parseRead1)
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
 import System.Exit (exitFailure)
@@ -500,7 +499,7 @@ sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT Tran
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
 
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
-getHandshake th = ExceptT $ (first (const $ TEHandshake PARSE) . A.parseOnly smpP =<<) <$> tGetBlock th
+getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
 
 tHandle :: Transport c => c -> THandle c
 tHandle c =
