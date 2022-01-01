@@ -25,8 +25,8 @@ import Text.Read (readMaybe)
 base64P :: Parser ByteString
 base64P = decode <$?> paddedBase64 rawBase64P
 
-base64UriP :: Parser ByteString
-base64UriP = U.decode <$?> paddedBase64 rawBase64UriP
+-- base64UriP :: Parser ByteString
+-- base64UriP = U.decode <$?> paddedBase64 rawBase64UriP
 
 paddedBase64 :: Parser ByteString -> Parser ByteString
 paddedBase64 raw = (<>) <$> raw <*> pad
@@ -36,8 +36,8 @@ paddedBase64 raw = (<>) <$> raw <*> pad
 rawBase64P :: Parser ByteString
 rawBase64P = A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
 
-rawBase64UriP :: Parser ByteString
-rawBase64UriP = A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
+-- rawBase64UriP :: Parser ByteString
+-- rawBase64UriP = A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
 
 tsISO8601P :: Parser UTCTime
 tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill wordEnd
@@ -73,9 +73,12 @@ parseString :: (ByteString -> Either String a) -> (String -> a)
 parseString p = either error id . p . B.pack
 
 blobFieldParser :: Typeable k => Parser k -> FieldParser k
-blobFieldParser p = \case
+blobFieldParser = blobFieldDecoder . parseAll
+
+blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> FieldParser k
+blobFieldDecoder dec = \case
   f@(Field (SQLBlob b) _) ->
-    case parseAll p b of
+    case dec b of
       Right k -> Ok k
       Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
   f -> returnError ConversionFailed f "expecting SQLBlob column type"

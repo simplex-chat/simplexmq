@@ -11,7 +11,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Transport (TLS, Transport (..))
 
 cfg :: AgentConfig
-cfg = defaultAgentConfig {smpServers = L.fromList ["localhost:5223#bU0K+bRg24xWW//lS0umO1Zdw/SXqpJNtm1/RrPLViE="]}
+cfg = defaultAgentConfig {smpServers = L.fromList ["bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"]}
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}

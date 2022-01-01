@@ -62,7 +62,6 @@ module Simplex.Messaging.Crypto
 
     -- * key encoding/decoding
     encodePubKey,
-    binaryPubKeyP,
     encodePrivKey,
 
     -- * E2E hybrid encryption scheme
@@ -83,8 +82,8 @@ module Simplex.Messaging.Crypto
 
     -- * DH derivation
     dh',
-    dhSecret,
-    dhSecret',
+    dhSecretBytes',
+    toDhSecret,
 
     -- * AES256 AEAD-GCM scheme
     Key (..),
@@ -142,7 +141,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
-import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
@@ -160,7 +158,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (base64P, blobFieldParser, parseAll, parseString)
+import Simplex.Messaging.Parsers (blobFieldDecoder, blobFieldParser, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
 
 type E2EEncryptionVersion = Word16
@@ -283,17 +281,6 @@ instance AlgorithmPrefix APublicKey where
 instance AlgorithmPrefix APrivateKey where
   algorithmPrefix (APrivateKey a _) = algorithmPrefix a
 
-prefixAlgorithm :: ByteString -> Either String Alg
-prefixAlgorithm = \case
-  "ed25519" -> Right $ Alg SEd25519
-  "ed448" -> Right $ Alg SEd448
-  "x25519" -> Right $ Alg SX25519
-  "x448" -> Right $ Alg SX448
-  _ -> Left "unknown algorithm"
-
-algP :: Parser Alg
-algP = prefixAlgorithm <$?> A.takeTill (== ':')
-
 type family SignatureAlgorithm (a :: Algorithm) :: Constraint where
   SignatureAlgorithm Ed25519 = ()
   SignatureAlgorithm Ed448 = ()
@@ -381,42 +368,41 @@ dhAlgorithm = \case
   SX448 -> Just Dict
   _ -> Nothing
 
+dhSecretBytes' :: DhSecret a -> ByteString
+dhSecretBytes' = \case
+  DhSecretX25519 s -> BA.convert s
+  DhSecretX448 s -> BA.convert s
+
+instance AlgorithmI a => StrEncoding (DhSecret a) where
+  strEncode = strEncode . dhSecretBytes'
+  smpStrDecode = toDhSecret <=< smpStrDecode
+
+instance StrEncoding ADhSecret where
+  strEncode (ADhSecret _ s) = strEncode $ dhSecretBytes' s
+  smpStrDecode = cryptoPassed . secret
+    where
+      secret bs
+        | B.length bs == x25519_size = ADhSecret SX25519 . DhSecretX25519 <$> X25519.dhSecret bs
+        | B.length bs == x448_size = ADhSecret SX448 . DhSecretX448 <$> X448.dhSecret bs
+        | otherwise = CE.CryptoFailed CE.CryptoError_SharedSecretSizeInvalid
+      cryptoPassed = \case
+        CE.CryptoPassed s -> Right s
+        CE.CryptoFailed e -> Left $ show e
+
 class CryptoDhSecret s where
-  serializeDhSecret :: s -> ByteString
-  dhSecretBytes :: s -> ByteString
-  strDhSecretP :: Parser s
   dhSecretP :: Parser s
 
 instance AlgorithmI a => IsString (DhSecret a) where
-  fromString = parseString $ dhSecret >=> dhSecret'
+  fromString = parseString smpStrDecode
 
 instance CryptoDhSecret ADhSecret where
-  serializeDhSecret (ADhSecret _ s) = serializeDhSecret s
-  dhSecretBytes (ADhSecret _ s) = dhSecretBytes s
-  strDhSecretP = dhSecret <$?> base64P
-  dhSecretP = dhSecret <$?> A.takeByteString
-
-dhSecret :: ByteString -> Either String ADhSecret
-dhSecret = cryptoPassed . secret
-  where
-    secret bs
-      | B.length bs == x25519_size = ADhSecret SX25519 . DhSecretX25519 <$> X25519.dhSecret bs
-      | B.length bs == x448_size = ADhSecret SX448 . DhSecretX448 <$> X448.dhSecret bs
-      | otherwise = CE.CryptoFailed CE.CryptoError_SharedSecretSizeInvalid
-    cryptoPassed = \case
-      CE.CryptoPassed s -> Right s
-      CE.CryptoFailed e -> Left $ show e
+  dhSecretP = smpStrDecode <$?> A.takeByteString
 
 instance forall a. AlgorithmI a => CryptoDhSecret (DhSecret a) where
-  serializeDhSecret = encode . dhSecretBytes
-  dhSecretBytes = \case
-    DhSecretX25519 s -> BA.convert s
-    DhSecretX448 s -> BA.convert s
-  strDhSecretP = dhSecret' <$?> strDhSecretP
-  dhSecretP = dhSecret' <$?> dhSecretP
+  dhSecretP = toDhSecret <$?> dhSecretP
 
-dhSecret' :: forall a. AlgorithmI a => ADhSecret -> Either String (DhSecret a)
-dhSecret' (ADhSecret a s) = case testEquality a $ sAlgorithm @a of
+toDhSecret :: forall a. AlgorithmI a => ADhSecret -> Either String (DhSecret a)
+toDhSecret (ADhSecret a s) = case testEquality a $ sAlgorithm @a of
   Just Refl -> Right s
   _ -> Left "bad DH secret algorithm"
 
@@ -471,30 +457,26 @@ instance AlgorithmI a => Encoding (PublicKey a) where
   {-# INLINE smpDecode #-}
 
 instance StrEncoding APublicVerifyKey where
-  smpStrEncode = smpStrEncode . encodePubKey
-  {-# INLINE smpStrEncode #-}
+  strEncode = strEncode . encodePubKey
+  {-# INLINE strEncode #-}
   smpStrDecode = decodePubKey
   {-# INLINE smpStrDecode #-}
 
 instance StrEncoding APublicDhKey where
-  smpStrEncode = smpStrEncode . encodePubKey
-  {-# INLINE smpStrEncode #-}
+  strEncode = strEncode . encodePubKey
+  {-# INLINE strEncode #-}
   smpStrDecode = decodePubKey
   {-# INLINE smpStrDecode #-}
 
 instance AlgorithmI a => StrEncoding (PublicKey a) where
-  smpStrEncode = smpStrEncode . encodePubKey
-  {-# INLINE smpStrEncode #-}
+  strEncode = strEncode . encodePubKey
+  {-# INLINE strEncode #-}
   smpStrDecode = decodePubKey
   {-# INLINE smpStrDecode #-}
 
 encodePubKey :: CryptoPublicKey pk => pk -> ByteString
 encodePubKey = toPubKey $ encodeASNObj . publicToX509
 {-# INLINE encodePubKey #-}
-
-binaryPubKeyP :: CryptoPublicKey pk => Parser pk
-binaryPubKeyP = decodePubKey <$?> A.takeByteString
-{-# INLINE binaryPubKeyP #-}
 
 class CryptoPrivateKey pk where
   toPrivKey :: (forall a. AlgorithmI a => PrivateKey a -> b) -> pk -> b
@@ -529,9 +511,6 @@ instance AlgorithmI a => CryptoPrivateKey (PrivateKey a) where
 
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
 encodePrivKey = toPrivKey $ encodeASNObj . privateToX509
-
-binaryPrivKeyP :: CryptoPrivateKey pk => Parser pk
-binaryPrivKeyP = decodePrivKey <$?> A.takeByteString
 
 instance AlgorithmI a => IsString (PrivateKey a) where
   fromString = parseString $ decode >=> decodePrivKey
@@ -588,21 +567,21 @@ instance AlgorithmI a => ToField (PrivateKey a) where toField = toField . encode
 
 instance AlgorithmI a => ToField (PublicKey a) where toField = toField . encodePubKey
 
-instance AlgorithmI a => ToField (DhSecret a) where toField = toField . dhSecretBytes
+instance AlgorithmI a => ToField (DhSecret a) where toField = toField . dhSecretBytes'
 
-instance FromField APrivateSignKey where fromField = blobFieldParser binaryPrivKeyP
+instance FromField APrivateSignKey where fromField = blobFieldDecoder decodePrivKey
 
-instance FromField APublicVerifyKey where fromField = blobFieldParser binaryPubKeyP
+instance FromField APublicVerifyKey where fromField = blobFieldDecoder decodePubKey
 
-instance FromField APrivateDhKey where fromField = blobFieldParser binaryPrivKeyP
+instance FromField APrivateDhKey where fromField = blobFieldDecoder decodePrivKey
 
-instance FromField APublicDhKey where fromField = blobFieldParser binaryPubKeyP
+instance FromField APublicDhKey where fromField = blobFieldDecoder decodePubKey
 
-instance (Typeable a, AlgorithmI a) => FromField (PrivateKey a) where fromField = blobFieldParser binaryPrivKeyP
+instance (Typeable a, AlgorithmI a) => FromField (PrivateKey a) where fromField = blobFieldDecoder decodePrivKey
 
-instance (Typeable a, AlgorithmI a) => FromField (PublicKey a) where fromField = blobFieldParser binaryPubKeyP
+instance (Typeable a, AlgorithmI a) => FromField (PublicKey a) where fromField = blobFieldDecoder decodePubKey
 
-instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldParser dhSecretP
+instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldDecoder smpStrDecode
 
 instance IsString (Maybe ASignature) where
   fromString = parseString $ decode >=> decodeSignature
@@ -736,12 +715,16 @@ newtype IV = IV {unIV :: ByteString}
 -- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
+instance StrEncoding KeyHash where
+  strEncode = strEncode . unKeyHash
+  smpStrDecode = Right . KeyHash
+
 instance IsString KeyHash where
-  fromString = parseString . parseAll $ KeyHash <$> base64P
+  fromString = parseString $ parseAll strP
 
-instance ToField KeyHash where toField = toField . encode . unKeyHash
+instance ToField KeyHash where toField = toField . strEncode
 
-instance FromField KeyHash where fromField = blobFieldParser $ KeyHash <$> base64P
+instance FromField KeyHash where fromField = blobFieldParser strP
 
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString

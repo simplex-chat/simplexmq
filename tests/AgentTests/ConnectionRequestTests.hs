@@ -37,7 +37,7 @@ testDhKey :: C.PublicKeyX25519
 testDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 testDhKeyStr :: ByteString
-testDhKeyStr = smpStrEncode testDhKey
+testDhKeyStr = strEncode testDhKey
 
 testDhKeyStrUri :: ByteString
 testDhKeyStrUri = urlEncode True testDhKeyStr
@@ -58,9 +58,9 @@ connectionRequestTests :: Spec
 connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
-      smpStrEncode queue {smpServer = srv {port = Nothing}}
+      strEncode queue {smpServer = srv {port = Nothing}}
         `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr
-      smpStrEncode queue
+      strEncode queue
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
     it "should parse SMP queue URIs" $ do
       smpStrDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)

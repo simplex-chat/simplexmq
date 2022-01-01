@@ -46,8 +46,8 @@ instance Encoding VersionRange where
       =<< versionRange <$> smpP <*> smpP
 
 instance StrEncoding VersionRange where
-  smpStrEncode (VRange v1 v2) = bshow v1 <> "-" <> bshow v2
-  smpStrP =
+  strEncode (VRange v1 v2) = bshow v1 <> "-" <> bshow v2
+  strP =
     maybe (fail "invalid version range") pure
       =<< versionRange <$> A.decimal <* A.char '-' <*> A.decimal
 

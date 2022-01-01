@@ -43,7 +43,7 @@ defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
-      smpServers = undefined,
+      smpServers = undefined, -- TODO move it elsewhere?
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 16,

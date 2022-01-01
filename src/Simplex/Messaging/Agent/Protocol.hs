@@ -85,7 +85,6 @@ module Simplex.Messaging.Agent.Protocol
     serializeAgentError,
     serializeSmpErrorType,
     commandP,
-    smpServerP,
     connModeT,
     connReqP,
     connReqP',
@@ -348,14 +347,6 @@ aMessageP =
     reply = REPLY <$> connReqP'
     a_msg = A_MSG <$> A.takeByteString
 
--- | SMP server location parser.
-smpServerP :: Parser SMPServer
-smpServerP = SMPServer <$> server <*> optional port <*> kHash
-  where
-    server = B.unpack <$> A.takeWhile1 (A.notInClass ":#,; ")
-    port = A.char ':' *> (B.unpack <$> A.takeWhile1 A.isDigit)
-    kHash = C.KeyHash <$> (A.char '#' *> base64P)
-
 serializeAMessage :: AMessage -> ByteString
 serializeAMessage = \case
   HELLO -> "HELLO"
@@ -363,13 +354,13 @@ serializeAMessage = \case
   A_MSG body -> "MSG " <> body
 
 instance StrEncoding SMPQueueUri where
-  smpStrEncode SMPQueueUri {smpServer = srv, senderId = qId, smpVersionRange = vr, dhPublicKey = k} =
-    smpStrEncode srv <> "/" <> U.encode qId <> "#" <> smpStrEncode k
-  smpStrP = do
-    smpServer <- smpStrP <* A.char '/'
-    senderId <- smpStrP <* A.char '#'
+  strEncode SMPQueueUri {smpServer = srv, senderId = qId, smpVersionRange = vr, dhPublicKey = k} =
+    strEncode srv <> "/" <> U.encode qId <> "#" <> strEncode k
+  strP = do
+    smpServer <- strP <* A.char '/'
+    senderId <- strP <* A.char '#'
     let smpVersionRange = SMP.smpClientVersion
-    dhPublicKey <- smpStrP
+    dhPublicKey <- strP
     pure SMPQueueUri {smpServer, senderId, smpVersionRange, dhPublicKey}
 
 serializeConnReq :: AConnectionRequest -> ByteString
@@ -390,7 +381,7 @@ serializeConnReq' = \case
           CMInvitation -> "invitation"
           CMContact -> "contact"
         queryStr = renderSimpleQuery True [("smp", queues), ("e2e", "")]
-        queues = B.intercalate "," . map smpStrEncode $ L.toList crSmpQueues
+        queues = B.intercalate "," . map strEncode $ L.toList crSmpQueues
 
 connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
 connReqP' = do
@@ -424,13 +415,13 @@ connReqP = do
     smpQueue = smpStrDecode <$?> A.takeTill (== ',')
 
 instance StrEncoding SMPServer where
-  smpStrEncode SMPServer {host, port, keyHash} = "smp://" <> kh <> B.pack host <> p
+  strEncode SMPServer {host, port, keyHash} = "smp://" <> kh <> "@" <> B.pack host <> p
     where
-      kh = ((<> "@") . U.encode . C.unKeyHash) keyHash
+      kh = strEncode keyHash
       p = B.pack $ maybe "" (':' :) port
-  smpStrP = do
+  strP = do
     _ <- "smp://"
-    keyHash <- C.KeyHash <$> (U.decode <$?> A.takeTill (== '@') <* A.char '@')
+    keyHash <- strP <* A.char '@'
     host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
     port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
     pure SMPServer {host, port, keyHash}
@@ -464,7 +455,7 @@ data SMPServer = SMPServer
   deriving (Eq, Ord, Show)
 
 instance IsString SMPServer where
-  fromString = parseString $ parseAll smpServerP
+  fromString = parseString smpStrDecode
 
 -- | SMP agent connection alias.
 type ConnId = ByteString
