@@ -6,7 +6,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -82,7 +81,6 @@ module Simplex.Messaging.Protocol
     -- * exports for tests
     CommandTag (..),
     BrokerMsgTag (..),
-    ProtocolTag (..),
   )
 where
 
@@ -218,14 +216,6 @@ data BrokerMsg where
 
 -- * SMP command tags
 
-newtype ProtocolTag = ProtocolTag {unProtocolTag :: ByteString} deriving (Eq, Show)
-
-instance IsString ProtocolTag where fromString = ProtocolTag . B.pack
-
-instance Encoding ProtocolTag where
-  smpEncode (ProtocolTag t) = t
-  smpP = ProtocolTag <$> A.takeWhile (/= ' ') <* optional A.space
-
 data CommandTag (p :: Party) where
   NEW_ :: CommandTag Recipient
   SUB_ :: CommandTag Recipient
@@ -259,7 +249,9 @@ class ProtocolMsgTag t where
   decodeTag :: ByteString -> Maybe t
 
 messageTagP :: ProtocolMsgTag t => Parser t
-messageTagP = maybe (fail "bad command") pure . decodeTag . unProtocolTag =<< smpP
+messageTagP =
+  maybe (fail "bad command") pure . decodeTag
+    =<< (A.takeTill (== ' ') <* optional A.space)
 
 instance PartyI p => Encoding (CommandTag p) where
   smpEncode = \case
@@ -435,35 +427,6 @@ data ErrorType
     DUPLICATE_ -- TODO remove, not part of SMP protocol
   deriving (Eq, Generic, Read, Show)
 
--- * ErrorType tags
-
-pattern BLOCK_ :: ProtocolTag
-pattern BLOCK_ = "BLOCK"
-
-pattern SESSION_ :: ProtocolTag
-pattern SESSION_ = "SESSION"
-
-pattern CMD_ :: ProtocolTag
-pattern CMD_ = "CMD"
-
-pattern AUTH_ :: ProtocolTag
-pattern AUTH_ = "AUTH"
-
-pattern QUOTA_ :: ProtocolTag
-pattern QUOTA_ = "QUOTA"
-
-pattern NO_MSG_ :: ProtocolTag
-pattern NO_MSG_ = "NO_MSG"
-
-pattern LARGE_MSG_ :: ProtocolTag
-pattern LARGE_MSG_ = "LARGE_MSG"
-
-pattern INTERNAL_ :: ProtocolTag
-pattern INTERNAL_ = "INTERNAL"
-
-pattern DUPLICATE__ :: ProtocolTag
-pattern DUPLICATE__ = "DUPLICATE_"
-
 -- | SMP command error type.
 data CommandError
   = -- | unknown command
@@ -477,22 +440,6 @@ data CommandError
   | -- | transmission has no required queue ID
     NO_QUEUE
   deriving (Eq, Generic, Read, Show)
-
--- CommandError tags
-pattern UNKNOWN_ :: ProtocolTag
-pattern UNKNOWN_ = "UNKNOWN"
-
-pattern SYNTAX_ :: ProtocolTag
-pattern SYNTAX_ = "SYNTAX"
-
-pattern NO_AUTH_ :: ProtocolTag
-pattern NO_AUTH_ = "NO_AUTH"
-
-pattern HAS_AUTH_ :: ProtocolTag
-pattern HAS_AUTH_ = "HAS_AUTH"
-
-pattern NO_QUEUE_ :: ProtocolTag
-pattern NO_QUEUE_ = "NO_QUEUE"
 
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
@@ -640,46 +587,43 @@ checkParty' c = case testEquality (sParty @p) (sParty @p') of
 
 instance Encoding ErrorType where
   smpEncode = \case
-    BLOCK -> e BLOCK_
-    SESSION -> e SESSION_
-    CMD err -> e (CMD_, ' ', err)
-    AUTH -> e AUTH_
-    QUOTA -> e QUOTA_
-    NO_MSG -> e NO_MSG_
-    LARGE_MSG -> e LARGE_MSG_
-    INTERNAL -> e INTERNAL_
-    DUPLICATE_ -> e DUPLICATE__
-    where
-      e :: Encoding a => a -> ByteString
-      e = smpEncode
+    BLOCK -> "BLOCK"
+    SESSION -> "SESSION"
+    CMD err -> "CMD " <> smpEncode err
+    AUTH -> "AUTH"
+    QUOTA -> "QUOTA"
+    NO_MSG -> "NO_MSG"
+    LARGE_MSG -> "LARGE_MSG"
+    INTERNAL -> "INTERNAL"
+    DUPLICATE_ -> "DUPLICATE_"
 
   smpP =
-    smpP >>= \case
-      BLOCK_ -> pure BLOCK
-      SESSION_ -> pure SESSION
-      CMD_ -> CMD <$> smpP
-      AUTH_ -> pure AUTH
-      QUOTA_ -> pure QUOTA
-      NO_MSG_ -> pure NO_MSG
-      LARGE_MSG_ -> pure LARGE_MSG
-      INTERNAL_ -> pure INTERNAL
-      DUPLICATE__ -> pure DUPLICATE_
+    A.takeTill (== ' ') >>= \case
+      "BLOCK" -> pure BLOCK
+      "SESSION" -> pure SESSION
+      "CMD" -> CMD <$> _smpP
+      "AUTH" -> pure AUTH
+      "QUOTA" -> pure QUOTA
+      "NO_MSG" -> pure NO_MSG
+      "LARGE_MSG" -> pure LARGE_MSG
+      "INTERNAL" -> pure INTERNAL
+      "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"
 
 instance Encoding CommandError where
-  smpEncode e = smpEncode $ case e of
-    UNKNOWN -> UNKNOWN_
-    SYNTAX -> SYNTAX_
-    NO_AUTH -> NO_AUTH_
-    HAS_AUTH -> HAS_AUTH_
-    NO_QUEUE -> NO_QUEUE_
+  smpEncode e = case e of
+    UNKNOWN -> "UNKNOWN"
+    SYNTAX -> "SYNTAX"
+    NO_AUTH -> "NO_AUTH"
+    HAS_AUTH -> "HAS_AUTH"
+    NO_QUEUE -> "NO_QUEUE"
   smpP =
-    smpP >>= \case
-      UNKNOWN_ -> pure UNKNOWN
-      SYNTAX_ -> pure SYNTAX
-      NO_AUTH_ -> pure NO_AUTH
-      HAS_AUTH_ -> pure HAS_AUTH
-      NO_QUEUE_ -> pure NO_QUEUE
+    A.takeTill (== ' ') >>= \case
+      "UNKNOWN" -> pure UNKNOWN
+      "SYNTAX" -> pure SYNTAX
+      "NO_AUTH" -> pure NO_AUTH
+      "HAS_AUTH" -> pure HAS_AUTH
+      "NO_QUEUE" -> pure NO_QUEUE
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.

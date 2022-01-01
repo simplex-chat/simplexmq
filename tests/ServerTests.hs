@@ -476,7 +476,7 @@ sampleSig = "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw
 
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do
-  it "unknown command" $ ("", "abcd", "1234", ProtocolTag "UNKNOWN") >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)
+  it "unknown command" $ ("", "abcd", "1234", ('H', 'E', 'L', 'L', 'O')) >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
     it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
