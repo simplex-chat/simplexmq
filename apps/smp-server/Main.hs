@@ -12,7 +12,6 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (dropWhileEnd)
-import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (ServiceName)
 import Options.Applicative
@@ -26,22 +25,6 @@ import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (IOMode (..))
 import System.Process (readCreateProcess, shell)
-
-serverConfig :: ServerConfig
-serverConfig =
-  ServerConfig
-    { tbqSize = 16,
-      serverTbqSize = 128,
-      msgQueueQuota = 256,
-      queueIdBytes = 24,
-      msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
-      caCertificateFile = caCrtFile,
-      privateKeyFile = serverKeyFile,
-      certificateFile = serverCrtFile,
-      -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini
-      transports = undefined,
-      storeLog = undefined
-    }
 
 cfgDir :: FilePath
 cfgDir = "/etc/opt/simplex"
@@ -74,28 +57,20 @@ main :: IO ()
 main = do
   getCliOptions >>= \opts -> case optCommand opts of
     Init initOptions@InitOptions {pubkeyAlgorithm} -> do
-      checkChoiceOption "pubkey-algorithm" pubkeyAlgorithm ["ED25519", "ED448"]
+      -- TODO check during parsing
+      checkPubkeyAlgorithm pubkeyAlgorithm
       doesFileExist iniFile >>= \case
         True -> iniAlreadyExistsErr >> exitFailure
         False -> initializeServer initOptions
-    Start startOptions -> do
-      -- checkChoiceOption "store-log" (enableStoreLog startOptions) ["on", "off", "ini"]
+    Start -> do
       doesFileExist iniFile >>= \case
         False -> iniDoesNotExistErr >> exitFailure
-        True ->
-          readIniFile iniFile
-            >>= either
-              (\e -> putStrLn e >> exitFailure)
-              ( \ini -> do
-                  let resolvedOptions = resolveOptions startOptions $ mkIniOptions ini
-                  runServer resolvedOptions
-              )
+        True -> readIniFile iniFile >>= either (\e -> putStrLn e >> exitFailure) (runServer . mkIniOptions)
     Delete -> cleanup >> putStrLn "Deleted configuration and log files"
   where
-    -- TODO check choice options during parsing
-    checkChoiceOption optionName val choice
-      | val `elem` choice = pure ()
-      | otherwise = putStrLn ("Unsupported choice for option " <> optionName <> ": " <> val) >> exitFailure
+    checkPubkeyAlgorithm alg
+      | alg == "ED448" || alg == "ED25519" = pure ()
+      | otherwise = putStrLn ("Unsupported public key algorithm " <> alg) >> exitFailure
     iniAlreadyExistsErr = putStrLn $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `smp-server start`."
     iniDoesNotExistErr = putStrLn $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `smp-server init`."
 
@@ -103,12 +78,13 @@ newtype CliOptions = CliOptions {optCommand :: Command}
 
 data Command
   = Init InitOptions
-  | Start StartOptions
+  | Start
   | Delete
 
-newtype InitOptions = InitOptions {pubkeyAlgorithm :: String}
-
-newtype StartOptions = StartOptions {enableStoreLog :: Maybe Bool}
+data InitOptions = InitOptions
+  { enableStoreLog :: Bool,
+    pubkeyAlgorithm :: String
+  }
 
 getCliOptions :: IO CliOptions
 getCliOptions =
@@ -124,34 +100,32 @@ getCliOptions =
 cliOptionsP :: Parser CliOptions
 cliOptionsP =
   CliOptions
-    <$> subparser
-      ( command "init" (info (helper <*> initOptionsP) (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
-          -- <> command "start" (info (helper <*> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
-          <> command "delete" (info (helper <*> pure Delete) (progDesc "Delete configuration and log files"))
+    <$> hsubparser
+      ( command "init" (info initP (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
+          <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+          <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
       )
   where
-    initOptionsP :: Parser Command
-    initOptionsP =
+    initP :: Parser Command
+    initP =
       Init . InitOptions
-        <$> strOption
+        <$> switch
+          ( long "store-log"
+              <> short 'l'
+              <> help "Enable store log for SMP queues persistence"
+              <> metavar "LOG"
+          )
+        <*> strOption
           ( long "pubkey-algorithm"
               <> short 'a'
-              <> help "Public key algorithm used for certificate generation: ED25519 or ED448 (default)"
+              <> help "Public key algorithm used for certificate generation: ED25519, ED448"
               <> value "ED448"
+              <> showDefault
+              <> metavar "ALG"
           )
 
--- startOptionsP :: Parser Command
--- startOptionsP =
---   Start . StartOptions
---     <$> strOption
---       ( long "store-log"
---           <> short 'l'
---           <> help "Enable store log for SMP queues persistence: on, off or ini (default)"
---           <> value "ini"
---       )
-
 initializeServer :: InitOptions -> IO ()
-initializeServer InitOptions {pubkeyAlgorithm} = do
+initializeServer InitOptions {enableStoreLog, pubkeyAlgorithm} = do
   cleanup
   createDirectoryIfMissing True cfgDir
   createDirectoryIfMissing True logDir
@@ -199,17 +173,17 @@ initializeServer InitOptions {pubkeyAlgorithm} = do
 
     createIni = do
       writeFile iniFile $
-        "[PERSISTENCE]\n\
+        "[STORE_LOG]\n\
         \# The server uses STM memory to store SMP queues and messages,\n\
         \# that will be lost on restart (e.g., as with redis).\n\
         \# This option enables saving SMP queues to append only log,\n\
         \# and restoring them when the server is started.\n\
         \# Log is compacted on start (deleted queues are removed).\n\
         \# The messages in the queues are not logged.\n"
-          <> "store_log: on\n\n"
-          <> "[TRANSPORT]\n"
-          <> "port: 5223\n"
-          <> "websockets: on\n"
+          <> ("enable: " <> (if enableStoreLog then "on" else "off # on") <> "\n\n")
+          <> "[TRANSPORT]\n\
+             \port: 5223\n\
+             \websockets: on\n"
 
 data IniOptions = IniOptions
   { enableStoreLog :: Bool,
@@ -221,7 +195,7 @@ data IniOptions = IniOptions
 mkIniOptions :: Ini -> IniOptions
 mkIniOptions ini =
   IniOptions
-    { enableStoreLog = (== "on") $ strict "PERSISTENCE" "store_log",
+    { enableStoreLog = (== "on") $ strict "STORE_LOG" "enable",
       port = T.unpack $ strict "TRANSPORT" "port",
       enableWebsockets = (== "on") $ strict "TRANSPORT" "websockets"
     }
@@ -231,22 +205,8 @@ mkIniOptions ini =
       fromRight (error ("no key " <> key <> " in section " <> section)) $
         lookupValue (T.pack section) (T.pack key) ini
 
-data ResolvedOptions = ResolvedOptions
-  { enableStoreLog :: Bool,
-    port :: ServiceName,
-    enableWebsockets :: Bool
-  }
-
-resolveOptions :: StartOptions -> IniOptions -> ResolvedOptions
-resolveOptions StartOptions {enableStoreLog = cliLog} IniOptions {enableStoreLog = iniLog, port, enableWebsockets} =
-  ResolvedOptions
-    { enableStoreLog = fromMaybe iniLog cliLog,
-      port,
-      enableWebsockets
-    }
-
-runServer :: ResolvedOptions -> IO ()
-runServer ResolvedOptions {enableStoreLog, port, enableWebsockets} = do
+runServer :: IniOptions -> IO ()
+runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
   checkSavedFingerprint
   printServiceInfo
   checkCAPrivateKeyFile
@@ -268,7 +228,19 @@ runServer ResolvedOptions {enableStoreLog, port, enableWebsockets} = do
     setupServerConfig = do
       storeLog <- openStoreLog
       let transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets]
-      pure serverConfig {transports, storeLog}
+      pure
+        ServerConfig
+          { tbqSize = 16,
+            serverTbqSize = 128,
+            msgQueueQuota = 256,
+            queueIdBytes = 24,
+            msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
+            caCertificateFile = caCrtFile,
+            privateKeyFile = serverKeyFile,
+            certificateFile = serverCrtFile,
+            transports,
+            storeLog
+          }
       where
         openStoreLog :: IO (Maybe (StoreLog 'ReadMode))
         openStoreLog
