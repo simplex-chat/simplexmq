@@ -76,9 +76,9 @@ main = do
     iniAlreadyExistsErr = putStrLn $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `smp-server start`."
     iniDoesNotExistErr = putStrLn $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `smp-server init`."
 
-newtype CliOptions = CliOptions {optCommand :: Command}
+newtype CliOptions = CliOptions {optCommand :: CliCommand}
 
-data Command
+data CliCommand
   = Init InitOptions
   | Start
   | Delete
@@ -108,7 +108,7 @@ cliOptionsP =
           <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
       )
   where
-    initP :: Parser Command
+    initP :: Parser CliCommand
     initP =
       Init .: InitOptions
         <$> switch
