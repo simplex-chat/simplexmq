@@ -42,14 +42,11 @@ testDhKeyStr = strEncode testDhKey
 testDhKeyStrUri :: ByteString
 testDhKeyStrUri = urlEncode True testDhKeyStr
 
-appServer :: ConnReqScheme
-appServer = CRSAppServer "simplex.chat" Nothing
-
 connectionRequest :: AConnectionRequest
 connectionRequest =
   ACR SCMInvitation . CRInvitation $
     ConnReqData
-      { crScheme = appServer,
+      { crScheme = simplexChat,
         crSmpQueues = [queue],
         crEncryption = ConnectionEncryption
       }

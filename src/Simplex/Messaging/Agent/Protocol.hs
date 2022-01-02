@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Protocol
     AHeader (..),
     AMessage (..),
     SMPServer (..),
+    SrvLoc (..),
     SMPQueueUri (..),
     ConnectionMode (..),
     SConnectionMode (..),
@@ -102,7 +103,7 @@ module Simplex.Messaging.Agent.Protocol
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative ((<|>))
 import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -116,7 +117,6 @@ import Data.Kind (Type)
 import Data.List (find)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
-import Data.String (IsString (..))
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601
@@ -125,7 +125,6 @@ import Data.Typeable ()
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Network.HTTP.Types (SimpleQuery, parseSimpleQuery, renderSimpleQuery)
-import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -136,7 +135,9 @@ import Simplex.Messaging.Protocol
     MsgBody,
     MsgId,
     PrivHeader (..),
+    SMPServer (..),
     SndPublicVerifyKey,
+    SrvLoc (..),
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
@@ -409,26 +410,6 @@ connReqP = do
   where
     mode = "invitation" $> CMInvitation <|> "contact" $> CMContact
 
-instance StrEncoding SMPServer where
-  strEncode SMPServer {host, port, keyHash} =
-    "smp://" <> strEncode keyHash <> "@" <> B.pack host <> p
-    where
-      p = B.pack $ maybe "" (':' :) port
-  strP = do
-    _ <- "smp://"
-    keyHash <- strP <* A.char '@'
-    Server host port <- strP
-    pure SMPServer {host, port, keyHash}
-
-data Server = Server HostName (Maybe ServiceName)
-
-instance StrEncoding Server where
-  strEncode (Server host port) = B.pack $ host <> maybe "" (':' :) port
-  strP = Server <$> host <*> optional port
-    where
-      host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
-      port = B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
-
 serializeConnMode :: AConnectionMode -> ByteString
 serializeConnMode (ACM cMode) = serializeConnMode' $ connMode cMode
 
@@ -448,17 +429,6 @@ connModeT = \case
   "INV" -> Just CMInvitation
   "CON" -> Just CMContact
   _ -> Nothing
-
--- | SMP server location and transport key digest (hash).
-data SMPServer = SMPServer
-  { host :: HostName,
-    port :: Maybe ServiceName,
-    keyHash :: C.KeyHash
-  }
-  deriving (Eq, Ord, Show)
-
-instance IsString SMPServer where
-  fromString = parseString strDecode
 
 -- | SMP agent connection alias.
 type ConnId = ByteString
@@ -502,25 +472,23 @@ data ConnReqData = ConnReqData
   }
   deriving (Eq, Show)
 
-data ConnReqScheme = CRSSimplex | CRSAppServer HostName (Maybe ServiceName)
+data ConnReqScheme = CRSSimplex | CRSAppServer SrvLoc
   deriving (Eq, Show)
 
 instance StrEncoding ConnReqScheme where
   strEncode = \case
     CRSSimplex -> "simplex:"
-    CRSAppServer host port -> "https://" <> strEncode (Server host port)
-  strP = "simplex:" $> CRSSimplex <|> "https://" *> appServer
-    where
-      appServer = do
-        Server host port <- strP
-        pure $ CRSAppServer host port
+    CRSAppServer srv -> "https://" <> strEncode srv
+  strP =
+    "simplex:" $> CRSSimplex
+      <|> "https://" *> (CRSAppServer <$> strP)
 
 -- TODO this is a stub for double ratchet E2E encryption parameters (2 public DH keys)
 data ConnectionEncryption = ConnectionEncryption
   deriving (Eq, Show)
 
 simplexChat :: ConnReqScheme
-simplexChat = CRSAppServer "simplex.chat" Nothing
+simplexChat = CRSAppServer $ SrvLoc "simplex.chat" Nothing
 
 -- | SMP queue status.
 data QueueStatus

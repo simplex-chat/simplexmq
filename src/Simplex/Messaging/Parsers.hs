@@ -8,7 +8,6 @@ import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
-import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
@@ -24,9 +23,6 @@ import Text.Read (readMaybe)
 
 base64P :: Parser ByteString
 base64P = decode <$?> paddedBase64 rawBase64P
-
--- base64UriP :: Parser ByteString
--- base64UriP = U.decode <$?> paddedBase64 rawBase64UriP
 
 paddedBase64 :: Parser ByteString -> Parser ByteString
 paddedBase64 raw = (<>) <$> raw <*> pad

@@ -15,6 +15,7 @@ import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (dropWhileEnd)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import Options.Applicative
 import Simplex.Messaging.Encoding.String
@@ -26,7 +27,7 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (IOMode (..), hFlush, stdout)
+import System.IO (IOMode (..), hFlush, stdout, withFile)
 import System.Process (readCreateProcess, shell)
 
 defaultServerPort :: ServiceName
@@ -155,8 +156,8 @@ runServer cfg = do
   where
     checkSavedFingerprint :: String -> IO ()
     checkSavedFingerprint savedFingerprint = do
-      fingerprint <- loadFingerprint $ caCertificateFile (cfg :: ServerConfig)
-      if savedFingerprint == (B.unpack . strEncode) fingerprint
+      Fingerprint fp <- loadFingerprint $ caCertificateFile (cfg :: ServerConfig)
+      if B.pack savedFingerprint == strEncode fp
         then putStrLn "stored fingerprint is valid"
         else putStrLn "stored fingerprint is invalid" >> exitFailure
 
@@ -296,8 +297,8 @@ createX509 IniOpts {caCertificateFile, serverPrivateKeyFile, serverCertificateFi
 
 saveFingerprint :: FilePath -> IO ()
 saveFingerprint caCertificateFile = do
-  fingerprint <- loadFingerprint caCertificateFile
-  writeFile fingerprintFile $ (B.unpack . strEncode) fingerprint <> "\n"
+  Fingerprint fp <- loadFingerprint caCertificateFile
+  withFile fingerprintFile WriteMode (`B.hPutStrLn` strEncode fp)
 
 loadSavedFingerprint :: IO String
 loadSavedFingerprint = do

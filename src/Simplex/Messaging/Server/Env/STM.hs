@@ -11,7 +11,6 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.X509.Validation (Fingerprint)
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
@@ -33,7 +32,7 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
-    caServerIdentity :: Fingerprint,
+    caServerIdentity :: KeyHash,
     caCertificateFile :: FilePath,
     serverPrivateKeyFile :: FilePath,
     serverCertificateFile :: FilePath

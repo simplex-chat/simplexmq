@@ -70,7 +70,6 @@ import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
-import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
@@ -303,13 +302,11 @@ mkTLSClientParams host port keyHash = do
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
 validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[_, caCert]) =
-  let fp = XV.getFingerprint caCert X.HashSHA256
-   in if sameFingerprint fp keyHash
-        then x509validate
-        else pure [XV.UnknownCA]
+validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, caCert]) =
+  if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
+    then x509validate
+    else pure [XV.UnknownCA]
   where
-    sameFingerprint (Fingerprint s) (C.KeyHash s') = s == s'
     x509validate :: IO [XV.FailedReason]
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
@@ -402,6 +399,7 @@ data ServerHandshake = ServerHandshake
 data ClientHandshake = ClientHandshake
   { -- | agreed SMP server protocol version
     smpVersion :: Word16,
+    -- | server identity - CA certificate fingerprint
     keyHash :: C.KeyHash
   }
 
@@ -475,14 +473,14 @@ tGetBlock THandle {connection = c} =
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-serverHandshake :: forall c. Transport c => c -> Fingerprint -> ExceptT TransportError IO (THandle c)
-serverHandshake c serverIdentity = do
+serverHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
+serverHandshake c kh = do
   let th@THandle {sessionId} = tHandle c
   sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
   getHandshake th >>= \case
     ClientHandshake {smpVersion, keyHash}
       -- TODO check KeyHash once it's added to server config
-      --  | serverIdentity /= keyHash -> throwE $ TEHandshake IDENTITY
+      --  | keyHash /= kh -> throwE $ TEHandshake IDENTITY
       | smpVersion `isCompatible` supportedSMPVersions -> pure (th :: THandle c) {smpVersion}
       | otherwise -> throwE $ TEHandshake VERSION
 
@@ -493,13 +491,13 @@ clientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportE
 clientHandshake c keyHash = do
   let th@THandle {sessionId} = tHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
-  if sessionId == sessId
-    then case smpVersionRange `compatibleVersion` supportedSMPVersions of
+  if sessionId /= sessId
+    then throwE TEBadSession
+    else case smpVersionRange `compatibleVersion` supportedSMPVersions of
       Just smpVersion -> do
         sendHandshake th $ ClientHandshake {smpVersion, keyHash}
         pure (th :: THandle c) {smpVersion}
       Nothing -> throwE $ TEHandshake VERSION
-    else throwE TEBadSession
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
