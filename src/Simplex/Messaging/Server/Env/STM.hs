@@ -33,9 +33,10 @@ data ServerConfig = ServerConfig
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
     caServerIdentity :: KeyHash,
+    -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
-    serverPrivateKeyFile :: FilePath,
-    serverCertificateFile :: FilePath
+    privateKeyFile :: FilePath,
+    certificateFile :: FilePath
   }
 
 data Env = Env
@@ -94,13 +95,13 @@ newSubscription = do
   return Sub {subThread = NoSub, delivered}
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
-newEnv config@ServerConfig {caCertificateFile, serverCertificateFile, serverPrivateKeyFile} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} = do
   server <- atomically $ newServer (serverTbqSize config)
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
-  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile serverCertificateFile serverPrivateKeyFile
+  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   return Env {config, server, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)

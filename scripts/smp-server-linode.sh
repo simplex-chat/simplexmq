@@ -23,10 +23,8 @@ ufw allow 5223
 
 bin_dir="/opt/simplex/bin"
 conf_dir="/etc/opt/simplex"
-var_dir="/var/opt/simplex"
+
 mkdir -p $bin_dir
-mkdir -p $conf_dir
-mkdir -p $var_dir
 
 # retrieve latest release info and download smp-server executable
 curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/latest > release.json

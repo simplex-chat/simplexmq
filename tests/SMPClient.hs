@@ -61,8 +61,8 @@ cfg =
       storeLog = Nothing,
       caServerIdentity = undefined, -- TODO add once it is validated
       caCertificateFile = "tests/fixtures/ca.crt",
-      serverPrivateKeyFile = "tests/fixtures/server.key",
-      serverCertificateFile = "tests/fixtures/server.crt"
+      privateKeyFile = "tests/fixtures/server.key",
+      certificateFile = "tests/fixtures/server.crt"
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a

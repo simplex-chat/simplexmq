@@ -32,8 +32,8 @@ data AgentConfig = AgentConfig
     retryInterval :: RetryInterval,
     reconnectInterval :: RetryInterval,
     caCertificateFile :: FilePath,
-    agentPrivateKeyFile :: FilePath,
-    agentCertificateFile :: FilePath
+    privateKeyFile :: FilePath,
+    certificateFile :: FilePath
   }
 
 minute :: Int
@@ -62,10 +62,11 @@ defaultAgentConfig =
             increaseAfter = 10_000_000,
             maxInterval = 10_000_000
           },
+      -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
-      agentPrivateKeyFile = "/etc/opt/simplex-agent/agent.key",
-      agentCertificateFile = "/etc/opt/simplex-agent/agent.crt"
+      privateKeyFile = "/etc/opt/simplex-agent/agent.key",
+      certificateFile = "/etc/opt/simplex-agent/agent.crt"
     }
 
 data Env = Env
