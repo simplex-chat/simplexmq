@@ -100,7 +100,7 @@ This approach is based on the concept of [unidirectional networks][4] that are u
 
 Access to each queue is controlled with unique (not shared with other queues) asymmetric key pairs, separate for the sender and the recipient. The sender and the receiver have private keys, and the server has associated public keys to authenticate participants' commands by verifying cryptographic signatures.
 
-The messages sent over the queue are end-to-end encrypted using key negotiated via out-of-band message and SMP confirmation.
+The messages sent over the queue are end-to-end encrypted using the DH secret agreed via out-of-band message and SMP confirmation.
 
 **Simplex queue diagram:**
 
