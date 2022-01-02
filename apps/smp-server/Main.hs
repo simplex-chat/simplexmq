@@ -17,10 +17,11 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Network.Socket (ServiceName)
 import Options.Applicative
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), encodeFingerprint, loadFingerprint, simplexMQVersion)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadFingerprint, simplexMQVersion)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.Exit (exitFailure)
@@ -42,6 +43,7 @@ serverConfig =
       -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini
       transports = undefined,
       storeLog = undefined,
+      caServerIdentity = undefined,
       caCertificateFile = undefined,
       serverPrivateKeyFile = undefined,
       serverCertificateFile = undefined
@@ -154,7 +156,7 @@ runServer cfg = do
     checkSavedFingerprint :: String -> IO ()
     checkSavedFingerprint savedFingerprint = do
       fingerprint <- loadFingerprint $ caCertificateFile (cfg :: ServerConfig)
-      if savedFingerprint == (B.unpack . encodeFingerprint) fingerprint
+      if savedFingerprint == (B.unpack . strEncode) fingerprint
         then putStrLn "stored fingerprint is valid"
         else putStrLn "stored fingerprint is invalid" >> exitFailure
 
@@ -295,7 +297,7 @@ createX509 IniOpts {caCertificateFile, serverPrivateKeyFile, serverCertificateFi
 saveFingerprint :: FilePath -> IO ()
 saveFingerprint caCertificateFile = do
   fingerprint <- loadFingerprint caCertificateFile
-  writeFile fingerprintFile $ (B.unpack . encodeFingerprint) fingerprint <> "\n"
+  writeFile fingerprintFile $ (B.unpack . strEncode) fingerprint <> "\n"
 
 loadSavedFingerprint :: IO String
 loadSavedFingerprint = do

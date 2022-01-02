@@ -117,11 +117,11 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
             writeTBQueue (sndQ c) (CorrId "", qId, END)
           atomically . stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
 
-runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
-runClient _ h =
-  liftIO (runExceptT $ serverHandshake h) >>= \case
-    Right th -> runClientTransport th
-    Left _ -> pure ()
+    runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
+    runClient _ h =
+      liftIO (runExceptT $ serverHandshake h $ caServerIdentity cfg) >>= \case
+        Right th -> runClientTransport th
+        Left _ -> pure ()
 
 runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
 runClientTransport th@THandle {sessionId} = do

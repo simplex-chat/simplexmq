@@ -11,9 +11,11 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.X509.Validation (Fingerprint)
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
+import Simplex.Messaging.Crypto (KeyHash)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
@@ -31,6 +33,7 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
+    caServerIdentity :: Fingerprint,
     caCertificateFile :: FilePath,
     serverPrivateKeyFile :: FilePath,
     serverCertificateFile :: FilePath

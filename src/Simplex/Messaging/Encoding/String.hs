@@ -16,6 +16,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import qualified Data.List.NonEmpty as L
+import Data.X509.Validation (Fingerprint (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -62,6 +63,10 @@ instance StrEncoding a => StrEncoding (L.NonEmpty a) where
 
 listItem :: StrEncoding a => Parser a
 listItem = strDecode <$?> A.takeTill (== ',')
+
+instance StrEncoding Fingerprint where
+  strEncode (Fingerprint s) = strEncode s
+  strP = Fingerprint <$> strP
 
 instance (StrEncoding a, StrEncoding b) => StrEncoding (a, b) where
   strEncode (a, b) = B.unwords [strEncode a, strEncode b]

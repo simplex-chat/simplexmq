@@ -665,9 +665,13 @@ newtype IV = IV {unIV :: ByteString}
 -- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
 newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
+instance Encoding KeyHash where
+  smpEncode = smpEncode . unKeyHash
+  smpP = KeyHash <$> smpP
+
 instance StrEncoding KeyHash where
   strEncode = strEncode . unKeyHash
-  strDecode = Right . KeyHash
+  strP = KeyHash <$> strP
 
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP

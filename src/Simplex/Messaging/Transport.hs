@@ -41,7 +41,6 @@ module Simplex.Messaging.Transport
     runTransportClient,
     loadTLSServerParams,
     loadFingerprint,
-    encodeFingerprint,
 
     -- * TLS 1.2 Transport
     TLS (..),
@@ -82,6 +81,7 @@ import qualified Data.Set as S
 import Data.Word (Word16)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
+import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
@@ -248,13 +248,10 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
           T.serverSupported = supportedParameters
         }
 
-loadFingerprint :: FilePath -> IO XV.Fingerprint
+loadFingerprint :: FilePath -> IO Fingerprint
 loadFingerprint certificateFile = do
   (cert : _) <- SX.readSignedObject certificateFile
   pure $ XV.getFingerprint (cert :: X.SignedExact X.Certificate) X.HashSHA256
-
-encodeFingerprint :: XV.Fingerprint -> ByteString
-encodeFingerprint (XV.Fingerprint bs) = encode bs
 
 -- * TLS 1.2 Transport
 
@@ -312,7 +309,7 @@ validateCertificateChain keyHash host port cc@(X.CertificateChain sc@[_, caCert]
         then x509validate
         else pure [XV.UnknownCA]
   where
-    sameFingerprint (XV.Fingerprint s) (C.KeyHash s') = s == s'
+    sameFingerprint (Fingerprint s) (C.KeyHash s') = s == s'
     x509validate :: IO [XV.FailedReason]
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
@@ -402,14 +399,18 @@ data ServerHandshake = ServerHandshake
     sessionId :: ByteString
   }
 
-newtype ClientHandshake = ClientHandshake
+data ClientHandshake = ClientHandshake
   { -- | agreed SMP server protocol version
-    smpVersion :: Word16
+    smpVersion :: Word16,
+    keyHash :: C.KeyHash
   }
 
 instance Encoding ClientHandshake where
-  smpEncode ClientHandshake {smpVersion} = smpEncode smpVersion
-  smpP = ClientHandshake <$> smpP
+  smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash)
+  smpP = do
+    smpVersion <- smpP
+    keyHash <- smpP
+    pure ClientHandshake {smpVersion, keyHash}
 
 instance Encoding ServerHandshake where
   smpEncode ServerHandshake {smpVersionRange, sessionId} =
@@ -434,6 +435,8 @@ data HandshakeError
     PARSE
   | -- | incompatible peer version
     VERSION
+  | -- | incorrect server identity
+    IDENTITY
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance Arbitrary TransportError where arbitrary = genericArbitraryU
@@ -472,26 +475,28 @@ tGetBlock THandle {connection = c} =
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-serverHandshake :: forall c. Transport c => c -> ExceptT TransportError IO (THandle c)
-serverHandshake c = do
+serverHandshake :: forall c. Transport c => c -> Fingerprint -> ExceptT TransportError IO (THandle c)
+serverHandshake c serverIdentity = do
   let th@THandle {sessionId} = tHandle c
   sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
-  ClientHandshake smpVersion <- getHandshake th
-  if smpVersion `isCompatible` supportedSMPVersions
-    then pure (th :: THandle c) {smpVersion}
-    else throwE $ TEHandshake VERSION
+  getHandshake th >>= \case
+    ClientHandshake {smpVersion, keyHash}
+      -- TODO check KeyHash once it's added to server config
+      --  | serverIdentity /= keyHash -> throwE $ TEHandshake IDENTITY
+      | smpVersion `isCompatible` supportedSMPVersions -> pure (th :: THandle c) {smpVersion}
+      | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-clientHandshake :: forall c. Transport c => c -> ExceptT TransportError IO (THandle c)
-clientHandshake c = do
+clientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
+clientHandshake c keyHash = do
   let th@THandle {sessionId} = tHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
   if sessionId == sessId
     then case smpVersionRange `compatibleVersion` supportedSMPVersions of
       Just smpVersion -> do
-        sendHandshake th $ ClientHandshake smpVersion
+        sendHandshake th $ ClientHandshake {smpVersion, keyHash}
         pure (th :: THandle c) {smpVersion}
       Nothing -> throwE $ TEHandshake VERSION
     else throwE TEBadSession

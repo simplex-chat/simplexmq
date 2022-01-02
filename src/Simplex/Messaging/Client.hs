@@ -171,7 +171,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ dis
 
     client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =
-      runExceptT (clientHandshake h) >>= \case
+      runExceptT (clientHandshake h (keyHash smpServer)) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
         Right th@THandle {sessionId} -> do
           atomically $ do
