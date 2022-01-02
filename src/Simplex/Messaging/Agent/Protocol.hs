@@ -124,7 +124,7 @@ import Data.Type.Equality
 import Data.Typeable ()
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
-import Network.HTTP.Types (parseSimpleQuery, renderSimpleQuery)
+import Network.HTTP.Types (SimpleQuery, parseSimpleQuery, renderSimpleQuery)
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -197,15 +197,12 @@ data ACommand (p :: AParty) where
   END :: ACommand Agent
   DOWN :: ACommand Agent
   UP :: ACommand Agent
-  -- QST :: QueueDirection -> ACommand Client
-  -- STAT :: QueueDirection -> Maybe QueueStatus -> Maybe SubMode -> ACommand Agent
   SEND :: MsgBody -> ACommand Client
   MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
   MSG :: MsgMeta -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
-  -- RCVD :: AgentMsgId -> ACommand Agent
   OFF :: ACommand Client
   DEL :: ACommand Client
   OK :: ACommand Agent
@@ -363,6 +360,18 @@ instance StrEncoding SMPQueueUri where
     dhPublicKey <- strP
     pure SMPQueueUri {smpServer, senderId, smpVersionRange, dhPublicKey}
 
+newtype QueryStringParams = QSP SimpleQuery
+
+instance StrEncoding QueryStringParams where
+  strEncode (QSP q) = renderSimpleQuery True q
+  strP = QSP . parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
+
+queryParam :: StrEncoding a => ByteString -> QueryStringParams -> Parser a
+queryParam name (QSP q) =
+  case find ((== name) . fst) q of
+    Just (_, p) -> either fail pure $ parseAll strP p
+    _ -> fail $ "no qs param " <> B.unpack name
+
 serializeConnReq :: AConnectionRequest -> ByteString
 serializeConnReq (ACR _ cr) = serializeConnReq' cr
 
@@ -372,16 +381,12 @@ serializeConnReq' = \case
   CRContact crData -> serialize CMContact crData
   where
     serialize crMode ConnReqData {crScheme, crSmpQueues, crEncryption = _} =
-      sch <> "/" <> m <> "#/" <> queryStr
+      strEncode crScheme <> "/" <> m <> "#/" <> queryStr
       where
-        sch = case crScheme of
-          CRSSimplex -> "simplex:"
-          CRSAppServer host port -> B.pack $ "https://" <> host <> maybe "" (':' :) port
         m = case crMode of
           CMInvitation -> "invitation"
           CMContact -> "contact"
-        queryStr = renderSimpleQuery True [("smp", queues), ("e2e", "")]
-        queues = B.intercalate "," . map strEncode $ L.toList crSmpQueues
+        queryStr = strEncode $ QSP [("smp", strEncode crSmpQueues), ("e2e", "")]
 
 connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
 connReqP' = do
@@ -392,39 +397,37 @@ connReqP' = do
 
 connReqP :: Parser AConnectionRequest
 connReqP = do
-  crScheme <- "simplex:" $> CRSSimplex <|> "https://" *> appServer
+  crScheme <- strP
   crMode <- "/" *> mode <* "#/?"
-  query <- parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
-  crSmpQueues <- paramP "smp" smpQueues query
+  query <- strP
+  crSmpQueues <- queryParam "smp" query
   let crEncryption = ConnectionEncryption
       cReq = ConnReqData {crScheme, crSmpQueues, crEncryption}
   pure $ case crMode of
     CMInvitation -> ACR SCMInvitation $ CRInvitation cReq
     CMContact -> ACR SCMContact $ CRContact cReq
   where
-    appServer = CRSAppServer <$> host <*> optional port
-    host = B.unpack <$> A.takeTill (\c -> c == ':' || c == '/')
-    port = B.unpack <$> (A.char ':' *> A.takeTill (== '/'))
     mode = "invitation" $> CMInvitation <|> "contact" $> CMContact
-    paramP param parser query =
-      let p = maybe (fail "") (pure . snd) $ find ((== param) . fst) query
-       in parseAll parser <$?> p
-    smpQueues =
-      maybe (fail "no SMP queues") pure . L.nonEmpty
-        =<< (smpQueue `A.sepBy1'` A.char ',')
-    smpQueue = strDecode <$?> A.takeTill (== ',')
 
 instance StrEncoding SMPServer where
-  strEncode SMPServer {host, port, keyHash} = "smp://" <> kh <> "@" <> B.pack host <> p
+  strEncode SMPServer {host, port, keyHash} =
+    "smp://" <> strEncode keyHash <> "@" <> B.pack host <> p
     where
-      kh = strEncode keyHash
       p = B.pack $ maybe "" (':' :) port
   strP = do
     _ <- "smp://"
     keyHash <- strP <* A.char '@'
-    host <- B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
-    port <- optional $ B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
+    Server host port <- strP
     pure SMPServer {host, port, keyHash}
+
+data Server = Server HostName (Maybe ServiceName)
+
+instance StrEncoding Server where
+  strEncode (Server host port) = B.pack $ host <> maybe "" (':' :) port
+  strP = Server <$> host <*> optional port
+    where
+      host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
+      port = B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
 
 serializeConnMode :: AConnectionMode -> ByteString
 serializeConnMode (ACM cMode) = serializeConnMode' $ connMode cMode
@@ -502,14 +505,22 @@ data ConnReqData = ConnReqData
 data ConnReqScheme = CRSSimplex | CRSAppServer HostName (Maybe ServiceName)
   deriving (Eq, Show)
 
+instance StrEncoding ConnReqScheme where
+  strEncode = \case
+    CRSSimplex -> "simplex:"
+    CRSAppServer host port -> "https://" <> strEncode (Server host port)
+  strP = "simplex:" $> CRSSimplex <|> "https://" *> appServer
+    where
+      appServer = do
+        Server host port <- strP
+        pure $ CRSAppServer host port
+
 -- TODO this is a stub for double ratchet E2E encryption parameters (2 public DH keys)
 data ConnectionEncryption = ConnectionEncryption
   deriving (Eq, Show)
 
 simplexChat :: ConnReqScheme
 simplexChat = CRSAppServer "simplex.chat" Nothing
-
-data QueueDirection = SND | RCV deriving (Show)
 
 -- | SMP queue status.
 data QueueStatus

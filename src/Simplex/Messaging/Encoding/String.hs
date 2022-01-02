@@ -15,6 +15,7 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
+import qualified Data.List.NonEmpty as L
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -47,6 +48,20 @@ instance StrEncoding Str where
 instance StrEncoding a => StrEncoding (Maybe a) where
   strEncode = maybe "" strEncode
   strP = optional strP
+
+-- lists encode/parse as comma-separated strings
+instance StrEncoding a => StrEncoding [a] where
+  strEncode = B.intercalate "," . map strEncode
+  strP = listItem `A.sepBy'` A.char ','
+
+instance StrEncoding a => StrEncoding (L.NonEmpty a) where
+  strEncode = strEncode . L.toList
+  strP =
+    maybe (fail "empty list") pure . L.nonEmpty
+      =<< listItem `A.sepBy1'` A.char ','
+
+listItem :: StrEncoding a => Parser a
+listItem = strDecode <$?> A.takeTill (== ',')
 
 instance (StrEncoding a, StrEncoding b) => StrEncoding (a, b) where
   strEncode (a, b) = B.unwords [strEncode a, strEncode b]
