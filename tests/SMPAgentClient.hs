@@ -167,8 +167,8 @@ cfg =
           },
       retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000},
       caCertificateFile = "tests/fixtures/ca.crt",
-      agentPrivateKeyFile = "tests/fixtures/server.key",
-      agentCertificateFile = "tests/fixtures/server.crt"
+      privateKeyFile = "tests/fixtures/server.key",
+      certificateFile = "tests/fixtures/server.crt"
     }
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
