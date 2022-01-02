@@ -355,13 +355,13 @@ rcDecrypt' rc@Ratchet {rcRcv, rcMKSkipped, rcAD} msg' = do
 
 initKdf :: (AlgorithmI a, DhAlgorithm a) => ByteString -> PublicKey a -> PrivateKey a -> (RatchetKey, Key, Key)
 initKdf salt k pk =
-  let dhOut = dhSecretBytes $ dh' k pk
+  let dhOut = dhSecretBytes' $ dh' k pk
       (sk, hk, nhk) = hkdf3 salt dhOut "SimpleXInitRatchet"
    in (RatchetKey sk, Key hk, Key nhk)
 
 rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> (RatchetKey, RatchetKey, Key)
 rootKdf (RatchetKey rk) k pk =
-  let dhOut = dhSecretBytes $ dh' k pk
+  let dhOut = dhSecretBytes' $ dh' k pk
       (rk', ck, nhk) = hkdf3 rk dhOut "SimpleXRootRatchet"
    in (RatchetKey rk', RatchetKey ck, Key nhk)
 

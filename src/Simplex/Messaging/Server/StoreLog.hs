@@ -5,6 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Server.StoreLog
   ( StoreLog, -- constructors are not exported
@@ -22,10 +23,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad (unless)
-import Data.Attoparsec.ByteString.Char8 (Parser)
-import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first, second)
-import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -34,8 +32,7 @@ import Data.Functor (($>))
 import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Parsers (base64P, parseAll)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (QueueRec (..), QueueStatus (..))
 import Simplex.Messaging.Transport (trimCR)
@@ -54,44 +51,40 @@ data StoreLogRecord
   | AddNotifier QueueId NotifierId NtfPublicVerifyKey
   | DeleteQueue QueueId
 
-storeLogRecordP :: Parser StoreLogRecord
-storeLogRecordP =
-  "CREATE " *> createQueueP
-    <|> "SECURE " *> secureQueueP
-    <|> "NOTIFIER " *> addNotifierP
-    <|> "DELETE " *> (DeleteQueue <$> base64P)
-  where
-    createQueueP = CreateQueue <$> queueRecP
-    secureQueueP = SecureQueue <$> base64P <* A.space <*> C.strPubKeyP
-    addNotifierP =
-      AddNotifier <$> base64P <* A.space <*> base64P <* A.space <*> C.strPubKeyP
-    queueRecP = do
-      recipientId <- "rid=" *> base64P
-      recipientKey <- " rk=" *> C.strPubKeyP
-      rcvDhSecret <- " rdh=" *> C.strDhSecretP
-      senderId <- " sid=" *> base64P
-      senderKey <- " sk=" *> optional C.strPubKeyP
-      notifier <- optional $ (,) <$> (" nid=" *> base64P) <*> (" nk=" *> C.strPubKeyP)
-      pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
+instance StrEncoding QueueRec where
+  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
+    B.unwords
+      [ "rid=" <> strEncode recipientId,
+        "rk=" <> strEncode recipientKey,
+        "rdh=" <> strEncode rcvDhSecret,
+        "sid=" <> strEncode senderId,
+        "sk=" <> strEncode senderKey
+      ]
+      <> maybe "" notifierStr notifier
+    where
+      notifierStr (nId, nKey) = " nid=" <> strEncode nId <> " nk=" <> strEncode nKey
 
-serializeStoreLogRecord :: StoreLogRecord -> ByteString
-serializeStoreLogRecord = \case
-  CreateQueue q -> "CREATE " <> serializeQueue q
-  SecureQueue rId sKey -> "SECURE " <> encode rId <> " " <> C.serializePubKey sKey
-  AddNotifier rId nId nKey -> B.unwords ["NOTIFIER", encode rId, encode nId, C.serializePubKey nKey]
-  DeleteQueue rId -> "DELETE " <> encode rId
-  where
-    serializeQueue
-      QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
-        B.unwords
-          [ "rid=" <> encode recipientId,
-            "rk=" <> C.serializePubKey recipientKey,
-            "rdh=" <> C.serializeDhSecret rcvDhSecret,
-            "sid=" <> encode senderId,
-            "sk=" <> maybe "" C.serializePubKey senderKey
-          ]
-          <> maybe "" serializeNotifier notifier
-    serializeNotifier (nId, nKey) = " nid=" <> encode nId <> " nk=" <> C.serializePubKey nKey
+  strP = do
+    recipientId <- "rid=" *> strP_
+    recipientKey <- "rk=" *> strP_
+    rcvDhSecret <- "rdh=" *> strP_
+    senderId <- "sid=" *> strP_
+    senderKey <- "sk=" *> strP
+    notifier <- optional $ (,) <$> (" nid=" *> strP_) <*> ("nk=" *> strP)
+    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
+
+instance StrEncoding StoreLogRecord where
+  strEncode = \case
+    CreateQueue q -> strEncode (Str "CREATE", q)
+    SecureQueue rId sKey -> strEncode (Str "SECURE", rId, sKey)
+    AddNotifier rId nId nKey -> strEncode (Str "NOTIFIER", rId, nId, nKey)
+    DeleteQueue rId -> strEncode (Str "DELETE", rId)
+
+  strP =
+    "CREATE " *> (CreateQueue <$> strP)
+      <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
+      <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP_ <*> strP)
+      <|> "DELETE " *> (DeleteQueue <$> strP)
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
@@ -113,7 +106,7 @@ closeStoreLog = \case
 
 writeStoreLogRecord :: StoreLog 'WriteMode -> StoreLogRecord -> IO ()
 writeStoreLogRecord (WriteStoreLog _ h) r = do
-  B.hPutStrLn h $ serializeStoreLogRecord r
+  B.hPutStrLn h $ strEncode r
   hFlush h
 
 logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
@@ -151,7 +144,7 @@ readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLo
     returnResult :: ([LogParsingError], Map RecipientId QueueRec) -> IO (Map RecipientId QueueRec)
     returnResult (errs, res) = mapM_ printError errs $> res
     parseLogRecord :: LB.ByteString -> Either LogParsingError StoreLogRecord
-    parseLogRecord = (\s -> first (,s) $ parseAll storeLogRecordP s) . trimCR . LB.toStrict
+    parseLogRecord = (\s -> first (,s) $ strDecode s) . trimCR . LB.toStrict
     procLogRecord :: Map RecipientId QueueRec -> StoreLogRecord -> Map RecipientId QueueRec
     procLogRecord m = \case
       CreateQueue q -> M.insert (recipientId q) q m

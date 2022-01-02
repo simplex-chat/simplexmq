@@ -691,7 +691,7 @@ newSndQueue_ ::
   SMPQueueUri ->
   ConnInfo ->
   m (SndQueue, SMPConfirmation)
-newSndQueue_ a (SMPQueueUri smpServer senderId rcvE2ePubDhKey) cInfo = do
+newSndQueue_ a (SMPQueueUri smpServer senderId clientVersion rcvE2ePubDhKey) cInfo = do
   (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
   let sndQueue =

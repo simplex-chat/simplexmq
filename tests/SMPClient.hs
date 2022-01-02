@@ -36,11 +36,8 @@ testPort = "5001"
 testPort2 :: ServiceName
 testPort2 = "5002"
 
-testKeyHashStr :: ByteString
-testKeyHashStr = "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
-
-testKeyHash :: Maybe C.KeyHash
-testKeyHash = Just "9VjLsOY5ZvB4hoglNdBzJFAUi/vP4GkZnJFahQOXV20="
+testKeyHash :: C.KeyHash
+testKeyHash = "9VjLsOY5ZvB4hoglNdBzJFAUi_vP4GkZnJFahQOXV20="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
@@ -48,7 +45,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
   runTransportClient testHost testPort testKeyHash $ \h ->
-    liftIO (runExceptT $ clientHandshake h) >>= \case
+    liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -68,17 +65,17 @@ cfg =
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerStoreLogOn t port client = do
+withSmpServerStoreLogOn t port' client = do
   s <- liftIO $ openReadStoreLog testStoreLogFile
   serverBracket
-    (\started -> runSMPServerBlocking started cfg {transports = [(port, t)], storeLog = Just s})
+    (\started -> runSMPServerBlocking started cfg {transports = [(port', t)], storeLog = Just s})
     (pure ())
     client
 
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerThreadOn t port =
+withSmpServerThreadOn t port' =
   serverBracket
-    (\started -> runSMPServerBlocking started cfg {transports = [(port, t)]})
+    (\started -> runSMPServerBlocking started cfg {transports = [(port', t)]})
     (pure ())
 
 serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
@@ -95,7 +92,7 @@ serverBracket process afterProcess f = do
         _ -> pure ()
 
 withSmpServerOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> m a -> m a
-withSmpServerOn t port = withSmpServerThreadOn t port . const
+withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 
 withSmpServer :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
 withSmpServer t = withSmpServerOn t testPort

@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -8,24 +9,27 @@
 module Main where
 
 import Control.Monad.Except
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:))
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.List (dropWhileEnd)
 import qualified Data.Text as T
+import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import Options.Applicative
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), encodeFingerprint, loadFingerprint, simplexMQVersion)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadFingerprint, simplexMQVersion)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (IOMode (..))
+import System.IO (IOMode (..), hGetLine, withFile)
 import System.Process (readCreateProcess, shell)
+import Text.Read (readMaybe)
 
 cfgDir :: FilePath
 cfgDir = "/etc/opt/simplex"
@@ -56,58 +60,53 @@ fingerprintFile = combine cfgDir "fingerprint"
 
 main :: IO ()
 main = do
-  getCliOptions >>= \opts -> case optCommand opts of
-    Init initOptions@InitOptions {pubkeyAlgorithm} -> do
-      -- TODO check during parsing
-      checkPubkeyAlgorithm pubkeyAlgorithm
+  getCliCommand >>= \case
+    Init opts ->
       doesFileExist iniFile >>= \case
-        True -> iniAlreadyExistsErr >> exitFailure
-        False -> initializeServer initOptions
-    Start -> do
+        True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `smp-server start`."
+        _ -> initializeServer opts
+    Start ->
       doesFileExist iniFile >>= \case
-        False -> iniDoesNotExistErr >> exitFailure
-        True -> readIniFile iniFile >>= either (\e -> putStrLn e >> exitFailure) (runServer . mkIniOptions)
+        True -> readIniFile iniFile >>= either exitError (runServer . mkIniOptions)
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `smp-server init`."
     Delete -> cleanup >> putStrLn "Deleted configuration and log files"
-  where
-    checkPubkeyAlgorithm alg
-      | alg == "ED448" || alg == "ED25519" = pure ()
-      | otherwise = putStrLn ("Unsupported public key algorithm " <> alg) >> exitFailure
-    iniAlreadyExistsErr = putStrLn $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `smp-server start`."
-    iniDoesNotExistErr = putStrLn $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `smp-server init`."
 
-newtype CliOptions = CliOptions {optCommand :: Command}
+exitError :: String -> IO ()
+exitError msg = putStrLn msg >> exitFailure
 
-data Command
+data CliCommand
   = Init InitOptions
   | Start
   | Delete
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
-    pubkeyAlgorithm :: String
+    signAlgorithm :: SignAlgorithm
   }
 
-getCliOptions :: IO CliOptions
-getCliOptions =
+data SignAlgorithm = ED448 | ED25519
+  deriving (Read, Show)
+
+getCliCommand :: IO CliCommand
+getCliCommand =
   customExecParser
     (prefs showHelpOnEmpty)
     ( info
-        (helper <*> versionOption <*> cliOptionsP)
+        (helper <*> versionOption <*> cliCommandP)
         (header version <> fullDesc)
     )
   where
     versionOption = infoOption version (long "version" <> short 'v' <> help "Show version")
 
-cliOptionsP :: Parser CliOptions
-cliOptionsP =
-  CliOptions
-    <$> hsubparser
-      ( command "init" (info initP (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
-          <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
-          <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
-      )
+cliCommandP :: Parser CliCommand
+cliCommandP =
+  hsubparser
+    ( command "init" (info initP (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
+        <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+        <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
+    )
   where
-    initP :: Parser Command
+    initP :: Parser CliCommand
     initP =
       Init .: InitOptions
         <$> switch
@@ -115,34 +114,35 @@ cliOptionsP =
               <> short 'l'
               <> help "Enable store log for SMP queues persistence"
           )
-        <*> strOption
-          ( long "pubkey-algorithm"
+        <*> option
+          (maybeReader readMaybe)
+          ( long "sign-algorithm"
               <> short 'a'
-              <> help "Public key algorithm used for certificate generation: ED25519, ED448"
-              <> value "ED448"
+              <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
+              <> value ED448
               <> showDefault
               <> metavar "ALG"
           )
 
 initializeServer :: InitOptions -> IO ()
-initializeServer InitOptions {enableStoreLog, pubkeyAlgorithm} = do
+initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
   cleanup
   createDirectoryIfMissing True cfgDir
   createDirectoryIfMissing True logDir
   createX509
-  saveFingerprint
+  fp <- saveFingerprint
   createIni
   putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `smp-server start` to start server."
-  printServiceInfo
+  printServiceInfo fp
   warnCAPrivateKeyFile
   where
     createX509 = do
       createOpensslConf
       -- CA certificate (identity/offline)
-      run $ "openssl genpkey -algorithm " <> pubkeyAlgorithm <> " -out " <> caKeyFile
+      run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> caKeyFile
       run $ "openssl req -new -x509 -days 999999 -config " <> opensslCnfFile <> " -extensions v3_ca -key " <> caKeyFile <> " -out " <> caCrtFile
       -- server certificate (online)
-      run $ "openssl genpkey -algorithm " <> pubkeyAlgorithm <> " -out " <> serverKeyFile
+      run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> serverKeyFile
       run $ "openssl req -new -config " <> opensslCnfFile <> " -reqexts v3_req -key " <> serverKeyFile <> " -out " <> serverCsrFile
       run $ "openssl x509 -req -days 999999 -copy_extensions copy -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -out " <> serverCrtFile
       where
@@ -168,8 +168,9 @@ initializeServer InitOptions {enableStoreLog, pubkeyAlgorithm} = do
             \extendedKeyUsage = serverAuth\n"
 
     saveFingerprint = do
-      fingerprint <- loadFingerprint caCrtFile
-      writeFile fingerprintFile $ (B.unpack . encodeFingerprint) fingerprint <> "\n"
+      Fingerprint fp <- loadFingerprint caCrtFile
+      withFile fingerprintFile WriteMode (`B.hPutStrLn` strEncode fp)
+      pure fp
 
     createIni = do
       writeFile iniFile $
@@ -207,45 +208,39 @@ mkIniOptions ini =
 
 runServer :: IniOptions -> IO ()
 runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
-  checkSavedFingerprint
-  printServiceInfo
-  checkCAPrivateKeyFile
-  cfg <- setupServerConfig
+  fp <- checkSavedFingerprint
+  printServiceInfo fp
+  storeLog <- openStoreLog
+  let cfg = mkServerConfig storeLog
   printServerConfig cfg
   runSMPServer cfg
   where
     checkSavedFingerprint = do
       savedFingerprint <- loadSavedFingerprint
-      fingerprint <- loadFingerprint caCrtFile
-      when (savedFingerprint /= (B.unpack . encodeFingerprint) fingerprint) $
-        putStrLn "Stored fingerprint is invalid." >> exitFailure
+      Fingerprint fp <- loadFingerprint caCrtFile
+      when (B.pack savedFingerprint /= strEncode fp) $
+        exitError "Stored fingerprint is invalid."
+      pure fp
 
-    checkCAPrivateKeyFile =
-      doesFileExist caKeyFile >>= (`when` (alert >> warnCAPrivateKeyFile))
-      where
-        alert = putStrLn $ "WARNING: " <> caKeyFile <> " is present on the server!"
+    mkServerConfig storeLog =
+      ServerConfig
+        { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
+          tbqSize = 16,
+          serverTbqSize = 128,
+          msgQueueQuota = 256,
+          queueIdBytes = 24,
+          msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
+          caCertificateFile = caCrtFile,
+          privateKeyFile = serverKeyFile,
+          certificateFile = serverCrtFile,
+          storeLog
+        }
 
-    setupServerConfig = do
-      storeLog <- openStoreLog
-      let transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets]
-      pure
-        ServerConfig
-          { tbqSize = 16,
-            serverTbqSize = 128,
-            msgQueueQuota = 256,
-            queueIdBytes = 24,
-            msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
-            caCertificateFile = caCrtFile,
-            privateKeyFile = serverKeyFile,
-            certificateFile = serverCrtFile,
-            transports,
-            storeLog
-          }
-      where
-        openStoreLog :: IO (Maybe (StoreLog 'ReadMode))
-        openStoreLog
-          | enableStoreLog = Just <$> openReadStoreLog storeLogFile
-          | otherwise = pure Nothing
+    openStoreLog :: IO (Maybe (StoreLog 'ReadMode))
+    openStoreLog =
+      if enableStoreLog
+        then Just <$> openReadStoreLog storeLogFile
+        else pure Nothing
 
     printServerConfig ServerConfig {storeLog, transports} = do
       putStrLn $ case storeLog of
@@ -261,11 +256,10 @@ cleanup = do
   where
     deleteDirIfExists path = doesDirectoryExist path >>= (`when` removeDirectoryRecursive path)
 
-printServiceInfo :: IO ()
-printServiceInfo = do
+printServiceInfo :: ByteString -> IO ()
+printServiceInfo fpStr = do
   putStrLn version
-  fingerprint <- loadSavedFingerprint
-  putStrLn $ "Fingerprint: " <> fingerprint
+  B.putStrLn $ "Fingerprint: " <> strEncode fpStr
 
 version :: String
 version = "SMP server v" <> simplexMQVersion
@@ -274,13 +268,12 @@ warnCAPrivateKeyFile :: IO ()
 warnCAPrivateKeyFile =
   putStrLn $
     "----------\n\
-    \We highly recommend to remove CA private key file from the server and keep it securely in place of your choosing.\n\
-    \In case server's TLS credential is compromised you will be able to regenerate it using this key,\n\
-    \thus keeping server's identity and allowing clients to keep established connections. Key location:\n"
+    \You should store CA private key securely and delete it from the server.\n\
+    \If server TLS credential is compromised this key can be used to sign a new one, \
+    \keeping the same server identity and established connections.\n\
+    \CA private key location:\n"
       <> caKeyFile
       <> "\n----------"
 
 loadSavedFingerprint :: IO String
-loadSavedFingerprint = do
-  fingerprint <- readFile fingerprintFile
-  pure $ dropWhileEnd (== '\n') fingerprint
+loadSavedFingerprint = withFile fingerprintFile ReadMode hGetLine

@@ -43,6 +43,7 @@ library
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Encoding
+      Simplex.Messaging.Encoding.String
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server

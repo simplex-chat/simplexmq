@@ -53,6 +53,8 @@ module Simplex.Messaging.Protocol
     PubHeader (..),
     ClientMessage (..),
     PrivHeader (..),
+    SMPServer (..),
+    SrvLoc (..),
     CorrId (..),
     QueueId,
     RecipientId,
@@ -98,8 +100,10 @@ import Data.Type.Equality
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
+import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
 import Simplex.Messaging.Util ((<$?>))
@@ -330,7 +334,7 @@ instance Encoding PubHeader where
 
 instance Encoding EncMessage where
   smpEncode EncMessage {emHeader, emNonce, emBody} =
-    smpEncode emHeader <> smpEncode emNonce <> emBody
+    smpEncode (emHeader, emNonce, Tail emBody)
   smpP = do
     emHeader <- smpP
     emNonce <- smpP
@@ -356,6 +360,36 @@ instance Encoding PrivHeader where
 instance Encoding ClientMessage where
   smpEncode (ClientMessage h msg) = smpEncode h <> msg
   smpP = ClientMessage <$> smpP <*> A.takeByteString
+
+-- | SMP server location and transport key digest (hash).
+data SMPServer = SMPServer
+  { host :: HostName,
+    port :: Maybe ServiceName,
+    keyHash :: C.KeyHash
+  }
+  deriving (Eq, Ord, Show)
+
+instance IsString SMPServer where
+  fromString = parseString strDecode
+
+instance StrEncoding SMPServer where
+  strEncode SMPServer {host, port, keyHash} =
+    "smp://" <> strEncode keyHash <> "@" <> strEncode (SrvLoc host port)
+  strP = do
+    _ <- "smp://"
+    keyHash <- strP <* A.char '@'
+    SrvLoc host port <- strP
+    pure SMPServer {host, port, keyHash}
+
+data SrvLoc = SrvLoc HostName (Maybe ServiceName)
+  deriving (Eq, Ord, Show)
+
+instance StrEncoding SrvLoc where
+  strEncode (SrvLoc host port) = B.pack $ host <> maybe "" (':' :) port
+  strP = SrvLoc <$> host <*> optional port
+    where
+      host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
+      port = B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
 
 -- | Transmission correlation ID.
 newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)

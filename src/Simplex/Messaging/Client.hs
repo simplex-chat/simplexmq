@@ -61,7 +61,6 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Network.Socket (ServiceName)
 import Numeric.Natural
-import Simplex.Messaging.Agent.Protocol (SMPServer (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
@@ -171,7 +170,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ dis
 
     client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =
-      runExceptT (clientHandshake h) >>= \case
+      runExceptT (clientHandshake h $ keyHash smpServer) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
         Right th@THandle {sessionId} -> do
           atomically $ do
