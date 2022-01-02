@@ -11,15 +11,17 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
+import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport, loadTLSServerParams)
+import Simplex.Messaging.Transport (ATransport, loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -31,14 +33,16 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
-    blockSize :: Int,
-    serverPrivateKeyFile :: FilePath,
-    serverCertificateFile :: FilePath
+    -- CA certificate private key is not needed for initialization
+    caCertificateFile :: FilePath,
+    privateKeyFile :: FilePath,
+    certificateFile :: FilePath
   }
 
 data Env = Env
   { config :: ServerConfig,
     server :: Server,
+    serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
@@ -56,8 +60,8 @@ data Server = Server
 data Client = Client
   { subscriptions :: TVar (Map RecipientId Sub),
     ntfSubscriptions :: TVar (Map NotifierId ()),
-    rcvQ :: TBQueue (Transmission ClientCmd),
-    sndQ :: TBQueue BrokerTransmission,
+    rcvQ :: TBQueue (Transmission Cmd),
+    sndQ :: TBQueue (Transmission BrokerMsg),
     sessionId :: ByteString,
     connected :: TVar Bool
   }
@@ -92,14 +96,16 @@ newSubscription = do
   return Sub {subThread = NoSub, delivered}
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
-newEnv config = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} = do
   server <- atomically $ newServer (serverTbqSize config)
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
-  tlsServerParams <- liftIO $ loadTLSServerParams (serverCertificateFile config) (serverPrivateKeyFile config)
-  return Env {config, server, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
+  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+  Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
+  let serverIdentity = KeyHash fp
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do

@@ -25,7 +25,12 @@
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
-  ( -- * Transport connection class
+  ( -- * SMP transport parameters
+    smpBlockSize,
+    supportedSMPVersions,
+    simplexMQVersion,
+
+    -- * Transport connection class
     Transport (..),
     TProxy (..),
     ATransport (..),
@@ -35,11 +40,12 @@ module Simplex.Messaging.Transport
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
-    withTlsUnique,
+    loadFingerprint,
 
     -- * TLS 1.2 Transport
     TLS (..),
     closeTLS,
+    withTlsUnique,
 
     -- * SMP transport
     THandle (..),
@@ -50,7 +56,6 @@ module Simplex.Messaging.Transport
     tGetBlock,
     serializeTransportError,
     transportErrorP,
-    currentSMPVersionStr,
 
     -- * Trim trailing CR
     trimCR,
@@ -61,10 +66,10 @@ import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
+import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
-import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
-import Data.ByteString.Base64
+import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
@@ -72,7 +77,11 @@ import Data.Default (def)
 import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.String
+import Data.Word (Word16)
+import qualified Data.X509 as X
+import qualified Data.X509.CertificateStore as XS
+import Data.X509.Validation (Fingerprint (..))
+import qualified Data.X509.Validation as XV
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
@@ -80,8 +89,11 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
-import Simplex.Messaging.Parsers (parseAll, parseRead1, parseString)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Parsers (parse, parseRead1)
 import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Version
 import System.Exit (exitFailure)
 import System.IO.Error
 import Test.QuickCheck (Arbitrary (..))
@@ -89,6 +101,17 @@ import UnliftIO.Concurrent
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+
+-- * Transport parameters
+
+smpBlockSize :: Int
+smpBlockSize = 16384
+
+supportedSMPVersions :: VersionRange
+supportedSMPVersions = mkVersionRange 1 1
+
+simplexMQVersion :: String
+simplexMQVersion = "0.5.1"
 
 -- * Transport connection class
 
@@ -158,7 +181,7 @@ runTransportServer started port serverParams server = do
     acceptConnection :: Socket -> IO c
     acceptConnection sock = do
       (newSock, _) <- accept sock
-      ctx <- connectTLS "server" serverParams newSock
+      ctx <- connectTLS serverParams newSock
       getServerConnection ctx
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
@@ -177,13 +200,14 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> (c -> m a) -> m a
-runTransportClient host port client = do
-  c <- liftIO $ startTCPClient host port
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> (c -> m a) -> m a
+runTransportClient host port keyHash client = do
+  let clientParams = mkTLSClientParams host port keyHash
+  c <- liftIO $ startTCPClient host port clientParams
   client c `E.finally` liftIO (closeConnection c)
 
-startTCPClient :: forall c. Transport c => HostName -> ServiceName -> IO c
-startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
+startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> IO c
+startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
@@ -202,16 +226,16 @@ startTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      ctx <- connectTLS "client" clientParams sock
+      ctx <- connectTLS clientParams sock
       getClientConnection ctx
 
-loadTLSServerParams :: FilePath -> FilePath -> IO T.ServerParams
-loadTLSServerParams certificateFile privateKeyFile =
+loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
+loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
   fromCredential <$> loadServerCredential
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
-      T.credentialLoadX509 certificateFile privateKeyFile >>= \case
+      T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
         Right credential -> pure credential
         Left _ -> putStrLn "invalid credential" >> exitFailure
     fromCredential :: T.Credential -> T.ServerParams
@@ -223,6 +247,11 @@ loadTLSServerParams certificateFile privateKeyFile =
           T.serverSupported = supportedParameters
         }
 
+loadFingerprint :: FilePath -> IO Fingerprint
+loadFingerprint certificateFile = do
+  (cert : _) <- SX.readSignedObject certificateFile
+  pure $ XV.getFingerprint (cert :: X.SignedExact X.Certificate) X.HashSHA256
+
 -- * TLS 1.2 Transport
 
 data TLS = TLS
@@ -233,11 +262,11 @@ data TLS = TLS
     getLock :: TMVar ()
   }
 
-connectTLS :: T.TLSParams p => String -> p -> Socket -> IO T.Context
-connectTLS party params sock =
+connectTLS :: T.TLSParams p => p -> Socket -> IO T.Context
+connectTLS params sock =
   E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
     T.handshake ctx
-      `E.catch` \(e :: E.SomeException) -> putStrLn (party <> " exception: " <> show e) >> E.throwIO e
+      `E.catch` \(e :: E.SomeException) -> putStrLn ("exception: " <> show e) >> E.throwIO e
     pure ctx
 
 getTLS :: TransportPeer -> T.Context -> IO TLS
@@ -261,13 +290,32 @@ closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
 
-clientParams :: T.ClientParams
-clientParams =
-  (T.defaultParamsClient "localhost" "5223")
+mkTLSClientParams :: HostName -> ServiceName -> C.KeyHash -> T.ClientParams
+mkTLSClientParams host port keyHash = do
+  let p = B.pack port
+  (T.defaultParamsClient host p)
     { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ _ -> pure []},
+      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p},
       T.clientSupported = supportedParameters
     }
+
+validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
+validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
+validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
+validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, caCert]) =
+  if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
+    then x509validate
+    else pure [XV.UnknownCA]
+  where
+    x509validate :: IO [XV.FailedReason]
+    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
+      where
+        hooks = XV.defaultHooks
+        checks = XV.defaultChecks
+        certStore = XS.makeCertificateStore sc
+        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
+        serviceID = (host, port)
+validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
 
 supportedParameters :: T.Supported
 supportedParameters =
@@ -333,46 +381,39 @@ trimCR :: ByteString -> ByteString
 trimCR "" = ""
 trimCR s = if B.last s == '\r' then B.init s else s
 
--- * SMP encrypted transport
-
-data SMPVersion = SMPVersion Int Int Int
-  deriving (Eq, Ord)
-
-instance IsString SMPVersion where
-  fromString = parseString $ parseAll smpVersionP
-
-currentSMPVersion :: SMPVersion
-currentSMPVersion = "0.5.1"
-
-currentSMPVersionStr :: ByteString
-currentSMPVersionStr = serializeSMPVersion currentSMPVersion
-
-serializeSMPVersion :: SMPVersion -> ByteString
-serializeSMPVersion (SMPVersion a b c) = B.intercalate "." [bshow a, bshow b, bshow c]
-
-smpVersionP :: Parser SMPVersion
-smpVersionP =
-  let ver = A.decimal <* A.char '.'
-   in SMPVersion <$> ver <*> ver <*> A.decimal
+-- * SMP transport
 
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
     sessionId :: ByteString,
-    blockSize :: Int
+    -- | agreed SMP server protocol version
+    smpVersion :: Word16
   }
 
-data Handshake = Handshake
-  { sessionId :: ByteString,
-    smpVersion :: SMPVersion
+data ServerHandshake = ServerHandshake
+  { smpVersionRange :: VersionRange,
+    sessionId :: ByteString
   }
 
-serializeHandshake :: Handshake -> ByteString
-serializeHandshake Handshake {sessionId, smpVersion} =
-  sessionId <> " " <> serializeSMPVersion smpVersion <> " "
+data ClientHandshake = ClientHandshake
+  { -- | agreed SMP server protocol version
+    smpVersion :: Word16,
+    -- | server identity - CA certificate fingerprint
+    keyHash :: C.KeyHash
+  }
 
-handshakeP :: Parser Handshake
-handshakeP = Handshake <$> A.takeWhile (/= ' ') <* A.space <*> smpVersionP <* A.space
+instance Encoding ClientHandshake where
+  smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash)
+  smpP = do
+    smpVersion <- smpP
+    keyHash <- smpP
+    pure ClientHandshake {smpVersion, keyHash}
+
+instance Encoding ServerHandshake where
+  smpEncode ServerHandshake {smpVersionRange, sessionId} =
+    smpEncode (smpVersionRange, sessionId)
+  smpP = ServerHandshake <$> smpP <*> smpP
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -392,6 +433,8 @@ data HandshakeError
     PARSE
   | -- | incompatible peer version
     VERSION
+  | -- | incorrect server identity
+    IDENTITY
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance Arbitrary TransportError where arbitrary = genericArbitraryU
@@ -416,52 +459,53 @@ serializeTransportError = \case
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
-tPutBlock THandle {connection = c, blockSize} block
-  | len > blockSize = pure $ Left TELargeMsg
-  | otherwise = Right <$> cPut c (block <> B.replicate (blockSize - len) '#')
-  where
-    len = B.length block
+tPutBlock THandle {connection = c} block =
+  bimapM (const $ pure TELargeMsg) (cPut c) $
+    C.pad block smpBlockSize
 
 -- | Receive block from SMP transport.
-tGetBlock :: Transport c => THandle c -> IO ByteString
-tGetBlock THandle {connection = c, blockSize} =
-  cGet c blockSize >>= \case
+tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
+tGetBlock THandle {connection = c} =
+  cGet c smpBlockSize >>= \case
     "" -> ioe_EOF
-    msg -> pure msg
+    msg -> pure . first (const TELargeMsg) $ C.unPad msg
 
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-serverHandshake :: Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
-serverHandshake c blockSize = do
-  let th@THandle {sessionId} = tHandle c blockSize
-  _ <- getPeerHello th
-  sendHelloToPeer th sessionId
-  pure th
+serverHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
+serverHandshake c kh = do
+  let th@THandle {sessionId} = tHandle c
+  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
+  getHandshake th >>= \case
+    ClientHandshake {smpVersion, keyHash}
+      | keyHash /= kh ->
+        throwE $ TEHandshake IDENTITY
+      | smpVersion `isCompatible` supportedSMPVersions -> do
+        pure (th :: THandle c) {smpVersion}
+      | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-clientHandshake :: forall c. Transport c => c -> Int -> ExceptT TransportError IO (THandle c)
-clientHandshake c blockSize = do
-  let th@THandle {sessionId} = tHandle c blockSize
-  sendHelloToPeer th ""
-  Handshake {sessionId = sessId} <- getPeerHello th
-  if sessionId == sessId
-    then pure th
-    else throwE TEBadSession
+clientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
+clientHandshake c keyHash = do
+  let th@THandle {sessionId} = tHandle c
+  ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
+  if sessionId /= sessId
+    then throwE TEBadSession
+    else case smpVersionRange `compatibleVersion` supportedSMPVersions of
+      Just smpVersion -> do
+        sendHandshake th $ ClientHandshake {smpVersion, keyHash}
+        pure (th :: THandle c) {smpVersion}
+      Nothing -> throwE $ TEHandshake VERSION
 
-sendHelloToPeer :: Transport c => THandle c -> ByteString -> ExceptT TransportError IO ()
-sendHelloToPeer th sessionId =
-  let handshake = Handshake {sessionId, smpVersion = currentSMPVersion}
-   in ExceptT . tPutBlock th $ serializeHandshake handshake
+sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
+sendHandshake th = ExceptT . tPutBlock th . smpEncode
 
-getPeerHello :: Transport c => THandle c -> ExceptT TransportError IO Handshake
-getPeerHello th = ExceptT $ parseHandshake <$> tGetBlock th
-  where
-    parseHandshake :: ByteString -> Either TransportError Handshake
-    parseHandshake = first (const $ TEHandshake PARSE) . A.parseOnly handshakeP
+getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
+getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
 
-tHandle :: Transport c => c -> Int -> THandle c
-tHandle c blockSize =
-  THandle {connection = c, sessionId = encode $ tlsUnique c, blockSize}
+tHandle :: Transport c => c -> THandle c
+tHandle c =
+  THandle {connection = c, sessionId = tlsUnique c, smpVersion = 0}

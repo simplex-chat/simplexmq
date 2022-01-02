@@ -10,6 +10,7 @@
 module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
+import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
@@ -20,6 +21,7 @@ import SMPAgentClient
 import SMPClient (testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import System.Directory (removeFile)
@@ -29,6 +31,7 @@ import Test.Hspec
 agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
   describe "Connection request" connectionRequestTests
+  describe "Double ratchet tests" doubleRatchetTests
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
@@ -109,7 +112,7 @@ pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (CONF confId "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
@@ -141,7 +144,7 @@ testDuplexConnection _ alice bob = do
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", bobConn', Right (CONF confId "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
@@ -174,7 +177,7 @@ testDuplexConnRandomIds _ alice bob = do
 testContactConnection :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testContactConnection _ alice bob tom = do
   ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
 
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
@@ -205,7 +208,7 @@ testContactConnection _ alice bob tom = do
 testContactConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testContactConnRandomIds _ alice bob = do
   ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", aliceContact', Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
@@ -228,7 +231,7 @@ testContactConnRandomIds _ alice bob = do
 testRejectContactRequest :: Transport c => TProxy c -> c -> c -> IO ()
 testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 10\nbob's info") #> ("11", "alice", OK)
   ("", "a_contact", Right (REQ aInvId "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
@@ -327,7 +330,7 @@ testMsgDeliveryAgentRestart t bob = do
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (CONF connId "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
@@ -338,7 +341,7 @@ connect (h1, name1) (h2, name2) = do
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do
 --   ("c1", conn2, Right (INV cReq)) <- h1 #: ("c1", "", "NEW INV")
---   let cReq' = serializeConnReq cReq
+--   let cReq' = strEncode cReq
 --   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> cReq' <> " 5\ninfo2")
 --   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
 --   h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
@@ -347,8 +350,8 @@ connect (h1, name1) (h2, name2) = do
 --   h1 <# ("", conn2, CON)
 --   pure (conn1, conn2)
 
-samplePublicKey :: ByteString
-samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj-toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP-Tm4sokaFDTIG3QJFzOjC-_9nW4MUjAOFll9PCp9kaEFHJ_YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju_f6kAayvYKW3_lbJNXCmyinAccBosO08_0sUxvtuniIo18kfYJE0UmP1ReCjhMP-O-yOmwZJini_QelJk_Pez8IIDDWnY1qYQsN_q7ocjakOYrpGG7mig6JMFpDJtD6istR"
+sampleDhKey :: ByteString
+sampleDhKey = "MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
@@ -366,7 +369,16 @@ syntaxTests t = do
       -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
       -- TODO: add tests with defined connection alias
       it "using same server as in invitation" $
-        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5001%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
+        ( "311",
+          "a",
+          "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F"
+            <> urlEncode True "9VjLsOY5ZvB4hoglNdBzJFAUi_vP4GkZnJFahQOXV20="
+            <> "%40localhost%3A5001%2F3456-w%3D%3D%23"
+            <> urlEncode True sampleDhKey
+            <> "&e2e="
+            <> " 14\nbob's connInfo"
+        )
+          >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" $ do
       -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")

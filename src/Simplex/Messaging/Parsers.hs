@@ -3,11 +3,11 @@
 
 module Simplex.Messaging.Parsers where
 
+import Control.Monad.Trans.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
-import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
@@ -22,16 +22,7 @@ import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
 
 base64P :: Parser ByteString
-base64P = decode <$?> base64StringP
-
-base64StringP :: Parser ByteString
-base64StringP = paddedBase64 rawBase64P
-
-base64UriP :: Parser ByteString
-base64UriP = U.decode <$?> base64UriStringP
-
-base64UriStringP :: Parser ByteString
-base64UriStringP = paddedBase64 rawBase64UriP
+base64P = decode <$?> paddedBase64 rawBase64P
 
 paddedBase64 :: Parser ByteString -> Parser ByteString
 paddedBase64 raw = (<>) <$> raw <*> pad
@@ -41,8 +32,8 @@ paddedBase64 raw = (<>) <$> raw <*> pad
 rawBase64P :: Parser ByteString
 rawBase64P = A.takeWhile1 (\c -> isAlphaNum c || c == '+' || c == '/')
 
-rawBase64UriP :: Parser ByteString
-rawBase64UriP = A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
+-- rawBase64UriP :: Parser ByteString
+-- rawBase64UriP = A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
 
 tsISO8601P :: Parser UTCTime
 tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill wordEnd
@@ -52,6 +43,12 @@ parse parser err = first (const err) . parseAll parser
 
 parseAll :: Parser a -> (ByteString -> Either String a)
 parseAll parser = A.parseOnly (parser <* A.endOfInput)
+
+parseE :: (String -> e) -> Parser a -> (ByteString -> ExceptT e IO a)
+parseE err parser = except . first err . parseAll parser
+
+parseE' :: (String -> e) -> Parser a -> (ByteString -> ExceptT e IO a)
+parseE' err parser = except . first err . A.parseOnly parser
 
 parseRead :: Read a => Parser ByteString -> Parser a
 parseRead = (>>= maybe (fail "cannot read") pure . readMaybe . B.unpack)
@@ -72,9 +69,12 @@ parseString :: (ByteString -> Either String a) -> (String -> a)
 parseString p = either error id . p . B.pack
 
 blobFieldParser :: Typeable k => Parser k -> FieldParser k
-blobFieldParser p = \case
+blobFieldParser = blobFieldDecoder . parseAll
+
+blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> FieldParser k
+blobFieldDecoder dec = \case
   f@(Field (SQLBlob b) _) ->
-    case parseAll p b of
+    case dec b of
       Right k -> Ok k
       Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
   f -> returnError ConversionFailed f "expecting SQLBlob column type"

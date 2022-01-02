@@ -2,10 +2,8 @@
 
 bin_dir="/opt/simplex/bin"
 conf_dir="/etc/opt/simplex"
-var_dir="/var/opt/simplex"
+
 mkdir -p $bin_dir
-mkdir -p $conf_dir
-mkdir -p $var_dir
 
 echo "downloading the latest SMP server release"
 curl -s https://api.github.com/repos/simplex-chat/simplexmq/releases/latest > release.json
@@ -45,10 +43,12 @@ EOT
 chmod 644 /etc/systemd/system/smp-server.service
 
 echo "initializing SMP server"
-hash_file="$conf_dir/pubkey_hash"
-smp-server init -l | grep "transport key hash:" | cut -f2 -d":" | xargs > $hash_file
+smp-server init -l
+# CA certificate (identity/offline) fingerprint
+hash_file="$conf_dir/fingerprint"
 # turn off websockets support
 sed -e '/websockets/s/^/# /g' -i $conf_dir/smp-server.ini
+
 # add welcome script to .bashrc
 echo "bash /opt/simplex/on_login.sh $hash_file" >> /root/.bashrc
 
