@@ -9,6 +9,7 @@ module Main where
 
 import Control.Monad.Except
 import qualified Data.ByteString.Char8 as B
+import Data.Composition ((.:))
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (dropWhileEnd)
@@ -18,7 +19,7 @@ import Options.Applicative
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), currentSMPVersionBS, encodeFingerprint, loadFingerprint)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), encodeFingerprint, loadFingerprint, simplexMQVersion)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
@@ -108,12 +109,11 @@ cliOptionsP =
   where
     initP :: Parser Command
     initP =
-      Init . InitOptions
+      Init .: InitOptions
         <$> switch
           ( long "store-log"
               <> short 'l'
               <> help "Enable store log for SMP queues persistence"
-              <> metavar "LOG"
           )
         <*> strOption
           ( long "pubkey-algorithm"
@@ -268,7 +268,7 @@ printServiceInfo = do
   putStrLn $ "Fingerprint: " <> fingerprint
 
 version :: String
-version = "SMP server v" <> B.unpack currentSMPVersionBS
+version = "SMP server v" <> simplexMQVersion
 
 warnCAPrivateKeyFile :: IO ()
 warnCAPrivateKeyFile =

@@ -15,12 +15,10 @@ import Data.Char (isAlphaNum)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
 import Data.Typeable (Typeable)
-import Data.Word (Word16, Word32)
 import Database.SQLite.Simple (ResultError (..), SQLData (..))
 import Database.SQLite.Simple.FromField (FieldParser, returnError)
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
-import Network.Transport.Internal (decodeWord16, decodeWord32)
 import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
 
@@ -49,12 +47,6 @@ rawBase64UriP = A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
 
 tsISO8601P :: Parser UTCTime
 tsISO8601P = maybe (fail "timestamp") pure . parseISO8601 . B.unpack =<< A.takeTill wordEnd
-
-word16P :: Parser Word16
-word16P = decodeWord16 <$> A.take 2
-
-word32P :: Parser Word32
-word32P = decodeWord32 <$> A.take 4
 
 parse :: Parser a -> e -> (ByteString -> Either e a)
 parse parser err = first (const err) . parseAll parser

@@ -191,7 +191,7 @@ testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m
 testSMPAgentClientOn port' client = do
   runTransportClient agentTestHost port' testKeyHash $ \h -> do
     line <- liftIO $ getLn h
-    if line == "Welcome to SMP agent v" <> currentSMPVersionBS
+    if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h
       else do
         error $ "wrong welcome message: " <> B.unpack line

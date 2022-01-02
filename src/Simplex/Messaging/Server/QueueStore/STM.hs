@@ -42,8 +42,8 @@ instance MonadQueueStore QueueStore STM where
             }
         return $ Right ()
 
-  getQueue :: QueueStore -> ClientParty -> QueueId -> STM (Either ErrorType QueueRec)
-  getQueue st (CP party) qId = do
+  getQueue :: QueueStore -> SParty p -> QueueId -> STM (Either ErrorType QueueRec)
+  getQueue st party qId = do
     cs <- readTVar st
     pure $ case party of
       SRecipient -> getRcpQueue cs qId

@@ -17,6 +17,7 @@ import qualified Data.ByteString.Char8 as B
 import Simplex.Messaging.Crypto (Algorithm (..), AlgorithmI, CryptoError, DhAlgorithm)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
 import Test.Hspec
 
@@ -45,7 +46,7 @@ testMessageHeader :: Expectation
 testMessageHeader = do
   (k, _) <- C.generateKeyPair' @X25519
   let hdr = MsgHeader {msgVersion = 1, msgLatestVersion = 1, msgDHRs = k, msgPN = 0, msgNs = 0}
-  parseAll (msgHeaderP' @X25519) (serializeMsgHeader' hdr) `shouldBe` Right hdr
+  parseAll (smpP @(MsgHeader 'X25519)) (smpEncode hdr) `shouldBe` Right hdr
 
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
 pattern Decrypted msg <- Right (Right msg)

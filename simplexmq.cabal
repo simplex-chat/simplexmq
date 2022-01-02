@@ -42,6 +42,7 @@ library
       Simplex.Messaging.Client
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Encoding
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server
@@ -54,6 +55,7 @@ library
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
+      Simplex.Messaging.Version
   other-modules:
       Paths_simplexmq
   hs-source-dirs:
@@ -219,7 +221,9 @@ test-suite smp-server-test
       AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
       AgentTests.SQLiteTests
-      ProtocolErrorTests
+      CoreTests.EncodingTests
+      CoreTests.ProtocolErrorTests
+      CoreTests.VersionRangeTests
       ServerTests
       SMPAgentClient
       SMPClient

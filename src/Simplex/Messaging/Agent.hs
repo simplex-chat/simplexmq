@@ -74,6 +74,7 @@ import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
+import Data.Time.Clock.System (systemToUTCTime)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -83,10 +84,11 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), currentSMPVersionBS, loadTLSServerParams, runTransportServer)
+import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), loadTLSServerParams, runTransportServer, simplexMQVersion)
 import Simplex.Messaging.Util (bshow, tryError, unlessM)
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
@@ -114,7 +116,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, caCertifica
       -- tlsServerParams is not in Env to avoid breaking functional API w/t key and certificate generation
       tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
       runTransportServer started tcpPort tlsServerParams $ \(h :: c) -> do
-        liftIO . putLn h $ "Welcome to SMP agent v" <> currentSMPVersionBS
+        liftIO . putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
         c <- getAgentClient
         logConnection c True
         race_ (connectClient h c) (runAgentClient c)
@@ -526,7 +528,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           -- TODO deduplicate with previously received
           msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
           encMessage@SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey} <-
-            liftEither $ parse SMP.encMessageP (AGENT A_MESSAGE) msgBody
+            liftEither $ parse smpP (AGENT A_MESSAGE) msgBody
           case e2eShared of
             Nothing -> do
               let e2eDhSecret = C.dh' e2ePubKey e2ePrivKey
@@ -551,7 +553,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                       -- note that there is no ACK sent here, it is sent with agent's user ACK command
                       -- TODO add hash to other messages
                       let msgHash = C.sha256Hash msg
-                      agentClientMsg prevMsgHash sndMsgId (srvMsgId, srvTs) body msgHash
+                      agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) body msgHash
                   _ -> prohibited >> ack
         SMP.END -> do
           removeSubscription c connId
@@ -577,7 +579,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         decryptAgentMessage e2eDhSecret SMP.EncMessage {emNonce, emBody} = do
           msg <- agentCbDecrypt e2eDhSecret emNonce emBody
           agentMessage <-
-            liftEither $ clientToAgentMsg =<< parse SMP.clientMessageP (AGENT A_MESSAGE) msg
+            liftEither $ clientToAgentMsg =<< parse smpP (AGENT A_MESSAGE) msg
           pure (msg, agentMessage)
 
         smpConfirmation :: SMPConfirmation -> m ()
