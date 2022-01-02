@@ -188,7 +188,7 @@ To create and start using a simplex queue Alice and Bob follow these steps:
 
 4. Alice receives Bob's message from the server using recipient queue ID `RID` (possibly, via the same transport connection she already has opened - see `message` in [Deliver queue message](#deliver-queue-message)):
 
-    1. She decrypts received message body with key `SS`.
+    1. She decrypts received message body using the secret `SS`.
 
     2. She decrypts received message with [key agreed with sender using] "private" key `EK`.
 
