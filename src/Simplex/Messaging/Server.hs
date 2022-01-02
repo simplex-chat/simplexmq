@@ -118,8 +118,9 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
           atomically . stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
 
     runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
-    runClient _ h =
-      liftIO (runExceptT $ serverHandshake h $ caServerIdentity cfg) >>= \case
+    runClient _ h = do
+      kh <- asks serverIdentity
+      liftIO (runExceptT $ serverHandshake h kh) >>= \case
         Right th -> runClientTransport th
         Left _ -> pure ()
 

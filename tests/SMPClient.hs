@@ -59,7 +59,6 @@ cfg =
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLog = Nothing,
-      caServerIdentity = undefined, -- TODO add once it is validated
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"

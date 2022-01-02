@@ -11,16 +11,17 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
-import Simplex.Messaging.Crypto (KeyHash)
+import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport, loadTLSServerParams)
+import Simplex.Messaging.Transport (ATransport, loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -32,7 +33,6 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
-    caServerIdentity :: KeyHash,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -42,6 +42,7 @@ data ServerConfig = ServerConfig
 data Env = Env
   { config :: ServerConfig,
     server :: Server,
+    serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
@@ -102,7 +103,9 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} 
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-  return Env {config, server, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
+  Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
+  let serverIdentity = KeyHash fp
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do

@@ -479,9 +479,10 @@ serverHandshake c kh = do
   sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
   getHandshake th >>= \case
     ClientHandshake {smpVersion, keyHash}
-      -- TODO check KeyHash once it's added to server config
-      --  | keyHash /= kh -> throwE $ TEHandshake IDENTITY
-      | smpVersion `isCompatible` supportedSMPVersions -> pure (th :: THandle c) {smpVersion}
+      | keyHash /= kh ->
+        throwE $ TEHandshake IDENTITY
+      | smpVersion `isCompatible` supportedSMPVersions -> do
+        pure (th :: THandle c) {smpVersion}
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.

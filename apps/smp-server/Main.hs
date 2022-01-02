@@ -8,6 +8,7 @@
 module Main where
 
 import Control.Monad.Except
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:))
 import Data.Either (fromRight)
@@ -58,9 +59,9 @@ fingerprintFile = combine cfgDir "fingerprint"
 main :: IO ()
 main = do
   getCliOptions >>= \opts -> case optCommand opts of
-    Init initOptions@InitOptions {pubkeyAlgorithm} -> do
+    Init initOptions@InitOptions {sigAlgorithm} -> do
       -- TODO check during parsing
-      checkPubkeyAlgorithm pubkeyAlgorithm
+      checkPubkeyAlgorithm sigAlgorithm
       doesFileExist iniFile >>= \case
         True -> iniAlreadyExistsErr >> exitFailure
         False -> initializeServer initOptions
@@ -85,7 +86,7 @@ data CliCommand
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
-    pubkeyAlgorithm :: String
+    sigAlgorithm :: String
   }
 
 getCliOptions :: IO CliOptions
@@ -126,24 +127,24 @@ cliOptionsP =
           )
 
 initializeServer :: InitOptions -> IO ()
-initializeServer InitOptions {enableStoreLog, pubkeyAlgorithm} = do
+initializeServer InitOptions {enableStoreLog, sigAlgorithm} = do
   cleanup
   createDirectoryIfMissing True cfgDir
   createDirectoryIfMissing True logDir
   createX509
-  saveFingerprint
+  fp <- saveFingerprint
   createIni
   putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `smp-server start` to start server."
-  printServiceInfo
+  printServiceInfo fp
   warnCAPrivateKeyFile
   where
     createX509 = do
       createOpensslConf
       -- CA certificate (identity/offline)
-      run $ "openssl genpkey -algorithm " <> pubkeyAlgorithm <> " -out " <> caKeyFile
+      run $ "openssl genpkey -algorithm " <> sigAlgorithm <> " -out " <> caKeyFile
       run $ "openssl req -new -x509 -days 999999 -config " <> opensslCnfFile <> " -extensions v3_ca -key " <> caKeyFile <> " -out " <> caCrtFile
       -- server certificate (online)
-      run $ "openssl genpkey -algorithm " <> pubkeyAlgorithm <> " -out " <> serverKeyFile
+      run $ "openssl genpkey -algorithm " <> sigAlgorithm <> " -out " <> serverKeyFile
       run $ "openssl req -new -config " <> opensslCnfFile <> " -reqexts v3_req -key " <> serverKeyFile <> " -out " <> serverCsrFile
       run $ "openssl x509 -req -days 999999 -copy_extensions copy -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -out " <> serverCrtFile
       where
@@ -171,6 +172,7 @@ initializeServer InitOptions {enableStoreLog, pubkeyAlgorithm} = do
     saveFingerprint = do
       Fingerprint fp <- loadFingerprint caCrtFile
       withFile fingerprintFile WriteMode (`B.hPutStrLn` strEncode fp)
+      pure fp
 
     createIni = do
       writeFile iniFile $
@@ -208,9 +210,8 @@ mkIniOptions ini =
 
 runServer :: IniOptions -> IO ()
 runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
-  checkSavedFingerprint
-  printServiceInfo
-  checkCAPrivateKeyFile
+  fp <- checkSavedFingerprint
+  printServiceInfo fp
   cfg <- setupServerConfig
   printServerConfig cfg
   runSMPServer cfg
@@ -220,11 +221,7 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
       Fingerprint fp <- loadFingerprint caCrtFile
       when (B.pack savedFingerprint /= strEncode fp) $
         putStrLn "Stored fingerprint is invalid." >> exitFailure
-
-    checkCAPrivateKeyFile =
-      doesFileExist caKeyFile >>= (`when` (alert >> warnCAPrivateKeyFile))
-      where
-        alert = putStrLn $ "WARNING: " <> caKeyFile <> " is present on the server!"
+      pure fp
 
     setupServerConfig = do
       storeLog <- openStoreLog
@@ -236,7 +233,6 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
             msgQueueQuota = 256,
             queueIdBytes = 24,
             msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
-            caServerIdentity = undefined, -- TODO put it here
             caCertificateFile = caCrtFile,
             privateKeyFile = serverKeyFile,
             certificateFile = serverCrtFile,
@@ -263,11 +259,10 @@ cleanup = do
   where
     deleteDirIfExists path = doesDirectoryExist path >>= (`when` removeDirectoryRecursive path)
 
-printServiceInfo :: IO ()
-printServiceInfo = do
+printServiceInfo :: ByteString -> IO ()
+printServiceInfo fpStr = do
   putStrLn version
-  fingerprint <- loadSavedFingerprint
-  putStrLn $ "Fingerprint: " <> fingerprint
+  B.putStrLn $ "Fingerprint: " <> strEncode fpStr
 
 version :: String
 version = "SMP server v" <> simplexMQVersion
@@ -276,9 +271,10 @@ warnCAPrivateKeyFile :: IO ()
 warnCAPrivateKeyFile =
   putStrLn $
     "----------\n\
-    \We highly recommend to remove CA private key file from the server and keep it securely in place of your choosing.\n\
-    \In case server's TLS credential is compromised you will be able to regenerate it using this key,\n\
-    \thus keeping server's identity and allowing clients to keep established connections. Key location:\n"
+    \You should store CA private key securely and delete it from the server.\n\
+    \If server TLS credential is compromised this key can be used to sign a new one, \
+    \keeping the same server identity and established connections.\n\
+    \CA private key location:\n"
       <> caKeyFile
       <> "\n----------"
 
