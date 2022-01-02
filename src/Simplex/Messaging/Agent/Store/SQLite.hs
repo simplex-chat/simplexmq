@@ -550,15 +550,15 @@ instance ToField SMPQueueUri where toField = toField . strEncode
 
 instance FromField SMPQueueUri where fromField = blobFieldParser strP
 
-instance ToField AConnectionRequest where toField = toField . serializeConnReq
+instance ToField AConnectionRequest where toField = toField . strEncode
 
-instance FromField AConnectionRequest where fromField = blobFieldParser connReqP
+instance FromField AConnectionRequest where fromField = blobFieldParser strP
 
-instance ToField (ConnectionRequest c) where toField = toField . serializeConnReq'
+instance ConnectionModeI c => ToField (ConnectionRequest c) where toField = toField . strEncode
 
-instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequest c) where fromField = blobFieldParser connReqP'
+instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequest c) where fromField = blobFieldParser strP
 
-instance ToField ConnectionMode where toField = toField . decodeLatin1 . serializeConnMode'
+instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
 
 instance FromField ConnectionMode where fromField = fromTextField_ connModeT
 

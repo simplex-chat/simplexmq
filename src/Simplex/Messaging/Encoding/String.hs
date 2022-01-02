@@ -23,6 +23,8 @@ import Simplex.Messaging.Util ((<$?>))
 class StrEncoding a where
   {-# MINIMAL strEncode, (strDecode | strP) #-}
   strEncode :: a -> ByteString
+
+  -- Please note - if you only specify strDecode, it will use base64urlP as default parser before decoding the string
   strDecode :: ByteString -> Either String a
   strDecode = parseAll strP
   strP :: Parser a

@@ -21,6 +21,7 @@ import SMPAgentClient
 import SMPClient (testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import System.Directory (removeFile)
@@ -111,7 +112,7 @@ pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (CONF confId "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
@@ -143,7 +144,7 @@ testDuplexConnection _ alice bob = do
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", bobConn', Right (CONF confId "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
@@ -176,7 +177,7 @@ testDuplexConnRandomIds _ alice bob = do
 testContactConnection :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testContactConnection _ alice bob tom = do
   ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
 
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
@@ -207,7 +208,7 @@ testContactConnection _ alice bob tom = do
 testContactConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testContactConnRandomIds _ alice bob = do
   ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", aliceContact', Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
@@ -230,7 +231,7 @@ testContactConnRandomIds _ alice bob = do
 testRejectContactRequest :: Transport c => TProxy c -> c -> c -> IO ()
 testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 10\nbob's info") #> ("11", "alice", OK)
   ("", "a_contact", Right (REQ aInvId "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
@@ -329,7 +330,7 @@ testMsgDeliveryAgentRestart t bob = do
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (CONF connId "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
@@ -340,7 +341,7 @@ connect (h1, name1) (h2, name2) = do
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do
 --   ("c1", conn2, Right (INV cReq)) <- h1 #: ("c1", "", "NEW INV")
---   let cReq' = serializeConnReq cReq
+--   let cReq' = strEncode cReq
 --   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> cReq' <> " 5\ninfo2")
 --   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
 --   h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False

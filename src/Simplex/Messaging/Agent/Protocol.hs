@@ -77,18 +77,12 @@ module Simplex.Messaging.Agent.Protocol
     clientToAgentMsg,
     serializeAgentMessage,
     serializeMsgIntegrity,
-    serializeConnMode,
-    serializeConnMode',
     connMode,
     connMode',
-    serializeConnReq,
-    serializeConnReq',
     serializeAgentError,
     serializeSmpErrorType,
     commandP,
     connModeT,
-    connReqP,
-    connReqP',
     msgIntegrityP,
     agentErrorTypeP,
     smpErrorTypeP,
@@ -111,6 +105,7 @@ import Data.ByteString.Base64
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Composition ((.:))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -229,7 +224,7 @@ instance TestEquality SConnectionMode where
   testEquality SCMContact SCMContact = Just Refl
   testEquality _ _ = Nothing
 
-data AConnectionMode = forall m. ACM (SConnectionMode m)
+data AConnectionMode = forall m. ConnectionModeI m => ACM (SConnectionMode m)
 
 instance Eq AConnectionMode where
   ACM m == ACM m' = isJust $ testEquality m m'
@@ -290,15 +285,13 @@ data AHeader = AHeader
     prevMsgHash :: MsgHash
   }
 
-serializeAHeader :: AHeader -> ByteString
-serializeAHeader AHeader {sndMsgId, prevMsgHash} =
-  bshow sndMsgId <> " " <> encode prevMsgHash <> "\n"
+instance StrEncoding AHeader where
+  strEncode AHeader {sndMsgId, prevMsgHash} =
+    bshow sndMsgId <> " " <> strEncode prevMsgHash <> "\n"
+  strP = AHeader <$> A.decimal <* A.space <*> (strP <|> pure "") <* A.endOfLine
 
 emptyAHeader :: ByteString
 emptyAHeader = "\n"
-
-aHeaderP :: Parser AHeader
-aHeaderP = AHeader <$> A.decimal <* A.space <*> (base64P <|> pure "") <* A.endOfLine
 
 emptyAHeaderP :: Parser ()
 emptyAHeaderP = A.endOfLine $> ()
@@ -323,9 +316,9 @@ agentToClientMsg = \case
   AgentConfirmation senderKey cInfo ->
     ClientMessage (PHConfirmation senderKey) $ emptyAHeader <> cInfo
   AgentInvitation cReq cInfo ->
-    ClientMessage PHEmpty $ emptyAHeader <> serializeConnReq' cReq <> "\n" <> cInfo
+    ClientMessage PHEmpty $ emptyAHeader <> strEncode cReq <> "\n" <> cInfo
   AgentMessage header aMsg ->
-    ClientMessage PHEmpty $ serializeAHeader header <> serializeAMessage aMsg
+    ClientMessage PHEmpty $ strEncode header <> strEncode aMsg
 
 clientToAgentMsg :: ClientMessage -> Either AgentErrorType AgentMessage
 clientToAgentMsg (ClientMessage header body) = parse parser (AGENT A_MESSAGE) body
@@ -333,23 +326,18 @@ clientToAgentMsg (ClientMessage header body) = parse parser (AGENT A_MESSAGE) bo
     parser = case header of
       PHConfirmation senderKey -> AgentConfirmation senderKey <$> (emptyAHeaderP *> A.takeByteString)
       PHEmpty -> invitationP <|> messageP
-    invitationP = AgentInvitation <$> (emptyAHeaderP *> connReqP' <* A.endOfLine) <*> A.takeByteString
-    messageP = AgentMessage <$> aHeaderP <*> aMessageP
+    invitationP = AgentInvitation <$> (emptyAHeaderP *> strP <* A.endOfLine) <*> A.takeByteString
+    messageP = AgentMessage <$> strP <*> strP
 
-aMessageP :: Parser AMessage
-aMessageP =
-  "HELLO" $> HELLO
-    <|> "REPLY " *> reply
-    <|> "MSG " *> a_msg
-  where
-    reply = REPLY <$> connReqP'
-    a_msg = A_MSG <$> A.takeByteString
-
-serializeAMessage :: AMessage -> ByteString
-serializeAMessage = \case
-  HELLO -> "HELLO"
-  REPLY cReq -> "REPLY " <> serializeConnReq' cReq
-  A_MSG body -> "MSG " <> body
+instance StrEncoding AMessage where
+  strP =
+    "HELLO" $> HELLO
+      <|> "REPLY " *> (REPLY <$> strP)
+      <|> "MSG " *> (A_MSG <$> A.takeByteString)
+  strEncode = \case
+    HELLO -> "HELLO"
+    REPLY cReq -> "REPLY " <> strEncode cReq
+    A_MSG body -> "MSG " <> body
 
 instance StrEncoding SMPQueueUri where
   strEncode SMPQueueUri {smpServer = srv, senderId = qId, smpVersionRange = vr, dhPublicKey = k} =
@@ -373,56 +361,44 @@ queryParam name (QSP q) =
     Just (_, p) -> either fail pure $ parseAll strP p
     _ -> fail $ "no qs param " <> B.unpack name
 
-serializeConnReq :: AConnectionRequest -> ByteString
-serializeConnReq (ACR _ cr) = serializeConnReq' cr
+instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequest m) where
+  strEncode = \case
+    CRInvitation crData -> serialize "invitation" crData
+    CRContact crData -> serialize "contact" crData
+    where
+      serialize crMode ConnReqData {crScheme, crSmpQueues, crEncryption = _} =
+        strEncode crScheme <> "/" <> crMode <> "#/" <> queryStr
+        where
+          queryStr = strEncode $ QSP [("smp", strEncode crSmpQueues), ("e2e", "")]
+  strP = do
+    ACR m cr <- strP
+    case testEquality m $ sConnectionMode @m of
+      Just Refl -> pure cr
+      _ -> fail "bad connection request mode"
 
-serializeConnReq' :: ConnectionRequest m -> ByteString
-serializeConnReq' = \case
-  CRInvitation crData -> serialize CMInvitation crData
-  CRContact crData -> serialize CMContact crData
-  where
-    serialize crMode ConnReqData {crScheme, crSmpQueues, crEncryption = _} =
-      strEncode crScheme <> "/" <> m <> "#/" <> queryStr
-      where
-        m = case crMode of
-          CMInvitation -> "invitation"
-          CMContact -> "contact"
-        queryStr = strEncode $ QSP [("smp", strEncode crSmpQueues), ("e2e", "")]
+instance StrEncoding AConnectionRequest where
+  strEncode (ACR _ cr) = strEncode cr
+  strP = do
+    crScheme <- strP
+    mkConnReq <- "/" *> mkConnReqP <* "#/?"
+    query <- strP
+    crSmpQueues <- queryParam "smp" query
+    let crEncryption = ConnectionEncryption
+    pure $ mkConnReq ConnReqData {crScheme, crSmpQueues, crEncryption}
+    where
+      mkConnReqP =
+        "invitation" $> ACR SCMInvitation . CRInvitation
+          <|> "contact" $> ACR SCMContact . CRContact
 
-connReqP' :: forall m. ConnectionModeI m => Parser (ConnectionRequest m)
-connReqP' = do
-  ACR m cr <- connReqP
-  case testEquality m $ sConnectionMode @m of
-    Just Refl -> pure cr
-    _ -> fail "bad connection request mode"
+instance StrEncoding ConnectionMode where
+  strEncode = \case
+    CMInvitation -> "INV"
+    CMContact -> "CON"
+  strP = "INV" $> CMInvitation <|> "CON" $> CMContact
 
-connReqP :: Parser AConnectionRequest
-connReqP = do
-  crScheme <- strP
-  crMode <- "/" *> mode <* "#/?"
-  query <- strP
-  crSmpQueues <- queryParam "smp" query
-  let crEncryption = ConnectionEncryption
-      cReq = ConnReqData {crScheme, crSmpQueues, crEncryption}
-  pure $ case crMode of
-    CMInvitation -> ACR SCMInvitation $ CRInvitation cReq
-    CMContact -> ACR SCMContact $ CRContact cReq
-  where
-    mode = "invitation" $> CMInvitation <|> "contact" $> CMContact
-
-serializeConnMode :: AConnectionMode -> ByteString
-serializeConnMode (ACM cMode) = serializeConnMode' $ connMode cMode
-
-serializeConnMode' :: ConnectionMode -> ByteString
-serializeConnMode' = \case
-  CMInvitation -> "INV"
-  CMContact -> "CON"
-
-connModeP' :: Parser ConnectionMode
-connModeP' = "INV" $> CMInvitation <|> "CON" $> CMContact
-
-connModeP :: Parser AConnectionMode
-connModeP = connMode' <$> connModeP'
+instance StrEncoding AConnectionMode where
+  strEncode (ACM cMode) = strEncode $ connMode cMode
+  strP = connMode' <$> strP
 
 connModeT :: Text -> Maybe ConnectionMode
 connModeT = \case
@@ -456,7 +432,7 @@ deriving instance Eq (ConnectionRequest m)
 
 deriving instance Show (ConnectionRequest m)
 
-data AConnectionRequest = forall m. ACR (SConnectionMode m) (ConnectionRequest m)
+data AConnectionRequest = forall m. ConnectionModeI m => ACR (SConnectionMode m) (ConnectionRequest m)
 
 instance Eq AConnectionRequest where
   ACR m cr == ACR m' cr' = case testEquality m m' of
@@ -633,20 +609,20 @@ commandP =
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
-    newCmd = ACmd SClient . NEW <$> connModeP
-    invResp = ACmd SAgent . INV <$> connReqP
-    joinCmd = ACmd SClient <$> (JOIN <$> connReqP <* A.space <*> A.takeByteString)
-    confMsg = ACmd SAgent <$> (CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
-    letCmd = ACmd SClient <$> (LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
-    reqMsg = ACmd SAgent <$> (REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
-    acptCmd = ACmd SClient <$> (ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString)
+    newCmd = ACmd SClient . NEW <$> strP
+    invResp = ACmd SAgent . INV <$> strP
+    joinCmd = ACmd SClient .: JOIN <$> strP_ <*> A.takeByteString
+    confMsg = ACmd SAgent .: CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
+    letCmd = ACmd SClient .: LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
+    reqMsg = ACmd SAgent .: REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
+    acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
-    msgErrResp = ACmd SAgent <$> (MERR <$> A.decimal <* A.space <*> agentErrorTypeP)
-    message = ACmd SAgent <$> (MSG <$> msgMetaP <* A.space <*> A.takeByteString)
+    msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> agentErrorTypeP
+    message = ACmd SAgent .: MSG <$> msgMetaP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
     msgMetaP = do
       integrity <- msgIntegrityP
@@ -673,9 +649,9 @@ parseCommand = parse commandP $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW cMode -> "NEW " <> serializeConnMode cMode
-  INV cReq -> "INV " <> serializeConnReq cReq
-  JOIN cReq cInfo -> B.unwords ["JOIN", serializeConnReq cReq, serializeBinary cInfo]
+  NEW cMode -> "NEW " <> strEncode cMode
+  INV cReq -> "INV " <> strEncode cReq
+  JOIN cReq cInfo -> B.unwords ["JOIN", strEncode cReq, serializeBinary cInfo]
   CONF confId cInfo -> B.unwords ["CONF", confId, serializeBinary cInfo]
   LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
   REQ invId cInfo -> B.unwords ["REQ", invId, serializeBinary cInfo]
