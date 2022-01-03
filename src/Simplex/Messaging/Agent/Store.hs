@@ -44,7 +44,7 @@ class Monad m => MonadAgentStore s m where
   upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.PublicKeyX25519 -> C.DhSecretX25519 -> m ()
+  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
 
   -- Confirmations
@@ -85,7 +85,7 @@ data RcvQueue = RcvQueue
     -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
     e2ePrivKey :: C.PrivateKeyX25519,
     -- | public sender's DH key and agreed shared DH secret for simple per-queue e2e
-    e2eShared :: Maybe (C.PublicKeyX25519, C.DhSecretX25519),
+    e2eDhSecret :: Maybe C.DhSecretX25519,
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
     -- | queue status
@@ -100,8 +100,6 @@ data SndQueue = SndQueue
     sndId :: SMP.SenderId,
     -- | key used by the sender to sign transmissions
     sndPrivateKey :: SndPrivateSignKey,
-    -- | public DH key that was (or needs to be) sent to the recipient in SMP confirmation (to agree simple per-queue e2e)
-    e2ePubKey :: C.PublicKeyX25519,
     -- | shared DH secret agreed for simple per-queue e2e encryption
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status

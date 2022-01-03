@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -65,6 +66,14 @@ w32P = fromIntegral <$> smpP @Word32
 instance Encoding ByteString where
   smpEncode s = B.cons (w2c len) s where len = fromIntegral $ B.length s
   smpP = A.take . fromIntegral . c2w =<< A.anyChar
+
+instance Encoding a => Encoding (Maybe a) where
+  smpEncode s = maybe "\0" (("\1" <>) . smpEncode) s
+  smpP =
+    smpP >>= \case
+      '\0' -> pure Nothing
+      '\1' -> Just <$> smpP
+      _ -> fail "invalid Maybe tag"
 
 newtype Tail = Tail {unTail :: ByteString}
 
