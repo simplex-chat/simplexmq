@@ -18,7 +18,7 @@ openssl x509 -in server.crt -text -noout
 
 To compute fingerprint for tests:
 
-```sh
+```haskell
 stack ghci
 > import Data.X509.Validation (Fingerprint (..))
 > Fingerprint fp <- loadFingerprint "tests/fixtures/ca.crt"
