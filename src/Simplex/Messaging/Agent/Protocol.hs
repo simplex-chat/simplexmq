@@ -58,6 +58,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnReqUriData (..),
     ConnReqScheme (..),
     E2ERatchetParams (..),
+    E2ERatchetParamsUri (..),
     simplexChat,
     AgentErrorType (..),
     CommandErrorType (..),
@@ -75,6 +76,8 @@ module Simplex.Messaging.Agent.Protocol
     QueueStatus (..),
     ACorrId,
     AgentMsgId,
+    -- TODO remove
+    connEncStub,
 
     -- * Parse and serialize
     serializeCommand,
@@ -101,7 +104,7 @@ module Simplex.Messaging.Agent.Protocol
   )
 where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -123,7 +126,7 @@ import Data.Type.Equality
 import Data.Typeable ()
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
-import Network.HTTP.Types (SimpleQuery, parseSimpleQuery, renderSimpleQuery)
+import qualified Network.HTTP.Types as Q
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -284,59 +287,85 @@ data SMPConfirmation = SMPConfirmation
 
 data EncAgentMessage
   = EncAgentConfirmation
-      { version :: Version,
+      { agentVersion :: Version,
         e2eEncryption :: E2ERatchetParams,
         encConnInfo :: ByteString
       }
   | EncAgentMessage
-      { version :: Version,
+      { agentVersion :: Version,
         encAgentMessage :: ByteString
       }
   | AgentInvitation' -- the message body (connInfo) is not encrypted in this case
-      { version :: Version,
-        e2eEncryption :: E2ERatchetParams,
+      { agentVersion :: Version,
         smpQueues :: L.NonEmpty SMPQueue,
+        e2eEncryption :: E2ERatchetParams,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
 
 instance Encoding EncAgentMessage where
   smpEncode = \case
-    EncAgentConfirmation {version, e2eEncryption, encConnInfo} ->
-      smpEncode (version, 'C', e2eEncryption, encConnInfo)
-    EncAgentMessage {version, encAgentMessage} ->
-      smpEncode (version, 'M', encAgentMessage)
-    AgentInvitation' {version, e2eEncryption, smpQueues, connInfo} ->
-      smpEncode (version, 'I', e2eEncryption, smpQueues, connInfo)
+    EncAgentConfirmation {agentVersion, e2eEncryption, encConnInfo} ->
+      smpEncode (agentVersion, 'C', e2eEncryption, Tail encConnInfo)
+    EncAgentMessage {agentVersion, encAgentMessage} ->
+      smpEncode (agentVersion, 'M', Tail encAgentMessage)
+    AgentInvitation' {agentVersion, smpQueues, e2eEncryption, connInfo} ->
+      smpEncode (agentVersion, 'I', smpQueues, e2eEncryption, Tail connInfo)
   smpP = do
-    version <- smpP
+    agentVersion <- smpP
     smpP >>= \case
       'C' -> do
-        e2eEncryption <- smpP
-        encConnInfo <- smpP
-        pure EncAgentConfirmation {version, e2eEncryption, encConnInfo}
+        (e2eEncryption, Tail encConnInfo) <- smpP
+        pure EncAgentConfirmation {agentVersion, e2eEncryption, encConnInfo}
       'M' -> do
-        encAgentMessage <- smpP
-        pure EncAgentMessage {version, encAgentMessage}
+        Tail encAgentMessage <- smpP
+        pure EncAgentMessage {agentVersion, encAgentMessage}
       'I' -> do
-        e2eEncryption <- smpP
-        smpQueues <- smpP
-        connInfo <- smpP
-        pure AgentInvitation' {version, e2eEncryption, smpQueues, connInfo}
+        (smpQueues, e2eEncryption, Tail connInfo) <- smpP
+        pure AgentInvitation' {agentVersion, smpQueues, e2eEncryption, connInfo}
       _ -> fail "bad EncAgentMessage"
 
 data E2ERatchetParams
-  = E2ERatchetParams C.PublicKeyX448 C.PublicKeyX448
-  | ConnectionEncryptionStub
+  = E2ERatchetParams Version C.PublicKeyX448 C.PublicKeyX448
   deriving (Eq, Show)
 
 instance Encoding E2ERatchetParams where
-  smpEncode = \case
-    E2ERatchetParams k1 k2 -> smpEncode ('1', k1, k2)
-    ConnectionEncryptionStub -> smpEncode '0'
-  smpP =
-    smpP >>= \case
-      '1' -> E2ERatchetParams <$> smpP <*> smpP
-      _ -> pure ConnectionEncryptionStub
+  smpEncode (E2ERatchetParams v k1 k2) = smpEncode (v, k1, k2)
+  smpP = E2ERatchetParams <$> smpP <*> smpP <*> smpP
+
+instance VersionI E2ERatchetParams where
+  type VersionRangeT E2ERatchetParams = E2ERatchetParamsUri
+  version (E2ERatchetParams v _ _) = v
+  toVersionRangeT (E2ERatchetParams _ k1 k2) vr = E2ERatchetParamsUri vr k1 k2
+
+instance VersionRangeI E2ERatchetParamsUri where
+  type VersionT E2ERatchetParamsUri = E2ERatchetParams
+  versionRange (E2ERatchetParamsUri vr _ _) = vr
+  toVersionT (E2ERatchetParamsUri _ k1 k2) v = E2ERatchetParams v k1 k2
+
+data E2ERatchetParamsUri
+  = E2ERatchetParamsUri VersionRange C.PublicKeyX448 C.PublicKeyX448
+  deriving (Eq, Show)
+
+connEncStub :: E2ERatchetParamsUri
+connEncStub = E2ERatchetParamsUri e2eEncryptionVersion stubDhPubKey stubDhPubKey
+
+stubDhPubKey :: C.PublicKeyX448
+stubDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
+
+instance StrEncoding E2ERatchetParamsUri where
+  strEncode (E2ERatchetParamsUri vs key1 key2) =
+    Q.renderQueryPartialEscape
+      False
+      [ ("v", [Q.QN $ strEncode vs]),
+        ("dh", [Q.QN $ strEncode [key1, key2]])
+      ]
+  strP = do
+    query <- strP
+    vs <- queryParam "v" query
+    keys <- queryParam "dh" query
+    case keys of
+      [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
+      _ -> fail "bad e2e params"
 
 -- SMP agent message formats (after double ratchet encryption,
 -- or in case of AgentInvitation - in plain text body)
@@ -445,11 +474,11 @@ instance StrEncoding AMessage where
     REPLY cReq -> "R" <> strEncode cReq
     A_MSG body -> "M" <> body
 
-newtype QueryStringParams = QSP SimpleQuery
+newtype QueryStringParams = QSP Q.SimpleQuery
 
 instance StrEncoding QueryStringParams where
-  strEncode (QSP q) = renderSimpleQuery True q
-  strP = QSP . parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
+  strEncode (QSP q) = Q.renderSimpleQuery False q
+  strP = QSP . Q.parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
 
 queryParam :: StrEncoding a => ByteString -> QueryStringParams -> Parser a
 queryParam name (QSP q) =
@@ -459,13 +488,17 @@ queryParam name (QSP q) =
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
-    CRInvitation crData -> serialize "invitation" crData
-    CRContact crData -> serialize "contact" crData
+    CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
+    CRContactUri crData -> crEncode "contact" crData Nothing
     where
-      serialize crMode ConnReqUriData {crScheme, crSmpQueues, crEncryption = _} =
-        strEncode crScheme <> "/" <> crMode <> "#/" <> queryStr
+      crEncode :: ByteString -> ConnReqUriData -> Maybe E2ERatchetParamsUri -> ByteString
+      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues} e2eParams =
+        strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
-          queryStr = strEncode $ QSP [("smp", strEncode crSmpQueues), ("e2e", "")]
+          queryStr =
+            strEncode . QSP $
+              [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
+                <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
   strP = do
     ACRU m cr <- strP
     case testEquality m $ sConnectionMode @m of
@@ -476,15 +509,18 @@ instance StrEncoding AConnectionRequestUri where
   strEncode (ACRU _ cr) = strEncode cr
   strP = do
     crScheme <- strP
-    mkConnReq <- "/" *> mkConnReqP <* "#/?"
+    crMode <- "/" *> crModeP <* optional (A.char '/') <* "#/?"
     query <- strP
+    crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
-    let crEncryption = ConnectionEncryptionStub
-    pure $ mkConnReq ConnReqUriData {crScheme, crSmpQueues, crEncryption}
+    let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues}
+    case crMode of
+      CMInvitation -> do
+        crE2eParams <- queryParam "e2e" query
+        pure . ACRU SCMInvitation $ CRInvitationUri crData crE2eParams
+      CMContact -> pure . ACRU SCMContact $ CRContactUri crData
     where
-      mkConnReqP =
-        "invitation" $> ACRU SCMInvitation . CRInvitation
-          <|> "contact" $> ACRU SCMContact . CRContact
+      crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
 
 instance StrEncoding ConnectionMode where
   strEncode = \case
@@ -510,7 +546,7 @@ type ConfirmationId = ByteString
 type InvitationId = ByteString
 
 data SMPQueue = SMPQueue
-  { smpClientVersion :: Version,
+  { clientVersion :: Version,
     smpServer :: SMPServer,
     senderId :: SMP.SenderId,
     dhPublicKey :: C.PublicKeyX25519
@@ -518,11 +554,27 @@ data SMPQueue = SMPQueue
   deriving (Eq, Show)
 
 instance Encoding SMPQueue where
-  smpEncode SMPQueue {smpClientVersion, smpServer, senderId, dhPublicKey} =
-    smpEncode (smpClientVersion, smpServer, senderId, dhPublicKey)
+  smpEncode SMPQueue {clientVersion, smpServer, senderId, dhPublicKey} =
+    smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
   smpP = do
-    (smpClientVersion, smpServer, senderId, dhPublicKey) <- smpP
-    pure SMPQueue {smpClientVersion, smpServer, senderId, dhPublicKey}
+    (clientVersion, smpServer, senderId, dhPublicKey) <- smpP
+    pure SMPQueue {clientVersion, smpServer, senderId, dhPublicKey}
+
+-- This instance seems contrived and there was a temptation to split a common part of both types.
+-- But this is created to allow backward and forward compatibility where SMPQueueUri
+-- could have more fields to convert to different versions of SMPQueue in a different way,
+-- and this instance would become non-trivial.
+instance VersionI SMPQueue where
+  type VersionRangeT SMPQueue = SMPQueueUri
+  version = clientVersion
+  toVersionRangeT SMPQueue {smpServer, senderId, dhPublicKey} vr =
+    SMPQueueUri {clientVersionRange = vr, smpServer, senderId, dhPublicKey}
+
+instance VersionRangeI SMPQueueUri where
+  type VersionT SMPQueueUri = SMPQueue
+  versionRange = clientVersionRange
+  toVersionT SMPQueueUri {smpServer, senderId, dhPublicKey} v =
+    SMPQueue {clientVersion = v, smpServer, senderId, dhPublicKey}
 
 -- | SMP queue information sent out-of-band.
 --
@@ -530,25 +582,27 @@ instance Encoding SMPQueue where
 data SMPQueueUri = SMPQueueUri
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    smpVersionRange :: VersionRange,
+    clientVersionRange :: VersionRange,
     dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)
 
+-- TODO change SMP queue URI format to include version range and allow unknown parameters
 instance StrEncoding SMPQueueUri where
-  strEncode SMPQueueUri {smpServer = srv, senderId = qId, smpVersionRange = vr, dhPublicKey = k} =
+  strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVersionRange = vr, dhPublicKey = k} =
     strEncode srv <> "/" <> U.encode qId <> "#" <> strEncode k
   strP = do
     smpServer <- strP <* A.char '/'
     senderId <- strP <* A.char '#'
-    let smpVersionRange = SMP.smpClientVersion
+    let clientVersionRange = SMP.smpClientVersion
     dhPublicKey <- strP
-    pure SMPQueueUri {smpServer, senderId, smpVersionRange, dhPublicKey}
+    pure SMPQueueUri {smpServer, senderId, clientVersionRange, dhPublicKey}
 
 data ConnectionRequestUri (m :: ConnectionMode) where
-  CRInvitation :: ConnReqUriData -> ConnectionRequestUri CMInvitation
-  -- TODO contact connection request SHOULD NOT contain E2E encryption parameters
-  CRContact :: ConnReqUriData -> ConnectionRequestUri CMContact
+  CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri -> ConnectionRequestUri CMInvitation
+  -- contact connection request does NOT contain E2E encryption parameters -
+  -- they are passed in AgentInvitation message
+  CRContactUri :: ConnReqUriData -> ConnectionRequestUri CMContact
 
 deriving instance Eq (ConnectionRequestUri m)
 
@@ -565,8 +619,8 @@ deriving instance Show AConnectionRequestUri
 
 data ConnReqUriData = ConnReqUriData
   { crScheme :: ConnReqScheme,
-    crSmpQueues :: L.NonEmpty SMPQueueUri,
-    crEncryption :: E2ERatchetParams
+    crAgentVRange :: VersionRange,
+    crSmpQueues :: L.NonEmpty SMPQueueUri
   }
   deriving (Eq, Show)
 

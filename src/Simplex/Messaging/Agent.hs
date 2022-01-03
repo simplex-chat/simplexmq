@@ -273,13 +273,13 @@ newConn c connId cMode = do
   let cData = ConnData {connId}
   connId' <- withStore $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
-  let crData = ConnReqUriData simplexChat [qUri] ConnectionEncryptionStub
+  let crData = ConnReqUriData simplexChat smpAgentVersion [qUri]
   pure . (connId',) $ case cMode of
-    SCMInvitation -> CRInvitation crData
-    SCMContact -> CRContact crData
+    SCMInvitation -> CRInvitationUri crData connEncStub
+    SCMContact -> CRContactUri crData
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConn c connId (CRInvitation (ConnReqUriData _ (qUri :| _) _)) cInfo = do
+joinConn c connId (CRInvitationUri (ConnReqUriData _ _ (qUri :| _)) _e2eEnc) cInfo = do
   (sq, smpConf) <- newSndQueue qUri cInfo
   g <- asks idsDrg
   cfg <- asks config
@@ -288,7 +288,7 @@ joinConn c connId (CRInvitation (ConnReqUriData _ (qUri :| _) _)) cInfo = do
   confirmQueue c sq smpConf
   activateQueueJoining c connId' sq $ retryInterval cfg
   pure connId'
-joinConn c connId (CRContact (ConnReqUriData _ (qUri :| _) _)) cInfo = do
+joinConn c connId (CRContactUri (ConnReqUriData _ _ (qUri :| _))) cInfo = do
   (connId', cReq) <- newConn c connId SCMInvitation
   sendInvitation c qUri cReq cInfo
   pure connId'
@@ -303,7 +303,8 @@ activateQueueJoining c connId sq retryInterval =
       (rq, qUri') <- newRcvQueue c srv
       addSubscription c rq connId
       withStore $ \st -> upgradeSndConnToDuplex st connId rq
-      sendControlMessage c sq . REPLY $ CRInvitation $ ConnReqUriData CRSSimplex [qUri'] ConnectionEncryptionStub
+      let crData = ConnReqUriData CRSSimplex smpAgentVersion [qUri']
+      sendControlMessage c sq . REPLY $ CRInvitationUri crData connEncStub
 
 -- | Approve confirmation (LET command) in Reader monad
 allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
@@ -609,7 +610,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 _ -> pure ()
 
         replyMsg :: ConnectionRequestUri 'CMInvitation -> m ()
-        replyMsg (CRInvitation (ConnReqUriData _ (qUri :| _) _)) = do
+        replyMsg (CRInvitationUri (ConnReqUriData _ _ (qUri :| _)) _e2eEnc) = do
           logServer "<--" c srv rId "MSG <REPLY>"
           case cType of
             SCRcv -> do

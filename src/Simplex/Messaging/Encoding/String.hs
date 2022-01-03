@@ -16,6 +16,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import qualified Data.List.NonEmpty as L
+import Data.Word (Word16)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -51,6 +52,10 @@ instance StrEncoding a => StrEncoding (Maybe a) where
   strEncode = maybe "" strEncode
   strP = optional strP
 
+instance StrEncoding Word16 where
+  strEncode = B.pack . show
+  strP = A.decimal
+
 -- lists encode/parse as comma-separated strings
 instance StrEncoding a => StrEncoding [a] where
   strEncode = B.intercalate "," . map strEncode
@@ -63,7 +68,7 @@ instance StrEncoding a => StrEncoding (L.NonEmpty a) where
   strP = L.fromList <$> listItem `A.sepBy1'` A.char ','
 
 listItem :: StrEncoding a => Parser a
-listItem = strDecode <$?> A.takeTill (== ',')
+listItem = parseAll strP <$?> A.takeTill (== ',')
 
 instance (StrEncoding a, StrEncoding b) => StrEncoding (a, b) where
   strEncode (a, b) = B.unwords [strEncode a, strEncode b]

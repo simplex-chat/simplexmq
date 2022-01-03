@@ -8,8 +8,10 @@ import Data.ByteString (ByteString)
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (doubleRatchetVersion)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (smpClientVersion)
+import Simplex.Messaging.Version
 import Test.Hspec
 
 uri :: String
@@ -28,7 +30,7 @@ queue =
   SMPQueueUri
     { smpServer = srv,
       senderId = "\223\142z\251",
-      smpVersionRange = smpClientVersion,
+      clientVersionRange = smpClientVersion,
       dhPublicKey = testDhKey
     }
 
@@ -41,14 +43,32 @@ testDhKeyStr = strEncode testDhKey
 testDhKeyStrUri :: ByteString
 testDhKeyStrUri = urlEncode True testDhKeyStr
 
+connReqData :: ConnReqUriData
+connReqData =
+  ConnReqUriData
+    { crScheme = simplexChat,
+      crAgentVRange = smpAgentVersion,
+      crSmpQueues = [queue]
+    }
+
+testDhPubKey :: C.PublicKeyX448
+testDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
+
+testE2ERatchetParams :: E2ERatchetParamsUri
+testE2ERatchetParams = E2ERatchetParamsUri doubleRatchetVersion testDhPubKey testDhPubKey
+
+testE2ERatchetParams13 :: E2ERatchetParamsUri
+testE2ERatchetParams13 = E2ERatchetParamsUri (mkVersionRange 1 3) testDhPubKey testDhPubKey
+
 connectionRequest :: AConnectionRequestUri
 connectionRequest =
-  ACRU SCMInvitation . CRInvitation $
-    ConnReqUriData
-      { crScheme = simplexChat,
-        crSmpQueues = [queue],
-        crEncryption = ConnectionEncryptionStub
-      }
+  ACRU SCMInvitation $
+    CRInvitationUri connReqData testE2ERatchetParams
+
+connectionRequest12 :: AConnectionRequestUri
+connectionRequest12 =
+  ACRU SCMInvitation $
+    CRInvitationUri connReqData {crAgentVRange = mkVersionRange 1 2} testE2ERatchetParams13
 
 connectionRequestTests :: Spec
 connectionRequestTests =
@@ -65,13 +85,35 @@ connectionRequestTests =
         `shouldBe` Right queue
     it "should serialize connection requests" $ do
       strEncode connectionRequest
-        `shouldBe` "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
+        `shouldBe` "https://simplex.chat/invitation#/?v=1&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
         <> testDhKeyStrUri
-        <> "&e2e="
+        <> "&e2e=v%3D1%26dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+    it "should serialize connection request with version range" $ do
+      strEncode connectionRequest12
+        `shouldBe` "https://simplex.chat/invitation#/?v=1-2&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
+        <> testDhKeyStrUri
+        <> "&e2e=v%3D1-3%26dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
     it "should parse connection requests" $ do
       strDecode
         ( "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
             <> testDhKeyStrUri
-            <> "&e2e="
+            <> "&e2e=v%3D1%26dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> "&v=1"
         )
         `shouldBe` Right connectionRequest
+      strDecode
+        ( "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
+            <> testDhKeyStrUri
+            <> "&e2e=v%3D1-1%26dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> "&v=1-1"
+        )
+        `shouldBe` Right connectionRequest
+    it "should parse connection request with version range" $ do
+      strDecode
+        ( "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
+            <> testDhKeyStrUri
+            <> "&e2e=extra_key%3Dnew%26v%3D1-3%26dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> "&some_new_param=abc"
+            <> "&v=1-2"
+        )
+        `shouldBe` Right connectionRequest12
