@@ -251,7 +251,7 @@ newRcvQueue_ a c srv = do
             rcvPrivateKey,
             rcvDhSecret = C.dh' rcvPublicDhKey privDhKey,
             e2ePrivKey,
-            e2eShared = Nothing,
+            e2eDhSecret = Nothing,
             sndId = Just sndId,
             status = New
           }
@@ -305,14 +305,14 @@ logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
 sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, connInfo} =
+sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, e2ePubKey, connInfo} =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: m MsgBody
     mkConfirmation =
-      agentCbEncrypt sq . serializeAgentMessage $
+      agentCbEncrypt sq (Just e2ePubKey) . serializeAgentMessage $
         AgentConfirmation senderKey connInfo
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> RetryInterval -> m ()
@@ -326,7 +326,7 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
   where
     mkHello :: m ByteString
     mkHello = do
-      agentCbEncrypt sq . serializeAgentMessage $
+      agentCbEncrypt sq Nothing . serializeAgentMessage $
         AgentMessage (AHeader 0 "") HELLO
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
@@ -363,11 +363,11 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
 sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
 sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
   withLogSMP_ c server sndId "SEND <message>" $ \smp -> do
-    msg' <- agentCbEncrypt sq msg
+    msg' <- agentCbEncrypt sq Nothing msg
     liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg'
 
-agentCbEncrypt :: AgentMonad m => SndQueue -> ByteString -> m ByteString
-agentCbEncrypt SndQueue {e2ePubKey, e2eDhSecret} msg = do
+agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
+agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do
   emNonce <- liftIO C.randomCbNonce
   emBody <-
     liftEither . first cryptoError $
@@ -385,7 +385,7 @@ agentCbEncryptOnce dhRcvPubKey msg = do
     liftEither . first cryptoError $
       C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let emHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) dhSndPubKey
+  let emHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) (Just dhSndPubKey)
   pure $ smpEncode SMP.EncMessage {emHeader, emNonce, emBody}
 
 agentCbDecrypt :: AgentMonad m => C.DhSecretX25519 -> C.CbNonce -> ByteString -> m ByteString

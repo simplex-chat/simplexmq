@@ -815,6 +815,7 @@ cbDecrypt secret (CbNonce nonce) packet
     tag = Poly1305.auth rs c
 
 newtype CbNonce = CbNonce {unCbNonce :: ByteString}
+  deriving (Show)
 
 cbNonce :: ByteString -> CbNonce
 cbNonce s

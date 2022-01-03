@@ -137,9 +137,9 @@ testForeignKeysEnabled =
     let inconsistentQuery =
           [sql|
             INSERT INTO snd_queues
-              ( host, port, snd_id, conn_alias, snd_private_key, e2e_pub_key, e2e_dh_secret, status)
+              ( host, port, snd_id, conn_alias, snd_private_key, e2e_dh_secret, status)
             VALUES
-              ('smp.simplex.im', '5223', '1234', '2345', x'', x'', x'', 'new');
+              ('smp.simplex.im', '5223', '1234', '2345', x'', x'', 'new');
           |]
     DB.execute_ db inconsistentQuery
       `shouldThrow` (\e -> DB.sqlError e == DB.ErrorConstraint)
@@ -149,9 +149,6 @@ cData1 = ConnData {connId = "conn1"}
 
 testPrivateSignKey :: C.APrivateSignKey
 testPrivateSignKey = C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
-
-testPubDhKey :: C.PublicKeyX25519
-testPubDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 testPrivDhKey :: C.PrivateKeyX25519
 testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk"
@@ -167,7 +164,7 @@ rcvQueue1 =
       rcvPrivateKey = testPrivateSignKey,
       rcvDhSecret = testDhSecret,
       e2ePrivKey = testPrivDhKey,
-      e2eShared = Nothing,
+      e2eDhSecret = Nothing,
       sndId = Just "2345",
       status = New
     }
@@ -178,7 +175,6 @@ sndQueue1 =
     { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
       sndId = "3456",
       sndPrivateKey = testPrivateSignKey,
-      e2ePubKey = testPubDhKey,
       e2eDhSecret = testDhSecret,
       status = New
     }
@@ -309,7 +305,6 @@ testUpgradeRcvConnToDuplex =
             { server = SMPServer "smp.simplex.im" (Just "5223") testKeyHash,
               sndId = "2345",
               sndPrivateKey = testPrivateSignKey,
-              e2ePubKey = testPubDhKey,
               e2eDhSecret = testDhSecret,
               status = New
             }
@@ -331,7 +326,7 @@ testUpgradeSndConnToDuplex =
               rcvPrivateKey = testPrivateSignKey,
               rcvDhSecret = testDhSecret,
               e2ePrivKey = testPrivDhKey,
-              e2eShared = Nothing,
+              e2eDhSecret = Nothing,
               sndId = Just "4567",
               status = New
             }
