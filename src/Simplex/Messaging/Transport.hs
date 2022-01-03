@@ -77,7 +77,6 @@ import Data.Default (def)
 import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.Word (Word16)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import Data.X509.Validation (Fingerprint (..))
@@ -388,7 +387,7 @@ data THandle c = THandle
   { connection :: c,
     sessionId :: ByteString,
     -- | agreed SMP server protocol version
-    smpVersion :: Word16
+    smpVersion :: Version
   }
 
 data ServerHandshake = ServerHandshake
@@ -398,7 +397,7 @@ data ServerHandshake = ServerHandshake
 
 data ClientHandshake = ClientHandshake
   { -- | agreed SMP server protocol version
-    smpVersion :: Word16,
+    smpVersion :: Version,
     -- | server identity - CA certificate fingerprint
     keyHash :: C.KeyHash
   }

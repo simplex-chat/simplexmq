@@ -187,14 +187,14 @@ data AcceptedConfirmation = AcceptedConfirmation
 
 data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
-    connReq :: ConnectionRequest 'CMInvitation,
+    connReq :: ConnectionRequestUri 'CMInvitation,
     recipientConnInfo :: ConnInfo
   }
 
 data Invitation = Invitation
   { invitationId :: InvitationId,
     contactConnId :: ConnId,
-    connReq :: ConnectionRequest 'CMInvitation,
+    connReq :: ConnectionRequestUri 'CMInvitation,
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
     accepted :: Bool

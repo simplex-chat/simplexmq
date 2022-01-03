@@ -41,13 +41,13 @@ testDhKeyStr = strEncode testDhKey
 testDhKeyStrUri :: ByteString
 testDhKeyStrUri = urlEncode True testDhKeyStr
 
-connectionRequest :: AConnectionRequest
+connectionRequest :: AConnectionRequestUri
 connectionRequest =
-  ACR SCMInvitation . CRInvitation $
-    ConnReqData
+  ACRU SCMInvitation . CRInvitation $
+    ConnReqUriData
       { crScheme = simplexChat,
         crSmpQueues = [queue],
-        crEncryption = ConnectionEncryption
+        crEncryption = ConnectionEncryptionStub
       }
 
 connectionRequestTests :: Spec

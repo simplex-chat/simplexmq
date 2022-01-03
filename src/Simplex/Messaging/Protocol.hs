@@ -97,7 +97,6 @@ import Data.Maybe (isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
-import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Network.Socket (HostName, ServiceName)
@@ -325,7 +324,7 @@ data EncMessage = EncMessage
   deriving (Show)
 
 data PubHeader = PubHeader
-  { phVersion :: Word16,
+  { phVersion :: Version,
     phE2ePubDhKey :: Maybe C.PublicKeyX25519
   }
   deriving (Show)
@@ -373,6 +372,13 @@ data SMPServer = SMPServer
 
 instance IsString SMPServer where
   fromString = parseString strDecode
+
+instance Encoding SMPServer where
+  smpEncode SMPServer {host, port, keyHash} =
+    smpEncode (host, port, keyHash)
+  smpP = do
+    (host, port, keyHash) <- smpP
+    pure SMPServer {host, port, keyHash}
 
 instance StrEncoding SMPServer where
   strEncode SMPServer {host, port, keyHash} =

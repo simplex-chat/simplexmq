@@ -138,11 +138,11 @@ disconnectAgentClient c = closeAgentClient c >> logConnection c False
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: AgentErrorMonad m => AgentClient -> SConnectionMode c -> m (ConnId, ConnectionRequest c)
+createConnection :: AgentErrorMonad m => AgentClient -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 createConnection c cMode = withAgentEnv c $ newConn c "" cMode
 
 -- | Join SMP agent connection (JOIN command)
-joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequest c -> ConnInfo -> m ConnId
+joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequestUri c -> ConnInfo -> m ConnId
 joinConnection c = withAgentEnv c .: joinConn c ""
 
 -- | Allow connection to continue after CONF notification (LET command)
@@ -254,8 +254,8 @@ withStore action = do
 -- | execute any SMP agent command
 processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
 processCommand c (connId, cmd) = case cmd of
-  NEW (ACM cMode) -> second (INV . ACR cMode) <$> newConn c connId cMode
-  JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
+  NEW (ACM cMode) -> second (INV . ACRU cMode) <$> newConn c connId cMode
+  JOIN (ACRU _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
   LET confId ownCInfo -> allowConnection' c connId confId ownCInfo $> (connId, OK)
   ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId invId ownCInfo
   RJCT invId -> rejectContact' c connId invId $> (connId, OK)
@@ -265,7 +265,7 @@ processCommand c (connId, cmd) = case cmd of
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
 
-newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequest c)
+newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId cMode = do
   srv <- getSMPServer
   (rq, qUri) <- newRcvQueue c srv
@@ -273,13 +273,13 @@ newConn c connId cMode = do
   let cData = ConnData {connId}
   connId' <- withStore $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
-  let crData = ConnReqData simplexChat [qUri] ConnectionEncryption
+  let crData = ConnReqUriData simplexChat [qUri] ConnectionEncryptionStub
   pure . (connId',) $ case cMode of
     SCMInvitation -> CRInvitation crData
     SCMContact -> CRContact crData
 
-joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequest c -> ConnInfo -> m ConnId
-joinConn c connId (CRInvitation (ConnReqData _ (qUri :| _) _)) cInfo = do
+joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
+joinConn c connId (CRInvitation (ConnReqUriData _ (qUri :| _) _)) cInfo = do
   (sq, smpConf) <- newSndQueue qUri cInfo
   g <- asks idsDrg
   cfg <- asks config
@@ -288,7 +288,7 @@ joinConn c connId (CRInvitation (ConnReqData _ (qUri :| _) _)) cInfo = do
   confirmQueue c sq smpConf
   activateQueueJoining c connId' sq $ retryInterval cfg
   pure connId'
-joinConn c connId (CRContact (ConnReqData _ (qUri :| _) _)) cInfo = do
+joinConn c connId (CRContact (ConnReqUriData _ (qUri :| _) _)) cInfo = do
   (connId', cReq) <- newConn c connId SCMInvitation
   sendInvitation c qUri cReq cInfo
   pure connId'
@@ -303,7 +303,7 @@ activateQueueJoining c connId sq retryInterval =
       (rq, qUri') <- newRcvQueue c srv
       addSubscription c rq connId
       withStore $ \st -> upgradeSndConnToDuplex st connId rq
-      sendControlMessage c sq . REPLY $ CRInvitation $ ConnReqData CRSSimplex [qUri'] ConnectionEncryption
+      sendControlMessage c sq . REPLY $ CRInvitation $ ConnReqUriData CRSSimplex [qUri'] ConnectionEncryptionStub
 
 -- | Approve confirmation (LET command) in Reader monad
 allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
@@ -392,7 +392,7 @@ sendMessage' c connId msg =
             (internalId, internalSndId, prevMsgHash) <- updateSndIds st connId
             let msgBody =
                   serializeAgentMessage $
-                    AgentMessage (AHeader (unSndId internalSndId) prevMsgHash) (A_MSG msg)
+                    AgentMessage (APrivHeader (unSndId internalSndId) prevMsgHash) (A_MSG msg)
                 internalHash = C.sha256Hash msgBody
                 msgData = SndMsgData {..}
             createSndMsg st connId msgData
@@ -504,7 +504,7 @@ getSMPServer =
 sendControlMessage :: AgentMonad m => AgentClient -> SndQueue -> AMessage -> m ()
 sendControlMessage c sq agentMessage = do
   sendAgentMessage c sq . serializeAgentMessage $
-    AgentMessage (AHeader 0 "") agentMessage
+    AgentMessage (APrivHeader 0 "") agentMessage
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
@@ -544,7 +544,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               (msg, agentMessage) <-
                 decryptAgentMessage e2eDh encMessage
               case agentMessage of
-                AgentMessage AHeader {sndMsgId, prevMsgHash} aMsg -> case aMsg of
+                AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMsg -> case aMsg of
                   HELLO -> helloMsg >> ack
                   REPLY cReq -> replyMsg cReq >> ack
                   A_MSG body -> do
@@ -608,8 +608,8 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 SCDuplex -> notifyConnected c connId
                 _ -> pure ()
 
-        replyMsg :: ConnectionRequest 'CMInvitation -> m ()
-        replyMsg (CRInvitation (ConnReqData _ (qUri :| _) _)) = do
+        replyMsg :: ConnectionRequestUri 'CMInvitation -> m ()
+        replyMsg (CRInvitation (ConnReqUriData _ (qUri :| _) _)) = do
           logServer "<--" c srv rId "MSG <REPLY>"
           case cType of
             SCRcv -> do
@@ -634,7 +634,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           withStore $ \st -> createRcvMsg st connId rcvMsg
           notify $ MSG msgMeta msgBody
 
-        smpInvitation :: ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
+        smpInvitation :: ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
         smpInvitation connReq cInfo = do
           logServer "<--" c srv rId "MSG <KEY>"
           case cType of

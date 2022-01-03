@@ -16,6 +16,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
 import Data.Int (Int64)
+import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16, Word32)
 import Network.Transport.Internal (decodeWord16, decodeWord32, encodeWord16, encodeWord32)
@@ -64,15 +65,21 @@ w32P = fromIntegral <$> smpP @Word32
 
 -- ByteStrings are assumed no longer than 255 bytes
 instance Encoding ByteString where
-  smpEncode s = B.cons (w2c len) s where len = fromIntegral $ B.length s
-  smpP = A.take . fromIntegral . c2w =<< A.anyChar
+  smpEncode s = B.cons (lenEncode $ B.length s) s
+  smpP = A.take =<< lenP
+
+lenEncode :: Int -> Char
+lenEncode = w2c . fromIntegral
+
+lenP :: Parser Int
+lenP = fromIntegral . c2w <$> A.anyChar
 
 instance Encoding a => Encoding (Maybe a) where
-  smpEncode s = maybe "\0" (("\1" <>) . smpEncode) s
+  smpEncode s = maybe "0" (("1" <>) . smpEncode) s
   smpP =
     smpP >>= \case
-      '\0' -> pure Nothing
-      '\1' -> Just <$> smpP
+      '0' -> pure Nothing
+      '1' -> Just <$> smpP
       _ -> fail "invalid Maybe tag"
 
 newtype Tail = Tail {unTail :: ByteString}
@@ -88,6 +95,18 @@ instance Encoding SystemTime where
 instance (Encoding a, Encoding b) => Encoding (a, b) where
   smpEncode (a, b) = smpEncode a <> smpEncode b
   smpP = (,) <$> smpP <*> smpP
+
+-- lists encode/parse as a sequence of items prefixed with list length (as 1 byte)
+instance Encoding a => Encoding [a] where
+  smpEncode xs = B.cons (lenEncode $ length xs) . B.concat $ map smpEncode xs
+  smpP = (`A.count` smpP) =<< lenP
+
+instance Encoding a => Encoding (L.NonEmpty a) where
+  smpEncode = smpEncode . L.toList
+  smpP =
+    lenP >>= \case
+      0 -> fail "empty list"
+      n -> L.fromList <$> A.count n smpP
 
 instance (Encoding a, Encoding b, Encoding c) => Encoding (a, b, c) where
   smpEncode (a, b, c) = smpEncode a <> smpEncode b <> smpEncode c

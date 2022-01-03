@@ -137,47 +137,28 @@ previousMsgHash = encoded
 encoded = <base64 encoded>
 
 agentMessage = helloMsg / replyQueueMsg /
-               clientMsg / invitationMsg/ acknowledgeMsg /
+               clientMsg / invitationMsg /
                newQueueMessage / deleteQueueMsg 
 
 msgPadding = *OCTET ; optional random bytes to get messages to the same size (as defined in SMP message size)
 
-helloMsg = %s"HELLO"
+helloMsg = %s"H"
 
-replyQueueMsg = %s"REPLY" SP connectionRequest ; `connectionRequest` is defined below
+replyQueueMsg = %s"R" connectionRequest ; `connectionRequest` is defined below
 ; this message can only be sent by the second connection party
 
-clientMsg = %s"MSG" SP clientMsgBody
+clientMsg = %s"M" clientMsgBody
 clientMsgBody = *OCTET
 
 ; TODO remove and move to "public" header
 invitationMsg = %s"INV" SP connReqInvitation SP connInfo
 ; `connReqInvitation` and `connInfo` are defined below
 
-acknowledgeMsg = %s"ACK" SP agentMsgId SP msgHash SP ackStatus
-; NOT SUPPORTED in the current implementation
-
-msgHash = encoded
-; base64 encoded hash of the received message
-
-ackStatus = %s"OK" / ackError
-
-ackError = %s"ERR" SP ackErrorType
-
-ackErrorType = ackUnknownMsg / ackProhibitedMsg / ackSyntaxErr
-
-ackUnknownMsg = %s"UNKNOWN"
-
-ackProhibitedMsg = %s"PROHIBITED" ; unexpected message e.g. "HELLO" or "REPLY"
-
-ackSyntaxErr = %s"SYNTAX" SP syntaxErrCode
-syntaxErrCode = 1*DIGIT ; TODO
-
-newQueueMsg = %s"NEW" SP queueURI
+newQueueMsg = %s"N" queueURI
 ; this message can be sent by any party to add SMP queue to the connection.
 ; NOT SUPPORTED in the current implementation
 
-deleteQueueMsg = %s"DEL" SP queueURI
+deleteQueueMsg = %s"D" queueURI
 ; notification that the queue with passed URI will be deleted
 ; no need to notify the other party about suspending queue separately, as suspended and deleted queues are indistinguishable to the sender
 ; NOT SUPPORTED in the current implementation

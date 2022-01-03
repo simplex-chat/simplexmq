@@ -39,7 +39,9 @@ module Simplex.Messaging.Crypto
     PrivateKey (..),
     PublicKey (..),
     PrivateKeyX25519,
+    PrivateKeyX448,
     PublicKeyX25519,
+    PublicKeyX448,
     APrivateKey (..),
     APublicKey (..),
     APrivateSignKey (..),
@@ -63,10 +65,6 @@ module Simplex.Messaging.Crypto
     encodePubKey,
     encodePrivKey,
 
-    -- * E2E hybrid encryption scheme
-    E2EEncryptionVersion,
-    currentE2EVersion,
-
     -- * sign/verify
     Signature (..),
     ASignature (..),
@@ -86,16 +84,14 @@ module Simplex.Messaging.Crypto
     -- * AES256 AEAD-GCM scheme
     Key (..),
     IV (..),
+    AuthTag (..),
     encryptAES,
     decryptAES,
     encryptAEAD,
     decryptAEAD,
     authTagSize,
-    authTagToBS,
-    bsToAuthTag,
     randomAesKey,
     randomIV,
-    ivP,
     ivSize,
 
     -- * NaCl crypto_box
@@ -134,7 +130,6 @@ import Crypto.Random (getRandomBytes)
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
-import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
@@ -148,7 +143,6 @@ import Data.Kind (Constraint, Type)
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Typeable)
-import Data.Word (Word16)
 import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -157,11 +151,6 @@ import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
-
-type E2EEncryptionVersion = Word16
-
-currentE2EVersion :: E2EEncryptionVersion
-currentE2EVersion = 1
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -236,6 +225,8 @@ deriving instance Show APublicKey
 
 type PublicKeyX25519 = PublicKey X25519
 
+type PublicKeyX448 = PublicKey X448
+
 -- | GADT for private keys.
 data PrivateKey (a :: Algorithm) where
   PrivateKeyEd25519 :: Ed25519.SecretKey -> Ed25519.PublicKey -> PrivateKey Ed25519
@@ -260,6 +251,8 @@ instance Eq APrivateKey where
 deriving instance Show APrivateKey
 
 type PrivateKeyX25519 = PrivateKey X25519
+
+type PrivateKeyX448 = PrivateKey X448
 
 type family SignatureAlgorithm (a :: Algorithm) :: Constraint where
   SignatureAlgorithm Ed25519 = ()
@@ -519,7 +512,7 @@ instance AlgorithmI a => ToField (PrivateKey a) where toField = toField . encode
 
 instance AlgorithmI a => ToField (PublicKey a) where toField = toField . encodePubKey
 
-instance AlgorithmI a => ToField (DhSecret a) where toField = toField . dhSecretBytes'
+instance ToField (DhSecret a) where toField = toField . dhSecretBytes'
 
 instance FromField APrivateSignKey where fromField = blobFieldDecoder decodePrivKey
 
@@ -660,6 +653,16 @@ newtype Key = Key {unKey :: ByteString}
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
 
+instance Encoding IV where
+  smpEncode = unIV
+  smpP = IV <$> A.take (ivSize @AES256)
+
+newtype AuthTag = AuthTag {unAuthTag :: AES.AuthTag}
+
+instance Encoding AuthTag where
+  smpEncode = B.pack . map w2c . BA.unpack . AES.unAuthTag . unAuthTag
+  smpP = AuthTag . AES.AuthTag . BA.pack . map c2w . B.unpack <$> A.take authTagSize
+
 -- | Certificate fingerpint newtype.
 --
 -- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
@@ -684,36 +687,32 @@ instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
 
--- | IV bytes parser.
-ivP :: Parser IV
-ivP = IV <$> A.take (ivSize @AES256)
-
 -- | AEAD-GCM encryption with empty associated data.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
-encryptAES :: Key -> IV -> Int -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
+encryptAES :: Key -> IV -> Int -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAES key iv paddedLen = encryptAEAD key iv paddedLen ""
 
 -- | AEAD-GCM encryption.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks encryption.
-encryptAEAD :: Key -> IV -> Int -> ByteString -> ByteString -> ExceptT CryptoError IO (AES.AuthTag, ByteString)
+encryptAEAD :: Key -> IV -> Int -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEAD aesKey ivBytes paddedLen ad msg = do
   aead <- initAEAD @AES256 aesKey ivBytes
   msg' <- liftEither $ pad msg paddedLen
-  return $ AES.aeadSimpleEncrypt aead ad msg' authTagSize
+  pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg' authTagSize
 
 -- | AEAD-GCM decryption with empty associated data.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
-decryptAES :: Key -> IV -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
+decryptAES :: Key -> IV -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAES key iv = decryptAEAD key iv ""
 
 -- | AEAD-GCM decryption.
 --
 -- Used as part of hybrid E2E encryption scheme and for SMP transport blocks decryption.
-decryptAEAD :: Key -> IV -> ByteString -> ByteString -> AES.AuthTag -> ExceptT CryptoError IO ByteString
-decryptAEAD aesKey ivBytes ad msg authTag = do
+decryptAEAD :: Key -> IV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
+decryptAEAD aesKey ivBytes ad msg (AuthTag authTag) = do
   aead <- initAEAD @AES256 aesKey ivBytes
   liftEither . unPad =<< maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg authTag)
 
@@ -756,14 +755,6 @@ makeIV bs = maybeError CryptoIVError $ AES.makeIV bs
 
 maybeError :: CryptoError -> Maybe a -> ExceptT CryptoError IO a
 maybeError e = maybe (throwE e) return
-
--- | Convert AEAD 'AuthTag' to ByteString.
-authTagToBS :: AES.AuthTag -> ByteString
-authTagToBS = B.pack . map w2c . BA.unpack . AES.unAuthTag
-
--- | Convert ByteString to AEAD 'AuthTag'.
-bsToAuthTag :: ByteString -> AES.AuthTag
-bsToAuthTag = AES.AuthTag . BA.pack . map c2w . B.unpack
 
 cryptoFailable :: CE.CryptoFailable a -> ExceptT CryptoError IO a
 cryptoFailable = liftEither . first AESCipherError . CE.eitherCryptoError

@@ -58,9 +58,9 @@ instance StrEncoding a => StrEncoding [a] where
 
 instance StrEncoding a => StrEncoding (L.NonEmpty a) where
   strEncode = strEncode . L.toList
-  strP =
-    maybe (fail "empty list") pure . L.nonEmpty
-      =<< listItem `A.sepBy1'` A.char ','
+
+  -- relies on sepBy1 never returning an empty list
+  strP = L.fromList <$> listItem `A.sepBy1'` A.char ','
 
 listItem :: StrEncoding a => Parser a
 listItem = strDecode <$?> A.takeTill (== ',')

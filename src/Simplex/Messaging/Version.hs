@@ -2,7 +2,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.Messaging.Version
-  ( VersionRange (minVersion, maxVersion),
+  ( Version,
+    VersionRange (minVersion, maxVersion),
     pattern VersionRange,
     mkVersionRange,
     versionRange,
@@ -22,19 +23,21 @@ pattern VersionRange v1 v2 <- VRange v1 v2
 
 {-# COMPLETE VersionRange #-}
 
+type Version = Word16
+
 data VersionRange = VRange
-  { minVersion :: Word16,
-    maxVersion :: Word16
+  { minVersion :: Version,
+    maxVersion :: Version
   }
   deriving (Eq, Show)
 
 -- | construct valid version range, to be used in constants
-mkVersionRange :: Word16 -> Word16 -> VersionRange
+mkVersionRange :: Version -> Version -> VersionRange
 mkVersionRange v1 v2
   | v1 <= v2 = VRange v1 v2
   | otherwise = error "invalid version range"
 
-versionRange :: Word16 -> Word16 -> Maybe VersionRange
+versionRange :: Version -> Version -> Maybe VersionRange
 versionRange v1 v2
   | v1 <= v2 = Just $ VRange v1 v2
   | otherwise = Nothing
@@ -56,5 +59,5 @@ compatibleVersion (VersionRange min1 max1) (VersionRange min2 max2)
   | min1 <= max2 && min2 <= max1 = Just $ min max1 max2
   | otherwise = Nothing
 
-isCompatible :: Word16 -> VersionRange -> Bool
+isCompatible :: Version -> VersionRange -> Bool
 isCompatible v (VersionRange v1 v2) = v1 <= v && v <= v2

@@ -548,13 +548,13 @@ instance ToField SMPQueueUri where toField = toField . strEncode
 
 instance FromField SMPQueueUri where fromField = blobFieldParser strP
 
-instance ToField AConnectionRequest where toField = toField . strEncode
+instance ToField AConnectionRequestUri where toField = toField . strEncode
 
-instance FromField AConnectionRequest where fromField = blobFieldParser strP
+instance FromField AConnectionRequestUri where fromField = blobFieldParser strP
 
-instance ConnectionModeI c => ToField (ConnectionRequest c) where toField = toField . strEncode
+instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = toField . strEncode
 
-instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequest c) where fromField = blobFieldParser strP
+instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequestUri c) where fromField = blobFieldParser strP
 
 instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
 

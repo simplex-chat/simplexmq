@@ -327,9 +327,9 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
     mkHello :: m ByteString
     mkHello = do
       agentCbEncrypt sq Nothing . serializeAgentMessage $
-        AgentMessage (AHeader 0 "") HELLO
+        AgentMessage (APrivHeader 0 "") HELLO
 
-sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
+sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} cReq connInfo = do
   withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
     msg <- mkInvitation
