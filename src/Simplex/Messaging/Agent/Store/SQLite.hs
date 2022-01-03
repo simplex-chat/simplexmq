@@ -241,20 +241,18 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
-  setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.PublicKeyX25519 -> C.DhSecretX25519 -> m ()
-  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eSndPubKey e2eDhSecret =
+  setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.DhSecretX25519 -> m ()
+  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eDhSecret =
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
         [sql|
           UPDATE rcv_queues
-          SET e2e_snd_pub_key = :e2e_snd_pub_key,
-              e2e_dh_secret = :e2e_dh_secret,
+          SET e2e_dh_secret = :e2e_dh_secret,
               status = :status
           WHERE host = :host AND port = :port AND rcv_id = :rcv_id
         |]
         [ ":status" := Confirmed,
-          ":e2e_snd_pub_key" := e2eSndPubKey,
           ":e2e_dh_secret" := e2eDhSecret,
           ":host" := host,
           ":port" := port,
@@ -621,15 +619,13 @@ upsertServer_ dbConn SMPServer {host, port, keyHash} = do
 
 insertRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 insertRcvQueue_ dbConn connId RcvQueue {..} = do
-  let e2eSndPubKey = fst <$> e2eShared :: Maybe C.PublicKeyX25519
-      e2eDhSecret = snd <$> e2eShared :: Maybe C.DhSecretX25519
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_snd_pub_key, e2e_dh_secret, snd_id, status)
+        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status)
       VALUES
-        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_snd_pub_key,:e2e_dh_secret,:snd_id,:status);
+        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_dh_secret,:snd_id,:status);
     |]
     [ ":host" := host server,
       ":port" := port server,
@@ -638,7 +634,6 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
       ":rcv_private_key" := rcvPrivateKey,
       ":rcv_dh_secret" := rcvDhSecret,
       ":e2e_priv_key" := e2ePrivKey,
-      ":e2e_snd_pub_key" := e2eSndPubKey,
       ":e2e_dh_secret" := e2eDhSecret,
       ":snd_id" := sndId,
       ":status" := status
@@ -652,16 +647,15 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     dbConn
     [sql|
       INSERT INTO snd_queues
-        ( host, port, snd_id, conn_alias, snd_private_key, e2e_pub_key, e2e_dh_secret, status)
+        ( host, port, snd_id, conn_alias, snd_private_key, e2e_dh_secret, status)
       VALUES
-        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_pub_key,:e2e_dh_secret,:status);
+        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_dh_secret,:status);
     |]
     [ ":host" := host server,
       ":port" := port server,
       ":snd_id" := sndId,
       ":conn_alias" := connId,
       ":snd_private_key" := sndPrivateKey,
-      ":e2e_pub_key" := e2ePubKey,
       ":e2e_dh_secret" := e2eDhSecret,
       ":status" := status
     ]
@@ -697,17 +691,16 @@ getRcvQueueByConnAlias_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.e2e_priv_key, q.e2e_snd_pub_key, q.e2e_dh_secret, q.snd_id, q.status
+          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eSndPubKey, e2eDhSecret, sndId, status)] =
+    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status)] =
       let server = SMPServer host port keyHash
-          e2eShared = (,) <$> e2eSndPubKey <*> e2eDhSecret
-       in Just RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eShared, sndId, status}
+       in Just RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status}
     rcvQueue _ = Nothing
 
 getSndQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
@@ -716,17 +709,16 @@ getSndQueueByConnAlias_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key,
-          q.e2e_pub_key, q.e2e_dh_secret, q.status
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.e2e_dh_secret, q.status
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_alias = ?;
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, status)] =
+    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2eDhSecret, status)] =
       let server = SMPServer host port keyHash
-       in Just SndQueue {server, sndId, sndPrivateKey, e2ePubKey, e2eDhSecret, status}
+       in Just SndQueue {server, sndId, sndPrivateKey, e2eDhSecret, status}
     sndQueue _ = Nothing
 
 -- * updateRcvIds helpers

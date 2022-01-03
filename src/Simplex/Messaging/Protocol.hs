@@ -322,11 +322,13 @@ data EncMessage = EncMessage
     emNonce :: C.CbNonce,
     emBody :: ByteString
   }
+  deriving (Show)
 
 data PubHeader = PubHeader
   { phVersion :: Word16,
-    phE2ePubDhKey :: C.PublicKeyX25519
+    phE2ePubDhKey :: Maybe C.PublicKeyX25519
   }
+  deriving (Show)
 
 instance Encoding PubHeader where
   smpEncode (PubHeader v k) = smpEncode (v, k)

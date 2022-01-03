@@ -332,7 +332,7 @@ rejectContact' _ contactConnId invId =
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SMPConfirmation -> m ()
 processConfirmation c rq@RcvQueue {e2ePrivKey} SMPConfirmation {senderKey, e2ePubKey} = do
   let dhSecret = C.dh' e2ePubKey e2ePrivKey
-  withStore $ \st -> setRcvQueueConfirmedE2E st rq e2ePubKey dhSecret
+  withStore $ \st -> setRcvQueueConfirmedE2E st rq dhSecret
   secureQueue c rq senderKey
   withStore $ \st -> setRcvQueueStatus st rq Secured
 
@@ -522,39 +522,38 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
     _ -> atomically $ writeTBQueue subQ ("", "", ERR $ CONN NOT_FOUND)
   where
     processSMP :: SConnType c -> ConnData -> RcvQueue -> m ()
-    processSMP cType ConnData {connId} rq@RcvQueue {rcvDhSecret, e2ePrivKey, e2eShared, status} =
+    processSMP cType ConnData {connId} rq@RcvQueue {rcvDhSecret, e2ePrivKey, e2eDhSecret, status} =
       case cmd of
         SMP.MSG srvMsgId srvTs msgBody' -> handleNotifyAck $ do
           -- TODO deduplicate with previously received
           msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
-          encMessage@SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey} <-
+          encMessage@SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey_} <-
             liftEither $ parse smpP (AGENT A_MESSAGE) msgBody
-          case e2eShared of
-            Nothing -> do
-              let e2eDhSecret = C.dh' e2ePubKey e2ePrivKey
+          case (e2eDhSecret, e2ePubKey_) of
+            (Nothing, Just e2ePubKey) -> do
+              let e2eDh = C.dh' e2ePubKey e2ePrivKey
               (_, agentMessage) <-
-                decryptAgentMessage e2eDhSecret encMessage
+                decryptAgentMessage e2eDh encMessage
               case agentMessage of
                 AgentConfirmation senderKey connInfo -> do
                   smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
                   ack
                 AgentInvitation cReq cInfo -> smpInvitation cReq cInfo >> ack
                 _ -> prohibited >> ack
-            Just (e2eSndPubKey, e2eDhSecret)
-              | e2eSndPubKey /= e2ePubKey -> prohibited >> ack
-              | otherwise -> do
-                (msg, agentMessage) <-
-                  decryptAgentMessage e2eDhSecret encMessage
-                case agentMessage of
-                  AgentMessage AHeader {sndMsgId, prevMsgHash} aMsg -> case aMsg of
-                    HELLO -> helloMsg >> ack
-                    REPLY cReq -> replyMsg cReq >> ack
-                    A_MSG body -> do
-                      -- note that there is no ACK sent here, it is sent with agent's user ACK command
-                      -- TODO add hash to other messages
-                      let msgHash = C.sha256Hash msg
-                      agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) body msgHash
-                  _ -> prohibited >> ack
+            (Just e2eDh, Nothing) -> do
+              (msg, agentMessage) <-
+                decryptAgentMessage e2eDh encMessage
+              case agentMessage of
+                AgentMessage AHeader {sndMsgId, prevMsgHash} aMsg -> case aMsg of
+                  HELLO -> helloMsg >> ack
+                  REPLY cReq -> replyMsg cReq >> ack
+                  A_MSG body -> do
+                    -- note that there is no ACK sent here, it is sent with agent's user ACK command
+                    -- TODO add hash to other messages
+                    let msgHash = C.sha256Hash msg
+                    agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) body msgHash
+                _ -> prohibited >> ack
+            _ -> prohibited >> ack
         SMP.END -> do
           removeSubscription c connId
           logServer "<--" c srv rId "END"
@@ -576,8 +575,8 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         ack = sendAck c rq
 
         decryptAgentMessage :: C.DhSecretX25519 -> SMP.EncMessage -> m (ByteString, AgentMessage)
-        decryptAgentMessage e2eDhSecret SMP.EncMessage {emNonce, emBody} = do
-          msg <- agentCbDecrypt e2eDhSecret emNonce emBody
+        decryptAgentMessage e2eDh SMP.EncMessage {emNonce, emBody} = do
+          msg <- agentCbDecrypt e2eDh emNonce emBody
           agentMessage <-
             liftEither $ clientToAgentMsg =<< parse smpP (AGENT A_MESSAGE) msg
           pure (msg, agentMessage)
@@ -699,7 +698,6 @@ newSndQueue_ a (SMPQueueUri smpServer senderId clientVersion rcvE2ePubDhKey) cIn
           { server = smpServer,
             sndId = senderId,
             sndPrivateKey,
-            e2ePubKey,
             e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
             status = New
           }

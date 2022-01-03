@@ -567,10 +567,11 @@ This command is sent to the server by the sender both to confirm the queue after
 ```abnf
 send = %s"SEND " smpEncMessage
 smpEncMessage = smpPubHeader sentMsgBody ; message up to 15968 bytes
-smpPubHeader = smpClientVersion senderPublicDhKey
+smpPubHeader = smpClientVersion (%x01 senderPublicDhKey / %x00)
 smpClientVersion = word16
 senderPublicDhKey = length x509encoded
 ; sender's Curve25519 public key to agree DH secret for E2E encryption in this queue
+; it is only sent in confirmation message
 x509encoded = <binary X509 key encoding>
 sentMsgBody = 15842*15842 OCTET
 ; E2E-encrypted smpClientMessage padded to 15842 bytes before encryption
@@ -609,21 +610,21 @@ SMP transmission structure for sent messages:
 ```
 ------- transmission (= 16384 bytes)
     2 | originalLength
- 398- | signature SP sessionId SP corrId SP queueId SP %s"SEND" SP
-      ....... smpEncMessage (= 15968 bytes)
+ 396- | signature sessionId corrId queueId %s"SEND" SP (1+114 + 1+32? + 1+32 + 1+24 + 4+1 = 210)
+      ....... smpEncMessage (= 15968 bytes = 16384 - 416 bytes)
        126- | smpPubHeader
          24 | nonce for smpClientMessage
-            ------- smpClientMessage (E2E encrypted, = 15842 bytes)
+            ------- smpClientMessage (E2E encrypted, = 15802 bytes = 15968 - 166)
                 2 | originalLength
               16- | smpPrivHeader
                   .......
-                        | clientMsgBody (<= 15784 bytes)
+                        | clientMsgBody (<= 15784 bytes = 15802 - 18)
                   .......
                0+ | smpClientMessage pad
             ------- smpClientMessage end
          16 | auth tag for smpClientMessage
       ....... smpEncMessage end
-  16+ | transmission pad
+  18+ | transmission pad
 ------- transmission end
 ```
 
@@ -632,28 +633,28 @@ SMP transmission structure for received messages:
 ```
 ------- transmission (= 16384 bytes)
     2 | originalLength
- 398- | signature SP sessionId SP corrId SP queueId SP %s"MSG" SP msgId SP timestamp SP
-      ------- serverEncryptedMsg (= 15986 bytes)
+ 396- | signature sessionId corrId queueId %s"MSG" SP msgId timestamp (1+114 + 1+32? + 1+32 + 1+24 + 3+1 + 24+1 + 8 = 243)
+      ------- serverEncryptedMsg (= 15970 bytes = 16384 - 414 bytes)
           2 | originalLength
-            ....... smpEncMessage (= 15968 bytes)
+            ....... smpEncMessage (= 15968 bytes = 15970 - 2 bytes)
              126- | smpPubHeader
                24 | nonce for smpClientMessage
-                  ------- smpClientMessage (E2E encrypted, = 15842 bytes)
+                  ------- smpClientMessage (E2E encrypted, = 15802 bytes = 15968 - 166 bytes)
                       2 | originalLength
                     16- | smpPrivHeader
-                        ....... clientMsgBody (<= 15784 bytes)
+                        ....... clientMsgBody (<= 15784 bytes = 15802 - 18)
                               -- TODO move internal structure to agent protocol
-                          16- | agentPublicHeader
-                              ....... E2E double-ratchet encrypted (= 15768)
+                          16- | agentPublicHeader (the size is for user messages post handshake, without E2E X3DH keys)
+                              ....... E2E double-ratchet encrypted (= 15768 bytes = 15784 - 16)
                                  96 | double-ratchet header
                                  16 | double-ratchet header auth tag
                                  24 | double-ratchet header iv
-                                    ------- encrypted agent message (= 15616 bytes)
+                                    ------- encrypted agent message (= 15616 bytes = 15768 - 152)
                                         2 | originalLength
                                  122 (90) | agentHeader
                                         4 | %s"MSG" SP
                                           .......
-                                                | application message (<= 15488 bytes)
+                                                | application message (<= 15488 bytes = 15616 - 128)
                                           .......
                                        0+ | encrypted agent message pad
                                     ------- encrypted agent message end
@@ -665,9 +666,9 @@ SMP transmission structure for received messages:
                   ------- smpClientMessage end
                16 | auth tag for smpClientMessage
             ....... smpEncMessage end
-         16 | auth tag (msgId is used as nonce)
          0+ | serverEncryptedMsg pad
       ------- serverEncryptedMsg end
+   16 | auth tag (msgId is used as nonce)
    0+ | transmission pad
 ------- transmission end
 ```
