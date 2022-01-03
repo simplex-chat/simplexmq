@@ -9,7 +9,7 @@ openssl req -new -x509 -days 999999 -config openssl.cnf -extensions v3_ca -key c
 # server certificate (online)
 openssl genpkey -algorithm ED448 -out server.key
 openssl req -new -config openssl.cnf -reqexts v3_req -key server.key -out server.csr
-openssl x509 -req -days 999999 -copy_extensions copy -in server.csr -CA ca.crt -CAkey ca.key -out server.crt
+openssl x509 -req -days 999999 -extfile openssl.cnf -extensions v3_req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt
 # to pretty-print
 openssl x509 -in ca.crt -text -noout
 openssl req -in server.csr -text -noout
@@ -19,7 +19,8 @@ openssl x509 -in server.crt -text -noout
 To compute fingerprint for tests:
 
 ```sh
-stack ghci --ghci-options src/Simplex/Messaging/Transport.hs
-> fingerprint <- loadFingerprint "tests/fixtures/ca.crt"
-> encodeFingerprint fingerprint
+stack ghci
+> import Data.X509.Validation (Fingerprint (..))
+> Fingerprint fp <- loadFingerprint "tests/fixtures/ca.crt"
+> strEncode fp
 ```
