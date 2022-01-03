@@ -144,7 +144,7 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
       -- server certificate (online)
       run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> serverKeyFile
       run $ "openssl req -new -config " <> opensslCnfFile <> " -reqexts v3_req -key " <> serverKeyFile <> " -out " <> serverCsrFile
-      run $ "openssl x509 -req -days 999999 -copy_extensions copy -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -out " <> serverCrtFile
+      run $ "openssl x509 -req -days 999999 -extfile " <> opensslCnfFile <> " -extensions v3_req -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -CAcreateserial -out " <> serverCrtFile
       where
         run cmd = void $ readCreateProcess (shell cmd) ""
         opensslCnfFile = combine cfgDir "openssl.cnf"
@@ -185,6 +185,16 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
           <> "[TRANSPORT]\n\
              \port: 5223\n\
              \websockets: on\n"
+
+    warnCAPrivateKeyFile =
+      putStrLn $
+        "----------\n\
+        \You should store CA private key securely and delete it from the server.\n\
+        \If server TLS credential is compromised this key can be used to sign a new one, \
+        \keeping the same server identity and established connections.\n\
+        \CA private key location:\n"
+          <> caKeyFile
+          <> "\n----------"
 
 data IniOptions = IniOptions
   { enableStoreLog :: Bool,
@@ -263,17 +273,6 @@ printServiceInfo fpStr = do
 
 version :: String
 version = "SMP server v" <> simplexMQVersion
-
-warnCAPrivateKeyFile :: IO ()
-warnCAPrivateKeyFile =
-  putStrLn $
-    "----------\n\
-    \You should store CA private key securely and delete it from the server.\n\
-    \If server TLS credential is compromised this key can be used to sign a new one, \
-    \keeping the same server identity and established connections.\n\
-    \CA private key location:\n"
-      <> caKeyFile
-      <> "\n----------"
 
 loadSavedFingerprint :: IO String
 loadSavedFingerprint = withFile fingerprintFile ReadMode hGetLine
