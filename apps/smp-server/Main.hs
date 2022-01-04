@@ -174,7 +174,7 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
           -- TODO dynamic domain name and IP
           writeFile
             opensslCnfFile
-            "[req]\
+            "[req]\n\
             \distinguished_name = req_distinguished_name\n\
             \prompt = no\n\n\
             \[req_distinguished_name]\n\
