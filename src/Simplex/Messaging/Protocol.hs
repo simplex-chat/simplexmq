@@ -347,15 +347,16 @@ data ClientMessage = ClientMessage PrivHeader ByteString
 data PrivHeader
   = PHConfirmation C.APublicVerifyKey
   | PHEmpty
+  deriving (Show)
 
 instance Encoding PrivHeader where
   smpEncode = \case
     PHConfirmation k -> "K" <> smpEncode k
-    PHEmpty -> " "
+    PHEmpty -> "_"
   smpP =
     A.anyChar >>= \case
       'K' -> PHConfirmation <$> smpP
-      ' ' -> pure PHEmpty
+      '_' -> pure PHEmpty
       _ -> fail "invalid PrivHeader"
 
 instance Encoding ClientMessage where

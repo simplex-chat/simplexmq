@@ -133,11 +133,9 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
-  ( -- ClientMessage (..),
-    ErrorType,
+  ( ErrorType,
     MsgBody,
     MsgId,
-    -- PrivHeader (..),
     SMPServer (..),
     SndPublicVerifyKey,
     SrvLoc (..),
@@ -297,10 +295,11 @@ data AgentMsgEnvelope
         encAgentMessage :: ByteString
       }
   | AgentInvitation' -- the connInfo in contactInvite is only encrypted with per-queue E2E, not with double ratchet,
-      { agentVersion :: Version,
-        connReq :: ConnectionRequestUri 'CMInvitation,
-        connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
+      { agentVersion :: !Version,
+        connReq :: !(ConnectionRequestUri 'CMInvitation),
+        connInfo :: !ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
+  deriving (Show)
 
 instance Encoding AgentMsgEnvelope where
   smpEncode = \case
@@ -309,7 +308,7 @@ instance Encoding AgentMsgEnvelope where
     AgentMsgEnvelope {agentVersion, encAgentMessage} ->
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation' {agentVersion, connReq, connInfo} ->
-      smpEncode (agentVersion, 'I', strEncode connReq, Tail connInfo)
+      smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
   smpP = do
     agentVersion <- smpP
     smpP >>= \case
@@ -320,8 +319,8 @@ instance Encoding AgentMsgEnvelope where
         Tail encAgentMessage <- smpP
         pure AgentMsgEnvelope {agentVersion, encAgentMessage}
       'I' -> do
-        connReq <- strDecode <$?> smpP
-        connInfo <- smpP
+        connReq <- strDecode . unLarge <$?> smpP
+        Tail connInfo <- smpP
         pure AgentInvitation' {agentVersion, connReq, connInfo}
       _ -> fail "bad AgentMsgEnvelope"
 
@@ -420,8 +419,10 @@ instance Encoding AMessage where
         _ -> fail "bad AMessage"
 
 data QueryStringParams = QSP QSPEscaping Q.SimpleQuery
+  deriving (Show)
 
 data QSPEscaping = QEscape | QNoEscaping
+  deriving (Show)
 
 instance StrEncoding QueryStringParams where
   strEncode (QSP esc q) = case esc of
@@ -472,6 +473,10 @@ instance StrEncoding AConnectionRequestUri where
       CMContact -> pure . ACRU SCMContact $ CRContactUri crData
     where
       crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
+
+-- debug :: Show a => String -> a -> a
+-- debug name value = unsafePerformIO (putStrLn $ name <> ": " <> show value) `seq` value
+-- {-# INLINE debug #-}
 
 instance StrEncoding ConnectionMode where
   strEncode = \case

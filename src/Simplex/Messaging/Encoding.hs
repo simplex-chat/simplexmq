@@ -7,7 +7,12 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Simplex.Messaging.Encoding (Encoding (..), Tail (..)) where
+module Simplex.Messaging.Encoding
+  ( Encoding (..),
+    Tail (..),
+    Large (..),
+  )
+where
 
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -87,6 +92,15 @@ newtype Tail = Tail {unTail :: ByteString}
 instance Encoding Tail where
   smpEncode = unTail
   smpP = Tail <$> A.takeByteString
+
+-- newtype for encoding/decoding ByteStrings over 255 bytes with 2-bytes length prefix
+newtype Large = Large {unLarge :: ByteString}
+
+instance Encoding Large where
+  smpEncode (Large s) = smpEncode @Word16 (fromIntegral $ B.length s) <> s
+  smpP = do
+    len <- fromIntegral <$> smpP @Word16
+    Large <$> A.take len
 
 instance Encoding SystemTime where
   smpEncode = smpEncode . systemSeconds

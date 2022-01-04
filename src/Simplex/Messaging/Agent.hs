@@ -62,7 +62,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
-import Data.Bifunctor (second)
+import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.))
@@ -85,7 +85,7 @@ import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), loadTLSServerParams, runTransportServer, simplexMQVersion)
@@ -531,27 +531,27 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           -- TODO deduplicate with previously received
           msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
           clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader v e2ePubKey_} <-
-            liftEither $ parse smpP (AGENT A_MESSAGE) msgBody
+            parseMessage msgBody
           case (e2eDhSecret, e2ePubKey_) of
             (Nothing, Just e2ePubKey) -> do
               let e2eDh = C.dh' e2ePubKey e2ePrivKey
               decryptClientMessage e2eDh clientMsg >>= \case
-                (_, SMP.PHConfirmation senderKey, AgentConfirmation {agentVersion = _v, e2eEncryption, encConnInfo}) -> do
+                (SMP.PHConfirmation senderKey, AgentConfirmation {agentVersion = _v, e2eEncryption, encConnInfo}) -> do
                   aMessage <- agentRatchetDecrypt encConnInfo
-                  agentMessage <- liftEither $ parse smpP (AGENT A_MESSAGE) aMessage
+                  agentMessage <- parseMessage aMessage
                   case agentMessage of
                     AgentConnInfo connInfo -> do
                       smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
                       ack
                     _ -> prohibited >> ack
-                (_, SMP.PHEmpty, AgentInvitation' {agentVersion = _v, connReq, connInfo}) ->
+                (SMP.PHEmpty, AgentInvitation' {agentVersion = _v, connReq, connInfo}) ->
                   smpInvitation connReq connInfo >> ack
                 _ -> prohibited >> ack
             (Just e2eDh, Nothing) -> do
               decryptClientMessage e2eDh clientMsg >>= \case
-                (msg, SMP.PHEmpty, AgentMsgEnvelope _v encAgentMsg) -> do
+                (SMP.PHEmpty, AgentMsgEnvelope _v encAgentMsg) -> do
                   aMessage <- agentRatchetDecrypt encAgentMsg
-                  agentMessage <- liftEither $ parse smpP (AGENT A_MESSAGE) aMessage
+                  agentMessage <- parseMessage aMessage
                   case agentMessage of
                     AgentMessage' APrivHeader {sndMsgId, prevMsgHash} aMsg ->
                       case aMsg of
@@ -560,7 +560,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                         A_MSG body -> do
                           -- note that there is no ACK sent here, it is sent with agent's user ACK command
                           -- TODO add hash to other messages
-                          let msgHash = C.sha256Hash msg
+                          let msgHash = C.sha256Hash aMessage
                           agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) body msgHash
                     _ -> prohibited >> ack
                 _ -> prohibited >> ack
@@ -585,12 +585,15 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         ack :: m ()
         ack = sendAck c rq
 
-        decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> m (ByteString, SMP.PrivHeader, AgentMsgEnvelope)
+        decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> m (SMP.PrivHeader, AgentMsgEnvelope)
         decryptClientMessage e2eDh SMP.ClientMsgEnvelope {cmNonce, cmEncBody} = do
-          msg <- agentCbDecrypt e2eDh cmNonce cmEncBody
-          SMP.ClientMessage privHeader clientBody <- liftEither $ parse smpP (AGENT A_MESSAGE) msg
-          agentEnvelope <- liftEither $ parse smpP (AGENT A_MESSAGE) clientBody
-          pure (msg, privHeader, agentEnvelope)
+          clientMsg <- agentCbDecrypt e2eDh cmNonce cmEncBody
+          SMP.ClientMessage privHeader clientBody <- parseMessage clientMsg
+          agentEnvelope <- parseMessage clientBody
+          pure (privHeader, agentEnvelope)
+
+        parseMessage :: Encoding a => ByteString -> m a
+        parseMessage = liftEither . parse smpP (AGENT A_MESSAGE)
 
         smpConfirmation :: SMPConfirmation -> m ()
         smpConfirmation senderConf@SMPConfirmation {connInfo} = do
