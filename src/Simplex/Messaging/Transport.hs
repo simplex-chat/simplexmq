@@ -263,7 +263,7 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
               (T.HashSHA256, T.SignatureECDSA)
             ],
           T.supportedSecureRenegotiation = False,
-          T.supportedGroups = [T.X448, T.X25519]
+          T.supportedGroups = [T.X448, T.X25519, T.P384]
         }
 
 loadFingerprint :: FilePath -> IO Fingerprint
