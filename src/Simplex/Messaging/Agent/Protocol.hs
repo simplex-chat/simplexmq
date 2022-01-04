@@ -11,6 +11,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -428,7 +429,7 @@ instance Encoding AMessage' where
         'H' -> pure HELLO'
         'R' -> REPLY' <$> smpP
         'M' -> A_MSG' . unTail <$> smpP
-        _ -> fail ""
+        _ -> fail "bad AMessage"
 
 data AMessage
   = -- | the first message in the queue to validate it is secured
@@ -462,9 +463,11 @@ clientToAgentMsg (ClientMessage header body) = parse parser (AGENT A_MESSAGE) bo
 
 instance StrEncoding AMessage where
   strP =
-    "H" $> HELLO
-      <|> "R" *> (REPLY <$> strP)
-      <|> "M" *> (A_MSG <$> A.takeByteString)
+    A.anyChar >>= \case
+      'H' -> pure HELLO
+      'R' -> REPLY <$> strP
+      'M' -> A_MSG <$> A.takeByteString
+      _ -> fail "bad AMessage"
   strEncode = \case
     HELLO -> "H"
     REPLY cReq -> "R" <> strEncode cReq
@@ -511,7 +514,7 @@ instance StrEncoding AConnectionRequestUri where
   strEncode (ACRU _ cr) = strEncode cr
   strP = do
     crScheme <- strP
-    crMode <- "/" *> crModeP <* optional (A.char '/') <* "#/?"
+    crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
     query <- strP
     crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
@@ -592,16 +595,20 @@ data SMPQueueUri = SMPQueueUri
 -- TODO change SMP queue URI format to include version range and allow unknown parameters
 instance StrEncoding SMPQueueUri where
   strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVersionRange = vr, dhPublicKey = k} =
-    strEncode srv <> "/" <> strEncode qId <> "#/?" <> queryStr
-    where
-      queryStr = strEncode $ QSP QNoEscaping [("v", strEncode vr), ("dh", strEncode k)]
+    strEncode srv <> "/" <> strEncode qId <> "#" <> strEncode k
   strP = do
     smpServer <- strP <* A.char '/'
-    senderId <- strP <* optional (A.char '/') <* "#/?"
-    query <- strP
-    vr <- queryParam "v" query
-    dhPublicKey <- queryParam "dh" query
+    senderId <- strP <* optional (A.char '/') <* A.char '#'
+    (vr, dhPublicKey) <- unversioned <|> versioned
     pure SMPQueueUri {smpServer, senderId, clientVersionRange = vr, dhPublicKey}
+    where
+      unversioned = (SMP.smpClientVersion,) <$> strP <* A.endOfInput
+      versioned = do
+        dhKey_ <- optional strP
+        query <- optional (A.char '/') *> A.char '?' *> strP
+        vr <- queryParam "v" query
+        dhKey <- maybe (queryParam "dh" query) pure dhKey_
+        pure (vr, dhKey)
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri -> ConnectionRequestUri CMInvitation
@@ -807,7 +814,7 @@ commandP =
       broker <- " B=" *> partyMeta base64P
       sndMsgId <- " S=" *> A.decimal
       pure MsgMeta {integrity, recipient, broker, sndMsgId}
-    partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P
+    partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
 -- | Message integrity validation result parser.

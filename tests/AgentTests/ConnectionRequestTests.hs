@@ -74,29 +74,44 @@ connectionRequest12 =
 
 connectionRequestTests :: Spec
 connectionRequestTests =
-  describe "connection request parsing / serializing" $ do
+  fdescribe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
       strEncode queue {smpServer = srv {port = Nothing}}
-        `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#/?v=1&dh=" <> testDhKeyStr
+        `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr
       strEncode queue {clientVersionRange = mkVersionRange 1 2}
-        `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-2&dh=" <> testDhKeyStr
+        `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
     it "should parse SMP queue URIs" $ do
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1&dh=" <> testDhKeyStr)
         `shouldBe` Right queue {smpServer = srv {port = Nothing}}
+      strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
+        `shouldBe` Right queue {smpServer = srv {port = Nothing}}
+      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
+        `shouldBe` Right queue
+      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1&extra_param=abc")
+        `shouldBe` Right queue
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?extra_param=abc&v=1-2&dh=" <> testDhKeyStr)
+        `shouldBe` Right queue {clientVersionRange = mkVersionRange 1 2}
+      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-2&extra_param=abc")
         `shouldBe` Right queue {clientVersionRange = mkVersionRange 1 2}
     it "should serialize connection requests" $ do
       strEncode connectionRequest
-        `shouldBe` "https://simplex.chat/invitation#/?v=1&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
+        `shouldBe` "https://simplex.chat/invitation#/?v=1&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
         <> testDhKeyStrUri
         <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
       strEncode connectionRequest12
-        `shouldBe` "https://simplex.chat/invitation#/?v=1-2&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
+        `shouldBe` "https://simplex.chat/invitation#/?v=1-2&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
         <> testDhKeyStrUri
-        <> "%2Csmp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
+        <> "%2Csmp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
         <> testDhKeyStrUri
         <> "&e2e=v%3D1-3%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
     it "should parse connection requests" $ do
+      strDecode
+        ( "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
+            <> testDhKeyStrUri
+            <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> "&v=1"
+        )
+        `shouldBe` Right connectionRequest
       strDecode
         ( "https://simplex.chat/invitation#/?smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
             <> testDhKeyStrUri
