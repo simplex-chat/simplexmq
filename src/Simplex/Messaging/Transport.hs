@@ -244,10 +244,10 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
         { T.serverWantClientCert = False,
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
-          T.serverSupported = def
-            {
-              T.supportedVersions = [T.TLS13,T.TLS12,T.TLS11,T.TLS10, T.SSL3]
-            }
+          T.serverSupported =
+            def
+              { T.supportedVersions = T.SSL3 : T.supportedVersions def
+              }
         }
     serverSupported :: T.Supported
     serverSupported =
@@ -300,12 +300,13 @@ getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS
       pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, buffer, getLock}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
-withTlsUnique peer cxt f =
-  cxtFinished peer cxt
-    >>= maybe (closeTLS cxt >> ioe_EOF) f
-  where
-    cxtFinished TServer = T.getPeerFinished
-    cxtFinished TClient = T.getFinished
+withTlsUnique peer cxt f = f ""
+
+-- cxtFinished peer cxt
+--   >>= maybe (closeTLS cxt >> ioe_EOF) f
+-- where
+--   cxtFinished TServer = T.getPeerFinished
+--   cxtFinished TClient = T.getFinished
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
