@@ -244,7 +244,10 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
         { T.serverWantClientCert = False,
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
-          T.serverSupported = def -- serverSupported
+          T.serverSupported = def
+            {
+              T.supportedVersions = [T.TLS13,T.TLS12,T.TLS11,T.TLS10, T.SSL3]
+            }
         }
     serverSupported :: T.Supported
     serverSupported =
