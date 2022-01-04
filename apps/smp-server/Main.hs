@@ -260,7 +260,7 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
 
     mkServerConfig storeLog =
       ServerConfig
-        { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
+        { transports = (port, transport @TLS) : [("443", transport @WS) | enableWebsockets],
           tbqSize = 16,
           serverTbqSize = 128,
           msgQueueQuota = 256,
