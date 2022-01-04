@@ -1,4 +1,4 @@
-To generate fixtures:
+To generate fixtures (ED keys):
 
 (keep these instructions and *openssl.cnf* consistent with certificate generation on server)
 
@@ -10,6 +10,22 @@ openssl req -new -x509 -days 999999 -config openssl.cnf -extensions v3_ca -key c
 openssl genpkey -algorithm ED448 -out server.key
 openssl req -new -config openssl.cnf -reqexts v3_req -key server.key -out server.csr
 openssl x509 -req -days 999999 -extfile openssl.cnf -extensions v3_req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt
+# to pretty-print
+openssl x509 -in ca.crt -text -noout
+openssl req -in server.csr -text -noout
+openssl x509 -in server.crt -text -noout
+```
+
+ECDSA keys:
+
+```sh
+# CA certificate (identity/offline)
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -pkeyopt ec_param_enc:named_curve -out ca.key
+openssl req -new -x509 -days 999999 -config openssl.cnf -extensions v3_ca -key ca.key -sha512 -out ca.crt
+# server certificate (online)
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -pkeyopt ec_param_enc:named_curve -out server.key
+openssl req -new -config openssl.cnf -reqexts v3_req -key server.key -sha512 -out server.csr
+openssl x509 -req -days 999999 -extfile openssl.cnf -extensions v3_req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -sha512 -out server.crt
 # to pretty-print
 openssl x509 -in ca.crt -text -noout
 openssl req -in server.csr -text -noout

@@ -84,8 +84,13 @@ data InitOptions = InitOptions
     signAlgorithm :: SignAlgorithm
   }
 
-data SignAlgorithm = ED448 | ED25519
-  deriving (Read, Show)
+data SignAlgorithm
+  = ED448
+  | ED25519
+  | ECDSA_WITH_SHA512
+  | ECDSA_WITH_SHA384
+  | ECDSA_WITH_SHA256
+  deriving (Eq, Read, Show)
 
 getCliCommand :: IO CliCommand
 getCliCommand =
@@ -118,7 +123,7 @@ cliCommandP =
           (maybeReader readMaybe)
           ( long "sign-algorithm"
               <> short 'a'
-              <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
+              <> help "Signature algorithm used for TLS certificates: ED448, ED25519, ECDSA_WITH_SHA512, ECDSA_WITH_SHA384, ECDSA_WITH_SHA256"
               <> value ED448
               <> showDefault
               <> metavar "ALG"
@@ -139,16 +144,31 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
     createX509 = do
       createOpensslConf
       -- CA certificate (identity/offline)
-      run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> caKeyFile
-      run $ "openssl req -new -x509 -days 999999 -config " <> opensslCnfFile <> " -extensions v3_ca -key " <> caKeyFile <> " -out " <> caCrtFile
+      run $ "openssl genpkey " <> algOptions <> " -out " <> caKeyFile
+      run $ "openssl req -new -x509 -days 999999 -config " <> opensslCnfFile <> " -extensions v3_ca -key " <> caKeyFile <> " " <> optionalEcdsaSHA <> " -out " <> caCrtFile
       -- server certificate (online)
-      run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> serverKeyFile
-      run $ "openssl req -new -config " <> opensslCnfFile <> " -reqexts v3_req -key " <> serverKeyFile <> " -out " <> serverCsrFile
-      run $ "openssl x509 -req -days 999999 -extfile " <> opensslCnfFile <> " -extensions v3_req -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -CAcreateserial -out " <> serverCrtFile
+      run $ "openssl genpkey " <> algOptions <> " -out " <> serverKeyFile
+      run $ "openssl req -new -config " <> opensslCnfFile <> " -reqexts v3_req -key " <> serverKeyFile <> " " <> optionalEcdsaSHA <> " -out " <> serverCsrFile
+      run $ "openssl x509 -req -days 999999 -extfile " <> opensslCnfFile <> " -extensions v3_req -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -CAcreateserial " <> optionalEcdsaSHA <> " -out " <> serverCrtFile
       where
         run cmd = void $ readCreateProcess (shell cmd) ""
         opensslCnfFile = combine cfgDir "openssl.cnf"
         serverCsrFile = combine cfgDir "server.csr"
+
+        algOptions = case signAlgorithm of
+          ED448 -> "-algorithm ED448"
+          ED25519 -> "-algorithm ED25519"
+          ECDSA_WITH_SHA512 -> "-algorithm EC -pkeyopt ec_paramgen_curve:P-384 -pkeyopt ec_param_enc:named_curve"
+          ECDSA_WITH_SHA384 -> "-algorithm EC -pkeyopt ec_paramgen_curve:P-384 -pkeyopt ec_param_enc:named_curve"
+          ECDSA_WITH_SHA256 -> "-algorithm EC -pkeyopt ec_paramgen_curve:P-384 -pkeyopt ec_param_enc:named_curve"
+
+        optionalEcdsaSHA = case signAlgorithm of
+          ED448 -> ""
+          ED25519 -> ""
+          ECDSA_WITH_SHA512 -> "-sha512"
+          ECDSA_WITH_SHA384 -> "-sha384"
+          ECDSA_WITH_SHA256 -> "-sha256"
+
         createOpensslConf =
           -- TODO revise https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3, https://www.rfc-editor.org/rfc/rfc3279#section-2.3.5
           writeFile
