@@ -26,8 +26,11 @@ import Simplex.Messaging.Parsers (parseE, parseE')
 import Simplex.Messaging.Util (tryE)
 import Simplex.Messaging.Version
 
-doubleRatchetVersion :: VersionRange
-doubleRatchetVersion = mkVersionRange 1 1
+e2eEncryptVersion :: Version
+e2eEncryptVersion = 1
+
+e2eEncryptVRange :: VersionRange
+e2eEncryptVRange = mkVersionRange 1 e2eEncryptVersion
 
 data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)
@@ -84,7 +87,7 @@ initSndRatchet' rcDHRr sPKey salt rcAD = do
       (rcRK, rcCKs, rcNHKs) = rootKdf sk rcDHRr pk
   pure
     Ratchet
-      { rcVersion = doubleRatchetVersion,
+      { rcVersion = e2eEncryptVRange,
         rcAD,
         rcDHRs,
         rcRK,
@@ -108,7 +111,7 @@ initRcvRatchet' sKey rcDHRs@(_, pk) salt rcAD = do
   let (sk, rcNHKr, rcNHKs) = initKdf salt sKey pk
   pure
     Ratchet
-      { rcVersion = doubleRatchetVersion,
+      { rcVersion = e2eEncryptVRange,
         rcAD,
         rcDHRs,
         rcRK = sk,

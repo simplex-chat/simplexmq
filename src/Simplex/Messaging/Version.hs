@@ -96,14 +96,20 @@ pattern Compatible a <- Compatible_ a
 isCompatible :: VersionI a => a -> VersionRange -> Bool
 isCompatible x (VRange v1 v2) = let v = version x in v1 <= v && v <= v2
 
+isCompatibleRange :: VersionRangeI a => a -> VersionRange -> Bool
+isCompatibleRange x (VRange min2 max2) = min1 <= max2 && min2 <= max1
+  where
+    VRange min1 max1 = versionRange x
+
 proveCompatible :: VersionI a => a -> VersionRange -> Maybe (Compatible a)
 proveCompatible x vr = x `mkCompatibleIf` (x `isCompatible` vr)
 
 compatibleVersion :: VersionRangeI a => a -> VersionRange -> Maybe (Compatible (VersionT a))
-compatibleVersion x (VRange min2 max2) =
-  toVersionT x (min max1 max2) `mkCompatibleIf` (min1 <= max2 && min2 <= max1)
+compatibleVersion x vr =
+  toVersionT x (min max1 max2) `mkCompatibleIf` isCompatibleRange x vr
   where
-    VRange min1 max1 = versionRange x
+    max1 = maxVersion $ versionRange x
+    max2 = maxVersion vr
 
 mkCompatibleIf :: a -> Bool -> Maybe (Compatible a)
 x `mkCompatibleIf` cond = if cond then Just $ Compatible_ x else Nothing

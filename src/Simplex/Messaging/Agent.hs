@@ -274,14 +274,15 @@ newConn c connId cMode = do
   let cData = ConnData {connId}
   connId' <- withStore $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
-  let crData = ConnReqUriData simplexChat smpAgentVersion [qUri]
+  let crData = ConnReqUriData simplexChat smpAgentVRange [qUri]
   pure . (connId',) $ case cMode of
-    SCMInvitation -> CRInvitationUri crData connEncStub
+    SCMInvitation -> CRInvitationUri crData connEncStubUri
     SCMContact -> CRContactUri crData
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
 joinConn c connId (CRInvitationUri (ConnReqUriData _ _ (qUri :| _)) _e2eEnc) cInfo = do
-  -- TODO convert qUri to qInfo of compatible version (choose max compatible version)
+  -- TODO check all versions in connection request are compatible with supported
+  -- (add agent and e2e)
   case qUri `compatibleVersion` SMP.smpClientVersion of
     Nothing -> throwError $ AGENT A_VERSION
     Just qInfo -> do
@@ -310,7 +311,7 @@ activateQueueJoining c connId sq retryInterval =
       let qInfo = toVersionT qUri (maxVersion SMP.smpClientVersion)
       addSubscription c rq connId
       withStore $ \st -> upgradeSndConnToDuplex st connId rq
-      sendControlMessage c sq $ REPLY [qInfo]
+      sendReply c sq qInfo
 
 -- | Approve confirmation (LET command) in Reader monad
 allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
@@ -398,8 +399,8 @@ sendMessage' c connId msg =
           withStore $ \st -> do
             (internalId, internalSndId, prevMsgHash) <- updateSndIds st connId
             let msgBody =
-                  serializeAgentMessage $
-                    AgentMessage (APrivHeader (unSndId internalSndId) prevMsgHash) (A_MSG msg)
+                  smpEncode $
+                    AgentMessage' (APrivHeader (unSndId internalSndId) prevMsgHash) (A_MSG msg)
                 internalHash = C.sha256Hash msgBody
                 msgData = SndMsgData {..}
             createSndMsg st connId msgData
@@ -508,11 +509,6 @@ getSMPServer =
       i <- atomically . stateTVar gen $ randomR (0, L.length servers - 1)
       pure $ servers L.!! i
 
-sendControlMessage :: AgentMonad m => AgentClient -> SndQueue -> AMessage -> m ()
-sendControlMessage c sq aMessage = do
-  sendAgentMessage c sq . serializeAgentMessage $
-    AgentMessage (APrivHeader 0 "") aMessage
-
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
@@ -534,31 +530,39 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         SMP.MSG srvMsgId srvTs msgBody' -> handleNotifyAck $ do
           -- TODO deduplicate with previously received
           msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
-          encMessage@SMP.EncMessage {emHeader = SMP.PubHeader v e2ePubKey_} <-
+          clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader v e2ePubKey_} <-
             liftEither $ parse smpP (AGENT A_MESSAGE) msgBody
           case (e2eDhSecret, e2ePubKey_) of
             (Nothing, Just e2ePubKey) -> do
               let e2eDh = C.dh' e2ePubKey e2ePrivKey
-              (_, agentMessage) <-
-                decryptAgentMessage e2eDh encMessage
-              case agentMessage of
-                AgentConfirmation senderKey connInfo -> do
-                  smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
-                  ack
-                AgentInvitation cReq cInfo -> smpInvitation cReq cInfo >> ack
+              decryptClientMessage e2eDh clientMsg >>= \case
+                (_, SMP.PHConfirmation senderKey, AgentConfirmation {agentVersion = _v, e2eEncryption, encConnInfo}) -> do
+                  aMessage <- agentRatchetDecrypt encConnInfo
+                  agentMessage <- liftEither $ parse smpP (AGENT A_MESSAGE) aMessage
+                  case agentMessage of
+                    AgentConnInfo connInfo -> do
+                      smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
+                      ack
+                    _ -> prohibited >> ack
+                (_, SMP.PHEmpty, AgentInvitation' {agentVersion = _v, connReq, connInfo}) ->
+                  smpInvitation connReq connInfo >> ack
                 _ -> prohibited >> ack
             (Just e2eDh, Nothing) -> do
-              (msg, agentMessage) <-
-                decryptAgentMessage e2eDh encMessage
-              case agentMessage of
-                AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMsg -> case aMsg of
-                  HELLO -> helloMsg >> ack
-                  REPLY cReq -> replyMsg cReq >> ack
-                  A_MSG body -> do
-                    -- note that there is no ACK sent here, it is sent with agent's user ACK command
-                    -- TODO add hash to other messages
-                    let msgHash = C.sha256Hash msg
-                    agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) body msgHash
+              decryptClientMessage e2eDh clientMsg >>= \case
+                (msg, SMP.PHEmpty, AgentMsgEnvelope _v encAgentMsg) -> do
+                  aMessage <- agentRatchetDecrypt encAgentMsg
+                  agentMessage <- liftEither $ parse smpP (AGENT A_MESSAGE) aMessage
+                  case agentMessage of
+                    AgentMessage' APrivHeader {sndMsgId, prevMsgHash} aMsg ->
+                      case aMsg of
+                        HELLO -> helloMsg >> ack
+                        REPLY cReq -> replyMsg cReq >> ack
+                        A_MSG body -> do
+                          -- note that there is no ACK sent here, it is sent with agent's user ACK command
+                          -- TODO add hash to other messages
+                          let msgHash = C.sha256Hash msg
+                          agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) body msgHash
+                    _ -> prohibited >> ack
                 _ -> prohibited >> ack
             _ -> prohibited >> ack
         SMP.END -> do
@@ -581,12 +585,12 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         ack :: m ()
         ack = sendAck c rq
 
-        decryptAgentMessage :: C.DhSecretX25519 -> SMP.EncMessage -> m (ByteString, AgentMessage)
-        decryptAgentMessage e2eDh SMP.EncMessage {emNonce, emBody} = do
-          msg <- agentCbDecrypt e2eDh emNonce emBody
-          agentMessage <-
-            liftEither $ clientToAgentMsg =<< parse smpP (AGENT A_MESSAGE) msg
-          pure (msg, agentMessage)
+        decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> m (ByteString, SMP.PrivHeader, AgentMsgEnvelope)
+        decryptClientMessage e2eDh SMP.ClientMsgEnvelope {cmNonce, cmEncBody} = do
+          msg <- agentCbDecrypt e2eDh cmNonce cmEncBody
+          SMP.ClientMessage privHeader clientBody <- liftEither $ parse smpP (AGENT A_MESSAGE) msg
+          agentEnvelope <- liftEither $ parse smpP (AGENT A_MESSAGE) clientBody
+          pure (msg, privHeader, agentEnvelope)
 
         smpConfirmation :: SMPConfirmation -> m ()
         smpConfirmation senderConf@SMPConfirmation {connInfo} = do
@@ -615,7 +619,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 SCDuplex -> notifyConnected c connId
                 _ -> pure ()
 
-        replyMsg :: L.NonEmpty SMPQueue -> m ()
+        replyMsg :: L.NonEmpty SMPQueueInfo -> m ()
         replyMsg (qInfo :| _) = do
           logServer "<--" c srv rId "MSG <REPLY>"
           case cType of
@@ -666,7 +670,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
 
 confirmQueue :: AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> m ()
 confirmQueue c sq smpConf = do
-  sendConfirmation c sq smpConf
+  sendConfirmation c sq smpConf connEncStub
   withStore $ \st -> setSndQueueStatus st sq Confirmed
 
 activateQueueInitiating :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> RetryInterval -> m ()
@@ -689,7 +693,7 @@ activateQueue c connId sq retryInterval afterActivation =
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
-newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueue -> ConnInfo -> m (SndQueue, SMPConfirmation)
+newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueueInfo -> ConnInfo -> m (SndQueue, SMPConfirmation)
 newSndQueue qInfo cInfo =
   asks (cmdSignAlg . config) >>= \case
     C.SignAlg a -> newSndQueue_ a qInfo cInfo
@@ -697,10 +701,10 @@ newSndQueue qInfo cInfo =
 newSndQueue_ ::
   (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m) =>
   C.SAlgorithm a ->
-  Compatible SMPQueue ->
+  Compatible SMPQueueInfo ->
   ConnInfo ->
   m (SndQueue, SMPConfirmation)
-newSndQueue_ a (Compatible (SMPQueue _clientVersion smpServer senderId rcvE2ePubDhKey)) cInfo = do
+newSndQueue_ a (Compatible (SMPQueueInfo _clientVersion smpServer senderId rcvE2ePubDhKey)) cInfo = do
   -- this function assumes clientVersion is compatible - it was tested before
   (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'

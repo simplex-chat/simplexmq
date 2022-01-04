@@ -9,7 +9,7 @@ import Data.ByteString (ByteString)
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (doubleRatchetVersion)
+import Simplex.Messaging.Crypto.Ratchet (e2eEncryptVRange)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (smpClientVersion)
 import Simplex.Messaging.Version
@@ -48,7 +48,7 @@ connReqData :: ConnReqUriData
 connReqData =
   ConnReqUriData
     { crScheme = simplexChat,
-      crAgentVRange = smpAgentVersion,
+      crAgentVRange = smpAgentVRange,
       crSmpQueues = [queue]
     }
 
@@ -56,7 +56,7 @@ testDhPubKey :: C.PublicKeyX448
 testDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
 
 testE2ERatchetParams :: E2ERatchetParamsUri
-testE2ERatchetParams = E2ERatchetParamsUri doubleRatchetVersion testDhPubKey testDhPubKey
+testE2ERatchetParams = E2ERatchetParamsUri e2eEncryptVRange testDhPubKey testDhPubKey
 
 testE2ERatchetParams13 :: E2ERatchetParamsUri
 testE2ERatchetParams13 = E2ERatchetParamsUri (mkVersionRange 1 3) testDhPubKey testDhPubKey

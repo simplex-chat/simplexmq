@@ -49,7 +49,7 @@ module Simplex.Messaging.Protocol
     SignedTransmission,
     SentRawTransmission,
     SignedRawTransmission,
-    EncMessage (..),
+    ClientMsgEnvelope (..),
     PubHeader (..),
     ClientMessage (..),
     PrivHeader (..),
@@ -316,10 +316,10 @@ instance ProtocolMsgTag BrokerMsgTag where
     _ -> Nothing
 
 -- | SMP message body format
-data EncMessage = EncMessage
-  { emHeader :: PubHeader,
-    emNonce :: C.CbNonce,
-    emBody :: ByteString
+data ClientMsgEnvelope = ClientMsgEnvelope
+  { cmHeader :: PubHeader,
+    cmNonce :: C.CbNonce,
+    cmEncBody :: ByteString
   }
   deriving (Show)
 
@@ -333,14 +333,14 @@ instance Encoding PubHeader where
   smpEncode (PubHeader v k) = smpEncode (v, k)
   smpP = PubHeader <$> smpP <*> smpP
 
-instance Encoding EncMessage where
-  smpEncode EncMessage {emHeader, emNonce, emBody} =
-    smpEncode (emHeader, emNonce, Tail emBody)
+instance Encoding ClientMsgEnvelope where
+  smpEncode ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody} =
+    smpEncode (cmHeader, cmNonce, Tail cmEncBody)
   smpP = do
-    emHeader <- smpP
-    emNonce <- smpP
-    emBody <- A.takeByteString
-    pure EncMessage {emHeader, emNonce, emBody}
+    cmHeader <- smpP
+    cmNonce <- smpP
+    cmEncBody <- A.takeByteString
+    pure ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 data ClientMessage = ClientMessage PrivHeader ByteString
 

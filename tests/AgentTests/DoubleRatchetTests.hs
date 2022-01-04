@@ -19,7 +19,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Version
 import Test.Hspec
 
 doubleRatchetTests :: Spec
@@ -46,7 +45,7 @@ fullMsgLen = 1 + fullHeaderLen + 1 + paddedMsgLen + C.authTagSize
 testMessageHeader :: Expectation
 testMessageHeader = do
   (k, _) <- C.generateKeyPair' @X25519
-  let hdr = MsgHeader {msgMaxVersion = maxVersion doubleRatchetVersion, msgDHRs = k, msgPN = 0, msgNs = 0}
+  let hdr = MsgHeader {msgMaxVersion = e2eEncryptVersion, msgDHRs = k, msgPN = 0, msgNs = 0}
   parseAll (smpP @(MsgHeader 'X25519)) (smpEncode hdr) `shouldBe` Right hdr
 
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)

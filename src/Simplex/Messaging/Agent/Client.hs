@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -20,8 +21,10 @@ module Simplex.Messaging.Agent.Client
     sendInvitation,
     RetryInterval (..),
     sendHello,
+    sendReply,
     secureQueue,
     sendAgentMessage,
+    agentRatchetDecrypt,
     agentCbDecrypt,
     sendAck,
     suspendQueue,
@@ -304,16 +307,24 @@ showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, e2ePubKey, connInfo} =
+-- TODO maybe package E2ERatchetParams into SMPConfirmation
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> E2ERatchetParams -> m ()
+sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEncryption =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation
     liftSMP $ sendSMPMessage smp Nothing sndId msg
   where
     mkConfirmation :: m MsgBody
-    mkConfirmation =
-      agentCbEncrypt sq (Just e2ePubKey) . serializeAgentMessage $
-        AgentConfirmation senderKey connInfo
+    mkConfirmation = do
+      encConnInfo <- agentRatchetEncrypt . smpEncode $ AgentConnInfo connInfo
+      let agentEnvelope =
+            AgentConfirmation
+              { agentVersion = smpAgentVersion,
+                e2eEncryption,
+                encConnInfo
+              }
+      agentCbEncrypt sq (Just e2ePubKey) . smpEncode $
+        SMP.ClientMessage (SMP.PHConfirmation senderKey) $ smpEncode agentEnvelope
 
 sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> RetryInterval -> m ()
 sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
@@ -326,19 +337,36 @@ sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
   where
     mkHello :: m ByteString
     mkHello = do
-      agentCbEncrypt sq Nothing . serializeAgentMessage $
-        AgentMessage (APrivHeader 0 "") HELLO
+      encAgentMessage <- agentRatchetEncrypt . smpEncode $ AgentMessage' (APrivHeader 0 "") HELLO
+      let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
+      agentCbEncrypt sq Nothing . smpEncode $
+        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
+
+sendReply :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPQueueInfo -> m ()
+sendReply c sq@SndQueue {server, sndId, sndPrivateKey} qInfo =
+  withLogSMP_ c server sndId "SEND <REPLY>" $ \smp -> do
+    msg <- mkReply
+    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
+  where
+    mkReply :: m ByteString
+    mkReply = do
+      encAgentMessage <- agentRatchetEncrypt . smpEncode $ AgentMessage' (APrivHeader 0 "") $ REPLY [qInfo]
+      let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
+      agentCbEncrypt sq Nothing . smpEncode $
+        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
-sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} cReq connInfo = do
+sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} connReq connInfo = do
   withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
     msg <- mkInvitation
     liftSMP $ sendSMPMessage smp Nothing senderId msg
   where
     mkInvitation :: m ByteString
-    mkInvitation =
-      agentCbEncryptOnce dhPublicKey . serializeAgentMessage $
-        AgentInvitation cReq connInfo
+    -- this is only encrypted with per-queue E2E, not with double ratchet
+    mkInvitation = do
+      let agentEnvelope = AgentInvitation' {agentVersion = smpAgentVersion, connReq, connInfo}
+      agentCbEncryptOnce dhPublicKey . smpEncode $
+        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
 secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
@@ -360,34 +388,54 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
-sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
+-- TODO this is just wrong
+sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
 sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
-  withLogSMP_ c server sndId "SEND <message>" $ \smp -> do
-    msg' <- agentCbEncrypt sq Nothing msg
+  withLogSMP_ c server sndId "SEND <MSG>" $ \smp -> do
+    msg' <- mkMessage
     liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg'
+  where
+    mkMessage :: m ByteString
+    mkMessage = do
+      -- the message is already constructed and encoded in DB
+      encAgentMessage <- agentRatchetEncrypt msg -- . smpEncode $ AgentMessage' (APrivHeader 0 "") $ A_MSG msg
+      let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
+      agentCbEncrypt sq Nothing . smpEncode $
+        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
+
+-- encoded AgentMessage' -> encoded EncAgentMessage
+agentRatchetEncrypt :: AgentMonad m => ByteString -> m ByteString
+agentRatchetEncrypt s = pure s
+
+-- encoded EncAgentMessage -> encoded AgentMessage'
+agentRatchetDecrypt :: AgentMonad m => ByteString -> m ByteString
+agentRatchetDecrypt s = pure s
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do
-  emNonce <- liftIO C.randomCbNonce
-  emBody <-
+  cmNonce <- liftIO C.randomCbNonce
+  cmEncBody <-
     liftEither . first cryptoError $
-      C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
+      C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let emHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) e2ePubKey
-  pure $ smpEncode SMP.EncMessage {emHeader, emNonce, emBody}
+  let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) e2ePubKey
+  pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
+-- add encoding as AgentInvitation'?
 agentCbEncryptOnce :: AgentMonad m => C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncryptOnce dhRcvPubKey msg = do
   (dhSndPubKey, dhSndPrivKey) <- liftIO C.generateKeyPair'
   let e2eDhSecret = C.dh' dhRcvPubKey dhSndPrivKey
-  emNonce <- liftIO C.randomCbNonce
-  emBody <-
+  cmNonce <- liftIO C.randomCbNonce
+  cmEncBody <-
     liftEither . first cryptoError $
-      C.cbEncrypt e2eDhSecret emNonce msg SMP.e2eEncMessageLength
+      C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let emHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) (Just dhSndPubKey)
-  pure $ smpEncode SMP.EncMessage {emHeader, emNonce, emBody}
+  let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) (Just dhSndPubKey)
+  pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
+-- | NaCl crypto-box decrypt - both for messages received from the server
+-- and per-queue E2E encrypted messages from the sender that were inside.
 agentCbDecrypt :: AgentMonad m => C.DhSecretX25519 -> C.CbNonce -> ByteString -> m ByteString
 agentCbDecrypt dhSecret nonce msg =
   liftEither . first cryptoError $
