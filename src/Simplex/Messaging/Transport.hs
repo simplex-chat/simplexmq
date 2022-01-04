@@ -244,7 +244,22 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
         { T.serverWantClientCert = False,
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
-          T.serverSupported = supportedParameters
+          T.serverSupported = serverSupported
+        }
+    serverSupported :: T.Supported
+    serverSupported =
+      def
+        { T.supportedVersions = [T.TLS12],
+          T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
+          T.supportedHashSignatures =
+            [ (T.HashIntrinsic, T.SignatureEd448),
+              (T.HashIntrinsic, T.SignatureEd25519),
+              (T.HashSHA512, T.SignatureECDSA),
+              (T.HashSHA384, T.SignatureECDSA),
+              (T.HashSHA256, T.SignatureECDSA)
+            ],
+          T.supportedSecureRenegotiation = False,
+          T.supportedGroups = [T.X448, T.X25519]
         }
 
 loadFingerprint :: FilePath -> IO Fingerprint
@@ -296,8 +311,18 @@ mkTLSClientParams host port keyHash = do
   (T.defaultParamsClient host p)
     { T.clientShared = def,
       T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p},
-      T.clientSupported = supportedParameters
+      T.clientSupported = clientSupported
     }
+  where
+    clientSupported :: T.Supported
+    clientSupported =
+      def
+        { T.supportedVersions = [T.TLS12],
+          T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
+          T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
+          T.supportedSecureRenegotiation = False,
+          T.supportedGroups = [T.X448, T.X25519]
+        }
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
@@ -316,16 +341,6 @@ validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, 
         cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
         serviceID = (host, port)
 validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
-
-supportedParameters :: T.Supported
-supportedParameters =
-  def
-    { T.supportedVersions = [T.TLS12],
-      T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
-      T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
-      T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448, T.X25519]
-    }
 
 instance Transport TLS where
   transportName _ = "TLS 1.2"
