@@ -109,7 +109,6 @@ import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
-import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:))
@@ -354,15 +353,12 @@ stubDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx
 
 instance StrEncoding E2ERatchetParamsUri where
   strEncode (E2ERatchetParamsUri vs key1 key2) =
-    Q.renderQueryPartialEscape
-      False
-      [ ("v", [Q.QN $ strEncode vs]),
-        ("dh", [Q.QN $ strEncode [key1, key2]])
-      ]
+    strEncode $
+      QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncode [key1, key2])]
   strP = do
     query <- strP
     vs <- queryParam "v" query
-    keys <- queryParam "dh" query
+    keys <- queryParam "x3dh" query
     case keys of
       [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
       _ -> fail "bad e2e params"
@@ -474,14 +470,20 @@ instance StrEncoding AMessage where
     REPLY cReq -> "R" <> strEncode cReq
     A_MSG body -> "M" <> body
 
-newtype QueryStringParams = QSP Q.SimpleQuery
+data QueryStringParams = QSP QSPEscaping Q.SimpleQuery
+
+data QSPEscaping = QEscape | QNoEscaping
 
 instance StrEncoding QueryStringParams where
-  strEncode (QSP q) = Q.renderSimpleQuery False q
-  strP = QSP . Q.parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
+  strEncode (QSP esc q) = case esc of
+    QEscape -> Q.renderSimpleQuery False q
+    QNoEscaping ->
+      Q.renderQueryPartialEscape False $
+        map (\(n, v) -> (n, [Q.QN v])) q
+  strP = QSP QEscape . Q.parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
 
 queryParam :: StrEncoding a => ByteString -> QueryStringParams -> Parser a
-queryParam name (QSP q) =
+queryParam name (QSP _ q) =
   case find ((== name) . fst) q of
     Just (_, p) -> either fail pure $ parseAll strP p
     _ -> fail $ "no qs param " <> B.unpack name
@@ -496,7 +498,7 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
         strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
           queryStr =
-            strEncode . QSP $
+            strEncode . QSP QEscape $
               [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
                 <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
   strP = do
@@ -590,13 +592,16 @@ data SMPQueueUri = SMPQueueUri
 -- TODO change SMP queue URI format to include version range and allow unknown parameters
 instance StrEncoding SMPQueueUri where
   strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVersionRange = vr, dhPublicKey = k} =
-    strEncode srv <> "/" <> U.encode qId <> "#" <> strEncode k
+    strEncode srv <> "/" <> strEncode qId <> "#/?" <> queryStr
+    where
+      queryStr = strEncode $ QSP QNoEscaping [("v", strEncode vr), ("dh", strEncode k)]
   strP = do
     smpServer <- strP <* A.char '/'
-    senderId <- strP <* A.char '#'
-    let clientVersionRange = SMP.smpClientVersion
-    dhPublicKey <- strP
-    pure SMPQueueUri {smpServer, senderId, clientVersionRange, dhPublicKey}
+    senderId <- strP <* optional (A.char '/') <* "#/?"
+    query <- strP
+    vr <- queryParam "v" query
+    dhPublicKey <- queryParam "dh" query
+    pure SMPQueueUri {smpServer, senderId, clientVersionRange = vr, dhPublicKey}
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri -> ConnectionRequestUri CMInvitation
