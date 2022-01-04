@@ -44,11 +44,15 @@ versionRangeTests = modifyMaxSuccess (const 1000) $ do
                  vr1 = mkVersionRange (w min1) (w max1) :: VersionRange
                  vr2 = mkVersionRange (w min2) (w max2) :: VersionRange
               in case compatibleVersion vr1 vr2 of
-                   Just v -> v `isCompatible` vr1 && v `isCompatible` vr2
+                   Just (Compatible v) -> v `isCompatible` vr1 && v `isCompatible` vr2
                    _ -> True
   where
     vr = mkVersionRange
     compatible :: (VersionRange, VersionRange) -> Maybe Version -> Expectation
     (vr1, vr2) `compatible` v = do
-      compatibleVersion vr1 vr2 `shouldBe` v
-      compatibleVersion vr2 vr1 `shouldBe` v
+      (vr1, vr2) `checkCompatible` v
+      (vr2, vr1) `checkCompatible` v
+    (vr1, vr2) `checkCompatible` v =
+      case compatibleVersion vr1 vr2 of
+        Just (Compatible v') -> Just v' `shouldBe` v
+        Nothing -> Nothing `shouldBe` v

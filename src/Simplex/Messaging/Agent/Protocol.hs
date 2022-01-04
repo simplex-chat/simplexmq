@@ -48,6 +48,7 @@ module Simplex.Messaging.Agent.Protocol
     SMPServer (..),
     SrvLoc (..),
     SMPQueueUri (..),
+    SMPQueue (..),
     ConnectionMode (..),
     SConnectionMode (..),
     AConnectionMode (..),
@@ -364,9 +365,9 @@ instance StrEncoding E2ERatchetParamsUri where
       [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
       _ -> fail "bad e2e params"
 
--- SMP agent message formats (after double ratchet encryption,
+-- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
-data AgentMessage' = AgentConnInfo ConnInfo | AgentMessage' APrivHeader AMessage'
+data AgentMessage' = AgentConnInfo ConnInfo | AgentMessage' APrivHeader AMessage
 
 instance Encoding AgentMessage' where
   smpEncode = \case
@@ -409,36 +410,27 @@ emptyAHeaderP = A.endOfLine $> ()
 -- | Messages sent between SMP agents once SMP queue is secured.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents
-data AMessage'
-  = -- | the first message in the queue to validate it is secured
-    HELLO'
-  | -- | reply queues information
-    REPLY' (L.NonEmpty SMPQueue)
-  | -- | agent envelope for the client message
-    A_MSG' MsgBody
-  deriving (Show)
-
-instance Encoding AMessage' where
-  smpEncode = \case
-    HELLO' -> "H"
-    REPLY' smpQueues -> smpEncode ('R', smpQueues)
-    A_MSG' body -> smpEncode ('M', Tail body)
-  smpP =
-    smpP
-      >>= \case
-        'H' -> pure HELLO'
-        'R' -> REPLY' <$> smpP
-        'M' -> A_MSG' . unTail <$> smpP
-        _ -> fail "bad AMessage"
-
 data AMessage
   = -- | the first message in the queue to validate it is secured
     HELLO
-  | -- | reply queue information
-    REPLY (ConnectionRequestUri CMInvitation)
+  | -- | reply queues information
+    REPLY (L.NonEmpty SMPQueue)
   | -- | agent envelope for the client message
     A_MSG MsgBody
   deriving (Show)
+
+instance Encoding AMessage where
+  smpEncode = \case
+    HELLO -> "H"
+    REPLY smpQueues -> smpEncode ('R', smpQueues)
+    A_MSG body -> smpEncode ('M', Tail body)
+  smpP =
+    smpP
+      >>= \case
+        'H' -> pure HELLO
+        'R' -> REPLY <$> smpP
+        'M' -> A_MSG . unTail <$> smpP
+        _ -> fail "bad AMessage"
 
 serializeAgentMessage :: AgentMessage -> ByteString
 serializeAgentMessage = smpEncode . agentToClientMsg
@@ -450,7 +442,7 @@ agentToClientMsg = \case
   AgentInvitation cReq cInfo ->
     ClientMessage PHEmpty $ emptyAHeader <> strEncode cReq <> "\n" <> cInfo
   AgentMessage header aMsg ->
-    ClientMessage PHEmpty $ strEncode header <> strEncode aMsg
+    ClientMessage PHEmpty $ smpEncode header <> smpEncode aMsg
 
 clientToAgentMsg :: ClientMessage -> Either AgentErrorType AgentMessage
 clientToAgentMsg (ClientMessage header body) = parse parser (AGENT A_MESSAGE) body
@@ -459,19 +451,7 @@ clientToAgentMsg (ClientMessage header body) = parse parser (AGENT A_MESSAGE) bo
       PHConfirmation senderKey -> AgentConfirmation senderKey <$> (emptyAHeaderP *> A.takeByteString)
       PHEmpty -> invitationP <|> messageP
     invitationP = AgentInvitation <$> (emptyAHeaderP *> strP <* A.endOfLine) <*> A.takeByteString
-    messageP = AgentMessage <$> strP <*> strP
-
-instance StrEncoding AMessage where
-  strP =
-    A.anyChar >>= \case
-      'H' -> pure HELLO
-      'R' -> REPLY <$> strP
-      'M' -> A_MSG <$> A.takeByteString
-      _ -> fail "bad AMessage"
-  strEncode = \case
-    HELLO -> "H"
-    REPLY cReq -> "R" <> strEncode cReq
-    A_MSG body -> "M" <> body
+    messageP = AgentMessage <$> smpP <*> smpP
 
 data QueryStringParams = QSP QSPEscaping Q.SimpleQuery
 
@@ -746,11 +726,14 @@ data BrokerErrorType
   deriving (Eq, Generic, Read, Show, Exception)
 
 -- | Errors of another SMP agent.
+-- TODO encode/decode without A prefix
 data SMPAgentError
   = -- | client or agent message that failed to parse
     A_MESSAGE
   | -- | prohibited SMP/agent message
     A_PROHIBITED
+  | -- | incompatible version of SMP client, agent or encryption protocols
+    A_VERSION
   | -- | cannot decrypt message
     A_ENCRYPTION
   deriving (Eq, Generic, Read, Show, Exception)

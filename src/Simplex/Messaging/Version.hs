@@ -11,9 +11,12 @@ module Simplex.Messaging.Version
     pattern VersionRange,
     VersionI (..),
     VersionRangeI (..),
+    Compatible,
+    pattern Compatible,
     mkVersionRange,
     safeVersionRange,
     isCompatible,
+    proveCompatible,
     compatibleVersion,
   )
 where
@@ -68,16 +71,6 @@ class VersionI a where
   version :: a -> Version
   toVersionRangeT :: a -> VersionRange -> VersionRangeT a
 
-isCompatible :: VersionI a => a -> VersionRange -> Bool
-isCompatible x (VRange v1 v2) = let v = version x in v1 <= v && v <= v2
-
-compatibleVersion :: VersionRangeI a => a -> VersionRange -> Maybe (VersionT a)
-compatibleVersion x (VRange min2 max2)
-  | min1 <= max2 && min2 <= max1 = Just . toVersionT x $ min max1 max2
-  | otherwise = Nothing
-  where
-    VRange min1 max1 = versionRange x
-
 class VersionRangeI a where
   type VersionT a
   versionRange :: a -> VersionRange
@@ -92,3 +85,25 @@ instance VersionRangeI VersionRange where
   type VersionT VersionRange = Version
   versionRange = id
   toVersionT _ v = v
+
+newtype Compatible a = Compatible_ a
+
+pattern Compatible :: a -> Compatible a
+pattern Compatible a <- Compatible_ a
+
+{-# COMPLETE Compatible #-}
+
+isCompatible :: VersionI a => a -> VersionRange -> Bool
+isCompatible x (VRange v1 v2) = let v = version x in v1 <= v && v <= v2
+
+proveCompatible :: VersionI a => a -> VersionRange -> Maybe (Compatible a)
+proveCompatible x vr = x `mkCompatibleIf` (x `isCompatible` vr)
+
+compatibleVersion :: VersionRangeI a => a -> VersionRange -> Maybe (Compatible (VersionT a))
+compatibleVersion x (VRange min2 max2) =
+  toVersionT x (min max1 max2) `mkCompatibleIf` (min1 <= max2 && min2 <= max1)
+  where
+    VRange min1 max1 = versionRange x
+
+mkCompatibleIf :: a -> Bool -> Maybe (Compatible a)
+x `mkCompatibleIf` cond = if cond then Just $ Compatible_ x else Nothing

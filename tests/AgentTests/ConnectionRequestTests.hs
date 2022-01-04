@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -74,17 +75,17 @@ connectionRequest12 =
 
 connectionRequestTests :: Spec
 connectionRequestTests =
-  fdescribe "connection request parsing / serializing" $ do
+  describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
-      strEncode queue {smpServer = srv {port = Nothing}}
+      strEncode (queue :: SMPQueueUri) {smpServer = srv {port = Nothing}}
         `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr
       strEncode queue {clientVersionRange = mkVersionRange 1 2}
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
     it "should parse SMP queue URIs" $ do
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1&dh=" <> testDhKeyStr)
-        `shouldBe` Right queue {smpServer = srv {port = Nothing}}
+        `shouldBe` Right (queue :: SMPQueueUri) {smpServer = srv {port = Nothing}}
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
-        `shouldBe` Right queue {smpServer = srv {port = Nothing}}
+        `shouldBe` Right (queue :: SMPQueueUri) {smpServer = srv {port = Nothing}}
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queue
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1&extra_param=abc")

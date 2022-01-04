@@ -494,7 +494,7 @@ clientHandshake c keyHash = do
   if sessionId /= sessId
     then throwE TEBadSession
     else case smpVersionRange `compatibleVersion` supportedSMPVersions of
-      Just smpVersion -> do
+      Just (Compatible smpVersion) -> do
         sendHandshake th $ ClientHandshake {smpVersion, keyHash}
         pure (th :: THandle c) {smpVersion}
       Nothing -> throwE $ TEHandshake VERSION

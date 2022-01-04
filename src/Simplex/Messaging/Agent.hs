@@ -90,6 +90,7 @@ import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), loadTLSServerParams, runTransportServer, simplexMQVersion)
 import Simplex.Messaging.Util (bshow, tryError, unlessM)
+import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
@@ -280,14 +281,18 @@ newConn c connId cMode = do
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
 joinConn c connId (CRInvitationUri (ConnReqUriData _ _ (qUri :| _)) _e2eEnc) cInfo = do
-  (sq, smpConf) <- newSndQueue qUri cInfo
-  g <- asks idsDrg
-  cfg <- asks config
-  let cData = ConnData {connId}
-  connId' <- withStore $ \st -> createSndConn st g cData sq
-  confirmQueue c sq smpConf
-  activateQueueJoining c connId' sq $ retryInterval cfg
-  pure connId'
+  -- TODO convert qUri to qInfo of compatible version (choose max compatible version)
+  case qUri `compatibleVersion` SMP.smpClientVersion of
+    Nothing -> throwError $ AGENT A_VERSION
+    Just qInfo -> do
+      (sq, smpConf) <- newSndQueue qInfo cInfo
+      g <- asks idsDrg
+      cfg <- asks config
+      let cData = ConnData {connId}
+      connId' <- withStore $ \st -> createSndConn st g cData sq
+      confirmQueue c sq smpConf
+      activateQueueJoining c connId' sq $ retryInterval cfg
+      pure connId'
 joinConn c connId (CRContactUri (ConnReqUriData _ _ (qUri :| _))) cInfo = do
   (connId', cReq) <- newConn c connId SCMInvitation
   sendInvitation c qUri cReq cInfo
@@ -300,11 +305,12 @@ activateQueueJoining c connId sq retryInterval =
     createReplyQueue :: m ()
     createReplyQueue = do
       srv <- getSMPServer
-      (rq, qUri') <- newRcvQueue c srv
+      (rq, qUri) <- newRcvQueue c srv
+      -- TODO reply queue version should be the same as send queue, ignoring it in v1
+      let qInfo = toVersionT qUri (maxVersion SMP.smpClientVersion)
       addSubscription c rq connId
       withStore $ \st -> upgradeSndConnToDuplex st connId rq
-      let crData = ConnReqUriData CRSSimplex smpAgentVersion [qUri']
-      sendControlMessage c sq . REPLY $ CRInvitationUri crData connEncStub
+      sendControlMessage c sq $ REPLY [qInfo]
 
 -- | Approve confirmation (LET command) in Reader monad
 allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
@@ -503,9 +509,9 @@ getSMPServer =
       pure $ servers L.!! i
 
 sendControlMessage :: AgentMonad m => AgentClient -> SndQueue -> AMessage -> m ()
-sendControlMessage c sq agentMessage = do
+sendControlMessage c sq aMessage = do
   sendAgentMessage c sq . serializeAgentMessage $
-    AgentMessage (APrivHeader 0 "") agentMessage
+    AgentMessage (APrivHeader 0 "") aMessage
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
@@ -609,18 +615,21 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 SCDuplex -> notifyConnected c connId
                 _ -> pure ()
 
-        replyMsg :: ConnectionRequestUri 'CMInvitation -> m ()
-        replyMsg (CRInvitationUri (ConnReqUriData _ _ (qUri :| _)) _e2eEnc) = do
+        replyMsg :: L.NonEmpty SMPQueue -> m ()
+        replyMsg (qInfo :| _) = do
           logServer "<--" c srv rId "MSG <REPLY>"
           case cType of
             SCRcv -> do
               AcceptedConfirmation {ownConnInfo} <- withStore (`getAcceptedConfirmation` connId)
-              (sq, smpConf) <- newSndQueue qUri ownConnInfo
-              withStore $ \st -> upgradeRcvConnToDuplex st connId sq
-              confirmQueue c sq smpConf
-              withStore (`removeConfirmations` connId)
-              cfg <- asks config
-              activateQueueInitiating c connId sq $ retryInterval cfg
+              case qInfo `proveCompatible` SMP.smpClientVersion of
+                Nothing -> notify (ERR $ AGENT A_VERSION) >> ack
+                Just qInfo' -> do
+                  (sq, smpConf) <- newSndQueue qInfo' ownConnInfo
+                  withStore $ \st -> upgradeRcvConnToDuplex st connId sq
+                  confirmQueue c sq smpConf
+                  withStore (`removeConfirmations` connId)
+                  cfg <- asks config
+                  activateQueueInitiating c connId sq $ retryInterval cfg
             _ -> prohibited
 
         agentClientMsg :: PrevRcvMsgHash -> ExternalSndId -> (BrokerId, BrokerTs) -> MsgBody -> MsgHash -> m ()
@@ -680,18 +689,19 @@ activateQueue c connId sq retryInterval afterActivation =
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)
 
-newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => SMPQueueUri -> ConnInfo -> m (SndQueue, SMPConfirmation)
-newSndQueue qUri cInfo =
+newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueue -> ConnInfo -> m (SndQueue, SMPConfirmation)
+newSndQueue qInfo cInfo =
   asks (cmdSignAlg . config) >>= \case
-    C.SignAlg a -> newSndQueue_ a qUri cInfo
+    C.SignAlg a -> newSndQueue_ a qInfo cInfo
 
 newSndQueue_ ::
   (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m) =>
   C.SAlgorithm a ->
-  SMPQueueUri ->
+  Compatible SMPQueue ->
   ConnInfo ->
   m (SndQueue, SMPConfirmation)
-newSndQueue_ a (SMPQueueUri smpServer senderId clientVersion rcvE2ePubDhKey) cInfo = do
+newSndQueue_ a (Compatible (SMPQueue _clientVersion smpServer senderId rcvE2ePubDhKey)) cInfo = do
+  -- this function assumes clientVersion is compatible - it was tested before
   (senderKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
   let sndQueue =
