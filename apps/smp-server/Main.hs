@@ -171,21 +171,27 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
 
         createOpensslConf =
           -- TODO revise https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3, https://www.rfc-editor.org/rfc/rfc3279#section-2.3.5
+          -- TODO dynamic domain name and IP
           writeFile
             opensslCnfFile
-            "[req]\n\
+            "[req]\
             \distinguished_name = req_distinguished_name\n\
             \prompt = no\n\n\
             \[req_distinguished_name]\n\
-            \CN = localhost\n\n\
+            \CN = testws.simplex.im\n\n\
             \[v3_ca]\n\
             \subjectKeyIdentifier = hash\n\
             \authorityKeyIdentifier = keyid:always\n\
-            \basicConstraints = critical,CA:true\n\n\
+            \basicConstraints = critical,CA:true\n\
+            \subjectAltName = @alt_names\n\n\
             \[v3_req]\n\
             \basicConstraints = CA:FALSE\n\
             \keyUsage = digitalSignature, nonRepudiation, keyAgreement\n\
-            \extendedKeyUsage = serverAuth\n"
+            \extendedKeyUsage = serverAuth\n\
+            \subjectAltName = @alt_names\n\n\
+            \[alt_names]\n\
+            \DNS.1 = testws.simplex.im\n\
+            \IP.1 = 188.166.8.35"
 
     saveFingerprint = do
       Fingerprint fp <- loadFingerprint caCrtFile
