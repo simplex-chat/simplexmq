@@ -250,7 +250,10 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
     serverSupported =
       def
         { T.supportedVersions = [T.TLS12],
-          T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
+          T.supportedCiphers =
+            [ TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256,
+              TE.cipher_AES256GCM_SHA384
+            ],
           T.supportedHashSignatures =
             [ (T.HashIntrinsic, T.SignatureEd448),
               (T.HashIntrinsic, T.SignatureEd25519),
