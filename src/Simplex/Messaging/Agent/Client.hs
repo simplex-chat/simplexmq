@@ -368,11 +368,11 @@ sendAgentMessage c SndQueue {server, sndId, sndPrivateKey} msg =
 
 -- encoded AgentMessage' -> encoded EncAgentMessage
 agentRatchetEncrypt :: AgentMonad m => ByteString -> m ByteString
-agentRatchetEncrypt s = pure s
+agentRatchetEncrypt = pure
 
 -- encoded EncAgentMessage -> encoded AgentMessage'
 agentRatchetDecrypt :: AgentMonad m => ByteString -> m ByteString
-agentRatchetDecrypt s = pure s
+agentRatchetDecrypt = pure
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do
