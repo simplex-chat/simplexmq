@@ -363,9 +363,6 @@ subscribeConnection' c connId =
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
     SomeConn _ (ContactConnection _ rq) -> subscribeQueue c rq connId
-  where
-    activateSecuredQueue :: RcvQueue -> SndQueue -> m ()
-    activateSecuredQueue rq sq = pure ()
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId
