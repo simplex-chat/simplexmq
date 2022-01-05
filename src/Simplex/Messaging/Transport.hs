@@ -86,9 +86,9 @@ import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
-import Network.Socket
-import qualified Network.TLS as T
-import qualified Network.TLS.Extra as TE
+import Network.Socket hiding (HostName)
+import Network.TLS as T
+import Network.TLS.Extra as TE
 import qualified Network.TLS.Extra.Cipher as TEC
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -247,8 +247,18 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
           T.serverSupported =
-            def
-              { T.supportedCiphers = TEC.ciphersuite_all
+            T.Supported
+              { supportedVersions = [TLS12, TLS11, TLS10],
+                supportedCiphers = TEC.ciphersuite_all,
+                supportedCompressions = [T.nullCompression],
+                supportedHashSignatures = [(HashIntrinsic, SignatureEd448), (HashIntrinsic, SignatureEd25519), (HashSHA256, SignatureECDSA), (HashSHA384, SignatureECDSA), (HashSHA512, SignatureECDSA), (HashIntrinsic, SignatureRSApssRSAeSHA512), (HashIntrinsic, SignatureRSApssRSAeSHA384), (HashIntrinsic, SignatureRSApssRSAeSHA256), (HashSHA512, SignatureRSA), (HashSHA384, SignatureRSA), (HashSHA256, SignatureRSA), (HashSHA1, SignatureRSA), (HashSHA1, SignatureDSS)],
+                supportedSecureRenegotiation = True,
+                supportedClientInitiatedRenegotiation = False,
+                supportedExtendedMasterSec = AllowEMS,
+                supportedSession = True,
+                supportedFallbackScsv = True,
+                supportedEmptyPacket = True,
+                supportedGroups = [X25519, X448, P256, FFDHE3072, FFDHE4096, P384, FFDHE6144, FFDHE8192, P521]
               }
         }
     serverSupported :: T.Supported
