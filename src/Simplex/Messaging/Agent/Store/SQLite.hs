@@ -468,10 +468,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getPendingMsgs st connId =
     liftIO . withTransaction st $ \db ->
       map fromOnly
-        <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ? AND snd_status = ?" (connId, SndMsgCreated)
-
-  getMsg :: SQLiteStore -> ConnId -> InternalId -> m Msg
-  getMsg _st _connId _id = throwError SENotImplemented
+        <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ?" (Only connId)
 
   checkRcvMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
   checkRcvMsg st connId msgId =
@@ -512,17 +509,9 @@ instance ToField InternalId where toField (InternalId x) = toField x
 
 instance FromField InternalId where fromField x = InternalId <$> fromField x
 
-instance ToField RcvMsgStatus where toField = toField . serializeRcvMsgStatus
-
-instance FromField RcvMsgStatus where fromField = fromTextField_ rcvMsgStatusT
-
 instance ToField AMsgType where toField = toField . smpEncode
 
 instance FromField AMsgType where fromField = blobFieldParser smpP
-
-instance ToField SndMsgStatus where toField = toField . serializeSndMsgStatus
-
-instance FromField SndMsgStatus where fromField = fromTextField_ sndMsgStatusT
 
 instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
 
@@ -764,11 +753,11 @@ insertRcvMsgDetails_ dbConn connId RcvMsgData {msgMeta, internalRcvId, internalH
     [sql|
       INSERT INTO rcv_messages
         ( conn_alias, internal_rcv_id, internal_id, external_snd_id,
-          broker_id, broker_ts, rcv_status,
+          broker_id, broker_ts,
           internal_hash, external_prev_snd_hash, integrity)
       VALUES
         (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,
-         :broker_id,:broker_ts,:rcv_status,
+         :broker_id,:broker_ts,
          :internal_hash,:external_prev_snd_hash,:integrity);
     |]
     [ ":conn_alias" := connId,
@@ -777,7 +766,6 @@ insertRcvMsgDetails_ dbConn connId RcvMsgData {msgMeta, internalRcvId, internalH
       ":external_snd_id" := sndMsgId,
       ":broker_id" := fst broker,
       ":broker_ts" := snd broker,
-      ":rcv_status" := RcvMsgReceived,
       ":internal_hash" := internalHash,
       ":external_prev_snd_hash" := externalPrevSndHash,
       ":integrity" := integrity
@@ -857,14 +845,13 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_alias, internal_snd_id, internal_id, snd_status, internal_hash, previous_msg_hash)
+        ( conn_alias, internal_snd_id, internal_id, internal_hash, previous_msg_hash)
       VALUES
-        (:conn_alias,:internal_snd_id,:internal_id,:snd_status,:internal_hash,:previous_msg_hash);
+        (:conn_alias,:internal_snd_id,:internal_id,:internal_hash,:previous_msg_hash);
     |]
     [ ":conn_alias" := connId,
       ":internal_snd_id" := internalSndId,
       ":internal_id" := internalId,
-      ":snd_status" := SndMsgCreated,
       ":internal_hash" := internalHash,
       ":previous_msg_hash" := prevMsgHash
     ]
