@@ -14,6 +14,7 @@ import AgentTests.ConnectionRequestTests
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
+import Control.Monad (forM_)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network.HTTP.Types (urlEncode)
@@ -23,6 +24,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
+import Simplex.Messaging.Util (bshow)
 import System.Directory (removeFile)
 import System.Timeout
 import Test.Hspec
@@ -65,6 +67,8 @@ agentTests (ATransport t) = do
       smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
     xit "should concurrently deliver messages to connections without blocking" $
       smpAgentTest2_2_1 $ testConcurrentMsgDelivery t
+    xit "should deliver messages if one of connections has quota exceeded" $
+      smpAgentTest2_2_1 $ testMsgDeliveryQuotaExceeded t
 
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
@@ -342,16 +346,33 @@ testConcurrentMsgDelivery _ alice bob = do
   -- alice <# ("", "bob", CON)
 
   -- the first connection should not be blocked by the second one
-  alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", MID 1)
-  alice <# ("", "bob", SENT 1)
-  bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
-  bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
+  sendMessage (alice, "alice") (bob, "bob") "hello"
+  -- alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", MID 1)
+  -- alice <# ("", "bob", SENT 1)
+  -- bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+  -- bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
   bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 2)
   putStrLn "it gets this far"
   bob <# ("", "alice", SENT 2)
   putStrLn "it never gets here as the message is blocked by HELLO in in another connection"
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
   alice #: ("3", "bob", "ACK 2") #> ("3", "bob", OK)
+
+testMsgDeliveryQuotaExceeded :: Transport c => TProxy c -> c -> c -> IO ()
+testMsgDeliveryQuotaExceeded _ alice bob = do
+  connect (alice, "alice") (bob, "bob")
+  connect (alice, "alice2") (bob, "bob2")
+  forM_ [1 .. 4 :: Int] $ \i -> do
+    let corrId = bshow i
+        msg = "message " <> bshow i
+    (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND :" <> msg)
+    alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
+  (_, "bob", Right (MID _)) <- alice #: ("5", "bob", "SEND :over quota")
+
+  alice #: ("1", "bob2", "SEND :hello") #> ("1", "bob2", MID 1)
+  putStrLn "it gets this far"
+  alice <# ("", "bob2", SENT 1)
+  putStrLn "it never gets here as the message is blocked by MSG in in another connection"
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
@@ -363,6 +384,16 @@ connect (h1, name1) (h2, name2) = do
   h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
+
+sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()
+sendMessage (h1, name1) (h2, name2) msg = do
+  ("m1", name2', Right (MID mId)) <- h1 #: ("m1", name2, "SEND :" <> msg)
+  name2' `shouldBe` name2
+  h1 <#= \case ("", n, SENT m) -> n == name2 && m == mId; _ -> False
+  ("", name1', Right (MSG MsgMeta {recipient = (msgId, _)} msg')) <- (h2 <#:)
+  name1' `shouldBe` name1
+  msg' `shouldBe` msg
+  h2 #: ("m2", name1, "ACK " <> bshow msgId) =#> \case ("m2", n, OK) -> n == name1; _ -> False
 
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do
