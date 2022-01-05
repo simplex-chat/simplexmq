@@ -20,8 +20,7 @@ module Simplex.Messaging.Agent.Client
     sendConfirmation,
     sendInvitation,
     RetryInterval (..),
-    sendHello,
-    sendReply,
+    -- sendHello,
     secureQueue,
     sendAgentMessage,
     agentRatchetEncrypt,
@@ -328,35 +327,6 @@ sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, e2ePu
       agentCbEncrypt sq (Just e2ePubKey) . smpEncode $
         SMP.ClientMessage (SMP.PHConfirmation senderKey) $ smpEncode agentEnvelope
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> RetryInterval -> m ()
-sendHello c sq@SndQueue {server, sndId, sndPrivateKey} ri =
-  withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
-    msg <- mkHello
-    liftSMP . withRetryInterval ri $ \loop ->
-      sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
-        SMPServerError AUTH -> loop
-        e -> throwE e
-  where
-    mkHello :: m ByteString
-    mkHello = do
-      encAgentMessage <- agentRatchetEncrypt . smpEncode $ AgentMessage' (APrivHeader 0 "") HELLO
-      let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
-      agentCbEncrypt sq Nothing . smpEncode $
-        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
-
-sendReply :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPQueueInfo -> m ()
-sendReply c sq@SndQueue {server, sndId, sndPrivateKey} qInfo =
-  withLogSMP_ c server sndId "SEND <REPLY>" $ \smp -> do
-    msg <- mkReply
-    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
-  where
-    mkReply :: m ByteString
-    mkReply = do
-      encAgentMessage <- agentRatchetEncrypt . smpEncode $ AgentMessage' (APrivHeader 0 "") $ REPLY [qInfo]
-      let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
-      agentCbEncrypt sq Nothing . smpEncode $
-        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
-
 sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} connReq connInfo = do
   withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
@@ -392,19 +362,9 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
 
 -- TODO this is just wrong
 sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
-sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
-  withLogSMP_ c server sndId "SEND <MSG>" $ \smp -> do
-    -- msg' <- mkMessage
+sendAgentMessage c SndQueue {server, sndId, sndPrivateKey} msg =
+  withLogSMP_ c server sndId "SEND <MSG>" $ \smp ->
     liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
-
--- where
---   mkMessage :: m ByteString
---   mkMessage = do
---     -- the message is already constructed and encoded in DB
---     encAgentMessage <- agentRatchetEncrypt msg -- . smpEncode $ AgentMessage' (APrivHeader 0 "") $ A_MSG msg
---     let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
---     agentCbEncrypt sq Nothing . smpEncode $
---       SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 
 -- encoded AgentMessage' -> encoded EncAgentMessage
 agentRatchetEncrypt :: AgentMonad m => ByteString -> m ByteString

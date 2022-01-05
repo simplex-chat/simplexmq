@@ -366,9 +366,7 @@ syntaxTests t = do
 
   describe "JOIN" $ do
     describe "valid" $ do
-      -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
-      -- TODO: add tests with defined connection alias
-      xit "using same server as in invitation" $
+      it "using same server as in invitation" $
         ( "311",
           "a",
           "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F"
@@ -376,12 +374,11 @@ syntaxTests t = do
             <> "%40localhost%3A5001%2F3456-w%3D%3D%23"
             <> urlEncode True sampleDhKey
             <> "&v=1"
-            <> "&e2e=v%3D1%26dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
             <> " 14\nbob's connInfo"
         )
           >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" $ do
-      -- TODO: JOIN is not merged yet - to be added
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
   where
     -- simple test for one command with the expected response

@@ -46,6 +46,7 @@ module Simplex.Messaging.Agent.Protocol
     AgentMessage' (..),
     APrivHeader (..),
     AMessage (..),
+    AMsgType (..),
     SMPServer (..),
     SrvLoc (..),
     SMPQueueUri (..),
@@ -97,6 +98,7 @@ module Simplex.Messaging.Agent.Protocol
     smpErrorTypeP,
     serializeQueueStatus,
     queueStatusT,
+    aMessageType,
 
     -- * TCP transport functions
     tPut,
@@ -393,6 +395,27 @@ instance Encoding APrivHeader where
     smpEncode (sndMsgId, prevMsgHash)
   smpP = APrivHeader <$> smpP <*> smpP
 
+data AMsgType = HELLO_ | REPLY_ | A_MSG_
+  deriving (Eq)
+
+instance Encoding AMsgType where
+  smpEncode = \case
+    HELLO_ -> "H"
+    REPLY_ -> "R"
+    A_MSG_ -> "M"
+  smpP =
+    smpP >>= \case
+      'H' -> pure HELLO_
+      'R' -> pure REPLY_
+      'M' -> pure A_MSG_
+      _ -> fail "bad AMsgType"
+
+aMessageType :: AMessage -> AMsgType
+aMessageType = \case
+  HELLO -> HELLO_
+  REPLY _ -> REPLY_
+  A_MSG _ -> A_MSG_
+
 -- | Messages sent between SMP agents once SMP queue is secured.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md#messages-between-smp-agents
@@ -407,16 +430,15 @@ data AMessage
 
 instance Encoding AMessage where
   smpEncode = \case
-    HELLO -> "H"
-    REPLY smpQueues -> smpEncode ('R', smpQueues)
-    A_MSG body -> smpEncode ('M', Tail body)
+    HELLO -> smpEncode HELLO_
+    REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
+    A_MSG body -> smpEncode (A_MSG_, Tail body)
   smpP =
     smpP
       >>= \case
-        'H' -> pure HELLO
-        'R' -> REPLY <$> smpP
-        'M' -> A_MSG . unTail <$> smpP
-        _ -> fail "bad AMessage"
+        HELLO_ -> pure HELLO
+        REPLY_ -> REPLY <$> smpP
+        A_MSG_ -> A_MSG . unTail <$> smpP
 
 data QueryStringParams = QSP QSPEscaping Q.SimpleQuery
   deriving (Show)

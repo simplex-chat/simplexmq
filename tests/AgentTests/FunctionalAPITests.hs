@@ -42,9 +42,6 @@ functionalAPITests t = do
       withSmpServer t testAsyncInitiatingOffline
     it "should connect with joining client going offline before its queue activation" $
       withSmpServer t testAsyncJoiningOfflineBeforeActivation
-    -- TODO a valid test case but not trivial to implement, probably requires some agent rework
-    xit "should connect with joining client going offline after its queue activation" $
-      withSmpServer t testAsyncJoiningOfflineAfterActivation
     it "should connect with both clients going offline" $
       withSmpServer t testAsyncBothOffline
 
@@ -126,9 +123,6 @@ testAsyncJoiningOfflineBeforeActivation = do
     get bob' ##> ("", aliceId, CON)
     exchangeGreetings alice bobId bob' aliceId
   pure ()
-
-testAsyncJoiningOfflineAfterActivation :: IO ()
-testAsyncJoiningOfflineAfterActivation = error "not implemented"
 
 testAsyncBothOffline :: IO ()
 testAsyncBothOffline = do
