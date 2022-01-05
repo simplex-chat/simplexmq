@@ -504,17 +504,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       hasMsg :: [(ConnId, InternalId)] -> Either StoreError ()
       hasMsg r = if null r then Left SEMsgNotFound else Right ()
 
-  updateRcvMsgAck :: SQLiteStore -> ConnId -> InternalId -> m ()
-  updateRcvMsgAck st connId msgId =
-    liftIO . withTransaction st $ \db -> do
-      DB.execute
-        db
-        [sql|
-          UPDATE rcv_messages
-          SET rcv_status = ?, ack_brocker_ts = datetime('now')
-          WHERE conn_alias = ? AND internal_id = ?
-        |]
-        (RcvMsgAcknowledged, connId, msgId)
+  deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
+  deleteMsg st connId msgId =
+    liftIO . withTransaction st $ \db ->
+      DB.execute db "DELETE FROM messages WHERE conn_alias = ? AND internal_id = ?;" (connId, msgId)
 
 -- * Auxiliary helpers
 

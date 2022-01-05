@@ -487,7 +487,7 @@ ackMessage' c connId msgId = do
       let mId = InternalId msgId
       withStore $ \st -> checkRcvMsg st connId mId
       sendAck c rq
-      withStore $ \st -> updateRcvMsgAck st connId mId
+      withStore $ \st -> deleteMsg st connId mId
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
