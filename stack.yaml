@@ -17,7 +17,7 @@
 #
 # resolver: ./custom-snapshot.yaml
 # resolver: https://example.com/snapshots/2018-01-01.yaml
-resolver: lts-18.13
+resolver: lts-18.21
 
 # User packages to be built.
 # Various formats can be used as shown in the example below.
@@ -36,9 +36,7 @@ packages:
 #
 extra-deps:
   - cryptostore-0.2.1.0@sha256:9896e2984f36a1c8790f057fd5ce3da4cbcaf8aa73eb2d9277916886978c5b19,3881
-  - direct-sqlite-2.3.26@sha256:04e835402f1508abca383182023e4e2b9b86297b8533afbd4e57d1a5652e0c23,3718
   - simple-logger-0.1.0@sha256:be8ede4bd251a9cac776533bae7fb643369ebd826eb948a9a18df1a8dd252ff8,1079
-  - sqlite-simple-0.4.18.0@sha256:3ceea56375c0a3590c814e411a4eb86943f8d31b93b110ca159c90689b6b39e5,3002
   # - ../hs-tls/core
   - github: simplex-chat/hs-tls
     commit: cea6d52c512716ff09adcac86ebc95bb0b3bb797

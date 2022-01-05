@@ -1,5 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module CoreTests.VersionRangeTests where
 
@@ -31,21 +33,26 @@ versionRangeTests = modifyMaxSuccess (const 1000) $ do
       (vr 1 3, vr 2 4) `compatible` Just 3
       (vr 1 2, vr 3 4) `compatible` Nothing
     it "should check if version is compatible" $ do
-      isCompatible 1 (vr 1 2) `shouldBe` True
-      isCompatible 2 (vr 1 2) `shouldBe` True
-      isCompatible 2 (vr 1 1) `shouldBe` False
-      isCompatible 1 (vr 2 2) `shouldBe` False
+      isCompatible (1 :: Version) (vr 1 2) `shouldBe` True
+      isCompatible (2 :: Version) (vr 1 2) `shouldBe` True
+      isCompatible (2 :: Version) (vr 1 1) `shouldBe` False
+      isCompatible (1 :: Version) (vr 2 2) `shouldBe` False
     it "compatibleVersion should pass isCompatible check" . property $
       \((min1, max1) :: (V, V)) ((min2, max2) :: (V, V)) ->
         min1 > max1 || min2 > max2 -- one of ranges is invalid, skip testing it
           || let w = fromIntegral . fromEnum
-                 vr1 = mkVersionRange (w min1) (w max1)
-                 vr2 = mkVersionRange (w min2) (w max2)
+                 vr1 = mkVersionRange (w min1) (w max1) :: VersionRange
+                 vr2 = mkVersionRange (w min2) (w max2) :: VersionRange
               in case compatibleVersion vr1 vr2 of
-                   Just v -> v `isCompatible` vr1 && v `isCompatible` vr2
+                   Just (Compatible v) -> v `isCompatible` vr1 && v `isCompatible` vr2
                    _ -> True
   where
     vr = mkVersionRange
+    compatible :: (VersionRange, VersionRange) -> Maybe Version -> Expectation
     (vr1, vr2) `compatible` v = do
-      compatibleVersion vr1 vr2 `shouldBe` v
-      compatibleVersion vr2 vr1 `shouldBe` v
+      (vr1, vr2) `checkCompatible` v
+      (vr2, vr1) `checkCompatible` v
+    (vr1, vr2) `checkCompatible` v =
+      case compatibleVersion vr1 vr2 of
+        Just (Compatible v') -> Just v' `shouldBe` v
+        Nothing -> Nothing `shouldBe` v

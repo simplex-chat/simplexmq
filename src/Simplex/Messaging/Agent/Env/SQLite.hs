@@ -29,7 +29,6 @@ data AgentConfig = AgentConfig
     dbFile :: FilePath,
     dbPoolSize :: Int,
     smpCfg :: SMPClientConfig,
-    retryInterval :: RetryInterval,
     reconnectInterval :: RetryInterval,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -50,12 +49,6 @@ defaultAgentConfig =
       dbFile = "smp-agent.db",
       dbPoolSize = 4,
       smpCfg = smpDefaultConfig,
-      retryInterval =
-        RetryInterval
-          { initialInterval = 1_000_000,
-            increaseAfter = minute,
-            maxInterval = 10 * minute
-          },
       reconnectInterval =
         RetryInterval
           { initialInterval = 1_000_000,

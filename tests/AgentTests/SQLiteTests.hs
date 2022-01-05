@@ -97,10 +97,8 @@ storeTests = do
         describe "set Queue status" $ do
           describe "setRcvQueueStatus" $ do
             testSetRcvQueueStatus
-            testSetRcvQueueStatusNoQueue
           describe "setSndQueueStatus" $ do
             testSetSndQueueStatus
-            testSetSndQueueStatusNoQueue
           testSetQueueStatusDuplex
       describe "Msg management" $ do
         describe "create Msg" $ do
@@ -377,18 +375,6 @@ testSetQueueStatusDuplex =
     getConn store "conn1"
       `returnsResult` SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 {status = Secured} sndQueue1 {status = Confirmed})
 
-testSetRcvQueueStatusNoQueue :: SpecWith SQLiteStore
-testSetRcvQueueStatusNoQueue =
-  xit "should throw error on attempt to update status of non-existent RcvQueue" $ \store -> do
-    setRcvQueueStatus store rcvQueue1 Confirmed
-      `throwsError` SEConnNotFound
-
-testSetSndQueueStatusNoQueue :: SpecWith SQLiteStore
-testSetSndQueueStatusNoQueue =
-  xit "should throw error on attempt to update status of non-existent SndQueue" $ \store -> do
-    setSndQueueStatus store sndQueue1 Confirmed
-      `throwsError` SEConnNotFound
-
 hw :: ByteString
 hw = encodeUtf8 "Hello world!"
 
@@ -406,13 +392,14 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
             sndMsgId = externalSndId,
             broker = (brokerId, ts)
           },
+      msgType = A_MSG_,
       msgBody = hw,
       internalHash,
       externalPrevSndHash = "hash_from_sender"
     }
 
-testCreateRcvMsg' :: SQLiteStore -> PrevExternalSndId -> PrevRcvMsgHash -> ConnId -> RcvMsgData -> Expectation
-testCreateRcvMsg' st expectedPrevSndId expectedPrevHash connId rcvMsgData@RcvMsgData {..} = do
+testCreateRcvMsg_ :: SQLiteStore -> PrevExternalSndId -> PrevRcvMsgHash -> ConnId -> RcvMsgData -> Expectation
+testCreateRcvMsg_ st expectedPrevSndId expectedPrevHash connId rcvMsgData@RcvMsgData {..} = do
   let MsgMeta {recipient = (internalId, _)} = msgMeta
   updateRcvIds st connId
     `returnsResult` (InternalId internalId, internalRcvId, expectedPrevSndId, expectedPrevHash)
@@ -426,8 +413,8 @@ testCreateRcvMsg =
     let ConnData {connId} = cData1
     _ <- runExceptT $ createRcvConn st g cData1 rcvQueue1 SCMInvitation
     -- TODO getMsg to check message
-    testCreateRcvMsg' st 0 "" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "hash_dummy"
-    testCreateRcvMsg' st 1 "hash_dummy" connId $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "new_hash_dummy"
+    testCreateRcvMsg_ st 0 "" connId $ mkRcvMsgData (InternalId $ -2) (InternalRcvId 1) 1 "1" "hash_dummy"
+    testCreateRcvMsg_ st 1 "hash_dummy" connId $ mkRcvMsgData (InternalId $ -1) (InternalRcvId 2) 2 "2" "new_hash_dummy"
 
 mkSndMsgData :: InternalId -> InternalSndId -> MsgHash -> SndMsgData
 mkSndMsgData internalId internalSndId internalHash =
@@ -435,13 +422,14 @@ mkSndMsgData internalId internalSndId internalHash =
     { internalId,
       internalSndId,
       internalTs = ts,
+      msgType = A_MSG_,
       msgBody = hw,
       internalHash,
       prevMsgHash = internalHash
     }
 
-testCreateSndMsg' :: SQLiteStore -> PrevSndMsgHash -> ConnId -> SndMsgData -> Expectation
-testCreateSndMsg' store expectedPrevHash connId sndMsgData@SndMsgData {..} = do
+testCreateSndMsg_ :: SQLiteStore -> PrevSndMsgHash -> ConnId -> SndMsgData -> Expectation
+testCreateSndMsg_ store expectedPrevHash connId sndMsgData@SndMsgData {..} = do
   updateSndIds store connId
     `returnsResult` (internalId, internalSndId, expectedPrevHash)
   createSndMsg store connId sndMsgData
@@ -454,8 +442,8 @@ testCreateSndMsg =
     let ConnData {connId} = cData1
     _ <- runExceptT $ createSndConn store g cData1 sndQueue1
     -- TODO getMsg to check message
-    testCreateSndMsg' store "" connId $ mkSndMsgData (InternalId 1) (InternalSndId 1) "hash_dummy"
-    testCreateSndMsg' store "hash_dummy" connId $ mkSndMsgData (InternalId 2) (InternalSndId 2) "new_hash_dummy"
+    testCreateSndMsg_ store "" connId $ mkSndMsgData (InternalId $ -2) (InternalSndId 1) "hash_dummy"
+    testCreateSndMsg_ store "hash_dummy" connId $ mkSndMsgData (InternalId $ -1) (InternalSndId 2) "new_hash_dummy"
 
 testCreateRcvAndSndMsgs :: SpecWith SQLiteStore
 testCreateRcvAndSndMsgs =
@@ -464,9 +452,9 @@ testCreateRcvAndSndMsgs =
     let ConnData {connId} = cData1
     _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     _ <- runExceptT $ upgradeRcvConnToDuplex store "conn1" sndQueue1
-    testCreateRcvMsg' store 0 "" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "rcv_hash_1"
-    testCreateRcvMsg' store 1 "rcv_hash_1" connId $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "rcv_hash_2"
-    testCreateSndMsg' store "" connId $ mkSndMsgData (InternalId 3) (InternalSndId 1) "snd_hash_1"
-    testCreateRcvMsg' store 2 "rcv_hash_2" connId $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
-    testCreateSndMsg' store "snd_hash_1" connId $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
-    testCreateSndMsg' store "snd_hash_2" connId $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
+    testCreateRcvMsg_ store 0 "" connId $ mkRcvMsgData (InternalId $ -2) (InternalRcvId 1) 1 "1" "rcv_hash_1"
+    testCreateRcvMsg_ store 1 "rcv_hash_1" connId $ mkRcvMsgData (InternalId $ -1) (InternalRcvId 2) 2 "2" "rcv_hash_2"
+    testCreateSndMsg_ store "" connId $ mkSndMsgData (InternalId 0) (InternalSndId 1) "snd_hash_1"
+    testCreateRcvMsg_ store 2 "rcv_hash_2" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 3) 3 "3" "rcv_hash_3"
+    testCreateSndMsg_ store "snd_hash_1" connId $ mkSndMsgData (InternalId 2) (InternalSndId 2) "snd_hash_2"
+    testCreateSndMsg_ store "snd_hash_2" connId $ mkSndMsgData (InternalId 3) (InternalSndId 3) "snd_hash_3"

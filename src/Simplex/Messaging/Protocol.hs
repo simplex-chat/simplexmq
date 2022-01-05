@@ -49,7 +49,7 @@ module Simplex.Messaging.Protocol
     SignedTransmission,
     SentRawTransmission,
     SignedRawTransmission,
-    EncMessage (..),
+    ClientMsgEnvelope (..),
     PubHeader (..),
     ClientMessage (..),
     PrivHeader (..),
@@ -97,7 +97,6 @@ import Data.Maybe (isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
-import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Network.Socket (HostName, ServiceName)
@@ -317,15 +316,15 @@ instance ProtocolMsgTag BrokerMsgTag where
     _ -> Nothing
 
 -- | SMP message body format
-data EncMessage = EncMessage
-  { emHeader :: PubHeader,
-    emNonce :: C.CbNonce,
-    emBody :: ByteString
+data ClientMsgEnvelope = ClientMsgEnvelope
+  { cmHeader :: PubHeader,
+    cmNonce :: C.CbNonce,
+    cmEncBody :: ByteString
   }
   deriving (Show)
 
 data PubHeader = PubHeader
-  { phVersion :: Word16,
+  { phVersion :: Version,
     phE2ePubDhKey :: Maybe C.PublicKeyX25519
   }
   deriving (Show)
@@ -334,29 +333,30 @@ instance Encoding PubHeader where
   smpEncode (PubHeader v k) = smpEncode (v, k)
   smpP = PubHeader <$> smpP <*> smpP
 
-instance Encoding EncMessage where
-  smpEncode EncMessage {emHeader, emNonce, emBody} =
-    smpEncode (emHeader, emNonce, Tail emBody)
+instance Encoding ClientMsgEnvelope where
+  smpEncode ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody} =
+    smpEncode (cmHeader, cmNonce, Tail cmEncBody)
   smpP = do
-    emHeader <- smpP
-    emNonce <- smpP
-    emBody <- A.takeByteString
-    pure EncMessage {emHeader, emNonce, emBody}
+    cmHeader <- smpP
+    cmNonce <- smpP
+    cmEncBody <- A.takeByteString
+    pure ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 data ClientMessage = ClientMessage PrivHeader ByteString
 
 data PrivHeader
   = PHConfirmation C.APublicVerifyKey
   | PHEmpty
+  deriving (Show)
 
 instance Encoding PrivHeader where
   smpEncode = \case
     PHConfirmation k -> "K" <> smpEncode k
-    PHEmpty -> " "
+    PHEmpty -> "_"
   smpP =
     A.anyChar >>= \case
       'K' -> PHConfirmation <$> smpP
-      ' ' -> pure PHEmpty
+      '_' -> pure PHEmpty
       _ -> fail "invalid PrivHeader"
 
 instance Encoding ClientMessage where
@@ -373,6 +373,13 @@ data SMPServer = SMPServer
 
 instance IsString SMPServer where
   fromString = parseString strDecode
+
+instance Encoding SMPServer where
+  smpEncode SMPServer {host, port, keyHash} =
+    smpEncode (host, port, keyHash)
+  smpP = do
+    (host, port, keyHash) <- smpP
+    pure SMPServer {host, port, keyHash}
 
 instance StrEncoding SMPServer where
   strEncode SMPServer {host, port, keyHash} =

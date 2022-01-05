@@ -8,7 +8,7 @@ CREATE TABLE servers (
 CREATE TABLE connections (
   conn_alias BLOB NOT NULL PRIMARY KEY,
   conn_mode TEXT NOT NULL,
-  last_internal_msg_id INTEGER NOT NULL DEFAULT 0,
+  last_internal_msg_id INTEGER NOT NULL DEFAULT -3,
   last_internal_rcv_msg_id INTEGER NOT NULL DEFAULT 0,
   last_internal_snd_msg_id INTEGER NOT NULL DEFAULT 0,
   last_external_snd_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -31,7 +31,7 @@ CREATE TABLE rcv_queues (
   snd_key BLOB,
   status TEXT NOT NULL,
   smp_server_version INTEGER NOT NULL DEFAULT 1,
-  smp_client_version INTEGER NOT NULL DEFAULT 1,
+  smp_client_version INTEGER,
   PRIMARY KEY (host, port, rcv_id),
   FOREIGN KEY (host, port) REFERENCES servers
     ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -60,6 +60,7 @@ CREATE TABLE messages (
   internal_ts TEXT NOT NULL,
   internal_rcv_id INTEGER,
   internal_snd_id INTEGER,
+  msg_type BLOB NOT NULL, -- SMP_CONF?, HELLO, REPLY, DELETE
   msg_body BLOB NOT NULL DEFAULT x'',
   PRIMARY KEY (conn_alias, internal_id),
   FOREIGN KEY (conn_alias, internal_rcv_id) REFERENCES rcv_messages

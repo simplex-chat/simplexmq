@@ -52,6 +52,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldParser)
 import Simplex.Messaging.Protocol (MsgBody)
@@ -438,41 +439,27 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       insertSndMsgDetails_ db connId sndMsgData
       updateHashSnd_ db connId sndMsgData
 
-  updateSndMsgStatus :: SQLiteStore -> ConnId -> InternalId -> SndMsgStatus -> m ()
-  updateSndMsgStatus st connId msgId msgStatus =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE snd_messages
-          SET snd_status = :snd_status
-          WHERE conn_alias = :conn_alias AND internal_id = :internal_id
-        |]
-        [ ":conn_alias" := connId,
-          ":internal_id" := msgId,
-          ":snd_status" := msgStatus
-        ]
-
-  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (SndQueue, MsgBody)
+  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (SndQueue, Maybe RcvQueue, (AMsgType, MsgBody))
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
       sq <- ExceptT $ sndQueue <$> getSndQueueByConnAlias_ db connId
-      msgBody <-
+      rq_ <- liftIO $ getRcvQueueByConnAlias_ db connId
+      msgData <-
         ExceptT $
           sndMsgData
             <$> DB.query
               db
               [sql|
-                SELECT m.msg_body
+                SELECT m.msg_type, m.msg_body
                 FROM messages m
                 JOIN snd_messages s ON s.conn_alias = m.conn_alias AND s.internal_id = m.internal_id
                 WHERE m.conn_alias = ? AND m.internal_id = ?
               |]
               (connId, msgId)
-      pure (sq, msgBody)
+      pure (sq, rq_, msgData)
     where
-      sndMsgData :: [Only MsgBody] -> Either StoreError MsgBody
-      sndMsgData [Only msgBody] = Right msgBody
+      sndMsgData :: [(AMsgType, MsgBody)] -> Either StoreError (AMsgType, MsgBody)
+      sndMsgData [msgData] = Right msgData
       sndMsgData _ = Left SEMsgNotFound
       sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
       sndQueue = maybe (Left SEConnNotFound) Right
@@ -529,6 +516,10 @@ instance ToField RcvMsgStatus where toField = toField . serializeRcvMsgStatus
 
 instance FromField RcvMsgStatus where fromField = fromTextField_ rcvMsgStatusT
 
+instance ToField AMsgType where toField = toField . smpEncode
+
+instance FromField AMsgType where fromField = blobFieldParser smpP
+
 instance ToField SndMsgStatus where toField = toField . serializeSndMsgStatus
 
 instance FromField SndMsgStatus where fromField = fromTextField_ sndMsgStatusT
@@ -541,13 +532,13 @@ instance ToField SMPQueueUri where toField = toField . strEncode
 
 instance FromField SMPQueueUri where fromField = blobFieldParser strP
 
-instance ToField AConnectionRequest where toField = toField . strEncode
+instance ToField AConnectionRequestUri where toField = toField . strEncode
 
-instance FromField AConnectionRequest where fromField = blobFieldParser strP
+instance FromField AConnectionRequestUri where fromField = blobFieldParser strP
 
-instance ConnectionModeI c => ToField (ConnectionRequest c) where toField = toField . strEncode
+instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = toField . strEncode
 
-instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequest c) where fromField = blobFieldParser strP
+instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequestUri c) where fromField = blobFieldParser strP
 
 instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
 
@@ -747,20 +738,21 @@ updateLastIdsRcv_ dbConn connId newInternalId newInternalRcvId =
 -- * createRcvMsg helpers
 
 insertRcvMsgBase_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgBody, internalRcvId} = do
+insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgBody, internalRcvId} = do
   let MsgMeta {recipient = (internalId, internalTs)} = msgMeta
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_body)
+        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:msg_body);
+        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:msg_type, :msg_body);
     |]
     [ ":conn_alias" := connId,
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_rcv_id" := internalRcvId,
+      ":msg_type" := msgType,
       ":msg_body" := msgBody
     ]
 
@@ -847,14 +839,15 @@ insertSndMsgBase_ dbConn connId SndMsgData {..} = do
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_body)
+        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,            NULL,:internal_snd_id,:msg_body);
+        (:conn_alias,:internal_id,:internal_ts,            NULL,:internal_snd_id,:msg_type, :msg_body);
     |]
     [ ":conn_alias" := connId,
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_snd_id" := internalSndId,
+      ":msg_type" := msgType,
       ":msg_body" := msgBody
     ]
 

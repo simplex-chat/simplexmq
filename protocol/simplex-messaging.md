@@ -567,7 +567,7 @@ This command is sent to the server by the sender both to confirm the queue after
 ```abnf
 send = %s"SEND " smpEncMessage
 smpEncMessage = smpPubHeader sentMsgBody ; message up to 15968 bytes
-smpPubHeader = smpClientVersion (%x01 senderPublicDhKey / %x00)
+smpPubHeader = smpClientVersion ("1" senderPublicDhKey / "0")
 smpClientVersion = word16
 senderPublicDhKey = length x509encoded
 ; sender's Curve25519 public key to agree DH secret for E2E encryption in this queue

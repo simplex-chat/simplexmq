@@ -11,6 +11,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -29,7 +30,11 @@
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent.Protocol
-  ( -- * SMP agent protocol types
+  ( -- * Protocol parameters
+    smpAgentVersion,
+    smpAgentVRange,
+
+    -- * SMP agent protocol types
     ConnInfo,
     ACommand (..),
     AParty (..),
@@ -37,23 +42,27 @@ module Simplex.Messaging.Agent.Protocol
     MsgHash,
     MsgMeta (..),
     SMPConfirmation (..),
-    AgentMessage (..),
-    AHeader (..),
+    AgentMsgEnvelope (..),
+    AgentMessage' (..),
+    APrivHeader (..),
     AMessage (..),
+    AMsgType (..),
     SMPServer (..),
     SrvLoc (..),
     SMPQueueUri (..),
+    SMPQueueInfo (..),
     ConnectionMode (..),
     SConnectionMode (..),
     AConnectionMode (..),
     cmInvitation,
     cmContact,
     ConnectionModeI (..),
-    ConnectionRequest (..),
-    AConnectionRequest (..),
-    ConnReqData (..),
+    ConnectionRequestUri (..),
+    AConnectionRequestUri (..),
+    ConnReqUriData (..),
     ConnReqScheme (..),
-    ConnectionEncryption (..),
+    E2ERatchetParams (..),
+    E2ERatchetParamsUri (..),
     simplexChat,
     AgentErrorType (..),
     CommandErrorType (..),
@@ -71,11 +80,12 @@ module Simplex.Messaging.Agent.Protocol
     QueueStatus (..),
     ACorrId,
     AgentMsgId,
+    -- TODO remove
+    connEncStubUri,
+    connEncStub,
 
-    -- * Parse and serialize
+    -- * Encode/decode
     serializeCommand,
-    clientToAgentMsg,
-    serializeAgentMessage,
     serializeMsgIntegrity,
     connMode,
     connMode',
@@ -88,6 +98,7 @@ module Simplex.Messaging.Agent.Protocol
     smpErrorTypeP,
     serializeQueueStatus,
     queueStatusT,
+    aMessageType,
 
     -- * TCP transport functions
     tPut,
@@ -97,12 +108,11 @@ module Simplex.Messaging.Agent.Protocol
   )
 where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Control.Monad.IO.Class
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
-import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:))
@@ -119,17 +129,15 @@ import Data.Type.Equality
 import Data.Typeable ()
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
-import Network.HTTP.Types (SimpleQuery, parseSimpleQuery, renderSimpleQuery)
+import qualified Network.HTTP.Types as Q
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
-  ( ClientMessage (..),
-    ErrorType,
+  ( ErrorType,
     MsgBody,
     MsgId,
-    PrivHeader (..),
     SMPServer (..),
     SndPublicVerifyKey,
     SrvLoc (..),
@@ -141,6 +149,12 @@ import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception (Exception)
+
+smpAgentVersion :: Version
+smpAgentVersion = 1
+
+smpAgentVRange :: VersionRange
+smpAgentVRange = mkVersionRange 1 smpAgentVersion
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
@@ -180,8 +194,8 @@ type ConnInfo = ByteString
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) where
   NEW :: AConnectionMode -> ACommand Client -- response INV
-  INV :: AConnectionRequest -> ACommand Agent
-  JOIN :: AConnectionRequest -> ConnInfo -> ACommand Client -- response OK
+  INV :: AConnectionRequestUri -> ACommand Agent
+  JOIN :: AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
   CONF :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
   LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   REQ :: InvitationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
@@ -272,29 +286,135 @@ data SMPConfirmation = SMPConfirmation
   }
   deriving (Show)
 
--- SMP agent message formats
-data AgentMessage
-  = AgentConfirmation C.APublicVerifyKey ConnInfo -- TODO add double ratchet E2E settings
-  | AgentInvitation (ConnectionRequest CMInvitation) ConnInfo
-  | AgentMessage AHeader AMessage
+data AgentMsgEnvelope
+  = AgentConfirmation
+      { agentVersion :: Version,
+        e2eEncryption :: E2ERatchetParams,
+        encConnInfo :: ByteString
+      }
+  | AgentMsgEnvelope
+      { agentVersion :: Version,
+        encAgentMessage :: ByteString
+      }
+  | AgentInvitation' -- the connInfo in contactInvite is only encrypted with per-queue E2E, not with double ratchet,
+      { agentVersion :: !Version,
+        connReq :: !(ConnectionRequestUri 'CMInvitation),
+        connInfo :: !ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
+      }
+  deriving (Show)
 
-data AHeader = AHeader
+instance Encoding AgentMsgEnvelope where
+  smpEncode = \case
+    AgentConfirmation {agentVersion, e2eEncryption, encConnInfo} ->
+      smpEncode (agentVersion, 'C', e2eEncryption, Tail encConnInfo)
+    AgentMsgEnvelope {agentVersion, encAgentMessage} ->
+      smpEncode (agentVersion, 'M', Tail encAgentMessage)
+    AgentInvitation' {agentVersion, connReq, connInfo} ->
+      smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
+  smpP = do
+    agentVersion <- smpP
+    smpP >>= \case
+      'C' -> do
+        (e2eEncryption, Tail encConnInfo) <- smpP
+        pure AgentConfirmation {agentVersion, e2eEncryption, encConnInfo}
+      'M' -> do
+        Tail encAgentMessage <- smpP
+        pure AgentMsgEnvelope {agentVersion, encAgentMessage}
+      'I' -> do
+        connReq <- strDecode . unLarge <$?> smpP
+        Tail connInfo <- smpP
+        pure AgentInvitation' {agentVersion, connReq, connInfo}
+      _ -> fail "bad AgentMsgEnvelope"
+
+data E2ERatchetParams
+  = E2ERatchetParams Version C.PublicKeyX448 C.PublicKeyX448
+  deriving (Eq, Show)
+
+instance Encoding E2ERatchetParams where
+  smpEncode (E2ERatchetParams v k1 k2) = smpEncode (v, k1, k2)
+  smpP = E2ERatchetParams <$> smpP <*> smpP <*> smpP
+
+instance VersionI E2ERatchetParams where
+  type VersionRangeT E2ERatchetParams = E2ERatchetParamsUri
+  version (E2ERatchetParams v _ _) = v
+  toVersionRangeT (E2ERatchetParams _ k1 k2) vr = E2ERatchetParamsUri vr k1 k2
+
+instance VersionRangeI E2ERatchetParamsUri where
+  type VersionT E2ERatchetParamsUri = E2ERatchetParams
+  versionRange (E2ERatchetParamsUri vr _ _) = vr
+  toVersionT (E2ERatchetParamsUri _ k1 k2) v = E2ERatchetParams v k1 k2
+
+data E2ERatchetParamsUri
+  = E2ERatchetParamsUri VersionRange C.PublicKeyX448 C.PublicKeyX448
+  deriving (Eq, Show)
+
+connEncStubUri :: E2ERatchetParamsUri
+connEncStubUri = E2ERatchetParamsUri smpAgentVRange stubDhPubKey stubDhPubKey
+
+connEncStub :: E2ERatchetParams
+connEncStub = E2ERatchetParams smpAgentVersion stubDhPubKey stubDhPubKey
+
+stubDhPubKey :: C.PublicKeyX448
+stubDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
+
+instance StrEncoding E2ERatchetParamsUri where
+  strEncode (E2ERatchetParamsUri vs key1 key2) =
+    strEncode $
+      QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncode [key1, key2])]
+  strP = do
+    query <- strP
+    vs <- queryParam "v" query
+    keys <- queryParam "x3dh" query
+    case keys of
+      [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
+      _ -> fail "bad e2e params"
+
+-- SMP agent message formats (after double ratchet decryption,
+-- or in case of AgentInvitation - in plain text body)
+data AgentMessage' = AgentConnInfo ConnInfo | AgentMessage' APrivHeader AMessage
+
+instance Encoding AgentMessage' where
+  smpEncode = \case
+    AgentConnInfo cInfo -> smpEncode ('I', cInfo)
+    AgentMessage' hdr aMsg -> smpEncode ('M', hdr, aMsg)
+  smpP =
+    smpP >>= \case
+      'I' -> AgentConnInfo <$> smpP
+      'M' -> AgentMessage' <$> smpP <*> smpP
+      _ -> fail "bad AgentMessage"
+
+data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
     sndMsgId :: AgentMsgId,
     -- | digest of the previous message
     prevMsgHash :: MsgHash
   }
 
-instance StrEncoding AHeader where
-  strEncode AHeader {sndMsgId, prevMsgHash} =
-    bshow sndMsgId <> " " <> strEncode prevMsgHash <> "\n"
-  strP = AHeader <$> A.decimal <* A.space <*> (strP <|> pure "") <* A.endOfLine
+instance Encoding APrivHeader where
+  smpEncode APrivHeader {sndMsgId, prevMsgHash} =
+    smpEncode (sndMsgId, prevMsgHash)
+  smpP = APrivHeader <$> smpP <*> smpP
 
-emptyAHeader :: ByteString
-emptyAHeader = "\n"
+data AMsgType = HELLO_ | REPLY_ | A_MSG_
+  deriving (Eq)
 
-emptyAHeaderP :: Parser ()
-emptyAHeaderP = A.endOfLine $> ()
+instance Encoding AMsgType where
+  smpEncode = \case
+    HELLO_ -> "H"
+    REPLY_ -> "R"
+    A_MSG_ -> "M"
+  smpP =
+    smpP >>= \case
+      'H' -> pure HELLO_
+      'R' -> pure REPLY_
+      'M' -> pure A_MSG_
+      _ -> fail "bad AMsgType"
+
+aMessageType :: AMessage -> AMsgType
+aMessageType = \case
+  HELLO -> HELLO_
+  REPLY _ -> REPLY_
+  A_MSG _ -> A_MSG_
 
 -- | Messages sent between SMP agents once SMP queue is secured.
 --
@@ -302,93 +422,83 @@ emptyAHeaderP = A.endOfLine $> ()
 data AMessage
   = -- | the first message in the queue to validate it is secured
     HELLO
-  | -- | reply queue information
-    REPLY (ConnectionRequest CMInvitation)
+  | -- | reply queues information
+    REPLY (L.NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
   deriving (Show)
 
-serializeAgentMessage :: AgentMessage -> ByteString
-serializeAgentMessage = smpEncode . agentToClientMsg
+instance Encoding AMessage where
+  smpEncode = \case
+    HELLO -> smpEncode HELLO_
+    REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
+    A_MSG body -> smpEncode (A_MSG_, Tail body)
+  smpP =
+    smpP
+      >>= \case
+        HELLO_ -> pure HELLO
+        REPLY_ -> REPLY <$> smpP
+        A_MSG_ -> A_MSG . unTail <$> smpP
 
-agentToClientMsg :: AgentMessage -> ClientMessage
-agentToClientMsg = \case
-  AgentConfirmation senderKey cInfo ->
-    ClientMessage (PHConfirmation senderKey) $ emptyAHeader <> cInfo
-  AgentInvitation cReq cInfo ->
-    ClientMessage PHEmpty $ emptyAHeader <> strEncode cReq <> "\n" <> cInfo
-  AgentMessage header aMsg ->
-    ClientMessage PHEmpty $ strEncode header <> strEncode aMsg
+data QueryStringParams = QSP QSPEscaping Q.SimpleQuery
+  deriving (Show)
 
-clientToAgentMsg :: ClientMessage -> Either AgentErrorType AgentMessage
-clientToAgentMsg (ClientMessage header body) = parse parser (AGENT A_MESSAGE) body
-  where
-    parser = case header of
-      PHConfirmation senderKey -> AgentConfirmation senderKey <$> (emptyAHeaderP *> A.takeByteString)
-      PHEmpty -> invitationP <|> messageP
-    invitationP = AgentInvitation <$> (emptyAHeaderP *> strP <* A.endOfLine) <*> A.takeByteString
-    messageP = AgentMessage <$> strP <*> strP
-
-instance StrEncoding AMessage where
-  strP =
-    "HELLO" $> HELLO
-      <|> "REPLY " *> (REPLY <$> strP)
-      <|> "MSG " *> (A_MSG <$> A.takeByteString)
-  strEncode = \case
-    HELLO -> "HELLO"
-    REPLY cReq -> "REPLY " <> strEncode cReq
-    A_MSG body -> "MSG " <> body
-
-instance StrEncoding SMPQueueUri where
-  strEncode SMPQueueUri {smpServer = srv, senderId = qId, smpVersionRange = vr, dhPublicKey = k} =
-    strEncode srv <> "/" <> U.encode qId <> "#" <> strEncode k
-  strP = do
-    smpServer <- strP <* A.char '/'
-    senderId <- strP <* A.char '#'
-    let smpVersionRange = SMP.smpClientVersion
-    dhPublicKey <- strP
-    pure SMPQueueUri {smpServer, senderId, smpVersionRange, dhPublicKey}
-
-newtype QueryStringParams = QSP SimpleQuery
+data QSPEscaping = QEscape | QNoEscaping
+  deriving (Show)
 
 instance StrEncoding QueryStringParams where
-  strEncode (QSP q) = renderSimpleQuery True q
-  strP = QSP . parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
+  strEncode (QSP esc q) = case esc of
+    QEscape -> Q.renderSimpleQuery False q
+    QNoEscaping ->
+      Q.renderQueryPartialEscape False $
+        map (\(n, v) -> (n, [Q.QN v])) q
+  strP = QSP QEscape . Q.parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
 
 queryParam :: StrEncoding a => ByteString -> QueryStringParams -> Parser a
-queryParam name (QSP q) =
+queryParam name (QSP _ q) =
   case find ((== name) . fst) q of
     Just (_, p) -> either fail pure $ parseAll strP p
     _ -> fail $ "no qs param " <> B.unpack name
 
-instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequest m) where
+instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
-    CRInvitation crData -> serialize "invitation" crData
-    CRContact crData -> serialize "contact" crData
+    CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
+    CRContactUri crData -> crEncode "contact" crData Nothing
     where
-      serialize crMode ConnReqData {crScheme, crSmpQueues, crEncryption = _} =
-        strEncode crScheme <> "/" <> crMode <> "#/" <> queryStr
+      crEncode :: ByteString -> ConnReqUriData -> Maybe E2ERatchetParamsUri -> ByteString
+      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues} e2eParams =
+        strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
-          queryStr = strEncode $ QSP [("smp", strEncode crSmpQueues), ("e2e", "")]
+          queryStr =
+            strEncode . QSP QEscape $
+              [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
+                <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
   strP = do
-    ACR m cr <- strP
+    ACRU m cr <- strP
     case testEquality m $ sConnectionMode @m of
       Just Refl -> pure cr
       _ -> fail "bad connection request mode"
 
-instance StrEncoding AConnectionRequest where
-  strEncode (ACR _ cr) = strEncode cr
+instance StrEncoding AConnectionRequestUri where
+  strEncode (ACRU _ cr) = strEncode cr
   strP = do
     crScheme <- strP
-    mkConnReq <- "/" *> mkConnReqP <* "#/?"
+    crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
     query <- strP
+    crAgentVRange <- queryParam "v" query
     crSmpQueues <- queryParam "smp" query
-    let crEncryption = ConnectionEncryption
-    pure $ mkConnReq ConnReqData {crScheme, crSmpQueues, crEncryption}
+    let crData = ConnReqUriData {crScheme, crAgentVRange, crSmpQueues}
+    case crMode of
+      CMInvitation -> do
+        crE2eParams <- queryParam "e2e" query
+        pure . ACRU SCMInvitation $ CRInvitationUri crData crE2eParams
+      CMContact -> pure . ACRU SCMContact $ CRContactUri crData
     where
-      mkConnReqP =
-        "invitation" $> ACR SCMInvitation . CRInvitation
-          <|> "contact" $> ACR SCMContact . CRContact
+      crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
+
+-- debug :: Show a => String -> a -> a
+-- debug name value = unsafePerformIO (putStrLn $ name <> ": " <> show value) `seq` value
+-- {-# INLINE debug #-}
 
 instance StrEncoding ConnectionMode where
   strEncode = \case
@@ -413,38 +523,90 @@ type ConfirmationId = ByteString
 
 type InvitationId = ByteString
 
+data SMPQueueInfo = SMPQueueInfo
+  { clientVersion :: Version,
+    smpServer :: SMPServer,
+    senderId :: SMP.SenderId,
+    dhPublicKey :: C.PublicKeyX25519
+  }
+  deriving (Eq, Show)
+
+instance Encoding SMPQueueInfo where
+  smpEncode SMPQueueInfo {clientVersion, smpServer, senderId, dhPublicKey} =
+    smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+  smpP = do
+    (clientVersion, smpServer, senderId, dhPublicKey) <- smpP
+    pure SMPQueueInfo {clientVersion, smpServer, senderId, dhPublicKey}
+
+-- This instance seems contrived and there was a temptation to split a common part of both types.
+-- But this is created to allow backward and forward compatibility where SMPQueueUri
+-- could have more fields to convert to different versions of SMPQueueInfo in a different way,
+-- and this instance would become non-trivial.
+instance VersionI SMPQueueInfo where
+  type VersionRangeT SMPQueueInfo = SMPQueueUri
+  version = clientVersion
+  toVersionRangeT SMPQueueInfo {smpServer, senderId, dhPublicKey} vr =
+    SMPQueueUri {clientVersionRange = vr, smpServer, senderId, dhPublicKey}
+
+instance VersionRangeI SMPQueueUri where
+  type VersionT SMPQueueUri = SMPQueueInfo
+  versionRange = clientVersionRange
+  toVersionT SMPQueueUri {smpServer, senderId, dhPublicKey} v =
+    SMPQueueInfo {clientVersion = v, smpServer, senderId, dhPublicKey}
+
 -- | SMP queue information sent out-of-band.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
 data SMPQueueUri = SMPQueueUri
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    smpVersionRange :: VersionRange,
+    clientVersionRange :: VersionRange,
     dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)
 
-data ConnectionRequest (m :: ConnectionMode) where
-  CRInvitation :: ConnReqData -> ConnectionRequest CMInvitation
-  CRContact :: ConnReqData -> ConnectionRequest CMContact
+-- TODO change SMP queue URI format to include version range and allow unknown parameters
+instance StrEncoding SMPQueueUri where
+  -- v1 uses short SMP queue URI format
+  strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVersionRange = _vr, dhPublicKey = k} =
+    strEncode srv <> "/" <> strEncode qId <> "#" <> strEncode k
+  strP = do
+    smpServer <- strP <* A.char '/'
+    senderId <- strP <* optional (A.char '/') <* A.char '#'
+    (vr, dhPublicKey) <- unversioned <|> versioned
+    pure SMPQueueUri {smpServer, senderId, clientVersionRange = vr, dhPublicKey}
+    where
+      unversioned = (SMP.smpClientVersion,) <$> strP <* A.endOfInput
+      versioned = do
+        dhKey_ <- optional strP
+        query <- optional (A.char '/') *> A.char '?' *> strP
+        vr <- queryParam "v" query
+        dhKey <- maybe (queryParam "dh" query) pure dhKey_
+        pure (vr, dhKey)
 
-deriving instance Eq (ConnectionRequest m)
+data ConnectionRequestUri (m :: ConnectionMode) where
+  CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri -> ConnectionRequestUri CMInvitation
+  -- contact connection request does NOT contain E2E encryption parameters -
+  -- they are passed in AgentInvitation message
+  CRContactUri :: ConnReqUriData -> ConnectionRequestUri CMContact
 
-deriving instance Show (ConnectionRequest m)
+deriving instance Eq (ConnectionRequestUri m)
 
-data AConnectionRequest = forall m. ConnectionModeI m => ACR (SConnectionMode m) (ConnectionRequest m)
+deriving instance Show (ConnectionRequestUri m)
 
-instance Eq AConnectionRequest where
-  ACR m cr == ACR m' cr' = case testEquality m m' of
+data AConnectionRequestUri = forall m. ConnectionModeI m => ACRU (SConnectionMode m) (ConnectionRequestUri m)
+
+instance Eq AConnectionRequestUri where
+  ACRU m cr == ACRU m' cr' = case testEquality m m' of
     Just Refl -> cr == cr'
     _ -> False
 
-deriving instance Show AConnectionRequest
+deriving instance Show AConnectionRequestUri
 
-data ConnReqData = ConnReqData
+data ConnReqUriData = ConnReqUriData
   { crScheme :: ConnReqScheme,
-    crSmpQueues :: L.NonEmpty SMPQueueUri,
-    crEncryption :: ConnectionEncryption
+    crAgentVRange :: VersionRange,
+    crSmpQueues :: L.NonEmpty SMPQueueUri
   }
   deriving (Eq, Show)
 
@@ -458,10 +620,6 @@ instance StrEncoding ConnReqScheme where
   strP =
     "simplex:" $> CRSSimplex
       <|> "https://" *> (CRSAppServer <$> strP)
-
--- TODO this is a stub for double ratchet E2E encryption parameters (2 public DH keys)
-data ConnectionEncryption = ConnectionEncryption
-  deriving (Eq, Show)
 
 simplexChat :: ConnReqScheme
 simplexChat = CRSAppServer $ SrvLoc "simplex.chat" Nothing
@@ -562,11 +720,14 @@ data BrokerErrorType
   deriving (Eq, Generic, Read, Show, Exception)
 
 -- | Errors of another SMP agent.
+-- TODO encode/decode without A prefix
 data SMPAgentError
   = -- | client or agent message that failed to parse
     A_MESSAGE
   | -- | prohibited SMP/agent message
     A_PROHIBITED
+  | -- | incompatible version of SMP client, agent or encryption protocols
+    A_VERSION
   | -- | cannot decrypt message
     A_ENCRYPTION
   deriving (Eq, Generic, Read, Show, Exception)
@@ -630,7 +791,7 @@ commandP =
       broker <- " B=" *> partyMeta base64P
       sndMsgId <- " S=" *> A.decimal
       pure MsgMeta {integrity, recipient, broker, sndMsgId}
-    partyMeta idParser = (,) <$> idParser <* "," <*> tsISO8601P
+    partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
     agentError = ACmd SAgent . ERR <$> agentErrorTypeP
 
 -- | Message integrity validation result parser.
