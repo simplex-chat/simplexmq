@@ -11,7 +11,6 @@ module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
     newAgentClient,
     AgentMonad,
-    ConnSndQueue,
     withAgentLock,
     closeAgentClient,
     newRcvQueue,
@@ -67,8 +66,6 @@ import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-type ConnSndQueue = (ConnId, SMPServer, SMP.SenderId)
-
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
@@ -78,8 +75,8 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Map ConnId SMPServer),
     activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
     connMsgsQueued :: TVar (Map ConnId Bool),
-    smpQueueMsgQueues :: TVar (Map ConnSndQueue (TQueue InternalId)),
-    smpQueueMsgDeliveries :: TVar (Map ConnSndQueue (Async ())),
+    smpQueueMsgQueues :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId)),
+    smpQueueMsgDeliveries :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (Async ())),
     reconnections :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
