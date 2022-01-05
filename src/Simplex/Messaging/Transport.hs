@@ -89,6 +89,7 @@ import Generic.Random (genericArbitraryU)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
+import qualified Network.TLS.Extra.Cipher as TEC
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse, parseRead1)
@@ -245,7 +246,10 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
         { T.serverWantClientCert = False,
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
-          T.serverSupported = def
+          T.serverSupported =
+            def
+              { T.supportedCiphers = TEC.ciphersuite_all
+              }
         }
     serverSupported :: T.Supported
     serverSupported =
