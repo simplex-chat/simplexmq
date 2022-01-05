@@ -24,7 +24,9 @@ module Simplex.Messaging.Agent.Client
     sendReply,
     secureQueue,
     sendAgentMessage,
+    agentRatchetEncrypt,
     agentRatchetDecrypt,
+    agentCbEncrypt,
     agentCbDecrypt,
     sendAck,
     suspendQueue,
@@ -392,16 +394,17 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
 sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
 sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
   withLogSMP_ c server sndId "SEND <MSG>" $ \smp -> do
-    msg' <- mkMessage
-    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg'
-  where
-    mkMessage :: m ByteString
-    mkMessage = do
-      -- the message is already constructed and encoded in DB
-      encAgentMessage <- agentRatchetEncrypt msg -- . smpEncode $ AgentMessage' (APrivHeader 0 "") $ A_MSG msg
-      let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
-      agentCbEncrypt sq Nothing . smpEncode $
-        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
+    -- msg' <- mkMessage
+    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
+
+-- where
+--   mkMessage :: m ByteString
+--   mkMessage = do
+--     -- the message is already constructed and encoded in DB
+--     encAgentMessage <- agentRatchetEncrypt msg -- . smpEncode $ AgentMessage' (APrivHeader 0 "") $ A_MSG msg
+--     let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
+--     agentCbEncrypt sq Nothing . smpEncode $
+--       SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 
 -- encoded AgentMessage' -> encoded EncAgentMessage
 agentRatchetEncrypt :: AgentMonad m => ByteString -> m ByteString

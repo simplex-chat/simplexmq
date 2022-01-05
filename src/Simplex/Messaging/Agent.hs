@@ -11,7 +11,6 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -382,29 +381,36 @@ subscribeConnection' c connId =
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId
 sendMessage' c connId msg =
   withStore (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ _ sq) -> enqueueMessage sq
-    SomeConn _ (SndConnection _ sq) -> enqueueMessage sq
+    SomeConn _ (DuplexConnection _ _ sq) -> enqueueMsg sq
+    SomeConn _ (SndConnection _ sq) -> enqueueMsg sq
     _ -> throwError $ CONN SIMPLEX
   where
-    enqueueMessage :: SndQueue -> m AgentMsgId
-    enqueueMessage sq@SndQueue {server} = do
-      resumeMsgDelivery c connId sq
-      msgId <- storeSentMsg
-      queuePendingMsgs c connId server [msgId]
-      pure $ unId msgId
-      where
-        storeSentMsg :: m InternalId
-        storeSentMsg = do
-          internalTs <- liftIO getCurrentTime
-          withStore $ \st -> do
-            (internalId, internalSndId, prevMsgHash) <- updateSndIds st connId
-            let msgBody =
-                  smpEncode $
-                    AgentMessage' (APrivHeader (unSndId internalSndId) prevMsgHash) (A_MSG msg)
-                internalHash = C.sha256Hash msgBody
-                msgData = SndMsgData {..}
-            createSndMsg st connId msgData
-            pure internalId
+    enqueueMsg :: SndQueue -> m AgentMsgId
+    enqueueMsg sq = enqueueMessage c connId sq $ A_MSG msg
+
+enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> AMessage -> m AgentMsgId
+enqueueMessage c connId sq@SndQueue {server} aMsg = do
+  resumeMsgDelivery c connId sq
+  msgId <- storeSentMsg
+  queuePendingMsgs c connId server [msgId]
+  pure $ unId msgId
+  where
+    storeSentMsg :: m InternalId
+    storeSentMsg = do
+      internalTs <- liftIO getCurrentTime
+      (internalId, internalSndId, prevMsgHash) <- withStore (`updateSndIds` connId)
+      let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
+          agentMessage = smpEncode $ AgentMessage' privHeader aMsg
+          internalHash = C.sha256Hash agentMessage
+
+      encAgentMessage <- agentRatchetEncrypt agentMessage
+      let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
+          clientMsg = SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
+      msgBody <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
+
+      let msgData = SndMsgData {internalId, internalSndId, internalTs, msgBody, internalHash, prevMsgHash}
+      withStore $ \st -> createSndMsg st connId msgData
+      pure internalId
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
 resumeMsgDelivery c connId SndQueue {server} = do
