@@ -11,6 +11,7 @@ module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
     newAgentClient,
     AgentMonad,
+    ConnSndQueue,
     withAgentLock,
     closeAgentClient,
     newRcvQueue,
@@ -60,10 +61,13 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+
+type ConnSndQueue = (ConnId, SMPServer, SMP.SenderId)
 
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission 'Client),
@@ -74,8 +78,8 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Map ConnId SMPServer),
     activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
     connMsgsQueued :: TVar (Map ConnId Bool),
-    srvMsgQueues :: TVar (Map SMPServer (TQueue PendingMsg)),
-    srvMsgDeliveries :: TVar (Map SMPServer (Async ())),
+    smpQueueMsgQueues :: TVar (Map ConnSndQueue (TQueue InternalId)),
+    smpQueueMsgDeliveries :: TVar (Map ConnSndQueue (Async ())),
     reconnections :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
@@ -94,12 +98,12 @@ newAgentClient agentEnv = do
   subscrConns <- newTVar M.empty
   activations <- newTVar M.empty
   connMsgsQueued <- newTVar M.empty
-  srvMsgQueues <- newTVar M.empty
-  srvMsgDeliveries <- newTVar M.empty
+  smpQueueMsgQueues <- newTVar M.empty
+  smpQueueMsgDeliveries <- newTVar M.empty
   reconnections <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgsQueued, srvMsgQueues, srvMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -175,7 +179,7 @@ closeAgentClient c = liftIO $ do
   closeSMPServerClients c
   cancelActions $ activations c
   cancelActions $ reconnections c
-  cancelActions $ srvMsgDeliveries c
+  cancelActions $ smpQueueMsgDeliveries c
 
 closeSMPServerClients :: AgentClient -> IO ()
 closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ closeSMPClient

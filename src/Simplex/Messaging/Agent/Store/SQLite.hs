@@ -461,29 +461,23 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           ":snd_status" := msgStatus
         ]
 
-  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (SndQueue, MsgBody)
+  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m MsgBody
   getPendingMsgData st connId msgId =
-    liftIOEither . withTransaction st $ \db -> runExceptT $ do
-      sq <- ExceptT $ sndQueue <$> getSndQueueByConnAlias_ db connId
-      msgBody <-
-        ExceptT $
-          sndMsgData
-            <$> DB.query
-              db
-              [sql|
-                SELECT m.msg_body
-                FROM messages m
-                JOIN snd_messages s ON s.conn_alias = m.conn_alias AND s.internal_id = m.internal_id
-                WHERE m.conn_alias = ? AND m.internal_id = ?
-              |]
-              (connId, msgId)
-      pure (sq, msgBody)
+    liftIOEither . withTransaction st $ \db ->
+      sndMsgData
+        <$> DB.query
+          db
+          [sql|
+            SELECT m.msg_body
+            FROM messages m
+            JOIN snd_messages s ON s.conn_alias = m.conn_alias AND s.internal_id = m.internal_id
+            WHERE m.conn_alias = ? AND m.internal_id = ?
+          |]
+          (connId, msgId)
     where
       sndMsgData :: [Only MsgBody] -> Either StoreError MsgBody
       sndMsgData [Only msgBody] = Right msgBody
       sndMsgData _ = Left SEMsgNotFound
-      sndQueue :: Maybe SndQueue -> Either StoreError SndQueue
-      sndQueue = maybe (Left SEConnNotFound) Right
 
   getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
   getPendingMsgs st connId =
