@@ -514,6 +514,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         (RcvMsgAcknowledged, connId, msgId)
 
+  deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
+  deleteMsg st connId msgId = pure ()
+
 -- * Auxiliary helpers
 
 instance ToField QueueStatus where toField = toField . serializeQueueStatus

@@ -70,6 +70,7 @@ class Monad m => MonadAgentStore s m where
   getMsg :: s -> ConnId -> InternalId -> m Msg
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   updateRcvMsgAck :: s -> ConnId -> InternalId -> m ()
+  deleteMsg :: s -> ConnId -> InternalId -> m ()
 
 -- * Queue types
 
