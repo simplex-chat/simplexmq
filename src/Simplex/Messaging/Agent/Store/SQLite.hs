@@ -514,6 +514,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         (RcvMsgAcknowledged, connId, msgId)
 
+  deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
+  deleteMsg st connId msgId =
+    liftIO . withTransaction st $ \db ->
+      DB.execute db "DELETE FROM messages WHERE conn_alias = ? AND internal_id = ?;" (connId, msgId)
+
 -- * Auxiliary helpers
 
 instance ToField QueueStatus where toField = toField . serializeQueueStatus
