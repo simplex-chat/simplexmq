@@ -464,7 +464,7 @@ runSrvMsgDelivery c@AgentClient {subQ} srv = do
                     _ -> createReplyQueue c connId sq
                 A_MSG_ -> notify connId $ SENT mId
                 _ -> pure ()
-              withStore $ \st -> updateSndMsgStatus st connId msgId SndMsgSent
+              withStore $ \st -> deleteMsg st connId msgId
   where
     notify :: ConnId -> ACommand 'Agent -> m ()
     notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)

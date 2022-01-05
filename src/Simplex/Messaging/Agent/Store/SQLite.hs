@@ -439,21 +439,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       insertSndMsgDetails_ db connId sndMsgData
       updateHashSnd_ db connId sndMsgData
 
-  updateSndMsgStatus :: SQLiteStore -> ConnId -> InternalId -> SndMsgStatus -> m ()
-  updateSndMsgStatus st connId msgId msgStatus =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE snd_messages
-          SET snd_status = :snd_status
-          WHERE conn_alias = :conn_alias AND internal_id = :internal_id
-        |]
-        [ ":conn_alias" := connId,
-          ":internal_id" := msgId,
-          ":snd_status" := msgStatus
-        ]
-
   getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (SndQueue, Maybe RcvQueue, (AMsgType, MsgBody))
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
