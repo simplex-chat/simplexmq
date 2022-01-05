@@ -103,6 +103,9 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} 
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+  liftIO $ putStrLn "----------"
+  liftIO $ print tlsServerParams
+  liftIO $ putStrLn "----------"
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
   return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
