@@ -235,7 +235,8 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
-      T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
+      -- T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
+      T.credentialLoadX509 certificateFile privateKeyFile >>= \case
         Right credential -> pure credential
         Left _ -> putStrLn "invalid credential" >> exitFailure
     fromCredential :: T.Credential -> T.ServerParams
@@ -245,9 +246,6 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
           T.serverSupported = def
-            {
-              T.supportedVersions = [T.TLS13,T.TLS12,T.TLS11,T.TLS10, T.SSL3]
-            }
         }
     serverSupported :: T.Supported
     serverSupported =

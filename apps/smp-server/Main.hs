@@ -255,7 +255,7 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
       savedFingerprint <- loadSavedFingerprint
       Fingerprint fp <- loadFingerprint caCrtFile
       when (B.pack savedFingerprint /= strEncode fp) $
-        exitError "Stored fingerprint is invalid."
+        putStrLn "Stored fingerprint is invalid."
       pure fp
 
     mkServerConfig storeLog =
