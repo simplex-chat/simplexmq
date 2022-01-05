@@ -63,6 +63,8 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
     it "should deliver pending messages after agent restarting" $
       smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
+    xit "should concurrently deliver messages to connections without blocking" $
+      smpAgentTest2_2_1 $ testConcurrentMsgDelivery t
 
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
@@ -324,6 +326,32 @@ testMsgDeliveryAgentRestart t bob = do
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort
+
+testConcurrentMsgDelivery :: Transport c => TProxy c -> c -> c -> IO ()
+testConcurrentMsgDelivery _ alice bob = do
+  connect (alice, "alice") (bob, "bob")
+
+  ("1", "bob2", Right (INV cReq)) <- alice #: ("1", "bob2", "NEW INV")
+  let cReq' = strEncode cReq
+  bob #: ("11", "alice2", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice2", OK)
+  ("", "bob2", Right (CONF _confId "bob's connInfo")) <- (alice <#:)
+  -- below commands would be needed to accept bob's connection, but alice does not
+  -- alice #: ("2", "bob", "LET " <> _confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  -- bob <# ("", "alice", INFO "alice's connInfo")
+  -- bob <# ("", "alice", CON)
+  -- alice <# ("", "bob", CON)
+
+  -- the first connection should not be blocked by the second one
+  alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", MID 1)
+  alice <# ("", "bob", SENT 1)
+  bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+  bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
+  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 2)
+  putStrLn "it gets this far"
+  bob <# ("", "alice", SENT 2)
+  putStrLn "it never gets here as the message is blocked by HELLO in in another connection"
+  alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
+  alice #: ("3", "bob", "ACK 2") #> ("3", "bob", OK)
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
