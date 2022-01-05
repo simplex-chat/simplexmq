@@ -235,7 +235,8 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
-      T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
+      -- T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
+      T.credentialLoadX509 certificateFile privateKeyFile >>= \case
         Right credential -> pure credential
         Left _ -> putStrLn "invalid credential" >> exitFailure
     fromCredential :: T.Credential -> T.ServerParams
