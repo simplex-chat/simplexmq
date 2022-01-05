@@ -246,39 +246,18 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
         { T.serverWantClientCert = False,
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
-          T.serverSupported =
-            T.Supported
-              { supportedVersions = [TLS12, TLS11, TLS10],
-                supportedCiphers = TEC.ciphersuite_all,
-                supportedCompressions = [T.nullCompression],
-                supportedHashSignatures = [(HashIntrinsic, SignatureEd448), (HashIntrinsic, SignatureEd25519), (HashSHA256, SignatureECDSA), (HashSHA384, SignatureECDSA), (HashSHA512, SignatureECDSA), (HashIntrinsic, SignatureRSApssRSAeSHA512), (HashIntrinsic, SignatureRSApssRSAeSHA384), (HashIntrinsic, SignatureRSApssRSAeSHA256), (HashSHA512, SignatureRSA), (HashSHA384, SignatureRSA), (HashSHA256, SignatureRSA), (HashSHA1, SignatureRSA), (HashSHA1, SignatureDSS)],
-                supportedSecureRenegotiation = True,
-                supportedClientInitiatedRenegotiation = False,
-                supportedExtendedMasterSec = AllowEMS,
-                supportedSession = True,
-                supportedFallbackScsv = True,
-                supportedEmptyPacket = True,
-                supportedGroups = [X25519, X448, P256, FFDHE3072, FFDHE4096, P384, FFDHE6144, FFDHE8192, P521]
-              }
+          T.serverSupported = serverSupported
         }
     serverSupported :: T.Supported
     serverSupported =
       def
-        { T.supportedVersions = [T.TLS12, T.SSL3],
-          T.supportedCiphers =
-            [ TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256,
-              TE.cipher_AES256GCM_SHA384,
-              TE.cipher_ECDHE_ECDSA_AES256GCM_SHA384
-            ],
-          T.supportedHashSignatures =
-            [ (T.HashIntrinsic, T.SignatureEd448),
-              (T.HashIntrinsic, T.SignatureEd25519),
-              (T.HashSHA512, T.SignatureECDSA),
-              (T.HashSHA384, T.SignatureECDSA),
-              (T.HashSHA256, T.SignatureECDSA)
-            ],
-          T.supportedSecureRenegotiation = False,
-          T.supportedGroups = [T.X448, T.X25519, T.P384]
+        { supportedVersions = [TLS12],
+          supportedCiphers = TEC.ciphersuite_strong_det, --[TEC.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256, TEC.cipher_ECDHE_RSA_CHACHA20POLY1305_SHA256, TEC.cipher_ECDHE_ECDSA_AES256GCM_SHA384, TEC.cipher_ECDHE_RSA_AES256GCM_SHA384],
+          supportedHashSignatures = [(HashIntrinsic, SignatureEd448), (HashIntrinsic, SignatureEd25519), (HashSHA256, SignatureECDSA), (HashSHA384, SignatureECDSA), (HashSHA512, SignatureECDSA), (HashIntrinsic, SignatureRSApssRSAeSHA512), (HashIntrinsic, SignatureRSApssRSAeSHA384), (HashIntrinsic, SignatureRSApssRSAeSHA256), (HashSHA512, SignatureRSA), (HashSHA384, SignatureRSA), (HashSHA256, SignatureRSA)],
+          supportedSecureRenegotiation = False,
+          supportedClientInitiatedRenegotiation = False,
+          supportedSession = True,
+          supportedGroups = [X25519, X448]
         }
 
 loadFingerprint :: FilePath -> IO Fingerprint
