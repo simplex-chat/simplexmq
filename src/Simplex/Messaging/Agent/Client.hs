@@ -43,7 +43,6 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
-import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -61,7 +60,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import Simplex.Messaging.Version
@@ -361,8 +360,10 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
 
 -- TODO this is just wrong
 sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
-sendAgentMessage c SndQueue {server, sndId, sndPrivateKey} msg =
-  withLogSMP_ c server sndId "SEND <MSG>" $ \smp ->
+sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} agentMsg =
+  withLogSMP_ c server sndId "SEND <MSG>" $ \smp -> do
+    let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
+    msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
     liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
 -- encoded AgentMessage' -> encoded EncAgentMessage

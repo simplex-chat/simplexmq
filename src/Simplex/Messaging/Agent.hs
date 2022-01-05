@@ -391,11 +391,8 @@ enqueueMessage c connId sq@SndQueue {server} aMessage = do
           internalHash = C.sha256Hash agentMessage
 
       encAgentMessage <- agentRatchetEncrypt agentMessage
-      let agentEnvelope = AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
-          clientMsg = SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
-      msgBody <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
-
-      let msgType = aMessageType aMessage
+      let msgBody = smpEncode $ AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
+          msgType = aMessageType aMessage
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, internalHash, prevMsgHash}
       withStore $ \st -> createSndMsg st connId msgData
       pure internalId
