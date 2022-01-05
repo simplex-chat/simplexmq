@@ -20,7 +20,6 @@ module Simplex.Messaging.Agent.Client
     sendConfirmation,
     sendInvitation,
     RetryInterval (..),
-    -- sendHello,
     secureQueue,
     sendAgentMessage,
     agentRatchetEncrypt,
