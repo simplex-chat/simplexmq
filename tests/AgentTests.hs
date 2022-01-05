@@ -336,7 +336,7 @@ testConcurrentMsgDelivery _ alice bob = do
   connect (alice, "alice") (bob, "bob")
 
   ("1", "bob2", Right (INV cReq)) <- alice #: ("1", "bob2", "NEW INV")
-  let cReq' = strEncode cReq
+  let cReq' = serializeConnReq cReq
   bob #: ("11", "alice2", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice2", OK)
   ("", "bob2", Right (CONF _confId "bob's connInfo")) <- (alice <#:)
   -- below commands would be needed to accept bob's connection, but alice does not
