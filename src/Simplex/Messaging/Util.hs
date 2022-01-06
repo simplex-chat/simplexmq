@@ -53,3 +53,11 @@ liftEitherError f a = liftIOEither (first f <$> a)
 
 tryError :: MonadError e m => m a -> m (Either e a)
 tryError action = (Right <$> action) `catchError` (pure . Left)
+
+ifM :: Monad m => m Bool -> m a -> m a -> m a
+ifM ba t f = ba >>= \b -> if b then t else f
+{-# INLINE ifM #-}
+
+unlessM :: Monad m => m Bool -> m () -> m ()
+unlessM b = ifM b $ pure ()
+{-# INLINE unlessM #-}

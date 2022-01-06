@@ -14,6 +14,7 @@ import AgentTests.ConnectionRequestTests
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
+import Control.Monad (forM_)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network.HTTP.Types (urlEncode)
@@ -23,6 +24,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
+import Simplex.Messaging.Util (bshow)
 import System.Directory (removeFile)
 import System.Timeout
 import Test.Hspec
@@ -63,6 +65,10 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
     it "should deliver pending messages after agent restarting" $
       smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
+    it "should concurrently deliver messages to connections without blocking" $
+      smpAgentTest2_2_1 $ testConcurrentMsgDelivery t
+    it "should deliver messages if one of connections has quota exceeded" $
+      smpAgentTest2_2_1 $ testMsgDeliveryQuotaExceeded t
 
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
@@ -325,6 +331,47 @@ testMsgDeliveryAgentRestart t bob = do
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort
 
+testConcurrentMsgDelivery :: Transport c => TProxy c -> c -> c -> IO ()
+testConcurrentMsgDelivery _ alice bob = do
+  connect (alice, "alice") (bob, "bob")
+
+  ("1", "bob2", Right (INV cReq)) <- alice #: ("1", "bob2", "NEW INV")
+  let cReq' = serializeConnReq cReq
+  bob #: ("11", "alice2", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice2", OK)
+  ("", "bob2", Right (CONF _confId "bob's connInfo")) <- (alice <#:)
+  -- below commands would be needed to accept bob's connection, but alice does not
+  -- alice #: ("2", "bob", "LET " <> _confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
+  -- bob <# ("", "alice", INFO "alice's connInfo")
+  -- bob <# ("", "alice", CON)
+  -- alice <# ("", "bob", CON)
+
+  -- the first connection should not be blocked by the second one
+  sendMessage (alice, "alice") (bob, "bob") "hello"
+  -- alice #: ("2", "bob", "SEND :hello") #> ("2", "bob", MID 1)
+  -- alice <# ("", "bob", SENT 1)
+  -- bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+  -- bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
+  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 2)
+  bob <# ("", "alice", SENT 2)
+  -- if delivery is blocked it won't go further
+  alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
+  alice #: ("3", "bob", "ACK 2") #> ("3", "bob", OK)
+
+testMsgDeliveryQuotaExceeded :: Transport c => TProxy c -> c -> c -> IO ()
+testMsgDeliveryQuotaExceeded _ alice bob = do
+  connect (alice, "alice") (bob, "bob")
+  connect (alice, "alice2") (bob, "bob2")
+  forM_ [1 .. 4 :: Int] $ \i -> do
+    let corrId = bshow i
+        msg = "message " <> bshow i
+    (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND :" <> msg)
+    alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
+  (_, "bob", Right (MID _)) <- alice #: ("5", "bob", "SEND :over quota")
+
+  alice #: ("1", "bob2", "SEND :hello") #> ("1", "bob2", MID 1)
+  -- if delivery is blocked it won't go further
+  alice <# ("", "bob2", SENT 1)
+
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW INV")
@@ -335,6 +382,16 @@ connect (h1, name1) (h2, name2) = do
   h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
+
+sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()
+sendMessage (h1, name1) (h2, name2) msg = do
+  ("m1", name2', Right (MID mId)) <- h1 #: ("m1", name2, "SEND :" <> msg)
+  name2' `shouldBe` name2
+  h1 <#= \case ("", n, SENT m) -> n == name2 && m == mId; _ -> False
+  ("", name1', Right (MSG MsgMeta {recipient = (msgId, _)} msg')) <- (h2 <#:)
+  name1' `shouldBe` name1
+  msg' `shouldBe` msg
+  h2 #: ("m2", name1, "ACK " <> bshow msgId) =#> \case ("m2", n, OK) -> n == name1; _ -> False
 
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do
