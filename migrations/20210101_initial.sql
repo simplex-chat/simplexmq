@@ -60,7 +60,7 @@ CREATE TABLE messages (
   internal_ts TEXT NOT NULL,
   internal_rcv_id INTEGER,
   internal_snd_id INTEGER,
-  msg_type BLOB NOT NULL, -- SMP_CONF?, HELLO, REPLY, DELETE
+  msg_type BLOB NOT NULL, -- (H)ELLO, (R)EPLY, (D)ELETE. Should SMP confirmation be saved too?
   msg_body BLOB NOT NULL DEFAULT x'',
   PRIMARY KEY (conn_alias, internal_id),
   FOREIGN KEY (conn_alias, internal_rcv_id) REFERENCES rcv_messages
@@ -76,8 +76,6 @@ CREATE TABLE rcv_messages (
   external_snd_id INTEGER NOT NULL,
   broker_id BLOB NOT NULL,
   broker_ts TEXT NOT NULL,
-  rcv_status TEXT NOT NULL,
-  ack_brocker_ts TEXT,
   internal_hash BLOB NOT NULL,
   external_prev_snd_hash BLOB NOT NULL,
   integrity BLOB NOT NULL,
@@ -90,8 +88,6 @@ CREATE TABLE snd_messages (
   conn_alias BLOB NOT NULL,
   internal_snd_id INTEGER NOT NULL,
   internal_id INTEGER NOT NULL,
-  snd_status TEXT NOT NULL,
-  sent_ts TEXT,
   internal_hash BLOB NOT NULL,
   previous_msg_hash BLOB NOT NULL DEFAULT x'',
   PRIMARY KEY (conn_alias, internal_snd_id),

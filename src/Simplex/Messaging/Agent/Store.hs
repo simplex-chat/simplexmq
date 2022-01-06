@@ -3,9 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -17,7 +15,6 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
-import Data.Text (Text)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -66,7 +63,6 @@ class Monad m => MonadAgentStore s m where
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
   getPendingMsgData :: s -> ConnId -> InternalId -> m (SndQueue, Maybe RcvQueue, (AMsgType, MsgBody))
   getPendingMsgs :: s -> ConnId -> m [InternalId]
-  getMsg :: s -> ConnId -> InternalId -> m Msg
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   deleteMsg :: s -> ConnId -> InternalId -> m ()
 
@@ -210,8 +206,6 @@ type PrevRcvMsgHash = MsgHash
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
 type PrevSndMsgHash = MsgHash
 
--- ? merge/replace these with RcvMsg and SndMsg
-
 -- * Message data containers - used on Msg creation to reduce number of parameters
 
 data RcvMsgData = RcvMsgData
@@ -239,35 +233,6 @@ data PendingMsg = PendingMsg
   }
   deriving (Show)
 
--- * Message types
-
--- | A message in either direction that is stored by the agent.
-data Msg = MRcv RcvMsg | MSnd SndMsg
-  deriving (Eq, Show)
-
--- | A message received by the agent from a sender.
-data RcvMsg = RcvMsg
-  { msgBase :: MsgBase,
-    internalRcvId :: InternalRcvId,
-    -- | Id of the message at sender, corresponds to `internalSndId` from the sender's side.
-    -- Sender Id is made sequential for detection of missing messages. For redundant / parallel queues,
-    -- it also allows to keep track of duplicates and restore the original order before delivery to the client.
-    externalSndId :: ExternalSndId,
-    externalSndTs :: ExternalSndTs,
-    -- | Id of the message at broker, although it is not sequential (to avoid metadata leakage for potential observer),
-    -- it is needed to track repeated deliveries in case of connection loss - this logic is not implemented yet.
-    brokerId :: BrokerId,
-    brokerTs :: BrokerTs,
-    rcvMsgStatus :: RcvMsgStatus,
-    -- | Timestamp of acknowledgement to broker, corresponds to `Acknowledged` status.
-    -- Don't confuse with `brokerTs` - timestamp created at broker after it receives the message from sender.
-    ackBrokerTs :: AckBrokerTs,
-    -- | Hash of previous message as received from sender - stored for integrity forensics.
-    externalPrevSndHash :: MsgHash,
-    msgIntegrity :: MsgIntegrity
-  }
-  deriving (Eq, Show)
-
 -- internal Ids are newtypes to prevent mixing them up
 newtype InternalRcvId = InternalRcvId {unRcvId :: Int64} deriving (Eq, Show)
 
@@ -279,54 +244,7 @@ type BrokerId = MsgId
 
 type BrokerTs = UTCTime
 
-data RcvMsgStatus = RcvMsgReceived | RcvMsgAcknowledged
-  deriving (Eq, Show)
-
-serializeRcvMsgStatus :: RcvMsgStatus -> Text
-serializeRcvMsgStatus = \case
-  RcvMsgReceived -> "rcvd"
-  RcvMsgAcknowledged -> "ackd"
-
-rcvMsgStatusT :: Text -> Maybe RcvMsgStatus
-rcvMsgStatusT = \case
-  "rcvd" -> Just RcvMsgReceived
-  "ackd" -> Just RcvMsgAcknowledged
-  _ -> Nothing
-
-type AckBrokerTs = UTCTime
-
-type AckSenderTs = UTCTime
-
--- | A message sent by the agent to a recipient.
-data SndMsg = SndMsg
-  { msgBase :: MsgBase,
-    -- | Id of the message sent / to be sent, as in its number in order of sending.
-    internalSndId :: InternalSndId,
-    sndMsgStatus :: SndMsgStatus,
-    -- | Timestamp of the message received by broker, corresponds to `Sent` status.
-    sentTs :: SentTs
-  }
-  deriving (Eq, Show)
-
 newtype InternalSndId = InternalSndId {unSndId :: Int64} deriving (Eq, Show)
-
-data SndMsgStatus = SndMsgCreated | SndMsgSent
-  deriving (Eq, Show)
-
-serializeSndMsgStatus :: SndMsgStatus -> Text
-serializeSndMsgStatus = \case
-  SndMsgCreated -> "created"
-  SndMsgSent -> "sent"
-
-sndMsgStatusT :: Text -> Maybe SndMsgStatus
-sndMsgStatusT = \case
-  "created" -> Just SndMsgCreated
-  "sent" -> Just SndMsgSent
-  _ -> Nothing
-
-type SentTs = UTCTime
-
-type DeliveredTs = UTCTime
 
 -- | Base message data independent of direction.
 data MsgBase = MsgBase
