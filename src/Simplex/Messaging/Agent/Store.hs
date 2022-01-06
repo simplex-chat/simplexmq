@@ -61,7 +61,7 @@ class Monad m => MonadAgentStore s m where
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
-  getPendingMsgData :: s -> ConnId -> InternalId -> m (SndQueue, Maybe RcvQueue, (AMsgType, MsgBody))
+  getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody))
   getPendingMsgs :: s -> ConnId -> m [InternalId]
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   deleteMsg :: s -> ConnId -> InternalId -> m ()

@@ -7,7 +7,6 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -376,10 +375,10 @@ sendMessage' c connId msg =
     enqueueMsg sq = enqueueMessage c connId sq $ A_MSG msg
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> AMessage -> m AgentMsgId
-enqueueMessage c connId sq@SndQueue {server} aMessage = do
+enqueueMessage c connId sq aMessage = do
   resumeMsgDelivery c connId sq
   msgId <- storeSentMsg
-  queuePendingMsgs c connId server [msgId]
+  queuePendingMsgs c connId sq [msgId]
   pure $ unId msgId
   where
     storeSentMsg :: m InternalId
@@ -398,15 +397,16 @@ enqueueMessage c connId sq@SndQueue {server} aMessage = do
       pure internalId
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
-resumeMsgDelivery c connId SndQueue {server} = do
-  unlessM srvDelivering $
-    async (runSrvMsgDelivery c server)
-      >>= atomically . modifyTVar (srvMsgDeliveries c) . M.insert server
+resumeMsgDelivery c connId sq@SndQueue {server, sndId} = do
+  let qKey = (connId, server, sndId)
+  unlessM (queueDelivering qKey) $
+    async (runSmpQueueMsgDelivery c connId sq)
+      >>= atomically . modifyTVar (smpQueueMsgDeliveries c) . M.insert qKey
   unlessM connQueued $
     withStore (`getPendingMsgs` connId)
-      >>= queuePendingMsgs c connId server
+      >>= queuePendingMsgs c connId sq
   where
-    srvDelivering = isJust . M.lookup server <$> readTVarIO (srvMsgDeliveries c)
+    queueDelivering qKey = isJust . M.lookup qKey <$> readTVarIO (smpQueueMsgDeliveries c)
     connQueued =
       atomically $
         isJust
@@ -414,42 +414,42 @@ resumeMsgDelivery c connId SndQueue {server} = do
             (connMsgsQueued c)
             (\m -> (M.lookup connId m, M.insert connId True m))
 
-queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> SMPServer -> [InternalId] -> m ()
-queuePendingMsgs c connId server msgIds = atomically $ do
-  q <- getPendingMsgQ c server
-  mapM_ (writeTQueue q . PendingMsg connId) msgIds
+queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> [InternalId] -> m ()
+queuePendingMsgs c connId sq msgIds = atomically $ do
+  q <- getPendingMsgQ c connId sq
+  mapM_ (writeTQueue q) msgIds
 
-getPendingMsgQ :: AgentClient -> SMPServer -> STM (TQueue PendingMsg)
-getPendingMsgQ c srv = do
-  maybe newMsgQueue pure . M.lookup srv =<< readTVar (srvMsgQueues c)
+getPendingMsgQ :: AgentClient -> ConnId -> SndQueue -> STM (TQueue InternalId)
+getPendingMsgQ c connId SndQueue {server, sndId} = do
+  let qKey = (connId, server, sndId)
+  maybe (newMsgQueue qKey) pure . M.lookup qKey =<< readTVar (smpQueueMsgQueues c)
   where
-    newMsgQueue :: STM (TQueue PendingMsg)
-    newMsgQueue = do
+    newMsgQueue qKey = do
       mq <- newTQueue
-      modifyTVar (srvMsgQueues c) $ M.insert srv mq
+      modifyTVar (smpQueueMsgQueues c) $ M.insert qKey mq
       pure mq
 
-runSrvMsgDelivery :: forall m. AgentMonad m => AgentClient -> SMPServer -> m ()
-runSrvMsgDelivery c@AgentClient {subQ} srv = do
-  mq <- atomically $ getPendingMsgQ c srv
+runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
+runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
+  mq <- atomically $ getPendingMsgQ c connId sq
   ri <- asks $ reconnectInterval . config
   forever $ do
-    PendingMsg {connId, msgId} <- atomically $ readTQueue mq
+    msgId <- atomically $ readTQueue mq
     let mId = unId msgId
     withStore (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
       Left (e :: E.SomeException) ->
-        notify connId $ MERR mId (INTERNAL $ show e)
-      Right (sq, rq_, (msgType, msgBody)) -> do
+        notify $ MERR mId (INTERNAL $ show e)
+      Right (rq_, (msgType, msgBody)) -> do
         withRetryInterval ri $ \loop -> do
           tryError (sendAgentMessage c sq msgBody) >>= \case
             Left e -> case e of
               SMP SMP.QUOTA -> loop
               SMP SMP.AUTH -> case msgType of
                 HELLO_ -> loop
-                REPLY_ -> notify connId $ ERR e
-                A_MSG_ -> notify connId $ MERR mId e
-              SMP {} -> notify connId $ MERR mId e
-              CMD {} -> notify connId $ MERR mId e
+                REPLY_ -> notify $ ERR e
+                A_MSG_ -> notify $ MERR mId e
+              SMP {} -> notify $ MERR mId e
+              CMD {} -> notify $ MERR mId e
               _ -> loop
             Right () -> do
               case msgType of
@@ -459,15 +459,15 @@ runSrvMsgDelivery c@AgentClient {subQ} srv = do
                     -- party initiating connection
                     Just rq -> do
                       subscribeQueue c rq connId
-                      notify connId CON
+                      notify CON
                     -- party joining connection
                     _ -> createReplyQueue c connId sq
-                A_MSG_ -> notify connId $ SENT mId
+                A_MSG_ -> notify $ SENT mId
                 _ -> pure ()
               withStore $ \st -> deleteMsg st connId msgId
   where
-    notify :: ConnId -> ACommand 'Agent -> m ()
-    notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
+    notify :: ACommand 'Agent -> m ()
+    notify cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage' c connId msgId = do
