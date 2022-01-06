@@ -439,7 +439,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     withStore (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
-      Right (sq, rq_, (msgType, msgBody)) -> do
+      Right (rq_, (msgType, msgBody)) -> do
         withRetryInterval ri $ \loop -> do
           tryError (sendAgentMessage c sq msgBody) >>= \case
             Left e -> case e of
