@@ -1,3 +1,7 @@
+# 0.5.2
+
+- Fix message delivery logic that blocked delivery of all server messages when server per-queue quota exceeded, making it concurrent per SMP queue, not per server.
+
 # 0.5.1
 
 - Fix server subscription logic bug that was leading to memory leak / resource exhaustion in some edge cases.

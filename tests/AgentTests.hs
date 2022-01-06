@@ -67,9 +67,9 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
     it "should deliver pending messages after agent restarting" $
       smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
-    xit "should concurrently deliver messages to connections without blocking" $
+    it "should concurrently deliver messages to connections without blocking" $
       smpAgentTest2_2_1 $ testConcurrentMsgDelivery t
-    xit "should deliver messages if one of connections has quota exceeded" $
+    it "should deliver messages if one of connections has quota exceeded" $
       smpAgentTest2_2_1 $ testMsgDeliveryQuotaExceeded t
 
 -- | receive message to handle `h`
@@ -354,9 +354,8 @@ testConcurrentMsgDelivery _ alice bob = do
   -- bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   -- bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
   bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 2)
-  putStrLn "it gets this far"
   bob <# ("", "alice", SENT 2)
-  putStrLn "it never gets here as the message is blocked by HELLO in in another connection"
+  -- if delivery is blocked it won't go further
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
   alice #: ("3", "bob", "ACK 2") #> ("3", "bob", OK)
 
@@ -372,9 +371,8 @@ testMsgDeliveryQuotaExceeded _ alice bob = do
   (_, "bob", Right (MID _)) <- alice #: ("5", "bob", "SEND :over quota")
 
   alice #: ("1", "bob2", "SEND :hello") #> ("1", "bob2", MID 1)
-  putStrLn "it gets this far"
+  -- if delivery is blocked it won't go further
   alice <# ("", "bob2", SENT 1)
-  putStrLn "it never gets here as the message is blocked by MSG in in another connection"
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
