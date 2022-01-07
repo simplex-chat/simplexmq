@@ -169,14 +169,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   createRcvConn st gVar cData q@RcvQueue {server} cMode =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      DB.execute db "INSERT INTO connections (conn_alias, conn_mode) VALUES (?, ?)" (connId, cMode)
+      DB.execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, cMode)
       insertRcvQueue_ db connId q
 
   createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   createSndConn st gVar cData q@SndQueue {server} =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      DB.execute db "INSERT INTO connections (conn_alias, conn_mode) VALUES (?, ?)" (connId, SCMInvitation)
+      DB.execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, SCMInvitation)
       insertSndQueue_ db connId q
 
   getConn :: SQLiteStore -> ConnId -> m SomeConn
@@ -190,7 +190,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       DB.queryNamed
         db
         [sql|
-          SELECT q.conn_alias
+          SELECT q.conn_id
           FROM rcv_queues q
           WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
         |]
@@ -204,8 +204,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
-        "DELETE FROM connections WHERE conn_alias = :conn_alias;"
-        [":conn_alias" := connId]
+        "DELETE FROM connections WHERE conn_id = :conn_id;"
+        [":conn_id" := connId]
 
   upgradeRcvConnToDuplex :: SQLiteStore -> ConnId -> SndQueue -> m ()
   upgradeRcvConnToDuplex st connId sq@SndQueue {server} =
@@ -281,7 +281,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           db
           [sql|
             INSERT INTO conn_confirmations
-            (confirmation_id, conn_alias, sender_key, e2e_snd_pub_key, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
+            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
           |]
           (confirmationId, connId, senderKey, e2ePubKey, connInfo)
 
@@ -303,7 +303,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         <$> DB.query
           db
           [sql|
-            SELECT conn_alias, sender_key, e2e_snd_pub_key, sender_conn_info
+            SELECT conn_id, sender_key, e2e_snd_pub_key, sender_conn_info
             FROM conn_confirmations
             WHERE confirmation_id = ?;
           |]
@@ -328,7 +328,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           [sql|
             SELECT confirmation_id, sender_key, e2e_snd_pub_key, sender_conn_info, own_conn_info
             FROM conn_confirmations
-            WHERE conn_alias = ? AND accepted = 1;
+            WHERE conn_id = ? AND accepted = 1;
           |]
           (Only connId)
     where
@@ -349,9 +349,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         db
         [sql|
           DELETE FROM conn_confirmations
-          WHERE conn_alias = :conn_alias;
+          WHERE conn_id = :conn_id;
         |]
-        [":conn_alias" := connId]
+        [":conn_id" := connId]
 
   createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   createInvitation st gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
@@ -442,7 +442,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody))
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
-      rq_ <- liftIO $ getRcvQueueByConnAlias_ db connId
+      rq_ <- liftIO $ getRcvQueueByConnId_ db connId
       msgData <-
         ExceptT $
           sndMsgData
@@ -451,8 +451,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
               [sql|
                 SELECT m.msg_type, m.msg_body
                 FROM messages m
-                JOIN snd_messages s ON s.conn_alias = m.conn_alias AND s.internal_id = m.internal_id
-                WHERE m.conn_alias = ? AND m.internal_id = ?
+                JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
+                WHERE m.conn_id = ? AND m.internal_id = ?
               |]
               (connId, msgId)
       pure (rq_, msgData)
@@ -465,7 +465,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getPendingMsgs st connId =
     liftIO . withTransaction st $ \db ->
       map fromOnly
-        <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_alias = ?" (Only connId)
+        <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_id = ?" (Only connId)
 
   checkRcvMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
   checkRcvMsg st connId msgId =
@@ -474,9 +474,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         <$> DB.query
           db
           [sql|
-            SELECT conn_alias, internal_id
+            SELECT conn_id, internal_id
             FROM rcv_messages
-            WHERE conn_alias = ? AND internal_id = ?
+            WHERE conn_id = ? AND internal_id = ?
           |]
           (connId, msgId)
     where
@@ -486,7 +486,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
   deleteMsg st connId msgId =
     liftIO . withTransaction st $ \db ->
-      DB.execute db "DELETE FROM messages WHERE conn_alias = ? AND internal_id = ?;" (connId, msgId)
+      DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
 
 -- * Auxiliary helpers
 
@@ -593,14 +593,14 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_alias, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status)
+        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status)
       VALUES
-        (:host,:port,:rcv_id,:conn_alias,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_dh_secret,:snd_id,:status);
+        (:host,:port,:rcv_id,:conn_id,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_dh_secret,:snd_id,:status);
     |]
     [ ":host" := host server,
       ":port" := port server,
       ":rcv_id" := rcvId,
-      ":conn_alias" := connId,
+      ":conn_id" := connId,
       ":rcv_private_key" := rcvPrivateKey,
       ":rcv_dh_secret" := rcvDhSecret,
       ":e2e_priv_key" := e2ePrivKey,
@@ -617,14 +617,14 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     dbConn
     [sql|
       INSERT INTO snd_queues
-        ( host, port, snd_id, conn_alias, snd_private_key, e2e_dh_secret, status)
+        ( host, port, snd_id, conn_id, snd_private_key, e2e_dh_secret, status)
       VALUES
-        (:host,:port,:snd_id,:conn_alias,:snd_private_key,:e2e_dh_secret,:status);
+        (:host,:port,:snd_id,:conn_id,:snd_private_key,:e2e_dh_secret,:status);
     |]
     [ ":host" := host server,
       ":port" := port server,
       ":snd_id" := sndId,
-      ":conn_alias" := connId,
+      ":conn_id" := connId,
       ":snd_private_key" := sndPrivateKey,
       ":e2e_dh_secret" := e2eDhSecret,
       ":status" := status
@@ -637,8 +637,8 @@ getConn_ dbConn connId =
   getConnData_ dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
     Just (connData, cMode) -> do
-      rQ <- getRcvQueueByConnAlias_ dbConn connId
-      sQ <- getSndQueueByConnAlias_ dbConn connId
+      rQ <- getRcvQueueByConnId_ dbConn connId
+      sQ <- getSndQueueByConnId_ dbConn connId
       pure $ case (rQ, sQ, cMode) of
         (Just rcvQ, Just sndQ, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection connData rcvQ sndQ)
         (Just rcvQ, Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection connData rcvQ)
@@ -649,13 +649,13 @@ getConn_ dbConn connId =
 getConnData_ :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData_ dbConn connId' =
   connData
-    <$> DB.query dbConn "SELECT conn_alias, conn_mode FROM connections WHERE conn_alias = ?;" (Only connId')
+    <$> DB.query dbConn "SELECT conn_id, conn_mode FROM connections WHERE conn_id = ?;" (Only connId')
   where
     connData [(connId, cMode)] = Just (ConnData {connId}, cMode)
     connData _ = Nothing
 
-getRcvQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
-getRcvQueueByConnAlias_ dbConn connId =
+getRcvQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
+getRcvQueueByConnId_ dbConn connId =
   rcvQueue
     <$> DB.query
       dbConn
@@ -664,7 +664,7 @@ getRcvQueueByConnAlias_ dbConn connId =
           q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.conn_alias = ?;
+        WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
@@ -673,8 +673,8 @@ getRcvQueueByConnAlias_ dbConn connId =
        in Just RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status}
     rcvQueue _ = Nothing
 
-getSndQueueByConnAlias_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
-getSndQueueByConnAlias_ dbConn connId =
+getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
+getSndQueueByConnId_ dbConn connId =
   sndQueue
     <$> DB.query
       dbConn
@@ -682,7 +682,7 @@ getSndQueueByConnAlias_ dbConn connId =
         SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.e2e_dh_secret, q.status
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.conn_alias = ?;
+        WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
@@ -701,9 +701,9 @@ retrieveLastIdsAndHashRcv_ dbConn connId = do
       [sql|
         SELECT last_internal_msg_id, last_internal_rcv_msg_id, last_external_snd_msg_id, last_rcv_msg_hash
         FROM connections
-        WHERE conn_alias = :conn_alias;
+        WHERE conn_id = :conn_id;
       |]
-      [":conn_alias" := connId]
+      [":conn_id" := connId]
   return (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)
 
 updateLastIdsRcv_ :: DB.Connection -> ConnId -> InternalId -> InternalRcvId -> IO ()
@@ -714,11 +714,11 @@ updateLastIdsRcv_ dbConn connId newInternalId newInternalRcvId =
       UPDATE connections
       SET last_internal_msg_id = :last_internal_msg_id,
           last_internal_rcv_msg_id = :last_internal_rcv_msg_id
-      WHERE conn_alias = :conn_alias;
+      WHERE conn_id = :conn_id;
     |]
     [ ":last_internal_msg_id" := newInternalId,
       ":last_internal_rcv_msg_id" := newInternalRcvId,
-      ":conn_alias" := connId
+      ":conn_id" := connId
     ]
 
 -- * createRcvMsg helpers
@@ -730,11 +730,11 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgBody, internalR
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_body)
+        ( conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:msg_type, :msg_body);
+        (:conn_id,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:msg_type, :msg_body);
     |]
-    [ ":conn_alias" := connId,
+    [ ":conn_id" := connId,
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_rcv_id" := internalRcvId,
@@ -749,15 +749,15 @@ insertRcvMsgDetails_ dbConn connId RcvMsgData {msgMeta, internalRcvId, internalH
     dbConn
     [sql|
       INSERT INTO rcv_messages
-        ( conn_alias, internal_rcv_id, internal_id, external_snd_id,
+        ( conn_id, internal_rcv_id, internal_id, external_snd_id,
           broker_id, broker_ts,
           internal_hash, external_prev_snd_hash, integrity)
       VALUES
-        (:conn_alias,:internal_rcv_id,:internal_id,:external_snd_id,
+        (:conn_id,:internal_rcv_id,:internal_id,:external_snd_id,
          :broker_id,:broker_ts,
          :internal_hash,:external_prev_snd_hash,:integrity);
     |]
-    [ ":conn_alias" := connId,
+    [ ":conn_id" := connId,
       ":internal_rcv_id" := internalRcvId,
       ":internal_id" := fst recipient,
       ":external_snd_id" := sndMsgId,
@@ -777,12 +777,12 @@ updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =
       UPDATE connections
       SET last_external_snd_msg_id = :last_external_snd_msg_id,
           last_rcv_msg_hash = :last_rcv_msg_hash
-      WHERE conn_alias = :conn_alias
+      WHERE conn_id = :conn_id
         AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
     |]
     [ ":last_external_snd_msg_id" := sndMsgId (msgMeta :: MsgMeta),
       ":last_rcv_msg_hash" := internalHash,
-      ":conn_alias" := connId,
+      ":conn_id" := connId,
       ":last_internal_rcv_msg_id" := internalRcvId
     ]
 
@@ -796,9 +796,9 @@ retrieveLastIdsAndHashSnd_ dbConn connId = do
       [sql|
         SELECT last_internal_msg_id, last_internal_snd_msg_id, last_snd_msg_hash
         FROM connections
-        WHERE conn_alias = :conn_alias;
+        WHERE conn_id = :conn_id;
       |]
-      [":conn_alias" := connId]
+      [":conn_id" := connId]
   return (lastInternalId, lastInternalSndId, lastSndHash)
 
 updateLastIdsSnd_ :: DB.Connection -> ConnId -> InternalId -> InternalSndId -> IO ()
@@ -809,11 +809,11 @@ updateLastIdsSnd_ dbConn connId newInternalId newInternalSndId =
       UPDATE connections
       SET last_internal_msg_id = :last_internal_msg_id,
           last_internal_snd_msg_id = :last_internal_snd_msg_id
-      WHERE conn_alias = :conn_alias;
+      WHERE conn_id = :conn_id;
     |]
     [ ":last_internal_msg_id" := newInternalId,
       ":last_internal_snd_msg_id" := newInternalSndId,
-      ":conn_alias" := connId
+      ":conn_id" := connId
     ]
 
 -- * createSndMsg helpers
@@ -824,11 +824,11 @@ insertSndMsgBase_ dbConn connId SndMsgData {..} = do
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_alias, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_body)
+        ( conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_body)
       VALUES
-        (:conn_alias,:internal_id,:internal_ts,            NULL,:internal_snd_id,:msg_type, :msg_body);
+        (:conn_id,:internal_id,:internal_ts,            NULL,:internal_snd_id,:msg_type, :msg_body);
     |]
-    [ ":conn_alias" := connId,
+    [ ":conn_id" := connId,
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_snd_id" := internalSndId,
@@ -842,11 +842,11 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_alias, internal_snd_id, internal_id, internal_hash, previous_msg_hash)
+        ( conn_id, internal_snd_id, internal_id, internal_hash, previous_msg_hash)
       VALUES
-        (:conn_alias,:internal_snd_id,:internal_id,:internal_hash,:previous_msg_hash);
+        (:conn_id,:internal_snd_id,:internal_id,:internal_hash,:previous_msg_hash);
     |]
-    [ ":conn_alias" := connId,
+    [ ":conn_id" := connId,
       ":internal_snd_id" := internalSndId,
       ":internal_id" := internalId,
       ":internal_hash" := internalHash,
@@ -861,11 +861,11 @@ updateHashSnd_ dbConn connId SndMsgData {..} =
     [sql|
       UPDATE connections
       SET last_snd_msg_hash = :last_snd_msg_hash
-      WHERE conn_alias = :conn_alias
+      WHERE conn_id = :conn_id
         AND last_internal_snd_msg_id = :last_internal_snd_msg_id;
     |]
     [ ":last_snd_msg_hash" := internalHash,
-      ":conn_alias" := connId,
+      ":conn_id" := connId,
       ":last_internal_snd_msg_id" := internalSndId
     ]
 

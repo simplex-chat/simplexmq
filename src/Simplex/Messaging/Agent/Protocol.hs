@@ -516,7 +516,7 @@ connModeT = \case
   "CON" -> Just CMContact
   _ -> Nothing
 
--- | SMP agent connection alias.
+-- | SMP agent connection ID.
 type ConnId = ByteString
 
 type ConfirmationId = ByteString
@@ -697,9 +697,9 @@ data CommandErrorType
 
 -- | Connection error.
 data ConnectionErrorType
-  = -- | connection alias is not in the database
+  = -- | connection is not in the database
     NOT_FOUND
-  | -- | connection alias already exists
+  | -- | connection already exists
     DUPLICATE
   | -- | connection is simplex, but operation requires another queue
     SIMPLEX
@@ -899,8 +899,8 @@ tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
 tPut :: (Transport c, MonadIO m) => c -> ATransmission p -> m ()
-tPut h (corrId, connAlias, command) =
-  liftIO $ tPutRaw h (corrId, connAlias, serializeCommand command)
+tPut h (corrId, connId, command) =
+  liftIO $ tPutRaw h (corrId, connId, serializeCommand command)
 
 -- | Receive client and agent transmissions from TCP connection.
 tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)

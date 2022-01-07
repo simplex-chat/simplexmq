@@ -203,13 +203,11 @@ Commands syntax below is provided using [ABNF][3] with [case-sensitive strings e
 Each transmission between the user and SMP agent must have this format/syntax:
 
 ```abnf
-agentTransmission = [corrId] CRLF [cAlias] CRLF agentCommand
+agentTransmission = [corrId] CRLF [connId] CRLF agentCommand
 
 corrId = 1*(%x21-7F) ; any characters other than control/whitespace
 
-cAlias = cId / cName
-cId = encoded
-cName = 1*(ALPHA / DIGIT / "_" / "-")
+connId = encoded
 
 agentCommand = (userCmd / agentMsg) CRLF
 userCmd = newCmd / joinCmd / letCmd / acceptCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd

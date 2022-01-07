@@ -83,7 +83,7 @@ h #: t = tPutRaw h t >> (<#:) h
 -- | action and expected response
 -- `h #:t #> r` is the test that sends `t` to `h` and validates that the response is `r`
 (#>) :: IO (ATransmissionOrError 'Agent) -> ATransmission 'Agent -> Expectation
-action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right cmd)
+action #> (corrId, connId, cmd) = action `shouldReturn` (corrId, connId, Right cmd)
 
 -- | action and predicate for the response
 -- `h #:t =#> p` is the test that sends `t` to `h` and validates the response using `p`
@@ -91,13 +91,13 @@ action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right c
 action =#> p = action >>= (`shouldSatisfy` p . correctTransmission)
 
 correctTransmission :: ATransmissionOrError a -> ATransmission a
-correctTransmission (corrId, cAlias, cmdOrErr) = case cmdOrErr of
-  Right cmd -> (corrId, cAlias, cmd)
+correctTransmission (corrId, connId, cmdOrErr) = case cmdOrErr of
+  Right cmd -> (corrId, connId, cmd)
   Left e -> error $ show e
 
 -- | receive message to handle `h` and validate that it is the expected one
 (<#) :: Transport c => c -> ATransmission 'Agent -> Expectation
-h <# (corrId, cAlias, cmd) = (h <#:) `shouldReturn` (corrId, cAlias, Right cmd)
+h <# (corrId, connId, cmd) = (h <#:) `shouldReturn` (corrId, connId, Right cmd)
 
 -- | receive message to handle `h` and validate it using predicate `p`
 (<#=) :: Transport c => c -> (ATransmission 'Agent -> Bool) -> Expectation
@@ -416,10 +416,10 @@ syntaxTests t = do
   it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
   describe "NEW" $ do
     describe "valid" $ do
-      -- TODO: add tests with defined connection alias
+      -- TODO: add tests with defined connection id
       it "with correct parameter" $ ("211", "", "NEW INV") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
     describe "invalid" $ do
-      -- TODO: add tests with defined connection alias
+      -- TODO: add tests with defined connection id
       it "with incorrect parameter" $ ("222", "", "NEW hi") >#> ("222", "", "ERR CMD SYNTAX")
 
   describe "JOIN" $ do
@@ -445,4 +445,4 @@ syntaxTests t = do
 
     -- simple test for one command with a predicate for the expected response
     (>#>=) :: ARawTransmission -> ((ByteString, ByteString, [ByteString]) -> Bool) -> Expectation
-    command >#>= p = smpAgentTest t command >>= (`shouldSatisfy` p . \(cId, cAlias, cmd) -> (cId, cAlias, B.words cmd))
+    command >#>= p = smpAgentTest t command >>= (`shouldSatisfy` p . \(cId, connId, cmd) -> (cId, connId, B.words cmd))
