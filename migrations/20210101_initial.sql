@@ -8,7 +8,7 @@ CREATE TABLE servers (
 CREATE TABLE connections (
   conn_alias BLOB NOT NULL PRIMARY KEY,
   conn_mode TEXT NOT NULL,
-  last_internal_msg_id INTEGER NOT NULL DEFAULT -3,
+  last_internal_msg_id INTEGER NOT NULL DEFAULT 0,
   last_internal_rcv_msg_id INTEGER NOT NULL DEFAULT 0,
   last_internal_snd_msg_id INTEGER NOT NULL DEFAULT 0,
   last_external_snd_msg_id INTEGER NOT NULL DEFAULT 0,
