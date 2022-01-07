@@ -19,6 +19,7 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (ARatchet, SkippedMsgDiff, SkippedMsgKeys)
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
@@ -65,6 +66,11 @@ class Monad m => MonadAgentStore s m where
   getPendingMsgs :: s -> ConnId -> m [InternalId]
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   deleteMsg :: s -> ConnId -> InternalId -> m ()
+
+  -- Double ratchet persistence
+  createRatchet :: s -> ConnId -> ARatchet -> m ()
+  getRatchet :: s -> ConnId -> m (ARatchet, SkippedMsgKeys)
+  updateRatchet :: s -> ConnId -> ARatchet -> SkippedMsgDiff -> m ()
 
 -- * Queue types
 

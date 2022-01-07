@@ -14,6 +14,7 @@ import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.Map.Strict as M
 import Simplex.Messaging.Crypto (Algorithm (..), AlgorithmI, CryptoError, DhAlgorithm)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
@@ -51,7 +52,7 @@ testMessageHeader = do
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
 pattern Decrypted msg <- Right (Right msg)
 
-type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a) -> TVar (Ratchet a) -> IO ()
+type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a, SkippedMsgKeys) -> TVar (Ratchet a, SkippedMsgKeys) -> IO ()
 
 testEncryptDecrypt :: TestRatchets a
 testEncryptDecrypt alice bob = do
@@ -137,17 +138,17 @@ testSkippedAfterRatchetAdvance alice bob = do
   Decrypted "b11" <- decrypt alice b11
   pure ()
 
-(#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a), ByteString) -> TVar (Ratchet a) -> Expectation
+(#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a, SkippedMsgKeys), ByteString) -> TVar (Ratchet a, SkippedMsgKeys) -> Expectation
 (alice, msg) #> bob = do
   Right msg' <- encrypt alice msg
   Decrypted msg'' <- decrypt bob msg'
   msg'' `shouldBe` msg
 
-withRatchets :: forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a) -> TVar (Ratchet a) -> IO ()) -> Expectation
+withRatchets :: forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a, SkippedMsgKeys) -> TVar (Ratchet a, SkippedMsgKeys) -> IO ()) -> Expectation
 withRatchets test = do
   (a, b) <- initRatchets @a
-  alice <- newTVarIO a
-  bob <- newTVarIO b
+  alice <- newTVarIO (a, M.empty)
+  bob <- newTVarIO (b, M.empty)
   test alice bob `shouldReturn` ()
 
 initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
@@ -159,32 +160,32 @@ initRatchets = do
   alice <- initRcvRatchet' bk (ak, apk) salt "bob -> alice"
   pure (alice, bob)
 
-encrypt_ :: AlgorithmI a => Ratchet a -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a))
-encrypt_ rc msg =
+encrypt_ :: AlgorithmI a => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgKeys))
+encrypt_ (rc, smks) msg =
   runExceptT (rcEncrypt' rc paddedMsgLen msg)
     >>= either (pure . Left) checkLength
   where
-    checkLength r@(msg', _) = do
+    checkLength (msg', rc') = do
       B.length msg' `shouldBe` fullMsgLen
-      pure $ Right r
+      pure $ Right (msg', rc', smks)
 
-decrypt_ :: (AlgorithmI a, DhAlgorithm a) => Ratchet a -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a))
-decrypt_ rc msg = runExceptT $ rcDecrypt' rc msg
+decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgKeys))
+decrypt_ (rc, smks) msg = runExceptT $ rcDecrypt' rc smks msg
 
-encrypt :: AlgorithmI a => TVar (Ratchet a) -> ByteString -> IO (Either CryptoError ByteString)
+encrypt :: AlgorithmI a => TVar (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError ByteString)
 encrypt = withTVar encrypt_
 
-decrypt :: (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
+decrypt :: (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
 decrypt = withTVar decrypt_
 
 withTVar ::
-  (Ratchet a -> ByteString -> IO (Either e (r, Ratchet a))) ->
-  TVar (Ratchet a) ->
+  ((Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgKeys))) ->
+  TVar (Ratchet a, SkippedMsgKeys) ->
   ByteString ->
   IO (Either e r)
 withTVar op rcVar msg =
   readTVarIO rcVar
     >>= (`op` msg)
     >>= \case
-      Right (res, rc') -> atomically (writeTVar rcVar rc') >> pure (Right res)
+      Right (res, rc', smks') -> atomically (writeTVar rcVar (rc', smks')) >> pure (Right res)
       Left e -> pure $ Left e

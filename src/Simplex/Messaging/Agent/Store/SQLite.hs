@@ -52,6 +52,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (ARatchet, SkippedMsgDiff, SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldParser)
@@ -487,6 +488,15 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   deleteMsg st connId msgId =
     liftIO . withTransaction st $ \db ->
       DB.execute db "DELETE FROM messages WHERE conn_alias = ? AND internal_id = ?;" (connId, msgId)
+
+  createRatchet :: SQLiteStore -> ConnId -> ARatchet -> m ()
+  createRatchet _ _ _ = throwError SENotImplemented
+
+  getRatchet :: s -> ConnId -> m (ARatchet, SkippedMsgKeys)
+  getRatchet _ _ = throwError SENotImplemented
+
+  updateRatchet :: SQLiteStore -> ConnId -> ARatchet -> SkippedMsgDiff -> m ()
+  updateRatchet _ _ _ _ = throwError SENotImplemented
 
 -- * Auxiliary helpers
 
