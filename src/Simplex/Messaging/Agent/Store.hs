@@ -272,11 +272,11 @@ type InternalTs = UTCTime
 data StoreError
   = -- | IO exceptions in store actions.
     SEInternal ByteString
-  | -- | failed to generate unique random ID
+  | -- | Failed to generate unique random ID
     SEUniqueID
-  | -- | connection id not found (or both queues absent).
+  | -- | Connection not found (or both queues absent).
     SEConnNotFound
-  | -- | connection id already used.
+  | -- | Connection already used.
     SEConnDuplicate
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.

@@ -697,9 +697,9 @@ data CommandErrorType
 
 -- | Connection error.
 data ConnectionErrorType
-  = -- | connection id is not in the database
+  = -- | connection is not in the database
     NOT_FOUND
-  | -- | connection id already exists
+  | -- | connection already exists
     DUPLICATE
   | -- | connection is simplex, but operation requires another queue
     SIMPLEX
