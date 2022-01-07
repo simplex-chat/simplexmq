@@ -82,8 +82,8 @@ applySMDiff smks = \case
         then M.delete hk smks
         else M.insert hk mks' smks
   SMDAdd smks' ->
-    let merge hk mks = maybe mks (`M.union` mks) $ M.lookup hk smks'
-     in M.mapWithKey merge smks
+    let merge hk mks = M.alter (Just . maybe mks (M.union mks)) hk
+     in M.foldrWithKey merge smks smks'
 
 type HeaderKey = Key
 

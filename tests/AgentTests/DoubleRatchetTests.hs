@@ -25,7 +25,7 @@ import Test.Hspec
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
-  fdescribe "double-ratchet encryption/decryption" $ do
+  describe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" testMessageHeader
     it "should encrypt and decrypt messages" $ do
       withRatchets @X25519 testEncryptDecrypt
