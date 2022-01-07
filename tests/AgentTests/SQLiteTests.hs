@@ -116,7 +116,7 @@ testConcurrentWrites =
   where
     runTest :: SQLiteStore -> ConnId -> IO (Either StoreError ())
     runTest store connId = runExceptT . replicateM_ 100 $ do
-      (internalId, internalRcvId, _, _) <- updateRcvIds store connId
+      (internalId, internalRcvId, _, _) <- updateRcvIds store connId 0 "hash_dummy"
       let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
       createRcvMsg store connId rcvMsgData
 
@@ -400,8 +400,8 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
 
 testCreateRcvMsg_ :: SQLiteStore -> PrevExternalSndId -> PrevRcvMsgHash -> ConnId -> RcvMsgData -> Expectation
 testCreateRcvMsg_ st expectedPrevSndId expectedPrevHash connId rcvMsgData@RcvMsgData {..} = do
-  let MsgMeta {recipient = (internalId, _)} = msgMeta
-  updateRcvIds st connId
+  let MsgMeta {recipient = (internalId, _), sndMsgId} = msgMeta
+  updateRcvIds st connId sndMsgId internalHash
     `returnsResult` (InternalId internalId, internalRcvId, expectedPrevSndId, expectedPrevHash)
   createRcvMsg st connId rcvMsgData
     `returnsResult` ()

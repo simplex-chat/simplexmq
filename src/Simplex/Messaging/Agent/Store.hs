@@ -57,7 +57,7 @@ class Monad m => MonadAgentStore s m where
   deleteInvitation :: s -> ConnId -> InvitationId -> m ()
 
   -- Msg management
-  updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+  updateRcvIds :: s -> ConnId -> ExternalSndId -> MsgHash -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()

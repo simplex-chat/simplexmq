@@ -647,13 +647,14 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           logServer "<--" c srv rId "MSG <MSG>"
           let internalHash = C.sha256Hash msgBody
           internalTs <- liftIO getCurrentTime
-          (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- withStore (`updateRcvIds` connId)
+          (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <-
+            withStore $ \st -> updateRcvIds st connId sndMsgId internalHash
           let integrity = checkMsgIntegrity prevExtSndId sndMsgId prevRcvMsgHash externalPrevSndHash
               recipient = (unId internalId, internalTs)
               msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId}
               msgType = aMessageType aMessage
               rcvMsg = RcvMsgData {msgMeta, msgType, msgBody, internalRcvId, internalHash, externalPrevSndHash}
-          withStore $ \st -> createRcvMsg st connId rcvMsg
+          when (msgType == A_MSG_) $ withStore $ \st -> createRcvMsg st connId rcvMsg
           pure msgMeta
 
         smpInvitation :: ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()

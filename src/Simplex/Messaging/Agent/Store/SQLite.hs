@@ -407,13 +407,29 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             liftIO $ DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, invId)
           _ -> throwError SEConnNotFound
 
-  updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
-  updateRcvIds st connId =
+  updateRcvIds :: SQLiteStore -> ConnId -> ExternalSndId -> MsgHash -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+  updateRcvIds st connId sndMsgId internalHash =
     liftIO . withTransaction st $ \db -> do
-      (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ db connId
+      [(lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)] <-
+        DB.query
+          db
+          [sql|
+            SELECT last_internal_msg_id, last_internal_rcv_msg_id, last_external_snd_msg_id, last_rcv_msg_hash
+            FROM connections
+            WHERE conn_alias = ?
+          |]
+          (Only connId)
       let internalId = InternalId $ unId lastInternalId + 1
           internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
-      updateLastIdsRcv_ db connId internalId internalRcvId
+      DB.execute
+        db
+        [sql|
+          UPDATE connections
+          SET last_internal_msg_id = ?, last_internal_rcv_msg_id = ?,
+              last_external_snd_msg_id = ?, last_rcv_msg_hash = ?
+          WHERE conn_alias = ?
+        |]
+        (internalId, internalRcvId, sndMsgId, internalHash, connId)
       pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
 
   createRcvMsg :: SQLiteStore -> ConnId -> RcvMsgData -> m ()
@@ -421,7 +437,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIO . withTransaction st $ \db -> do
       insertRcvMsgBase_ db connId rcvMsgData
       insertRcvMsgDetails_ db connId rcvMsgData
-      updateHashRcv_ db connId rcvMsgData
 
   updateSndIds :: SQLiteStore -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   updateSndIds st connId =
@@ -691,36 +706,6 @@ getSndQueueByConnAlias_ dbConn connId =
        in Just SndQueue {server, sndId, sndPrivateKey, e2eDhSecret, status}
     sndQueue _ = Nothing
 
--- * updateRcvIds helpers
-
-retrieveLastIdsAndHashRcv_ :: DB.Connection -> ConnId -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
-retrieveLastIdsAndHashRcv_ dbConn connId = do
-  [(lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)] <-
-    DB.queryNamed
-      dbConn
-      [sql|
-        SELECT last_internal_msg_id, last_internal_rcv_msg_id, last_external_snd_msg_id, last_rcv_msg_hash
-        FROM connections
-        WHERE conn_alias = :conn_alias;
-      |]
-      [":conn_alias" := connId]
-  return (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)
-
-updateLastIdsRcv_ :: DB.Connection -> ConnId -> InternalId -> InternalRcvId -> IO ()
-updateLastIdsRcv_ dbConn connId newInternalId newInternalRcvId =
-  DB.executeNamed
-    dbConn
-    [sql|
-      UPDATE connections
-      SET last_internal_msg_id = :last_internal_msg_id,
-          last_internal_rcv_msg_id = :last_internal_rcv_msg_id
-      WHERE conn_alias = :conn_alias;
-    |]
-    [ ":last_internal_msg_id" := newInternalId,
-      ":last_internal_rcv_msg_id" := newInternalRcvId,
-      ":conn_alias" := connId
-    ]
-
 -- * createRcvMsg helpers
 
 insertRcvMsgBase_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
@@ -766,24 +751,6 @@ insertRcvMsgDetails_ dbConn connId RcvMsgData {msgMeta, internalRcvId, internalH
       ":internal_hash" := internalHash,
       ":external_prev_snd_hash" := externalPrevSndHash,
       ":integrity" := integrity
-    ]
-
-updateHashRcv_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-updateHashRcv_ dbConn connId RcvMsgData {msgMeta, internalHash, internalRcvId} =
-  DB.executeNamed
-    dbConn
-    -- last_internal_rcv_msg_id equality check prevents race condition in case next id was reserved
-    [sql|
-      UPDATE connections
-      SET last_external_snd_msg_id = :last_external_snd_msg_id,
-          last_rcv_msg_hash = :last_rcv_msg_hash
-      WHERE conn_alias = :conn_alias
-        AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
-    |]
-    [ ":last_external_snd_msg_id" := sndMsgId (msgMeta :: MsgMeta),
-      ":last_rcv_msg_hash" := internalHash,
-      ":conn_alias" := connId,
-      ":last_internal_rcv_msg_id" := internalRcvId
     ]
 
 -- * updateSndIds helpers
