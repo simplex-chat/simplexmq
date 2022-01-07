@@ -64,26 +64,26 @@ type SkippedMsgKeys = Map HeaderKey SkippedHdrMsgKeys
 type SkippedHdrMsgKeys = Map Word32 MessageKey
 
 data SkippedMsgDiff
-  = SkippedMsgNoChange
-  | SkippedMsgRemove HeaderKey Word32
-  | SkippedMsgAdd SkippedMsgKeys
+  = SMDNoChange
+  | SMDRemove HeaderKey Word32
+  | SMDAdd SkippedMsgKeys
 
 -- | this function is only used in tests to apply changes in skipped messages,
 -- in the agent the diff is persisted, and the whole state is loaded for the next message.
-applySkippedMsgDiff :: SkippedMsgKeys -> SkippedMsgDiff -> SkippedMsgKeys
-applySkippedMsgDiff skippedMKs = \case
-  SkippedMsgNoChange -> skippedMKs
-  SkippedMsgRemove hk msgN -> fromMaybe skippedMKs $ do
-    mks <- M.lookup hk skippedMKs
+applySMDiff :: SkippedMsgKeys -> SkippedMsgDiff -> SkippedMsgKeys
+applySMDiff smks = \case
+  SMDNoChange -> smks
+  SMDRemove hk msgN -> fromMaybe smks $ do
+    mks <- M.lookup hk smks
     _ <- M.lookup msgN mks
     let mks' = M.delete msgN mks
     pure $
       if M.null mks'
-        then M.delete hk skippedMKs
-        else M.insert hk mks' skippedMKs
-  SkippedMsgAdd smks ->
-    let merge hk mks = maybe mks (`M.union` mks) $ M.lookup hk smks
-     in M.mapWithKey merge skippedMKs
+        then M.delete hk smks
+        else M.insert hk mks' smks
+  SMDAdd smks' ->
+    let merge hk mks = maybe mks (`M.union` mks) $ M.lookup hk smks'
+     in M.mapWithKey merge smks
 
 type HeaderKey = Key
 
@@ -245,7 +245,7 @@ data SkippedMessage a
 data RatchetStep = AdvanceRatchet | SameRatchet
   deriving (Eq)
 
-type DecryptResult a = (Either CryptoError ByteString, Ratchet a, SkippedMsgKeys)
+type DecryptResult a = (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff)
 
 maxSkip :: Word32
 maxSkip = 512
@@ -274,62 +274,57 @@ rcDecrypt' rc@Ratchet {rcRcv, rcAD} rcMKSkipped msg' = do
     decryptRcMessage :: RatchetStep -> MsgHeader a -> EncRatchetMessage -> ExceptT CryptoError IO (DecryptResult a)
     decryptRcMessage rcStep MsgHeader {msgDHRs, msgPN, msgNs} encMsg = do
       -- if dh_ratchet:
-      (rc', rcMKSkipped') <- ratchetStep rcStep
-      case skipMessageKeys msgNs rc' rcMKSkipped' of
-        Left e -> pure (Left e, rc', rcMKSkipped')
-        Right (rc''@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr}, rcNr}, rcMKSkipped'') -> do
+      (rc', smks1) <- ratchetStep rcStep
+      case skipMessageKeys msgNs rc' of
+        Left e -> pure (Left e, rc', smkDiff smks1)
+        Right (rc''@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr}, rcNr}, smks2) -> do
           -- state.CKr, mk = KDF_CK(state.CKr)
           let (rcCKr', mk, iv, _) = chainKdf rcCKr
           -- return DECRYPT (mk, ciphertext, CONCAT (AD, enc_header))
           msg <- decryptMessage (MessageKey mk iv) encMsg
           -- state . Nr += 1
-          pure (msg, rc'' {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr + 1}, rcMKSkipped'')
-        Right (rc'', rcMKSkipped'') -> pure (Left CERatchetState, rc'', rcMKSkipped'')
+          pure (msg, rc'' {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr + 1}, smkDiff $ smks1 <> smks2)
+        Right (rc'', smks2) -> do
+          pure (Left CERatchetState, rc'', smkDiff $ smks1 <> smks2)
       where
+        smkDiff :: SkippedMsgKeys -> SkippedMsgDiff
+        smkDiff smks = if M.null smks then SMDNoChange else SMDAdd smks
         ratchetStep :: RatchetStep -> ExceptT CryptoError IO (Ratchet a, SkippedMsgKeys)
-        ratchetStep SameRatchet = pure (rc, rcMKSkipped)
+        ratchetStep SameRatchet = pure (rc, M.empty)
         ratchetStep AdvanceRatchet =
           -- SkipMessageKeysHE(state, header.pn)
-          case skipMessageKeys msgPN rc rcMKSkipped of
+          case skipMessageKeys msgPN rc of
             Left e -> throwE e
-            Right (rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr}, rcMKSkipped') -> do
+            Right (rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr}, hmks) -> do
               -- DHRatchetHE(state, header)
               rcDHRs' <- liftIO $ generateKeyPair' @a
               -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))
               let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs (snd rcDHRs)
                   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))
                   (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs (snd rcDHRs')
-              pure
-                ( rc'
-                    { rcDHRs = rcDHRs',
-                      rcRK = rcRK'',
-                      rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
-                      rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
-                      rcPN = rcNs rc,
-                      rcNs = 0,
-                      rcNr = 0,
-                      rcNHKs = rcNHKs',
-                      rcNHKr = rcNHKr'
-                    },
-                  rcMKSkipped'
-                )
-    skipMessageKeys :: Word32 -> Ratchet a -> SkippedMsgKeys -> Either CryptoError (Ratchet a, SkippedMsgKeys)
-    skipMessageKeys _ r@Ratchet {rcRcv = Nothing} mkSkipped = Right (r, mkSkipped)
-    skipMessageKeys untilN r@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr, rcHKr}, rcNr} mkSkipped
+                  rc'' =
+                    rc'
+                      { rcDHRs = rcDHRs',
+                        rcRK = rcRK'',
+                        rcSnd = Just SndRatchet {rcDHRr = msgDHRs, rcCKs = rcCKs', rcHKs = rcNHKs},
+                        rcRcv = Just RcvRatchet {rcCKr = rcCKr', rcHKr = rcNHKr},
+                        rcPN = rcNs rc,
+                        rcNs = 0,
+                        rcNr = 0,
+                        rcNHKs = rcNHKs',
+                        rcNHKr = rcNHKr'
+                      }
+              pure (rc'', hmks)
+    skipMessageKeys :: Word32 -> Ratchet a -> Either CryptoError (Ratchet a, SkippedMsgKeys)
+    skipMessageKeys _ r@Ratchet {rcRcv = Nothing} = Right (r, M.empty)
+    skipMessageKeys untilN r@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr, rcHKr}, rcNr}
       | rcNr > untilN = Left CERatchetDuplicateMessage
       | rcNr + maxSkip < untilN = Left CERatchetTooManySkipped
-      | rcNr == untilN = Right (r, mkSkipped)
+      | rcNr == untilN = Right (r, M.empty)
       | otherwise =
-        let mks = fromMaybe M.empty $ M.lookup rcHKr mkSkipped
-            (rcCKr', rcNr', mks') = advanceRcvRatchet (untilN - rcNr) rcCKr rcNr mks
-            mkSkipped' = M.insert rcHKr mks' mkSkipped
-         in Right
-              ( r
-                  { rcRcv = Just rr {rcCKr = rcCKr'},
-                    rcNr = rcNr'
-                  },
-                mkSkipped'
-              )
+        let (rcCKr', rcNr', mks) = advanceRcvRatchet (untilN - rcNr) rcCKr rcNr M.empty
+            r' = r {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr'}
+         in Right (r', M.singleton rcHKr mks)
     advanceRcvRatchet :: Word32 -> RatchetKey -> Word32 -> SkippedHdrMsgKeys -> (RatchetKey, Word32, SkippedHdrMsgKeys)
     advanceRcvRatchet 0 ck msgNs mks = (ck, msgNs, mks)
     advanceRcvRatchet n ck msgNs mks =
@@ -353,12 +348,8 @@ rcDecrypt' rc@Ratchet {rcRcv, rcAD} rcMKSkipped msg' = do
                         | otherwise = Nothing
                    in pure $ SMHeader nextRc hdr
                 Just mk -> do
-                  let mks' = M.delete msgNs mks
-                      mksSkipped
-                        | M.null mks' = M.delete hk rcMKSkipped
-                        | otherwise = M.insert hk mks' rcMKSkipped
                   msg <- decryptMessage mk encMsg
-                  pure $ SMMessage (msg, rc, mksSkipped)
+                  pure $ SMMessage (msg, rc, SMDRemove hk msgNs)
         tryDecryptSkipped r _ = pure r
     decryptRcHeader :: Maybe RcvRatchet -> EncMessageHeader -> ExceptT CryptoError IO (RatchetStep, MsgHeader a)
     decryptRcHeader Nothing hdr = decryptNextHeader hdr

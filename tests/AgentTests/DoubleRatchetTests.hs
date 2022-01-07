@@ -20,11 +20,12 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Util ((<$$>))
 import Test.Hspec
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
-  describe "double-ratchet encryption/decryption" $ do
+  fdescribe "double-ratchet encryption/decryption" $ do
     it "should serialize and parse message header" testMessageHeader
     it "should encrypt and decrypt messages" $ do
       withRatchets @X25519 testEncryptDecrypt
@@ -160,16 +161,16 @@ initRatchets = do
   alice <- initRcvRatchet' bk (ak, apk) salt "bob -> alice"
   pure (alice, bob)
 
-encrypt_ :: AlgorithmI a => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgKeys))
-encrypt_ (rc, smks) msg =
+encrypt_ :: AlgorithmI a => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
+encrypt_ (rc, _) msg =
   runExceptT (rcEncrypt' rc paddedMsgLen msg)
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
       B.length msg' `shouldBe` fullMsgLen
-      pure $ Right (msg', rc', smks)
+      pure $ Right (msg', rc', SMDNoChange)
 
-decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgKeys))
+decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
 decrypt_ (rc, smks) msg = runExceptT $ rcDecrypt' rc smks msg
 
 encrypt :: AlgorithmI a => TVar (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError ByteString)
@@ -179,13 +180,15 @@ decrypt :: (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a, SkippedMsgKeys) -> 
 decrypt = withTVar decrypt_
 
 withTVar ::
-  ((Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgKeys))) ->
+  ((Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgDiff))) ->
   TVar (Ratchet a, SkippedMsgKeys) ->
   ByteString ->
   IO (Either e r)
 withTVar op rcVar msg =
   readTVarIO rcVar
-    >>= (`op` msg)
+    >>= (\(rc, smks) -> applyDiff smks <$$> op (rc, smks) msg)
     >>= \case
       Right (res, rc', smks') -> atomically (writeTVar rcVar (rc', smks')) >> pure (Right res)
       Left e -> pure $ Left e
+  where
+    applyDiff smks (res, rc', smDiff) = (res, rc', applySMDiff smks smDiff)
