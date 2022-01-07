@@ -17,7 +17,7 @@ Additional parameters in commands in SMP agent protocol:
 
 - `NEW` command will have a parameter `INV` or `CON` to create an invitation or a permanent contact connection.
 
-`conn_alias? OPEN` (or `PUB`, `NEWPUB`, tbc) - to create an "open"/"public" queue, the response is an invitation in a different format (TBC):
+`conn_id? OPEN` (or `PUB`, `NEWPUB`, tbc) - to create an "open"/"public" queue, the response is an invitation in a different format (TBC):
   - should allow multiple servers (probably the original invitation should be extended to support it)
   - should have a marker to indicate it's an open/public queue (probably the original invitation should be extended to include an invitation type).
 

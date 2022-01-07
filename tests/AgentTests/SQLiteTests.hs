@@ -135,7 +135,7 @@ testForeignKeysEnabled =
     let inconsistentQuery =
           [sql|
             INSERT INTO snd_queues
-              ( host, port, snd_id, conn_alias, snd_private_key, e2e_dh_secret, status)
+              ( host, port, snd_id, conn_id, snd_private_key, e2e_dh_secret, status)
             VALUES
               ('smp.simplex.im', '5223', '1234', '2345', x'', x'', 'new');
           |]

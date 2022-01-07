@@ -248,7 +248,7 @@ newtype InternalSndId = InternalSndId {unSndId :: Int64} deriving (Eq, Show)
 
 -- | Base message data independent of direction.
 data MsgBase = MsgBase
-  { connAlias :: ConnId,
+  { connId :: ConnId,
     -- | Monotonically increasing id of a message per connection, internal to the agent.
     -- Internal Id preserves ordering between both received and sent messages, and is needed
     -- to track the order of the conversation (which can be different for the sender / receiver)
@@ -274,9 +274,9 @@ data StoreError
     SEInternal ByteString
   | -- | failed to generate unique random ID
     SEUniqueID
-  | -- | Connection alias not found (or both queues absent).
+  | -- | connection id not found (or both queues absent).
     SEConnNotFound
-  | -- | Connection alias already used.
+  | -- | connection id already used.
     SEConnDuplicate
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
