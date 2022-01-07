@@ -516,7 +516,7 @@ connModeT = \case
   "CON" -> Just CMContact
   _ -> Nothing
 
--- | SMP agent connection id.
+-- | SMP agent connection ID.
 type ConnId = ByteString
 
 type ConfirmationId = ByteString
