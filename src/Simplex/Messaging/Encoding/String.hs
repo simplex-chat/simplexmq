@@ -5,10 +5,17 @@ module Simplex.Messaging.Encoding.String
   ( StrEncoding (..),
     Str (..),
     strP_,
+    strToJSON,
+    strToJEncoding,
+    strParseJSON,
   )
 where
 
 import Control.Applicative (optional)
+import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson as J
+import qualified Data.Aeson.Encoding as JE
+import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as U
@@ -16,9 +23,11 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import qualified Data.List.NonEmpty as L
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Word (Word16)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
+import System.IO.Unsafe (unsafePerformIO)
 
 -- | Serializing human-readable and (where possible) URI-friendly strings for SMP and SMP agent protocols
 class StrEncoding a where
@@ -43,10 +52,18 @@ base64urlP = do
   either fail pure $ U.decode (str <> pad)
 
 newtype Str = Str {unStr :: ByteString}
+  deriving (Eq, Show)
 
 instance StrEncoding Str where
   strEncode = unStr
   strP = Str <$> A.takeTill (== ' ') <* optional A.space
+
+instance ToJSON Str where
+  toJSON = strToJSON . unStr
+  toEncoding = strToJEncoding . unStr
+
+instance FromJSON Str where
+  parseJSON = fmap Str . strParseJSON "Str"
 
 instance StrEncoding a => StrEncoding (Maybe a) where
   strEncode = maybe "" strEncode
@@ -88,3 +105,12 @@ instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d, StrEncodin
 
 strP_ :: StrEncoding a => Parser a
 strP_ = strP <* A.space
+
+strToJSON :: StrEncoding a => a -> J.Value
+strToJSON = J.String . decodeLatin1 . strEncode
+
+strToJEncoding :: StrEncoding a => a -> J.Encoding
+strToJEncoding = JE.text . decodeLatin1 . strEncode
+
+strParseJSON :: StrEncoding a => String -> J.Value -> JT.Parser a
+strParseJSON name = J.withText name $ either fail pure . parseAll strP . encodeUtf8

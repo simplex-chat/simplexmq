@@ -130,10 +130,12 @@ import Crypto.Random (getRandomBytes)
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
@@ -151,6 +153,7 @@ import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
+import Simplex.Messaging.Util ((<$?>))
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -177,6 +180,42 @@ data DhAlg
   = forall a.
     (AlgorithmI a, DhAlgorithm a) =>
     DhAlg (SAlgorithm a)
+
+instance AlgorithmI a => StrEncoding (SAlgorithm a) where
+  strEncode = \case
+    SEd25519 -> "Ed25519"
+    SEd448 -> "Ed448"
+    SX25519 -> "X25519"
+    SX448 -> "X448"
+  strDecode = (\(Alg a) -> checkAlgorithm a) <=< strDecode
+  strP = strDecode <$?> A.takeByteString
+
+instance StrEncoding Alg where
+  strEncode (Alg a) = strEncode a
+  strDecode = \case
+    "Ed25519" -> Right $ Alg SEd25519
+    "Ed448" -> Right $ Alg SEd448
+    "X25519" -> Right $ Alg SX25519
+    "X448" -> Right $ Alg SX448
+    _ -> Left "unknown algorithm"
+  strP = strDecode <$?> A.takeByteString
+
+instance StrEncoding DhAlg where
+  strEncode (DhAlg a) = strEncode a
+  strDecode = toDhAlg <=< strDecode
+    where
+      toDhAlg :: Alg -> Either String DhAlg
+      toDhAlg (Alg a) = case dhAlgorithm a of
+        Just Dict -> Right $ DhAlg a
+        _ -> Left "bad algorithm"
+  strP = strDecode <$?> A.takeByteString
+
+instance ToJSON DhAlg where
+  toJSON (DhAlg a) = strToJSON a
+  toEncoding (DhAlg a) = strToJEncoding a
+
+instance FromJSON DhAlg where
+  parseJSON = strParseJSON "DhAlg"
 
 class AlgorithmI (a :: Algorithm) where sAlgorithm :: SAlgorithm a
 
@@ -426,6 +465,13 @@ instance AlgorithmI a => StrEncoding (PublicKey a) where
   strDecode = decodePubKey
   {-# INLINE strDecode #-}
 
+instance AlgorithmI a => ToJSON (PublicKey a) where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance AlgorithmI a => FromJSON (PublicKey a) where
+  parseJSON = strParseJSON "PublicKey"
+
 encodePubKey :: CryptoPublicKey pk => pk -> ByteString
 encodePubKey = toPubKey $ encodeASNObj . publicToX509
 {-# INLINE encodePubKey #-}
@@ -462,6 +508,13 @@ instance AlgorithmI a => IsString (PrivateKey a) where
 
 instance AlgorithmI a => IsString (PublicKey a) where
   fromString = parseString $ decode >=> decodePubKey
+
+instance AlgorithmI a => ToJSON (PrivateKey a) where
+  toJSON = strToJSON . strEncode . encodePrivKey
+  toEncoding = strToJEncoding . strEncode . encodePrivKey
+
+instance AlgorithmI a => FromJSON (PrivateKey a) where
+  parseJSON v = (decodePrivKey <=< U.decode) <$?> strParseJSON "PrivateKey" v
 
 -- | Tuple of RSA 'PublicKey' and 'PrivateKey'.
 type KeyPair a = (PublicKey a, PrivateKey a)
@@ -648,7 +701,14 @@ validSignatureSize n =
 
 -- | AES key newtype.
 newtype Key = Key {unKey :: ByteString}
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
+
+instance ToJSON Key where
+  toJSON = strToJSON . unKey
+  toEncoding = strToJEncoding . unKey
+
+instance FromJSON Key where
+  parseJSON = fmap Key . strParseJSON "Key"
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}

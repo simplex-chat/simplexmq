@@ -22,10 +22,12 @@ module Simplex.Messaging.Version
 where
 
 import Control.Applicative (optional)
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Word (Word16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Util ((<$?>))
 
 pattern VersionRange :: Word16 -> Word16 -> VersionRange
 pattern VersionRange v1 v2 <- VRange v1 v2
@@ -65,6 +67,15 @@ instance StrEncoding VersionRange where
     v1 <- strP
     v2 <- maybe (pure v1) (const strP) =<< optional (A.char '-')
     maybe (fail "invalid version range") pure $ safeVersionRange v1 v2
+
+instance ToJSON VersionRange where
+  toJSON (VRange v1 v2) = toJSON (v1, v2)
+  toEncoding (VRange v1 v2) = toEncoding (v1, v2)
+
+instance FromJSON VersionRange where
+  parseJSON v =
+    (\(v1, v2) -> maybe (Left "bad VersionRange") Right $ safeVersionRange v1 v2)
+      <$?> parseJSON v
 
 class VersionI a where
   type VersionRangeT a

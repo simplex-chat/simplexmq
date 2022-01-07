@@ -1,9 +1,12 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -14,14 +17,20 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import Crypto.Hash (SHA512)
 import qualified Crypto.KDF.HKDF as H
+import Data.Aeson (FromJSON, ToJSON, (.:), (.=))
+import qualified Data.Aeson as J
+import qualified Data.Aeson.Types as JT
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
+import Data.Type.Equality
 import Data.Word (Word32)
+import GHC.Generics
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseE, parseE')
 import Simplex.Messaging.Util (tryE)
 import Simplex.Messaging.Version
@@ -36,7 +45,7 @@ data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)
     rcVersion :: VersionRange,
     -- associated data - must be the same in both parties ratchets
-    rcAD :: ByteString,
+    rcAD :: Str,
     rcDHRs :: KeyPair a,
     rcRK :: RatchetKey,
     rcSnd :: Maybe (SndRatchet a),
@@ -47,17 +56,29 @@ data Ratchet a = Ratchet
     rcNHKs :: HeaderKey,
     rcNHKr :: HeaderKey
   }
+  deriving (Eq, Show, Generic, FromJSON)
+
+instance AlgorithmI a => ToJSON (Ratchet a) where
+  toEncoding = J.genericToEncoding J.defaultOptions
 
 data SndRatchet a = SndRatchet
   { rcDHRr :: PublicKey a,
     rcCKs :: RatchetKey,
     rcHKs :: HeaderKey
   }
+  deriving (Eq, Show, Generic, FromJSON)
+
+instance AlgorithmI a => ToJSON (SndRatchet a) where
+  toEncoding = J.genericToEncoding J.defaultOptions
 
 data RcvRatchet = RcvRatchet
   { rcCKr :: RatchetKey,
     rcHKr :: HeaderKey
   }
+  deriving (Eq, Show, Generic, FromJSON)
+
+instance ToJSON RcvRatchet where
+  toEncoding = J.genericToEncoding J.defaultOptions
 
 type SkippedMsgKeys = Map HeaderKey SkippedHdrMsgKeys
 
@@ -94,8 +115,34 @@ data ARatchet
     (AlgorithmI a, DhAlgorithm a) =>
     ARatchet (SAlgorithm a) (Ratchet a)
 
+instance Eq ARatchet where
+  ARatchet a r == ARatchet a' r' = case testEquality a a' of
+    Just Refl -> r == r'
+    _ -> False
+
+deriving instance Show ARatchet
+
+instance ToJSON ARatchet where
+  toJSON (ARatchet a r) = J.object ["algorithm" .= DhAlg a, "ratchet" .= r]
+  toEncoding (ARatchet a r) = J.pairs $ "algorithm" .= DhAlg a <> "ratchet" .= r
+
+instance FromJSON ARatchet where
+  parseJSON (J.Object v) = do
+    DhAlg a <- v .: "algorithm"
+    r <- v .: "ratchet"
+    pure $ ARatchet a r
+  parseJSON invalid = JT.prependFailure "bad ARatchet, " (JT.typeMismatch "Object" invalid)
+
 -- | Input key material for double ratchet HKDF functions
 newtype RatchetKey = RatchetKey ByteString
+  deriving (Eq, Show)
+
+instance ToJSON RatchetKey where
+  toJSON (RatchetKey k) = strToJSON k
+  toEncoding (RatchetKey k) = strToJEncoding k
+
+instance FromJSON RatchetKey where
+  parseJSON = fmap RatchetKey . strParseJSON "Key"
 
 -- | Sending ratchet initialization, equivalent to RatchetInitAliceHE in double ratchet spec
 --
@@ -111,7 +158,7 @@ initSndRatchet' rcDHRr sPKey salt rcAD = do
   pure
     Ratchet
       { rcVersion = e2eEncryptVRange,
-        rcAD,
+        rcAD = Str rcAD,
         rcDHRs,
         rcRK,
         rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs},
@@ -134,7 +181,7 @@ initRcvRatchet' sKey rcDHRs@(_, pk) salt rcAD = do
   pure
     Ratchet
       { rcVersion = e2eEncryptVRange,
-        rcAD,
+        rcAD = Str rcAD,
         rcDHRs,
         rcRK = sk,
         rcSnd = Nothing,
@@ -214,7 +261,7 @@ instance Encoding EncRatchetMessage where
 
 rcEncrypt' :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt' Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
-rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs, rcAD, rcVersion} paddedMsgLen msg = do
+rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs, rcAD = Str rcAD, rcVersion} paddedMsgLen msg = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
@@ -257,7 +304,7 @@ rcDecrypt' ::
   SkippedMsgKeys ->
   ByteString ->
   ExceptT CryptoError IO (DecryptResult a)
-rcDecrypt' rc@Ratchet {rcRcv, rcAD} rcMKSkipped msg' = do
+rcDecrypt' rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
   encMsg@EncRatchetMessage {emHeader} <- parseE CryptoHeaderError smpP msg'
   encHdr <- parseE CryptoHeaderError smpP emHeader
   -- plaintext = TrySkippedMessageKeysHE(state, enc_header, ciphertext, AD)

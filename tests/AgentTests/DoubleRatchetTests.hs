@@ -12,6 +12,8 @@ module AgentTests.DoubleRatchetTests where
 import Control.Concurrent.STM
 import Control.Monad.Except
 import Crypto.Random (getRandomBytes)
+import Data.Aeson (FromJSON, ToJSON)
+import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
@@ -37,6 +39,11 @@ doubleRatchetTests = do
       withRatchets @X25519 testManyMessages
     it "should allow skipped after ratchet advance" $ do
       withRatchets @X25519 testSkippedAfterRatchetAdvance
+    it "should encode/decode ratchet as JSON" $ do
+      testKeyJSON C.SX25519
+      testKeyJSON C.SX448
+      testRatchetJSON C.SX25519
+      testRatchetJSON C.SX448
 
 paddedMsgLen :: Int
 paddedMsgLen = 100
@@ -139,6 +146,24 @@ testSkippedAfterRatchetAdvance alice bob = do
   Decrypted "b11" <- decrypt alice b11
   pure ()
 
+testKeyJSON :: forall a. AlgorithmI a => C.SAlgorithm a -> IO ()
+testKeyJSON _ = do
+  (k, pk) <- C.generateKeyPair' @a
+  testEncodeDecode k
+  testEncodeDecode pk
+
+testRatchetJSON :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testRatchetJSON a = do
+  (alice, bob) <- initRatchets @a
+  testEncodeDecode $ ARatchet a alice
+  testEncodeDecode $ ARatchet a bob
+
+testEncodeDecode :: (Eq a, Show a, ToJSON a, FromJSON a) => a -> Expectation
+testEncodeDecode x = do
+  let j = J.encode x
+      x' = J.eitherDecode' j
+  x' `shouldBe` Right x
+
 (#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a, SkippedMsgKeys), ByteString) -> TVar (Ratchet a, SkippedMsgKeys) -> Expectation
 (alice, msg) #> bob = do
   Right msg' <- encrypt alice msg
@@ -180,13 +205,14 @@ decrypt :: (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a, SkippedMsgKeys) -> 
 decrypt = withTVar decrypt_
 
 withTVar ::
+  AlgorithmI a =>
   ((Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgDiff))) ->
   TVar (Ratchet a, SkippedMsgKeys) ->
   ByteString ->
   IO (Either e r)
 withTVar op rcVar msg =
   readTVarIO rcVar
-    >>= (\(rc, smks) -> applyDiff smks <$$> op (rc, smks) msg)
+    >>= (\(rc, smks) -> applyDiff smks <$$> (testEncodeDecode rc >> op (rc, smks) msg))
     >>= \case
       Right (res, rc', smks') -> atomically (writeTVar rcVar (rc', smks')) >> pure (Right res)
       Left e -> pure $ Left e
