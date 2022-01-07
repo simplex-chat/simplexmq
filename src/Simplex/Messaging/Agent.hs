@@ -560,10 +560,10 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                   agentMessage <- parseMessage agentMsgBody
                   case agentMessage of
                     AgentMessage' APrivHeader {sndMsgId, prevMsgHash} aMessage -> do
-                      msgMeta <- agentClientMsg' prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) agentMsgBody aMessage
+                      (msgId, msgMeta) <- agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) agentMsgBody aMessage
                       case aMessage of
-                        HELLO -> helloMsg >> ack
-                        REPLY cReq -> replyMsg cReq >> ack
+                        HELLO -> helloMsg >> ack >> withStore (\st -> deleteMsg st connId msgId)
+                        REPLY cReq -> replyMsg cReq >> ack >> withStore (\st -> deleteMsg st connId msgId)
                         -- note that there is no ACK sent here, it is sent with agent's user ACK command
                         A_MSG body -> notify $ MSG msgMeta body
                     _ -> prohibited >> ack
@@ -642,8 +642,8 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                   void $ enqueueMessage c connId sq HELLO
             _ -> prohibited
 
-        agentClientMsg' :: PrevRcvMsgHash -> ExternalSndId -> (BrokerId, BrokerTs) -> MsgBody -> AMessage -> m MsgMeta
-        agentClientMsg' externalPrevSndHash sndMsgId broker msgBody aMessage = do
+        agentClientMsg :: PrevRcvMsgHash -> ExternalSndId -> (BrokerId, BrokerTs) -> MsgBody -> AMessage -> m (InternalId, MsgMeta)
+        agentClientMsg externalPrevSndHash sndMsgId broker msgBody aMessage = do
           logServer "<--" c srv rId "MSG <MSG>"
           let internalHash = C.sha256Hash msgBody
           internalTs <- liftIO getCurrentTime
@@ -654,7 +654,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
               msgType = aMessageType aMessage
               rcvMsg = RcvMsgData {msgMeta, msgType, msgBody, internalRcvId, internalHash, externalPrevSndHash}
           withStore $ \st -> createRcvMsg st connId rcvMsg
-          pure msgMeta
+          pure (internalId, msgMeta)
 
         smpInvitation :: ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
         smpInvitation connReq cInfo = do
