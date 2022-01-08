@@ -23,16 +23,19 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Type.Equality
 import Data.Word (Word32)
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.Generics
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (parseE, parseE')
+import Simplex.Messaging.Parsers (blobFieldDecoder, parseE, parseE')
 import Simplex.Messaging.Util (tryE)
 import Simplex.Messaging.Version
 
@@ -111,6 +114,10 @@ type HeaderKey = Key
 
 data MessageKey = MessageKey Key IV
 
+instance Encoding MessageKey where
+  smpEncode (MessageKey (Key key) (IV iv)) = smpEncode (key, iv)
+  smpP = MessageKey <$> (Key <$> smpP) <*> (IV <$> smpP)
+
 data ARatchet
   = forall a.
     (AlgorithmI a, DhAlgorithm a) =>
@@ -144,6 +151,14 @@ instance ToJSON RatchetKey where
 
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
+
+instance ToField ARatchet where toField = toField . LB.toStrict . J.encode
+
+instance FromField ARatchet where fromField = blobFieldDecoder $ J.eitherDecode' . LB.fromStrict
+
+instance ToField MessageKey where toField = toField . smpEncode
+
+instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 
 -- | Sending ratchet initialization, equivalent to RatchetInitAliceHE in double ratchet spec
 --

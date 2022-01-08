@@ -704,6 +704,10 @@ validSignatureSize n =
 newtype Key = Key {unKey :: ByteString}
   deriving (Eq, Ord, Show)
 
+instance ToField Key where toField = toField . unKey
+
+instance FromField Key where fromField f = Key <$> fromField f
+
 instance ToJSON Key where
   toJSON = strToJSON . unKey
   toEncoding = strToJEncoding . unKey

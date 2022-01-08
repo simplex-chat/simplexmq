@@ -297,6 +297,8 @@ data StoreError
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.
     SEBadQueueStatus
+  | -- | connection does not have associated double-ratchet state
+    SERatchetNotFound
   | -- | Used in `getMsg` that is not implemented/used. TODO remove.
     SENotImplemented
   deriving (Eq, Show, Exception)

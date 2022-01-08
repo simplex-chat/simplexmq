@@ -8,6 +8,7 @@ module Simplex.Messaging.Encoding.String
     strToJSON,
     strToJEncoding,
     strParseJSON,
+    base64urlP,
   )
 where
 
@@ -42,6 +43,7 @@ class StrEncoding a where
 -- base64url encoding/decoding of ByteStrings - the parser only allows non-empty strings
 instance StrEncoding ByteString where
   strEncode = U.encode
+  strDecode = U.decode
   strP = base64urlP
 
 base64urlP :: Parser ByteString
