@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -22,6 +23,7 @@ import qualified Crypto.KDF.HKDF as H
 import Data.Aeson (FromJSON, ToJSON, (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
+import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -89,6 +91,47 @@ instance StrEncoding E2ERatchetParamsUri where
     case keys of
       [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
       _ -> fail "bad e2e params"
+
+generateE2EParams :: Version -> IO (KeyPair 'X448, KeyPair 'X448, E2ERatchetParams)
+generateE2EParams v = do
+  p1@(k1, _) <- generateKeyPair'
+  p2@(k2, _) <- generateKeyPair'
+  pure (p1, p2, E2ERatchetParams v k1 k2)
+
+data RatchetInitParams = RatchetInitParams
+  { sharedSecret :: ByteString,
+    assocData :: Str,
+    sndHK :: HeaderKey,
+    rcvNextHK :: HeaderKey
+  }
+
+x3dhSnd :: KeyPair 'X448 -> KeyPair 'X448 -> E2ERatchetParams -> RatchetInitParams
+x3dhSnd (sk1, spk1) (_, spk2) (E2ERatchetParams _ rk1 rk2) =
+  RatchetInitParams {assocData, sharedSecret, sndHK, rcvNextHK}
+  where
+    assocData = associatedData sk1 rk1
+    (sndHK, rcvNextHK, sharedSecret) = x3dh rk2 rk1 spk2 spk1
+
+x3dhRcv :: KeyPair 'X448 -> KeyPair 'X448 -> E2ERatchetParams -> RatchetInitParams
+x3dhRcv (rk1, rpk1) (_, rpk2) (E2ERatchetParams _ sk1 sk2) =
+  RatchetInitParams {assocData, sharedSecret, sndHK, rcvNextHK}
+  where
+    assocData = associatedData sk1 rk1
+    (sndHK, rcvNextHK, sharedSecret) = x3dh sk1 sk2 rpk1 rpk2
+
+-- TODO combine with x3dh
+associatedData :: PublicKeyX448 -> PublicKeyX448 -> Str
+associatedData (PublicKeyX448 k1) (PublicKeyX448 k1') =
+  Str $ BA.convert k1 <> BA.convert k1'
+
+x3dh :: PublicKeyX448 -> PublicKeyX448 -> PrivateKeyX448 -> PrivateKeyX448 -> (Key, Key, ByteString)
+x3dh k1 k2 pk1 pk2 = (Key hk, Key nhk, secret)
+  where
+    dh1 = dhSecretBytes' $ dh' k1 pk2
+    dh2 = dhSecretBytes' $ dh' k2 pk1
+    dh3 = dhSecretBytes' $ dh' k2 pk2
+    (hk, rest) = B.splitAt 32 $ dh1 <> dh2 <> dh3
+    (nhk, secret) = B.splitAt 32 rest
 
 data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)

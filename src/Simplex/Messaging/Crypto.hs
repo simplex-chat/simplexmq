@@ -473,7 +473,7 @@ instance AlgorithmI a => ToJSON (PublicKey a) where
 instance AlgorithmI a => FromJSON (PublicKey a) where
   parseJSON = strParseJSON "PublicKey"
 
-encodePubKey :: CryptoPublicKey pk => pk -> ByteString
+encodePubKey :: CryptoPublicKey k => k -> ByteString
 encodePubKey = toPubKey $ encodeASNObj . publicToX509
 {-# INLINE encodePubKey #-}
 
