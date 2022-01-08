@@ -117,15 +117,14 @@ CREATE TABLE conn_invitations (
 ) WITHOUT ROWID;
 
 CREATE TABLE ratchets (
-  ratchet_id INTEGER PRIMARY KEY,
-  conn_alias BLOB NOT NULL REFERENCES connections
+  conn_alias BLOB NOT NULL PRIMARY KEY REFERENCES connections
     ON DELETE CASCADE,
   ratchet BLOB NOT NULL
 );
 
 CREATE TABLE skipped_messages (
   skipped_message_id INTEGER PRIMARY KEY,
-  ratchet_id INTEGER NOT NULL REFERENCES ratchets
+  conn_alias BLOB NOT NULL REFERENCES ratchets
     ON DELETE CASCADE,
   header_key BLOB NOT NULL,
   msg_n INTEGER NOT NULL,

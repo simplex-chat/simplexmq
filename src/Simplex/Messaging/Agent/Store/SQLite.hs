@@ -38,7 +38,6 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
-import Data.Int (Int64)
 import Data.List (find, foldl')
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
@@ -56,7 +55,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (ARatchet, SkippedMsgDiff, SkippedMsgKeys)
+import Simplex.Messaging.Crypto.Ratchet (ARatchet, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldParser)
@@ -481,7 +480,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
   deleteMsg st connId msgId =
     liftIO . withTransaction st $ \db ->
-      DB.execute db "DELETE FROM messages WHERE conn_alias = ? AND internal_id = ?;" (connId, msgId)
+      DB.execute db "DELETE FROM messages WHERE conn_alias = ? AND internal_id = ?" (connId, msgId)
 
   createRatchet :: SQLiteStore -> ConnId -> ARatchet -> m ()
   createRatchet st connId ratchet =
@@ -491,23 +490,29 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getRatchet :: SQLiteStore -> ConnId -> m (ARatchet, SkippedMsgKeys)
   getRatchet st connId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
-      (rId, r) <-
+      (Only r) <-
         ExceptT . firstRow id SERatchetNotFound $
-          DB.query db "SELECT ratchet_id, ratchet FROM ratchets WHERE conn_alias = ? ORDER BY ratchet_id DESC LIMIT 1" (Only connId)
-      smks <- liftIO $ skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE ratchet_id = ?" (Only (rId :: Int64))
+          DB.query db "SELECT ratchet FROM ratchets WHERE conn_alias = ? ORDER BY ratchet_id DESC LIMIT 1" (Only connId)
+      smks <- liftIO $ skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_alias = ?" (Only connId)
       pure (r, smks)
     where
       skipped ms = foldl' addSkippedKey M.empty ms
       addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
         where
-          addMsgKey = \case
-            Nothing -> M.singleton msgN mk
-            Just mks -> M.insert msgN mk mks
+          addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
 
   updateRatchet :: SQLiteStore -> ConnId -> ARatchet -> SkippedMsgDiff -> m ()
-  updateRatchet _ _ _ _ = throwError SENotImplemented
-
--- liftIOEither . withTransaction st $ \db -> runExceptT $ do
+  updateRatchet st connId ratchet skipped =
+    liftIO . withTransaction st $ \db -> do
+      DB.execute db "UPDATE ratchets SET ratchet = ? WHERE conn_alias = ?" (ratchet, connId)
+      case skipped of
+        SMDNoChange -> pure ()
+        SMDRemove hk msgN ->
+          DB.execute db "DELETE FROM skipped_messages WHERE conn_alias = ? AND header_key = ? AND msg_n = ?" (connId, hk, msgN)
+        SMDAdd smks ->
+          forM_ (M.assocs smks) $ \(hk, mks) ->
+            forM_ (M.assocs mks) $ \(msgN, mk) ->
+              DB.execute db "INSERT INTO skipped_messages (conn_alias, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
 -- * Auxiliary helpers
 
