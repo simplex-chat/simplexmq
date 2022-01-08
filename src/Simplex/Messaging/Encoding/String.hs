@@ -27,7 +27,6 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Word (Word16)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
-import System.IO.Unsafe (unsafePerformIO)
 
 -- | Serializing human-readable and (where possible) URI-friendly strings for SMP and SMP agent protocols
 class StrEncoding a where

@@ -32,14 +32,16 @@ import Control.Exception (bracket)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
+import qualified Data.Aeson as J
 import Data.ByteString (ByteString)
-import Data.ByteString.Base64 (encode)
+import qualified Data.ByteString.Base64.URL as U
+import qualified Data.ByteString.Lazy as LB
 import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.List (find)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, ToRow, field)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
@@ -544,6 +546,10 @@ instance ToField (SConnectionMode c) where toField = toField . connMode
 
 instance FromField AConnectionMode where fromField = fromTextField_ $ fmap connMode' . connModeT
 
+instance ToField ARatchet where toField = toField . decodeLatin1 . LB.toStrict . J.encode
+
+instance FromField ARatchet where fromField = fromTextField_ $ J.decode' . LB.fromStrict . encodeUtf8
+
 fromTextField_ :: (E.Typeable a) => (Text -> Maybe a) -> Field -> Ok a
 fromTextField_ fromText = \case
   f@(Field (SQLText t) _) ->
@@ -894,4 +900,4 @@ createWithRandomId gVar create = tryCreate 3
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
+randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)

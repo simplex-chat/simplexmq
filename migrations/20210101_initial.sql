@@ -115,3 +115,19 @@ CREATE TABLE conn_invitations (
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 ) WITHOUT ROWID;
+
+CREATE TABLE ratchets (
+  ratchet_id INTEGER PRIMARY KEY,
+  conn_alias BLOB NOT NULL REFERENCES connections
+    ON DELETE CASCADE,
+  ratchet BLOB NOT NULL
+);
+
+CREATE TABLE skipped_messages (
+  skipped_message_id INTEGER PRIMARY KEY,
+  ratchet_id INTEGER NOT NULL REFERENCES ratchets
+    ON DELETE CASCADE,
+  header_key BLOB NOT NULL,
+  msg_n INTEGER NOT NULL,
+  msg_key BLOB NOT NULL
+);
