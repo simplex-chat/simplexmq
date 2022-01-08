@@ -71,7 +71,7 @@ executables:
       - cryptostore == 0.2.*
       - ini == 0.4.*
       - optparse-applicative >= 0.15 && < 0.17
-      - simplexmq
+      - simplexmq-legacy
     ghc-options:
       - -threaded
 
@@ -79,7 +79,7 @@ executables:
     source-dirs: apps/smp-agent
     main: Main.hs
     dependencies:
-      - simplexmq
+      - simplexmq-legacy
     ghc-options:
       - -threaded
 
@@ -88,7 +88,7 @@ tests:
     source-dirs: tests
     main: Test.hs
     dependencies:
-      - simplexmq
+      - simplexmq-legacy
       - hspec == 2.7.*
       - hspec-core == 2.7.*
       - HUnit == 1.6.*
