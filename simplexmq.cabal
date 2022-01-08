@@ -36,6 +36,7 @@ library
       Simplex.Messaging.Agent.Env.SQLite
       Simplex.Messaging.Agent.ExceptT
       Simplex.Messaging.Agent.Protocol
+      Simplex.Messaging.Agent.QueryString
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite

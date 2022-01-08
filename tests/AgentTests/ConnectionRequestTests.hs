@@ -9,7 +9,7 @@ import Data.ByteString (ByteString)
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (e2eEncryptVRange)
+import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (smpClientVersion)
 import Simplex.Messaging.Version

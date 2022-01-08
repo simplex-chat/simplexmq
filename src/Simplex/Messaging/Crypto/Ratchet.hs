@@ -9,6 +9,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 
 module Simplex.Messaging.Crypto.Ratchet where
@@ -32,6 +33,7 @@ import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.Generics
+import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -44,6 +46,49 @@ e2eEncryptVersion = 1
 
 e2eEncryptVRange :: VersionRange
 e2eEncryptVRange = mkVersionRange 1 e2eEncryptVersion
+
+data E2ERatchetParams
+  = E2ERatchetParams Version PublicKeyX448 PublicKeyX448
+  deriving (Eq, Show)
+
+instance Encoding E2ERatchetParams where
+  smpEncode (E2ERatchetParams v k1 k2) = smpEncode (v, k1, k2)
+  smpP = E2ERatchetParams <$> smpP <*> smpP <*> smpP
+
+instance VersionI E2ERatchetParams where
+  type VersionRangeT E2ERatchetParams = E2ERatchetParamsUri
+  version (E2ERatchetParams v _ _) = v
+  toVersionRangeT (E2ERatchetParams _ k1 k2) vr = E2ERatchetParamsUri vr k1 k2
+
+instance VersionRangeI E2ERatchetParamsUri where
+  type VersionT E2ERatchetParamsUri = E2ERatchetParams
+  versionRange (E2ERatchetParamsUri vr _ _) = vr
+  toVersionT (E2ERatchetParamsUri _ k1 k2) v = E2ERatchetParams v k1 k2
+
+data E2ERatchetParamsUri
+  = E2ERatchetParamsUri VersionRange PublicKeyX448 PublicKeyX448
+  deriving (Eq, Show)
+
+connEncStubUri :: E2ERatchetParamsUri
+connEncStubUri = E2ERatchetParamsUri e2eEncryptVRange stubDhPubKey stubDhPubKey
+
+connEncStub :: E2ERatchetParams
+connEncStub = E2ERatchetParams e2eEncryptVersion stubDhPubKey stubDhPubKey
+
+stubDhPubKey :: PublicKeyX448
+stubDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
+
+instance StrEncoding E2ERatchetParamsUri where
+  strEncode (E2ERatchetParamsUri vs key1 key2) =
+    strEncode $
+      QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncode [key1, key2])]
+  strP = do
+    query <- strP
+    vs <- queryParam "v" query
+    keys <- queryParam "x3dh" query
+    case keys of
+      [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
+      _ -> fail "bad e2e params"
 
 data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)

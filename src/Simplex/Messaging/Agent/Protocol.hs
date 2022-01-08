@@ -61,8 +61,6 @@ module Simplex.Messaging.Agent.Protocol
     AConnectionRequestUri (..),
     ConnReqUriData (..),
     ConnReqScheme (..),
-    E2ERatchetParams (..),
-    E2ERatchetParamsUri (..),
     simplexChat,
     AgentErrorType (..),
     CommandErrorType (..),
@@ -80,9 +78,6 @@ module Simplex.Messaging.Agent.Protocol
     QueueStatus (..),
     ACorrId,
     AgentMsgId,
-    -- TODO remove
-    connEncStubUri,
-    connEncStub,
 
     -- * Encode/decode
     serializeCommand,
@@ -119,7 +114,6 @@ import Data.Composition ((.:))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
-import Data.List (find)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -129,11 +123,12 @@ import Data.Type.Equality
 import Data.Typeable ()
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
-import qualified Network.HTTP.Types as Q
+import Simplex.Messaging.Agent.QueryString
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers
+import Simplex.Messaging.Parsers (base64P, parse, parseRead, parseRead1, parseRead2, tsISO8601P)
 import Simplex.Messaging.Protocol
   ( ErrorType,
     MsgBody,
@@ -326,49 +321,6 @@ instance Encoding AgentMsgEnvelope where
         pure AgentInvitation' {agentVersion, connReq, connInfo}
       _ -> fail "bad AgentMsgEnvelope"
 
-data E2ERatchetParams
-  = E2ERatchetParams Version C.PublicKeyX448 C.PublicKeyX448
-  deriving (Eq, Show)
-
-instance Encoding E2ERatchetParams where
-  smpEncode (E2ERatchetParams v k1 k2) = smpEncode (v, k1, k2)
-  smpP = E2ERatchetParams <$> smpP <*> smpP <*> smpP
-
-instance VersionI E2ERatchetParams where
-  type VersionRangeT E2ERatchetParams = E2ERatchetParamsUri
-  version (E2ERatchetParams v _ _) = v
-  toVersionRangeT (E2ERatchetParams _ k1 k2) vr = E2ERatchetParamsUri vr k1 k2
-
-instance VersionRangeI E2ERatchetParamsUri where
-  type VersionT E2ERatchetParamsUri = E2ERatchetParams
-  versionRange (E2ERatchetParamsUri vr _ _) = vr
-  toVersionT (E2ERatchetParamsUri _ k1 k2) v = E2ERatchetParams v k1 k2
-
-data E2ERatchetParamsUri
-  = E2ERatchetParamsUri VersionRange C.PublicKeyX448 C.PublicKeyX448
-  deriving (Eq, Show)
-
-connEncStubUri :: E2ERatchetParamsUri
-connEncStubUri = E2ERatchetParamsUri smpAgentVRange stubDhPubKey stubDhPubKey
-
-connEncStub :: E2ERatchetParams
-connEncStub = E2ERatchetParams smpAgentVersion stubDhPubKey stubDhPubKey
-
-stubDhPubKey :: C.PublicKeyX448
-stubDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
-
-instance StrEncoding E2ERatchetParamsUri where
-  strEncode (E2ERatchetParamsUri vs key1 key2) =
-    strEncode $
-      QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncode [key1, key2])]
-  strP = do
-    query <- strP
-    vs <- queryParam "v" query
-    keys <- queryParam "x3dh" query
-    case keys of
-      [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
-      _ -> fail "bad e2e params"
-
 -- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
 data AgentMessage' = AgentConnInfo ConnInfo | AgentMessage' APrivHeader AMessage
@@ -439,26 +391,6 @@ instance Encoding AMessage where
         HELLO_ -> pure HELLO
         REPLY_ -> REPLY <$> smpP
         A_MSG_ -> A_MSG . unTail <$> smpP
-
-data QueryStringParams = QSP QSPEscaping Q.SimpleQuery
-  deriving (Show)
-
-data QSPEscaping = QEscape | QNoEscaping
-  deriving (Show)
-
-instance StrEncoding QueryStringParams where
-  strEncode (QSP esc q) = case esc of
-    QEscape -> Q.renderSimpleQuery False q
-    QNoEscaping ->
-      Q.renderQueryPartialEscape False $
-        map (\(n, v) -> (n, [Q.QN v])) q
-  strP = QSP QEscape . Q.parseSimpleQuery <$> A.takeTill (\c -> c == ' ' || c == '\n')
-
-queryParam :: StrEncoding a => ByteString -> QueryStringParams -> Parser a
-queryParam name (QSP _ q) =
-  case find ((== name) . fst) q of
-    Just (_, p) -> either fail pure $ parseAll strP p
-    _ -> fail $ "no qs param " <> B.unpack name
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case

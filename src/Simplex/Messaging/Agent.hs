@@ -82,6 +82,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
@@ -274,7 +275,7 @@ newConn c connId cMode = do
   addSubscription c rq connId'
   let crData = ConnReqUriData simplexChat smpAgentVRange [qUri]
   pure . (connId',) $ case cMode of
-    SCMInvitation -> CRInvitationUri crData connEncStubUri
+    SCMInvitation -> CRInvitationUri crData CR.connEncStubUri
     SCMContact -> CRContactUri crData
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
@@ -678,7 +679,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
 
 confirmQueue :: AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> m ()
 confirmQueue c sq smpConf = do
-  sendConfirmation c sq smpConf connEncStub
+  sendConfirmation c sq smpConf CR.connEncStub
   withStore $ \st -> setSndQueueStatus st sq Confirmed
 
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()

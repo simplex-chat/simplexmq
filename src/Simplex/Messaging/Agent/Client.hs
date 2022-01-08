@@ -60,6 +60,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -308,7 +309,7 @@ logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
 -- TODO maybe package E2ERatchetParams into SMPConfirmation
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> E2ERatchetParams -> m ()
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> CR.E2ERatchetParams -> m ()
 sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEncryption =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation
