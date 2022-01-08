@@ -58,8 +58,8 @@ instance StrEncoding Str where
   strP = Str <$> A.takeTill (== ' ') <* optional A.space
 
 instance ToJSON Str where
-  toJSON = strToJSON . unStr
-  toEncoding = strToJEncoding . unStr
+  toJSON (Str s) = strToJSON s
+  toEncoding (Str s) = strToJEncoding s
 
 instance FromJSON Str where
   parseJSON = fmap Str . strParseJSON "Str"
