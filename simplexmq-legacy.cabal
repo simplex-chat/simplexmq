@@ -3,10 +3,8 @@ cabal-version: 1.12
 -- This file has been generated from package.yaml by hpack version 0.34.4.
 --
 -- see: https://github.com/sol/hpack
---
--- hash: f5e649e0c359792d9528dec6e6cf07af772a521d746e66b8cc2b86d8c604afb2
 
-name:           simplexmq
+name:           simplexmq-legacy
 version:        0.5.2
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -59,7 +57,7 @@ library
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
   other-modules:
-      Paths_simplexmq
+      Paths_simplexmq_legacy
   hs-source-dirs:
       src
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
@@ -105,7 +103,7 @@ library
 executable smp-agent
   main-is: Main.hs
   other-modules:
-      Paths_simplexmq
+      Paths_simplexmq_legacy
   hs-source-dirs:
       apps/smp-agent
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
@@ -152,7 +150,7 @@ executable smp-agent
 executable smp-server
   main-is: Main.hs
   other-modules:
-      Paths_simplexmq
+      Paths_simplexmq_legacy
   hs-source-dirs:
       apps/smp-server
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
@@ -211,7 +209,7 @@ test-suite smp-server-test
       ServerTests
       SMPAgentClient
       SMPClient
-      Paths_simplexmq
+      Paths_simplexmq_legacy
   hs-source-dirs:
       tests
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns

@@ -1,4 +1,4 @@
-name: simplexmq
+name: simplexmq-legacy
 version: 0.5.2
 synopsis: SimpleXMQ message broker
 description:  |
