@@ -136,7 +136,7 @@ testForeignKeysEnabled =
     let inconsistentQuery =
           [sql|
             INSERT INTO snd_queues
-              ( host, port, snd_id, conn_alias, snd_private_key, e2e_dh_secret, status)
+              ( host, port, snd_id, conn_id, snd_private_key, e2e_dh_secret, status)
             VALUES
               ('smp.simplex.im', '5223', '1234', '2345', x'', x'', 'new');
           |]
@@ -413,9 +413,8 @@ testCreateRcvMsg =
     g <- newTVarIO =<< drgNew
     let ConnData {connId} = cData1
     _ <- runExceptT $ createRcvConn st g cData1 rcvQueue1 SCMInvitation
-    -- TODO getMsg to check message
-    testCreateRcvMsg_ st 0 "" connId $ mkRcvMsgData (InternalId $ -2) (InternalRcvId 1) 1 "1" "hash_dummy"
-    testCreateRcvMsg_ st 1 "hash_dummy" connId $ mkRcvMsgData (InternalId $ -1) (InternalRcvId 2) 2 "2" "new_hash_dummy"
+    testCreateRcvMsg_ st 0 "" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "hash_dummy"
+    testCreateRcvMsg_ st 1 "hash_dummy" connId $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "new_hash_dummy"
 
 mkSndMsgData :: InternalId -> InternalSndId -> MsgHash -> SndMsgData
 mkSndMsgData internalId internalSndId internalHash =
@@ -442,9 +441,8 @@ testCreateSndMsg =
     g <- newTVarIO =<< drgNew
     let ConnData {connId} = cData1
     _ <- runExceptT $ createSndConn store g cData1 sndQueue1
-    -- TODO getMsg to check message
-    testCreateSndMsg_ store "" connId $ mkSndMsgData (InternalId $ -2) (InternalSndId 1) "hash_dummy"
-    testCreateSndMsg_ store "hash_dummy" connId $ mkSndMsgData (InternalId $ -1) (InternalSndId 2) "new_hash_dummy"
+    testCreateSndMsg_ store "" connId $ mkSndMsgData (InternalId 1) (InternalSndId 1) "hash_dummy"
+    testCreateSndMsg_ store "hash_dummy" connId $ mkSndMsgData (InternalId 2) (InternalSndId 2) "new_hash_dummy"
 
 testCreateRcvAndSndMsgs :: SpecWith SQLiteStore
 testCreateRcvAndSndMsgs =
@@ -453,9 +451,9 @@ testCreateRcvAndSndMsgs =
     let ConnData {connId} = cData1
     _ <- runExceptT $ createRcvConn store g cData1 rcvQueue1 SCMInvitation
     _ <- runExceptT $ upgradeRcvConnToDuplex store "conn1" sndQueue1
-    testCreateRcvMsg_ store 0 "" connId $ mkRcvMsgData (InternalId $ -2) (InternalRcvId 1) 1 "1" "rcv_hash_1"
-    testCreateRcvMsg_ store 1 "rcv_hash_1" connId $ mkRcvMsgData (InternalId $ -1) (InternalRcvId 2) 2 "2" "rcv_hash_2"
-    testCreateSndMsg_ store "" connId $ mkSndMsgData (InternalId 0) (InternalSndId 1) "snd_hash_1"
-    testCreateRcvMsg_ store 2 "rcv_hash_2" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 3) 3 "3" "rcv_hash_3"
-    testCreateSndMsg_ store "snd_hash_1" connId $ mkSndMsgData (InternalId 2) (InternalSndId 2) "snd_hash_2"
-    testCreateSndMsg_ store "snd_hash_2" connId $ mkSndMsgData (InternalId 3) (InternalSndId 3) "snd_hash_3"
+    testCreateRcvMsg_ store 0 "" connId $ mkRcvMsgData (InternalId 1) (InternalRcvId 1) 1 "1" "rcv_hash_1"
+    testCreateRcvMsg_ store 1 "rcv_hash_1" connId $ mkRcvMsgData (InternalId 2) (InternalRcvId 2) 2 "2" "rcv_hash_2"
+    testCreateSndMsg_ store "" connId $ mkSndMsgData (InternalId 3) (InternalSndId 1) "snd_hash_1"
+    testCreateRcvMsg_ store 2 "rcv_hash_2" connId $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
+    testCreateSndMsg_ store "snd_hash_1" connId $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
+    testCreateSndMsg_ store "snd_hash_2" connId $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"

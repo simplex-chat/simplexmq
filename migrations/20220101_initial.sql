@@ -6,9 +6,9 @@ CREATE TABLE servers (
 ) WITHOUT ROWID;
 
 CREATE TABLE connections (
-  conn_alias BLOB NOT NULL PRIMARY KEY,
+  conn_id BLOB NOT NULL PRIMARY KEY,
   conn_mode TEXT NOT NULL,
-  last_internal_msg_id INTEGER NOT NULL DEFAULT -3,
+  last_internal_msg_id INTEGER NOT NULL DEFAULT 0,
   last_internal_rcv_msg_id INTEGER NOT NULL DEFAULT 0,
   last_internal_snd_msg_id INTEGER NOT NULL DEFAULT 0,
   last_external_snd_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -22,7 +22,7 @@ CREATE TABLE rcv_queues (
   host TEXT NOT NULL,
   port TEXT,
   rcv_id BLOB NOT NULL,
-  conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   rcv_private_key BLOB NOT NULL,
   rcv_dh_secret BLOB NOT NULL,
   e2e_priv_key BLOB NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE snd_queues (
   host TEXT NOT NULL,
   port TEXT,
   snd_id BLOB NOT NULL,
-  conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   snd_private_key BLOB NOT NULL,
   e2e_dh_secret BLOB NOT NULL,
   status TEXT NOT NULL,
@@ -54,7 +54,7 @@ CREATE TABLE snd_queues (
 ) WITHOUT ROWID;
 
 CREATE TABLE messages (
-  conn_alias BLOB NOT NULL REFERENCES connections (conn_alias)
+  conn_id BLOB NOT NULL REFERENCES connections (conn_id)
     ON DELETE CASCADE,
   internal_id INTEGER NOT NULL,
   internal_ts TEXT NOT NULL,
@@ -62,15 +62,15 @@ CREATE TABLE messages (
   internal_snd_id INTEGER,
   msg_type BLOB NOT NULL, -- (H)ELLO, (R)EPLY, (D)ELETE. Should SMP confirmation be saved too?
   msg_body BLOB NOT NULL DEFAULT x'',
-  PRIMARY KEY (conn_alias, internal_id),
-  FOREIGN KEY (conn_alias, internal_rcv_id) REFERENCES rcv_messages
+  PRIMARY KEY (conn_id, internal_id),
+  FOREIGN KEY (conn_id, internal_rcv_id) REFERENCES rcv_messages
     ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
-  FOREIGN KEY (conn_alias, internal_snd_id) REFERENCES snd_messages
+  FOREIGN KEY (conn_id, internal_snd_id) REFERENCES snd_messages
     ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) WITHOUT ROWID;
 
 CREATE TABLE rcv_messages (
-  conn_alias BLOB NOT NULL,
+  conn_id BLOB NOT NULL,
   internal_rcv_id INTEGER NOT NULL,
   internal_id INTEGER NOT NULL,
   external_snd_id INTEGER NOT NULL,
@@ -79,25 +79,25 @@ CREATE TABLE rcv_messages (
   internal_hash BLOB NOT NULL,
   external_prev_snd_hash BLOB NOT NULL,
   integrity BLOB NOT NULL,
-  PRIMARY KEY (conn_alias, internal_rcv_id),
-  FOREIGN KEY (conn_alias, internal_id) REFERENCES messages
+  PRIMARY KEY (conn_id, internal_rcv_id),
+  FOREIGN KEY (conn_id, internal_id) REFERENCES messages
     ON DELETE CASCADE
 ) WITHOUT ROWID;
 
 CREATE TABLE snd_messages (
-  conn_alias BLOB NOT NULL,
+  conn_id BLOB NOT NULL,
   internal_snd_id INTEGER NOT NULL,
   internal_id INTEGER NOT NULL,
   internal_hash BLOB NOT NULL,
   previous_msg_hash BLOB NOT NULL DEFAULT x'',
-  PRIMARY KEY (conn_alias, internal_snd_id),
-  FOREIGN KEY (conn_alias, internal_id) REFERENCES messages
+  PRIMARY KEY (conn_id, internal_snd_id),
+  FOREIGN KEY (conn_id, internal_id) REFERENCES messages
     ON DELETE CASCADE
 ) WITHOUT ROWID;
 
 CREATE TABLE conn_confirmations (
   confirmation_id BLOB NOT NULL PRIMARY KEY,
-  conn_alias BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   e2e_snd_pub_key BLOB NOT NULL,
   sender_key BLOB NOT NULL,
   sender_conn_info BLOB NOT NULL,
@@ -117,14 +117,14 @@ CREATE TABLE conn_invitations (
 ) WITHOUT ROWID;
 
 CREATE TABLE ratchets (
-  conn_alias BLOB NOT NULL PRIMARY KEY REFERENCES connections
+  conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections
     ON DELETE CASCADE,
   ratchet BLOB NOT NULL
 );
 
 CREATE TABLE skipped_messages (
   skipped_message_id INTEGER PRIMARY KEY,
-  conn_alias BLOB NOT NULL REFERENCES ratchets
+  conn_id BLOB NOT NULL REFERENCES ratchets
     ON DELETE CASCADE,
   header_key BLOB NOT NULL,
   msg_n INTEGER NOT NULL,
