@@ -176,13 +176,15 @@ newtype ConnData = ConnData {connId :: ConnId}
 
 data NewConfirmation = NewConfirmation
   { connId :: ConnId,
-    senderConf :: SMPConfirmation
+    senderConf :: SMPConfirmation,
+    ratchetState :: RatchetX448
   }
 
 data AcceptedConfirmation = AcceptedConfirmation
   { confirmationId :: ConfirmationId,
     connId :: ConnId,
     senderConf :: SMPConfirmation,
+    ratchetState :: RatchetX448,
     ownConnInfo :: ConnInfo
   }
 

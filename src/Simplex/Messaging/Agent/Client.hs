@@ -22,10 +22,9 @@ module Simplex.Messaging.Agent.Client
     RetryInterval (..),
     secureQueue,
     sendAgentMessage,
-    agentRatchetEncrypt,
-    agentRatchetDecrypt,
     agentCbEncrypt,
     agentCbDecrypt,
+    cryptoError,
     sendAck,
     suspendQueue,
     deleteQueue,
@@ -60,9 +59,8 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Protocol (MsgBody, QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import Simplex.Messaging.Version
@@ -259,7 +257,7 @@ newRcvQueue_ a c srv = do
             sndId = Just sndId,
             status = New
           }
-  pure (rq, SMPQueueUri srv sndId SMP.smpClientVersion e2eDhKey)
+  pure (rq, SMPQueueUri srv sndId SMP.smpClientVRange e2eDhKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
@@ -309,23 +307,10 @@ logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
 -- TODO maybe package E2ERatchetParams into SMPConfirmation
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> CR.E2ERatchetParams 'C.X448 -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEncryption =
-  withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
-    msg <- mkConfirmation
-    liftSMP $ sendSMPMessage smp Nothing sndId msg
-  where
-    mkConfirmation :: m MsgBody
-    mkConfirmation = do
-      encConnInfo <- agentRatchetEncrypt . smpEncode $ AgentConnInfo connInfo
-      let agentEnvelope =
-            AgentConfirmation
-              { agentVersion = smpAgentVersion,
-                e2eEncryption,
-                encConnInfo
-              }
-      agentCbEncrypt sq (Just e2ePubKey) . smpEncode $
-        SMP.ClientMessage (SMP.PHConfirmation senderKey) $ smpEncode agentEnvelope
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
+sendConfirmation c SndQueue {server, sndId} encConfirmation =
+  withLogSMP_ c server sndId "SEND <CONF>" $ \smp ->
+    liftSMP $ sendSMPMessage smp Nothing sndId encConfirmation
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} connReq connInfo = do
@@ -368,14 +353,6 @@ sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} agentMsg =
     msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
     liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
--- encoded AgentMessage' -> encoded EncAgentMessage
-agentRatchetEncrypt :: AgentMonad m => ByteString -> m ByteString
-agentRatchetEncrypt = pure
-
--- encoded EncAgentMessage -> encoded AgentMessage'
-agentRatchetDecrypt :: AgentMonad m => ByteString -> m ByteString
-agentRatchetDecrypt = pure
-
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do
   cmNonce <- liftIO C.randomCbNonce
@@ -383,7 +360,7 @@ agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do
     liftEither . first cryptoError $
       C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) e2ePubKey
+  let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVRange) e2ePubKey
   pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 -- add encoding as AgentInvitation'?
@@ -396,7 +373,7 @@ agentCbEncryptOnce dhRcvPubKey msg = do
     liftEither . first cryptoError $
       C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncMessageLength
   -- TODO per-queue client version
-  let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVersion) (Just dhSndPubKey)
+  let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVRange) (Just dhSndPubKey)
   pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 -- | NaCl crypto-box decrypt - both for messages received from the server

@@ -284,7 +284,7 @@ data SMPConfirmation = SMPConfirmation
 data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: Version,
-        e2eEncryption :: E2ERatchetParams 'C.X448,
+        e2eEncryption :: Maybe (E2ERatchetParams 'C.X448),
         encConnInfo :: ByteString
       }
   | AgentMsgEnvelope
@@ -478,11 +478,11 @@ instance VersionI SMPQueueInfo where
   type VersionRangeT SMPQueueInfo = SMPQueueUri
   version = clientVersion
   toVersionRangeT SMPQueueInfo {smpServer, senderId, dhPublicKey} vr =
-    SMPQueueUri {clientVersionRange = vr, smpServer, senderId, dhPublicKey}
+    SMPQueueUri {clientVRange = vr, smpServer, senderId, dhPublicKey}
 
 instance VersionRangeI SMPQueueUri where
   type VersionT SMPQueueUri = SMPQueueInfo
-  versionRange = clientVersionRange
+  versionRange = clientVRange
   toVersionT SMPQueueUri {smpServer, senderId, dhPublicKey} v =
     SMPQueueInfo {clientVersion = v, smpServer, senderId, dhPublicKey}
 
@@ -492,7 +492,7 @@ instance VersionRangeI SMPQueueUri where
 data SMPQueueUri = SMPQueueUri
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    clientVersionRange :: VersionRange,
+    clientVRange :: VersionRange,
     dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)
@@ -500,15 +500,15 @@ data SMPQueueUri = SMPQueueUri
 -- TODO change SMP queue URI format to include version range and allow unknown parameters
 instance StrEncoding SMPQueueUri where
   -- v1 uses short SMP queue URI format
-  strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVersionRange = _vr, dhPublicKey = k} =
+  strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVRange = _vr, dhPublicKey = k} =
     strEncode srv <> "/" <> strEncode qId <> "#" <> strEncode k
   strP = do
     smpServer <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
     (vr, dhPublicKey) <- unversioned <|> versioned
-    pure SMPQueueUri {smpServer, senderId, clientVersionRange = vr, dhPublicKey}
+    pure SMPQueueUri {smpServer, senderId, clientVRange = vr, dhPublicKey}
     where
-      unversioned = (SMP.smpClientVersion,) <$> strP <* A.endOfInput
+      unversioned = (SMP.smpClientVRange,) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP

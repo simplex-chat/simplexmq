@@ -11,7 +11,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (smpClientVersion)
+import Simplex.Messaging.Protocol (smpClientVRange)
 import Simplex.Messaging.Version
 import Test.Hspec
 
@@ -31,7 +31,7 @@ queue =
   SMPQueueUri
     { smpServer = srv,
       senderId = "\223\142z\251",
-      clientVersionRange = smpClientVersion,
+      clientVRange = smpClientVRange,
       dhPublicKey = testDhKey
     }
 
@@ -79,7 +79,7 @@ connectionRequestTests =
     it "should serialize SMP queue URIs" $ do
       strEncode (queue :: SMPQueueUri) {smpServer = srv {port = Nothing}}
         `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr
-      strEncode queue {clientVersionRange = mkVersionRange 1 2}
+      strEncode queue {clientVRange = mkVersionRange 1 2}
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
     it "should parse SMP queue URIs" $ do
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1&dh=" <> testDhKeyStr)
@@ -91,9 +91,9 @@ connectionRequestTests =
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1&extra_param=abc")
         `shouldBe` Right queue
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?extra_param=abc&v=1-2&dh=" <> testDhKeyStr)
-        `shouldBe` Right queue {clientVersionRange = mkVersionRange 1 2}
+        `shouldBe` Right queue {clientVRange = mkVersionRange 1 2}
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-2&extra_param=abc")
-        `shouldBe` Right queue {clientVersionRange = mkVersionRange 1 2}
+        `shouldBe` Right queue {clientVRange = mkVersionRange 1 2}
     it "should serialize connection requests" $ do
       strEncode connectionRequest
         `shouldBe` "https://simplex.chat/invitation#/?v=1&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"

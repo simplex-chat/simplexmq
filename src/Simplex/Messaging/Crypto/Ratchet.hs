@@ -324,9 +324,9 @@ instance Encoding EncRatchetMessage where
     emAuthTag <- smpP
     pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
-rcEncrypt' :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
-rcEncrypt' Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
-rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg = do
+rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
+rcEncrypt Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
+rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
@@ -362,14 +362,14 @@ type DecryptResult a = (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff
 maxSkip :: Word32
 maxSkip = 512
 
-rcDecrypt' ::
+rcDecrypt ::
   forall a.
   (AlgorithmI a, DhAlgorithm a) =>
   Ratchet a ->
   SkippedMsgKeys ->
   ByteString ->
   ExceptT CryptoError IO (DecryptResult a)
-rcDecrypt' rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
+rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
   encMsg@EncRatchetMessage {emHeader} <- parseE CryptoHeaderError smpP msg'
   encHdr <- parseE CryptoHeaderError smpP emHeader
   -- plaintext = TrySkippedMessageKeysHE(state, enc_header, ciphertext, AD)

@@ -200,7 +200,7 @@ initRatchets = do
 
 encrypt_ :: AlgorithmI a => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
 encrypt_ (rc, _) msg =
-  runExceptT (rcEncrypt' rc paddedMsgLen msg)
+  runExceptT (rcEncrypt rc paddedMsgLen msg)
     >>= either (pure . Left) checkLength
   where
     checkLength (msg', rc') = do
@@ -208,7 +208,7 @@ encrypt_ (rc, _) msg =
       pure $ Right (msg', rc', SMDNoChange)
 
 decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
-decrypt_ (rc, smks) msg = runExceptT $ rcDecrypt' rc smks msg
+decrypt_ (rc, smks) msg = runExceptT $ rcDecrypt rc smks msg
 
 encrypt :: AlgorithmI a => TVar (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError ByteString)
 encrypt = withTVar encrypt_

@@ -278,16 +278,16 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}} =
+  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}, ratchetState} =
     liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \confirmationId ->
         DB.execute
           db
           [sql|
             INSERT INTO conn_confirmations
-            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
+            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
           |]
-          (confirmationId, connId, senderKey, e2ePubKey, connInfo)
+          (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo)
 
   acceptConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
   acceptConfirmation st confirmationId ownConnInfo =
@@ -307,17 +307,18 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         DB.query
           db
           [sql|
-            SELECT conn_id, sender_key, e2e_snd_pub_key, sender_conn_info
+            SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info
             FROM conn_confirmations
             WHERE confirmation_id = ?;
           |]
           (Only confirmationId)
     where
-      confirmation (connId, senderKey, e2ePubKey, connInfo) =
+      confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo) =
         AcceptedConfirmation
           { confirmationId,
             connId,
             senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
+            ratchetState,
             ownConnInfo
           }
 
@@ -328,17 +329,18 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         DB.query
           db
           [sql|
-            SELECT confirmation_id, sender_key, e2e_snd_pub_key, sender_conn_info, own_conn_info
+            SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, own_conn_info
             FROM conn_confirmations
             WHERE conn_id = ? AND accepted = 1;
           |]
           (Only connId)
     where
-      confirmation (confirmationId, senderKey, e2ePubKey, connInfo, ownConnInfo) =
+      confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, ownConnInfo) =
         AcceptedConfirmation
           { confirmationId,
             connId,
             senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
+            ratchetState,
             ownConnInfo
           }
 
