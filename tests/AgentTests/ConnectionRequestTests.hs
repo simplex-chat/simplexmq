@@ -63,12 +63,12 @@ testE2ERatchetParams13 = E2ERatchetParamsUri (mkVersionRange 1 3) testDhPubKey t
 
 connectionRequest :: AConnectionRequestUri
 connectionRequest =
-  ACRU SCMInvitation $
+  ACR SCMInvitation $
     CRInvitationUri connReqData testE2ERatchetParams
 
 connectionRequest12 :: AConnectionRequestUri
 connectionRequest12 =
-  ACRU SCMInvitation $
+  ACR SCMInvitation $
     CRInvitationUri
       connReqData {crAgentVRange = mkVersionRange 1 2, crSmpQueues = [queue, queue]}
       testE2ERatchetParams13

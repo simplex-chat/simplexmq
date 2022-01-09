@@ -254,8 +254,8 @@ withStore action = do
 -- | execute any SMP agent command
 processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
 processCommand c (connId, cmd) = case cmd of
-  NEW (ACM cMode) -> second (INV . ACRU cMode) <$> newConn c connId cMode
-  JOIN (ACRU _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
+  NEW (ACM cMode) -> second (INV . ACR cMode) <$> newConn c connId cMode
+  JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
   LET confId ownCInfo -> allowConnection' c connId confId ownCInfo $> (connId, OK)
   ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId invId ownCInfo
   RJCT invId -> rejectContact' c connId invId $> (connId, OK)
@@ -278,7 +278,7 @@ newConn c connId cMode = do
     SCMContact -> pure (connId', CRContactUri crData)
     SCMInvitation -> do
       (pk1, pk2, e2eRcvParams) <- liftIO $ CR.generateE2EParams CR.e2eEncryptVersion
-      withStore $ \st -> createRatchetX3dhKeys st connId pk1 pk2
+      withStore $ \st -> createRatchetX3dhKeys st connId' pk1 pk2
       pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams CR.e2eEncryptVRange)
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
@@ -297,7 +297,7 @@ joinConn c connId (CRInvitationUri (ConnReqUriData _ _ (qUri :| _)) e2eRcvParams
       let cData = ConnData {connId}
       connId' <- withStore $ \st -> do
         connId' <- createSndConn st g cData sq
-        createRatchet st connId rc
+        createRatchet st connId' rc
         pure connId'
       confirmQueue c connId' sq smpConf $ Just e2eSndParams
       void $ enqueueMessage c connId' sq HELLO
@@ -323,7 +323,8 @@ allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> C
 allowConnection' c connId confId ownConnInfo = do
   withStore (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection _ rq) -> do
-      AcceptedConfirmation {senderConf} <- withStore $ \st -> acceptConfirmation st confId ownConnInfo
+      AcceptedConfirmation {senderConf, ratchetState} <- withStore $ \st -> acceptConfirmation st confId ownConnInfo
+      withStore $ \st -> createRatchet st connId ratchetState
       processConfirmation c rq senderConf
     _ -> throwError $ CMD PROHIBITED
 
@@ -398,7 +399,7 @@ enqueueMessage c connId sq aMessage = do
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- withStore (`updateSndIds` connId)
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
-          agentMessage = smpEncode $ AgentMessage' privHeader aMessage
+          agentMessage = smpEncode $ AgentMessage privHeader aMessage
           internalHash = C.sha256Hash agentMessage
 
       encAgentMessage <- agentRatchetEncrypt connId agentMessage
@@ -554,62 +555,17 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
             (Nothing, Just e2ePubKey) -> do
               let e2eDh = C.dh' e2ePubKey e2ePrivKey
               decryptClientMessage e2eDh clientMsg >>= \case
-                (SMP.PHConfirmation senderKey, AgentConfirmation {agentVersion = _v, e2eEncryption, encConnInfo}) -> do
-                  logServer "<--" c srv rId "MSG <CONF>"
-                  case status of
-                    New -> case (cType, e2eEncryption) of
-                      (SCRcv, Just e2eSndParams) -> do
-                        (pk1, rcDHRs) <- withStore $ \st -> getRatchetX3dhKeys st connId
-                        let rc = CR.initRcvRatchet rcDHRs $ CR.x3dhRcv pk1 rcDHRs e2eSndParams
-                        (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt rc M.empty encConnInfo
-                        -- TODO fail if `skipped` is other than SMDNoChange here
-                        case (agentMsgBody_, skipped) of
-                          (Right agentMsgBody, CR.SMDNoChange) -> do
-                            agentMessage <- parseMessage agentMsgBody
-                            case agentMessage of
-                              AgentConnInfo connInfo -> do
-                                -- smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
-                                g <- asks idsDrg
-                                let senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}
-                                    newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
-                                confId <- withStore $ \st -> createConfirmation st g newConfirmation
-                                notify $ CONF confId connInfo
-                                -- the end of smpConfirmation SCRcv branch
-                                ack
-                              _ -> prohibited >> ack
-                          _ -> prohibited >> ack
-                      (SCDuplex, Nothing) -> do
-                        agentMsgBody <- agentRatchetDecrypt connId encConnInfo
-                        agentMessage <- parseMessage agentMsgBody
-                        case agentMessage of
-                          AgentConnInfo connInfo -> do
-                            -- smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
-                            let senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}
-                            notify $ INFO connInfo
-                            processConfirmation c rq senderConf
-                            -- the end of smpConfirmation SCDuplex branch
-                            ack
-                          _ -> prohibited >> ack
-                      _ -> prohibited >> ack
-                    _ -> prohibited >> ack
-
-                -- agentMsgBody <- agentRatchetDecrypt encConnInfo
-                -- agentMessage <- parseMessage agentMsgBody
-                -- case agentMessage of
-                --   AgentConnInfo connInfo -> do
-                --     smpConfirmation SMPConfirmation {senderKey, e2ePubKey, connInfo}
-                --     ack
-                --   _ -> prohibited >> ack
-                (SMP.PHEmpty, AgentInvitation' {agentVersion = _v, connReq, connInfo}) ->
+                (SMP.PHConfirmation senderKey, AgentConfirmation {agentVersion = _v, e2eEncryption, encConnInfo}) ->
+                  smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo >> ack
+                (SMP.PHEmpty, AgentInvitation {agentVersion = _v, connReq, connInfo}) ->
                   smpInvitation connReq connInfo >> ack
                 _ -> prohibited >> ack
             (Just e2eDh, Nothing) -> do
               decryptClientMessage e2eDh clientMsg >>= \case
                 (SMP.PHEmpty, AgentMsgEnvelope _v encAgentMsg) -> do
                   agentMsgBody <- agentRatchetDecrypt connId encAgentMsg
-                  agentMessage <- parseMessage agentMsgBody
-                  case agentMessage of
-                    AgentMessage' APrivHeader {sndMsgId, prevMsgHash} aMessage -> do
+                  parseMessage agentMsgBody >>= \case
+                    AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage -> do
                       (msgId, msgMeta) <- agentClientMsg prevMsgHash sndMsgId (srvMsgId, systemToUTCTime srvTs) agentMsgBody aMessage
                       case aMessage of
                         HELLO -> helloMsg >> ack >> withStore (\st -> deleteMsg st connId msgId)
@@ -649,21 +605,34 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         parseMessage :: Encoding a => ByteString -> m a
         parseMessage = liftEither . parse smpP (AGENT A_MESSAGE)
 
-        -- smpConfirmation :: SMPConfirmation -> m ()
-        -- smpConfirmation senderConf@SMPConfirmation {connInfo} = do
-        --   -- logServer "<--" c srv rId "MSG <KEY>"
-        --   case status of
-        --     New -> case cType of
-        --       SCRcv -> do
-        --         g <- asks idsDrg
-        --         let newConfirmation = NewConfirmation {connId, senderConf}
-        --         confId <- withStore $ \st -> createConfirmation st g newConfirmation
-        --         notify $ CONF confId connInfo
-        --       SCDuplex -> do
-        --         notify $ INFO connInfo
-        --         processConfirmation c rq senderConf
-        --       _ -> prohibited
-        --     _ -> prohibited
+        smpConfirmation :: C.APublicVerifyKey -> C.PublicKeyX25519 -> Maybe (CR.E2ERatchetParams 'C.X448) -> ByteString -> m ()
+        smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo = do
+          logServer "<--" c srv rId "MSG <CONF>"
+          case status of
+            New -> case (cType, e2eEncryption) of
+              (SCRcv, Just e2eSndParams) -> do
+                (pk1, rcDHRs) <- withStore $ \st -> getRatchetX3dhKeys st connId
+                let rc = CR.initRcvRatchet rcDHRs $ CR.x3dhRcv pk1 rcDHRs e2eSndParams
+                (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt rc M.empty encConnInfo
+                case (agentMsgBody_, skipped) of
+                  (Right agentMsgBody, CR.SMDNoChange) ->
+                    parseMessage agentMsgBody >>= \case
+                      AgentConnInfo connInfo -> do
+                        g <- asks idsDrg
+                        let senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}
+                            newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
+                        confId <- withStore $ \st -> createConfirmation st g newConfirmation
+                        notify $ CONF confId connInfo
+                      _ -> prohibited
+                  _ -> prohibited
+              (SCDuplex, Nothing) -> do
+                agentRatchetDecrypt connId encConnInfo >>= parseMessage >>= \case
+                  AgentConnInfo connInfo -> do
+                    notify $ INFO connInfo
+                    processConfirmation c rq $ SMPConfirmation {senderKey, e2ePubKey, connInfo}
+                  _ -> prohibited
+              _ -> prohibited
+            _ -> prohibited
 
         helloMsg :: m ()
         helloMsg = do
@@ -683,7 +652,7 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
             SCRcv -> do
               AcceptedConfirmation {ownConnInfo} <- withStore (`getAcceptedConfirmation` connId)
               case qInfo `proveCompatible` SMP.smpClientVRange of
-                Nothing -> notify (ERR $ AGENT A_VERSION) >> ack
+                Nothing -> notify . ERR $ AGENT A_VERSION
                 Just qInfo' -> do
                   (sq, smpConf) <- newSndQueue qInfo' ownConnInfo
                   withStore $ \st -> upgradeRcvConnToDuplex st connId sq
@@ -744,24 +713,21 @@ confirmQueue c connId sq SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEnc
       agentCbEncrypt sq (Just e2ePubKey) . smpEncode $
         SMP.ClientMessage (SMP.PHConfirmation senderKey) $ smpEncode agentEnvelope
 
--- encoded AgentMessage' -> encoded EncAgentMessage
+-- encoded AgentMessage -> encoded EncAgentMessage
 agentRatchetEncrypt :: AgentMonad m => ConnId -> ByteString -> m ByteString
 agentRatchetEncrypt connId msg = do
   (rc, _) <- withStore $ \st -> getRatchet st connId
-  (encMsg, rc') <- liftError cryptoError $ CR.rcEncrypt rc 15000 msg
+  (encMsg, rc') <- liftError cryptoError $ CR.rcEncrypt rc 200 msg
   withStore $ \st -> updateRatchet st connId rc' CR.SMDNoChange
   pure encMsg
 
--- encoded EncAgentMessage -> encoded AgentMessage'
+-- encoded EncAgentMessage -> encoded AgentMessage
 agentRatchetDecrypt :: AgentMonad m => ConnId -> ByteString -> m ByteString
 agentRatchetDecrypt connId encAgentMsg = do
   (rc, skipped) <- withStore $ \st -> getRatchet st connId
   (agentMsgBody_, rc', skippedDiff) <- liftError cryptoError $ CR.rcDecrypt rc skipped encAgentMsg
   withStore $ \st -> updateRatchet st connId rc' skippedDiff
   liftEither $ first cryptoError agentMsgBody_
-
--- withStore $ \st -> updateRatchet st connId rc' skippedDiff
--- liftEither $ first cryptoError msg_
 
 notifyConnected :: AgentMonad m => AgentClient -> ConnId -> m ()
 notifyConnected c connId = atomically $ writeTBQueue (subQ c) ("", connId, CON)

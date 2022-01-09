@@ -32,6 +32,7 @@ import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Control.Monad.Trans.Except (throwE)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
@@ -285,7 +286,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           db
           [sql|
             INSERT INTO conn_confirmations
-            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
+            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, ?, 0);
           |]
           (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo)
 
@@ -491,9 +492,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getRatchetX3dhKeys :: SQLiteStore -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
   getRatchetX3dhKeys st connId =
-    liftIOEither . withTransaction st $ \db -> do
-      firstRow id SERatchetNotFound $
-        DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2 FROM ratchets WHERE conn_id = ?" (Only connId)
+    liftIOEither . withTransaction st $ \db ->
+      fmap hasKeys $
+        firstRow id SEX3dhKeysNotFound $
+          DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2 FROM ratchets WHERE conn_id = ?" (Only connId)
+    where
+      hasKeys = \case
+        Right (Just k1, Just k2) -> Right (k1, k2)
+        _ -> Left SEX3dhKeysNotFound
 
   createRatchet :: SQLiteStore -> ConnId -> RatchetX448 -> m ()
   createRatchet st connId rc =
@@ -513,11 +519,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getRatchet :: SQLiteStore -> ConnId -> m (RatchetX448, SkippedMsgKeys)
   getRatchet st connId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
-      r <-
+      rc_ <-
         ExceptT . firstRow fromOnly SERatchetNotFound $
           DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
-      smks <- liftIO $ skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
-      pure (r, smks)
+      case rc_ of
+        Just rc -> do
+          smks <- liftIO $ skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
+          pure (rc, smks)
+        _ -> throwE SERatchetNotFound
     where
       skipped ms = foldl' addSkippedKey M.empty ms
       addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks

@@ -125,7 +125,7 @@ CREATE TABLE ratchets (
   x3dh_priv_key_2 BLOB,
   -- ratchet is initially empty on the receiving side (the side offering the connection)
   ratchet_state BLOB
-);
+) WITHOUT ROWID;
 
 CREATE TABLE skipped_messages (
   skipped_message_id INTEGER PRIMARY KEY,

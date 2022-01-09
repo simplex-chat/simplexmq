@@ -303,6 +303,8 @@ data StoreError
     SEBadQueueStatus
   | -- | connection does not have associated double-ratchet state
     SERatchetNotFound
+  | -- | connection does not have associated x3dh keys
+    SEX3dhKeysNotFound
   | -- | Used in `getMsg` that is not implemented/used. TODO remove.
     SENotImplemented
   deriving (Eq, Show, Exception)

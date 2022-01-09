@@ -372,7 +372,7 @@ rcDecrypt ::
 rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
   encMsg@EncRatchetMessage {emHeader} <- parseE CryptoHeaderError smpP msg'
   encHdr <- parseE CryptoHeaderError smpP emHeader
-  -- plaintext = TrySkippedMessageKeysHE(state, enc_header, ciphertext, AD)
+  -- plaintext = TrySkippedMessageKeysHE(state, enc_header, cipher-text, AD)
   decryptSkipped encHdr encMsg >>= \case
     SMNone -> do
       (rcStep, hdr) <- decryptRcHeader rcRcv encHdr
@@ -392,7 +392,7 @@ rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
         Right (rc''@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr}, rcNr}, smks2) -> do
           -- state.CKr, mk = KDF_CK(state.CKr)
           let (rcCKr', mk, iv, _) = chainKdf rcCKr
-          -- return DECRYPT (mk, ciphertext, CONCAT (AD, enc_header))
+          -- return DECRYPT (mk, cipher-text, CONCAT (AD, enc_header))
           msg <- decryptMessage (MessageKey mk iv) encMsg
           -- state . Nr += 1
           pure (msg, rc'' {rcRcv = Just rr {rcCKr = rcCKr'}, rcNr = rcNr + 1}, smkDiff $ smks1 <> smks2)
@@ -477,7 +477,7 @@ rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
       parseE' CryptoHeaderError smpP header
     decryptMessage :: MessageKey -> EncRatchetMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
     decryptMessage (MessageKey mk iv) EncRatchetMessage {emHeader, emBody, emAuthTag} =
-      -- DECRYPT(mk, ciphertext, CONCAT(AD, enc_header))
+      -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))
       -- TODO add associated data
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
 
