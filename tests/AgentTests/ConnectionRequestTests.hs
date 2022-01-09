@@ -55,10 +55,10 @@ connReqData =
 testDhPubKey :: C.PublicKeyX448
 testDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
 
-testE2ERatchetParams :: E2ERatchetParamsUri
+testE2ERatchetParams :: E2ERatchetParamsUri 'C.X448
 testE2ERatchetParams = E2ERatchetParamsUri e2eEncryptVRange testDhPubKey testDhPubKey
 
-testE2ERatchetParams13 :: E2ERatchetParamsUri
+testE2ERatchetParams13 :: E2ERatchetParamsUri 'C.X448
 testE2ERatchetParams13 = E2ERatchetParamsUri (mkVersionRange 1 3) testDhPubKey testDhPubKey
 
 connectionRequest :: AConnectionRequestUri

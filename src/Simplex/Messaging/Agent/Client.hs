@@ -309,7 +309,7 @@ logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
 -- TODO maybe package E2ERatchetParams into SMPConfirmation
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> CR.E2ERatchetParams -> m ()
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SMPConfirmation -> CR.E2ERatchetParams 'C.X448 -> m ()
 sendConfirmation c sq@SndQueue {server, sndId} SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEncryption =
   withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
     msg <- mkConfirmation

@@ -23,7 +23,6 @@ import qualified Crypto.KDF.HKDF as H
 import Data.Aeson (FromJSON, ToJSON, (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
-import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -49,38 +48,38 @@ e2eEncryptVersion = 1
 e2eEncryptVRange :: VersionRange
 e2eEncryptVRange = mkVersionRange 1 e2eEncryptVersion
 
-data E2ERatchetParams
-  = E2ERatchetParams Version PublicKeyX448 PublicKeyX448
+data E2ERatchetParams (a :: Algorithm)
+  = E2ERatchetParams Version (PublicKey a) (PublicKey a)
   deriving (Eq, Show)
 
-instance Encoding E2ERatchetParams where
+instance AlgorithmI a => Encoding (E2ERatchetParams a) where
   smpEncode (E2ERatchetParams v k1 k2) = smpEncode (v, k1, k2)
   smpP = E2ERatchetParams <$> smpP <*> smpP <*> smpP
 
-instance VersionI E2ERatchetParams where
-  type VersionRangeT E2ERatchetParams = E2ERatchetParamsUri
+instance VersionI (E2ERatchetParams a) where
+  type VersionRangeT (E2ERatchetParams a) = E2ERatchetParamsUri a
   version (E2ERatchetParams v _ _) = v
   toVersionRangeT (E2ERatchetParams _ k1 k2) vr = E2ERatchetParamsUri vr k1 k2
 
-instance VersionRangeI E2ERatchetParamsUri where
-  type VersionT E2ERatchetParamsUri = E2ERatchetParams
+instance VersionRangeI (E2ERatchetParamsUri a) where
+  type VersionT (E2ERatchetParamsUri a) = (E2ERatchetParams a)
   versionRange (E2ERatchetParamsUri vr _ _) = vr
   toVersionT (E2ERatchetParamsUri _ k1 k2) v = E2ERatchetParams v k1 k2
 
-data E2ERatchetParamsUri
-  = E2ERatchetParamsUri VersionRange PublicKeyX448 PublicKeyX448
+data E2ERatchetParamsUri (a :: Algorithm)
+  = E2ERatchetParamsUri VersionRange (PublicKey a) (PublicKey a)
   deriving (Eq, Show)
 
-connEncStubUri :: E2ERatchetParamsUri
+connEncStubUri :: E2ERatchetParamsUri 'X448
 connEncStubUri = E2ERatchetParamsUri e2eEncryptVRange stubDhPubKey stubDhPubKey
 
-connEncStub :: E2ERatchetParams
+connEncStub :: E2ERatchetParams 'X448
 connEncStub = E2ERatchetParams e2eEncryptVersion stubDhPubKey stubDhPubKey
 
 stubDhPubKey :: PublicKeyX448
 stubDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
 
-instance StrEncoding E2ERatchetParamsUri where
+instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
   strEncode (E2ERatchetParamsUri vs key1 key2) =
     strEncode $
       QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncode [key1, key2])]
@@ -92,11 +91,11 @@ instance StrEncoding E2ERatchetParamsUri where
       [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
       _ -> fail "bad e2e params"
 
-generateE2EParams :: Version -> IO (KeyPair 'X448, KeyPair 'X448, E2ERatchetParams)
+generateE2EParams :: (AlgorithmI a, DhAlgorithm a) => Version -> IO (PrivateKey a, PrivateKey a, E2ERatchetParams a)
 generateE2EParams v = do
-  p1@(k1, _) <- generateKeyPair'
-  p2@(k2, _) <- generateKeyPair'
-  pure (p1, p2, E2ERatchetParams v k1 k2)
+  (k1, pk1) <- generateKeyPair'
+  (k2, pk2) <- generateKeyPair'
+  pure (pk1, pk2, E2ERatchetParams v k1 k2)
 
 data RatchetInitParams = RatchetInitParams
   { sharedSecret :: ByteString,
@@ -104,41 +103,30 @@ data RatchetInitParams = RatchetInitParams
     sndHK :: HeaderKey,
     rcvNextHK :: HeaderKey
   }
+  deriving (Eq, Show)
 
-x3dhSnd :: KeyPair 'X448 -> KeyPair 'X448 -> E2ERatchetParams -> RatchetInitParams
-x3dhSnd (sk1, spk1) (_, spk2) (E2ERatchetParams _ rk1 rk2) =
-  RatchetInitParams {assocData, sharedSecret, sndHK, rcvNextHK}
+x3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
+x3dhSnd spk1 spk2 (E2ERatchetParams _ rk1 rk2) =
+  x3dh (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2)
+
+x3dhRcv :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> E2ERatchetParams a -> RatchetInitParams
+x3dhRcv rpk1 rpk2 (E2ERatchetParams _ sk1 sk2) =
+  x3dh (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2)
+
+x3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
+x3dh (sk1, rk1) dh1 dh2 dh3 =
+  RatchetInitParams {assocData, sharedSecret, sndHK = Key hk, rcvNextHK = Key nhk}
   where
-    assocData = associatedData sk1 rk1
-    (sndHK, rcvNextHK, sharedSecret) = x3dh rk2 rk1 spk2 spk1
-
-x3dhRcv :: KeyPair 'X448 -> KeyPair 'X448 -> E2ERatchetParams -> RatchetInitParams
-x3dhRcv (rk1, rpk1) (_, rpk2) (E2ERatchetParams _ sk1 sk2) =
-  RatchetInitParams {assocData, sharedSecret, sndHK, rcvNextHK}
-  where
-    assocData = associatedData sk1 rk1
-    (sndHK, rcvNextHK, sharedSecret) = x3dh sk1 sk2 rpk1 rpk2
-
--- TODO combine with x3dh
-associatedData :: PublicKeyX448 -> PublicKeyX448 -> Str
-associatedData (PublicKeyX448 k1) (PublicKeyX448 k1') =
-  Str $ BA.convert k1 <> BA.convert k1'
-
-x3dh :: PublicKeyX448 -> PublicKeyX448 -> PrivateKeyX448 -> PrivateKeyX448 -> (Key, Key, ByteString)
-x3dh k1 k2 pk1 pk2 = (Key hk, Key nhk, secret)
-  where
-    dh1 = dhSecretBytes' $ dh' k1 pk2
-    dh2 = dhSecretBytes' $ dh' k2 pk1
-    dh3 = dhSecretBytes' $ dh' k2 pk2
-    (hk, rest) = B.splitAt 32 $ dh1 <> dh2 <> dh3
-    (nhk, secret) = B.splitAt 32 rest
+    assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
+    (hk, rest) = B.splitAt 32 $ dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
+    (nhk, sharedSecret) = B.splitAt 32 rest
 
 data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)
     rcVersion :: VersionRange,
     -- associated data - must be the same in both parties ratchets
     rcAD :: Str,
-    rcDHRs :: KeyPair a,
+    rcDHRs :: PrivateKey a,
     rcRK :: RatchetKey,
     rcSnd :: Maybe (SndRatchet a),
     rcRcv :: Maybe RcvRatchet,
@@ -252,50 +240,45 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 --
 -- Please note that sPKey is not stored, and its public part together with random salt
 -- is sent to the recipient.
-initSndRatchet' ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> ByteString -> ByteString -> IO (Ratchet a)
-initSndRatchet' rcDHRr sPKey salt rcAD = do
-  rcDHRs@(_, pk) <- generateKeyPair' @a
-  let (sk, rcHKs, rcNHKr) = initKdf salt rcDHRr sPKey
-      -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
-      (rcRK, rcCKs, rcNHKs) = rootKdf sk rcDHRr pk
-  pure
-    Ratchet
-      { rcVersion = e2eEncryptVRange,
-        rcAD = Str rcAD,
-        rcDHRs,
-        rcRK,
-        rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs},
-        rcRcv = Nothing,
-        rcPN = 0,
-        rcNs = 0,
-        rcNr = 0,
-        rcNHKs,
-        rcNHKr
-      }
+initSndRatchet ::
+  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
+initSndRatchet rcDHRr rcDHRs RatchetInitParams {sharedSecret, assocData, sndHK, rcvNextHK} = do
+  -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
+  let (rcRK, rcCKs, rcNHKs) = rootKdf (RatchetKey sharedSecret) rcDHRr rcDHRs
+   in Ratchet
+        { rcVersion = e2eEncryptVRange,
+          rcAD = assocData,
+          rcDHRs,
+          rcRK,
+          rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs = sndHK},
+          rcRcv = Nothing,
+          rcPN = 0,
+          rcNs = 0,
+          rcNr = 0,
+          rcNHKs,
+          rcNHKr = rcvNextHK
+        }
 
 -- | Receiving ratchet initialization, equivalent to RatchetInitBobHE in double ratchet spec
 --
 -- Please note that the public part of rcDHRs was sent to the sender
 -- as part of the connection request and random salt was received from the sender.
-initRcvRatchet' ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> KeyPair a -> ByteString -> ByteString -> IO (Ratchet a)
-initRcvRatchet' sKey rcDHRs@(_, pk) salt rcAD = do
-  let (sk, rcNHKr, rcNHKs) = initKdf salt sKey pk
-  pure
-    Ratchet
-      { rcVersion = e2eEncryptVRange,
-        rcAD = Str rcAD,
-        rcDHRs,
-        rcRK = sk,
-        rcSnd = Nothing,
-        rcRcv = Nothing,
-        rcPN = 0,
-        rcNs = 0,
-        rcNr = 0,
-        rcNHKs,
-        rcNHKr
-      }
+initRcvRatchet ::
+  forall a. (AlgorithmI a, DhAlgorithm a) => PrivateKey a -> RatchetInitParams -> Ratchet a
+initRcvRatchet rcDHRs RatchetInitParams {sharedSecret, assocData, sndHK, rcvNextHK} =
+  Ratchet
+    { rcVersion = e2eEncryptVRange,
+      rcAD = assocData,
+      rcDHRs,
+      rcRK = RatchetKey sharedSecret,
+      rcSnd = Nothing,
+      rcRcv = Nothing,
+      rcPN = 0,
+      rcNs = 0,
+      rcNr = 0,
+      rcNHKs = rcvNextHK,
+      rcNHKr = sndHK
+    }
 
 data MsgHeader a = MsgHeader
   { -- | max supported ratchet version
@@ -365,7 +348,7 @@ instance Encoding EncRatchetMessage where
 
 rcEncrypt' :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)
 rcEncrypt' Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
-rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs, rcAD = Str rcAD, rcVersion} paddedMsgLen msg = do
+rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcNs, rcPN, rcAD = Str rcAD, rcVersion} paddedMsgLen msg = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
   -- enc_header = HENCRYPT(state.HKs, header)
@@ -383,8 +366,8 @@ rcEncrypt' rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcNs, rcAD = S
       smpEncode
         MsgHeader
           { msgMaxVersion = maxVersion rcVersion,
-            msgDHRs = fst $ rcDHRs rc,
-            msgPN = rcPN rc,
+            msgDHRs = publicKey rcDHRs,
+            msgPN = rcPN,
             msgNs = rcNs
           }
 
@@ -448,11 +431,11 @@ rcDecrypt' rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
             Left e -> throwE e
             Right (rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr}, hmks) -> do
               -- DHRatchetHE(state, header)
-              rcDHRs' <- liftIO $ generateKeyPair' @a
+              (_, rcDHRs') <- liftIO $ generateKeyPair' @a
               -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))
-              let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs (snd rcDHRs)
+              let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs
                   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr))
-                  (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs (snd rcDHRs')
+                  (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs'
                   rc'' =
                     rc'
                       { rcDHRs = rcDHRs',
@@ -520,15 +503,9 @@ rcDecrypt' rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
       -- TODO add associated data
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
 
-initKdf :: (AlgorithmI a, DhAlgorithm a) => ByteString -> PublicKey a -> PrivateKey a -> (RatchetKey, Key, Key)
-initKdf salt k pk =
-  let dhOut = dhSecretBytes' $ dh' k pk
-      (sk, hk, nhk) = hkdf3 salt dhOut "SimpleXInitRatchet"
-   in (RatchetKey sk, Key hk, Key nhk)
-
 rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> (RatchetKey, RatchetKey, Key)
 rootKdf (RatchetKey rk) k pk =
-  let dhOut = dhSecretBytes' $ dh' k pk
+  let dhOut = dhBytes' $ dh' k pk
       (rk', ck, nhk) = hkdf3 rk dhOut "SimpleXRootRatchet"
    in (RatchetKey rk', RatchetKey ck, Key nhk)
 

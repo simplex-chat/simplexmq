@@ -11,7 +11,6 @@ module AgentTests.DoubleRatchetTests where
 
 import Control.Concurrent.STM
 import Control.Monad.Except
-import Crypto.Random (getRandomBytes)
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
@@ -44,6 +43,9 @@ doubleRatchetTests = do
       testKeyJSON C.SX448
       testRatchetJSON C.SX25519
       testRatchetJSON C.SX448
+    it "should agree the same ratchet parameters" $ do
+      testX3dh C.SX25519
+      testX3dh C.SX448
 
 paddedMsgLen :: Int
 paddedMsgLen = 100
@@ -164,6 +166,14 @@ testEncodeDecode x = do
       x' = J.eitherDecode' j
   x' `shouldBe` Right x
 
+testX3dh :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testX3dh _ = do
+  (pkBob1, pkBob2, e2eBob) <- generateE2EParams @a e2eEncryptVersion
+  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams @a e2eEncryptVersion
+  let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
+      paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
+  paramsAlice `shouldBe` paramsBob
+
 (#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a, SkippedMsgKeys), ByteString) -> TVar (Ratchet a, SkippedMsgKeys) -> Expectation
 (alice, msg) #> bob = do
   Right msg' <- encrypt alice msg
@@ -179,11 +189,13 @@ withRatchets test = do
 
 initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
 initRatchets = do
-  salt <- getRandomBytes 16
-  (ak, apk) <- C.generateKeyPair'
-  (bk, bpk) <- C.generateKeyPair'
-  bob <- initSndRatchet' ak bpk salt "bob -> alice"
-  alice <- initRcvRatchet' bk (ak, apk) salt "bob -> alice"
+  (pkBob1, pkBob2, e2eBob) <- generateE2EParams e2eEncryptVersion
+  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams e2eEncryptVersion
+  let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
+      paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
+  (_, pkBob3) <- C.generateKeyPair'
+  let bob = initSndRatchet (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet pkAlice2 paramsAlice
   pure (alice, bob)
 
 encrypt_ :: AlgorithmI a => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))

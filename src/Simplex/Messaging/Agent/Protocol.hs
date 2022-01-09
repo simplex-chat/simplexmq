@@ -284,7 +284,7 @@ data SMPConfirmation = SMPConfirmation
 data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: Version,
-        e2eEncryption :: E2ERatchetParams,
+        e2eEncryption :: E2ERatchetParams 'C.X448,
         encConnInfo :: ByteString
       }
   | AgentMsgEnvelope
@@ -397,7 +397,7 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
     CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
     CRContactUri crData -> crEncode "contact" crData Nothing
     where
-      crEncode :: ByteString -> ConnReqUriData -> Maybe E2ERatchetParamsUri -> ByteString
+      crEncode :: ByteString -> ConnReqUriData -> Maybe (E2ERatchetParamsUri 'C.X448) -> ByteString
       crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues} e2eParams =
         strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
@@ -517,7 +517,7 @@ instance StrEncoding SMPQueueUri where
         pure (vr, dhKey)
 
 data ConnectionRequestUri (m :: ConnectionMode) where
-  CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri -> ConnectionRequestUri CMInvitation
+  CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
   -- contact connection request does NOT contain E2E encryption parameters -
   -- they are passed in AgentInvitation message
   CRContactUri :: ConnReqUriData -> ConnectionRequestUri CMContact
