@@ -98,8 +98,8 @@ CREATE TABLE snd_messages (
 CREATE TABLE conn_confirmations (
   confirmation_id BLOB NOT NULL PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  e2e_snd_pub_key BLOB NOT NULL,
-  sender_key BLOB NOT NULL,
+  e2e_snd_pub_key BLOB NOT NULL, -- TODO per-queue key. Split?
+  sender_key BLOB NOT NULL, -- TODO per-queue key. Split?
   sender_conn_info BLOB NOT NULL,
   accepted INTEGER NOT NULL,
   own_conn_info BLOB,
@@ -119,7 +119,11 @@ CREATE TABLE conn_invitations (
 CREATE TABLE ratchets (
   conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections
     ON DELETE CASCADE,
-  ratchet BLOB NOT NULL
+  -- x3dh keys are not saved on the sending side (the side accepting the connection)
+  x3dh_priv_key_1 BLOB,
+  x3dh_priv_key_2 BLOB,
+  -- ratchet is initially empty on the receiving side (the side offering the connection)
+  ratchet_state BLOB
 );
 
 CREATE TABLE skipped_messages (

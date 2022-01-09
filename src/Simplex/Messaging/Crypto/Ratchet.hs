@@ -20,16 +20,15 @@ import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import Crypto.Hash (SHA512)
 import qualified Crypto.KDF.HKDF as H
-import Data.Aeson (FromJSON, ToJSON, (.:), (.=))
+import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
-import qualified Data.Aeson.Types as JT
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
-import Data.Type.Equality
+import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -121,6 +120,8 @@ x3dh (sk1, rk1) dh1 dh2 dh3 =
     (hk, rest) = B.splitAt 32 $ dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
     (nhk, sharedSecret) = B.splitAt 32 rest
 
+type RatchetX448 = Ratchet 'X448
+
 data Ratchet a = Ratchet
   { -- ratchet version range sent in messages (current .. max supported ratchet version)
     rcVersion :: VersionRange,
@@ -194,29 +195,6 @@ instance Encoding MessageKey where
   smpEncode (MessageKey (Key key) (IV iv)) = smpEncode (key, iv)
   smpP = MessageKey <$> (Key <$> smpP) <*> (IV <$> smpP)
 
-data ARatchet
-  = forall a.
-    (AlgorithmI a, DhAlgorithm a) =>
-    ARatchet (SAlgorithm a) (Ratchet a)
-
-instance Eq ARatchet where
-  ARatchet a r == ARatchet a' r' = case testEquality a a' of
-    Just Refl -> r == r'
-    _ -> False
-
-deriving instance Show ARatchet
-
-instance ToJSON ARatchet where
-  toJSON (ARatchet a r) = J.object ["algorithm" .= DhAlg a, "ratchet" .= r]
-  toEncoding (ARatchet a r) = J.pairs $ "algorithm" .= DhAlg a <> "ratchet" .= r
-
-instance FromJSON ARatchet where
-  parseJSON (J.Object v) = do
-    DhAlg a <- v .: "algorithm"
-    r <- v .: "ratchet"
-    pure $ ARatchet a r
-  parseJSON invalid = JT.prependFailure "bad ARatchet, " (JT.typeMismatch "Object" invalid)
-
 -- | Input key material for double ratchet HKDF functions
 newtype RatchetKey = RatchetKey ByteString
   deriving (Eq, Show)
@@ -228,9 +206,9 @@ instance ToJSON RatchetKey where
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
 
-instance ToField ARatchet where toField = toField . LB.toStrict . J.encode
+instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
 
-instance FromField ARatchet where fromField = blobFieldDecoder $ J.eitherDecode' . LB.fromStrict
+instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder $ J.eitherDecode' . LB.fromStrict
 
 instance ToField MessageKey where toField = toField . smpEncode
 

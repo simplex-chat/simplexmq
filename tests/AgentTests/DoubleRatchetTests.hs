@@ -155,10 +155,10 @@ testKeyJSON _ = do
   testEncodeDecode pk
 
 testRatchetJSON :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
-testRatchetJSON a = do
+testRatchetJSON _ = do
   (alice, bob) <- initRatchets @a
-  testEncodeDecode $ ARatchet a alice
-  testEncodeDecode $ ARatchet a bob
+  testEncodeDecode alice
+  testEncodeDecode bob
 
 testEncodeDecode :: (Eq a, Show a, ToJSON a, FromJSON a) => a -> Expectation
 testEncodeDecode x = do
