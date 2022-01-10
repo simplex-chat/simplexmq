@@ -5,6 +5,7 @@
 
 # Log all stdout output to stackscript.log
 exec &> >(tee -i /var/log/stackscript.log)
+
 # Uncomment next line to enable debugging features
 # set -xeo pipefail
 
@@ -74,6 +75,7 @@ fingerprint=$(cat $conf_dir/fingerprint)
 
 # On login script
 on_login_script="/opt/simplex/on_login.sh"
+
 cat <<EOT >> $on_login_script
 #!/bin/bash
 # accepts server's fingerprint as the first parameter
@@ -95,6 +97,7 @@ To stop seeing this message delete line - bash /opt/simplex/on_login.sh - from /
 EOF
 
 EOT
+
 chmod +x $on_login_script
 echo "bash $on_login_script $fingerprint" >> /root/.bashrc
 
