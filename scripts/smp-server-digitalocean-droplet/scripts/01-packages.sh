@@ -16,9 +16,10 @@ sudo DEBIAN_FRONTEND=noninteractive \
   -y --allow-downgrades --allow-remove-essential --allow-change-held-packages \
   dist-upgrade
 
-sudo DEBIAN_FRONTEND=noninteractive \
-  apt-get \
-  -o Dpkg::Options::=--force-confold \
-  -o Dpkg::Options::=--force-confdef \
-  -y --allow-downgrades --allow-remove-essential --allow-change-held-packages \
-  install jq
+# TODO install unattended-upgrades; jq is not needed on DigitalOcean
+# sudo DEBIAN_FRONTEND=noninteractive \
+#   apt-get \
+#   -o Dpkg::Options::=--force-confold \
+#   -o Dpkg::Options::=--force-confdef \
+#   -y --allow-downgrades --allow-remove-essential --allow-change-held-packages \
+#   install jq

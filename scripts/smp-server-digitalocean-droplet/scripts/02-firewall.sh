@@ -1,9 +1,9 @@
 #!/bin/sh
 
-# add firewall
+# Add firewall
 echo "y" | ufw enable
 
-# open ports
+# Open ports
 ufw allow ssh
 ufw allow https
 ufw allow 5223
