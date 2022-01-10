@@ -717,7 +717,6 @@ confirmQueue c connId sq SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEnc
 agentRatchetEncrypt :: AgentMonad m => ConnId -> ByteString -> Int -> m ByteString
 agentRatchetEncrypt connId msg paddedLen = do
   (rc, _) <- withStore $ \st -> getRatchet st connId
-  -- TODO make padding size dependent on message or confirmation/connInfo
   (encMsg, rc') <- liftError cryptoError $ CR.rcEncrypt rc paddedLen msg
   withStore $ \st -> updateRatchet st connId rc' CR.SMDNoChange
   pure encMsg
