@@ -14,8 +14,7 @@ CREATE TABLE connections (
   last_external_snd_msg_id INTEGER NOT NULL DEFAULT 0,
   last_rcv_msg_hash BLOB NOT NULL DEFAULT x'',
   last_snd_msg_hash BLOB NOT NULL DEFAULT x'',
-  smp_agent_version INTEGER NOT NULL DEFAULT 1,
-  e2e_version INTEGER NOT NULL DEFAULT 1
+  smp_agent_version INTEGER NOT NULL DEFAULT 1
 ) WITHOUT ROWID;
 
 CREATE TABLE rcv_queues (
@@ -124,7 +123,8 @@ CREATE TABLE ratchets (
   x3dh_priv_key_1 BLOB,
   x3dh_priv_key_2 BLOB,
   -- ratchet is initially empty on the receiving side (the side offering the connection)
-  ratchet_state BLOB
+  ratchet_state BLOB,
+  e2e_version INTEGER NOT NULL DEFAULT 1
 ) WITHOUT ROWID;
 
 CREATE TABLE skipped_messages (

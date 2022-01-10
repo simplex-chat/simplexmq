@@ -282,13 +282,13 @@ newConn c connId cMode = do
       pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams CR.e2eEncryptVRange)
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConn c connId (CRInvitationUri (ConnReqUriData _ _ (qUri :| _)) e2eRcvParamsUri) cInfo = do
-  -- TODO check all versions in connection request are compatible with supported
-  -- (add agent and e2e)
+joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo =
   case ( qUri `compatibleVersion` SMP.smpClientVRange,
-         e2eRcvParamsUri `compatibleVersion` CR.e2eEncryptVRange
+         e2eRcvParamsUri `compatibleVersion` CR.e2eEncryptVRange,
+         agentVRange `compatibleVersion` smpAgentVRange
        ) of
-    (Just qInfo, Just (Compatible e2eRcvParams@(CR.E2ERatchetParams _ _ rcDHRr))) -> do
+    (Just qInfo, Just (Compatible e2eRcvParams@(CR.E2ERatchetParams _ _ rcDHRr)), Just _) -> do
+      -- TODO in agent v2 - use found compatible version rather than current
       (pk1, pk2, e2eSndParams) <- liftIO . CR.generateE2EParams $ version e2eRcvParams
       (_, rcDHRs) <- liftIO C.generateKeyPair'
       let rc = CR.initSndRatchet rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
@@ -303,10 +303,16 @@ joinConn c connId (CRInvitationUri (ConnReqUriData _ _ (qUri :| _)) e2eRcvParams
       void $ enqueueMessage c connId' sq HELLO
       pure connId'
     _ -> throwError $ AGENT A_VERSION
-joinConn c connId (CRContactUri (ConnReqUriData _ _ (qUri :| _))) cInfo = do
-  (connId', cReq) <- newConn c connId SCMInvitation
-  sendInvitation c qUri cReq cInfo
-  pure connId'
+joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo =
+  case ( qUri `compatibleVersion` SMP.smpClientVRange,
+         agentVRange `compatibleVersion` smpAgentVRange
+       ) of
+    (Just qInfo, Just _) -> do
+      -- TODO in agent v2 - use found compatible version rather than current
+      (connId', cReq) <- newConn c connId SCMInvitation
+      sendInvitation c qInfo cReq cInfo
+      pure connId'
+    _ -> throwError $ AGENT A_VERSION
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
 createReplyQueue c connId sq = do
@@ -549,20 +555,21 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
         SMP.MSG srvMsgId srvTs msgBody' -> handleNotifyAck $ do
           -- TODO deduplicate with previously received
           msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
-          clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader v e2ePubKey_} <-
+          clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
             parseMessage msgBody
+          unless (phVer `isCompatible` SMP.smpClientVRange) . throwError $ AGENT A_VERSION
           case (e2eDhSecret, e2ePubKey_) of
             (Nothing, Just e2ePubKey) -> do
               let e2eDh = C.dh' e2ePubKey e2ePrivKey
               decryptClientMessage e2eDh clientMsg >>= \case
-                (SMP.PHConfirmation senderKey, AgentConfirmation {agentVersion = _v, e2eEncryption, encConnInfo}) ->
+                (SMP.PHConfirmation senderKey, AgentConfirmation {e2eEncryption, encConnInfo}) ->
                   smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo >> ack
-                (SMP.PHEmpty, AgentInvitation {agentVersion = _v, connReq, connInfo}) ->
+                (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
                   smpInvitation connReq connInfo >> ack
                 _ -> prohibited >> ack
             (Just e2eDh, Nothing) -> do
               decryptClientMessage e2eDh clientMsg >>= \case
-                (SMP.PHEmpty, AgentMsgEnvelope _v encAgentMsg) -> do
+                (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) -> do
                   agentMsgBody <- agentRatchetDecrypt connId encAgentMsg
                   parseMessage agentMsgBody >>= \case
                     AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage -> do
@@ -600,7 +607,9 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           clientMsg <- agentCbDecrypt e2eDh cmNonce cmEncBody
           SMP.ClientMessage privHeader clientBody <- parseMessage clientMsg
           agentEnvelope <- parseMessage clientBody
-          pure (privHeader, agentEnvelope)
+          if agentVersion agentEnvelope `isCompatible` smpAgentVRange
+            then pure (privHeader, agentEnvelope)
+            else throwError $ AGENT A_VERSION
 
         parseMessage :: Encoding a => ByteString -> m a
         parseMessage = liftEither . parse smpP (AGENT A_MESSAGE)

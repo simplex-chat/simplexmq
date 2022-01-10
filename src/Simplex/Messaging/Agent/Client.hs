@@ -297,8 +297,8 @@ sendConfirmation c SndQueue {server, sndId} encConfirmation =
   withLogSMP_ c server sndId "SEND <CONF>" $ \smp ->
     liftSMP $ sendSMPMessage smp Nothing sndId encConfirmation
 
-sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
-sendInvitation c SMPQueueUri {smpServer, senderId, dhPublicKey} connReq connInfo = do
+sendInvitation :: forall m. AgentMonad m => AgentClient -> Compatible SMPQueueInfo -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
+sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) connReq connInfo =
   withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
     msg <- mkInvitation
     liftSMP $ sendSMPMessage smp Nothing senderId msg
