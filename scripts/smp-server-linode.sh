@@ -18,7 +18,7 @@ sudo apt-get install -y jq
 echo "y" | ufw enable
 # open ports
 ufw allow ssh
-ufw allow http
+ufw allow https
 ufw allow 5223
 
 bin_dir="/opt/simplex/bin"
@@ -68,7 +68,7 @@ SMP server address: \$ip_address#\$hash
 Check SMP server status with: systemctl status smp-server
 
 To keep this server secure, the UFW firewall is enabled.
-All ports are BLOCKED except 22 (SSH), 80 (HTTP), 5223 (SMP server).
+All ports are BLOCKED except 22 (SSH), 443 (HTTPS), 5223 (SMP server).
 
 ********************************************************************************
 To stop seeing this message delete line - bash /opt/simplex/on_login.sh - from /root/.bashrc
