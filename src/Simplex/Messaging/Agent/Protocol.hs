@@ -33,6 +33,8 @@ module Simplex.Messaging.Agent.Protocol
   ( -- * Protocol parameters
     smpAgentVersion,
     smpAgentVRange,
+    e2eEncConnInfoLength,
+    e2eEncUserMsgLength,
 
     -- * SMP agent protocol types
     ConnInfo,
@@ -150,6 +152,12 @@ smpAgentVersion = 1
 
 smpAgentVRange :: VersionRange
 smpAgentVRange = mkVersionRange 1 smpAgentVersion
+
+e2eEncConnInfoLength :: Int
+e2eEncConnInfoLength = 14336
+
+e2eEncUserMsgLength :: Int
+e2eEncUserMsgLength = 15488
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
@@ -328,11 +336,11 @@ data AgentMessage = AgentConnInfo ConnInfo | AgentMessage APrivHeader AMessage
 
 instance Encoding AgentMessage where
   smpEncode = \case
-    AgentConnInfo cInfo -> smpEncode ('I', cInfo)
+    AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
   smpP =
     smpP >>= \case
-      'I' -> AgentConnInfo <$> smpP
+      'I' -> AgentConnInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 

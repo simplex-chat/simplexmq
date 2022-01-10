@@ -51,7 +51,7 @@ paddedMsgLen :: Int
 paddedMsgLen = 100
 
 fullMsgLen :: Int
-fullMsgLen = 1 + fullHeaderLen + 1 + paddedMsgLen + C.authTagSize
+fullMsgLen = 1 + fullHeaderLen + C.authTagSize + paddedMsgLen
 
 testMessageHeader :: Expectation
 testMessageHeader = do

@@ -341,9 +341,7 @@ instance Encoding ClientMsgEnvelope where
   smpEncode ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody} =
     smpEncode (cmHeader, cmNonce, Tail cmEncBody)
   smpP = do
-    cmHeader <- smpP
-    cmNonce <- smpP
-    cmEncBody <- A.takeByteString
+    (cmHeader, cmNonce, Tail cmEncBody) <- smpP
     pure ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 data ClientMessage = ClientMessage PrivHeader ByteString

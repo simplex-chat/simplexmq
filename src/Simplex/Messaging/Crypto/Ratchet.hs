@@ -7,7 +7,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -68,15 +67,6 @@ instance VersionRangeI (E2ERatchetParamsUri a) where
 data E2ERatchetParamsUri (a :: Algorithm)
   = E2ERatchetParamsUri VersionRange (PublicKey a) (PublicKey a)
   deriving (Eq, Show)
-
-connEncStubUri :: E2ERatchetParamsUri 'X448
-connEncStubUri = E2ERatchetParamsUri e2eEncryptVRange stubDhPubKey stubDhPubKey
-
-connEncStub :: E2ERatchetParams 'X448
-connEncStub = E2ERatchetParams e2eEncryptVersion stubDhPubKey stubDhPubKey
-
-stubDhPubKey :: PublicKeyX448
-stubDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
 
 instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
   strEncode (E2ERatchetParamsUri vs key1 key2) =
@@ -303,10 +293,7 @@ instance Encoding EncMessageHeader where
   smpEncode EncMessageHeader {ehVersion, ehBody, ehAuthTag, ehIV} =
     smpEncode (ehVersion, ehBody, ehAuthTag, ehIV)
   smpP = do
-    ehVersion <- smpP
-    ehBody <- smpP
-    ehAuthTag <- smpP
-    ehIV <- smpP
+    (ehVersion, ehBody, ehAuthTag, ehIV) <- smpP
     pure EncMessageHeader {ehVersion, ehBody, ehAuthTag, ehIV}
 
 data EncRatchetMessage = EncRatchetMessage
@@ -317,11 +304,9 @@ data EncRatchetMessage = EncRatchetMessage
 
 instance Encoding EncRatchetMessage where
   smpEncode EncRatchetMessage {emHeader, emBody, emAuthTag} =
-    smpEncode (emHeader, emBody, emAuthTag)
+    smpEncode (emHeader, emAuthTag, Tail emBody)
   smpP = do
-    emHeader <- smpP
-    emBody <- smpP
-    emAuthTag <- smpP
+    (emHeader, emAuthTag, Tail emBody) <- smpP
     pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
 rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> ExceptT CryptoError IO (ByteString, Ratchet a)

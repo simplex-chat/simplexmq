@@ -402,7 +402,7 @@ enqueueMessage c connId sq aMessage = do
           agentMessage = smpEncode $ AgentMessage privHeader aMessage
           internalHash = C.sha256Hash agentMessage
 
-      encAgentMessage <- agentRatchetEncrypt connId agentMessage
+      encAgentMessage <- agentRatchetEncrypt connId agentMessage e2eEncUserMsgLength
       let msgBody = smpEncode $ AgentMsgEnvelope {agentVersion = smpAgentVersion, encAgentMessage}
           msgType = aMessageType aMessage
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, internalHash, prevMsgHash}
@@ -703,7 +703,7 @@ confirmQueue c connId sq SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEnc
   where
     mkConfirmation :: m MsgBody
     mkConfirmation = do
-      encConnInfo <- agentRatchetEncrypt connId . smpEncode $ AgentConnInfo connInfo
+      encConnInfo <- agentRatchetEncrypt connId (smpEncode $ AgentConnInfo connInfo) e2eEncConnInfoLength
       let agentEnvelope =
             AgentConfirmation
               { agentVersion = smpAgentVersion,
@@ -714,10 +714,11 @@ confirmQueue c connId sq SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEnc
         SMP.ClientMessage (SMP.PHConfirmation senderKey) $ smpEncode agentEnvelope
 
 -- encoded AgentMessage -> encoded EncAgentMessage
-agentRatchetEncrypt :: AgentMonad m => ConnId -> ByteString -> m ByteString
-agentRatchetEncrypt connId msg = do
+agentRatchetEncrypt :: AgentMonad m => ConnId -> ByteString -> Int -> m ByteString
+agentRatchetEncrypt connId msg paddedLen = do
   (rc, _) <- withStore $ \st -> getRatchet st connId
-  (encMsg, rc') <- liftError cryptoError $ CR.rcEncrypt rc 200 msg
+  -- TODO make padding size dependent on message or confirmation/connInfo
+  (encMsg, rc') <- liftError cryptoError $ CR.rcEncrypt rc paddedLen msg
   withStore $ \st -> updateRatchet st connId rc' CR.SMDNoChange
   pure encMsg
 

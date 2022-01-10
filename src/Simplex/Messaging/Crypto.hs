@@ -876,7 +876,7 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox <$> pad msg paddedLen
   where
-    cryptoBox s = BA.convert tag `B.append` c
+    cryptoBox s = BA.convert tag <> c
       where
         (rs, c) = xSalsa20 secret nonce s
         tag = Poly1305.auth rs c
