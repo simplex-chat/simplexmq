@@ -1,5 +1,5 @@
-name: simplexmq-legacy
-version: 0.5.2
+name: simplexmq-v0
+version: 0.5.3
 synopsis: SimpleXMQ message broker
 description:  |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -71,7 +71,7 @@ executables:
       - cryptostore == 0.2.*
       - ini == 0.4.*
       - optparse-applicative >= 0.15 && < 0.17
-      - simplexmq-legacy
+      - simplexmq-v0
     ghc-options:
       - -threaded
 
@@ -79,7 +79,7 @@ executables:
     source-dirs: apps/smp-agent
     main: Main.hs
     dependencies:
-      - simplexmq-legacy
+      - simplexmq-v0
     ghc-options:
       - -threaded
 
@@ -88,7 +88,7 @@ tests:
     source-dirs: tests
     main: Test.hs
     dependencies:
-      - simplexmq-legacy
+      - simplexmq-v0
       - hspec == 2.7.*
       - hspec-core == 2.7.*
       - HUnit == 1.6.*
