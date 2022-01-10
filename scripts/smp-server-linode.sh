@@ -10,9 +10,28 @@ exec &> >(tee -i /var/log/stackscript.log)
 
 cd $HOME
 
-sudo apt-get -y update 
-sudo apt-get -y upgrade
-sudo apt-get install -y jq
+# https://superuser.com/questions/1638779/automatic-yess-to-linux-update-upgrade
+# https://superuser.com/questions/1412054/non-interactive-apt-upgrade
+sudo DEBIAN_FRONTEND=noninteractive \
+  apt-get \
+  -o Dpkg::Options::=--force-confold \
+  -o Dpkg::Options::=--force-confdef \
+  -y --allow-downgrades --allow-remove-essential --allow-change-held-packages \
+  update
+
+sudo DEBIAN_FRONTEND=noninteractive \
+  apt-get \
+  -o Dpkg::Options::=--force-confold \
+  -o Dpkg::Options::=--force-confdef \
+  -y --allow-downgrades --allow-remove-essential --allow-change-held-packages \
+  dist-upgrade
+
+sudo DEBIAN_FRONTEND=noninteractive \
+  apt-get \
+  -o Dpkg::Options::=--force-confold \
+  -o Dpkg::Options::=--force-confdef \
+  -y --allow-downgrades --allow-remove-essential --allow-change-held-packages \
+  install jq
 
 # add firewall
 echo "y" | ufw enable
