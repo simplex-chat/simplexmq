@@ -32,7 +32,6 @@ import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
-import Control.Monad.Trans.Except (throwE)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
@@ -516,17 +515,19 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":conn_id" := connId, ":ratchet_state" := rc]
 
-  getRatchet :: SQLiteStore -> ConnId -> m (RatchetX448, SkippedMsgKeys)
+  getRatchet :: SQLiteStore -> ConnId -> m RatchetX448
   getRatchet st connId =
-    liftIOEither . withTransaction st $ \db -> runExceptT $ do
-      rc_ <-
-        ExceptT . firstRow fromOnly SERatchetNotFound $
-          DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
-      case rc_ of
-        Just rc -> do
-          smks <- liftIO $ skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
-          pure (rc, smks)
-        _ -> throwE SERatchetNotFound
+    liftIOEither . withTransaction st $ \db ->
+      ratchet
+        <$> DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
+    where
+      ratchet (Only (Just rc) : _) = Right rc
+      ratchet _ = Left SERatchetNotFound
+
+  getSkippedMsgKeys :: SQLiteStore -> ConnId -> m SkippedMsgKeys
+  getSkippedMsgKeys st connId =
+    liftIO . withTransaction st $ \db ->
+      skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
     where
       skipped ms = foldl' addSkippedKey M.empty ms
       addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks

@@ -71,7 +71,8 @@ class Monad m => MonadAgentStore s m where
   createRatchetX3dhKeys :: s -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
   getRatchetX3dhKeys :: s -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
   createRatchet :: s -> ConnId -> RatchetX448 -> m ()
-  getRatchet :: s -> ConnId -> m (RatchetX448, SkippedMsgKeys)
+  getRatchet :: s -> ConnId -> m RatchetX448
+  getSkippedMsgKeys :: s -> ConnId -> m SkippedMsgKeys
   updateRatchet :: s -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
 
 -- * Queue types

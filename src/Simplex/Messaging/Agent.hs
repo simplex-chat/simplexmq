@@ -713,19 +713,14 @@ confirmQueue c connId sq SMPConfirmation {senderKey, e2ePubKey, connInfo} e2eEnc
     mkConfirmation :: m MsgBody
     mkConfirmation = do
       encConnInfo <- agentRatchetEncrypt connId (smpEncode $ AgentConnInfo connInfo) e2eEncConnInfoLength
-      let agentEnvelope =
-            AgentConfirmation
-              { agentVersion = smpAgentVersion,
-                e2eEncryption,
-                encConnInfo
-              }
+      let agentEnvelope = AgentConfirmation {agentVersion = smpAgentVersion, e2eEncryption, encConnInfo}
       agentCbEncrypt sq (Just e2ePubKey) . smpEncode $
         SMP.ClientMessage (SMP.PHConfirmation senderKey) $ smpEncode agentEnvelope
 
 -- encoded AgentMessage -> encoded EncAgentMessage
 agentRatchetEncrypt :: AgentMonad m => ConnId -> ByteString -> Int -> m ByteString
 agentRatchetEncrypt connId msg paddedLen = do
-  (rc, _) <- withStore $ \st -> getRatchet st connId
+  rc <- withStore $ \st -> getRatchet st connId
   (encMsg, rc') <- liftError cryptoError $ CR.rcEncrypt rc paddedLen msg
   withStore $ \st -> updateRatchet st connId rc' CR.SMDNoChange
   pure encMsg
@@ -733,7 +728,8 @@ agentRatchetEncrypt connId msg paddedLen = do
 -- encoded EncAgentMessage -> encoded AgentMessage
 agentRatchetDecrypt :: AgentMonad m => ConnId -> ByteString -> m ByteString
 agentRatchetDecrypt connId encAgentMsg = do
-  (rc, skipped) <- withStore $ \st -> getRatchet st connId
+  (rc, skipped) <- withStore $ \st ->
+    (,) <$> getRatchet st connId <*> getSkippedMsgKeys st connId
   (agentMsgBody_, rc', skippedDiff) <- liftError cryptoError $ CR.rcDecrypt rc skipped encAgentMsg
   withStore $ \st -> updateRatchet st connId rc' skippedDiff
   liftEither $ first cryptoError agentMsgBody_
