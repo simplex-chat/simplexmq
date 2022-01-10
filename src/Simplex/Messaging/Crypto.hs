@@ -184,42 +184,6 @@ data DhAlg
     (AlgorithmI a, DhAlgorithm a) =>
     DhAlg (SAlgorithm a)
 
-instance AlgorithmI a => StrEncoding (SAlgorithm a) where
-  strEncode = \case
-    SEd25519 -> "Ed25519"
-    SEd448 -> "Ed448"
-    SX25519 -> "X25519"
-    SX448 -> "X448"
-  strDecode = (\(Alg a) -> checkAlgorithm a) <=< strDecode
-  strP = strDecode <$?> A.takeByteString
-
-instance StrEncoding Alg where
-  strEncode (Alg a) = strEncode a
-  strDecode = \case
-    "Ed25519" -> Right $ Alg SEd25519
-    "Ed448" -> Right $ Alg SEd448
-    "X25519" -> Right $ Alg SX25519
-    "X448" -> Right $ Alg SX448
-    _ -> Left "unknown algorithm"
-  strP = strDecode <$?> A.takeByteString
-
-instance StrEncoding DhAlg where
-  strEncode (DhAlg a) = strEncode a
-  strDecode = toDhAlg <=< strDecode
-    where
-      toDhAlg :: Alg -> Either String DhAlg
-      toDhAlg (Alg a) = case dhAlgorithm a of
-        Just Dict -> Right $ DhAlg a
-        _ -> Left "bad algorithm"
-  strP = strDecode <$?> A.takeByteString
-
-instance ToJSON DhAlg where
-  toJSON (DhAlg a) = strToJSON a
-  toEncoding (DhAlg a) = strToJEncoding a
-
-instance FromJSON DhAlg where
-  parseJSON = strParseJSON "DhAlg"
-
 class AlgorithmI (a :: Algorithm) where sAlgorithm :: SAlgorithm a
 
 instance AlgorithmI Ed25519 where sAlgorithm = SEd25519
