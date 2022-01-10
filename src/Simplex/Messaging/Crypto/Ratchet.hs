@@ -198,7 +198,7 @@ instance FromJSON RatchetKey where
 
 instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
 
-instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder $ J.eitherDecode' . LB.fromStrict
+instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 
 instance ToField MessageKey where toField = toField . smpEncode
 
