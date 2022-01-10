@@ -31,6 +31,7 @@
 module Simplex.Messaging.Protocol
   ( -- * SMP protocol parameters
     smpClientVersion,
+    smpClientVRange,
     maxMessageLength,
     e2eEncMessageLength,
 
@@ -109,8 +110,11 @@ import Simplex.Messaging.Util ((<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
-smpClientVersion :: VersionRange
-smpClientVersion = mkVersionRange 1 1
+smpClientVersion :: Version
+smpClientVersion = 1
+
+smpClientVRange :: VersionRange
+smpClientVRange = mkVersionRange 1 smpClientVersion
 
 maxMessageLength :: Int
 maxMessageLength = 15968
@@ -337,9 +341,7 @@ instance Encoding ClientMsgEnvelope where
   smpEncode ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody} =
     smpEncode (cmHeader, cmNonce, Tail cmEncBody)
   smpP = do
-    cmHeader <- smpP
-    cmNonce <- smpP
-    cmEncBody <- A.takeByteString
+    (cmHeader, cmNonce, Tail cmEncBody) <- smpP
     pure ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
 data ClientMessage = ClientMessage PrivHeader ByteString

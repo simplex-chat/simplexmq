@@ -11,14 +11,17 @@ module AgentTests.DoubleRatchetTests where
 
 import Control.Concurrent.STM
 import Control.Monad.Except
-import Crypto.Random (getRandomBytes)
+import Data.Aeson (FromJSON, ToJSON)
+import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.Map.Strict as M
 import Simplex.Messaging.Crypto (Algorithm (..), AlgorithmI, CryptoError, DhAlgorithm)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Util ((<$$>))
 import Test.Hspec
 
 doubleRatchetTests :: Spec
@@ -35,12 +38,20 @@ doubleRatchetTests = do
       withRatchets @X25519 testManyMessages
     it "should allow skipped after ratchet advance" $ do
       withRatchets @X25519 testSkippedAfterRatchetAdvance
+    it "should encode/decode ratchet as JSON" $ do
+      testKeyJSON C.SX25519
+      testKeyJSON C.SX448
+      testRatchetJSON C.SX25519
+      testRatchetJSON C.SX448
+    it "should agree the same ratchet parameters" $ do
+      testX3dh C.SX25519
+      testX3dh C.SX448
 
 paddedMsgLen :: Int
 paddedMsgLen = 100
 
 fullMsgLen :: Int
-fullMsgLen = 1 + fullHeaderLen + 1 + paddedMsgLen + C.authTagSize
+fullMsgLen = 1 + fullHeaderLen + C.authTagSize + paddedMsgLen
 
 testMessageHeader :: Expectation
 testMessageHeader = do
@@ -51,7 +62,7 @@ testMessageHeader = do
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
 pattern Decrypted msg <- Right (Right msg)
 
-type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a) -> TVar (Ratchet a) -> IO ()
+type TestRatchets a = (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a, SkippedMsgKeys) -> TVar (Ratchet a, SkippedMsgKeys) -> IO ()
 
 testEncryptDecrypt :: TestRatchets a
 testEncryptDecrypt alice bob = do
@@ -137,54 +148,85 @@ testSkippedAfterRatchetAdvance alice bob = do
   Decrypted "b11" <- decrypt alice b11
   pure ()
 
-(#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a), ByteString) -> TVar (Ratchet a) -> Expectation
+testKeyJSON :: forall a. AlgorithmI a => C.SAlgorithm a -> IO ()
+testKeyJSON _ = do
+  (k, pk) <- C.generateKeyPair' @a
+  testEncodeDecode k
+  testEncodeDecode pk
+
+testRatchetJSON :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testRatchetJSON _ = do
+  (alice, bob) <- initRatchets @a
+  testEncodeDecode alice
+  testEncodeDecode bob
+
+testEncodeDecode :: (Eq a, Show a, ToJSON a, FromJSON a) => a -> Expectation
+testEncodeDecode x = do
+  let j = J.encode x
+      x' = J.eitherDecode' j
+  x' `shouldBe` Right x
+
+testX3dh :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testX3dh _ = do
+  (pkBob1, pkBob2, e2eBob) <- generateE2EParams @a e2eEncryptVersion
+  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams @a e2eEncryptVersion
+  let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
+      paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
+  paramsAlice `shouldBe` paramsBob
+
+(#>) :: (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a, SkippedMsgKeys), ByteString) -> TVar (Ratchet a, SkippedMsgKeys) -> Expectation
 (alice, msg) #> bob = do
   Right msg' <- encrypt alice msg
   Decrypted msg'' <- decrypt bob msg'
   msg'' `shouldBe` msg
 
-withRatchets :: forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a) -> TVar (Ratchet a) -> IO ()) -> Expectation
+withRatchets :: forall a. (AlgorithmI a, DhAlgorithm a) => (TVar (Ratchet a, SkippedMsgKeys) -> TVar (Ratchet a, SkippedMsgKeys) -> IO ()) -> Expectation
 withRatchets test = do
   (a, b) <- initRatchets @a
-  alice <- newTVarIO a
-  bob <- newTVarIO b
+  alice <- newTVarIO (a, M.empty)
+  bob <- newTVarIO (b, M.empty)
   test alice bob `shouldReturn` ()
 
 initRatchets :: (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a)
 initRatchets = do
-  salt <- getRandomBytes 16
-  (ak, apk) <- C.generateKeyPair'
-  (bk, bpk) <- C.generateKeyPair'
-  bob <- initSndRatchet' ak bpk salt "bob -> alice"
-  alice <- initRcvRatchet' bk (ak, apk) salt "bob -> alice"
+  (pkBob1, pkBob2, e2eBob) <- generateE2EParams e2eEncryptVersion
+  (pkAlice1, pkAlice2, e2eAlice) <- generateE2EParams e2eEncryptVersion
+  let paramsBob = x3dhSnd pkBob1 pkBob2 e2eAlice
+      paramsAlice = x3dhRcv pkAlice1 pkAlice2 e2eBob
+  (_, pkBob3) <- C.generateKeyPair'
+  let bob = initSndRatchet (C.publicKey pkAlice2) pkBob3 paramsBob
+      alice = initRcvRatchet pkAlice2 paramsAlice
   pure (alice, bob)
 
-encrypt_ :: AlgorithmI a => Ratchet a -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a))
-encrypt_ rc msg =
-  runExceptT (rcEncrypt' rc paddedMsgLen msg)
+encrypt_ :: AlgorithmI a => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
+encrypt_ (rc, _) msg =
+  runExceptT (rcEncrypt rc paddedMsgLen msg)
     >>= either (pure . Left) checkLength
   where
-    checkLength r@(msg', _) = do
+    checkLength (msg', rc') = do
       B.length msg' `shouldBe` fullMsgLen
-      pure $ Right r
+      pure $ Right (msg', rc', SMDNoChange)
 
-decrypt_ :: (AlgorithmI a, DhAlgorithm a) => Ratchet a -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a))
-decrypt_ rc msg = runExceptT $ rcDecrypt' rc msg
+decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
+decrypt_ (rc, smks) msg = runExceptT $ rcDecrypt rc smks msg
 
-encrypt :: AlgorithmI a => TVar (Ratchet a) -> ByteString -> IO (Either CryptoError ByteString)
+encrypt :: AlgorithmI a => TVar (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError ByteString)
 encrypt = withTVar encrypt_
 
-decrypt :: (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
+decrypt :: (AlgorithmI a, DhAlgorithm a) => TVar (Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
 decrypt = withTVar decrypt_
 
 withTVar ::
-  (Ratchet a -> ByteString -> IO (Either e (r, Ratchet a))) ->
-  TVar (Ratchet a) ->
+  AlgorithmI a =>
+  ((Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgDiff))) ->
+  TVar (Ratchet a, SkippedMsgKeys) ->
   ByteString ->
   IO (Either e r)
 withTVar op rcVar msg =
   readTVarIO rcVar
-    >>= (`op` msg)
+    >>= (\(rc, smks) -> applyDiff smks <$$> (testEncodeDecode rc >> op (rc, smks) msg))
     >>= \case
-      Right (res, rc') -> atomically (writeTVar rcVar rc') >> pure (Right res)
+      Right (res, rc', smks') -> atomically (writeTVar rcVar (rc', smks')) >> pure (Right res)
       Left e -> pure $ Left e
+  where
+    applyDiff smks (res, rc', smDiff) = (res, rc', applySMDiff smks smDiff)

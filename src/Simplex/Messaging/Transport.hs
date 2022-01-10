@@ -405,14 +405,15 @@ data ClientHandshake = ClientHandshake
 instance Encoding ClientHandshake where
   smpEncode ClientHandshake {smpVersion, keyHash} = smpEncode (smpVersion, keyHash)
   smpP = do
-    smpVersion <- smpP
-    keyHash <- smpP
+    (smpVersion, keyHash) <- smpP
     pure ClientHandshake {smpVersion, keyHash}
 
 instance Encoding ServerHandshake where
   smpEncode ServerHandshake {smpVersionRange, sessionId} =
     smpEncode (smpVersionRange, sessionId)
-  smpP = ServerHandshake <$> smpP <*> smpP
+  smpP = do
+    (smpVersionRange, sessionId) <- smpP
+    pure ServerHandshake {smpVersionRange, sessionId}
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError

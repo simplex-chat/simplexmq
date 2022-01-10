@@ -34,7 +34,9 @@ library
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
+      Simplex.Messaging.Agent.ExceptT
       Simplex.Messaging.Agent.Protocol
+      Simplex.Messaging.Agent.QueryString
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite
@@ -64,6 +66,7 @@ library
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
   build-depends:
       QuickCheck ==2.14.*
+    , aeson ==1.5.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -115,6 +118,7 @@ executable smp-agent
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
   build-depends:
       QuickCheck ==2.14.*
+    , aeson ==1.5.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -167,6 +171,7 @@ executable smp-server
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
   build-depends:
       QuickCheck ==2.14.*
+    , aeson ==1.5.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -235,6 +240,7 @@ test-suite smp-server-test
   build-depends:
       HUnit ==1.6.*
     , QuickCheck ==2.14.*
+    , aeson ==1.5.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*

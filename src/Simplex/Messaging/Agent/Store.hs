@@ -19,6 +19,7 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff, SkippedMsgKeys)
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
@@ -65,6 +66,14 @@ class Monad m => MonadAgentStore s m where
   getPendingMsgs :: s -> ConnId -> m [InternalId]
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   deleteMsg :: s -> ConnId -> InternalId -> m ()
+
+  -- Double ratchet persistence
+  createRatchetX3dhKeys :: s -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
+  getRatchetX3dhKeys :: s -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
+  createRatchet :: s -> ConnId -> RatchetX448 -> m ()
+  getRatchet :: s -> ConnId -> m RatchetX448
+  getSkippedMsgKeys :: s -> ConnId -> m SkippedMsgKeys
+  updateRatchet :: s -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
 
 -- * Queue types
 
@@ -168,13 +177,15 @@ newtype ConnData = ConnData {connId :: ConnId}
 
 data NewConfirmation = NewConfirmation
   { connId :: ConnId,
-    senderConf :: SMPConfirmation
+    senderConf :: SMPConfirmation,
+    ratchetState :: RatchetX448
   }
 
 data AcceptedConfirmation = AcceptedConfirmation
   { confirmationId :: ConfirmationId,
     connId :: ConnId,
     senderConf :: SMPConfirmation,
+    ratchetState :: RatchetX448,
     ownConnInfo :: ConnInfo
   }
 
@@ -291,6 +302,10 @@ data StoreError
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.
     SEBadQueueStatus
+  | -- | connection does not have associated double-ratchet state
+    SERatchetNotFound
+  | -- | connection does not have associated x3dh keys
+    SEX3dhKeysNotFound
   | -- | Used in `getMsg` that is not implemented/used. TODO remove.
     SENotImplemented
   deriving (Eq, Show, Exception)

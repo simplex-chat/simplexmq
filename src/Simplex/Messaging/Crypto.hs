@@ -15,6 +15,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 -- |
@@ -60,10 +61,12 @@ module Simplex.Messaging.Crypto
     generateSignatureKeyPair,
     generateDhKeyPair,
     privateToX509,
+    publicKey,
 
     -- * key encoding/decoding
     encodePubKey,
     encodePrivKey,
+    pubKeyBytes,
 
     -- * sign/verify
     Signature (..),
@@ -79,7 +82,7 @@ module Simplex.Messaging.Crypto
 
     -- * DH derivation
     dh',
-    dhSecretBytes',
+    dhBytes',
 
     -- * AES256 AEAD-GCM scheme
     Key (..),
@@ -130,10 +133,12 @@ import Crypto.Random (getRandomBytes)
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
@@ -151,6 +156,7 @@ import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
+import Simplex.Messaging.Util ((<$?>))
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -231,8 +237,8 @@ type PublicKeyX448 = PublicKey X448
 data PrivateKey (a :: Algorithm) where
   PrivateKeyEd25519 :: Ed25519.SecretKey -> Ed25519.PublicKey -> PrivateKey Ed25519
   PrivateKeyEd448 :: Ed448.SecretKey -> Ed448.PublicKey -> PrivateKey Ed448
-  PrivateKeyX25519 :: X25519.SecretKey -> PrivateKey X25519
-  PrivateKeyX448 :: X448.SecretKey -> PrivateKey X448
+  PrivateKeyX25519 :: X25519.SecretKey -> X25519.PublicKey -> PrivateKey X25519
+  PrivateKeyX448 :: X448.SecretKey -> X448.PublicKey -> PrivateKey X448
 
 deriving instance Eq (PrivateKey a)
 
@@ -341,17 +347,17 @@ dhAlgorithm = \case
   SX448 -> Just Dict
   _ -> Nothing
 
-dhSecretBytes' :: DhSecret a -> ByteString
-dhSecretBytes' = \case
+dhBytes' :: DhSecret a -> ByteString
+dhBytes' = \case
   DhSecretX25519 s -> BA.convert s
   DhSecretX448 s -> BA.convert s
 
 instance AlgorithmI a => StrEncoding (DhSecret a) where
-  strEncode = strEncode . dhSecretBytes'
+  strEncode = strEncode . dhBytes'
   strDecode = (\(ADhSecret _ s) -> checkAlgorithm s) <=< strDecode
 
 instance StrEncoding ADhSecret where
-  strEncode (ADhSecret _ s) = strEncode $ dhSecretBytes' s
+  strEncode (ADhSecret _ s) = strEncode $ dhBytes' s
   strDecode = cryptoPassed . secret
     where
       secret bs
@@ -426,33 +432,59 @@ instance AlgorithmI a => StrEncoding (PublicKey a) where
   strDecode = decodePubKey
   {-# INLINE strDecode #-}
 
-encodePubKey :: CryptoPublicKey pk => pk -> ByteString
+instance AlgorithmI a => ToJSON (PublicKey a) where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance AlgorithmI a => FromJSON (PublicKey a) where
+  parseJSON = strParseJSON "PublicKey"
+
+encodePubKey :: CryptoPublicKey k => k -> ByteString
 encodePubKey = toPubKey $ encodeASNObj . publicToX509
 {-# INLINE encodePubKey #-}
 
+pubKeyBytes :: PublicKey a -> ByteString
+pubKeyBytes = \case
+  PublicKeyEd25519 k -> BA.convert k
+  PublicKeyEd448 k -> BA.convert k
+  PublicKeyX25519 k -> BA.convert k
+  PublicKeyX448 k -> BA.convert k
+
 class CryptoPrivateKey pk where
+  type PublicKeyType pk
   toPrivKey :: (forall a. AlgorithmI a => PrivateKey a -> b) -> pk -> b
   privKey :: APrivateKey -> Either String pk
 
 instance CryptoPrivateKey APrivateKey where
+  type PublicKeyType APrivateKey = APublicKey
   toPrivKey f (APrivateKey _ k) = f k
   privKey = Right
 
 instance CryptoPrivateKey APrivateSignKey where
+  type PublicKeyType APrivateSignKey = APublicVerifyKey
   toPrivKey f (APrivateSignKey _ k) = f k
   privKey (APrivateKey a k) = case signatureAlgorithm a of
     Just Dict -> Right $ APrivateSignKey a k
     _ -> Left "key does not support signature algorithms"
 
 instance CryptoPrivateKey APrivateDhKey where
+  type PublicKeyType APrivateDhKey = APublicDhKey
   toPrivKey f (APrivateDhKey _ k) = f k
   privKey (APrivateKey a k) = case dhAlgorithm a of
     Just Dict -> Right $ APrivateDhKey a k
     _ -> Left "key does not support DH algorithm"
 
 instance AlgorithmI a => CryptoPrivateKey (PrivateKey a) where
+  type PublicKeyType (PrivateKey a) = PublicKey a
   toPrivKey = id
   privKey (APrivateKey _ k) = checkAlgorithm k
+
+publicKey :: PrivateKey a -> PublicKey a
+publicKey = \case
+  PrivateKeyEd25519 _ k -> PublicKeyEd25519 k
+  PrivateKeyEd448 _ k -> PublicKeyEd448 k
+  PrivateKeyX25519 _ k -> PublicKeyX25519 k
+  PrivateKeyX448 _ k -> PublicKeyX448 k
 
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
 encodePrivKey = toPrivKey $ encodeASNObj . privateToX509
@@ -463,14 +495,22 @@ instance AlgorithmI a => IsString (PrivateKey a) where
 instance AlgorithmI a => IsString (PublicKey a) where
   fromString = parseString $ decode >=> decodePubKey
 
--- | Tuple of RSA 'PublicKey' and 'PrivateKey'.
-type KeyPair a = (PublicKey a, PrivateKey a)
+instance AlgorithmI a => ToJSON (PrivateKey a) where
+  toJSON = strToJSON . strEncode . encodePrivKey
+  toEncoding = strToJEncoding . strEncode . encodePrivKey
 
-type AKeyPair = (APublicKey, APrivateKey)
+instance AlgorithmI a => FromJSON (PrivateKey a) where
+  parseJSON v = (decodePrivKey <=< U.decode) <$?> strParseJSON "PrivateKey" v
 
-type ASignatureKeyPair = (APublicVerifyKey, APrivateSignKey)
+type KeyPairType pk = (PublicKeyType pk, pk)
 
-type ADhKeyPair = (APublicDhKey, APrivateDhKey)
+type KeyPair a = KeyPairType (PrivateKey a)
+
+type AKeyPair = KeyPairType APrivateKey
+
+type ASignatureKeyPair = KeyPairType APrivateSignKey
+
+type ADhKeyPair = KeyPairType APrivateDhKey
 
 generateKeyPair :: AlgorithmI a => SAlgorithm a -> IO AKeyPair
 generateKeyPair a = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair'
@@ -494,11 +534,11 @@ generateKeyPair' = case sAlgorithm @a of
   SX25519 ->
     X25519.generateSecretKey >>= \pk ->
       let k = X25519.toPublic pk
-       in pure (PublicKeyX25519 k, PrivateKeyX25519 pk)
+       in pure (PublicKeyX25519 k, PrivateKeyX25519 pk k)
   SX448 ->
     X448.generateSecretKey >>= \pk ->
       let k = X448.toPublic pk
-       in pure (PublicKeyX448 k, PrivateKeyX448 pk)
+       in pure (PublicKeyX448 k, PrivateKeyX448 pk k)
 
 instance ToField APrivateSignKey where toField = toField . encodePrivKey
 
@@ -512,7 +552,7 @@ instance AlgorithmI a => ToField (PrivateKey a) where toField = toField . encode
 
 instance AlgorithmI a => ToField (PublicKey a) where toField = toField . encodePubKey
 
-instance ToField (DhSecret a) where toField = toField . dhSecretBytes'
+instance ToField (DhSecret a) where toField = toField . dhBytes'
 
 instance FromField APrivateSignKey where fromField = blobFieldDecoder decodePrivKey
 
@@ -648,7 +688,18 @@ validSignatureSize n =
 
 -- | AES key newtype.
 newtype Key = Key {unKey :: ByteString}
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
+
+instance ToField Key where toField = toField . unKey
+
+instance FromField Key where fromField f = Key <$> fromField f
+
+instance ToJSON Key where
+  toJSON = strToJSON . unKey
+  toEncoding = strToJEncoding . unKey
+
+instance FromJSON Key where
+  parseJSON = fmap Key . strParseJSON "Key"
 
 -- | IV bytes newtype.
 newtype IV = IV {unIV :: ByteString}
@@ -782,14 +833,14 @@ verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' o
   _ -> False
 
 dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
-dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
-dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
+dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk _) = DhSecretX25519 $ X25519.dh k pk
+dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox <$> pad msg paddedLen
   where
-    cryptoBox s = BA.convert tag `B.append` c
+    cryptoBox s = BA.convert tag <> c
       where
         (rs, c) = xSalsa20 secret nonce s
         tag = Poly1305.auth rs c
@@ -844,8 +895,8 @@ privateToX509 :: PrivateKey a -> PrivKey
 privateToX509 = \case
   PrivateKeyEd25519 k _ -> PrivKeyEd25519 k
   PrivateKeyEd448 k _ -> PrivKeyEd448 k
-  PrivateKeyX25519 k -> PrivKeyX25519 k
-  PrivateKeyX448 k -> PrivKeyX448 k
+  PrivateKeyX25519 k _ -> PrivKeyX25519 k
+  PrivateKeyX448 k _ -> PrivKeyX448 k
 
 encodeASNObj :: ASN1Object a => a -> ByteString
 encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
@@ -870,8 +921,8 @@ x509ToPrivate :: (PrivKey, [ASN1]) -> Either String APrivateKey
 x509ToPrivate = \case
   (PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
   (PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 . PrivateKeyEd448 k $ Ed448.toPublic k
-  (PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 $ PrivateKeyX25519 k
-  (PrivKeyX448 k, []) -> Right . APrivateKey SX448 $ PrivateKeyX448 k
+  (PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 . PrivateKeyX25519 k $ X25519.toPublic k
+  (PrivKeyX448 k, []) -> Right . APrivateKey SX448 . PrivateKeyX448 k $ X448.toPublic k
   r -> keyError r
 
 decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])

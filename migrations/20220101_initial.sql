@@ -14,8 +14,7 @@ CREATE TABLE connections (
   last_external_snd_msg_id INTEGER NOT NULL DEFAULT 0,
   last_rcv_msg_hash BLOB NOT NULL DEFAULT x'',
   last_snd_msg_hash BLOB NOT NULL DEFAULT x'',
-  smp_agent_version INTEGER NOT NULL DEFAULT 1,
-  e2e_version INTEGER NOT NULL DEFAULT 1
+  smp_agent_version INTEGER NOT NULL DEFAULT 1
 ) WITHOUT ROWID;
 
 CREATE TABLE rcv_queues (
@@ -98,8 +97,9 @@ CREATE TABLE snd_messages (
 CREATE TABLE conn_confirmations (
   confirmation_id BLOB NOT NULL PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  e2e_snd_pub_key BLOB NOT NULL,
-  sender_key BLOB NOT NULL,
+  e2e_snd_pub_key BLOB NOT NULL, -- TODO per-queue key. Split?
+  sender_key BLOB NOT NULL, -- TODO per-queue key. Split?
+  ratchet_state BLOB NOT NULL,
   sender_conn_info BLOB NOT NULL,
   accepted INTEGER NOT NULL,
   own_conn_info BLOB,
@@ -115,3 +115,23 @@ CREATE TABLE conn_invitations (
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 ) WITHOUT ROWID;
+
+CREATE TABLE ratchets (
+  conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections
+    ON DELETE CASCADE,
+  -- x3dh keys are not saved on the sending side (the side accepting the connection)
+  x3dh_priv_key_1 BLOB,
+  x3dh_priv_key_2 BLOB,
+  -- ratchet is initially empty on the receiving side (the side offering the connection)
+  ratchet_state BLOB,
+  e2e_version INTEGER NOT NULL DEFAULT 1
+) WITHOUT ROWID;
+
+CREATE TABLE skipped_messages (
+  skipped_message_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES ratchets
+    ON DELETE CASCADE,
+  header_key BLOB NOT NULL,
+  msg_n INTEGER NOT NULL,
+  msg_key BLOB NOT NULL
+);

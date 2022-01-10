@@ -23,6 +23,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     withConnection,
     withTransaction,
     fromTextField_,
+    firstRow,
   )
 where
 
@@ -32,11 +33,13 @@ import Control.Exception (bracket)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
+import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
-import Data.ByteString.Base64 (encode)
+import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
-import Data.List (find)
+import Data.List (find, foldl')
+import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
@@ -52,6 +55,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldParser)
@@ -274,16 +278,16 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}} =
+  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}, ratchetState} =
     liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \confirmationId ->
         DB.execute
           db
           [sql|
             INSERT INTO conn_confirmations
-            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
+            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, ?, 0);
           |]
-          (confirmationId, connId, senderKey, e2ePubKey, connInfo)
+          (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo)
 
   acceptConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
   acceptConfirmation st confirmationId ownConnInfo =
@@ -299,48 +303,46 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [ ":own_conn_info" := ownConnInfo,
           ":confirmation_id" := confirmationId
         ]
-      confirmation
-        <$> DB.query
+      firstRow confirmation SEConfirmationNotFound $
+        DB.query
           db
           [sql|
-            SELECT conn_id, sender_key, e2e_snd_pub_key, sender_conn_info
+            SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info
             FROM conn_confirmations
             WHERE confirmation_id = ?;
           |]
           (Only confirmationId)
     where
-      confirmation [(connId, senderKey, e2ePubKey, connInfo)] =
-        Right
-          AcceptedConfirmation
-            { confirmationId,
-              connId,
-              senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
-              ownConnInfo
-            }
-      confirmation _ = Left SEConfirmationNotFound
+      confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo) =
+        AcceptedConfirmation
+          { confirmationId,
+            connId,
+            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
+            ratchetState,
+            ownConnInfo
+          }
 
   getAcceptedConfirmation :: SQLiteStore -> ConnId -> m AcceptedConfirmation
   getAcceptedConfirmation st connId =
     liftIOEither . withTransaction st $ \db ->
-      confirmation
-        <$> DB.query
+      firstRow confirmation SEConfirmationNotFound $
+        DB.query
           db
           [sql|
-            SELECT confirmation_id, sender_key, e2e_snd_pub_key, sender_conn_info, own_conn_info
+            SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, own_conn_info
             FROM conn_confirmations
             WHERE conn_id = ? AND accepted = 1;
           |]
           (Only connId)
     where
-      confirmation [(confirmationId, senderKey, e2ePubKey, connInfo, ownConnInfo)] =
-        Right
-          AcceptedConfirmation
-            { confirmationId,
-              connId,
-              senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
-              ownConnInfo
-            }
-      confirmation _ = Left SEConfirmationNotFound
+      confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, ownConnInfo) =
+        AcceptedConfirmation
+          { confirmationId,
+            connId,
+            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
+            ratchetState,
+            ownConnInfo
+          }
 
   removeConfirmations :: SQLiteStore -> ConnId -> m ()
   removeConfirmations st connId =
@@ -368,8 +370,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getInvitation :: SQLiteStore -> InvitationId -> m Invitation
   getInvitation st invitationId =
     liftIOEither . withTransaction st $ \db ->
-      invitation
-        <$> DB.query
+      firstRow invitation SEInvitationNotFound $
+        DB.query
           db
           [sql|
             SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
@@ -379,9 +381,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           |]
           (Only invitationId)
     where
-      invitation [(contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted)] =
-        Right Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
-      invitation _ = Left SEInvitationNotFound
+      invitation (contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted) =
+        Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
 
   acceptInvitation :: SQLiteStore -> InvitationId -> ConnInfo -> m ()
   acceptInvitation st invitationId ownConnInfo =
@@ -444,22 +445,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
       rq_ <- liftIO $ getRcvQueueByConnId_ db connId
       msgData <-
-        ExceptT $
-          sndMsgData
-            <$> DB.query
-              db
-              [sql|
+        ExceptT . firstRow id SEMsgNotFound $
+          DB.query
+            db
+            [sql|
                 SELECT m.msg_type, m.msg_body
                 FROM messages m
                 JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
                 WHERE m.conn_id = ? AND m.internal_id = ?
               |]
-              (connId, msgId)
+            (connId, msgId)
       pure (rq_, msgData)
-    where
-      sndMsgData :: [(AMsgType, MsgBody)] -> Either StoreError (AMsgType, MsgBody)
-      sndMsgData [msgData] = Right msgData
-      sndMsgData _ = Left SEMsgNotFound
 
   getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
   getPendingMsgs st connId =
@@ -487,6 +483,69 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   deleteMsg st connId msgId =
     liftIO . withTransaction st $ \db ->
       DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
+
+  createRatchetX3dhKeys :: SQLiteStore -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
+  createRatchetX3dhKeys st connId x3dhPrivKey1 x3dhPrivKey2 =
+    liftIO . withTransaction st $ \db ->
+      DB.execute db "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2) VALUES (?, ?, ?)" (connId, x3dhPrivKey1, x3dhPrivKey2)
+
+  getRatchetX3dhKeys :: SQLiteStore -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
+  getRatchetX3dhKeys st connId =
+    liftIOEither . withTransaction st $ \db ->
+      fmap hasKeys $
+        firstRow id SEX3dhKeysNotFound $
+          DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2 FROM ratchets WHERE conn_id = ?" (Only connId)
+    where
+      hasKeys = \case
+        Right (Just k1, Just k2) -> Right (k1, k2)
+        _ -> Left SEX3dhKeysNotFound
+
+  createRatchet :: SQLiteStore -> ConnId -> RatchetX448 -> m ()
+  createRatchet st connId rc =
+    liftIO . withTransaction st $ \db -> do
+      DB.executeNamed
+        db
+        [sql|
+          INSERT INTO ratchets (conn_id, ratchet_state)
+          VALUES (:conn_id, :ratchet_state)
+          ON CONFLICT (conn_id) DO UPDATE SET
+            ratchet_state = :ratchet_state,
+            x3dh_priv_key_1 = NULL,
+            x3dh_priv_key_2 = NULL
+        |]
+        [":conn_id" := connId, ":ratchet_state" := rc]
+
+  getRatchet :: SQLiteStore -> ConnId -> m RatchetX448
+  getRatchet st connId =
+    liftIOEither . withTransaction st $ \db ->
+      ratchet
+        <$> DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
+    where
+      ratchet (Only (Just rc) : _) = Right rc
+      ratchet _ = Left SERatchetNotFound
+
+  getSkippedMsgKeys :: SQLiteStore -> ConnId -> m SkippedMsgKeys
+  getSkippedMsgKeys st connId =
+    liftIO . withTransaction st $ \db ->
+      skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
+    where
+      skipped ms = foldl' addSkippedKey M.empty ms
+      addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
+        where
+          addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
+
+  updateRatchet :: SQLiteStore -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
+  updateRatchet st connId rc skipped =
+    liftIO . withTransaction st $ \db -> do
+      DB.execute db "UPDATE ratchets SET ratchet_state = ? WHERE conn_id = ?" (rc, connId)
+      case skipped of
+        SMDNoChange -> pure ()
+        SMDRemove hk msgN ->
+          DB.execute db "DELETE FROM skipped_messages WHERE conn_id = ? AND header_key = ? AND msg_n = ?" (connId, hk, msgN)
+        SMDAdd smks ->
+          forM_ (M.assocs smks) $ \(hk, mks) ->
+            forM_ (M.assocs mks) $ \(msgN, mk) ->
+              DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
 -- * Auxiliary helpers
 
@@ -541,6 +600,13 @@ fromTextField_ fromText = \case
       Just x -> Ok x
       _ -> returnError ConversionFailed f ("invalid text: " <> T.unpack t)
   f -> returnError ConversionFailed f "expecting SQLText column type"
+
+listToEither :: e -> [a] -> Either e a
+listToEither _ (x : _) = Right x
+listToEither e _ = Left e
+
+firstRow :: (a -> b) -> e -> IO [a] -> IO (Either e b)
+firstRow f e a = second f . listToEither e <$> a
 
 {- ORMOLU_DISABLE -}
 -- SQLite.Simple only has these up to 10 fields, which is insufficient for some of our queries
@@ -884,4 +950,4 @@ createWithRandomId gVar create = tryCreate 3
           | otherwise -> pure . Left . SEInternal $ bshow e
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
+randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)

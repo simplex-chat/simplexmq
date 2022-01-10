@@ -23,6 +23,7 @@ extra-source-files:
   - migrations/*.*
 
 dependencies:
+  - aeson == 1.5.*
   - ansi-terminal >= 0.10 && < 0.12
   - asn1-encoding == 0.9.*
   - asn1-types == 0.3.*
