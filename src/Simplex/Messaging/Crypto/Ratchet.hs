@@ -87,8 +87,8 @@ generateE2EParams v = do
   pure (pk1, pk2, E2ERatchetParams v k1 k2)
 
 data RatchetInitParams = RatchetInitParams
-  { sharedSecret :: ByteString,
-    assocData :: Str,
+  { assocData :: Str,
+    ratchetKey :: RatchetKey,
     sndHK :: HeaderKey,
     rcvNextHK :: HeaderKey
   }
@@ -104,11 +104,11 @@ x3dhRcv rpk1 rpk2 (E2ERatchetParams _ sk1 sk2) =
 
 x3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> RatchetInitParams
 x3dh (sk1, rk1) dh1 dh2 dh3 =
-  RatchetInitParams {assocData, sharedSecret, sndHK = Key hk, rcvNextHK = Key nhk}
+  RatchetInitParams {assocData, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk}
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
     (hk, rest) = B.splitAt 32 $ dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3
-    (nhk, sharedSecret) = B.splitAt 32 rest
+    (nhk, sk) = B.splitAt 32 rest
 
 type RatchetX448 = Ratchet 'X448
 
@@ -210,9 +210,9 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- is sent to the recipient.
 initSndRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => PublicKey a -> PrivateKey a -> RatchetInitParams -> Ratchet a
-initSndRatchet rcDHRr rcDHRs RatchetInitParams {sharedSecret, assocData, sndHK, rcvNextHK} = do
+initSndRatchet rcDHRr rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr))
-  let (rcRK, rcCKs, rcNHKs) = rootKdf (RatchetKey sharedSecret) rcDHRr rcDHRs
+  let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs
    in Ratchet
         { rcVersion = e2eEncryptVRange,
           rcAD = assocData,
@@ -233,12 +233,12 @@ initSndRatchet rcDHRr rcDHRs RatchetInitParams {sharedSecret, assocData, sndHK, 
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => PrivateKey a -> RatchetInitParams -> Ratchet a
-initRcvRatchet rcDHRs RatchetInitParams {sharedSecret, assocData, sndHK, rcvNextHK} =
+initRcvRatchet rcDHRs RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK} =
   Ratchet
     { rcVersion = e2eEncryptVRange,
       rcAD = assocData,
       rcDHRs,
-      rcRK = RatchetKey sharedSecret,
+      rcRK = ratchetKey,
       rcSnd = Nothing,
       rcRcv = Nothing,
       rcPN = 0,
