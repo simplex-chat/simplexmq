@@ -30,9 +30,6 @@ module Simplex.Messaging.Agent.Client
     deleteQueue,
     logServer,
     removeSubscription,
-    addActivation,
-    getActivation,
-    removeActivation,
   )
 where
 
@@ -75,7 +72,6 @@ data AgentClient = AgentClient
     smpClients :: TVar (Map SMPServer SMPClient),
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     subscrConns :: TVar (Map ConnId SMPServer),
-    activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
     connMsgsQueued :: TVar (Map ConnId Bool),
     smpQueueMsgQueues :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId)),
     smpQueueMsgDeliveries :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (Async ())),
@@ -95,14 +91,13 @@ newAgentClient agentEnv = do
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
-  activations <- newTVar M.empty
   connMsgsQueued <- newTVar M.empty
   smpQueueMsgQueues <- newTVar M.empty
   smpQueueMsgDeliveries <- newTVar M.empty
   reconnections <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -176,7 +171,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
 closeAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 closeAgentClient c = liftIO $ do
   closeSMPServerClients c
-  cancelActions $ activations c
   cancelActions $ reconnections c
   cancelActions $ smpQueueMsgDeliveries c
 
@@ -286,15 +280,6 @@ removeSubscription AgentClient {subscrConns, subscrSrvrs} connId = atomically $ 
     delSub cs =
       let cs' = M.delete connId cs
        in if M.null cs' then Nothing else Just cs'
-
-addActivation :: MonadUnliftIO m => AgentClient -> ConnId -> Async () -> m ()
-addActivation c connId a = atomically . modifyTVar (activations c) $ M.insert connId a
-
-getActivation :: MonadUnliftIO m => AgentClient -> ConnId -> m (Maybe (Async ()))
-getActivation c connId = M.lookup connId <$> readTVarIO (activations c)
-
-removeActivation :: MonadUnliftIO m => AgentClient -> ConnId -> m ()
-removeActivation c connId = atomically . modifyTVar (activations c) $ M.delete connId
 
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
