@@ -33,6 +33,7 @@ module Simplex.Messaging.Protocol
     smpClientVersion,
     smpClientVRange,
     maxMessageLength,
+    e2eEncConfirmationLength,
     e2eEncMessageLength,
 
     -- * SMP protocol types
@@ -117,10 +118,14 @@ smpClientVRange :: VersionRange
 smpClientVRange = mkVersionRange 1 smpClientVersion
 
 maxMessageLength :: Int
-maxMessageLength = 15968
+maxMessageLength = 16078
+
+-- it is shorter to allow per-queue e2e encryption DH key in the "public" header
+e2eEncConfirmationLength :: Int
+e2eEncConfirmationLength = 15942
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 15842
+e2eEncMessageLength = 16030
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier
@@ -464,7 +469,7 @@ data ErrorType
     QUOTA
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
-  | -- | sent message is too large (> maxMessageLength = 15968 bytes)
+  | -- | sent message is too large (> maxMessageLength = 16078 bytes)
     LARGE_MSG
   | -- | internal server error
     INTERNAL
