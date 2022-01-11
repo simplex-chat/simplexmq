@@ -21,13 +21,14 @@ source /etc/profile.d/simplex.sh
 smp-server --version
 
 # Initialize server
-smp-server init -l
+ip_address=$(curl ifconfig.me)
+smp-server init -l --ip @ip_address
 
 # Server fingerprint
 fingerprint=$(cat /etc/opt/simplex/fingerprint)
 
 # On login script
-echo "bash /opt/simplex/on_login.sh $fingerprint" >> /root/.bashrc
+echo "bash /opt/simplex/on_login.sh $fingerprint $ip_address" >> /root/.bashrc
 
 # / Create systemd service
 cat <<EOT >> /etc/systemd/system/smp-server.service
