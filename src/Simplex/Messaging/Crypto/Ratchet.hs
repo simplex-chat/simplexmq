@@ -24,6 +24,7 @@ import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
@@ -71,11 +72,11 @@ data E2ERatchetParamsUri (a :: Algorithm)
 instance AlgorithmI a => StrEncoding (E2ERatchetParamsUri a) where
   strEncode (E2ERatchetParamsUri vs key1 key2) =
     strEncode $
-      QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncode [key1, key2])]
+      QSP QNoEscaping [("v", strEncode vs), ("x3dh", strEncodeList [key1, key2])]
   strP = do
     query <- strP
     vs <- queryParam "v" query
-    keys <- queryParam "x3dh" query
+    keys <- L.toList <$> queryParam "x3dh" query
     case keys of
       [key1, key2] -> pure $ E2ERatchetParamsUri vs key1 key2
       _ -> fail "bad e2e params"

@@ -300,7 +300,8 @@ logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 
 showServer :: SMPServer -> ByteString
-showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
+showServer SMPServer {host, port} =
+  B.pack $ host <> if null port then "" else ':' : port
 
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
