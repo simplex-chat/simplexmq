@@ -186,6 +186,9 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
             \authorityKeyIdentifier = keyid:always\n\
             \basicConstraints = critical,CA:true\n"
         -- TODO revise https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3, https://www.rfc-editor.org/rfc/rfc3279#section-2.3.5
+        -- IP and FQDN can't both be used as server address interchangeably even if IP is added
+        -- as Subject Alternative Name, unless the following validation hook is disabled:
+        -- https://hackage.haskell.org/package/x509-validation-1.6.10/docs/src/Data-X509-Validation.html#validateCertificateName
         createOpensslServerConf =
           writeFile
             opensslServerConfFile
@@ -197,17 +200,10 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
                 <> "[v3]\n\
                    \basicConstraints = CA:FALSE\n\
                    \keyUsage = digitalSignature, nonRepudiation, keyAgreement\n\
-                   \extendedKeyUsage = serverAuth\n\
-                   \subjectAltName = @alt_names\n\n\
-                   \[alt_names]\n"
-                <> optionalDns1
-                <> ("IP.1 = " <> ip <> "\n")
+                   \extendedKeyUsage = serverAuth\n"
             )
           where
             cn = fromMaybe ip fqdn
-            optionalDns1 = case fqdn of
-              Nothing -> ""
-              Just n -> "DNS.1 = " <> n <> "\n"
 
     saveFingerprint = do
       Fingerprint fp <- loadFingerprint caCrtFile
