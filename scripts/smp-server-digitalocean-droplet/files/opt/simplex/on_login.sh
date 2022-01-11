@@ -1,5 +1,5 @@
 #!/bin/bash
-# accepts server's fingerprint as the first parameter
+
 fingerprint=$1
 
 ip_address=$(hostname -I | awk '{print$1}')

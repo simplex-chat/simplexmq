@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # <UDF name="enable_store_log" label="Store log - persists SMP queues to append only log and restores them upon server restart." default="on" oneof="on, off" />
 # <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server FQDN / IP address, CA certificate fingerprint and server version. Use `fqdn#fingerprint` or `ip#fingerprint` as SMP server address in the client. Note: minimal permissions token should have are - read/write access to `linodes` (to update linode tags) and `domains` (to add A record for the chosen 3rd level domain)" default="" />
 # <UDF name="fqdn" label="FQDN (Fully qualified domain name) - provide third level domain name (ex: smp.example.com). If provided can be used instead of IP address." default="" />
@@ -78,7 +79,7 @@ on_login_script="/opt/simplex/on_login.sh"
 
 cat <<EOT >> $on_login_script
 #!/bin/bash
-# accepts server's fingerprint as the first parameter
+
 fingerprint=\$1
 
 ip_address=\$(hostname -I | awk '{print\$1}')
