@@ -646,14 +646,14 @@ SMP transmission structure for received messages:
                       2 | originalLength
                      8- | smpPrivHeader (empty header for the message)
                         ....... clientMsgBody (<= 16020 bytes = 16030 - 10)
-                              -- TODO move internal structure to agent protocol
+                              -- TODO move internal structure (below) to agent protocol
                            8- | agentPublicHeader (the size is for user messages post handshake, without E2E X3DH keys - it is version and 'M' for the messages - 3 bytes in total)
                               ....... E2E double-ratchet encrypted (= 16012 bytes = 16020 - 8)
                                  88 | double-ratchet header (actual size is 69 bytes, the rest is reserved)
                                  16 | double-ratchet header auth tag
                                  16 | double-ratchet header iv
                                  16 | message auth tag (IV generated from chain ratchet)
-                                 ------- encrypted agent message (= 15876 bytes = 16012 - 136)
+                                    ------- encrypted agent message (= 15876 bytes = 16012 - 136)
                                         2 | originalLength
                                   84 (41) | agentHeader (8 + 1+32)
                                         2 | %s"MM"
@@ -665,6 +665,7 @@ SMP transmission structure for received messages:
                                     |
                               ....... E2E double-ratchet encrypted end
                               |
+                              -- TODO move internal structure (above) to agent protocol
                         ....... clientMsgBody end
                      0+ | smpClientMessage pad
                   ------- smpClientMessage end

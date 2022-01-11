@@ -161,7 +161,7 @@ e2eEncConnInfoLength :: Int
 e2eEncConnInfoLength = 14848
 
 e2eEncUserMsgLength :: Int
-e2eEncUserMsgLength = 15788
+e2eEncUserMsgLength = 15876
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)

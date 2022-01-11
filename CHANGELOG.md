@@ -16,7 +16,7 @@ New functionality:
 - Support for notification servers with new SMP commands: `NKEY`/`NID`, `NSUB`/`NMSG`.
 
 Efficiency improvements:
-- Binary protocol encodings to reduce overhead from circa 15% to approximately 3.6% of transmitted application message size, with only 2.2% overhead for SMP protocol messages.
+- Binary protocol encodings to reduce overhead from circa 15% to approximately 3.7% of transmitted application message size, with only 2.2% overhead for SMP protocol messages.
 - More performant cryptographic algorithms.
 
 For more information about SimpleX:
