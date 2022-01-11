@@ -579,7 +579,7 @@ instance StrEncoding ConnReqScheme where
       <|> "https://" *> (CRSAppServer <$> strP)
 
 simplexChat :: ConnReqScheme
-simplexChat = CRSAppServer $ SrvLoc "simplex.chat" Nothing
+simplexChat = CRSAppServer $ SrvLoc "simplex.chat" ""
 
 -- | SMP queue status.
 data QueueStatus

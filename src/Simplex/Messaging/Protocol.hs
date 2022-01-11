@@ -87,7 +87,7 @@ module Simplex.Messaging.Protocol
   )
 where
 
-import Control.Applicative (optional)
+import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -368,7 +368,7 @@ instance Encoding ClientMessage where
 -- | SMP server location and transport key digest (hash).
 data SMPServer = SMPServer
   { host :: HostName,
-    port :: Maybe ServiceName,
+    port :: ServiceName,
     keyHash :: C.KeyHash
   }
   deriving (Eq, Ord, Show)
@@ -392,12 +392,12 @@ instance StrEncoding SMPServer where
     SrvLoc host port <- strP
     pure SMPServer {host, port, keyHash}
 
-data SrvLoc = SrvLoc HostName (Maybe ServiceName)
+data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
 
 instance StrEncoding SrvLoc where
-  strEncode (SrvLoc host port) = B.pack $ host <> maybe "" (':' :) port
-  strP = SrvLoc <$> host <*> optional port
+  strEncode (SrvLoc host port) = B.pack $ host <> if null port then "" else ':' : port
+  strP = SrvLoc <$> host <*> (port <|> pure "")
     where
       host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
       port = B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)

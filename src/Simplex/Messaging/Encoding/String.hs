@@ -9,6 +9,8 @@ module Simplex.Messaging.Encoding.String
     strToJEncoding,
     strParseJSON,
     base64urlP,
+    strEncodeList,
+    strListP,
   )
 where
 
@@ -75,14 +77,15 @@ instance StrEncoding Word16 where
   strP = A.decimal
 
 -- lists encode/parse as comma-separated strings
-instance StrEncoding a => StrEncoding [a] where
-  strEncode = B.intercalate "," . map strEncode
-  strP = listItem `A.sepBy'` A.char ','
+strEncodeList :: StrEncoding a => [a] -> ByteString
+strEncodeList = B.intercalate "," . map strEncode
 
+strListP :: StrEncoding a => Parser [a]
+strListP = listItem `A.sepBy'` A.char ','
+
+-- relies on sepBy1 never returning an empty list
 instance StrEncoding a => StrEncoding (L.NonEmpty a) where
-  strEncode = strEncode . L.toList
-
-  -- relies on sepBy1 never returning an empty list
+  strEncode = strEncodeList . L.toList
   strP = L.fromList <$> listItem `A.sepBy1'` A.char ','
 
 listItem :: StrEncoding a => Parser a
