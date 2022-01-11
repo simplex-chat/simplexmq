@@ -164,9 +164,9 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ dis
 
     useTransport :: (ServiceName, ATransport)
     useTransport = case port smpServer of
-      Nothing -> defaultTransport cfg
-      Just "80" -> ("80", transport @WS)
-      Just p -> (p, transport @TLS)
+      "" -> defaultTransport cfg
+      "80" -> ("80", transport @WS)
+      p -> (p, transport @TLS)
 
     client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =

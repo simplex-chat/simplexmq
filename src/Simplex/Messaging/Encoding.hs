@@ -11,6 +11,8 @@ module Simplex.Messaging.Encoding
   ( Encoding (..),
     Tail (..),
     Large (..),
+    smpEncodeList,
+    smpListP,
   )
 where
 
@@ -111,12 +113,18 @@ instance (Encoding a, Encoding b) => Encoding (a, b) where
   smpP = (,) <$> smpP <*> smpP
 
 -- lists encode/parse as a sequence of items prefixed with list length (as 1 byte)
-instance Encoding a => Encoding [a] where
-  smpEncode xs = B.cons (lenEncode $ length xs) . B.concat $ map smpEncode xs
-  smpP = (`A.count` smpP) =<< lenP
+smpEncodeList :: Encoding a => [a] -> ByteString
+smpEncodeList xs = B.cons (lenEncode $ length xs) . B.concat $ map smpEncode xs
+
+smpListP :: Encoding a => Parser [a]
+smpListP = (`A.count` smpP) =<< lenP
+
+instance Encoding String where
+  smpEncode = smpEncode . B.pack
+  smpP = B.unpack <$> smpP
 
 instance Encoding a => Encoding (L.NonEmpty a) where
-  smpEncode = smpEncode . L.toList
+  smpEncode = smpEncodeList . L.toList
   smpP =
     lenP >>= \case
       0 -> fail "empty list"

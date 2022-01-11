@@ -22,7 +22,7 @@ srv :: SMPServer
 srv =
   SMPServer
     { host = "smp.simplex.im",
-      port = Just "5223",
+      port = "5223",
       keyHash = C.KeyHash "\215m\248\251"
     }
 
@@ -77,15 +77,15 @@ connectionRequestTests :: Spec
 connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
-      strEncode (queue :: SMPQueueUri) {smpServer = srv {port = Nothing}}
+      strEncode (queue :: SMPQueueUri) {smpServer = srv {port = ""}}
         `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr
       strEncode queue {clientVRange = mkVersionRange 1 2}
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
     it "should parse SMP queue URIs" $ do
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1&dh=" <> testDhKeyStr)
-        `shouldBe` Right (queue :: SMPQueueUri) {smpServer = srv {port = Nothing}}
+        `shouldBe` Right (queue :: SMPQueueUri) {smpServer = srv {port = ""}}
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
-        `shouldBe` Right (queue :: SMPQueueUri) {smpServer = srv {port = Nothing}}
+        `shouldBe` Right (queue :: SMPQueueUri) {smpServer = srv {port = ""}}
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queue
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1&extra_param=abc")
