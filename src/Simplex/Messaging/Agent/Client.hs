@@ -2,11 +2,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
@@ -50,7 +53,6 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.ExceptT ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -61,7 +63,7 @@ import Simplex.Messaging.Protocol (QueueId, QueueIdsKeys (..), SndPublicVerifyKe
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
 import Simplex.Messaging.Version
-import UnliftIO.Exception (IOException)
+import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -101,6 +103,18 @@ newAgentClient agentEnv = do
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
+
+newtype InternalException e = InternalException {unInternalException :: e}
+  deriving (Eq, Show)
+
+instance Exception e => Exception (InternalException e)
+
+instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
+  withRunInIO :: ((forall a. ExceptT e m a -> IO a) -> IO b) -> ExceptT e m b
+  withRunInIO exceptToIO =
+    withExceptT unInternalException . ExceptT . E.try $
+      withRunInIO $ \run ->
+        exceptToIO $ run . (either (E.throwIO . InternalException) return <=< runExceptT)
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
