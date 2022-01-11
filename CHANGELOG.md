@@ -1,3 +1,22 @@
+# 1.0.0
+
+Security and privacy improvements:
+- Faster and more secure 2-layer E2E encryption, using double ratchet algorithm with Curve448 and Curve25519 for key agreement.
+- Encryption of the traffic from server to recipient to avoid cipher-text correlation between sent and received.messages.
+- TLS 1.2+ with tls-unique binding to avoid the possibility of command replay.
+- Server identity verification via server offline certificate fingerprints included in SMP server addresses.
+
+New functionality:
+- Support for message notification servers with new SMP commands: `NKEY`/`NID`, `NSUB`/`NMSG`.
+
+Efficiency improvements:
+- Binary protocol encoding to reduce protocol overhead from circa 15% to less than 5% of transmitted data.
+- More performant cryptographic algorithms.
+
+For more information about SimpleX:
+- [SimpleX overview](https://github.com/simplex-chat/simplexmq/blob/master/protocol/overview-tjr.md).
+- [SimpleX chat v1 announcement](https://github.com/simplex-chat/simplex-chat/blob/master/blog/20220112-simplex-chat-v1-released.md).
+
 # 0.5.2
 
 - Fix message delivery logic that blocked delivery of all server messages when server per-queue quota exceeded, making it concurrent per SMP queue, not per server.
