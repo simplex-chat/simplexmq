@@ -107,6 +107,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad.IO.Class
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
@@ -437,6 +438,20 @@ instance StrEncoding AConnectionRequestUri where
       CMContact -> pure . ACR SCMContact $ CRContactUri crData
     where
       crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
+
+instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
+  parseJSON = strParseJSON "ConnectionRequestUri"
+
+instance ConnectionModeI m => ToJSON (ConnectionRequestUri m) where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON AConnectionRequestUri where
+  parseJSON = strParseJSON "ConnectionRequestUri"
+
+instance ToJSON AConnectionRequestUri where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 -- debug :: Show a => String -> a -> a
 -- debug name value = unsafePerformIO (putStrLn $ name <> ": " <> show value) `seq` value
