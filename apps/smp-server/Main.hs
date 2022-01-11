@@ -181,10 +181,10 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
         \# and restoring them when the server is started.\n\
         \# Log is compacted on start (deleted queues are removed).\n\
         \# The messages in the queues are not logged.\n"
-          <> ("enable: " <> (if enableStoreLog then "on" else "off # on") <> "\n\n")
+          <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
           <> "[TRANSPORT]\n\
              \port: 5223\n\
-             \websockets: on\n"
+             \websockets: off\n"
 
     warnCAPrivateKeyFile =
       putStrLn $

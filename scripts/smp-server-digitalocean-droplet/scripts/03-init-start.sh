@@ -1,37 +1,35 @@
 #!/bin/bash
 
+# Download latest release
 bin_dir="/opt/simplex/bin"
 binary="$bin_dir/smp-server"
-conf_dir="/etc/opt/simplex"
-
-# Download latest release
 mkdir -p $bin_dir
 curl -L -o $binary https://github.com/simplex-chat/simplexmq/releases/latest/download/smp-server-ubuntu-20_04-x86-64
 chmod +x $binary
-$binary --version
 
-# Add to PATH
+# / Add to PATH
 cat <<EOT >> /etc/profile.d/simplex.sh
 #!/bin/bash
 
 export PATH="$PATH:$bin_dir"
 
 EOT
+# Add to PATH /
+
+# Source and test PATH
 source /etc/profile.d/simplex.sh
+smp-server --version
 
 # Initialize server
 smp-server init -l
 
-# Turn off websockets support
-sed -e '/websockets/s/^/# /g' -i $conf_dir/smp-server.ini
-
 # Server fingerprint
-fingerprint=$(cat $conf_dir/fingerprint)
+fingerprint=$(cat /etc/opt/simplex/fingerprint)
 
 # On login script
 echo "bash /opt/simplex/on_login.sh $fingerprint" >> /root/.bashrc
 
-# Create and start systemd service
+# / Create systemd service
 cat <<EOT >> /etc/systemd/system/smp-server.service
 [Unit]
 Description=SMP server systemd service
@@ -44,7 +42,9 @@ ExecStart=/bin/sh -c "$binary start"
 WantedBy=multi-user.target
 
 EOT
+# Create systemd service /
 
+# Start systemd service
 chmod 644 /etc/systemd/system/smp-server.service
 sudo systemctl enable smp-server
 sudo systemctl start smp-server
