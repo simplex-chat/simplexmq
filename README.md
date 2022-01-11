@@ -73,7 +73,7 @@ See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for
 
 ## Using SMP server and SMP agent
 
-You can either run your own SMP server locally or deploy using [Linode StackScript](#deploy-smp-server-on-linode), or try local SMP agent with the deployed servers:
+You can either run your own SMP server locally or deploy using [Linode StackScript](https://cloud.linode.com/stackscripts/748014), or try local SMP agent with the deployed servers:
 
 `smp2.simplex.im#z5W2QLQ1Br3Yd6CoWg7bIq1bHdwK7Y8bEiEXBs/WfAg=` (London, UK)
 `smp3.simplex.im#nxc7HnrnM8dOKgkMp008ub/9o9LXJlxlMrMpR+mfMQw=` (Fremont, CA)
