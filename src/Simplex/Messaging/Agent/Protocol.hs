@@ -154,11 +154,14 @@ smpAgentVersion = 1
 smpAgentVRange :: VersionRange
 smpAgentVRange = mkVersionRange 1 smpAgentVersion
 
+-- it is shorter to allow all handshake headers,
+-- including E2E (double-ratchet) parameters and
+-- signing key of the sender for the server
 e2eEncConnInfoLength :: Int
-e2eEncConnInfoLength = 14336
+e2eEncConnInfoLength = 14848
 
 e2eEncUserMsgLength :: Int
-e2eEncUserMsgLength = 15488
+e2eEncUserMsgLength = 15788
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)

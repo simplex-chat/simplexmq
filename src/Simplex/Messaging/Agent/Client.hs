@@ -356,9 +356,10 @@ sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} agentMsg =
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do
   cmNonce <- liftIO C.randomCbNonce
+  let paddedLen = maybe SMP.e2eEncMessageLength (const SMP.e2eEncConfirmationLength) e2ePubKey
   cmEncBody <-
     liftEither . first cryptoError $
-      C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncMessageLength
+      C.cbEncrypt e2eDhSecret cmNonce msg paddedLen
   -- TODO per-queue client version
   let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVRange) e2ePubKey
   pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
@@ -371,7 +372,7 @@ agentCbEncryptOnce dhRcvPubKey msg = do
   cmNonce <- liftIO C.randomCbNonce
   cmEncBody <-
     liftEither . first cryptoError $
-      C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncMessageLength
+      C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncConfirmationLength
   -- TODO per-queue client version
   let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVRange) (Just dhSndPubKey)
   pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}

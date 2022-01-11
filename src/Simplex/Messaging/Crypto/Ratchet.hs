@@ -264,9 +264,9 @@ data AMsgHeader
     AMsgHeader (SAlgorithm a) (MsgHeader a)
 
 -- to allow extension without increasing the size, the actual header length is:
--- 81 = 2 (original size) + 2 + 1 + 68 (Ed448) + 4 + 4
+-- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
 paddedHeaderLen :: Int
-paddedHeaderLen = 96
+paddedHeaderLen = 88
 
 -- only used in tests to validate correct padding
 -- (2 bytes - version size, 1 byte - header size, not to have it fixed or version-dependent)
