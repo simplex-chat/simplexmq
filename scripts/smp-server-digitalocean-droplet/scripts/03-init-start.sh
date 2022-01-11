@@ -27,7 +27,7 @@ smp-server init -l --ip @ip_address
 # Server fingerprint
 fingerprint=$(cat /etc/opt/simplex/fingerprint)
 
-# On login script
+# Set up welcome script
 echo "bash /opt/simplex/on_login.sh $fingerprint $ip_address" >> /root/.bashrc
 
 # / Create systemd service
