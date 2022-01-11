@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# <UDF name="enable_store_log" label="Store log - persists SMP queues to append only log and restores them upon server restart." default="on" oneof="on, off" />
-# <UDF name="api_token" label="Linode API token - enables StackScript to create tags containing SMP server FQDN / IP address, CA certificate fingerprint and server version. Use `fqdn#fingerprint` or `ip#fingerprint` as SMP server address in the client. Note: minimal permissions token should have are - read/write access to `linodes` (to update linode tags) and `domains` (to add A record for the chosen 3rd level domain)" default="" />
-# <UDF name="fqdn" label="FQDN (Fully qualified domain name) - provide third level domain name (ex: smp.example.com). If provided will be used instead of IP address." default="" />
+# <UDF name="enable_store_log" label="Store log - persist SMP queues to append only log and restore them upon server restart." default="on" oneof="on, off" />
+# <UDF name="api_token" label="Linode API token - enable Linode to create tags with server address, fingerprint and version. Note: minimal permissions token should have are read/write access to `linodes` (to create tags) and `domains` (to add A record for the third level domain if FQDN is provided)." default="" />
+# <UDF name="fqdn" label="FQDN (Fully Qualified Domain Name) - provide third level domain name (e.g. smp.example.com). If provided use `smp://fingerprint@FQDN` as server address in the client. If FQDN is not provided use `smp://fingerprint@IP` instead." default="" />
 
 # Log all stdout output to stackscript.log
 exec &> >(tee -i /var/log/stackscript.log)
@@ -161,3 +161,6 @@ EOT
 chmod 644 /etc/systemd/system/smp-server.service
 sudo systemctl enable smp-server
 sudo systemctl start smp-server
+
+# Reboot Linode to apply upgrades
+sudo reboot
