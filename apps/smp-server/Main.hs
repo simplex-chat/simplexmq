@@ -11,12 +11,12 @@ module Main where
 import Control.Monad.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:))
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue, readIniFile)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.X509.Validation (Fingerprint (..))
-import Network.Socket (ServiceName)
+import Network.Socket (HostName, ServiceName)
 import Options.Applicative
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
@@ -81,8 +81,11 @@ data CliCommand
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
-    signAlgorithm :: SignAlgorithm
+    signAlgorithm :: SignAlgorithm,
+    ip :: HostName,
+    fqdn :: Maybe HostName
   }
+  deriving (Show)
 
 data SignAlgorithm = ED448 | ED25519
   deriving (Read, Show)
@@ -108,24 +111,42 @@ cliCommandP =
   where
     initP :: Parser CliCommand
     initP =
-      Init .: InitOptions
-        <$> switch
-          ( long "store-log"
-              <> short 'l'
-              <> help "Enable store log for SMP queues persistence"
-          )
-        <*> option
-          (maybeReader readMaybe)
-          ( long "sign-algorithm"
-              <> short 'a'
-              <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
-              <> value ED448
-              <> showDefault
-              <> metavar "ALG"
-          )
+      Init
+        <$> ( InitOptions
+                <$> switch
+                  ( long "store-log"
+                      <> short 'l'
+                      <> help "Enable store log for SMP queues persistence"
+                  )
+                <*> option
+                  (maybeReader readMaybe)
+                  ( long "sign-algorithm"
+                      <> short 'a'
+                      <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
+                      <> value ED448
+                      <> showDefault
+                      <> metavar "ALG"
+                  )
+                <*> strOption
+                  ( long "ip"
+                      <> help
+                        "Server IP address used as Subject Alternative Name for TLS online certificate, \
+                        \also used as Common Name if FQDN is not supplied"
+                      <> value "127.0.0.1"
+                      <> showDefault
+                      <> metavar "IP"
+                  )
+                <*> (optional . strOption)
+                  ( long "fqdn"
+                      <> short 'n'
+                      <> help "Server FQDN used as Common Name and Subject Alternative Name for TLS online certificate"
+                      <> showDefault
+                      <> metavar "FQDN"
+                  )
+            )
 
 initializeServer :: InitOptions -> IO ()
-initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
+initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
   cleanup
   createDirectoryIfMissing True cfgDir
   createDirectoryIfMissing True logDir
@@ -137,35 +158,56 @@ initializeServer InitOptions {enableStoreLog, signAlgorithm} = do
   warnCAPrivateKeyFile
   where
     createX509 = do
-      createOpensslConf
+      createOpensslCaConf
+      createOpensslServerConf
       -- CA certificate (identity/offline)
       run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> caKeyFile
-      run $ "openssl req -new -x509 -days 999999 -config " <> opensslCnfFile <> " -extensions v3_ca -key " <> caKeyFile <> " -out " <> caCrtFile
+      run $ "openssl req -new -x509 -days 999999 -config " <> opensslCaConfFile <> " -extensions v3 -key " <> caKeyFile <> " -out " <> caCrtFile
       -- server certificate (online)
       run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> serverKeyFile
-      run $ "openssl req -new -config " <> opensslCnfFile <> " -reqexts v3_req -key " <> serverKeyFile <> " -out " <> serverCsrFile
-      run $ "openssl x509 -req -days 999999 -extfile " <> opensslCnfFile <> " -extensions v3_req -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -CAcreateserial -out " <> serverCrtFile
+      run $ "openssl req -new -config " <> opensslServerConfFile <> " -reqexts v3 -key " <> serverKeyFile <> " -out " <> serverCsrFile
+      run $ "openssl x509 -req -days 999999 -extfile " <> opensslServerConfFile <> " -extensions v3 -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -CAcreateserial -out " <> serverCrtFile
       where
         run cmd = void $ readCreateProcess (shell cmd) ""
-        opensslCnfFile = combine cfgDir "openssl.cnf"
+        opensslCaConfFile = combine cfgDir "openssl_ca.conf"
+        opensslServerConfFile = combine cfgDir "openssl_server.conf"
         serverCsrFile = combine cfgDir "server.csr"
-        createOpensslConf =
-          -- TODO revise https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3, https://www.rfc-editor.org/rfc/rfc3279#section-2.3.5
+        createOpensslCaConf =
           writeFile
-            opensslCnfFile
+            opensslCaConfFile
             "[req]\n\
             \distinguished_name = req_distinguished_name\n\
             \prompt = no\n\n\
             \[req_distinguished_name]\n\
-            \CN = localhost\n\n\
-            \[v3_ca]\n\
+            \CN = SMP server CA\n\
+            \O = SimpleX\n\n\
+            \[v3]\n\
             \subjectKeyIdentifier = hash\n\
             \authorityKeyIdentifier = keyid:always\n\
-            \basicConstraints = critical,CA:true\n\n\
-            \[v3_req]\n\
-            \basicConstraints = CA:FALSE\n\
-            \keyUsage = digitalSignature, nonRepudiation, keyAgreement\n\
-            \extendedKeyUsage = serverAuth\n"
+            \basicConstraints = critical,CA:true\n"
+        -- TODO revise https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3, https://www.rfc-editor.org/rfc/rfc3279#section-2.3.5
+        createOpensslServerConf =
+          writeFile
+            opensslServerConfFile
+            ( "[req]\n\
+              \distinguished_name = req_distinguished_name\n\
+              \prompt = no\n\n\
+              \[req_distinguished_name]\n"
+                <> ("CN = " <> cn <> "\n\n")
+                <> "[v3]\n\
+                   \basicConstraints = CA:FALSE\n\
+                   \keyUsage = digitalSignature, nonRepudiation, keyAgreement\n\
+                   \extendedKeyUsage = serverAuth\n\
+                   \subjectAltName = @alt_names\n\n\
+                   \[alt_names]\n"
+                <> optionalDns1
+                <> ("IP.1 = " <> ip <> "\n")
+            )
+          where
+            cn = fromMaybe ip fqdn
+            optionalDns1 = case fqdn of
+              Nothing -> ""
+              Just n -> "DNS.1 = " <> n <> "\n"
 
     saveFingerprint = do
       Fingerprint fp <- loadFingerprint caCrtFile
