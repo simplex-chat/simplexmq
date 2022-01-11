@@ -44,35 +44,33 @@ ufw allow ssh
 ufw allow https
 ufw allow 5223
 
+# Download latest release
 bin_dir="/opt/simplex/bin"
 binary="$bin_dir/smp-server"
-conf_dir="/etc/opt/simplex"
-
-# Download latest release
 mkdir -p $bin_dir
 curl -L -o $binary https://github.com/simplex-chat/simplexmq/releases/latest/download/smp-server-ubuntu-20_04-x86-64
 chmod +x $binary
-$binary --version
 
-# Add to PATH
+# / Add to PATH
 cat <<EOT >> /etc/profile.d/simplex.sh
 #!/bin/bash
 
 export PATH="$PATH:$bin_dir"
 
 EOT
+# Add to PATH /
+
+# Source and test PATH
 source /etc/profile.d/simplex.sh
+smp-server --version
 
 # Initialize server
 init_opts=()
 [[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
 smp-server init "${init_opts[@]}"
 
-# Turn off websockets support
-sed -e '/websockets/s/^/# /g' -i $conf_dir/smp-server.ini
-
 # Server fingerprint
-fingerprint=$(cat $conf_dir/fingerprint)
+fingerprint=$(cat /etc/opt/simplex/fingerprint)
 
 # On login script
 on_login_script="/opt/simplex/on_login.sh"
@@ -120,7 +118,7 @@ if [ ! -z "$API_TOKEN" ]; then
     fi
   fi
 
-  version=$($binary --version | cut -d ' ' -f 3-)
+  version=$(smp-server --version | cut -d ' ' -f 3-)
 
   curl \
     -s -H "Content-Type: application/json" \
@@ -129,7 +127,7 @@ if [ ! -z "$API_TOKEN" ]; then
     https://api.linode.com/v4/linode/instances/$LINODE_ID
 fi
 
-# Create and start systemd service
+# / Create systemd service
 cat <<EOT >> /etc/systemd/system/smp-server.service
 [Unit]
 Description=SMP server systemd service
@@ -142,7 +140,9 @@ ExecStart=/bin/sh -c "$binary start"
 WantedBy=multi-user.target
 
 EOT
+# Create systemd service /
 
+# Start systemd service
 chmod 644 /etc/systemd/system/smp-server.service
 sudo systemctl enable smp-server
 sudo systemctl start smp-server
