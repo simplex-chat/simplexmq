@@ -4,8 +4,8 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 
-name:           simplexmq-legacy
-version:        0.5.2
+name:           simplexmq-v0
+version:        0.5.3
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -37,6 +37,7 @@ library
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
+      Simplex.Messaging.Agent.ExceptT
       Simplex.Messaging.Agent.Protocol
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Store
@@ -57,7 +58,7 @@ library
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
   other-modules:
-      Paths_simplexmq_legacy
+      Paths_simplexmq_v0
   hs-source-dirs:
       src
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
@@ -103,7 +104,7 @@ library
 executable smp-agent
   main-is: Main.hs
   other-modules:
-      Paths_simplexmq_legacy
+      Paths_simplexmq_v0
   hs-source-dirs:
       apps/smp-agent
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
@@ -134,7 +135,7 @@ executable smp-agent
     , network-transport ==0.5.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
-    , simplexmq-legacy
+    , simplexmq-v0
     , sqlite-simple ==0.4.*
     , stm ==2.5.*
     , template-haskell ==2.16.*
@@ -150,7 +151,7 @@ executable smp-agent
 executable smp-server
   main-is: Main.hs
   other-modules:
-      Paths_simplexmq_legacy
+      Paths_simplexmq_v0
   hs-source-dirs:
       apps/smp-server
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
@@ -184,7 +185,7 @@ executable smp-server
     , optparse-applicative >=0.15 && <0.17
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
-    , simplexmq-legacy
+    , simplexmq-v0
     , sqlite-simple ==0.4.*
     , stm ==2.5.*
     , template-haskell ==2.16.*
@@ -209,7 +210,7 @@ test-suite smp-server-test
       ServerTests
       SMPAgentClient
       SMPClient
-      Paths_simplexmq_legacy
+      Paths_simplexmq_v0
   hs-source-dirs:
       tests
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
@@ -243,7 +244,7 @@ test-suite smp-server-test
     , network-transport ==0.5.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
-    , simplexmq-legacy
+    , simplexmq-v0
     , sqlite-simple ==0.4.*
     , stm ==2.5.*
     , template-haskell ==2.16.*
