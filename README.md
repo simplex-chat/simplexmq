@@ -84,9 +84,7 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 ## Deploy SMP server on Linode
 
-<!-- TODO revise this link, looks fishy -->
-
-\* You can get [Linode free credits](https://www.linode.com/lp/affiliate-referral/?irclickid=02-QkdTEpxyLW0W0EOSREQreUkB2DtzGE2lGTE0&irgwc=1&utm_source=impact) to deploy SMP server.
+\* You can use free credit Linode offers when [creating a new account](https://www.linode.com/) to deploy an SMP server.
 
 Deployment on Linode is performed via StackScripts, which serve as recipes for Linode instances, also called Linodes. To deploy SMP server on Linode:
 
@@ -108,7 +106,7 @@ Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if an
 
 ## Deploy SMP server on DigitalOcean
 
-\* When creating a DigitalOcean account you can use [this link](https://try.digitalocean.com/freetrialoffer/) to get free credits. (You would still be required either to provide your credit card details or make a confirmation pre-payment with PayPal)
+\* When creating a DigitalOcean account you can use [this link](https://try.digitalocean.com/freetrialoffer/) to get free credit. (You would still be required either to provide your credit card details or make a confirmation pre-payment with PayPal)
 
 To deploy SMP server use [SimpleX Server 1-click app](https://marketplace.digitalocean.com/apps/simplex-server) from DigitalOcean marketplace:
 
