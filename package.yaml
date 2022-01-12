@@ -15,7 +15,7 @@ homepage: https://github.com/simplex-chat/simplexmq#readme
 license: AGPL-3
 author: simplex.chat
 maintainer: chat@simplex.chat
-copyright: 2020 simplex.chat
+copyright: 2020-2022 simplex.chat
 category: Chat, Network, Web, System, Cryptography
 extra-source-files:
   - README.md
