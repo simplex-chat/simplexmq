@@ -458,8 +458,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     withStore (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
-      Right (rq_, (msgType, msgBody)) -> do
-        withRetryInterval ri $ \loop -> do
+      Right (rq_, (msgType, msgBody)) ->
+        withRetryInterval ri $ \loop ->
           tryError (sendAgentMessage c sq msgBody) >>= \case
             Left e -> case e of
               SMP SMP.QUOTA -> loop

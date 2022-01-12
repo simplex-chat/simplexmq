@@ -118,14 +118,14 @@ smpClientVRange :: VersionRange
 smpClientVRange = mkVersionRange 1 smpClientVersion
 
 maxMessageLength :: Int
-maxMessageLength = 16078
+maxMessageLength = 16088
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
-e2eEncConfirmationLength = 15942
+e2eEncConfirmationLength = 15936
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 16030
+e2eEncMessageLength = 16032
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier
