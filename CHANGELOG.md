@@ -7,8 +7,8 @@ Security and privacy improvements:
   - Messages delivered from the servers to the recipients are additionally encrypted to avoid cipher-text correlation between sent and received messages.
 - To prevent any traffic correlation by content size, SimpleX uses fixed transport block size of 16kb (16384 bytes) with padding on all encryption layers:
   - application messages are padded to 15788 bytes before E2E double-ratchet encryption.
-  - messages between SMP clients are padded to 16030 bytes before E2E encryption in each SMP queue.
-  - messages from the server to the recipient are padded to padded to 16078 bytes before the additional encryption layer (see above).
+  - messages between SMP clients are padded to 16032 bytes before E2E encryption in each SMP queue.
+  - messages from the server to the recipient are padded to padded to 16088 bytes before the additional encryption layer (see above).
 - TLS 1.2+ with tls-unique channel binding in each command to prevent replay attacks.
 - Server identity verification via server offline certificate fingerprints included in SMP server addresses.
 
