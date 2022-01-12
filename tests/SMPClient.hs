@@ -37,7 +37,7 @@ testPort2 :: ServiceName
 testPort2 = "5002"
 
 testKeyHash :: C.KeyHash
-testKeyHash = "9VjLsOY5ZvB4hoglNdBzJFAUi_vP4GkZnJFahQOXV20="
+testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"

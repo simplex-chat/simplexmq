@@ -458,18 +458,20 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     withStore (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
-      Right (rq_, (msgType, msgBody)) -> do
-        withRetryInterval ri $ \loop -> do
+      Right (rq_, (msgType, msgBody)) ->
+        withRetryInterval ri $ \loop ->
           tryError (sendAgentMessage c sq msgBody) >>= \case
-            Left e -> case e of
-              SMP SMP.QUOTA -> loop
-              SMP SMP.AUTH -> case msgType of
-                HELLO_ -> loop
-                REPLY_ -> notify $ ERR e
-                A_MSG_ -> notify $ MERR mId e
-              SMP {} -> notify $ MERR mId e
-              CMD {} -> notify $ MERR mId e
-              _ -> loop
+            Left e -> do
+              case e of
+                SMP SMP.QUOTA -> loop
+                SMP SMP.AUTH -> case msgType of
+                  HELLO_ -> loop
+                  REPLY_ -> notify (ERR e) >> delMsg msgId
+                  A_MSG_ -> notify (MERR mId e) >> delMsg msgId
+                SMP (SMP.CMD _) -> notify (MERR mId e) >> delMsg msgId
+                SMP SMP.LARGE_MSG -> notify (MERR mId e) >> delMsg msgId
+                SMP {} -> notify (MERR mId e) >> loop
+                _ -> loop
             Right () -> do
               case msgType of
                 HELLO_ -> do
@@ -483,8 +485,10 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
                     _ -> createReplyQueue c connId sq
                 A_MSG_ -> notify $ SENT mId
                 _ -> pure ()
-              withStore $ \st -> deleteMsg st connId msgId
+              delMsg msgId
   where
+    delMsg :: InternalId -> m ()
+    delMsg msgId = withStore $ \st -> deleteMsg st connId msgId
     notify :: ACommand 'Agent -> m ()
     notify cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
 

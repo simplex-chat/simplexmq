@@ -199,7 +199,7 @@ instance FromJSON RatchetKey where
 
 instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
 
-instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder $ J.eitherDecode' . LB.fromStrict
+instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 
 instance ToField MessageKey where toField = toField . smpEncode
 
@@ -285,22 +285,22 @@ instance AlgorithmI a => Encoding (MsgHeader a) where
 
 data EncMessageHeader = EncMessageHeader
   { ehVersion :: Version,
-    ehBody :: ByteString,
+    ehIV :: IV,
     ehAuthTag :: AuthTag,
-    ehIV :: IV
+    ehBody :: ByteString
   }
 
 instance Encoding EncMessageHeader where
-  smpEncode EncMessageHeader {ehVersion, ehBody, ehAuthTag, ehIV} =
-    smpEncode (ehVersion, ehBody, ehAuthTag, ehIV)
+  smpEncode EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody} =
+    smpEncode (ehVersion, ehIV, ehAuthTag, ehBody)
   smpP = do
-    (ehVersion, ehBody, ehAuthTag, ehIV) <- smpP
-    pure EncMessageHeader {ehVersion, ehBody, ehAuthTag, ehIV}
+    (ehVersion, ehIV, ehAuthTag, ehBody) <- smpP
+    pure EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
 
 data EncRatchetMessage = EncRatchetMessage
   { emHeader :: ByteString,
-    emBody :: ByteString,
-    emAuthTag :: AuthTag
+    emAuthTag :: AuthTag,
+    emBody :: ByteString
   }
 
 instance Encoding EncRatchetMessage where

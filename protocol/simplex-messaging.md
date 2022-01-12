@@ -566,15 +566,15 @@ This command is sent to the server by the sender both to confirm the queue after
 
 ```abnf
 send = %s"SEND " smpEncMessage
-smpEncMessage = smpPubHeader sentMsgBody ; message up to 16078 bytes
+smpEncMessage = smpPubHeader sentMsgBody ; message up to 16088 bytes
 smpPubHeader = smpClientVersion ("1" senderPublicDhKey / "0")
 smpClientVersion = word16
 senderPublicDhKey = length x509encoded
 ; sender's Curve25519 public key to agree DH secret for E2E encryption in this queue
 ; it is only sent in confirmation message
 x509encoded = <binary X509 key encoding>
-sentMsgBody = 16030*16030 OCTET
-; E2E-encrypted smpClientMessage padded to 16030 bytes before encryption
+sentMsgBody = 16032*16032 OCTET
+; E2E-encrypted smpClientMessage padded to 16032 bytes before encryption
 word16 = 2*2 OCTET
 ```
 
@@ -593,14 +593,14 @@ Until the queue is secured, the server should accept any number of unsigned mess
 The body should be encrypted with the recipient's "public" key (`EK`); once decrypted it must have this format:
 
 ```abnf
-sentMsgBody = <encrypted padded(smpClientMessage, 16030)>
+sentMsgBody = <encrypted padded(smpClientMessage, 16032)>
 smpClientMessage = smpPrivHeader clientMsgBody
 smpPrivHeader = emptyHeader / smpConfirmationHeader
 emptyHeader = " "
 smpConfirmationHeader = %s"K" senderKey
 senderKey = length x509encoded
 ; the sender's Ed25519 or Ed448 public key to sign SEND commands for this queue
-clientMsgBody = *OCTET ; up to 16012 in case of emptyHeader
+clientMsgBody = *OCTET ; up to 16016 in case of emptyHeader
 ```
 
 `clientHeader` in the initial unsigned message is used to transmit sender's server key and can be used in the future revisions of SMP protocol for other purposes.
@@ -610,16 +610,16 @@ SMP transmission structure for sent messages:
 ```
 ------- transmission (= 16384 bytes)
     2 | originalLength
- 286- | signature sessionId corrId queueId %s"SEND" SP (1+114 + 1+32? + 1+32 + 1+24 + 4+1 = 210)
-      ....... smpEncMessage (= 16078 bytes = 16384 - 306 bytes)
+ 276- | signature sessionId corrId queueId %s"SEND" SP (1+114 + 1+32? + 1+32 + 1+24 + 4+1 = 210)
+      ....... smpEncMessage (= 16088 bytes = 16384 - 296 bytes)
          8- | smpPubHeader (for messages it is only version and '0' to mean "no DH key" = 3 bytes)
          24 | nonce for smpClientMessage
          16 | auth tag for smpClientMessage
-            ------- smpClientMessage (E2E encrypted, = 16030 bytes = 16078 - 48)
+            ------- smpClientMessage (E2E encrypted, = 16032 bytes = 16088 - 48)
                 2 | originalLength
-               8- | smpPrivHeader
+               12- | smpPrivHeader
                   .......
-                        | clientMsgBody (<= 16020 bytes = 16030 - 10)
+                        | clientMsgBody (<= 16016 bytes = 16032 - 14)
                   .......
                0+ | smpClientMessage pad
             ------- smpClientMessage end
@@ -634,37 +634,41 @@ SMP transmission structure for received messages:
 ```
 ------- transmission (= 16384 bytes)
     2 | originalLength
- 286- | signature sessionId corrId queueId %s"MSG" SP msgId timestamp (1+114 + 1+32? + 1+32 + 1+24 + 3+1 + 24+1 + 8 = 243)
+ 276- | signature sessionId corrId queueId %s"MSG" SP msgId timestamp (1+114 + 1+32? + 1+32 + 1+24 + 3+1 + 24+1 + 8 = 243)
    16 | auth tag (msgId is used as nonce)
-      ------- serverEncryptedMsg (= 16080 bytes = 16384 - 304 bytes)
+      ------- serverEncryptedMsg (= 16090 bytes = 16384 - 294 bytes)
           2 | originalLength
-            ....... smpEncMessage (= 16078 bytes = 16080 - 2 bytes)
-               8- | smpPubHeader (empty header for the message)
+            ....... smpEncMessage (= 16088 bytes = 16090 - 2 bytes)
+               16- | smpPubHeader (empty header for the message)
                24 | nonce for smpClientMessage
                16 | auth tag for smpClientMessage
-                  ------- smpClientMessage (E2E encrypted, = 16030 bytes = 16078 - 48 bytes)
+                  ------- smpClientMessage (E2E encrypted, = 16032 bytes = 16088 - 56 bytes)
                       2 | originalLength
-                     8- | smpPrivHeader (empty header for the message)
-                        ....... clientMsgBody (<= 16020 bytes = 16030 - 10)
-                              -- TODO move internal structure to agent protocol
-                           8- | agentPublicHeader (the size is for user messages post handshake, without E2E X3DH keys - it is version and 'M' for the messages - 3 bytes in total)
-                              ....... E2E double-ratchet encrypted (= 16012 bytes = 16020 - 8)
-                                 88 | double-ratchet header (actual size is 69 bytes, the rest is reserved)
-                                 16 | double-ratchet header auth tag
-                                 16 | double-ratchet header iv
+                     16- | smpPrivHeader (empty header for the message)
+                        ....... clientMsgBody (<= 16016 bytes = 16032 - 16)
+                              -- TODO move internal structure (below) to agent protocol
+                          20- | agentPublicHeader (the size is for user messages post handshake, without E2E X3DH keys - it is version and 'M' for the messages - 3 bytes in total)
+                              ....... E2E double-ratchet encrypted (<= 15996 bytes = 16016 - 20)
+                                  1 | encoded double ratchet header length (it is 123 now)
+                                123 | encoded double ratchet header, including:
+                                         2 | version
+                                        16 | double-ratchet header iv
+                                        16 | double-ratchet header auth tag
+                                      1+88 | double-ratchet header (actual size is 69 bytes, the rest is reserved)
                                  16 | message auth tag (IV generated from chain ratchet)
-                                 ------- encrypted agent message (= 15876 bytes = 16012 - 136)
+                                    ------- encrypted agent message (= 15856 bytes = 15996 - 140)
                                         2 | originalLength
-                                  84 (41) | agentHeader (8 + 1+32)
+                                      64- | agentHeader (the actual size is 41 = 8 + 1+32)
                                         2 | %s"MM"
                                           .......
-                                                | application message (<= 15788 bytes = 15876 - 88)
+                                                | application message (<= 15788 bytes = 15856 - 68)
                                           .......
                                        0+ | encrypted agent message pad
                                     ------- encrypted agent message end
                                     |
                               ....... E2E double-ratchet encrypted end
                               |
+                              -- TODO move internal structure (above) to agent protocol
                         ....... clientMsgBody end
                      0+ | smpClientMessage pad
                   ------- smpClientMessage end
@@ -705,7 +709,7 @@ The server must deliver messages to all subscribed simplex queues on the current
 ```abnf
 message = %s"MSG " msgId SP timestamp SP encryptedMsgBody
 encryptedMsgBody = <encrypt paddedSentMsgBody> ; server-encrypted padded sent msgBody
-paddedSentMsgBody = <padded(sentMsgBody, maxMessageLength + 2)> ; maxMessageLength = 16078
+paddedSentMsgBody = <padded(sentMsgBody, maxMessageLength + 2)> ; maxMessageLength = 16088
 msgId = length 24*24OCTET
 timestamp = 8*8OCTET
 ```
@@ -758,7 +762,7 @@ No further messages should be delivered to unsubscribed transport connection.
   - transmission has no required queue ID (`NO_QUEUE`)
 - authentication error (`AUTH`) - incorrect signature, unknown (or suspended) queue, sender's ID is used in place of recipient's and vice versa, and some other cases (see [Send message](#send-message) command).
 - message queue quota exceeded error (`QUOTA`) - too many messages were sent to the message queue. Further messages can only be sent after the recipient retrieves the messages.
-- sent message is too large (> 16078) to be delivered (`LARGE_MSG`).
+- sent message is too large (> 16088) to be delivered (`LARGE_MSG`).
 - internal server error (`INTERNAL`).
 
 The syntax for error responses:

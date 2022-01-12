@@ -108,10 +108,6 @@ instance Encoding SystemTime where
   smpEncode = smpEncode . systemSeconds
   smpP = MkSystemTime <$> smpP <*> pure 0
 
-instance (Encoding a, Encoding b) => Encoding (a, b) where
-  smpEncode (a, b) = smpEncode a <> smpEncode b
-  smpP = (,) <$> smpP <*> smpP
-
 -- lists encode/parse as a sequence of items prefixed with list length (as 1 byte)
 smpEncodeList :: Encoding a => [a] -> ByteString
 smpEncodeList xs = B.cons (lenEncode $ length xs) . B.concat $ map smpEncode xs
@@ -129,6 +125,10 @@ instance Encoding a => Encoding (L.NonEmpty a) where
     lenP >>= \case
       0 -> fail "empty list"
       n -> L.fromList <$> A.count n smpP
+
+instance (Encoding a, Encoding b) => Encoding (a, b) where
+  smpEncode (a, b) = smpEncode a <> smpEncode b
+  smpP = (,) <$> smpP <*> smpP
 
 instance (Encoding a, Encoding b, Encoding c) => Encoding (a, b, c) where
   smpEncode (a, b, c) = smpEncode a <> smpEncode b <> smpEncode c

@@ -1,13 +1,12 @@
 #!/bin/bash
 
 fingerprint=$1
-
-ip_address=$(hostname -I | awk '{print$1}')
+server_address=$2
 
 cat <<EOF
 ********************************************************************************
 
-SMP server address: $ip_address#$fingerprint
+SMP server address: smp://$fingerprint@$server_address
 Check SMP server status with: systemctl status smp-server
 
 To keep this server secure, the UFW firewall is enabled.

@@ -3,37 +3,35 @@
 [![GitHub build](https://github.com/simplex-chat/simplexmq/workflows/build/badge.svg)](https://github.com/simplex-chat/simplexmq/actions?query=workflow%3Abuild)
 [![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplexmq)](https://github.com/simplex-chat/simplexmq/releases)
 
-📢 **v0.5.1 brings a hotfix to the server's subscription management logic, to apply it log in to your server via SSH and run the following command. If you have store log enabled for your server, information about already established queues will be preserved.** If you're doing a custom installation instead of Linode or DigitalOcean you may have to change the path for binary download.
+📢 SimpleXMQ v1 is released - with many security, privacy and efficiency improvements, new functionality - see [release notes](https://github.com/simplex-chat/simplexmq/releases/tag/v1.0.0).
 
-```sh
-systemctl stop smp-server
-curl -L -o /opt/simplex/bin/smp-server https://github.com/simplex-chat/simplexmq/releases/download/v0.5.1/smp-server-ubuntu-20_04-x86-64
-systemctl start smp-server
-```
+**Please note**: v1 is not backwards compatible, but it has the version negotiation built into all protocol layers for forwards compatibility of this version and backwards compatibility of the future versions, that will be backwards compatible for at least two versions back.
+
+If you have a server deployed please deploy a new server to a new host and retire the previous version once it is no longer used.
 
 ## Message broker for unidirectional (simplex) queues
 
 SimpleXMQ is a message broker for managing message queues and sending messages over public network. It consists of SMP server, SMP client library and SMP agent that implement [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md) for client-server communication and [SMP agent protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md) to manage duplex connections via simplex queues on multiple SMP servers.
 
-SMP protocol is inspired by [Redis serialization protocol](https://redis.io/topics/protocol), but it is much simpler - it currently has only 8 client commands and 6 server responses.
+SMP protocol is inspired by [Redis serialization protocol](https://redis.io/topics/protocol), but it is much simpler - it currently has only 10 client commands and 8 server responses.
 
 SimpleXMQ is implemented in Haskell - it benefits from robust software transactional memory (STM) and concurrency primitives that Haskell provides.
 
 ## SimpleXMQ roadmap
 
-- SMP queue redundancy and rotation in SMP agent duplex connections.
+- SimpleX service protocol and application template - to enable users building services and chat bots that work over SimpleX protocol stack. The first such service will be a notification service for a mobile app.
+- SMP queue redundancy and rotation in SMP agent connections.
 - SMP agents synchronization to share connections and messages between multiple agents (it would allow using multiple devices for [simplex-chat](https://github.com/simplex-chat/simplex-chat)).
-- Streams - high performance message queues. See [Streams RFC](https://github.com/simplex-chat/simplexmq/blob/master/rfcs/2021-02-28-streams.md) for details.
 
 ## Components
 
 ### SMP server
 
-[SMP server](https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs) can be run on any Linux distribution without any dependencies. It uses in-memory persistence with an optional append-only log of created queues that allows to re-start the server without losing the connections. This log is compacted on every server restart, permanently removing suspended and removed queues.
+[SMP server](https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs) can be run on any Linux distribution without any dependencies, including low power/low memory devices. It uses in-memory persistence with an optional append-only log of created queues that allows to re-start the server without losing the connections. This log is compacted on every server restart, permanently removing suspended and removed queues.
 
 To enable the queue logging, uncomment `enable: on` option in `smp-server.ini` configuration file that is created the first time the server is started.
 
-On the first start the server generates an RSA key pair for encrypted transport handshake and outputs hash of the public key every time it runs - this hash should be used as part of the server address: `<hostname>:5223#<key hash>`.
+To initialize the server use `smp-server init` command - it will generate keys and certificates for TLS transport. The fingerprint of offline certificate is used as part of the server address to protect client/server connection against man-in-the-middle attacks: `smp://<fingerprint>@<hostname>:5223`.
 
 SMP server implements [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md).
 
@@ -75,7 +73,9 @@ See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for
 
 ## Using SMP server and SMP agent
 
-You can either run your own SMP server locally or deploy using [Linode StackScript](#deploy-smp-server-on-linode), or try local SMP agent with the deployed servers:
+You can either run your own SMP server locally or deploy using [Linode StackScript](https://cloud.linode.com/stackscripts/748014), or try local SMP agent with the deployed servers:
+
+<!-- TODO update -->
 
 `smp2.simplex.im#z5W2QLQ1Br3Yd6CoWg7bIq1bHdwK7Y8bEiEXBs/WfAg=` (London, UK)
 `smp3.simplex.im#nxc7HnrnM8dOKgkMp008ub/9o9LXJlxlMrMpR+mfMQw=` (Fremont, CA)
@@ -86,9 +86,7 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 ## Deploy SMP server on Linode
 
-<!-- TODO revise this link, looks fishy -->
-
-\* You can get [Linode free credits](https://www.linode.com/lp/affiliate-referral/?irclickid=02-QkdTEpxyLW0W0EOSREQreUkB2DtzGE2lGTE0&irgwc=1&utm_source=impact) to deploy SMP server.
+\* You can use free credit Linode offers when [creating a new account](https://www.linode.com/) to deploy an SMP server.
 
 Deployment on Linode is performed via StackScripts, which serve as recipes for Linode instances, also called Linodes. To deploy SMP server on Linode:
 
@@ -96,13 +94,13 @@ Deployment on Linode is performed via StackScripts, which serve as recipes for L
 - Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".
 - You can optionally configure the following parameters:
     - [SMP Server store log](#SMP-server) flag for queue persistence on server restart (recommended).
-    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server address, public key hash, version) and adding A record to your 2nd level domain (Note: 2nd level e.g. `example.com` domain should be [created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access to "linodes" (to update linode tags - you need them), and "domains" (to add A record for the 3rd level domain, e.g. `smp`).
+    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server address, fingerprint, version) and adding A record to your 2nd level domain (Note: 2nd level e.g. `example.com` domain should be [created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access to "linodes" (to create tags), and "domains" (to add A record for the 3rd level domain, e.g. `smp`).
     - Domain name to use instead of Linode ip address, e.g. `smp.example.com`.
 - Choose the region and plan according to your requirements (for regular use Shared CPU Nanode should be sufficient).
-- Provide ssh key to be able to connect to your Linode via ssh. This step is required if you haven't provided a Linode API token, because you will need to login to your Linode and get a public key hash either from the welcome message or from the file `/etc/opt/simplex/pub_key_hash` on your Linode after SMP server starts.
+- Provide ssh key to be able to connect to your Linode via ssh. If you haven't provided a Linode API token this step is required to login to your Linode and get the server's fingerprint either from the welcome message or from the file `/etc/opt/simplex/fingerprint` after server starts. See [Linode's guide on ssh](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) .
 - Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode. Connecting Linode IP address to provided domain name may take some additional time.
-- Get `hostname` and `hash` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh. Linode has a good [guide](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) about ssh.
-- Great, your own SMP server is ready! Use `address#hash` as SMP server address in the client.
+- Get `address` and `fingerprint` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh.
+- Great, your own SMP server is ready! If you provided FQDN use `smp://<fingerprint>@<fqdn>` as SMP server address in the client, otherwise use `smp://<fingerprint>@<ip_address>`.
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
@@ -110,16 +108,16 @@ Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if an
 
 ## Deploy SMP server on DigitalOcean
 
-\* When creating a DigitalOcean account you can use [this link](https://try.digitalocean.com/freetrialoffer/) to get free credits. (You would still be required either to provide your credit card details or make a confirmation pre-payment with PayPal)
+\* When creating a DigitalOcean account you can use [this link](https://try.digitalocean.com/freetrialoffer/) to get free credit. (You would still be required either to provide your credit card details or make a confirmation pre-payment with PayPal)
 
 To deploy SMP server use [SimpleX Server 1-click app](https://marketplace.digitalocean.com/apps/simplex-server) from DigitalOcean marketplace:
 
 - Create a DigitalOcean account or login with an already existing one.
 - Click 'Create SimpleX server Droplet' button.
 - Choose the region and plan according to your requirements (Basic plan should be sufficient).
-- Finalize Droplet creation. 
+- Finalize Droplet creation.
 - Open "Console" on your Droplet management page to get SMP server fingerprint - either from the welcome message or from `/etc/opt/simplex/fingerprint`. Alternatively you can manually SSH to created Droplet, see [instruction](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
-- Great, your own SMP server is ready! Use `ip_address#hash` as SMP server address in the client.
+- Great, your own SMP server is ready! Use `smp://<fingerprint>@<ip_address>` as SMP server address in the client.
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
