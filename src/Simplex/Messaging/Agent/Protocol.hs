@@ -161,7 +161,7 @@ e2eEncConnInfoLength :: Int
 e2eEncConnInfoLength = 14848
 
 e2eEncUserMsgLength :: Int
-e2eEncUserMsgLength = 15876
+e2eEncUserMsgLength = 15856
 
 -- | Raw (unparsed) SMP agent protocol transmission.
 type ARawTransmission = (ByteString, ByteString, ByteString)
@@ -304,9 +304,9 @@ data AgentMsgEnvelope
         encAgentMessage :: ByteString
       }
   | AgentInvitation -- the connInfo in contactInvite is only encrypted with per-queue E2E, not with double ratchet,
-      { agentVersion :: !Version,
-        connReq :: !(ConnectionRequestUri 'CMInvitation),
-        connInfo :: !ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
+      { agentVersion :: Version,
+        connReq :: (ConnectionRequestUri 'CMInvitation),
+        connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
   deriving (Show)
 

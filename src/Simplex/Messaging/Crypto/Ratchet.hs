@@ -285,22 +285,22 @@ instance AlgorithmI a => Encoding (MsgHeader a) where
 
 data EncMessageHeader = EncMessageHeader
   { ehVersion :: Version,
-    ehBody :: ByteString,
+    ehIV :: IV,
     ehAuthTag :: AuthTag,
-    ehIV :: IV
+    ehBody :: ByteString
   }
 
 instance Encoding EncMessageHeader where
-  smpEncode EncMessageHeader {ehVersion, ehBody, ehAuthTag, ehIV} =
-    smpEncode (ehVersion, ehBody, ehAuthTag, ehIV)
+  smpEncode EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody} =
+    smpEncode (ehVersion, ehIV, ehAuthTag, ehBody)
   smpP = do
-    (ehVersion, ehBody, ehAuthTag, ehIV) <- smpP
-    pure EncMessageHeader {ehVersion, ehBody, ehAuthTag, ehIV}
+    (ehVersion, ehIV, ehAuthTag, ehBody) <- smpP
+    pure EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
 
 data EncRatchetMessage = EncRatchetMessage
   { emHeader :: ByteString,
-    emBody :: ByteString,
-    emAuthTag :: AuthTag
+    emAuthTag :: AuthTag,
+    emBody :: ByteString
   }
 
 instance Encoding EncRatchetMessage where
