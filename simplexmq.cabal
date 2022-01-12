@@ -3,11 +3,9 @@ cabal-version: 1.12
 -- This file has been generated from package.yaml by hpack version 0.34.4.
 --
 -- see: https://github.com/sol/hpack
---
--- hash: f5e649e0c359792d9528dec6e6cf07af772a521d746e66b8cc2b86d8c604afb2
 
 name:           simplexmq
-version:        0.5.2
+version:        1.0.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -28,10 +26,7 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
-    migrations/20210101_initial.sql
-    migrations/20210624_confirmations.sql
-    migrations/20210809_snd_messages.sql
-    migrations/20211202_connection_mode.sql
+    migrations/20220101_initial.sql
     migrations/README.md
 
 library
@@ -40,12 +35,16 @@ library
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
       Simplex.Messaging.Agent.Protocol
+      Simplex.Messaging.Agent.QueryString
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Migrations
       Simplex.Messaging.Client
       Simplex.Messaging.Crypto
+      Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Encoding
+      Simplex.Messaging.Encoding.String
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server
@@ -58,6 +57,7 @@ library
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
+      Simplex.Messaging.Version
   other-modules:
       Paths_simplexmq
   hs-source-dirs:
@@ -65,99 +65,7 @@ library
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
   build-depends:
       QuickCheck ==2.14.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.13.*
-    , base >=4.7 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.10.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , cryptonite >=0.27 && <0.30
-    , direct-sqlite ==2.3.*
-    , directory ==1.3.*
-    , file-embed >=0.0.14.0 && <=0.0.15.0
-    , filepath ==1.4.*
-    , generic-random >=1.3 && <1.5
-    , http-types ==0.12.*
-    , iso8601-time ==0.1.*
-    , memory ==0.15.*
-    , mtl ==2.2.*
-    , network ==3.1.*
-    , network-transport ==0.5.*
-    , random >=1.1 && <1.3
-    , simple-logger ==0.1.*
-    , sqlite-simple ==0.4.*
-    , stm ==2.5.*
-    , template-haskell ==2.16.*
-    , text ==1.2.*
-    , time ==1.9.*
-    , transformers ==0.5.*
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , x509 ==1.7.*
-  default-language: Haskell2010
-
-executable smp-agent
-  main-is: Main.hs
-  other-modules:
-      Paths_simplexmq
-  hs-source-dirs:
-      apps/smp-agent
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
-  build-depends:
-      QuickCheck ==2.14.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.13.*
-    , base >=4.7 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.10.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , cryptonite >=0.27 && <0.30
-    , direct-sqlite ==2.3.*
-    , directory ==1.3.*
-    , file-embed >=0.0.14.0 && <=0.0.15.0
-    , filepath ==1.4.*
-    , generic-random >=1.3 && <1.5
-    , http-types ==0.12.*
-    , iso8601-time ==0.1.*
-    , memory ==0.15.*
-    , mtl ==2.2.*
-    , network ==3.1.*
-    , network-transport ==0.5.*
-    , random >=1.1 && <1.3
-    , simple-logger ==0.1.*
-    , simplexmq
-    , sqlite-simple ==0.4.*
-    , stm ==2.5.*
-    , template-haskell ==2.16.*
-    , text ==1.2.*
-    , time ==1.9.*
-    , transformers ==0.5.*
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , x509 ==1.7.*
-  default-language: Haskell2010
-
-executable smp-server
-  main-is: Main.hs
-  other-modules:
-      Paths_simplexmq
-  hs-source-dirs:
-      apps/smp-server
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
-  build-depends:
-      QuickCheck ==2.14.*
+    , aeson ==1.5.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -171,6 +79,112 @@ executable smp-server
     , containers ==0.6.*
     , cryptonite >=0.27 && <0.30
     , cryptostore ==0.2.*
+    , data-default ==0.7.*
+    , direct-sqlite ==2.3.*
+    , directory ==1.3.*
+    , file-embed >=0.0.14.0 && <=0.0.15.0
+    , filepath ==1.4.*
+    , generic-random >=1.3 && <1.5
+    , http-types ==0.12.*
+    , iso8601-time ==0.1.*
+    , memory ==0.15.*
+    , mtl ==2.2.*
+    , network ==3.1.*
+    , network-transport ==0.5.*
+    , random >=1.1 && <1.3
+    , simple-logger ==0.1.*
+    , sqlite-simple ==0.4.*
+    , stm ==2.5.*
+    , template-haskell ==2.16.*
+    , text ==1.2.*
+    , time ==1.9.*
+    , tls ==1.5.*
+    , transformers ==0.5.*
+    , unliftio ==0.2.*
+    , unliftio-core ==0.2.*
+    , websockets ==0.12.*
+    , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
+  default-language: Haskell2010
+
+executable smp-agent
+  main-is: Main.hs
+  other-modules:
+      Paths_simplexmq
+  hs-source-dirs:
+      apps/smp-agent
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  build-depends:
+      QuickCheck ==2.14.*
+    , aeson ==1.5.*
+    , ansi-terminal >=0.10 && <0.12
+    , asn1-encoding ==0.9.*
+    , asn1-types ==0.3.*
+    , async ==2.2.*
+    , attoparsec ==0.13.*
+    , base >=4.7 && <5
+    , base64-bytestring >=1.0 && <1.3
+    , bytestring ==0.10.*
+    , composition ==1.0.*
+    , constraints >=0.12 && <0.14
+    , containers ==0.6.*
+    , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
+    , data-default ==0.7.*
+    , direct-sqlite ==2.3.*
+    , directory ==1.3.*
+    , file-embed >=0.0.14.0 && <=0.0.15.0
+    , filepath ==1.4.*
+    , generic-random >=1.3 && <1.5
+    , http-types ==0.12.*
+    , iso8601-time ==0.1.*
+    , memory ==0.15.*
+    , mtl ==2.2.*
+    , network ==3.1.*
+    , network-transport ==0.5.*
+    , random >=1.1 && <1.3
+    , simple-logger ==0.1.*
+    , simplexmq
+    , sqlite-simple ==0.4.*
+    , stm ==2.5.*
+    , template-haskell ==2.16.*
+    , text ==1.2.*
+    , time ==1.9.*
+    , tls ==1.5.*
+    , transformers ==0.5.*
+    , unliftio ==0.2.*
+    , unliftio-core ==0.2.*
+    , websockets ==0.12.*
+    , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
+  default-language: Haskell2010
+
+executable smp-server
+  main-is: Main.hs
+  other-modules:
+      Paths_simplexmq
+  hs-source-dirs:
+      apps/smp-server
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -threaded
+  build-depends:
+      QuickCheck ==2.14.*
+    , aeson ==1.5.*
+    , ansi-terminal >=0.10 && <0.12
+    , asn1-encoding ==0.9.*
+    , asn1-types ==0.3.*
+    , async ==2.2.*
+    , attoparsec ==0.13.*
+    , base >=4.7 && <5
+    , base64-bytestring >=1.0 && <1.3
+    , bytestring ==0.10.*
+    , composition ==1.0.*
+    , constraints >=0.12 && <0.14
+    , containers ==0.6.*
+    , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
+    , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
     , file-embed >=0.0.14.0 && <=0.0.15.0
@@ -184,6 +198,7 @@ executable smp-server
     , network ==3.1.*
     , network-transport ==0.5.*
     , optparse-applicative >=0.15 && <0.17
+    , process ==1.6.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
@@ -192,11 +207,14 @@ executable smp-server
     , template-haskell ==2.16.*
     , text ==1.2.*
     , time ==1.9.*
+    , tls ==1.5.*
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010
 
 test-suite smp-server-test
@@ -205,9 +223,12 @@ test-suite smp-server-test
   other-modules:
       AgentTests
       AgentTests.ConnectionRequestTests
+      AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
       AgentTests.SQLiteTests
-      ProtocolErrorTests
+      CoreTests.EncodingTests
+      CoreTests.ProtocolErrorTests
+      CoreTests.VersionRangeTests
       ServerTests
       SMPAgentClient
       SMPClient
@@ -218,6 +239,7 @@ test-suite smp-server-test
   build-depends:
       HUnit ==1.6.*
     , QuickCheck ==2.14.*
+    , aeson ==1.5.*
     , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
@@ -230,6 +252,8 @@ test-suite smp-server-test
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
     , cryptonite >=0.27 && <0.30
+    , cryptostore ==0.2.*
+    , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
     , file-embed >=0.0.14.0 && <=0.0.15.0
@@ -252,9 +276,12 @@ test-suite smp-server-test
     , text ==1.2.*
     , time ==1.9.*
     , timeit ==2.0.*
+    , tls ==1.5.*
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , websockets ==0.12.*
     , x509 ==1.7.*
+    , x509-store ==1.6.*
+    , x509-validation ==1.6.*
   default-language: Haskell2010

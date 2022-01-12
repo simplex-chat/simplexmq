@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -8,52 +9,27 @@
 module Main where
 
 import Control.Monad.Except
-import Control.Monad.Trans.Except
-import qualified Crypto.Store.PKCS8 as S
-import Data.ByteString.Base64 (encode)
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (toLower)
+import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.Text (Text)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
-import Data.X509 (PrivKey (PrivKeyRSA))
-import Network.Socket (ServiceName)
+import Data.X509.Validation (Fingerprint (..))
+import Network.Socket (HostName, ServiceName)
 import Options.Applicative
-import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TCP, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadFingerprint, simplexMQVersion)
 import Simplex.Messaging.Transport.WebSockets (WS)
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (IOMode (..), hFlush, stdout)
-import Text.Read (readEither)
-
-defaultServerPort :: ServiceName
-defaultServerPort = "5223"
-
-defaultBlockSize :: Int
-defaultBlockSize = 4096
-
-serverConfig :: ServerConfig
-serverConfig =
-  ServerConfig
-    { tbqSize = 16,
-      serverTbqSize = 128,
-      msgQueueQuota = 256,
-      queueIdBytes = 12,
-      msgIdBytes = 6,
-      -- below parameters are set based on ini file /etc/opt/simplex/smp-server.ini
-      transports = undefined,
-      storeLog = undefined,
-      blockSize = undefined,
-      serverPrivateKey = undefined
-    }
-
-newKeySize :: Int
-newKeySize = 2048 `div` 8
+import System.IO (IOMode (..), hGetLine, withFile)
+import System.Process (readCreateProcess, shell)
+import Text.Read (readMaybe)
 
 cfgDir :: FilePath
 cfgDir = "/etc/opt/simplex"
@@ -61,217 +37,280 @@ cfgDir = "/etc/opt/simplex"
 logDir :: FilePath
 logDir = "/var/opt/simplex"
 
-defaultStoreLogFile :: FilePath
-defaultStoreLogFile = combine logDir "smp-server-store.log"
-
 iniFile :: FilePath
 iniFile = combine cfgDir "smp-server.ini"
 
-defaultKeyFile :: FilePath
-defaultKeyFile = combine cfgDir "server_key"
+storeLogFile :: FilePath
+storeLogFile = combine logDir "smp-server-store.log"
+
+caKeyFile :: FilePath
+caKeyFile = combine cfgDir "ca.key"
+
+caCrtFile :: FilePath
+caCrtFile = combine cfgDir "ca.crt"
+
+serverKeyFile :: FilePath
+serverKeyFile = combine cfgDir "server.key"
+
+serverCrtFile :: FilePath
+serverCrtFile = combine cfgDir "server.crt"
+
+fingerprintFile :: FilePath
+fingerprintFile = combine cfgDir "fingerprint"
 
 main :: IO ()
 main = do
-  opts <- getServerOpts
-  case serverCommand opts of
-    ServerInit ->
-      runExceptT (getConfig opts) >>= \case
-        Right cfg -> do
-          putStrLn "Error: server is already initialized. Start it with `smp-server start` command"
-          printConfig cfg
-          exitFailure
-        Left _ -> do
-          cfg <- initializeServer opts
-          putStrLn "Server was initialized. Start it with `smp-server start` command"
-          printConfig cfg
-    ServerStart ->
-      runExceptT (getConfig opts) >>= \case
-        Right cfg -> runServer cfg
-        Left e -> do
-          putStrLn $ "Server is not initialized: " <> e
-          putStrLn "Initialize server with `smp-server init` command"
-          exitFailure
-    ServerDelete -> do
-      deleteServer
-      putStrLn "Server key, config file and store log deleted"
+  getCliCommand >>= \case
+    Init opts ->
+      doesFileExist iniFile >>= \case
+        True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `smp-server start`."
+        _ -> initializeServer opts
+    Start ->
+      doesFileExist iniFile >>= \case
+        True -> readIniFile iniFile >>= either exitError (runServer . mkIniOptions)
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `smp-server init`."
+    Delete -> cleanup >> putStrLn "Deleted configuration and log files"
 
-getConfig :: ServerOpts -> ExceptT String IO ServerConfig
-getConfig opts = do
-  ini <- readIni
-  pk <- readKey ini
-  storeLog <- liftIO $ openStoreLog opts ini
-  pure $ makeConfig ini pk storeLog
+exitError :: String -> IO ()
+exitError msg = putStrLn msg >> exitFailure
 
-makeConfig :: IniOpts -> C.FullPrivateKey -> Maybe (StoreLog 'ReadMode) -> ServerConfig
-makeConfig IniOpts {serverPort, blockSize, enableWebsockets} pk storeLog =
-  let transports = (serverPort, transport @TCP) : [("80", transport @WS) | enableWebsockets]
-   in serverConfig {serverPrivateKey = pk, storeLog, blockSize, transports}
+data CliCommand
+  = Init InitOptions
+  | Start
+  | Delete
 
-printConfig :: ServerConfig -> IO ()
-printConfig ServerConfig {serverPrivateKey, storeLog} = do
-  B.putStrLn $ "transport key hash: " <> serverKeyHash serverPrivateKey
-  putStrLn $ case storeLog of
-    Just s -> "store log: " <> storeLogFilePath s
-    Nothing -> "store log disabled"
-
-initializeServer :: ServerOpts -> IO ServerConfig
-initializeServer opts = do
-  createDirectoryIfMissing False cfgDir
-  ini <- createIni opts
-  pk <- createKey ini
-  storeLog <- openStoreLog opts ini
-  pure $ makeConfig ini pk storeLog
-
-runServer :: ServerConfig -> IO ()
-runServer cfg = do
-  printConfig cfg
-  forM_ (transports cfg) $ \(port, ATransport t) ->
-    putStrLn $ "listening on port " <> port <> " (" <> transportName t <> ")"
-  runSMPServer cfg
-
-deleteServer :: IO ()
-deleteServer = do
-  ini <- runExceptT readIni
-  deleteIfExists iniFile
-  case ini of
-    Right IniOpts {storeLogFile, serverKeyFile} -> do
-      deleteIfExists storeLogFile
-      deleteIfExists serverKeyFile
-    Left _ -> do
-      deleteIfExists defaultKeyFile
-      deleteIfExists defaultStoreLogFile
-
-data IniOpts = IniOpts
+data InitOptions = InitOptions
   { enableStoreLog :: Bool,
-    storeLogFile :: FilePath,
-    serverKeyFile :: FilePath,
-    serverPort :: ServiceName,
-    blockSize :: Int,
+    signAlgorithm :: SignAlgorithm,
+    ip :: HostName,
+    fqdn :: Maybe HostName
+  }
+  deriving (Show)
+
+data SignAlgorithm = ED448 | ED25519
+  deriving (Read, Show)
+
+getCliCommand :: IO CliCommand
+getCliCommand =
+  customExecParser
+    (prefs showHelpOnEmpty)
+    ( info
+        (helper <*> versionOption <*> cliCommandP)
+        (header version <> fullDesc)
+    )
+  where
+    versionOption = infoOption version (long "version" <> short 'v' <> help "Show version")
+
+cliCommandP :: Parser CliCommand
+cliCommandP =
+  hsubparser
+    ( command "init" (info initP (progDesc $ "Initialize server - creates " <> cfgDir <> " and " <> logDir <> " directories and configuration files"))
+        <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+        <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
+    )
+  where
+    initP :: Parser CliCommand
+    initP =
+      Init
+        <$> ( InitOptions
+                <$> switch
+                  ( long "store-log"
+                      <> short 'l'
+                      <> help "Enable store log for SMP queues persistence"
+                  )
+                <*> option
+                  (maybeReader readMaybe)
+                  ( long "sign-algorithm"
+                      <> short 'a'
+                      <> help "Signature algorithm used for TLS certificates: ED25519, ED448"
+                      <> value ED448
+                      <> showDefault
+                      <> metavar "ALG"
+                  )
+                <*> strOption
+                  ( long "ip"
+                      <> help
+                        "Server IP address used as Subject Alternative Name for TLS online certificate, \
+                        \also used as Common Name if FQDN is not supplied"
+                      <> value "127.0.0.1"
+                      <> showDefault
+                      <> metavar "IP"
+                  )
+                <*> (optional . strOption)
+                  ( long "fqdn"
+                      <> short 'n'
+                      <> help "Server FQDN used as Common Name and Subject Alternative Name for TLS online certificate"
+                      <> showDefault
+                      <> metavar "FQDN"
+                  )
+            )
+
+initializeServer :: InitOptions -> IO ()
+initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
+  cleanup
+  createDirectoryIfMissing True cfgDir
+  createDirectoryIfMissing True logDir
+  createX509
+  fp <- saveFingerprint
+  createIni
+  putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `smp-server start` to start server."
+  printServiceInfo fp
+  warnCAPrivateKeyFile
+  where
+    createX509 = do
+      createOpensslCaConf
+      createOpensslServerConf
+      -- CA certificate (identity/offline)
+      run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> caKeyFile
+      run $ "openssl req -new -x509 -days 999999 -config " <> opensslCaConfFile <> " -extensions v3 -key " <> caKeyFile <> " -out " <> caCrtFile
+      -- server certificate (online)
+      run $ "openssl genpkey -algorithm " <> show signAlgorithm <> " -out " <> serverKeyFile
+      run $ "openssl req -new -config " <> opensslServerConfFile <> " -reqexts v3 -key " <> serverKeyFile <> " -out " <> serverCsrFile
+      run $ "openssl x509 -req -days 999999 -extfile " <> opensslServerConfFile <> " -extensions v3 -in " <> serverCsrFile <> " -CA " <> caCrtFile <> " -CAkey " <> caKeyFile <> " -CAcreateserial -out " <> serverCrtFile
+      where
+        run cmd = void $ readCreateProcess (shell cmd) ""
+        opensslCaConfFile = combine cfgDir "openssl_ca.conf"
+        opensslServerConfFile = combine cfgDir "openssl_server.conf"
+        serverCsrFile = combine cfgDir "server.csr"
+        createOpensslCaConf =
+          writeFile
+            opensslCaConfFile
+            "[req]\n\
+            \distinguished_name = req_distinguished_name\n\
+            \prompt = no\n\n\
+            \[req_distinguished_name]\n\
+            \CN = SMP server CA\n\
+            \O = SimpleX\n\n\
+            \[v3]\n\
+            \subjectKeyIdentifier = hash\n\
+            \authorityKeyIdentifier = keyid:always\n\
+            \basicConstraints = critical,CA:true\n"
+        -- TODO revise https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3, https://www.rfc-editor.org/rfc/rfc3279#section-2.3.5
+        -- IP and FQDN can't both be used as server address interchangeably even if IP is added
+        -- as Subject Alternative Name, unless the following validation hook is disabled:
+        -- https://hackage.haskell.org/package/x509-validation-1.6.10/docs/src/Data-X509-Validation.html#validateCertificateName
+        createOpensslServerConf =
+          writeFile
+            opensslServerConfFile
+            ( "[req]\n\
+              \distinguished_name = req_distinguished_name\n\
+              \prompt = no\n\n\
+              \[req_distinguished_name]\n"
+                <> ("CN = " <> cn <> "\n\n")
+                <> "[v3]\n\
+                   \basicConstraints = CA:FALSE\n\
+                   \keyUsage = digitalSignature, nonRepudiation, keyAgreement\n\
+                   \extendedKeyUsage = serverAuth\n"
+            )
+          where
+            cn = fromMaybe ip fqdn
+
+    saveFingerprint = do
+      Fingerprint fp <- loadFingerprint caCrtFile
+      withFile fingerprintFile WriteMode (`B.hPutStrLn` strEncode fp)
+      pure fp
+
+    createIni = do
+      writeFile iniFile $
+        "[STORE_LOG]\n\
+        \# The server uses STM memory to store SMP queues and messages,\n\
+        \# that will be lost on restart (e.g., as with redis).\n\
+        \# This option enables saving SMP queues to append only log,\n\
+        \# and restoring them when the server is started.\n\
+        \# Log is compacted on start (deleted queues are removed).\n\
+        \# The messages in the queues are not logged.\n"
+          <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
+          <> "[TRANSPORT]\n\
+             \port: 5223\n\
+             \websockets: off\n"
+
+    warnCAPrivateKeyFile =
+      putStrLn $
+        "----------\n\
+        \You should store CA private key securely and delete it from the server.\n\
+        \If server TLS credential is compromised this key can be used to sign a new one, \
+        \keeping the same server identity and established connections.\n\
+        \CA private key location:\n"
+          <> caKeyFile
+          <> "\n----------"
+
+data IniOptions = IniOptions
+  { enableStoreLog :: Bool,
+    port :: ServiceName,
     enableWebsockets :: Bool
   }
 
-readIni :: ExceptT String IO IniOpts
-readIni = do
-  fileExists iniFile
-  ini <- ExceptT $ readIniFile iniFile
-  let enableStoreLog = (== Right "on") $ lookupValue "STORE_LOG" "enable" ini
-      storeLogFile = opt defaultStoreLogFile "STORE_LOG" "file" ini
-      serverKeyFile = opt defaultKeyFile "TRANSPORT" "key_file" ini
-      serverPort = opt defaultServerPort "TRANSPORT" "port" ini
-      enableWebsockets = (== Right "on") $ lookupValue "TRANSPORT" "websockets" ini
-  blockSize <- liftEither . readEither $ opt (show defaultBlockSize) "TRANSPORT" "block_size" ini
-  pure IniOpts {enableStoreLog, storeLogFile, serverKeyFile, serverPort, blockSize, enableWebsockets}
+-- TODO ? properly parse ini as a whole
+mkIniOptions :: Ini -> IniOptions
+mkIniOptions ini =
+  IniOptions
+    { enableStoreLog = (== "on") $ strict "STORE_LOG" "enable",
+      port = T.unpack $ strict "TRANSPORT" "port",
+      enableWebsockets = (== "on") $ strict "TRANSPORT" "websockets"
+    }
   where
-    opt :: String -> Text -> Text -> Ini -> String
-    opt def section key ini = either (const def) T.unpack $ lookupValue section key ini
+    strict :: String -> String -> T.Text
+    strict section key =
+      fromRight (error ("no key " <> key <> " in section " <> section)) $
+        lookupValue (T.pack section) (T.pack key) ini
 
-createIni :: ServerOpts -> IO IniOpts
-createIni ServerOpts {enableStoreLog} = do
-  writeFile iniFile $
-    "[STORE_LOG]\n\
-    \# The server uses STM memory to store SMP queues and messages,\n\
-    \# that will be lost on restart (e.g., as with redis).\n\
-    \# This option enables saving SMP queues to append only log,\n\
-    \# and restoring them when the server is started.\n\
-    \# Log is compacted on start (deleted queues are removed).\n\
-    \# The messages in the queues are not logged.\n\n"
-      <> (if enableStoreLog then "" else "# ")
-      <> "enable: on\n\
-         \# file: "
-      <> defaultStoreLogFile
-      <> "\n\n\
-         \[TRANSPORT]\n\n\
-         \# key_file: "
-      <> defaultKeyFile
-      <> "\n\
-         \# port: "
-      <> defaultServerPort
-      <> "\n\
-         \# block_size: "
-      <> show defaultBlockSize
-      <> "\n\
-         \websockets: on\n"
-  pure
-    IniOpts
-      { enableStoreLog,
-        storeLogFile = defaultStoreLogFile,
-        serverKeyFile = defaultKeyFile,
-        serverPort = defaultServerPort,
-        blockSize = defaultBlockSize,
-        enableWebsockets = True
-      }
-
-readKey :: IniOpts -> ExceptT String IO C.FullPrivateKey
-readKey IniOpts {serverKeyFile} = do
-  fileExists serverKeyFile
-  liftIO (S.readKeyFile serverKeyFile) >>= \case
-    [S.Unprotected (PrivKeyRSA pk)] -> pure $ C.FullPrivateKey pk
-    [_] -> err "not RSA key"
-    [] -> err "invalid key file format"
-    _ -> err "more than one key"
+runServer :: IniOptions -> IO ()
+runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
+  fp <- checkSavedFingerprint
+  printServiceInfo fp
+  storeLog <- openStoreLog
+  let cfg = mkServerConfig storeLog
+  printServerConfig cfg
+  runSMPServer cfg
   where
-    err :: String -> ExceptT String IO b
-    err e = throwE $ e <> ": " <> serverKeyFile
+    checkSavedFingerprint = do
+      savedFingerprint <- loadSavedFingerprint
+      Fingerprint fp <- loadFingerprint caCrtFile
+      when (B.pack savedFingerprint /= strEncode fp) $
+        exitError "Stored fingerprint is invalid."
+      pure fp
 
-createKey :: IniOpts -> IO C.FullPrivateKey
-createKey IniOpts {serverKeyFile} = do
-  (_, pk) <- C.generateKeyPair newKeySize
-  S.writeKeyFile S.TraditionalFormat serverKeyFile [PrivKeyRSA $ C.rsaPrivateKey pk]
-  pure pk
+    mkServerConfig storeLog =
+      ServerConfig
+        { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
+          tbqSize = 16,
+          serverTbqSize = 128,
+          msgQueueQuota = 256,
+          queueIdBytes = 24,
+          msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
+          caCertificateFile = caCrtFile,
+          privateKeyFile = serverKeyFile,
+          certificateFile = serverCrtFile,
+          storeLog
+        }
 
-fileExists :: FilePath -> ExceptT String IO ()
-fileExists path = do
-  exists <- liftIO $ doesFileExist path
-  unless exists . throwE $ "file " <> path <> " not found"
+    openStoreLog :: IO (Maybe (StoreLog 'ReadMode))
+    openStoreLog =
+      if enableStoreLog
+        then Just <$> openReadStoreLog storeLogFile
+        else pure Nothing
 
-deleteIfExists :: FilePath -> IO ()
-deleteIfExists path = doesFileExist path >>= (`when` removeFile path)
+    printServerConfig ServerConfig {storeLog, transports} = do
+      putStrLn $ case storeLog of
+        Just s -> "Store log: " <> storeLogFilePath s
+        Nothing -> "Store log disabled."
+      forM_ transports $ \(p, ATransport t) ->
+        putStrLn $ "Listening on port " <> p <> " (" <> transportName t <> ")..."
 
-confirm :: String -> IO ()
-confirm msg = do
-  putStr $ msg <> " (y/N): "
-  hFlush stdout
-  ok <- getLine
-  when (map toLower ok /= "y") exitFailure
-
-serverKeyHash :: C.FullPrivateKey -> B.ByteString
-serverKeyHash = encode . C.unKeyHash . C.publicKeyHash . C.publicKey'
-
-openStoreLog :: ServerOpts -> IniOpts -> IO (Maybe (StoreLog 'ReadMode))
-openStoreLog ServerOpts {enableStoreLog = l} IniOpts {enableStoreLog = l', storeLogFile = f}
-  | l || l' = do
-    createDirectoryIfMissing True logDir
-    Just <$> openReadStoreLog f
-  | otherwise = pure Nothing
-
-data ServerOpts = ServerOpts
-  { serverCommand :: ServerCommand,
-    enableStoreLog :: Bool
-  }
-
-data ServerCommand = ServerInit | ServerStart | ServerDelete
-
-serverOpts :: Parser ServerOpts
-serverOpts =
-  ServerOpts
-    <$> subparser
-      ( command "init" (info (pure ServerInit) (progDesc "Initialize server: generate server key and ini file"))
-          <> command "start" (info (pure ServerStart) (progDesc "Start server (ini: /etc/opt/simplex/smp-server.ini)"))
-          <> command "delete" (info (pure ServerDelete) (progDesc "Delete server key, ini file and store log"))
-      )
-    <*> switch
-      ( long "store-log"
-          <> short 'l'
-          <> help "enable store log for SMP queues persistence"
-      )
-
-getServerOpts :: IO ServerOpts
-getServerOpts = customExecParser p opts
+cleanup :: IO ()
+cleanup = do
+  deleteDirIfExists cfgDir
+  deleteDirIfExists logDir
   where
-    p = prefs showHelpOnEmpty
-    opts =
-      info
-        (serverOpts <**> helper)
-        ( fullDesc
-            <> header "Simplex Messaging Protocol (SMP) Server"
-        )
+    deleteDirIfExists path = doesDirectoryExist path >>= (`when` removeDirectoryRecursive path)
+
+printServiceInfo :: ByteString -> IO ()
+printServiceInfo fpStr = do
+  putStrLn version
+  B.putStrLn $ "Fingerprint: " <> strEncode fpStr
+
+version :: String
+version = "SMP server v" <> simplexMQVersion
+
+loadSavedFingerprint :: IO String
+loadSavedFingerprint = withFile fingerprintFile ReadMode hGetLine

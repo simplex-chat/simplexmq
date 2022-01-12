@@ -2,3 +2,4 @@
 *.db
 *.db.bak
 *.session.sql
+tests/tmp

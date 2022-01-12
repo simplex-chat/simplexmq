@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -157,21 +156,24 @@ cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      smpServers = L.fromList ["localhost:5000#KXNE1m2E1m0lm92WGKet9CL6+lO742Vy5G6nsrkvgs8="],
+      smpServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
         smpDefaultConfig
           { qSize = 1,
-            defaultTransport = (testPort, transport @TCP),
+            defaultTransport = (testPort, transport @TLS),
             tcpTimeout = 500_000
           },
-      retryInterval = (retryInterval defaultAgentConfig) {initialInterval = 50_000}
+      reconnectInterval = (reconnectInterval defaultAgentConfig) {initialInterval = 50_000},
+      caCertificateFile = "tests/fixtures/ca.crt",
+      privateKeyFile = "tests/fixtures/server.key",
+      certificateFile = "tests/fixtures/server.crt"
     }
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" (Just smpPort') testKeyHash]}
+  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg')
         afterProcess
@@ -187,11 +189,12 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient agentTestHost port' $ \h -> do
+  runTransportClient agentTestHost port' testKeyHash $ \h -> do
     line <- liftIO $ getLn h
-    if line == "Welcome to SMP agent v" <> currentSMPVersionStr
+    if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h
-      else error $ "wrong welcome message: " <> B.unpack line
+      else do
+        error $ "wrong welcome message: " <> B.unpack line
 
 testSMPAgentClient :: (Transport c, MonadUnliftIO m) => (c -> m a) -> m a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort

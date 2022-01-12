@@ -14,6 +14,7 @@
 - [Simplex queue IDs](#simplex-queue-ids)
 - [Server security requirements](#server-security-requirements)
 - [Message delivery notifications](#message-delivery-notifications)
+- [SMP Transmission structure](#smp-transmission-structure)
 - [SMP commands](#smp-commands)
   - [Correlating responses with commands](#correlating-responses-with-commands)
   - [Command authentication](#command-authentication)
@@ -89,7 +90,7 @@ The simplex queue is the main unit of SMP protocol. It is used by:
 
 - Sender of the queue (who received out-of-band message) to send messages to the server using sender's queue ID, signed by sender's key.
 
-- Recipient of the queue (who created the queue and sent out-of-band message) will use it to retrieve messages from the server, signing the commands by the recipient key.
+- Recipient of the queue (who created the queue and sent out-of-band message) will use it to retrieve messages from the server, signing the commands by the recipient key. Recipient decrypts the messages with the key negotiated during the creation of the queue.
 
 - Participant identities are not shared with the server - new unique keys and queue IDs are used for each queue.
 
@@ -99,7 +100,7 @@ This approach is based on the concept of [unidirectional networks][4] that are u
 
 Access to each queue is controlled with unique (not shared with other queues) asymmetric key pairs, separate for the sender and the recipient. The sender and the receiver have private keys, and the server has associated public keys to authenticate participants' commands by verifying cryptographic signatures.
 
-The messages sent over the queue are encrypted and decrypted using another key pair that was shared via out-of-band message - the recipient has the private key and the sender has the associated public key.
+The messages sent over the queue are end-to-end encrypted using the DH secret agreed via out-of-band message and SMP confirmation.
 
 **Simplex queue diagram:**
 
@@ -116,14 +117,19 @@ The SMP queue URIs MUST include server identity, queue hostname, an optional por
 The [ABNF][8] syntax of the queue URI is:
 
 ```abnf
-queueURI = %s"smp://" smpServer "/" queueId "#" serverSignaturePublicKey
-; serverSignaturePublicKey syntax is defined below
-smpServer = serverIdentity "@" srvHost [":" port] 
+queueURI = %s"smp://" smpServer "/" queueId "#" recipientDhPublicKey
+smpServer = serverIdentity "@" srvHost [":" port]
 srvHost = <hostname> ; RFC1123, RFC5891
 port = 1*DIGIT
 serverIdentity = base64url
 queueId = base64url
 base64url = <base64url encoded binary> ; RFC4648, section 5
+recipientDhPublicKey = x509UrlEncoded
+; the recipient's Curve25519 key for DH exchange to derive the secret
+; that the sender will use to encrypt delivered messages
+; using [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
+
+x509UrlEncoded = <base64url X509 key encoding>
 ```
 
 `hostname` can be IP address or domain name, as defined in RFC 1123, section 2.1.
@@ -146,17 +152,21 @@ To create and start using a simplex queue Alice and Bob follow these steps:
 
     3. Generates another new random public/private key pair (recipient key - `RK`) that she did not use before for her to sign commands and to decrypt the transmissions received from the server.
 
-    4. Sends `"NEW"` command to the server to create a simplex queue (see `create` in [Create queue command](#create-queue-command)). This command contains previously generated unique "public" key `RK` that will be used to verify the following commands related to the same queue signed by its private counterpart, for example to subscribe to the messages received to this queue or to update the queue, e.g. by setting the key required to send the messages (initially Alice creates the queue that accepts unsigned messages, so anybody could send the message via this queue if they knew the queue sender's ID and server address).
+    4. Generates one more random key pair (recipient DH key - `RDHK`) to negotiate symmetric key that will be used by the server to encrypt message bodies delivered to Alice (to avoid shared cipher-text inside transport connection).
 
-    5. The server sends `"IDS"` response with queue IDs (`queueIds`):
+    5. Sends `"NEW"` command to the server to create a simplex queue (see `create` in [Create queue command](#create-queue-command)). This command contains previously generated unique "public" keys `RK` and `RDHK`. `RK` will be used to verify the following commands related to the same queue signed by its private counterpart, for example to subscribe to the messages received to this queue or to update the queue, e.g. by setting the key required to send the messages (initially Alice creates the queue that accepts unsigned messages, so anybody could send the message via this queue if they knew the queue sender's ID and server address).
+
+    6. The server sends `"IDS"` response with queue IDs (`queueIds`):
 
         - Recipient ID `RID` for Alice to manage the queue and to receive the messages.
 
         - Sender ID `SID` for Bob to send messages to the queue.
 
+        - Server public DH key (`SDHK`) to negotiate a shared secret for message body encryption, that Alice uses to derive a shared secret with the server `SS`.
+
 2. Alice sends an out-of-band message to Bob via the alternative channel that both Alice and Bob trust (see [protocol abstract](#simplex-messaging-protocol-abstract)). The message must include:
 
-    - Unique "public" key (`EK`) that Bob must use to encrypt messages.
+    - Unique "public" key (`EK`) that Bob must use for E2E key agreement.
 
     - SMP server hostname and information to open secure encrypted transport connection (see [Appendix A](#appendix-a)).
 
@@ -178,9 +188,11 @@ To create and start using a simplex queue Alice and Bob follow these steps:
 
 4. Alice receives Bob's message from the server using recipient queue ID `RID` (possibly, via the same transport connection she already has opened - see `message` in [Deliver queue message](#deliver-queue-message)):
 
-    1. She decrypts received message with "private" key `EK`.
+    1. She decrypts received message body using the secret `SS`.
 
-    2. Even though anybody could have sent the message to the queue with ID `SID` before it is secured (e.g. if communication is compromised), Alice would ignore all messages until the decryption succeeds (i.e. the result contains the expected message format). Optionally, in the client application, she also may identify Bob using the information provided, but it is out of scope of SMP protocol.
+    2. She decrypts received message with [key agreed with sender using] "private" key `EK`.
+
+    3. Even though anybody could have sent the message to the queue with ID `SID` before it is secured (e.g. if communication is compromised), Alice would ignore all messages until the decryption succeeds (i.e. the result contains the expected message format). Optionally, in the client application, she also may identify Bob using the information provided, but it is out of scope of SMP protocol.
 
 5. Alice secures the queue `RID` with `"KEY"` command so only Bob can send messages to it (see [Secure queue command](#secure-queue-command)):
 
@@ -206,7 +218,7 @@ Bob now can securely send messages to Alice:
 
     2. He signs `"SEND"` command to the server queue `SID` using the "private" key `SK` (that only he knows, used only for this queue).
 
-    3. He sends the command to the server (see `send` in [Send message](#send-message)), that the server will authenticate using the "public" key `SK` (that Alice earlier provided to the server).
+    3. He sends the command to the server (see `send` in [Send message](#send-message)), that the server will authenticate using the "public" key `SK` (that Alice earlier received from Bob and provided to the server via `"KEY"` command).
 
 2. Alice receives the message(s):
 
@@ -346,23 +358,35 @@ The clients can optionally instruct a dedicated push notification server to subs
 - `subscribeNotifications` (`"NSUB"`) - see [Subscribe to queue notifications](#subscribe-to-queue-notifications).
 - `messageNotification` (`"NMSG"`) - see [Deliver message notification](#deliver-message-notification).
 
-## SMP commands
+## SMP Transmission structure
 
-Commands syntax below is provided using [ABNF][8] with [case-sensitive strings extension][8a].
+Each transport block (SMP transmission) has a fixed size of 16384 bytes for traffic uniformity.
 
-Each transmission between the client and the server must have this format/syntax (after the decryption):
+Some parts of SMP transmission are padded to a fixed size; this padding is uniformly added as a word16 encoded in network byte order - see `paddedString` syntax.
 
-```abnf
-transmission = [signature] SP signed SP pad ; pad to the fixed block size
-signed = sessionIdentifier SP [corrId] SP [queueId] SP cmd ; corrId is required in client commands and server responses,
-                                                           ; corrId is empty in server notifications.
-cmd = ping / recipientCmd / send / subscribeNotifications / serverMsg
-recipientCmd = create / subscribe / secure / enableNotifications /
-               acknowledge / suspend / delete
-serverMsg = queueIds / message / notifierId / messageNotification /
-            unsubscribed / ok / error
-corrId = 1*(%x21-7F) ; any characters other than control/whitespace
-queueId = encoded ; empty queue ID is used with "create" command
+In places where some part of the transmission should be padded, the syntax for `paddedNotation` is used:
+
+```
+paddedString = originalLength string pad
+originalLength = 2*2 OCTET
+pad = N*N"#" ; where N = paddedLength - originalLength - 2
+
+paddedNotation = <padded(string, paddedLength)>
+; string - un-padded string
+; paddedLength - required length after padding, including 2 bytes for originalLength
+```
+
+Each transmission between the client and the server must have this format/syntax:
+
+```
+paddedTransmission = <padded(transmission), 16384>
+transmission = [signature] SP signed
+signed = sessionIdentifier SP [corrId] SP [queueId] SP smpCommand
+; corrId is required in client commands and server responses,
+; it is empty in server notifications.
+corrId = 1*32(%x21-7F) ; any characters other than control/whitespace
+queueId = encoded ; max 32 bytes when decoded (24 bytes is used),
+; empty queue ID is used with "create" command and in some server responses
 signature = encoded
 ; empty signature can be used with "send" before the queue is secured with secure command
 ; signature is always empty with "ping" and "serverMsg"
@@ -370,6 +394,18 @@ encoded = <base64 encoded binary>
 ```
 
 `base64` encoding should be used with padding, as defined in section 4 of [RFC 4648][9]
+
+## SMP commands
+
+Commands syntax below is provided using [ABNF][8] with [case-sensitive strings extension][8a].
+
+```abnf
+smpCommand = ping / recipientCmd / send / subscribeNotifications / serverMsg
+recipientCmd = create / subscribe / secure / enableNotifications /
+               acknowledge / suspend / delete
+serverMsg = queueIds / message / notifierId / messageNotification /
+            unsubscribed / ok / error
+```
 
 The syntax of specific commands and responses is defined below.
 
@@ -402,45 +438,36 @@ Sending any of the commands in this section (other than `create`, that is sent w
 This command is sent by the recipient to the SMP server to create a new queue. The syntax is:
 
 ```abnf
-create = %s"NEW" SP recipientSignaturePublicKey SP recipientDhPublicKey
-recipientSignaturePublicKey = signaturePublicKey
-; the recipient's public key to verify commands for this queue
+create = %s"NEW " recipientSignaturePublicKey recipientDhPublicKey
+recipientSignaturePublicKey = length x509encoded
+; the recipient's Ed25519 or Ed448 public key to verify commands for this queue
 
-signaturePublicKey = signatureScheme ":" x509encoded
-signatureScheme = %s"rsa" | %s"ed25519" | %s"ed448"
-; "rsa" means deprecated RSA-PSS signature scheme,
-; it must not be used for the new queues.
-
-recipientDhPublicKey = dhPublicKey
-dhPublicKey = encryptionScheme ":" x509encoded
-; the recipient's key for DH exchange to derive the secret
+recipientDhPublicKey = length x509encoded
+; the recipient's Curve25519 key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies
+; using [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
 
-encryptionScheme = %s"x25519" | %s"x448"
-; TODO change to define the encryption scheme, e.g. "crypto_box"
+x509encoded = <binary X509 key encoding>
 
-x509encoded = <base64 X509 key encoding>
+length = 1*1 OCTET
 ```
 
 If the queue is created successfully, the server must send `queueIds` response with the recipient's and sender's queue IDs and public keys to sign all responses and messages and to encrypt delivered message bodies:
 
 ```abnf
-queueIds = %s"IDS" SP recipientId SP senderId
-           SP serverSignaturePublicKey SP serverDhPublicKey
-serverSignaturePublicKey = signatureKey
-; the server's public key to verify responses and messages for this queue
-serverDhPublicKey = dhPublicKey
-; the server's key for DH exchange to derive the secret
+queueIds = %s"IDS " recipientId senderId srvDhPublicKey
+serverDhPublicKey = length x509encoded
+; the server's Curve25519 key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies to the recipient
-recipientId = encoded
-senderId = encoded
+recipientId = length *OCTET ; 16-24 bytes
+senderId = length *OCTET ; 16-24 bytes
 ```
 
 Once the queue is created, the recipient gets automatically subscribed to receive the messages from that queue, until the transport connection is closed. The `subscribe` command is needed only to start receiving the messages from the existing queue when the new transport connection is opened.
 
 `NEW` transmission MUST be signed using the private part of the `recipientSignaturePublicKey` – this verifies that the client has the private key that will be used to sign subsequent commands for this queue.
 
-`IDS` response transmission MUST be sent signed with `serverSignaturePublicKey` – this verifies that the server has the private key that will be used to sign subsequent responses and messages for this queue.  This response should be sent with empty queue ID (the third part of the transmission).
+`IDS` response transmission MUST be sent with empty queue ID (the third part of the transmission).
 
 #### Subscribe to queue
 
@@ -461,9 +488,9 @@ This transmission and its response MUST be signed.
 This command is sent by the recipient to the server to add sender's key to the queue:
 
 ```abnf
-secure = %s"KEY" SP senderSignaturePublicKey
-senderSignaturePublicKey = signaturePublicKey
-; the sender's key to verify SEND commands for this queue
+secure = %s"KEY " senderSignaturePublicKey
+senderSignaturePublicKey = length x509encoded
+; the sender's Ed25519 or Ed448 key to verify SEND commands for this queue
 ```
 
 `senderKey` is received from the sender as part of the first message - see [Send Message](#send-message) command.
@@ -475,15 +502,16 @@ Once the queue is secured only signed messages can be sent to it.
 This command is sent by the recipient to the server to add notifier's key to the queue, to allow push notifications server to receive notifications when the message arrives, via a separate queue ID, without receiving message content.
 
 ```abnf
-enableNotifications = %s"NKEY" SP notifierKey
-notifierKey = signatureScheme ":" x509encoded ; the notifier's public key public key to verify NSUB command for this queue
+enableNotifications = %s"NKEY " notifierKey
+notifierKey = length x509encoded
+; the notifier's Ed25519 or Ed448 public key public key to verify NSUB command for this queue
 ```
 
 The server will respond with `notifierId` response if notifications were enabled and the notifier's key was successfully added to the queue:
 
 ```abnf
-notifierId = %s"NID" SP notifierId
-recipientId = encoded
+notifierId = %s"NID " notifierId
+notifierId = length *OCTET ; 16-24 bytes
 ```
 
 This response is sent with the recipient's queue ID (the third part of the transmission).
@@ -537,10 +565,17 @@ Currently SMP defines only one command that can be used by senders - `send` mess
 This command is sent to the server by the sender both to confirm the queue after the sender received out-of-band message from the recipient and to send messages after the queue is secured:
 
 ```abnf
-send = %s"SEND" SP size SP msgBody SP
-; the last SP is in addition to SP in the transmission
-size = 1*DIGIT ; size in bytes
-msgBody = *OCTET ; any binary content of specified size
+send = %s"SEND " smpEncMessage
+smpEncMessage = smpPubHeader sentMsgBody ; message up to 16088 bytes
+smpPubHeader = smpClientVersion ("1" senderPublicDhKey / "0")
+smpClientVersion = word16
+senderPublicDhKey = length x509encoded
+; sender's Curve25519 public key to agree DH secret for E2E encryption in this queue
+; it is only sent in confirmation message
+x509encoded = <binary X509 key encoding>
+sentMsgBody = 16032*16032 OCTET
+; E2E-encrypted smpClientMessage padded to 16032 bytes before encryption
+word16 = 2*2 OCTET
 ```
 
 The first message is sent to confirm the queue - it should contain sender's server key (see decrypted message syntax below) - this first message must be sent without signature.
@@ -558,14 +593,92 @@ Until the queue is secured, the server should accept any number of unsigned mess
 The body should be encrypted with the recipient's "public" key (`EK`); once decrypted it must have this format:
 
 ```abnf
-decryptedBody = [clientHeader] CRLF clientBody CRLF
-clientHeader = senderKeyMsg
-senderKeyMsg = %s"KEY" SP senderKey
-senderKey = signatureScheme ":" x509encoded ; the sender's public key to sign SEND commands for this queue
-clientBody = *OCTET
+sentMsgBody = <encrypted padded(smpClientMessage, 16032)>
+smpClientMessage = smpPrivHeader clientMsgBody
+smpPrivHeader = emptyHeader / smpConfirmationHeader
+emptyHeader = " "
+smpConfirmationHeader = %s"K" senderKey
+senderKey = length x509encoded
+; the sender's Ed25519 or Ed448 public key to sign SEND commands for this queue
+clientMsgBody = *OCTET ; up to 16016 in case of emptyHeader
 ```
 
 `clientHeader` in the initial unsigned message is used to transmit sender's server key and can be used in the future revisions of SMP protocol for other purposes.
+
+SMP transmission structure for sent messages:
+
+```
+------- transmission (= 16384 bytes)
+    2 | originalLength
+ 276- | signature sessionId corrId queueId %s"SEND" SP (1+114 + 1+32? + 1+32 + 1+24 + 4+1 = 210)
+      ....... smpEncMessage (= 16088 bytes = 16384 - 296 bytes)
+         8- | smpPubHeader (for messages it is only version and '0' to mean "no DH key" = 3 bytes)
+         24 | nonce for smpClientMessage
+         16 | auth tag for smpClientMessage
+            ------- smpClientMessage (E2E encrypted, = 16032 bytes = 16088 - 48)
+                2 | originalLength
+               12- | smpPrivHeader
+                  .......
+                        | clientMsgBody (<= 16016 bytes = 16032 - 14)
+                  .......
+               0+ | smpClientMessage pad
+            ------- smpClientMessage end
+            |
+      ....... smpEncMessage end
+  18+ | transmission pad
+------- transmission end
+```
+
+SMP transmission structure for received messages:
+
+```
+------- transmission (= 16384 bytes)
+    2 | originalLength
+ 276- | signature sessionId corrId queueId %s"MSG" SP msgId timestamp (1+114 + 1+32? + 1+32 + 1+24 + 3+1 + 24+1 + 8 = 243)
+   16 | auth tag (msgId is used as nonce)
+      ------- serverEncryptedMsg (= 16090 bytes = 16384 - 294 bytes)
+          2 | originalLength
+            ....... smpEncMessage (= 16088 bytes = 16090 - 2 bytes)
+               16- | smpPubHeader (empty header for the message)
+               24 | nonce for smpClientMessage
+               16 | auth tag for smpClientMessage
+                  ------- smpClientMessage (E2E encrypted, = 16032 bytes = 16088 - 56 bytes)
+                      2 | originalLength
+                     16- | smpPrivHeader (empty header for the message)
+                        ....... clientMsgBody (<= 16016 bytes = 16032 - 16)
+                              -- TODO move internal structure (below) to agent protocol
+                          20- | agentPublicHeader (the size is for user messages post handshake, without E2E X3DH keys - it is version and 'M' for the messages - 3 bytes in total)
+                              ....... E2E double-ratchet encrypted (<= 15996 bytes = 16016 - 20)
+                                  1 | encoded double ratchet header length (it is 123 now)
+                                123 | encoded double ratchet header, including:
+                                         2 | version
+                                        16 | double-ratchet header iv
+                                        16 | double-ratchet header auth tag
+                                      1+88 | double-ratchet header (actual size is 69 bytes, the rest is reserved)
+                                 16 | message auth tag (IV generated from chain ratchet)
+                                    ------- encrypted agent message (= 15856 bytes = 15996 - 140)
+                                        2 | originalLength
+                                      64- | agentHeader (the actual size is 41 = 8 + 1+32)
+                                        2 | %s"MM"
+                                          .......
+                                                | application message (<= 15788 bytes = 15856 - 68)
+                                          .......
+                                       0+ | encrypted agent message pad
+                                    ------- encrypted agent message end
+                                    |
+                              ....... E2E double-ratchet encrypted end
+                              |
+                              -- TODO move internal structure (above) to agent protocol
+                        ....... clientMsgBody end
+                     0+ | smpClientMessage pad
+                  ------- smpClientMessage end
+                  |
+            ....... smpEncMessage end
+         0+ | serverEncryptedMsg pad
+      ------- serverEncryptedMsg end
+   0+ | transmission pad
+------- transmission end
+```
 
 ### Notifier commands
 
@@ -594,18 +707,18 @@ See its syntax in [Create queue command](#create-queue-command)
 The server must deliver messages to all subscribed simplex queues on the currently open transport connection. The syntax for the message delivery is:
 
 ```abnf
-message = %s"MSG" SP encryptedMessage
-encryptedMessage = <encrypt sentMessage>
-sentMessage = msgId SP timestamp SP size SP msgBody SP
-msgId = encoded
-timestamp = <date-time defined in RFC3339>
+message = %s"MSG " msgId SP timestamp SP encryptedMsgBody
+encryptedMsgBody = <encrypt paddedSentMsgBody> ; server-encrypted padded sent msgBody
+paddedSentMsgBody = <padded(sentMsgBody, maxMessageLength + 2)> ; maxMessageLength = 16088
+msgId = length 24*24OCTET
+timestamp = 8*8OCTET
 ```
 
-`msgId` - unique message ID generated by the server based on cryptographically strong random bytes. It should be used by the clients to detect messages that were delivered more than once (in case the transport connection was interrupted and the server did not receive the message delivery acknowledgement).
+`msgId` - unique message ID generated by the server based on cryptographically strong random bytes. It should be used by the clients to detect messages that were delivered more than once (in case the transport connection was interrupted and the server did not receive the message delivery acknowledgement). Message ID is used as a nonce for server/recipient encryption of message bodies.
 
-`timestamp` - the UTC time when the server received the message from the sender, must be in date-time format defined by [RFC 3339][10]
+`timestamp` - system time when the server received the message from the sender as **a number of seconds** since Unix epoch (1970-01-01) encoded as 64-bit integer in network byte order. If a client system/language does not support 64-bit integers, until 2106 it is safe to simply skip the first 4 zero bytes and decode 32-bit unsigned integer (or as signed integer until 2038).
 
-`msgBody` - see syntax in [Send message](#send-message)
+`paddedSentMsgBody` - see syntax in [Send message](#send-message)
 
 When server delivers the messages to the recipient, message body should be encrypted with the secret derived from DH exchange using the keys passed during the queue creation and returned with `queueIds` response.
 
@@ -640,24 +753,24 @@ No further messages should be delivered to unsubscribed transport connection.
 #### Error responses
 
 - incorrect block format, encoding or signature size (`BLOCK`).
+- missing or different session ID - tls-unique binding of TLS transport (`SESSION`)
 - command errors (`CMD`):
   - error parsing command (`SYNTAX`)
   - prohibited command (`PROHIBITED`) - any server response sent from client or `ACK` sent without active subscription or without message delivery.
-  - incorrect RSA key size in `NEW` or `KEY` commands - only 1024, 2048 and 4096-bit keys are allowed (`KEY_SIZE`).
   - transmission has no required signature or queue ID (`NO_AUTH`)
   - transmission has unexpected credentials (`HAS_AUTH`)
   - transmission has no required queue ID (`NO_QUEUE`)
 - authentication error (`AUTH`) - incorrect signature, unknown (or suspended) queue, sender's ID is used in place of recipient's and vice versa, and some other cases (see [Send message](#send-message) command).
 - message queue quota exceeded error (`QUOTA`) - too many messages were sent to the message queue. Further messages can only be sent after the recipient retrieves the messages.
-- incorrect message body size (`SIZE`).
+- sent message is too large (> 16088) to be delivered (`LARGE_MSG`).
 - internal server error (`INTERNAL`).
 
 The syntax for error responses:
 
 ```abnf
-error = %s"ERR" SP errorType
-errorType = %s"BLOCK" / %s"CMD" SP cmdError / %s"AUTH" / %s"SIZE" /%s"INTERNAL"
-cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"KEY_SIZE" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_QUEUE"
+error = %s"ERR " errorType
+errorType = %s"BLOCK" / %s"SESSION" / %s"CMD " cmdError / %s"AUTH" / %s"LARGE_MSG" /%s"INTERNAL"
+cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_QUEUE"
 ```
 
 Server implementations must aim to respond within the same time for each command in all cases when `"ERR AUTH"` response is required to prevent timing attacks (e.g., the server should perform signature verification even when the queue does not exist on the server or the signature of different size is sent, using any RSA key with the same size as the signature size).
@@ -692,32 +805,37 @@ The transport protocol should provide the following:
 - unique channel binding (`sessionIdentifier`) to include in the signed part of SMP transmissions.
 
 By default, the client and server communicate using [TLS 1.3 protocol][13] restricted to:
-- TLS_AES_256_GCM_SHA384 cypher suite,
+- TLS_CHACHA20_POLY1305_SHA256 cipher suite (for better performance on mobile devices),
 - ed25519 and ed448 EdDSA algorithms for signatures,
 - x25519 and x448 ECDHE groups for key exchange.
-- servers must send only one self-signed certificate in the handshake, clients must abort the connection in case more than one certificate is sent.
+- servers must send the chain of exactly 2 self-signed certificates in the handshake, with the first (offline) certificate one signing the second (online) certificate. Offline certificate fingerprint is used as a server identity - it is a part of SMP server address.
+- The clients must abort the connection in case a different number of certificates is sent.
 - server and client TLS configuration should not allow resuming the sessions.
 
-During TLS handshake the client must validate that the hash of the server certificate SPKI block is equal to the `serverIdentity` the client received as part of SMP server address; if the server identity does not match the client must abort the connection.
+During TLS handshake the client must validate that the fingerprint of the online server certificate is equal to the `serverIdentity` the client received as part of SMP server address; if the server identity does not match the client must abort the connection.
 
 Once TLS handshake is complete, client and server will exchange blocks of fixed size (16384 bytes).
 
-The first block sent by the client should be `clientHello` and the server should respond with `serverHello`:
+The first block sent by the server should be `serverHello` and the client should respond with `clientHello` - these blocks are used to agree SMP protocol version:
 
 ```abnf
-clientHello = SP smpVersion SP reserved pad
-serverHello = sessionIdentifier SP smpVersion SP reserved pad
-sessionIdentifier = <base64 encoded> ; unique session identifier derived from transport connection handshake
-  ; it should be included in all SMP transmissions sent in this transport connection.
+serverHello = minSmpVersion maxSmpVersion sessionIdentifier pad
+minSmpVersion = smpVersion
+maxSmpVersion = smpVersion
+sessionIdentifier = length *OCTET
+; unique session identifier derived from transport connection handshake
+; it should be included in all SMP transmissions sent in this transport connection.
 
-smpVersion = %s"SMP v" 1*DIGIT "." 1*DIGIT "." 1*DIGIT ; semver format, the version in this document is v0.5.0
-reserved = <reserved for additional information>
-pad = 1*OCTET
+clientHello = smpVersion pad
+; chosen SMP protocol version - it must be the maximum supported version
+; within the range offered by the server
+
+smpVersion = 2*2OCTET ; Word16 version number
+
+pad = *OCTET
 ```
 
-For TLS 1.3 transport client should assert that `sessionIdentifier` is equal to `tls-unique` channel binding defined in [RFC 5929][14] (TLS Finished message struct); we pass it in `serverHello` block to allow communication over some other transport protocol.
-
-The communication party (client or server) that has the lower protocol version should assume that this version will be supported by another party, the party with the higher protocol version should abort the connection in case they cannot support the lower version.
+For TLS 1.3 transport client should assert that `sessionIdentifier` is equal to `tls-unique` channel binding defined in [RFC 5929][14] (TLS Finished message struct); we pass it in `serverHello` block to allow communication over some other transport protocol (possibly, with another channel binding).
 
 [1]: https://en.wikipedia.org/wiki/Man-in-the-middle_attack
 [2]: https://en.wikipedia.org/wiki/End-to-end_encryption
@@ -734,3 +852,4 @@ The communication party (client or server) that has the lower protocol version s
 [13]: https://datatracker.ietf.org/doc/html/rfc8446
 [14]: https://datatracker.ietf.org/doc/html/rfc5929#section-3
 [15]: https://www.rfc-editor.org/rfc/rfc8709.html
+[16]: https://nacl.cr.yp.to/box.html

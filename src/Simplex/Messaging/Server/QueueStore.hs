@@ -1,35 +1,27 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Server.QueueStore where
 
 import Simplex.Messaging.Protocol
 
 data QueueRec = QueueRec
-  { recipientId :: QueueId,
-    senderId :: QueueId,
-    recipientKey :: RecipientPublicKey,
-    senderKey :: Maybe SenderPublicKey,
+  { recipientId :: RecipientId,
+    recipientKey :: RcvPublicVerifyKey,
+    rcvDhSecret :: RcvDhSecret,
+    senderId :: SenderId,
+    senderKey :: Maybe SndPublicVerifyKey,
+    notifier :: Maybe (NotifierId, NtfPublicVerifyKey),
     status :: QueueStatus
   }
 
-data QueueStatus = QueueActive | QueueOff deriving (Eq)
+data QueueStatus = QueueActive | QueueOff deriving (Eq, Show)
 
 class MonadQueueStore s m where
-  addQueue :: s -> RecipientPublicKey -> (RecipientId, SenderId) -> m (Either ErrorType ())
-  getQueue :: s -> SParty (a :: Party) -> QueueId -> m (Either ErrorType QueueRec)
-  secureQueue :: s -> RecipientId -> SenderPublicKey -> m (Either ErrorType ())
+  addQueue :: s -> QueueRec -> m (Either ErrorType ())
+  getQueue :: s -> SParty p -> QueueId -> m (Either ErrorType QueueRec)
+  secureQueue :: s -> RecipientId -> SndPublicVerifyKey -> m (Either ErrorType QueueRec)
+  addQueueNotifier :: s -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> m (Either ErrorType QueueRec)
   suspendQueue :: s -> RecipientId -> m (Either ErrorType ())
   deleteQueue :: s -> RecipientId -> m (Either ErrorType ())
-
-mkQueueRec :: RecipientPublicKey -> (RecipientId, SenderId) -> QueueRec
-mkQueueRec recipientKey (recipientId, senderId) =
-  QueueRec
-    { recipientId,
-      senderId,
-      recipientKey,
-      senderKey = Nothing,
-      status = QueueActive
-    }

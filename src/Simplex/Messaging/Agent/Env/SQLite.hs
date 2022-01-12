@@ -16,20 +16,23 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
+import qualified Simplex.Messaging.Crypto as C
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     smpServers :: NonEmpty SMPServer,
-    rsaKeySize :: Int,
+    cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
     dbFile :: FilePath,
     dbPoolSize :: Int,
     smpCfg :: SMPClientConfig,
-    retryInterval :: RetryInterval,
-    reconnectInterval :: RetryInterval
+    reconnectInterval :: RetryInterval,
+    caCertificateFile :: FilePath,
+    privateKeyFile :: FilePath,
+    certificateFile :: FilePath
   }
 
 minute :: Int
@@ -39,25 +42,24 @@ defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
-      smpServers = undefined,
-      rsaKeySize = 2048 `div` 8,
+      smpServers = undefined, -- TODO move it elsewhere?
+      cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 16,
       dbFile = "smp-agent.db",
       dbPoolSize = 4,
       smpCfg = smpDefaultConfig,
-      retryInterval =
-        RetryInterval
-          { initialInterval = 1_000_000,
-            increaseAfter = minute,
-            maxInterval = 10 * minute
-          },
       reconnectInterval =
         RetryInterval
           { initialInterval = 1_000_000,
             increaseAfter = 10_000_000,
             maxInterval = 10_000_000
-          }
+          },
+      -- CA certificate private key is not needed for initialization
+      -- ! we do not generate these
+      caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
+      privateKeyFile = "/etc/opt/simplex-agent/agent.key",
+      certificateFile = "/etc/opt/simplex-agent/agent.crt"
     }
 
 data Env = Env
@@ -65,7 +67,6 @@ data Env = Env
     store :: SQLiteStore,
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
-    reservedMsgSize :: Int,
     randomServer :: TVar StdGen
   }
 
@@ -75,10 +76,4 @@ newSMPAgentEnv cfg = do
   store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  return Env {config = cfg, store, idsDrg, clientCounter, reservedMsgSize, randomServer}
-  where
-    -- 1st rsaKeySize is used by the RSA signature in each command,
-    -- 2nd - by encrypted message body header
-    -- 3rd - by message signature
-    -- smpCommandSize - is the estimated max size for SMP command, queueId, corrId
-    reservedMsgSize = 3 * rsaKeySize cfg + smpCommandSize (smpCfg cfg)
+  return Env {config = cfg, store, idsDrg, clientCounter, randomServer}

@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -11,6 +10,7 @@
 module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
+import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
 import Control.Concurrent
@@ -22,6 +22,7 @@ import SMPAgentClient
 import SMPClient (testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import Simplex.Messaging.Util (bshow)
@@ -32,10 +33,11 @@ import Test.Hspec
 agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
   describe "Connection request" connectionRequestTests
+  describe "Double ratchet tests" doubleRatchetTests
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
-  describe "Establishing duplex connection" do
+  describe "Establishing duplex connection" $ do
     it "should connect via one server and one agent" $
       smpAgentTest2_1_1 $ testDuplexConnection t
     it "should connect via one server and one agent (random IDs)" $
@@ -48,19 +50,19 @@ agentTests (ATransport t) = do
       smpAgentTest2_2_2 $ testDuplexConnection t
     it "should connect via 2 servers and 2 agents (random IDs)" $
       smpAgentTest2_2_2 $ testDuplexConnRandomIds t
-  describe "Establishing connections via `contact connection`" do
+  describe "Establishing connections via `contact connection`" $ do
     it "should connect via contact connection with one server and 3 agents" $
       smpAgentTest3 $ testContactConnection t
     it "should connect via contact connection with one server and 2 agents (random IDs)" $
       smpAgentTest2_2_1 $ testContactConnRandomIds t
     it "should support rejecting contact request" $
       smpAgentTest2_2_1 $ testRejectContactRequest t
-  describe "Connection subscriptions" do
+  describe "Connection subscriptions" $ do
     it "should connect via one server and one agent" $
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
-  describe "Message delivery" do
+  describe "Message delivery" $ do
     it "should deliver messages after losing server connection and re-connecting" $
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
     it "should deliver pending messages after agent restarting" $
@@ -81,7 +83,7 @@ h #: t = tPutRaw h t >> (<#:) h
 -- | action and expected response
 -- `h #:t #> r` is the test that sends `t` to `h` and validates that the response is `r`
 (#>) :: IO (ATransmissionOrError 'Agent) -> ATransmission 'Agent -> Expectation
-action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right cmd)
+action #> (corrId, connId, cmd) = action `shouldReturn` (corrId, connId, Right cmd)
 
 -- | action and predicate for the response
 -- `h #:t =#> p` is the test that sends `t` to `h` and validates the response using `p`
@@ -89,13 +91,13 @@ action #> (corrId, cAlias, cmd) = action `shouldReturn` (corrId, cAlias, Right c
 action =#> p = action >>= (`shouldSatisfy` p . correctTransmission)
 
 correctTransmission :: ATransmissionOrError a -> ATransmission a
-correctTransmission (corrId, cAlias, cmdOrErr) = case cmdOrErr of
-  Right cmd -> (corrId, cAlias, cmd)
+correctTransmission (corrId, connId, cmdOrErr) = case cmdOrErr of
+  Right cmd -> (corrId, connId, cmd)
   Left e -> error $ show e
 
 -- | receive message to handle `h` and validate that it is the expected one
 (<#) :: Transport c => c -> ATransmission 'Agent -> Expectation
-h <# (corrId, cAlias, cmd) = (h <#:) `shouldReturn` (corrId, cAlias, Right cmd)
+h <# (corrId, connId, cmd) = (h <#:) `shouldReturn` (corrId, connId, Right cmd)
 
 -- | receive message to handle `h` and validate it using predicate `p`
 (<#=) :: Transport c => c -> (ATransmission 'Agent -> Bool) -> Expectation
@@ -116,39 +118,40 @@ pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (CONF confId "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
-  alice #: ("3", "bob", "SEND :hello") #> ("3", "bob", MID 1)
-  alice <# ("", "bob", SENT 1)
+  -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
+  alice #: ("3", "bob", "SEND :hello") #> ("3", "bob", MID 4)
+  alice <# ("", "bob", SENT 4)
   bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
-  bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
-  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", MID 2)
-  alice <# ("", "bob", SENT 2)
+  bob #: ("12", "alice", "ACK 4") #> ("12", "alice", OK)
+  alice #: ("4", "bob", "SEND :how are you?") #> ("4", "bob", MID 5)
+  alice <# ("", "bob", SENT 5)
   bob <#= \case ("", "alice", Msg "how are you?") -> True; _ -> False
-  bob #: ("13", "alice", "ACK 2") #> ("13", "alice", OK)
-  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 3)
-  bob <# ("", "alice", SENT 3)
+  bob #: ("13", "alice", "ACK 5") #> ("13", "alice", OK)
+  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 6)
+  bob <# ("", "alice", SENT 6)
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
-  alice #: ("3a", "bob", "ACK 3") #> ("3a", "bob", OK)
-  bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", MID 4)
-  bob <# ("", "alice", SENT 4)
+  alice #: ("3a", "bob", "ACK 6") #> ("3a", "bob", OK)
+  bob #: ("15", "alice", "SEND 9\nmessage 1") #> ("15", "alice", MID 7)
+  bob <# ("", "alice", SENT 7)
   alice <#= \case ("", "bob", Msg "message 1") -> True; _ -> False
-  alice #: ("4a", "bob", "ACK 4") #> ("4a", "bob", OK)
+  alice #: ("4a", "bob", "ACK 7") #> ("4a", "bob", OK)
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
-  bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", MID 5)
-  bob <# ("", "alice", MERR 5 (SMP AUTH))
+  bob #: ("17", "alice", "SEND 9\nmessage 3") #> ("17", "alice", MID 8)
+  bob <# ("", "alice", MERR 8 (SMP AUTH))
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
 testDuplexConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", bobConn', Right (CONF confId "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
@@ -156,32 +159,32 @@ testDuplexConnRandomIds _ alice bob = do
   bob <# ("", aliceConn, INFO "alice's connInfo")
   bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
-  alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, MID 1)
-  alice <# ("", bobConn, SENT 1)
+  alice #: ("2", bobConn, "SEND :hello") #> ("2", bobConn, MID 4)
+  alice <# ("", bobConn, SENT 4)
   bob <#= \case ("", c, Msg "hello") -> c == aliceConn; _ -> False
-  bob #: ("12", aliceConn, "ACK 1") #> ("12", aliceConn, OK)
-  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, MID 2)
-  alice <# ("", bobConn, SENT 2)
+  bob #: ("12", aliceConn, "ACK 4") #> ("12", aliceConn, OK)
+  alice #: ("3", bobConn, "SEND :how are you?") #> ("3", bobConn, MID 5)
+  alice <# ("", bobConn, SENT 5)
   bob <#= \case ("", c, Msg "how are you?") -> c == aliceConn; _ -> False
-  bob #: ("13", aliceConn, "ACK 2") #> ("13", aliceConn, OK)
-  bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, MID 3)
-  bob <# ("", aliceConn, SENT 3)
+  bob #: ("13", aliceConn, "ACK 5") #> ("13", aliceConn, OK)
+  bob #: ("14", aliceConn, "SEND 9\nhello too") #> ("14", aliceConn, MID 6)
+  bob <# ("", aliceConn, SENT 6)
   alice <#= \case ("", c, Msg "hello too") -> c == bobConn; _ -> False
-  alice #: ("3a", bobConn, "ACK 3") #> ("3a", bobConn, OK)
-  bob #: ("15", aliceConn, "SEND 9\nmessage 1") #> ("15", aliceConn, MID 4)
-  bob <# ("", aliceConn, SENT 4)
+  alice #: ("3a", bobConn, "ACK 6") #> ("3a", bobConn, OK)
+  bob #: ("15", aliceConn, "SEND 9\nmessage 1") #> ("15", aliceConn, MID 7)
+  bob <# ("", aliceConn, SENT 7)
   alice <#= \case ("", c, Msg "message 1") -> c == bobConn; _ -> False
-  alice #: ("4a", bobConn, "ACK 4") #> ("4a", bobConn, OK)
+  alice #: ("4a", bobConn, "ACK 7") #> ("4a", bobConn, OK)
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
-  bob #: ("17", aliceConn, "SEND 9\nmessage 3") #> ("17", aliceConn, MID 5)
-  bob <# ("", aliceConn, MERR 5 (SMP AUTH))
+  bob #: ("17", aliceConn, "SEND 9\nmessage 3") #> ("17", aliceConn, MID 8)
+  bob <# ("", aliceConn, MERR 8 (SMP AUTH))
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
 testContactConnection :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testContactConnection _ alice bob tom = do
   ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
 
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
@@ -191,10 +194,10 @@ testContactConnection _ alice bob tom = do
   alice <# ("", "bob", INFO "bob's connInfo 2")
   alice <# ("", "bob", CON)
   bob <# ("", "alice", CON)
-  alice #: ("3", "bob", "SEND :hi") #> ("3", "bob", MID 1)
-  alice <# ("", "bob", SENT 1)
+  alice #: ("3", "bob", "SEND :hi") #> ("3", "bob", MID 4)
+  alice <# ("", "bob", SENT 4)
   bob <#= \case ("", "alice", Msg "hi") -> True; _ -> False
-  bob #: ("13", "alice", "ACK 1") #> ("13", "alice", OK)
+  bob #: ("13", "alice", "ACK 4") #> ("13", "alice", OK)
 
   tom #: ("21", "alice", "JOIN " <> cReq' <> " 14\ntom's connInfo") #> ("21", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId' "tom's connInfo")) <- (alice <#:)
@@ -204,15 +207,15 @@ testContactConnection _ alice bob tom = do
   alice <# ("", "tom", INFO "tom's connInfo 2")
   alice <# ("", "tom", CON)
   tom <# ("", "alice", CON)
-  alice #: ("5", "tom", "SEND :hi there") #> ("5", "tom", MID 1)
-  alice <# ("", "tom", SENT 1)
+  alice #: ("5", "tom", "SEND :hi there") #> ("5", "tom", MID 4)
+  alice <# ("", "tom", SENT 4)
   tom <#= \case ("", "alice", Msg "hi there") -> True; _ -> False
-  tom #: ("23", "alice", "ACK 1") #> ("23", "alice", OK)
+  tom #: ("23", "alice", "ACK 4") #> ("23", "alice", OK)
 
 testContactConnRandomIds :: Transport c => TProxy c -> c -> c -> IO ()
 testContactConnRandomIds _ alice bob = do
   ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", aliceContact', Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
@@ -227,15 +230,15 @@ testContactConnRandomIds _ alice bob = do
   alice <# ("", bobConn, CON)
   bob <# ("", aliceConn, CON)
 
-  alice #: ("3", bobConn, "SEND :hi") #> ("3", bobConn, MID 1)
-  alice <# ("", bobConn, SENT 1)
+  alice #: ("3", bobConn, "SEND :hi") #> ("3", bobConn, MID 4)
+  alice <# ("", bobConn, SENT 4)
   bob <#= \case ("", c, Msg "hi") -> c == aliceConn; _ -> False
-  bob #: ("13", aliceConn, "ACK 1") #> ("13", aliceConn, OK)
+  bob #: ("13", aliceConn, "ACK 4") #> ("13", aliceConn, OK)
 
 testRejectContactRequest :: Transport c => TProxy c -> c -> c -> IO ()
 testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW CON")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 10\nbob's info") #> ("11", "alice", OK)
   ("", "a_contact", Right (REQ aInvId "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
@@ -247,20 +250,20 @@ testRejectContactRequest _ alice bob = do
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
   (alice1, "alice") `connect` (bob, "bob")
-  bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", MID 1)
-  bob <# ("", "alice", SENT 1)
+  bob #: ("12", "alice", "SEND 5\nhello") #> ("12", "alice", MID 4)
+  bob <# ("", "alice", SENT 4)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
-  alice1 #: ("1", "bob", "ACK 1") #> ("1", "bob", OK)
-  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", MID 2)
-  bob <# ("", "alice", SENT 2)
+  alice1 #: ("1", "bob", "ACK 4") #> ("1", "bob", OK)
+  bob #: ("13", "alice", "SEND 11\nhello again") #> ("13", "alice", MID 5)
+  bob <# ("", "alice", SENT 5)
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
-  alice1 #: ("2", "bob", "ACK 2") #> ("2", "bob", OK)
+  alice1 #: ("2", "bob", "ACK 5") #> ("2", "bob", OK)
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
-  bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", MID 3)
-  bob <# ("", "alice", SENT 3)
+  bob #: ("14", "alice", "SEND 2\nhi") #> ("14", "alice", MID 6)
+  bob <# ("", "alice", SENT 6)
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
-  alice2 #: ("22", "bob", "ACK 3") #> ("22", "bob", OK)
+  alice2 #: ("22", "bob", "ACK 6") #> ("22", "bob", OK)
   alice1 #:# "nothing else should be delivered to alice1"
 
 testSubscrNotification :: Transport c => TProxy c -> (ThreadId, ThreadId) -> c -> IO ()
@@ -276,22 +279,22 @@ testMsgDeliveryServerRestart :: Transport c => TProxy c -> c -> c -> IO ()
 testMsgDeliveryServerRestart t alice bob = do
   withServer $ do
     connect (alice, "alice") (bob, "bob")
-    bob #: ("1", "alice", "SEND 2\nhi") #> ("1", "alice", MID 1)
-    bob <# ("", "alice", SENT 1)
+    bob #: ("1", "alice", "SEND 2\nhi") #> ("1", "alice", MID 4)
+    bob <# ("", "alice", SENT 4)
     alice <#= \case ("", "bob", Msg "hi") -> True; _ -> False
-    alice #: ("11", "bob", "ACK 1") #> ("11", "bob", OK)
+    alice #: ("11", "bob", "ACK 4") #> ("11", "bob", OK)
     alice #:# "nothing else delivered before the server is killed"
 
   alice <# ("", "bob", DOWN)
-  bob #: ("2", "alice", "SEND 11\nhello again") #> ("2", "alice", MID 2)
+  bob #: ("2", "alice", "SEND 11\nhello again") #> ("2", "alice", MID 5)
   bob #:# "nothing else delivered before the server is restarted"
   alice #:# "nothing else delivered before the server is restarted"
 
   withServer $ do
-    bob <# ("", "alice", SENT 2)
+    bob <# ("", "alice", SENT 5)
     alice <# ("", "bob", UP)
     alice <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
-    alice #: ("12", "bob", "ACK 2") #> ("12", "bob", OK)
+    alice #: ("12", "bob", "ACK 5") #> ("12", "bob", OK)
 
   removeFile testStoreLogFile
   where
@@ -302,14 +305,14 @@ testMsgDeliveryAgentRestart t bob = do
   withAgent $ \alice -> do
     withServer $ do
       connect (bob, "bob") (alice, "alice")
-      alice #: ("1", "bob", "SEND 5\nhello") #> ("1", "bob", MID 1)
-      alice <# ("", "bob", SENT 1)
+      alice #: ("1", "bob", "SEND 5\nhello") #> ("1", "bob", MID 4)
+      alice <# ("", "bob", SENT 4)
       bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
-      bob #: ("11", "alice", "ACK 1") #> ("11", "alice", OK)
+      bob #: ("11", "alice", "ACK 4") #> ("11", "alice", OK)
       bob #:# "nothing else delivered before the server is down"
 
     bob <# ("", "alice", DOWN)
-    alice #: ("2", "bob", "SEND 11\nhello again") #> ("2", "bob", MID 2)
+    alice #: ("2", "bob", "SEND 11\nhello again") #> ("2", "bob", MID 5)
     alice #:# "nothing else delivered before the server is restarted"
     bob #:# "nothing else delivered before the server is restarted"
 
@@ -319,11 +322,11 @@ testMsgDeliveryAgentRestart t bob = do
       alice <#= \case
         (corrId, "bob", cmd) ->
           (corrId == "3" && cmd == OK)
-            || (corrId == "" && cmd == SENT 2)
+            || (corrId == "" && cmd == SENT 5)
         _ -> False
       bob <# ("", "alice", UP)
       bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
-      bob #: ("12", "alice", "ACK 2") #> ("12", "alice", OK)
+      bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
   removeFile testDB
@@ -336,7 +339,7 @@ testConcurrentMsgDelivery _ alice bob = do
   connect (alice, "alice") (bob, "bob")
 
   ("1", "bob2", Right (INV cReq)) <- alice #: ("1", "bob2", "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   bob #: ("11", "alice2", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice2", OK)
   ("", "bob2", Right (CONF _confId "bob's connInfo")) <- (alice <#:)
   -- below commands would be needed to accept bob's connection, but alice does not
@@ -351,11 +354,11 @@ testConcurrentMsgDelivery _ alice bob = do
   -- alice <# ("", "bob", SENT 1)
   -- bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   -- bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
-  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 2)
-  bob <# ("", "alice", SENT 2)
+  bob #: ("14", "alice", "SEND 9\nhello too") #> ("14", "alice", MID 5)
+  bob <# ("", "alice", SENT 5)
   -- if delivery is blocked it won't go further
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
-  alice #: ("3", "bob", "ACK 2") #> ("3", "bob", OK)
+  alice #: ("3", "bob", "ACK 5") #> ("3", "bob", OK)
 
 testMsgDeliveryQuotaExceeded :: Transport c => TProxy c -> c -> c -> IO ()
 testMsgDeliveryQuotaExceeded _ alice bob = do
@@ -368,14 +371,14 @@ testMsgDeliveryQuotaExceeded _ alice bob = do
     alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
   (_, "bob", Right (MID _)) <- alice #: ("5", "bob", "SEND :over quota")
 
-  alice #: ("1", "bob2", "SEND :hello") #> ("1", "bob2", MID 1)
+  alice #: ("1", "bob2", "SEND :hello") #> ("1", "bob2", MID 4)
   -- if delivery is blocked it won't go further
-  alice <# ("", "bob2", SENT 1)
+  alice <# ("", "bob2", SENT 4)
 
 connect :: forall c. Transport c => (c, ByteString) -> (c, ByteString) -> IO ()
 connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW INV")
-  let cReq' = serializeConnReq cReq
+  let cReq' = strEncode cReq
   h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (CONF connId "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
@@ -396,7 +399,7 @@ sendMessage (h1, name1) (h2, name2) msg = do
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do
 --   ("c1", conn2, Right (INV cReq)) <- h1 #: ("c1", "", "NEW INV")
---   let cReq' = serializeConnReq cReq
+--   let cReq' = strEncode cReq
 --   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> cReq' <> " 5\ninfo2")
 --   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
 --   h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
@@ -405,28 +408,35 @@ sendMessage (h1, name1) (h2, name2) msg = do
 --   h1 <# ("", conn2, CON)
 --   pure (conn1, conn2)
 
-samplePublicKey :: ByteString
-samplePublicKey = "rsa:MIIBoDANBgkqhkiG9w0BAQEFAAOCAY0AMIIBiAKCAQEAtn1NI2tPoOGSGfad0aUg0tJ0kG2nzrIPGLiz8wb3dQSJC9xkRHyzHhEE8Kmy2cM4q7rNZIlLcm4M7oXOTe7SC4x59bLQG9bteZPKqXu9wk41hNamV25PWQ4zIcIRmZKETVGbwN7jFMpH7wxLdI1zzMArAPKXCDCJ5ctWh4OWDI6OR6AcCtEj-toCI6N6pjxxn5VigJtwiKhxYpoUJSdNM60wVEDCSUrZYBAuDH8pOxPfP-Tm4sokaFDTIG3QJFzOjC-_9nW4MUjAOFll9PCp9kaEFHJ_YmOYKMWNOCCPvLS6lxA83i0UaardkNLNoFS5paWfTlroxRwOC2T6PwO2ywKBgDjtXcSED61zK1seocQMyGRINnlWdhceD669kIHju_f6kAayvYKW3_lbJNXCmyinAccBosO08_0sUxvtuniIo18kfYJE0UmP1ReCjhMP-O-yOmwZJini_QelJk_Pez8IIDDWnY1qYQsN_q7ocjakOYrpGG7mig6JMFpDJtD6istR"
+sampleDhKey :: ByteString
+sampleDhKey = "MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
   it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
-  describe "NEW" do
-    describe "valid" do
-      -- TODO: add tests with defined connection alias
+  describe "NEW" $ do
+    describe "valid" $ do
+      -- TODO: add tests with defined connection id
       it "with correct parameter" $ ("211", "", "NEW INV") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
-    describe "invalid" do
-      -- TODO: add tests with defined connection alias
+    describe "invalid" $ do
+      -- TODO: add tests with defined connection id
       it "with incorrect parameter" $ ("222", "", "NEW hi") >#> ("222", "", "ERR CMD SYNTAX")
 
-  describe "JOIN" do
-    describe "valid" do
-      -- TODO: ERROR no connection alias in the response (it does not generate it yet if not provided)
-      -- TODO: add tests with defined connection alias
+  describe "JOIN" $ do
+    describe "valid" $ do
       it "using same server as in invitation" $
-        ("311", "a", "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2Flocalhost%3A5000%2F1234-w%3D%3D%23&e2e=" <> urlEncode True samplePublicKey <> " 14\nbob's connInfo") >#> ("311", "a", "ERR SMP AUTH")
-    describe "invalid" do
-      -- TODO: JOIN is not merged yet - to be added
+        ( "311",
+          "a",
+          "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F"
+            <> urlEncode True "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
+            <> "%40localhost%3A5001%2F3456-w%3D%3D%23"
+            <> urlEncode True sampleDhKey
+            <> "&v=1"
+            <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+            <> " 14\nbob's connInfo"
+        )
+          >#> ("311", "a", "ERR SMP AUTH")
+    describe "invalid" $ do
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
   where
     -- simple test for one command with the expected response
@@ -435,4 +445,4 @@ syntaxTests t = do
 
     -- simple test for one command with a predicate for the expected response
     (>#>=) :: ARawTransmission -> ((ByteString, ByteString, [ByteString]) -> Bool) -> Expectation
-    command >#>= p = smpAgentTest t command >>= (`shouldSatisfy` p . \(cId, cAlias, cmd) -> (cId, cAlias, B.words cmd))
+    command >#>= p = smpAgentTest t command >>= (`shouldSatisfy` p . \(cId, connId, cmd) -> (cId, connId, B.words cmd))

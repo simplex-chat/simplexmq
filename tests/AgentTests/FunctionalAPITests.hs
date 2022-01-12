@@ -42,9 +42,6 @@ functionalAPITests t = do
       withSmpServer t testAsyncInitiatingOffline
     it "should connect with joining client going offline before its queue activation" $
       withSmpServer t testAsyncJoiningOfflineBeforeActivation
-    -- TODO a valid test case but not trivial to implement, probably requires some agent rework
-    xit "should connect with joining client going offline after its queue activation" $
-      withSmpServer t testAsyncJoiningOfflineAfterActivation
     it "should connect with both clients going offline" $
       withSmpServer t testAsyncBothOffline
 
@@ -60,25 +57,26 @@ testAgentClient = do
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
-    1 <- sendMessage alice bobId "hello"
-    get alice ##> ("", bobId, SENT 1)
-    2 <- sendMessage alice bobId "how are you?"
-    get alice ##> ("", bobId, SENT 2)
+    -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
+    4 <- sendMessage alice bobId "hello"
+    get alice ##> ("", bobId, SENT 4)
+    5 <- sendMessage alice bobId "how are you?"
+    get alice ##> ("", bobId, SENT 5)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-    ackMessage bob aliceId 1
+    ackMessage bob aliceId 4
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
-    ackMessage bob aliceId 2
-    3 <- sendMessage bob aliceId "hello too"
-    get bob ##> ("", aliceId, SENT 3)
-    4 <- sendMessage bob aliceId "message 1"
-    get bob ##> ("", aliceId, SENT 4)
+    ackMessage bob aliceId 5
+    6 <- sendMessage bob aliceId "hello too"
+    get bob ##> ("", aliceId, SENT 6)
+    7 <- sendMessage bob aliceId "message 1"
+    get bob ##> ("", aliceId, SENT 7)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
-    ackMessage alice bobId 3
+    ackMessage alice bobId 6
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
-    ackMessage alice bobId 4
+    ackMessage alice bobId 7
     suspendConnection alice bobId
-    5 <- sendMessage bob aliceId "message 2"
-    get bob ##> ("", aliceId, MERR 5 (SMP AUTH))
+    8 <- sendMessage bob aliceId "message 2"
+    get bob ##> ("", aliceId, MERR 8 (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   pure ()
@@ -127,9 +125,6 @@ testAsyncJoiningOfflineBeforeActivation = do
     exchangeGreetings alice bobId bob' aliceId
   pure ()
 
-testAsyncJoiningOfflineAfterActivation :: IO ()
-testAsyncJoiningOfflineAfterActivation = error "not implemented"
-
 testAsyncBothOffline :: IO ()
 testAsyncBothOffline = do
   alice <- getSMPAgentClient cfg
@@ -153,11 +148,11 @@ testAsyncBothOffline = do
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings alice bobId bob aliceId = do
-  1 <- sendMessage alice bobId "hello"
-  get alice ##> ("", bobId, SENT 1)
+  4 <- sendMessage alice bobId "hello"
+  get alice ##> ("", bobId, SENT 4)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-  ackMessage bob aliceId 1
-  2 <- sendMessage bob aliceId "hello too"
-  get bob ##> ("", aliceId, SENT 2)
+  ackMessage bob aliceId 4
+  5 <- sendMessage bob aliceId "hello too"
+  get bob ##> ("", aliceId, SENT 5)
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
-  ackMessage alice bobId 2
+  ackMessage alice bobId 5

@@ -123,7 +123,7 @@ Each SMP message client body, once decrypted, contains 3 parts (one of them may 
   - to send and to acknowledge user messages (`clientMsg`, `acknowledgeMsg`)
   - to manage SMP queue rotation (`newQueueMessage`, `deleteQueueMsg`)
   - to manage encryption key rotation (TODO)
-- `msgPadding` - an optional message padding to make all SMP messages have constant size, to prevent servers from observing the actual message size.
+- `msgPadding` - an optional message padding to make all SMP messages have constant size, to prevent servers from observing the actual message size. The only case the message padding can be absent is when the message has exactly the maximum size, in all other cases the message MUST be padded to a fixed size.
 
 ### Messages between SMP agents
 
@@ -131,56 +131,34 @@ Message syntax below uses [ABNF][3] with [case-sensitive strings extension][4].
 
 ```abnf
 decryptedSmpMessageBody = agentMsgHeader CRLF agentMessage CRLF msgPadding
-agentMsgHeader = agentMsgId SP agentTimestamp SP previousMsgHash ; here `agentMsgId` is sequential ID set by the sending agent
+agentMsgHeader = agentMsgId SP previousMsgHash ; here `agentMsgId` is sequential ID set by the sending agent
 agentMsgId = 1*DIGIT
-agentTimestamp = <date-time> ; RFC3339
 previousMsgHash = encoded
 encoded = <base64 encoded>
 
 agentMessage = helloMsg / replyQueueMsg /
-               clientMsg / invitationMsg/ acknowledgeMsg /
+               clientMsg / invitationMsg /
                newQueueMessage / deleteQueueMsg 
 
 msgPadding = *OCTET ; optional random bytes to get messages to the same size (as defined in SMP message size)
 
-helloMsg = %s"HELLO" SP signatureVerificationKey [SP %s"NO_ACK"]
-; NO_ACK means that acknowledgements to client messages will NOT be sent in this connection by the agent that sent `HELLO` message.
-signatureVerificationKey = encoded
+helloMsg = %s"H"
 
-replyQueueMsg = %s"REPLY" SP connectionRequest ; `connectionRequest` is defined below
+replyQueueMsg = %s"R" connectionRequest ; `connectionRequest` is defined below
 ; this message can only be sent by the second connection party
 
-clientMsg = %s"MSG" SP size CRLF clientMsgBody CRLF ; CRLF is in addition to CRLF in decryptedSmpMessageBody
-size = 1*DIGIT
+clientMsg = %s"M" clientMsgBody
 clientMsgBody = *OCTET
 
+; TODO remove and move to "public" header
 invitationMsg = %s"INV" SP connReqInvitation SP connInfo
 ; `connReqInvitation` and `connInfo` are defined below
 
-acknowledgeMsg = %s"ACK" SP agentMsgId SP msgHash SP ackStatus
-; NOT SUPPORTED in the current implementation
-
-msgHash = encoded
-; base64 encoded hash of the received message
-
-ackStatus = %s"OK" / ackError
-
-ackError = %s"ERR" SP ackErrorType
-
-ackErrorType = ackUnknownMsg / ackProhibitedMsg / ackSyntaxErr
-
-ackUnknownMsg = %s"UNKNOWN"
-
-ackProhibitedMsg = %s"PROHIBITED" ; unexpected message e.g. "HELLO" or "REPLY"
-
-ackSyntaxErr = %s"SYNTAX" SP syntaxErrCode
-syntaxErrCode = 1*DIGIT ; TODO
-
-newQueueMsg = %s"NEW" SP queueURI
+newQueueMsg = %s"N" queueURI
 ; this message can be sent by any party to add SMP queue to the connection.
 ; NOT SUPPORTED in the current implementation
 
-deleteQueueMsg = %s"DEL" SP queueURI
+deleteQueueMsg = %s"D" queueURI
 ; notification that the queue with passed URI will be deleted
 ; no need to notify the other party about suspending queue separately, as suspended and deleted queues are indistinguishable to the sender
 ; NOT SUPPORTED in the current implementation
@@ -214,7 +192,7 @@ This message is sent to add an additional SMP queue to the connection. Unlike RE
 
 #### DEL message 
 
-This message is sent to notify that the queue with passed URI will be deleted - having received this message, the receiving agent should no longer send messages to this queue. In case it was the only queue in the connection to which the agent could send the messages, it MAY also delete the reply queue(s) in the connection.
+This message is sent to notify that the queue with passed URI will be deleted - having received this message, the receiving agent should no longer send messages to this queue. In case it was the last remaining send queue in the duplex connection, the agent MAY also delete the reply queue(s) in the connection.
 
 ## SMP agent commands
 
@@ -225,13 +203,11 @@ Commands syntax below is provided using [ABNF][3] with [case-sensitive strings e
 Each transmission between the user and SMP agent must have this format/syntax:
 
 ```abnf
-agentTransmission = [corrId] CRLF [cAlias] CRLF agentCommand
+agentTransmission = [corrId] CRLF [connId] CRLF agentCommand
 
 corrId = 1*(%x21-7F) ; any characters other than control/whitespace
 
-cAlias = cId / cName
-cId = encoded
-cName = 1*(ALPHA / DIGIT / "_" / "-")
+connId = encoded
 
 agentCommand = (userCmd / agentMsg) CRLF
 userCmd = newCmd / joinCmd / letCmd / acceptCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
@@ -304,7 +280,7 @@ messageError = %s"MERR" SP agentMsgId SP <errorType>
 message = %s"MSG" SP msgIntegrity SP recipientMeta SP brokerMeta SP senderMeta SP binaryMsg
 recipientMeta = %s"R=" agentMsgId "," agentTimestamp ; receiving agent message metadata 
 brokerMeta = %s"B=" brokerMsgId "," brokerTimestamp ; broker (server) message metadata
-senderMeta = %s"S=" agentMsgId "," agentTimestamp ; sending agent message metadata 
+senderMeta = %s"S=" agentMsgId ; sending agent message ID 
 brokerMsgId = encoded
 brokerTimestamp = <date-time>
 msgIntegrity = ok / msgIntegrityError

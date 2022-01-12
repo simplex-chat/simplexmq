@@ -1,3 +1,28 @@
+# 1.0.0
+
+Security and privacy improvements:
+- Faster and more secure 2-layer E2E encryption with additional encryption layer between servers and recipients:
+  - application messages in each duplex connection (managed by SMP agents - see [overview](https://github.com/simplex-chat/simplexmq/blob/master/protocol/overview-tjr.md)) are encrypted using [double-ratchet algorithm](https://www.signal.org/docs/specifications/doubleratchet/), providing forward secrecy and break-in recovery. This layer uses two Curve448 keys per client for [X3DH key agreement](https://www.signal.org/docs/specifications/x3dh/), SHA512 based HKDFs and AES-GCM AEAD encryption.
+  - SMP client messages are additionally E2E encrypted in each SMP queue to avoid cipher-text correlation of messages sent via multiple redundant queues (that will be supported soon). This and the next layer use [NaCl crypto_box algorithm](https://nacl.cr.yp.to/index.html) with XSalsa20Poly1305 cipher and Curve25519 keys for DH key agreement.
+  - Messages delivered from the servers to the recipients are additionally encrypted to avoid cipher-text correlation between sent and received messages.
+- To prevent any traffic correlation by content size, SimpleX uses fixed transport block size of 16kb (16384 bytes) with padding on all encryption layers:
+  - application messages are padded to 15788 bytes before E2E double-ratchet encryption.
+  - messages between SMP clients are padded to 16032 bytes before E2E encryption in each SMP queue.
+  - messages from the server to the recipient are padded to padded to 16088 bytes before the additional encryption layer (see above).
+- TLS 1.2+ with tls-unique channel binding in each command to prevent replay attacks.
+- Server identity verification via server offline certificate fingerprints included in SMP server addresses.
+
+New functionality:
+- Support for notification servers with new SMP commands: `NKEY`/`NID`, `NSUB`/`NMSG`.
+
+Efficiency improvements:
+- Binary protocol encodings to reduce overhead from circa 15% to approximately 3.7% of transmitted application message size, with only 2.2% overhead for SMP protocol messages.
+- More performant cryptographic algorithms.
+
+For more information about SimpleX:
+- [SimpleX overview](https://github.com/simplex-chat/simplexmq/blob/master/protocol/overview-tjr.md).
+- [SimpleX chat v1 announcement](https://github.com/simplex-chat/simplex-chat/blob/master/blog/20220112-simplex-chat-v1-released.md).
+
 # 0.5.2
 
 - Fix message delivery logic that blocked delivery of all server messages when server per-queue quota exceeded, making it concurrent per SMP queue, not per server.

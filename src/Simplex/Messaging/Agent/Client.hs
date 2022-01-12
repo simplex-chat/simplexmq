@@ -2,10 +2,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
@@ -19,20 +23,16 @@ module Simplex.Messaging.Agent.Client
     sendConfirmation,
     sendInvitation,
     RetryInterval (..),
-    sendHello,
     secureQueue,
     sendAgentMessage,
-    decryptAndVerify,
-    verifyMessage,
+    agentCbEncrypt,
+    agentCbDecrypt,
+    cryptoError,
     sendAck,
     suspendQueue,
     deleteQueue,
     logServer,
     removeSubscription,
-    cryptoError,
-    addActivation,
-    getActivation,
-    removeActivation,
   )
 where
 
@@ -42,7 +42,7 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
-import Control.Monad.Trans.Except
+import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -52,17 +52,18 @@ import Data.Maybe (isNothing)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
-import Data.Time.Clock
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgBody, QueueId, SenderPublicKey)
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Protocol (QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
-import UnliftIO.Exception (IOException)
+import Simplex.Messaging.Version
+import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -73,7 +74,6 @@ data AgentClient = AgentClient
     smpClients :: TVar (Map SMPServer SMPClient),
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     subscrConns :: TVar (Map ConnId SMPServer),
-    activations :: TVar (Map ConnId (Async ())), -- activations of send queues in progress
     connMsgsQueued :: TVar (Map ConnId Bool),
     smpQueueMsgQueues :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId)),
     smpQueueMsgDeliveries :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (Async ())),
@@ -93,17 +93,28 @@ newAgentClient agentEnv = do
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
-  activations <- newTVar M.empty
   connMsgsQueued <- newTVar M.empty
   smpQueueMsgQueues <- newTVar M.empty
   smpQueueMsgDeliveries <- newTVar M.empty
   reconnections <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, activations, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
+
+newtype InternalException e = InternalException {unInternalException :: e}
+  deriving (Eq, Show)
+
+instance Exception e => Exception (InternalException e)
+
+instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
+  withRunInIO :: ((forall a. ExceptT e m a -> IO a) -> IO b) -> ExceptT e m b
+  withRunInIO exceptToIO =
+    withExceptT unInternalException . ExceptT . E.try $
+      withRunInIO $ \run ->
+        exceptToIO $ run . (either (E.throwIO . InternalException) return <=< runExceptT)
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
@@ -174,7 +185,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
 closeAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 closeAgentClient c = liftIO $ do
   closeSMPServerClients c
-  cancelActions $ activations c
   cancelActions $ reconnections c
   cancelActions $ smpQueueMsgDeliveries c
 
@@ -225,25 +235,37 @@ smpClientError = \case
   SMPTransportError e -> BROKER $ TRANSPORT e
   e -> INTERNAL $ show e
 
-newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri, EncryptionKey)
-newRcvQueue c srv = do
-  size <- asks $ rsaKeySize . config
-  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateKeyPair size
+newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri)
+newRcvQueue c srv =
+  asks (cmdSignAlg . config) >>= \case
+    C.SignAlg a -> newRcvQueue_ a c srv
+
+newRcvQueue_ ::
+  (C.SignatureAlgorithm a, C.AlgorithmI a, AgentMonad m) =>
+  C.SAlgorithm a ->
+  AgentClient ->
+  SMPServer ->
+  m (RcvQueue, SMPQueueUri)
+newRcvQueue_ a c srv = do
+  (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
+  (dhKey, privDhKey) <- liftIO C.generateKeyPair'
+  (e2eDhKey, e2ePrivKey) <- liftIO C.generateKeyPair'
   logServer "-->" c srv "" "NEW"
-  (rcvId, sId) <- withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey
-  logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sId]
-  (encryptKey, decryptKey) <- liftIO $ C.generateKeyPair size
+  QIK {rcvId, sndId, rcvPublicDhKey} <-
+    withSMP c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
+  logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
           { server = srv,
             rcvId,
             rcvPrivateKey,
-            sndId = Just sId,
-            decryptKey,
-            verifyKey = Nothing,
+            rcvDhSecret = C.dh' rcvPublicDhKey privDhKey,
+            e2ePrivKey,
+            e2eDhSecret = Nothing,
+            sndId = Just sndId,
             status = New
           }
-  pure (rq, SMPQueueUri srv sId reservedServerKey, encryptKey)
+  pure (rq, SMPQueueUri srv sndId SMP.smpClientVRange e2eDhKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
@@ -273,72 +295,37 @@ removeSubscription AgentClient {subscrConns, subscrSrvrs} connId = atomically $ 
       let cs' = M.delete connId cs
        in if M.null cs' then Nothing else Just cs'
 
-addActivation :: MonadUnliftIO m => AgentClient -> ConnId -> Async () -> m ()
-addActivation c connId a = atomically . modifyTVar (activations c) $ M.insert connId a
-
-getActivation :: MonadUnliftIO m => AgentClient -> ConnId -> m (Maybe (Async ()))
-getActivation c connId = M.lookup connId <$> readTVarIO (activations c)
-
-removeActivation :: MonadUnliftIO m => AgentClient -> ConnId -> m ()
-removeActivation c connId = atomically . modifyTVar (activations c) $ M.delete connId
-
 logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 
 showServer :: SMPServer -> ByteString
-showServer srv = B.pack $ host srv <> maybe "" (":" <>) (port srv)
+showServer SMPServer {host, port} =
+  B.pack $ host <> if null port then "" else ':' : port
 
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
-sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> SenderPublicKey -> ConnInfo -> m ()
-sendConfirmation c sq@SndQueue {server, sndId} senderKey cInfo =
-  withLogSMP_ c server sndId "SEND <KEY>" $ \smp -> do
-    msg <- mkConfirmation smp
-    liftSMP $ sendSMPMessage smp Nothing sndId msg
-  where
-    mkConfirmation :: SMPClient -> m MsgBody
-    mkConfirmation smp = encryptAndSign smp sq . serializeSMPMessage $ SMPConfirmation senderKey cInfo
+-- TODO maybe package E2ERatchetParams into SMPConfirmation
+sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
+sendConfirmation c SndQueue {server, sndId} encConfirmation =
+  withLogSMP_ c server sndId "SEND <CONF>" $ \smp ->
+    liftSMP $ sendSMPMessage smp Nothing sndId encConfirmation
 
-sendHello :: forall m. AgentMonad m => AgentClient -> SndQueue -> VerificationKey -> RetryInterval -> m ()
-sendHello c sq@SndQueue {server, sndId, sndPrivateKey} verifyKey ri =
-  withLogSMP_ c server sndId "SEND <HELLO> (retrying)" $ \smp -> do
-    msg <- mkHello smp $ AckMode On
-    liftSMP . withRetryInterval ri $ \loop ->
-      sendSMPMessage smp (Just sndPrivateKey) sndId msg `catchE` \case
-        SMPServerError AUTH -> loop
-        e -> throwE e
-  where
-    mkHello :: SMPClient -> AckMode -> m ByteString
-    mkHello smp ackMode = do
-      senderTimestamp <- liftIO getCurrentTime
-      encryptAndSign smp sq . serializeSMPMessage $
-        SMPMessage
-          { senderMsgId = 0,
-            senderTimestamp,
-            previousMsgHash = "",
-            agentMessage = HELLO verifyKey ackMode
-          }
-
-sendInvitation :: forall m. AgentMonad m => AgentClient -> SMPQueueUri -> EncryptionKey -> ConnectionRequest 'CMInvitation -> ConnInfo -> m ()
-sendInvitation c SMPQueueUri {smpServer, senderId} encryptKey cReq connInfo = do
+sendInvitation :: forall m. AgentMonad m => AgentClient -> Compatible SMPQueueInfo -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
+sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) connReq connInfo =
   withLogSMP_ c smpServer senderId "SEND <INV>" $ \smp -> do
-    msg <- mkInvitation smp
+    msg <- mkInvitation
     liftSMP $ sendSMPMessage smp Nothing senderId msg
   where
-    mkInvitation :: SMPClient -> m ByteString
-    mkInvitation smp = do
-      senderTimestamp <- liftIO getCurrentTime
-      encryptUnsigned smp encryptKey . serializeSMPMessage $
-        SMPMessage
-          { senderMsgId = 0,
-            senderTimestamp,
-            previousMsgHash = "",
-            agentMessage = A_INV cReq connInfo
-          }
+    mkInvitation :: m ByteString
+    -- this is only encrypted with per-queue E2E, not with double ratchet
+    mkInvitation = do
+      let agentEnvelope = AgentInvitation {agentVersion = smpAgentVersion, connReq, connInfo}
+      agentCbEncryptOnce dhPublicKey . smpEncode $
+        SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 
-secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SenderPublicKey -> m ()
+secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
 secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
   withLogSMP c server rcvId "KEY <key>" $ \smp ->
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
@@ -358,48 +345,49 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
-sendAgentMessage :: AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
-sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msg =
-  withLogSMP_ c server sndId "SEND <message>" $ \smp -> do
-    msg' <- encryptAndSign smp sq msg
-    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg'
+-- TODO this is just wrong
+sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
+sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} agentMsg =
+  withLogSMP_ c server sndId "SEND <MSG>" $ \smp -> do
+    let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
+    msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
+    liftSMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
 
-encryptAndSign :: AgentMonad m => SMPClient -> SndQueue -> ByteString -> m ByteString
-encryptAndSign smp SndQueue {encryptKey, signKey} msg = do
-  paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
-  liftError cryptoError $ do
-    enc <- C.encrypt encryptKey paddedSize msg
-    C.Signature sig <- C.sign signKey enc
-    pure $ sig <> enc
+agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
+agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do
+  cmNonce <- liftIO C.randomCbNonce
+  let paddedLen = maybe SMP.e2eEncMessageLength (const SMP.e2eEncConfirmationLength) e2ePubKey
+  cmEncBody <-
+    liftEither . first cryptoError $
+      C.cbEncrypt e2eDhSecret cmNonce msg paddedLen
+  -- TODO per-queue client version
+  let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVRange) e2ePubKey
+  pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
-decryptAndVerify :: AgentMonad m => RcvQueue -> ByteString -> m ByteString
-decryptAndVerify RcvQueue {decryptKey, verifyKey} msg =
-  verifyMessage verifyKey msg
-    >>= liftError cryptoError . C.decrypt decryptKey
+-- add encoding as AgentInvitation'?
+agentCbEncryptOnce :: AgentMonad m => C.PublicKeyX25519 -> ByteString -> m ByteString
+agentCbEncryptOnce dhRcvPubKey msg = do
+  (dhSndPubKey, dhSndPrivKey) <- liftIO C.generateKeyPair'
+  let e2eDhSecret = C.dh' dhRcvPubKey dhSndPrivKey
+  cmNonce <- liftIO C.randomCbNonce
+  cmEncBody <-
+    liftEither . first cryptoError $
+      C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncConfirmationLength
+  -- TODO per-queue client version
+  let cmHeader = SMP.PubHeader (maxVersion SMP.smpClientVRange) (Just dhSndPubKey)
+  pure $ smpEncode SMP.ClientMsgEnvelope {cmHeader, cmNonce, cmEncBody}
 
-encryptUnsigned :: AgentMonad m => SMPClient -> EncryptionKey -> ByteString -> m ByteString
-encryptUnsigned smp encryptKey msg = do
-  paddedSize <- asks $ (blockSize smp -) . reservedMsgSize
-  size <- asks $ rsaKeySize . config
-  liftError cryptoError $ do
-    enc <- C.encrypt encryptKey paddedSize msg
-    let sig = B.replicate size ' '
-    pure $ sig <> enc
-
-verifyMessage :: AgentMonad m => Maybe VerificationKey -> ByteString -> m ByteString
-verifyMessage verifyKey msg = do
-  size <- asks $ rsaKeySize . config
-  let (sig, enc) = B.splitAt size msg
-  case verifyKey of
-    Nothing -> pure enc
-    Just k
-      | C.verify k (C.Signature sig) enc -> pure enc
-      | otherwise -> throwError $ AGENT A_SIGNATURE
+-- | NaCl crypto-box decrypt - both for messages received from the server
+-- and per-queue E2E encrypted messages from the sender that were inside.
+agentCbDecrypt :: AgentMonad m => C.DhSecretX25519 -> C.CbNonce -> ByteString -> m ByteString
+agentCbDecrypt dhSecret nonce msg =
+  liftEither . first cryptoError $
+    C.cbDecrypt dhSecret nonce msg
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE
-  C.RSADecryptError _ -> AGENT A_ENCRYPTION
   C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
   C.AESDecryptError -> AGENT A_ENCRYPTION
+  C.CBDecryptError -> AGENT A_ENCRYPTION
   e -> INTERNAL $ show e

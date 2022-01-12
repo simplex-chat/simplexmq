@@ -18,12 +18,14 @@ import Data.Kind (Type)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff, SkippedMsgKeys)
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
-    RecipientPrivateKey,
-    SenderPrivateKey,
-    SenderPublicKey,
+    RcvDhSecret,
+    RcvPrivateSignKey,
+    SndPrivateSignKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 
@@ -35,15 +37,13 @@ class Monad m => MonadAgentStore s m where
   createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   getConn :: s -> ConnId -> m SomeConn
-  getAllConnIds :: s -> m [ConnId] -- TODO remove - hack for subscribing to all
   getRcvConn :: s -> SMPServer -> SMP.RecipientId -> m SomeConn
   deleteConn :: s -> ConnId -> m ()
   upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
   upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueActive :: s -> RcvQueue -> VerificationKey -> m ()
+  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
-  updateSignKey :: s -> SndQueue -> SignatureKey -> m ()
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
@@ -62,23 +62,37 @@ class Monad m => MonadAgentStore s m where
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
-  updateSndMsgStatus :: s -> ConnId -> InternalId -> SndMsgStatus -> m ()
-  getPendingMsgData :: s -> ConnId -> InternalId -> m MsgBody
+  getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody))
   getPendingMsgs :: s -> ConnId -> m [InternalId]
-  getMsg :: s -> ConnId -> InternalId -> m Msg
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
-  updateRcvMsgAck :: s -> ConnId -> InternalId -> m ()
+  deleteMsg :: s -> ConnId -> InternalId -> m ()
+
+  -- Double ratchet persistence
+  createRatchetX3dhKeys :: s -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
+  getRatchetX3dhKeys :: s -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
+  createRatchet :: s -> ConnId -> RatchetX448 -> m ()
+  getRatchet :: s -> ConnId -> m RatchetX448
+  getSkippedMsgKeys :: s -> ConnId -> m SkippedMsgKeys
+  updateRatchet :: s -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
 
 -- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
 data RcvQueue = RcvQueue
   { server :: SMPServer,
+    -- | recipient queue ID
     rcvId :: SMP.RecipientId,
-    rcvPrivateKey :: RecipientPrivateKey,
+    -- | key used by the recipient to sign transmissions
+    rcvPrivateKey :: RcvPrivateSignKey,
+    -- | shared DH secret used to encrypt/decrypt message bodies from server to recipient
+    rcvDhSecret :: RcvDhSecret,
+    -- | private DH key related to public sent to sender out-of-band (to agree simple per-queue e2e)
+    e2ePrivKey :: C.PrivateKeyX25519,
+    -- | public sender's DH key and agreed shared DH secret for simple per-queue e2e
+    e2eDhSecret :: Maybe C.DhSecretX25519,
+    -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
-    decryptKey :: DecryptionKey,
-    verifyKey :: Maybe VerificationKey,
+    -- | queue status
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -86,10 +100,13 @@ data RcvQueue = RcvQueue
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue
   { server :: SMPServer,
+    -- | sender queue ID
     sndId :: SMP.SenderId,
-    sndPrivateKey :: SenderPrivateKey,
-    encryptKey :: EncryptionKey,
-    signKey :: SignatureKey,
+    -- | key used by the sender to sign transmissions
+    sndPrivateKey :: SndPrivateSignKey,
+    -- | shared DH secret agreed for simple per-queue e2e encryption
+    e2eDhSecret :: C.DhSecretX25519,
+    -- | queue status
     status :: QueueStatus
   }
   deriving (Eq, Show)
@@ -160,15 +177,15 @@ newtype ConnData = ConnData {connId :: ConnId}
 
 data NewConfirmation = NewConfirmation
   { connId :: ConnId,
-    senderKey :: SenderPublicKey,
-    senderConnInfo :: ConnInfo
+    senderConf :: SMPConfirmation,
+    ratchetState :: RatchetX448
   }
 
 data AcceptedConfirmation = AcceptedConfirmation
   { confirmationId :: ConfirmationId,
     connId :: ConnId,
-    senderKey :: SenderPublicKey,
-    senderConnInfo :: ConnInfo,
+    senderConf :: SMPConfirmation,
+    ratchetState :: RatchetX448,
     ownConnInfo :: ConnInfo
   }
 
@@ -176,14 +193,14 @@ data AcceptedConfirmation = AcceptedConfirmation
 
 data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
-    connReq :: ConnectionRequest 'CMInvitation,
+    connReq :: ConnectionRequestUri 'CMInvitation,
     recipientConnInfo :: ConnInfo
   }
 
 data Invitation = Invitation
   { invitationId :: InvitationId,
     contactConnId :: ConnId,
-    connReq :: ConnectionRequest 'CMInvitation,
+    connReq :: ConnectionRequestUri 'CMInvitation,
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
     accepted :: Bool
@@ -200,12 +217,11 @@ type PrevRcvMsgHash = MsgHash
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
 type PrevSndMsgHash = MsgHash
 
--- ? merge/replace these with RcvMsg and SndMsg
-
 -- * Message data containers - used on Msg creation to reduce number of parameters
 
 data RcvMsgData = RcvMsgData
   { msgMeta :: MsgMeta,
+    msgType :: AMsgType,
     msgBody :: MsgBody,
     internalRcvId :: InternalRcvId,
     internalHash :: MsgHash,
@@ -216,9 +232,10 @@ data SndMsgData = SndMsgData
   { internalId :: InternalId,
     internalSndId :: InternalSndId,
     internalTs :: InternalTs,
+    msgType :: AMsgType,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
-    previousMsgHash :: MsgHash
+    prevMsgHash :: MsgHash
   }
 
 data PendingMsg = PendingMsg
@@ -226,43 +243,6 @@ data PendingMsg = PendingMsg
     msgId :: InternalId
   }
   deriving (Show)
-
--- * Broadcast types
-
-type BroadcastId = ByteString
-
--- * Message types
-
--- | A message in either direction that is stored by the agent.
-data Msg = MRcv RcvMsg | MSnd SndMsg
-  deriving (Eq, Show)
-
--- | A message received by the agent from a sender.
-data RcvMsg = RcvMsg
-  { msgBase :: MsgBase,
-    internalRcvId :: InternalRcvId,
-    -- | Id of the message at sender, corresponds to `internalSndId` from the sender's side.
-    -- Sender Id is made sequential for detection of missing messages. For redundant / parallel queues,
-    -- it also allows to keep track of duplicates and restore the original order before delivery to the client.
-    externalSndId :: ExternalSndId,
-    externalSndTs :: ExternalSndTs,
-    -- | Id of the message at broker, although it is not sequential (to avoid metadata leakage for potential observer),
-    -- it is needed to track repeated deliveries in case of connection loss - this logic is not implemented yet.
-    brokerId :: BrokerId,
-    brokerTs :: BrokerTs,
-    rcvMsgStatus :: RcvMsgStatus,
-    -- | Timestamp of acknowledgement to broker, corresponds to `AcknowledgedToBroker` status.
-    -- Do not mix up with `brokerTs` - timestamp created at broker after it receives the message from sender.
-    ackBrokerTs :: AckBrokerTs,
-    -- | Timestamp of acknowledgement to sender, corresponds to `AcknowledgedToSender` status.
-    -- Do not mix up with `externalSndTs` - timestamp created at sender before sending,
-    -- which in its turn corresponds to `internalTs` in sending agent.
-    ackSenderTs :: AckSenderTs,
-    -- | Hash of previous message as received from sender - stored for integrity forensics.
-    externalPrevSndHash :: MsgHash,
-    msgIntegrity :: MsgIntegrity
-  }
-  deriving (Eq, Show)
 
 -- internal Ids are newtypes to prevent mixing them up
 newtype InternalRcvId = InternalRcvId {unRcvId :: Int64} deriving (Eq, Show)
@@ -275,44 +255,11 @@ type BrokerId = MsgId
 
 type BrokerTs = UTCTime
 
-data RcvMsgStatus
-  = Received
-  | AcknowledgedToBroker
-  | AcknowledgedToSender
-  deriving (Eq, Show)
-
-type AckBrokerTs = UTCTime
-
-type AckSenderTs = UTCTime
-
--- | A message sent by the agent to a recipient.
-data SndMsg = SndMsg
-  { msgBase :: MsgBase,
-    -- | Id of the message sent / to be sent, as in its number in order of sending.
-    internalSndId :: InternalSndId,
-    sndMsgStatus :: SndMsgStatus,
-    -- | Timestamp of the message received by broker, corresponds to `Sent` status.
-    sentTs :: SentTs,
-    -- | Timestamp of the message received by recipient, corresponds to `Delivered` status.
-    deliveredTs :: DeliveredTs
-  }
-  deriving (Eq, Show)
-
 newtype InternalSndId = InternalSndId {unSndId :: Int64} deriving (Eq, Show)
-
-data SndMsgStatus
-  = SndMsgCreated
-  | SndMsgSent
-  | SndMsgDelivered
-  deriving (Eq, Show)
-
-type SentTs = UTCTime
-
-type DeliveredTs = UTCTime
 
 -- | Base message data independent of direction.
 data MsgBase = MsgBase
-  { connAlias :: ConnId,
+  { connId :: ConnId,
     -- | Monotonically increasing id of a message per connection, internal to the agent.
     -- Internal Id preserves ordering between both received and sent messages, and is needed
     -- to track the order of the conversation (which can be different for the sender / receiver)
@@ -336,11 +283,11 @@ type InternalTs = UTCTime
 data StoreError
   = -- | IO exceptions in store actions.
     SEInternal ByteString
-  | -- | failed to generate unique random ID
+  | -- | Failed to generate unique random ID
     SEUniqueID
-  | -- | Connection alias not found (or both queues absent).
+  | -- | Connection not found (or both queues absent).
     SEConnNotFound
-  | -- | Connection alias already used.
+  | -- | Connection already used.
     SEConnDuplicate
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
@@ -355,6 +302,10 @@ data StoreError
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.
     SEBadQueueStatus
+  | -- | connection does not have associated double-ratchet state
+    SERatchetNotFound
+  | -- | connection does not have associated x3dh keys
+    SEX3dhKeysNotFound
   | -- | Used in `getMsg` that is not implemented/used. TODO remove.
     SENotImplemented
   deriving (Eq, Show, Exception)

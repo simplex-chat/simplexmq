@@ -1,5 +1,5 @@
 name: simplexmq
-version: 0.5.2
+version: 1.0.0
 synopsis: SimpleXMQ message broker
 description:  |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -15,7 +15,7 @@ homepage: https://github.com/simplex-chat/simplexmq#readme
 license: AGPL-3
 author: simplex.chat
 maintainer: chat@simplex.chat
-copyright: 2020 simplex.chat
+copyright: 2020-2022 simplex.chat
 category: Chat, Network, Web, System, Cryptography
 extra-source-files:
   - README.md
@@ -23,6 +23,7 @@ extra-source-files:
   - migrations/*.*
 
 dependencies:
+  - aeson == 1.5.*
   - ansi-terminal >= 0.10 && < 0.12
   - asn1-encoding == 0.9.*
   - asn1-types == 0.3.*
@@ -35,6 +36,8 @@ dependencies:
   - constraints >= 0.12 && < 0.14
   - containers == 0.6.*
   - cryptonite >= 0.27 && < 0.30
+  - cryptostore == 0.2.*
+  - data-default == 0.7.*
   - direct-sqlite == 2.3.*
   - directory == 1.3.*
   - file-embed >= 0.0.14.0 && <= 0.0.15.0
@@ -54,11 +57,14 @@ dependencies:
   - template-haskell == 2.16.*
   - text == 1.2.*
   - time == 1.9.*
+  - tls == 1.5.*
   - transformers == 0.5.*
   - unliftio == 0.2.*
   - unliftio-core == 0.2.*
   - websockets == 0.12.*
   - x509 == 1.7.*
+  - x509-store == 1.6.*
+  - x509-validation == 1.6.*
 
 library:
   source-dirs: src
@@ -68,9 +74,9 @@ executables:
     source-dirs: apps/smp-server
     main: Main.hs
     dependencies:
-      - cryptostore == 0.2.*
       - ini == 0.4.*
       - optparse-applicative >= 0.15 && < 0.17
+      - process == 1.6.*
       - simplexmq
     ghc-options:
       - -threaded
