@@ -35,7 +35,13 @@ jobs:
           stack build --test --force-dirty
           install_root=$(stack path --local-install-root)
           mv ${install_root}/bin/smp-server smp-server-ubuntu-20_04-x86-64
-      
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v2
+        with:
+          name: smp-server-ubuntu-20_04-x86-64
+          path: smp-server-ubuntu-20_04-x86-64
+
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v')
         id: build_changelog
@@ -47,7 +53,6 @@ jobs:
           commitMode: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
