@@ -27,7 +27,7 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (IOMode (..), hGetLine, withFile)
+import System.IO (BufferMode (..), IOMode (..), hGetLine, withFile, hSetBuffering, stderr, stdout)
 import System.Process (readCreateProcess, shell)
 import Text.Read (readMaybe)
 
@@ -256,6 +256,8 @@ mkIniOptions ini =
 
 runServer :: IniOptions -> IO ()
 runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
+  hSetBuffering stdout LineBuffering
+  hSetBuffering stderr LineBuffering
   fp <- checkSavedFingerprint
   printServiceInfo fp
   storeLog <- openStoreLog
