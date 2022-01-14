@@ -79,7 +79,7 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
           serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
           map runServer transports
         )
-        `finally` withLog closeStoreLog
+        `finally` (withQueueLog closeStoreLog >> withMsgLog closeStoreLog)
 
     runServer :: (MonadUnliftIO m', MonadReader Env m') => (ServiceName, ATransport) -> m' ()
     runServer (tcpPort, ATransport t) = do
@@ -264,7 +264,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec
                 Left e -> pure $ ERR e
                 Right _ -> do
-                  withLog (`logCreateById` rId)
+                  withQueueLog (`logCreateById` rId)
                   subscribeQueue rId $> IDS (qik ids)
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
@@ -280,7 +280,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
         secureQueue_ :: QueueStore -> SndPublicVerifyKey -> m (Transmission BrokerMsg)
         secureQueue_ st sKey = do
-          withLog $ \s -> logSecureQueue s queueId sKey
+          withQueueLog $ \s -> logSecureQueue s queueId sKey
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> m (Transmission BrokerMsg)
@@ -294,12 +294,12 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 Left DUPLICATE_ -> addNotifierRetry $ n - 1
                 Left e -> pure $ ERR e
                 Right _ -> do
-                  withLog $ \s -> logAddNotifier s queueId nId nKey
+                  withQueueLog $ \s -> logAddNotifier s queueId nId nKey
                   pure $ NID nId
 
         suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
         suspendQueue_ st = do
-          withLog (`logDeleteQueue` queueId)
+          withQueueLog (`logDeleteQueue` queueId)
           okResp <$> atomically (suspendQueue st queueId)
 
         subscribeQueue :: RecipientId -> m (Transmission BrokerMsg)
@@ -351,12 +351,16 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   Right msg -> do
                     ms <- asks msgStore
                     quota <- asks $ msgQueueQuota . config
-                    atomically $ do
-                      q <- getMsgQueue ms (recipientId qr) quota
-                      ifM (isFull q) (pure $ err QUOTA) $ do
-                        trySendNotification
+                    let rId = recipientId qr
+                    (res, msgOk) <- atomically $ do
+                      q <- getMsgQueue ms rId quota
+                      ifM (isFull q) (pure (err QUOTA, False)) $ do
                         writeMsg q msg
-                        pure ok
+                        pure (ok, True)
+                    when msgOk $ do
+                      -- withMsgLog $ \s -> logMsgReceived s rId msg
+                      atomically trySendNotification
+                    pure res
               where
                 mkMessage :: m (Either C.CryptoError Message)
                 mkMessage = do
@@ -375,12 +379,16 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   unlessM (isFullTBQueue sndQ) $
                     writeTBQueue q (CorrId "", nId, NMSG)
 
+        getMessageQueue :: RecipientId -> m MsgQueue
+        getMessageQueue rId = do
+          ms <- asks msgStore
+          quota <- asks $ msgQueueQuota . config
+          atomically $ getMsgQueue ms rId quota
+
         deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> Sub -> m (Transmission BrokerMsg)
         deliverMessage tryPeek rId = \case
           Sub {subThread = NoSub} -> do
-            ms <- asks msgStore
-            quota <- asks $ msgQueueQuota . config
-            q <- atomically $ getMsgQueue ms rId quota
+            q <- getMessageQueue rId
             atomically (tryPeek q) >>= \case
               Nothing -> forkSub q $> ok
               Just msg -> atomically setDelivered $> (corrId, rId, msgCmd msg)
@@ -412,7 +420,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
         delQueueAndMsgs :: QueueStore -> m (Transmission BrokerMsg)
         delQueueAndMsgs st = do
-          withLog (`logDeleteQueue` queueId)
+          withQueueLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
           atomically $
             deleteQueue st queueId >>= \case
@@ -428,10 +436,15 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         okResp :: Either ErrorType () -> Transmission BrokerMsg
         okResp = either err $ const ok
 
-withLog :: (MonadUnliftIO m, MonadReader Env m) => (StoreLog 'WriteMode -> IO a) -> m ()
-withLog action = do
+withQueueLog :: (MonadUnliftIO m, MonadReader Env m) => (StoreLog 'WriteMode -> IO a) -> m ()
+withQueueLog action = do
   env <- ask
-  liftIO . mapM_ action $ storeLog (env :: Env)
+  liftIO . mapM_ action $ queueStoreLog (env :: Env)
+
+withMsgLog :: (MonadUnliftIO m, MonadReader Env m) => (StoreLog 'WriteMode -> IO a) -> m ()
+withMsgLog action = do
+  env <- ask
+  liftIO . mapM_ action $ msgStoreLog (env :: Env)
 
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ByteString
 randomId n = do

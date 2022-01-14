@@ -1,14 +1,18 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Server.StoreLog
-  ( StoreLog, -- constructors are not exported
+  ( StoreLog,
+    LogParsingError,
+    RecordLog (..),
     openWriteStoreLog,
     openReadStoreLog,
     storeLogFilePath,
@@ -17,23 +21,30 @@ module Simplex.Messaging.Server.StoreLog
     logSecureQueue,
     logAddNotifier,
     logDeleteQueue,
+    logMsgReceived,
+    logMsgAcknowledged,
     readWriteStoreLog,
   )
 where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad (unless)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Composition ((.:))
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Sequence (Seq (..), (|>))
+import qualified Data.Sequence as Seq
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.MsgStore (Message (..))
 import Simplex.Messaging.Server.QueueStore (QueueRec (..), QueueStatus (..))
 import Simplex.Messaging.Transport (trimCR)
 import System.Directory (doesFileExist)
@@ -45,11 +56,15 @@ data StoreLog (a :: IOMode) where
   ReadStoreLog :: FilePath -> Handle -> StoreLog 'ReadMode
   WriteStoreLog :: FilePath -> Handle -> StoreLog 'WriteMode
 
-data StoreLogRecord
+data QueueLogRecord
   = CreateQueue QueueRec
   | SecureQueue QueueId SndPublicVerifyKey
   | AddNotifier QueueId NotifierId NtfPublicVerifyKey
   | DeleteQueue QueueId
+
+data MsgLogRecord
+  = MsgReceived RecipientId Message
+  | MsgAcknowledged RecipientId MsgId
 
 instance StrEncoding QueueRec where
   strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
@@ -73,7 +88,7 @@ instance StrEncoding QueueRec where
     notifier <- optional $ (,) <$> (" nid=" *> strP_) <*> ("nk=" *> strP)
     pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
 
-instance StrEncoding StoreLogRecord where
+instance StrEncoding QueueLogRecord where
   strEncode = \case
     CreateQueue q -> strEncode (Str "CREATE", q)
     SecureQueue rId sKey -> strEncode (Str "SECURE", rId, sKey)
@@ -85,6 +100,16 @@ instance StrEncoding StoreLogRecord where
       <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
       <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP_ <*> strP)
       <|> "DELETE " *> (DeleteQueue <$> strP)
+
+instance StrEncoding MsgLogRecord where
+  strEncode = \case
+    MsgReceived rId msg -> strEncode ('R', rId, msg)
+    MsgAcknowledged rId msgId -> strEncode ('D', rId, msgId)
+  strP =
+    (A.anyChar <* A.space) >>= \case
+      'R' -> MsgReceived <$> strP_ <*> strP
+      'D' -> MsgAcknowledged <$> strP_ <*> strP
+      _ -> fail "bad MsgLogRecord"
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
@@ -104,7 +129,7 @@ closeStoreLog = \case
   WriteStoreLog _ h -> hClose h
   ReadStoreLog _ h -> hClose h
 
-writeStoreLogRecord :: StoreLog 'WriteMode -> StoreLogRecord -> IO ()
+writeStoreLogRecord :: StrEncoding a => StoreLog 'WriteMode -> a -> IO ()
 writeStoreLogRecord (WriteStoreLog _ h) r = do
   B.hPutStrLn h $ strEncode r
   hFlush h
@@ -121,35 +146,71 @@ logAddNotifier s qId nId nKey = writeStoreLogRecord s $ AddNotifier qId nId nKey
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
 
-readWriteStoreLog :: StoreLog 'ReadMode -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
+readWriteStoreLog :: RecordLog r => StoreLog 'ReadMode -> IO (Map RecipientId r, StoreLog 'WriteMode)
 readWriteStoreLog s@(ReadStoreLog f _) = do
-  qs <- readQueues s
+  recs <- readRecords s
   closeStoreLog s
   s' <- openWriteStoreLog f
-  writeQueues s' qs
-  pure (qs, s')
+  writeRecords s' recs
+  pure (recs, s')
 
-writeQueues :: StoreLog 'WriteMode -> Map RecipientId QueueRec -> IO ()
-writeQueues s = mapM_ (writeStoreLogRecord s . CreateQueue) . M.filter active
-  where
-    active QueueRec {status} = status == QueueActive
+class RecordLog r where
+  writeRecords :: StoreLog 'WriteMode -> Map RecipientId r -> IO ()
+  readRecords :: StoreLog 'ReadMode -> IO (Map RecipientId r)
+
+instance RecordLog QueueRec where
+  writeRecords s = mapM_ (writeStoreLogRecord s . CreateQueue) . M.filter active
+    where
+      active QueueRec {status} = status == QueueActive
+  readRecords = (`readStoreLog` procLogRecord)
+    where
+      procLogRecord :: Map RecipientId QueueRec -> QueueLogRecord -> Map RecipientId QueueRec
+      procLogRecord m = \case
+        CreateQueue q -> M.insert (recipientId q) q m
+        SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
+        AddNotifier qId nId nKey -> M.adjust (\q -> q {notifier = Just (nId, nKey)}) qId m
+        DeleteQueue qId -> M.delete qId m
+
+logMsgReceived :: StoreLog 'WriteMode -> RecipientId -> Message -> IO ()
+logMsgReceived s = writeStoreLogRecord s .: MsgReceived
+
+logMsgAcknowledged :: StoreLog 'WriteMode -> RecipientId -> MsgId -> IO ()
+logMsgAcknowledged s = writeStoreLogRecord s .: MsgAcknowledged
+
+instance RecordLog (Seq Message) where
+  writeRecords s = mapM_ writeMsgSeq . M.assocs . M.filter Seq.null
+    where
+      writeMsgSeq (rId, ms) = mapM_ (writeStoreLogRecord s . MsgReceived rId) ms
+  readRecords = (`readStoreLog` procMsgLogRecord)
+    where
+      procMsgLogRecord :: Map RecipientId (Seq Message) -> MsgLogRecord -> Map RecipientId (Seq Message)
+      procMsgLogRecord m = \case
+        MsgReceived rId msg -> M.alter (Just . rcvMsg msg) rId m
+        MsgAcknowledged rId msgId -> M.alter (ackMsg msgId) rId m
+        where
+          rcvMsg msg = \case
+            Just s -> s |> msg
+            _ -> Seq.singleton msg
+          ackMsg msgId' = \case
+            Just Seq.Empty -> Just Seq.Empty
+            Just s@(Message {msgId} :<| s')
+              | msgId' == msgId -> Just s'
+              | otherwise -> Just s
+            _ -> Nothing
 
 type LogParsingError = (String, ByteString)
 
-readQueues :: StoreLog 'ReadMode -> IO (Map RecipientId QueueRec)
-readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLog
+readStoreLog :: forall a r. StrEncoding a => StoreLog 'ReadMode -> (Map RecipientId r -> a -> Map RecipientId r) -> IO (Map RecipientId r)
+readStoreLog (ReadStoreLog _ h) procRecord = LB.hGetContents h >>= returnResult . procStoreLog
   where
-    procStoreLog :: LB.ByteString -> ([LogParsingError], Map RecipientId QueueRec)
-    procStoreLog = second (foldl' procLogRecord M.empty) . partitionEithers . map parseLogRecord . LB.lines
-    returnResult :: ([LogParsingError], Map RecipientId QueueRec) -> IO (Map RecipientId QueueRec)
-    returnResult (errs, res) = mapM_ printError errs $> res
-    parseLogRecord :: LB.ByteString -> Either LogParsingError StoreLogRecord
-    parseLogRecord = (\s -> first (,s) $ strDecode s) . trimCR . LB.toStrict
-    procLogRecord :: Map RecipientId QueueRec -> StoreLogRecord -> Map RecipientId QueueRec
-    procLogRecord m = \case
-      CreateQueue q -> M.insert (recipientId q) q m
-      SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
-      AddNotifier qId nId nKey -> M.adjust (\q -> q {notifier = Just (nId, nKey)}) qId m
-      DeleteQueue qId -> M.delete qId m
+    procStoreLog :: LB.ByteString -> ([LogParsingError], Map RecipientId r)
+    procStoreLog = second (foldl' procRecord M.empty) . partitionEithers . map parseLogRecord . LB.lines
+
+parseLogRecord :: StrEncoding a => LB.ByteString -> Either LogParsingError a
+parseLogRecord = (\s -> first (,s) $ strDecode s) . trimCR . LB.toStrict
+
+returnResult :: ([LogParsingError], Map RecipientId a) -> IO (Map RecipientId a)
+returnResult (errs, res) = mapM_ printError errs $> res
+  where
     printError :: LogParsingError -> IO ()
     printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s

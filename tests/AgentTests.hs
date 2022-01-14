@@ -19,7 +19,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
-import SMPClient (testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
+import SMPClient (testPort, testPort2, testQueueStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Encoding.String
@@ -296,7 +296,7 @@ testMsgDeliveryServerRestart t alice bob = do
     alice <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
     alice #: ("12", "bob", "ACK 5") #> ("12", "bob", OK)
 
-  removeFile testStoreLogFile
+  removeFile testQueueStoreLogFile
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
 
@@ -328,7 +328,7 @@ testMsgDeliveryAgentRestart t bob = do
       bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
-  removeFile testStoreLogFile
+  removeFile testQueueStoreLogFile
   removeFile testDB
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()

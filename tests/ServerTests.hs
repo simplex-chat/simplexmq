@@ -361,7 +361,7 @@ testWithStoreLog at@(ATransport t) =
       pure ()
 
     logSize `shouldReturn` 1
-    removeFile testStoreLogFile
+    removeFile testQueueStoreLogFile
   where
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
@@ -373,7 +373,7 @@ testWithStoreLog at@(ATransport t) =
 
     logSize :: IO Int
     logSize =
-      try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
+      try (length . B.lines <$> B.readFile testQueueStoreLogFile) >>= \case
         Right l -> pure l
         Left (_ :: SomeException) -> logSize
 

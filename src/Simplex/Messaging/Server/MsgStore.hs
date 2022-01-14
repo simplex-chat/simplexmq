@@ -1,9 +1,11 @@
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Server.MsgStore where
 
 import Data.Time.Clock.System (SystemTime)
 import Numeric.Natural
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (MsgBody, MsgId, RecipientId)
 
 data Message = Message
@@ -11,6 +13,12 @@ data Message = Message
     ts :: SystemTime,
     msgBody :: MsgBody
   }
+
+instance StrEncoding Message where
+  strEncode Message {msgId, ts, msgBody} = strEncode (msgId, ts, msgBody)
+  strP = do
+    (msgId, ts, msgBody) <- strP
+    pure Message {msgId, ts, msgBody}
 
 class MonadMsgStore s q m | s -> q where
   getMsgQueue :: s -> RecipientId -> Natural -> m q

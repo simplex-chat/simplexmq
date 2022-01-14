@@ -11,12 +11,14 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Sequence (Seq)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.MsgStore (Message, getMsgQueue, writeMsg)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -32,7 +34,8 @@ data ServerConfig = ServerConfig
     msgQueueQuota :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
-    storeLog :: Maybe (StoreLog 'ReadMode),
+    queueStoreLog :: Maybe (StoreLog 'ReadMode),
+    msgStoreLog :: Maybe (StoreLog 'ReadMode),
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -46,7 +49,8 @@ data Env = Env
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
-    storeLog :: Maybe (StoreLog 'WriteMode),
+    queueStoreLog :: Maybe (StoreLog 'WriteMode),
+    msgStoreLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams
   }
 
@@ -101,11 +105,12 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} 
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
+  qs' <- restoreQueues queueStore `mapM` queueStoreLog (config :: ServerConfig)
+  ms' <- restoreMsgs msgStore (msgQueueQuota config) `mapM` msgStoreLog (config :: ServerConfig)
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
-  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, queueStoreLog = qs', msgStoreLog = ms', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues queueStore s = do
@@ -124,3 +129,13 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} 
     addNotifier q = case notifier q of
       Nothing -> id
       Just (nId, _) -> M.insert nId (recipientId q)
+    restoreMsgs :: STMMsgStore -> Natural -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
+    restoreMsgs msgStore quota s = do
+      (msgs, s') <- liftIO $ readWriteStoreLog s
+      atomically . mapM_ restoreMsgQueue $ M.assocs msgs
+      pure s'
+      where
+        restoreMsgQueue :: (RecipientId, Seq Message) -> STM ()
+        restoreMsgQueue (rId, ms) = do
+          mq <- getMsgQueue msgStore rId quota
+          mapM_ (writeMsg mq) ms

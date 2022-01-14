@@ -40,8 +40,11 @@ logDir = "/var/opt/simplex"
 iniFile :: FilePath
 iniFile = combine cfgDir "smp-server.ini"
 
-storeLogFile :: FilePath
-storeLogFile = combine logDir "smp-server-store.log"
+queueStoreLogFile :: FilePath
+queueStoreLogFile = combine logDir "smp-server-store.log"
+
+msgStoreLogFile :: FilePath
+msgStoreLogFile = combine logDir "smp-server-msgs.log"
 
 caKeyFile :: FilePath
 caKeyFile = combine cfgDir "ca.key"
@@ -258,8 +261,9 @@ runServer :: IniOptions -> IO ()
 runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
   fp <- checkSavedFingerprint
   printServiceInfo fp
-  storeLog <- openStoreLog
-  let cfg = mkServerConfig storeLog
+  queueStoreLog <- openStoreLog queueStoreLogFile
+  msgStoreLog <- openStoreLog msgStoreLogFile
+  let cfg = mkServerConfig queueStoreLog msgStoreLog
   printServerConfig cfg
   runSMPServer cfg
   where
@@ -270,7 +274,7 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
         exitError "Stored fingerprint is invalid."
       pure fp
 
-    mkServerConfig storeLog =
+    mkServerConfig queueStoreLog msgStoreLog =
       ServerConfig
         { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
           tbqSize = 16,
@@ -281,19 +285,23 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
           caCertificateFile = caCrtFile,
           privateKeyFile = serverKeyFile,
           certificateFile = serverCrtFile,
-          storeLog
+          queueStoreLog,
+          msgStoreLog
         }
 
-    openStoreLog :: IO (Maybe (StoreLog 'ReadMode))
-    openStoreLog =
+    openStoreLog :: FilePath -> IO (Maybe (StoreLog 'ReadMode))
+    openStoreLog f =
       if enableStoreLog
-        then Just <$> openReadStoreLog storeLogFile
+        then Just <$> openReadStoreLog f
         else pure Nothing
 
-    printServerConfig ServerConfig {storeLog, transports} = do
-      putStrLn $ case storeLog of
+    printServerConfig ServerConfig {queueStoreLog, msgStoreLog, transports} = do
+      putStrLn $ case queueStoreLog of
         Just s -> "Store log: " <> storeLogFilePath s
         Nothing -> "Store log disabled."
+      putStrLn $ case msgStoreLog of
+        Just s -> "Message store log: " <> storeLogFilePath s
+        Nothing -> "Message store log disabled."
       forM_ transports $ \(p, ATransport t) ->
         putStrLn $ "Listening on port " <> p <> " (" <> transportName t <> ")..."
 

@@ -39,8 +39,11 @@ testPort2 = "5002"
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 
-testStoreLogFile :: FilePath
-testStoreLogFile = "tests/tmp/smp-server-store.log"
+testQueueStoreLogFile :: FilePath
+testQueueStoreLogFile = "tests/tmp/smp-server-store.log"
+
+testMsgStoreLogFile :: FilePath
+testMsgStoreLogFile = "tests/tmp/smp-server-msgs.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
@@ -58,7 +61,8 @@ cfg =
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      storeLog = Nothing,
+      queueStoreLog = Nothing,
+      msgStoreLog = Nothing,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
@@ -66,9 +70,10 @@ cfg =
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerStoreLogOn t port' client = do
-  s <- liftIO $ openReadStoreLog testStoreLogFile
+  qs <- liftIO $ openReadStoreLog testQueueStoreLogFile
+  ms <- liftIO $ openReadStoreLog testMsgStoreLogFile
   serverBracket
-    (\started -> runSMPServerBlocking started cfg {transports = [(port', t)], storeLog = Just s})
+    (\started -> runSMPServerBlocking started cfg {transports = [(port', t)], queueStoreLog = Just qs, msgStoreLog = Just ms})
     (pure ())
     client
 
