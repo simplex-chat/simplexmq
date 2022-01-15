@@ -1,3 +1,8 @@
+# 1.0.1
+
+SMP server:
+- Explicitly set line buffering in stdout/stderr to log each line when output is redirected to files.
+
 # 1.0.0
 
 Security and privacy improvements:
