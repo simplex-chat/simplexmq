@@ -111,7 +111,7 @@ Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if an
 
 ## Deploy SMP server on DigitalOcean
 
-> 🚧 DigitalOcean snapshot is currently not up to date, will soon be updated 🏗️
+> 🚧 DigitalOcean snapshot is currently not up to date, it will soon be updated 🏗️
 
 \* When creating a DigitalOcean account you can use [this link](https://try.digitalocean.com/freetrialoffer/) to get free credit. (You would still be required either to provide your credit card details or make a confirmation pre-payment with PayPal)
 
