@@ -1,23 +1,23 @@
 #!/bin/bash
 
-chmod +x /opt/simplex/smp_server_startup.sh
+chmod +x /opt/simplex/startup_master.sh
 
-# / Create systemd service for startup script
-cat > /etc/systemd/system/smp-server-startup.service << EOF
+# / Create systemd service for startup master script
+cat > /etc/systemd/system/startup-master.service << EOF
 [Unit]
-Description=Startup script to download and initialize SMP server from latest release
+Description=Startup master script to download and initialize SMP server from latest release
 
 [Service]
-Type=simple
-ExecStart=/opt/simplex/smp_server_startup.sh
+Type=oneshot
+ExecStart=/opt/simplex/startup_master.sh
 
 [Install]
 WantedBy=multi-user.target
 
 EOF
-# Create systemd service for startup script /
+# Create systemd service for startup master script /
 
-# Start systemd service for startup script
-chmod 644 /etc/systemd/system/smp-server-startup.service
-sudo systemctl enable smp-server-startup
-sudo systemctl start smp-server-startup
+# Start systemd service for startup master script
+chmod 644 /etc/systemd/system/startup-master.service
+sudo systemctl enable startup-master
+sudo systemctl start startup-master

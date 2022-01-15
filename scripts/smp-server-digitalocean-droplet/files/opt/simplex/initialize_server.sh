@@ -7,8 +7,6 @@ mkdir -p $bin_dir
 curl -L -o $binary https://github.com/simplex-chat/simplexmq/releases/latest/download/smp-server-ubuntu-20_04-x86-64
 chmod +x $binary
 
-echo $bin_dir
-
 # / Add to PATH
 cat > /etc/profile.d/simplex.sh << EOF
 #!/bin/bash
@@ -23,7 +21,7 @@ source /etc/profile.d/simplex.sh
 smp-server --version
 
 # Initialize server
-ip_address=$(hostname -I | awk '{print $1}')
+ip_address=$(curl ifconfig.me)
 smp-server init -l --ip $ip_address
 
 # Server fingerprint
@@ -35,7 +33,7 @@ echo "bash /opt/simplex/on_login.sh $fingerprint $ip_address" >> /root/.bashrc
 # / Create systemd service for SMP server
 cat > /etc/systemd/system/smp-server.service << EOF
 [Unit]
-Description=SMP server systemd service
+Description=SMP server
 
 [Service]
 Type=simple

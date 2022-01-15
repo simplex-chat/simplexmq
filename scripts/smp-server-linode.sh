@@ -69,7 +69,6 @@ init_opts=()
 
 [[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
 
-# TODO ? ip_address=$(hostname -I | awk '{print$1}')
 ip_address=$(curl ifconfig.me)
 init_opts+=(--ip $ip_address)
 
