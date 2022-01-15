@@ -49,6 +49,3 @@ EOF
 chmod 644 /etc/systemd/system/smp-server.service
 sudo systemctl enable smp-server
 sudo systemctl start smp-server
-
-# Cleanup
-# sudo systemctl stop smp-server-startup
