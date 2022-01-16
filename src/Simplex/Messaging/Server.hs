@@ -329,8 +329,16 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         acknowledgeMsg =
           atomically (withSub queueId $ \s -> const s <$$> tryTakeTMVar (delivered s))
             >>= \case
-              Just (Just s) -> deliverMessage tryDelPeekMsg queueId s
+              Just (Just s) -> do
+                logDelivered
+                deliverMessage tryDelPeekMsg queueId s
               _ -> return $ err NO_MSG
+          where
+            logDelivered =
+              getMessageQueue queueId >>= atomically . tryPeekMsg >>= \case
+                Just Message {msgId} ->
+                  withLog $ \s -> logAcknowledgeMsg s queueId msgId
+                _ -> pure ()
 
         withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
         withSub rId f = readTVar subscriptions >>= mapM f . M.lookup rId
@@ -349,14 +357,16 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 mkMessage >>= \case
                   Left _ -> pure $ err LARGE_MSG
                   Right msg -> do
-                    ms <- asks msgStore
-                    quota <- asks $ msgQueueQuota . config
-                    atomically $ do
-                      q <- getMsgQueue ms (recipientId qr) quota
-                      ifM (isFull q) (pure $ err QUOTA) $ do
-                        trySendNotification
+                    let rId = recipientId qr
+                    q <- getMessageQueue rId
+                    (res, msgOk) <- atomically $ do
+                      ifM (isFull q) (pure (err QUOTA, False)) $ do
                         writeMsg q msg
-                        pure ok
+                        pure (ok, True)
+                    when msgOk $ do
+                      withLog $ \s -> logCreateMsg s rId msg
+                      atomically trySendNotification
+                    pure res
               where
                 mkMessage :: m (Either C.CryptoError Message)
                 mkMessage = do
@@ -375,12 +385,16 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   unlessM (isFullTBQueue sndQ) $
                     writeTBQueue q (CorrId "", nId, NMSG)
 
+        getMessageQueue :: RecipientId -> m MsgQueue
+        getMessageQueue rId = do
+          ms <- asks msgStore
+          quota <- asks $ msgQueueQuota . config
+          atomically $ getMsgQueue ms rId quota
+
         deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> Sub -> m (Transmission BrokerMsg)
         deliverMessage tryPeek rId = \case
           Sub {subThread = NoSub} -> do
-            ms <- asks msgStore
-            quota <- asks $ msgQueueQuota . config
-            q <- atomically $ getMsgQueue ms rId quota
+            q <- getMessageQueue rId
             atomically (tryPeek q) >>= \case
               Nothing -> forkSub q $> ok
               Just msg -> atomically setDelivered $> (corrId, rId, msgCmd msg)

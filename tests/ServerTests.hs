@@ -38,7 +38,9 @@ serverTests t = do
   describe "SMP messages" $ do
     describe "duplex communication over 2 SMP connections" $ testDuplex t
     describe "switch subscription to another TCP connection" $ testSwitchSub t
-  describe "Store log" $ testWithStoreLog t
+  describe "Store log" $ do
+    describe "restoring queues" $ testWithStoreLog t
+    describe "message delivery" $ testWithAckMessages t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
 
@@ -335,7 +337,7 @@ testWithStoreLog at@(ATransport t) =
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, DEL)
       pure ()
 
-    logSize `shouldReturn` 6
+    logSize `shouldReturn` 8
 
     withSmpServerThreadOn at testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
@@ -360,22 +362,75 @@ testWithStoreLog at@(ATransport t) =
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, SEND "hello too")
       pure ()
 
-    logSize `shouldReturn` 1
+    logSize `shouldReturn` 3
     removeFile testStoreLogFile
-  where
-    runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
-    runTest _ test' server = do
-      testSMPClient test' `shouldReturn` ()
-      killThread server
 
-    runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
-    runClient _ test' = testSMPClient test' `shouldReturn` ()
+runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
+runTest _ test' server = do
+  testSMPClient test' `shouldReturn` ()
+  killThread server
 
-    logSize :: IO Int
-    logSize =
-      try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
-        Right l -> pure l
-        Left (_ :: SomeException) -> logSize
+runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+runClient _ test' = testSMPClient test' `shouldReturn` ()
+
+logSize :: IO Int
+logSize =
+  try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
+    Right l -> pure l
+    Left (_ :: SomeException) -> logSize
+
+testWithAckMessages :: ATransport -> Spec
+testWithAckMessages at@(ATransport t) =
+  it "should store queues and messages/acknowledgements to log and restore them after server restart" $ do
+    (sPub1, sKey1) <- C.generateSignatureKeyPair C.SEd25519
+    recipientId1 <- newTVarIO ""
+    recipientKey1 <- newTVarIO Nothing
+    dhShared1 <- newTVarIO Nothing
+
+    withSmpServerStoreLogOn at testPort . runTest t $ \rh -> runClient t $ \sh -> do
+      (sId1, rId1, rKey1, dhShared) <- createAndSecureQueue rh sPub1
+      atomically $ do
+        writeTVar recipientId1 rId1
+        writeTVar recipientKey1 $ Just rKey1
+        writeTVar dhShared1 $ Just dhShared
+      Resp "bcda" _ OK <- signSendRecv sh sKey1 ("bcda", sId1, SEND "hello")
+      Resp "" _ (MSG mId1 _ msg1) <- tGet rh
+      Resp "cdab" _ OK <- signSendRecv rh rKey1 ("cdab", rId1, ACK)
+      (C.cbDecrypt dhShared (C.cbNonce mId1) msg1, Right "hello") #== "delivered from queue 1"
+      Resp "dabc" _ OK <- signSendRecv sh sKey1 ("dabc", sId1, SEND "hello 2 - no ACK")
+      Resp "" _ (MSG mId2 _ msg2) <- tGet rh
+      (C.cbDecrypt dhShared (C.cbNonce mId2) msg2, Right "hello 2 - no ACK") #== "delivered from queue 1"
+      Resp "abcd" _ OK <- signSendRecv sh sKey1 ("abcd", sId1, SEND "hello 3 - no ACK")
+      pure ()
+
+    -- create, secure, msg, ack, msg, msg
+    logSize `shouldReturn` 6
+
+    withSmpServerStoreLogOn at testPort . runTest t $ \_ -> pure ()
+    -- create, msg, msg
+    logSize `shouldReturn` 3
+
+    withSmpServerStoreLogOn at testPort . runTest t $ \rh -> do
+      -- this queue is restored
+      rId1 <- readTVarIO recipientId1
+      Just rKey1 <- readTVarIO recipientKey1
+      Just dh1 <- readTVarIO dhShared1
+      -- Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, SEND "hello")
+      Resp "abcd" _ (MSG mId3 _ msg3) <- signSendRecv rh rKey1 ("abcd", rId1, SUB)
+      (C.cbDecrypt dh1 (C.cbNonce mId3) msg3, Right "hello 2 - no ACK") #== "delivered from restored queue"
+      Resp "cdba" _ (MSG mId4 _ msg4) <- signSendRecv rh rKey1 ("cdba", rId1, ACK)
+      (C.cbDecrypt dh1 (C.cbNonce mId4) msg4, Right "hello 3 - no ACK") #== "delivered from restored queue"
+      Resp "dabc" _ OK <- signSendRecv rh rKey1 ("dabc", rId1, ACK)
+      pure ()
+
+    -- create, msg, msg, ack, ack
+    logSize `shouldReturn` 5
+
+    withSmpServerStoreLogOn at testPort . runTest t $ \_ -> pure ()
+    -- only create
+    logSize `shouldReturn` 1
+
+    removeFile testStoreLogFile
 
 createAndSecureQueue :: Transport c => THandle c -> SndPublicVerifyKey -> IO (SenderId, RecipientId, RcvPrivateSignKey, RcvDhSecret)
 createAndSecureQueue h sPub = do

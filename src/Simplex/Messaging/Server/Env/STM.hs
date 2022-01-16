@@ -6,6 +6,7 @@
 module Simplex.Messaging.Server.Env.STM where
 
 import Control.Concurrent (ThreadId)
+import Control.Monad (forM_)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
@@ -17,6 +18,7 @@ import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.MsgStore (getMsgQueue, writeMsg)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -96,27 +98,32 @@ newSubscription = do
   return Sub {subThread = NoSub, delivered}
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, msgQueueQuota} = do
   server <- atomically $ newServer (serverTbqSize config)
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
+  s' <- restoreQueueData queueStore msgStore `mapM` storeLog (config :: ServerConfig)
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
   return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
-    restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
-    restoreQueues queueStore s = do
-      (queues, s') <- liftIO $ readWriteStoreLog s
-      atomically $
+    restoreQueueData :: QueueStore -> STMMsgStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
+    restoreQueueData queueStore msgStore s = do
+      (queueData, s') <- liftIO $ readWriteStoreLog s
+      let queues = M.map fst queueData
+          msgs = M.map snd queueData
+      atomically $ do
         modifyTVar queueStore $ \d ->
           d
             { queues,
               senders = M.foldr' addSender M.empty queues,
               notifiers = M.foldr' addNotifier M.empty queues
             }
+        forM_ (M.assocs msgs) $ \(rId, ms) -> do
+          mq <- getMsgQueue msgStore rId msgQueueQuota
+          mapM_ (writeMsg mq) ms
       pure s'
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)

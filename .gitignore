@@ -3,3 +3,4 @@
 *.db.bak
 *.session.sql
 tests/tmp
+dist-newstyle/
