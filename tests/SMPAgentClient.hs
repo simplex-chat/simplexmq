@@ -166,6 +166,7 @@ cfg =
             tcpTimeout = 500_000
           },
       reconnectInterval = (reconnectInterval defaultAgentConfig) {initialInterval = 50_000},
+      helloInterval = (helloInterval defaultAgentConfig) {initialInterval = 50_000},
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"

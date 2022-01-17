@@ -76,6 +76,7 @@ import Data.Time.Clock.System (systemToUTCTime)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (helloInterval))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -451,47 +452,46 @@ getPendingMsgQ c connId SndQueue {server, sndId} = do
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
   mq <- atomically $ getPendingMsgQ c connId sq
-  ri <- asks $ reconnectInterval . config
   forever $ do
     msgId <- atomically $ readTQueue mq
     let mId = unId msgId
     withStore (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
-      Right (rq_, (msgType, msgBody, internalTs)) ->
+      Right (rq_, (HELLO_, msgBody, internalTs)) -> do
+        hi <- asks $ helloInterval . config
+        withRetryInterval hi $ \loop ->
+          tryError (sendAgentMessage c sq msgBody) >>= \case
+            Left e -> processError e loop mId msgId $ do
+              helloTimeout <- asks $ helloTimeout . config
+              currentTime <- liftIO getCurrentTime
+              if diffUTCTime currentTime internalTs > helloTimeout
+                then case rq_ of
+                  -- party initiating connection
+                  Just _ -> notifyAndDelMsg (ERR $ CONN NOT_AVAILABLE) msgId
+                  -- party joining connection
+                  Nothing -> notifyAndDelMsg (ERR $ CONN NOT_ACCEPTED) msgId
+                else loop
+            Right () -> do
+              withStore $ \st -> setSndQueueStatus st sq Active
+              case rq_ of
+                -- party initiating connection
+                Just rq -> do
+                  subscribeQueue c rq connId
+                  notify CON
+                -- party joining connection
+                Nothing -> createReplyQueue c connId sq
+              delMsg msgId
+      Right (_, (msgType, msgBody, _)) -> do
+        ri <- asks $ reconnectInterval . config
         withRetryInterval ri $ \loop ->
           tryError (sendAgentMessage c sq msgBody) >>= \case
-            Left e -> do
-              case e of
-                SMP SMP.QUOTA -> loop
-                SMP SMP.AUTH -> case msgType of
-                  HELLO_ -> do
-                    helloTimeout <- asks $ helloTimeout . config
-                    currentTime <- liftIO getCurrentTime
-                    if diffUTCTime currentTime internalTs > helloTimeout
-                      then case rq_ of
-                        -- party initiating connection
-                        Just _ -> notifyAndDelMsg (ERR $ CONN NOT_AVAILABLE) msgId
-                        -- party joining connection
-                        Nothing -> notifyAndDelMsg (ERR $ CONN NOT_ACCEPTED) msgId
-                      else loop
-                  REPLY_ -> notifyAndDelMsg (ERR e) msgId
-                  A_MSG_ -> notifyAndDelMsg (MERR mId e) msgId
-                SMP (SMP.CMD _) -> notifyAndDelMsg (MERR mId e) msgId
-                SMP SMP.LARGE_MSG -> notifyAndDelMsg (MERR mId e) msgId
-                SMP {} -> notify (MERR mId e) >> loop
-                _ -> loop
+            Left e -> processError e loop mId msgId $ case msgType of
+              HELLO_ -> notifyAndDelMsg (ERR $ AGENT A_PROHIBITED) msgId -- unreachable
+              REPLY_ -> notifyAndDelMsg (ERR e) msgId
+              A_MSG_ -> notifyAndDelMsg (MERR mId e) msgId
             Right () -> do
               case msgType of
-                HELLO_ -> do
-                  withStore $ \st -> setSndQueueStatus st sq Active
-                  case rq_ of
-                    -- party initiating connection
-                    Just rq -> do
-                      subscribeQueue c rq connId
-                      notify CON
-                    -- party joining connection
-                    Nothing -> createReplyQueue c connId sq
                 A_MSG_ -> notify $ SENT mId
                 _ -> pure ()
               delMsg msgId
@@ -502,6 +502,15 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     notify cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
     notifyAndDelMsg :: ACommand 'Agent -> InternalId -> m ()
     notifyAndDelMsg cmd msgId = notify cmd >> delMsg msgId
+    processError :: AgentErrorType -> m () -> AgentMsgId -> InternalId -> m () -> m ()
+    processError e loop mId msgId authAction =
+      case e of
+        SMP SMP.QUOTA -> loop
+        SMP SMP.AUTH -> authAction
+        SMP (SMP.CMD _) -> notifyAndDelMsg (MERR mId e) msgId
+        SMP SMP.LARGE_MSG -> notifyAndDelMsg (MERR mId e) msgId
+        SMP {} -> notify (MERR mId e) >> loop
+        _ -> loop
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage' c connId msgId = do

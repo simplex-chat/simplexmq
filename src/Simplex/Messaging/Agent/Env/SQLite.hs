@@ -37,6 +37,7 @@ data AgentConfig = AgentConfig
     dbPoolSize :: Int,
     smpCfg :: SMPClientConfig,
     reconnectInterval :: RetryInterval,
+    helloInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -59,6 +60,12 @@ defaultAgentConfig =
           { initialInterval = second,
             increaseAfter = 10 * second,
             maxInterval = 10 * second
+          },
+      helloInterval =
+        RetryInterval
+          { initialInterval = second,
+            increaseAfter = 10 * second,
+            maxInterval = 10 * 60 * second
           },
       helloTimeout = 7 * 24 * 60 * 60,
       -- CA certificate private key is not needed for initialization
