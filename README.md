@@ -99,7 +99,9 @@ Deployment on Linode is performed via StackScripts, which serve as recipes for L
 - Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".
 - You can optionally configure the following parameters:
     - SMP Server store log flag for queue persistence on server restart, recommended.
-    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server server address, fingerprint, version as tags to Linode and adding A record to your 2nd level domain (note: 2nd level e.g. `example.com` [domain should be created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access for "linodes" to create tags, and for "domains" to add A record for the 3rd level domain, e.g. `smp1`.
+    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) to attach server address etc. as tags to Linode and to add A record to your 2nd level domain (e.g. `example.com` [domain should be created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scopes:
+      - read/write for "linodes"
+      - read/write for "domains"
     - Domain name to use instead of Linode IP address, e.g. `smp1.example.com`.
 - Choose the region and plan according to your requirements, for regular use Shared CPU Nanode should be sufficient.
 - Provide ssh key to be able to connect to your Linode via ssh. If you haven't provided a Linode API token this step is required to login to your Linode and get the server's fingerprint either from the welcome message or from the file `/etc/opt/simplex/fingerprint` after server starts. See [Linode's guide on ssh](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) .
