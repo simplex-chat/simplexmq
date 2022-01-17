@@ -1,10 +1,4 @@
-# Server image for DigitalOcean
-
-<!-- TODO tested on a fresh DO droplet and this seems to be wrong - we have to update the image to behave as described.
-
-The current image used for 1-click deployment on DigitalOcean does not contain the source or binary of SMP Server - it downloads the compiled binary of the latest release (rather than a particular release) from GitHub.
-
-The upside is that the new image does not have to be created and approved by DigitalOcean every time when the new release is created. -->
+# SMP server image for DigitalOcean
 
 ## How to build an image
 
