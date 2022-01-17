@@ -461,16 +461,22 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
         hi <- asks $ helloInterval . config
         withRetryInterval hi $ \loop ->
           tryError (sendAgentMessage c sq msgBody) >>= \case
-            Left e -> processError e loop mId msgId $ do
-              helloTimeout <- asks $ helloTimeout . config
-              currentTime <- liftIO getCurrentTime
-              if diffUTCTime currentTime internalTs > helloTimeout
-                then case rq_ of
-                  -- party initiating connection
-                  Just _ -> notifyDel (ERR $ CONN NOT_AVAILABLE) msgId
-                  -- party joining connection
-                  Nothing -> notifyDel (ERR $ CONN NOT_ACCEPTED) msgId
-                else loop
+            Left e -> case e of
+              SMP SMP.QUOTA -> loop
+              SMP SMP.AUTH -> do
+                helloTimeout <- asks $ helloTimeout . config
+                currentTime <- liftIO getCurrentTime
+                if diffUTCTime currentTime internalTs > helloTimeout
+                  then case rq_ of
+                    -- party initiating connection
+                    Just _ -> notifyDel msgId (ERR $ CONN NOT_AVAILABLE)
+                    -- party joining connection
+                    Nothing -> notifyDel msgId (ERR $ CONN NOT_ACCEPTED)
+                  else loop
+              SMP (SMP.CMD _) -> notifyDel msgId (MERR mId e)
+              SMP SMP.LARGE_MSG -> notifyDel msgId (MERR mId e)
+              SMP {} -> notify (MERR mId e) >> loop
+              _ -> loop
             Right () -> do
               withStore $ \st -> setSndQueueStatus st sq Active
               case rq_ of
@@ -485,10 +491,16 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
         ri <- asks $ reconnectInterval . config
         withRetryInterval ri $ \loop ->
           tryError (sendAgentMessage c sq msgBody) >>= \case
-            Left e -> processError e loop mId msgId $ case msgType of
-              HELLO_ -> notifyDel (ERR $ AGENT A_PROHIBITED) msgId -- unreachable
-              REPLY_ -> notifyDel (ERR e) msgId
-              A_MSG_ -> notifyDel (MERR mId e) msgId
+            Left e -> case e of
+              SMP SMP.QUOTA -> loop
+              SMP SMP.AUTH -> case msgType of
+                REPLY_ -> notifyDel msgId (ERR e)
+                A_MSG_ -> notifyDel msgId (MERR mId e)
+                _ -> notifyDel msgId (ERR $ AGENT A_PROHIBITED)
+              SMP (SMP.CMD _) -> notifyDel msgId (MERR mId e)
+              SMP SMP.LARGE_MSG -> notifyDel msgId (MERR mId e)
+              SMP {} -> notify (MERR mId e) >> loop
+              _ -> loop
             Right () -> do
               case msgType of
                 A_MSG_ -> notify $ SENT mId
@@ -499,17 +511,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     delMsg msgId = withStore $ \st -> deleteMsg st connId msgId
     notify :: ACommand 'Agent -> m ()
     notify cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
-    notifyDel :: ACommand 'Agent -> InternalId -> m ()
-    notifyDel cmd msgId = notify cmd >> delMsg msgId
-    processError :: AgentErrorType -> m () -> AgentMsgId -> InternalId -> m () -> m ()
-    processError e loop mId msgId authAction =
-      case e of
-        SMP SMP.QUOTA -> loop
-        SMP SMP.AUTH -> authAction
-        SMP (SMP.CMD _) -> notifyDel (MERR mId e) msgId
-        SMP SMP.LARGE_MSG -> notifyDel (MERR mId e) msgId
-        SMP {} -> notify (MERR mId e) >> loop
-        _ -> loop
+    notifyDel :: InternalId -> ACommand 'Agent -> m ()
+    notifyDel msgId cmd = notify cmd >> delMsg msgId
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage' c connId msgId = do
