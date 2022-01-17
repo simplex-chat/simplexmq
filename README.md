@@ -35,6 +35,8 @@ SMP server uses in-memory persistence with an optional append-only log of create
 
 To enable store log, initialize server using `smp-server -l` command, or modify `smp-server.ini` created during initialization (uncomment `enable: on` option in the store log section). Use `smp-server --help` for other usage tips.
 
+> **Please note:** On initialization SMP server creates a chain of two certificates: a self-signed CA certificate ("offline") and a server certificate used for TLS handshake ("online"). **You should store CA certificate private key securely and delete it from the server. If server TLS credential is compromised this key can be used to sign a new one, keeping the same server identity and established connections.** CA private key location by default is `/etc/opt/simplex/ca.key`.
+
 SMP server implements [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md).
 
 #### Running SMP server on MacOS
@@ -96,10 +98,10 @@ Deployment on Linode is performed via StackScripts, which serve as recipes for L
 - Create a Linode account or login with an already existing one.
 - Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".
 - You can optionally configure the following parameters:
-    - [SMP Server store log](#SMP-server) flag for queue persistence on server restart (recommended).
-    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server info as tags to Linode (server address, fingerprint, version) and adding A record to your 2nd level domain (Note: 2nd level e.g. `example.com` domain should be [created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access to "linodes" (to create tags), and "domains" (to add A record for the 3rd level domain, e.g. `smp`).
-    - Domain name to use instead of Linode ip address, e.g. `smp.example.com`.
-- Choose the region and plan according to your requirements (for regular use Shared CPU Nanode should be sufficient).
+    - SMP Server store log flag for queue persistence on server restart, recommended.
+    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for attaching server server address, fingerprint, version as tags to Linode and adding A record to your 2nd level domain (note: 2nd level e.g. `example.com` [domain should be created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scope should be read/write access for "linodes" to create tags, and for "domains" to add A record for the 3rd level domain, e.g. `smp1`.
+    - Domain name to use instead of Linode IP address, e.g. `smp1.example.com`.
+- Choose the region and plan according to your requirements, for regular use Shared CPU Nanode should be sufficient.
 - Provide ssh key to be able to connect to your Linode via ssh. If you haven't provided a Linode API token this step is required to login to your Linode and get the server's fingerprint either from the welcome message or from the file `/etc/opt/simplex/fingerprint` after server starts. See [Linode's guide on ssh](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) .
 - Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode. Connecting Linode IP address to provided domain name may take some additional time.
 - Get `address` and `fingerprint` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh.
@@ -119,10 +121,17 @@ To deploy SMP server use [SimpleX Server 1-click app](https://marketplace.digita
 - Click 'Create SimpleX server Droplet' button.
 - Choose the region and plan according to your requirements (Basic plan should be sufficient).
 - Finalize Droplet creation.
-- Open "Console" on your Droplet management page to get SMP server fingerprint - either from the welcome message or from `/etc/opt/simplex/fingerprint`. Alternatively you can manually SSH to created Droplet, see [instruction](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
+- Open "Console" on your Droplet management page to get SMP server fingerprint - either from the welcome message or from `/etc/opt/simplex/fingerprint`. Alternatively you can manually SSH to created Droplet, see [DigitalOcean instruction](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
 - Great, your own SMP server is ready! Use `smp://<fingerprint>@<ip_address>` as SMP server address in the client.
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
+
+> **Please note:** SMP server uses server address as a Common Name for generated server certificate. If you would like your server address to be FQDN instead of IP address, you can log in to your Droplet and run the commands below to re-initialize the server. Alternatively you can use [Linode's StackScript](https://cloud.linode.com/stackscripts/748014) which allows this parameterization.
+
+```sh
+smp-server delete
+smp-server init [-l] -n <FQDN>
+```
 
 ## SMP server design
 
