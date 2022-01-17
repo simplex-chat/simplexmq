@@ -37,7 +37,7 @@ Description=SMP server
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c "$binary start"
+ExecStart=/bin/sh -c "exec $binary start >> /var/opt/simplex/smp-server.log 2>&1"
 
 [Install]
 WantedBy=multi-user.target
