@@ -126,11 +126,11 @@ To deploy SMP server use [SimpleX Server 1-click app](https://marketplace.digita
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
-> **Please note:** SMP server uses server address as a Common Name for generated server certificate. If you would like your server address to be FQDN instead of IP address, you can log in to your Droplet and run the commands below to re-initialize the server. Alternatively you can use [Linode's StackScript](https://cloud.linode.com/stackscripts/748014) which allows this parameterization.
+> **Please note:** SMP server uses server address as a Common Name for server certificate generated during initialization. If you would like your server address to be FQDN instead of IP address, you can log in to your Droplet and run the commands below to re-initialize the server. Alternatively you can use [Linode StackScript](https://cloud.linode.com/stackscripts/748014) which allows this parameterization.
 
 ```sh
 smp-server delete
-smp-server init [-l] -n <FQDN>
+smp-server init [-l] -n <fqdn>
 ```
 
 ## SMP server design
