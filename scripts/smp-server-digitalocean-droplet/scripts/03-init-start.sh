@@ -5,7 +5,7 @@ chmod +x /opt/simplex/server_bootstrap.sh
 # / Create systemd service for server bootstrap script
 cat > /etc/systemd/system/server-bootstrap.service << EOF
 [Unit]
-Description=Server bootstrap script that downloads and initializes SMP server from latest release
+Description=Server bootstrap script that downloads and initializes SMP server from the latest release
 
 [Service]
 Type=oneshot
