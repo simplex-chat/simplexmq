@@ -496,7 +496,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
               SMP SMP.AUTH -> case msgType of
                 REPLY_ -> notifyDel msgId (ERR e)
                 A_MSG_ -> notifyDel msgId (MERR mId e)
-                _ -> notifyDel msgId (ERR $ AGENT A_PROHIBITED)
+                HELLO_ -> notifyDel msgId (ERR $ AGENT A_PROHIBITED) -- unreachable
               SMP (SMP.CMD _) -> notifyDel msgId (MERR mId e)
               SMP SMP.LARGE_MSG -> notifyDel msgId (MERR mId e)
               SMP {} -> notify (MERR mId e) >> loop
