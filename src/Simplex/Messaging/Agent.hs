@@ -469,12 +469,12 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
                 if diffUTCTime currentTime internalTs > helloTimeout
                   then case rq_ of
                     -- party initiating connection
-                    Just _ -> notifyDel msgId (ERR $ CONN NOT_AVAILABLE)
+                    Just _ -> notifyDel msgId . ERR $ CONN NOT_AVAILABLE
                     -- party joining connection
-                    Nothing -> notifyDel msgId (ERR $ CONN NOT_ACCEPTED)
+                    Nothing -> notifyDel msgId . ERR $ CONN NOT_ACCEPTED
                   else loop
-              SMP (SMP.CMD _) -> notifyDel msgId (MERR mId e)
-              SMP SMP.LARGE_MSG -> notifyDel msgId (MERR mId e)
+              SMP (SMP.CMD _) -> notifyDel msgId $ MERR mId e
+              SMP SMP.LARGE_MSG -> notifyDel msgId $ MERR mId e
               SMP {} -> notify (MERR mId e) >> loop
               _ -> loop
             Right () -> do
@@ -494,11 +494,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
             Left e -> case e of
               SMP SMP.QUOTA -> loop
               SMP SMP.AUTH -> case msgType of
-                REPLY_ -> notifyDel msgId (ERR e)
-                A_MSG_ -> notifyDel msgId (MERR mId e)
-                HELLO_ -> notifyDel msgId (ERR $ AGENT A_PROHIBITED) -- unreachable
-              SMP (SMP.CMD _) -> notifyDel msgId (MERR mId e)
-              SMP SMP.LARGE_MSG -> notifyDel msgId (MERR mId e)
+                REPLY_ -> notifyDel msgId $ ERR e
+                A_MSG_ -> notifyDel msgId $ MERR mId e
+                HELLO_ -> notifyDel msgId . ERR $ AGENT A_PROHIBITED -- unreachable
+              SMP (SMP.CMD _) -> notifyDel msgId $ MERR mId e
+              SMP SMP.LARGE_MSG -> notifyDel msgId $ MERR mId e
               SMP {} -> notify (MERR mId e) >> loop
               _ -> loop
             Right () -> do
