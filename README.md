@@ -103,7 +103,7 @@ Deployment on Linode is performed via StackScripts, which serve as recipes for L
       - read/write for "linodes"
       - read/write for "domains"
     - Domain name to use instead of Linode IP address, e.g. `smp1.example.com`.
-- Choose the region and plan according to your requirements, for regular use Shared CPU Nanode should be sufficient.
+- Choose the region and plan, Shared CPU Nanode with 1Gb is sufficient.
 - Provide ssh key to be able to connect to your Linode via ssh. If you haven't provided a Linode API token this step is required to login to your Linode and get the server's fingerprint either from the welcome message or from the file `/etc/opt/simplex/fingerprint` after server starts. See [Linode's guide on ssh](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) .
 - Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode. Connecting Linode IP address to provided domain name may take some additional time.
 - Get `address` and `fingerprint` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh.
