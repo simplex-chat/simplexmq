@@ -76,7 +76,6 @@ import Data.Time.Clock.System (systemToUTCTime)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (helloInterval))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -468,9 +467,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
               if diffUTCTime currentTime internalTs > helloTimeout
                 then case rq_ of
                   -- party initiating connection
-                  Just _ -> notifyAndDelMsg (ERR $ CONN NOT_AVAILABLE) msgId
+                  Just _ -> notifyDel (ERR $ CONN NOT_AVAILABLE) msgId
                   -- party joining connection
-                  Nothing -> notifyAndDelMsg (ERR $ CONN NOT_ACCEPTED) msgId
+                  Nothing -> notifyDel (ERR $ CONN NOT_ACCEPTED) msgId
                 else loop
             Right () -> do
               withStore $ \st -> setSndQueueStatus st sq Active
@@ -487,9 +486,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
         withRetryInterval ri $ \loop ->
           tryError (sendAgentMessage c sq msgBody) >>= \case
             Left e -> processError e loop mId msgId $ case msgType of
-              HELLO_ -> notifyAndDelMsg (ERR $ AGENT A_PROHIBITED) msgId -- unreachable
-              REPLY_ -> notifyAndDelMsg (ERR e) msgId
-              A_MSG_ -> notifyAndDelMsg (MERR mId e) msgId
+              HELLO_ -> notifyDel (ERR $ AGENT A_PROHIBITED) msgId -- unreachable
+              REPLY_ -> notifyDel (ERR e) msgId
+              A_MSG_ -> notifyDel (MERR mId e) msgId
             Right () -> do
               case msgType of
                 A_MSG_ -> notify $ SENT mId
@@ -500,15 +499,15 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     delMsg msgId = withStore $ \st -> deleteMsg st connId msgId
     notify :: ACommand 'Agent -> m ()
     notify cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
-    notifyAndDelMsg :: ACommand 'Agent -> InternalId -> m ()
-    notifyAndDelMsg cmd msgId = notify cmd >> delMsg msgId
+    notifyDel :: ACommand 'Agent -> InternalId -> m ()
+    notifyDel cmd msgId = notify cmd >> delMsg msgId
     processError :: AgentErrorType -> m () -> AgentMsgId -> InternalId -> m () -> m ()
     processError e loop mId msgId authAction =
       case e of
         SMP SMP.QUOTA -> loop
         SMP SMP.AUTH -> authAction
-        SMP (SMP.CMD _) -> notifyAndDelMsg (MERR mId e) msgId
-        SMP SMP.LARGE_MSG -> notifyAndDelMsg (MERR mId e) msgId
+        SMP (SMP.CMD _) -> notifyDel (MERR mId e) msgId
+        SMP SMP.LARGE_MSG -> notifyDel (MERR mId e) msgId
         SMP {} -> notify (MERR mId e) >> loop
         _ -> loop
 
