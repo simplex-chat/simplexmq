@@ -663,6 +663,10 @@ data ConnectionErrorType
     DUPLICATE
   | -- | connection is simplex, but operation requires another queue
     SIMPLEX
+  | -- | connection not accepted on join HELLO after timeout
+    NOT_ACCEPTED
+  | -- | connection not available on reply HELLO after timeout
+    NOT_AVAILABLE
   deriving (Eq, Generic, Read, Show, Exception)
 
 -- | SMP server errors.

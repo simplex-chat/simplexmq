@@ -440,7 +440,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       insertSndMsgDetails_ db connId sndMsgData
       updateHashSnd_ db connId sndMsgData
 
-  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody))
+  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody, InternalTs))
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
       rq_ <- liftIO $ getRcvQueueByConnId_ db connId
@@ -449,7 +449,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           DB.query
             db
             [sql|
-                SELECT m.msg_type, m.msg_body
+                SELECT m.msg_type, m.msg_body, m.internal_ts
                 FROM messages m
                 JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
                 WHERE m.conn_id = ? AND m.internal_id = ?

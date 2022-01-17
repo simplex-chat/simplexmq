@@ -458,14 +458,23 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     withStore (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
-      Right (rq_, (msgType, msgBody)) ->
+      Right (rq_, (msgType, msgBody, internalTs)) ->
         withRetryInterval ri $ \loop ->
           tryError (sendAgentMessage c sq msgBody) >>= \case
             Left e -> do
               case e of
                 SMP SMP.QUOTA -> loop
                 SMP SMP.AUTH -> case msgType of
-                  HELLO_ -> loop
+                  HELLO_ -> do
+                    helloTimeout <- asks $ helloTimeout . config
+                    currentTime <- liftIO getCurrentTime
+                    if diffUTCTime currentTime internalTs > helloTimeout
+                      then case rq_ of
+                        -- party initiating connection
+                        Just _ -> notify $ ERR (CONN NOT_AVAILABLE)
+                        -- party joining connection
+                        Nothing -> notify $ ERR (CONN NOT_ACCEPTED)
+                      else loop
                   REPLY_ -> notify (ERR e) >> delMsg msgId
                   A_MSG_ -> notify (MERR mId e) >> delMsg msgId
                 SMP (SMP.CMD _) -> notify (MERR mId e) >> delMsg msgId
@@ -482,7 +491,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
                       subscribeQueue c rq connId
                       notify CON
                     -- party joining connection
-                    _ -> createReplyQueue c connId sq
+                    Nothing -> createReplyQueue c connId sq
                 A_MSG_ -> notify $ SENT mId
                 _ -> pure ()
               delMsg msgId

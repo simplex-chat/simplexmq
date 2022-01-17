@@ -4,11 +4,18 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.Messaging.Agent.Env.SQLite where
+module Simplex.Messaging.Agent.Env.SQLite
+  ( AgentConfig (..),
+    defaultAgentConfig,
+    Env (..),
+    newSMPAgentEnv,
+  )
+where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
+import Data.Time.Clock (NominalDiffTime)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
@@ -30,13 +37,11 @@ data AgentConfig = AgentConfig
     dbPoolSize :: Int,
     smpCfg :: SMPClientConfig,
     reconnectInterval :: RetryInterval,
+    helloTimeout :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath
   }
-
-minute :: Int
-minute = 60_000_000
 
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
@@ -51,16 +56,19 @@ defaultAgentConfig =
       smpCfg = smpDefaultConfig,
       reconnectInterval =
         RetryInterval
-          { initialInterval = 1_000_000,
-            increaseAfter = 10_000_000,
-            maxInterval = 10_000_000
+          { initialInterval = second,
+            increaseAfter = 10 * second,
+            maxInterval = 10 * second
           },
+      helloTimeout = 7 * 24 * 60 * 60,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt"
     }
+  where
+    second = 1_000_000
 
 data Env = Env
   { config :: AgentConfig,
