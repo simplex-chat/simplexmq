@@ -277,17 +277,12 @@ getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS
       pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, buffer, getLock}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
-withTlsUnique peer cxt f = do
-  finished <- T.getFinished cxt
-  peerFinished <- T.getPeerFinished cxt
-  print $ "peer " <> show peer <> " finished " <> show finished <> " peerFinished " <> show peerFinished
+withTlsUnique peer cxt f =
   cxtFinished peer cxt
     >>= maybe (closeTLS cxt >> ioe_EOF) f
   where
     cxtFinished TServer = T.getPeerFinished
     cxtFinished TClient = T.getFinished
-  -- cxtFinished TServer = T.getFinished
-  -- cxtFinished TClient = T.getPeerFinished
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
