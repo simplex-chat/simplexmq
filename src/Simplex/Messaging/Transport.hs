@@ -36,13 +36,13 @@ module Simplex.Messaging.Transport
     ATransport (..),
     TransportPeer (..),
 
-    -- * Transport over TLS 1.2
+    -- * Transport over TLS
     runTransportServer,
     runTransportClient,
     loadTLSServerParams,
     loadFingerprint,
 
-    -- * TLS 1.2 Transport
+    -- * TLS Transport
     TLS (..),
     closeTLS,
     withTlsUnique,
@@ -154,7 +154,7 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
--- * Transport over TLS 1.2
+-- * Transport over TLS
 
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
@@ -251,7 +251,7 @@ loadFingerprint certificateFile = do
   (cert : _) <- SX.readSignedObject certificateFile
   pure $ XV.getFingerprint (cert :: X.SignedExact X.Certificate) X.HashSHA256
 
--- * TLS 1.2 Transport
+-- * TLS Transport
 
 data TLS = TLS
   { tlsContext :: T.Context,
@@ -277,12 +277,17 @@ getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS
       pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, buffer, getLock}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
-withTlsUnique peer cxt f =
+withTlsUnique peer cxt f = do
+  finished <- T.getFinished cxt
+  peerFinished <- T.getPeerFinished cxt
+  print $ "peer " <> show peer <> " finished " <> show finished <> " peerFinished " <> show peerFinished
   cxtFinished peer cxt
     >>= maybe (closeTLS cxt >> ioe_EOF) f
   where
     cxtFinished TServer = T.getPeerFinished
     cxtFinished TClient = T.getFinished
+  -- cxtFinished TServer = T.getFinished
+  -- cxtFinished TClient = T.getPeerFinished
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
@@ -319,15 +324,18 @@ validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
 supportedParameters :: T.Supported
 supportedParameters =
   def
-    { T.supportedVersions = [T.TLS12],
-      T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
+    { T.supportedVersions = [T.TLS13, T.TLS12],
+      T.supportedCiphers =
+        [ TE.cipher_TLS13_CHACHA20POLY1305_SHA256, -- for TLS13
+          TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256 -- for TLS12
+        ],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
       T.supportedSecureRenegotiation = False,
       T.supportedGroups = [T.X448, T.X25519]
     }
 
 instance Transport TLS where
-  transportName _ = "TLS 1.2"
+  transportName _ = "TLS"
   transportPeer = tlsPeer
   getServerConnection = getTLS TServer
   getClientConnection = getTLS TClient
