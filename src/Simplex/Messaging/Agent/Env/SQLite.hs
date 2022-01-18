@@ -15,7 +15,7 @@ where
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
-import Data.Time.Clock (NominalDiffTime)
+import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
@@ -60,7 +60,7 @@ defaultAgentConfig =
             increaseAfter = 10 * second,
             maxInterval = 10 * second
           },
-      helloTimeout = 7 * 24 * 60 * 60,
+      helloTimeout = 7 * nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",

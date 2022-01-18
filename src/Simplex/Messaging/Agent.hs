@@ -471,14 +471,14 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
                     if diffUTCTime currentTime internalTs > helloTimeout
                       then case rq_ of
                         -- party initiating connection
-                        Just _ -> notifyAndDelMsg (ERR $ CONN NOT_AVAILABLE) msgId
+                        Just _ -> notifyDel msgId . ERR $ CONN NOT_AVAILABLE
                         -- party joining connection
-                        Nothing -> notifyAndDelMsg (ERR $ CONN NOT_ACCEPTED) msgId
+                        Nothing -> notifyDel msgId . ERR $ CONN NOT_ACCEPTED
                       else loop
-                  REPLY_ -> notifyAndDelMsg (ERR e) msgId
-                  A_MSG_ -> notifyAndDelMsg (MERR mId e) msgId
-                SMP (SMP.CMD _) -> notifyAndDelMsg (MERR mId e) msgId
-                SMP SMP.LARGE_MSG -> notifyAndDelMsg (MERR mId e) msgId
+                  REPLY_ -> notifyDel msgId $ ERR e
+                  A_MSG_ -> notifyDel msgId $ MERR mId e
+                SMP (SMP.CMD _) -> notifyDel msgId $ MERR mId e
+                SMP SMP.LARGE_MSG -> notifyDel msgId $ MERR mId e
                 SMP {} -> notify (MERR mId e) >> loop
                 _ -> loop
             Right () -> do
@@ -500,8 +500,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     delMsg msgId = withStore $ \st -> deleteMsg st connId msgId
     notify :: ACommand 'Agent -> m ()
     notify cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
-    notifyAndDelMsg :: ACommand 'Agent -> InternalId -> m ()
-    notifyAndDelMsg cmd msgId = notify cmd >> delMsg msgId
+    notifyDel :: InternalId -> ACommand 'Agent -> m ()
+    notifyDel msgId cmd = notify cmd >> delMsg msgId
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage' c connId msgId = do
