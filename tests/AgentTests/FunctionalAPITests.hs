@@ -12,7 +12,7 @@ import Control.Monad.IO.Unlift
 import SMPAgentClient
 import SMPClient (withSmpServer)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (dbFile)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..))
@@ -44,6 +44,8 @@ functionalAPITests t = do
       withSmpServer t testAsyncJoiningOfflineBeforeActivation
     it "should connect with both clients going offline" $
       withSmpServer t testAsyncBothOffline
+    it "should notify after HELLO timeout" $
+      withSmpServer t testAsyncHelloTimeout
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -144,6 +146,17 @@ testAsyncBothOffline = do
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
     get bob' ##> ("", aliceId, CON)
     exchangeGreetings alice' bobId bob' aliceId
+  pure ()
+
+testAsyncHelloTimeout :: IO ()
+testAsyncHelloTimeout = do
+  alice <- getSMPAgentClient cfg
+  bob <- getSMPAgentClient cfg {dbFile = testDB2, helloTimeout = 1}
+  Right () <- runExceptT $ do
+    (_, cReq) <- createConnection alice SCMInvitation
+    disconnectAgentClient alice
+    aliceId <- joinConnection bob cReq "bob's connInfo"
+    get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
   pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()

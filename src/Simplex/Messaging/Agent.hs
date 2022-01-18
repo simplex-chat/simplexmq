@@ -458,18 +458,27 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     withStore (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
       Left (e :: E.SomeException) ->
         notify $ MERR mId (INTERNAL $ show e)
-      Right (rq_, (msgType, msgBody)) ->
+      Right (rq_, (msgType, msgBody, internalTs)) ->
         withRetryInterval ri $ \loop ->
           tryError (sendAgentMessage c sq msgBody) >>= \case
             Left e -> do
               case e of
                 SMP SMP.QUOTA -> loop
                 SMP SMP.AUTH -> case msgType of
-                  HELLO_ -> loop
-                  REPLY_ -> notify (ERR e) >> delMsg msgId
-                  A_MSG_ -> notify (MERR mId e) >> delMsg msgId
-                SMP (SMP.CMD _) -> notify (MERR mId e) >> delMsg msgId
-                SMP SMP.LARGE_MSG -> notify (MERR mId e) >> delMsg msgId
+                  HELLO_ -> do
+                    helloTimeout <- asks $ helloTimeout . config
+                    currentTime <- liftIO getCurrentTime
+                    if diffUTCTime currentTime internalTs > helloTimeout
+                      then case rq_ of
+                        -- party initiating connection
+                        Just _ -> notifyDel msgId . ERR $ CONN NOT_AVAILABLE
+                        -- party joining connection
+                        _ -> notifyDel msgId . ERR $ CONN NOT_ACCEPTED
+                      else loop
+                  REPLY_ -> notifyDel msgId $ ERR e
+                  A_MSG_ -> notifyDel msgId $ MERR mId e
+                SMP (SMP.CMD _) -> notifyDel msgId $ MERR mId e
+                SMP SMP.LARGE_MSG -> notifyDel msgId $ MERR mId e
                 SMP {} -> notify (MERR mId e) >> loop
                 _ -> loop
             Right () -> do
@@ -491,6 +500,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
     delMsg msgId = withStore $ \st -> deleteMsg st connId msgId
     notify :: ACommand 'Agent -> m ()
     notify cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
+    notifyDel :: InternalId -> ACommand 'Agent -> m ()
+    notifyDel msgId cmd = notify cmd >> delMsg msgId
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage' c connId msgId = do
