@@ -473,7 +473,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
                         -- party initiating connection
                         Just _ -> notifyDel msgId . ERR $ CONN NOT_AVAILABLE
                         -- party joining connection
-                        Nothing -> notifyDel msgId . ERR $ CONN NOT_ACCEPTED
+                        _ -> notifyDel msgId . ERR $ CONN NOT_ACCEPTED
                       else loop
                   REPLY_ -> notifyDel msgId $ ERR e
                   A_MSG_ -> notifyDel msgId $ MERR mId e
@@ -491,7 +491,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} connId sq = do
                       subscribeQueue c rq connId
                       notify CON
                     -- party joining connection
-                    Nothing -> createReplyQueue c connId sq
+                    _ -> createReplyQueue c connId sq
                 A_MSG_ -> notify $ SENT mId
                 _ -> pure ()
               delMsg msgId
