@@ -96,7 +96,7 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
       (s -> m' ()) ->
       m' ()
     serverThread s subQ subs clientSubs unsub = forever $ do
-      timedAtomically "serverThread" updateSubscribers
+      atomically updateSubscribers
         >>= fmap join . mapM endPreviousSubscriptions
         >>= mapM_ unsub
       where
@@ -135,10 +135,10 @@ runClientTransport th@THandle {sessionId} = do
 clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 clientDisconnected c@Client {subscriptions, connected} = do
   timedAtomically "clientDisconnected 1" $ writeTVar connected False
-  subs <- readTVarIO subscriptions
+  subs <- timedAtomically "clientDisconnected 2" $ readTVar subscriptions
   mapM_ cancelSub subs
   cs <- asks $ subscribers . server
-  timedAtomically "clientDisconnected 2" . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
+  timedAtomically "clientDisconnected 3" . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
   where
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
@@ -168,7 +168,7 @@ receive th Client {rcvQ, sndQ} = forever $ do
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
 send h Client {sndQ, sessionId} = forever $ do
-  t <- timedAtomically "send" $ readTBQueue sndQ
+  t <- atomically $ readTBQueue sndQ
   liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
 
 verifyTransmission ::
@@ -214,7 +214,7 @@ dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/Xo
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
 client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscribedQ, ntfSubscribedQ, notifiers} =
   forever $
-    timedAtomically "client 1" (readTBQueue rcvQ)
+    atomically (readTBQueue rcvQ)
       >>= processCommand
       >>= timedAtomically "client 2" . writeTBQueue sndQ
   where
