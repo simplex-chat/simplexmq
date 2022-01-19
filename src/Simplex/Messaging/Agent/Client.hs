@@ -232,6 +232,7 @@ smpClientError = \case
   SMPUnexpectedResponse -> BROKER UNEXPECTED
   SMPResponseTimeout -> BROKER TIMEOUT
   SMPNetworkError -> BROKER NETWORK
+  SMPNetworkTimeout -> BROKER NETWORK_TIMEOUT
   SMPTransportError e -> BROKER $ TRANSPORT e
   e -> INTERNAL $ show e
 

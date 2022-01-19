@@ -677,6 +677,8 @@ data BrokerErrorType
     UNEXPECTED
   | -- | network error
     NETWORK
+  | -- | network connection timeout
+    NETWORK_TIMEOUT
   | -- | handshake or other transport error
     TRANSPORT TransportError
   | -- | command response timeout

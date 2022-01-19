@@ -155,12 +155,13 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ dis
       action <-
         async $
           runTransportClient (host smpServer) port' (keyHash smpServer) (client t c thVar)
+            `catch` (\(e :: SomeException) -> print e >> throwIO e)
             `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
       th_ <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case th_ of
         Just (Right THandle {sessionId}) -> Right c {action, sessionId}
         Just (Left e) -> Left e
-        Nothing -> Left SMPNetworkError
+        Nothing -> Left SMPNetworkTimeout
 
     useTransport :: (ServiceName, ATransport)
     useTransport = case port smpServer of
@@ -239,6 +240,9 @@ data SMPClientError
   | -- | Failure to establish TCP connection.
     -- Forwarded to the agent client as `ERR BROKER NETWORK`.
     SMPNetworkError
+  | -- | Timeout establishing TCP connection.
+    -- Forwarded to the agent client as `ERR BROKER NETWORK_TIMEOUT`.
+    SMPNetworkTimeout
   | -- | TCP transport handshake or some other transport error.
     -- Forwarded to the agent client as `ERR BROKER TRANSPORT e`.
     SMPTransportError TransportError
