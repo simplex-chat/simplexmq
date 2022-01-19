@@ -69,10 +69,14 @@ data Client = Client
   }
 
 timedAtomically :: MonadUnliftIO m => String -> STM a -> m a
-timedAtomically msg a =
-  (2000000 `timeout` atomically a) >>= \case
-    Just r -> pure r
-    _ -> liftIO (putStrLn $ "atomically timeout: " <> msg) >> error ""
+timedAtomically = ta 2000000
+  where
+    ta t msg a =
+      (t `timeout` atomically a) >>= \case
+        Just r -> pure r
+        _ -> do
+          liftIO (putStrLn $ "atomically " <> show t <> " " <> msg)
+          if t < 20000000 then ta (t + 2000000) msg a else error ""
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
 
