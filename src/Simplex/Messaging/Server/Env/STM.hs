@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -24,6 +25,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Transport (ATransport, loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
+import UnliftIO.Timeout (timeout)
 
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
@@ -65,6 +67,12 @@ data Client = Client
     sessionId :: ByteString,
     connected :: TVar Bool
   }
+
+timedAtomically :: MonadUnliftIO m => String -> STM a -> m a
+timedAtomically msg a =
+  (2000000 `timeout` atomically a) >>= \case
+    Just r -> pure r
+    _ -> liftIO (putStrLn $ "atomically timeout: " <> msg) >> error ""
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
 

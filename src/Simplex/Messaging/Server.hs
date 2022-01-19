@@ -96,7 +96,7 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
       (s -> m' ()) ->
       m' ()
     serverThread s subQ subs clientSubs unsub = forever $ do
-      atomically updateSubscribers
+      timedAtomically "serverThread" updateSubscribers
         >>= fmap join . mapM endPreviousSubscriptions
         >>= mapM_ unsub
       where
@@ -113,9 +113,9 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
             >>= fmap join . mapM clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> m' (Maybe s)
         endPreviousSubscriptions (qId, c) = do
-          void . forkIO . atomically $
+          void . forkIO . timedAtomically "endPreviousSubscriptions 1" $
             writeTBQueue (sndQ c) (CorrId "", qId, END)
-          atomically . stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
+          timedAtomically "endPreviousSubscriptions 2" . stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
 
     runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
     runClient _ h = do
@@ -127,18 +127,18 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
 runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
 runClientTransport th@THandle {sessionId} = do
   q <- asks $ tbqSize . config
-  c <- atomically $ newClient q sessionId
+  c <- timedAtomically "runClientTransport" $ newClient q sessionId
   s <- asks server
   raceAny_ [send th c, client c s, receive th c]
     `finally` clientDisconnected c
 
 clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 clientDisconnected c@Client {subscriptions, connected} = do
-  atomically $ writeTVar connected False
+  timedAtomically "clientDisconnected 1" $ writeTVar connected False
   subs <- readTVarIO subscriptions
   mapM_ cancelSub subs
   cs <- asks $ subscribers . server
-  atomically . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
+  timedAtomically "clientDisconnected 2" . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
   where
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
@@ -157,18 +157,18 @@ receive :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Cli
 receive th Client {rcvQ, sndQ} = forever $ do
   (sig, signed, (corrId, queueId, cmdOrError)) <- tGet th
   case cmdOrError of
-    Left e -> write sndQ (corrId, queueId, ERR e)
+    Left e -> write "1" sndQ (corrId, queueId, ERR e)
     Right cmd -> do
       verified <- verifyTransmission sig signed queueId cmd
       if verified
-        then write rcvQ (corrId, queueId, cmd)
-        else write sndQ (corrId, queueId, ERR AUTH)
+        then write "2" rcvQ (corrId, queueId, cmd)
+        else write "3" sndQ (corrId, queueId, ERR AUTH)
   where
-    write q t = atomically $ writeTBQueue q t
+    write s q t = timedAtomically ("receive " <> s) $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
 send h Client {sndQ, sessionId} = forever $ do
-  t <- atomically $ readTBQueue sndQ
+  t <- timedAtomically "send" $ readTBQueue sndQ
   liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
 
 verifyTransmission ::
@@ -184,7 +184,7 @@ verifyTransmission sig_ signed queueId cmd = do
     verifyCmd :: SParty p -> (QueueRec -> Bool) -> m Bool
     verifyCmd party f = do
       st <- asks queueStore
-      q <- atomically $ getQueue st party queueId
+      q <- timedAtomically "verifyCmd" $ getQueue st party queueId
       pure $ either (const $ maybe False dummyVerify sig_ `seq` False) f q
     verifyMaybe :: Maybe C.APublicVerifyKey -> Bool
     verifyMaybe = maybe (isNothing sig_) verifySignature
@@ -214,9 +214,9 @@ dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/Xo
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => Client -> Server -> m ()
 client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscribedQ, ntfSubscribedQ, notifiers} =
   forever $
-    atomically (readTBQueue rcvQ)
+    timedAtomically "client 1" (readTBQueue rcvQ)
       >>= processCommand
-      >>= atomically . writeTBQueue sndQ
+      >>= timedAtomically "client 2" . writeTBQueue sndQ
   where
     processCommand :: Transmission Cmd -> m (Transmission BrokerMsg)
     processCommand (corrId, queueId, cmd) = do
@@ -260,7 +260,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             addQueueRetry n qik qRec = do
               ids@(rId, _) <- getIds
               -- create QueueRec record with these ids and keys
-              atomically (addQueue st $ qRec ids) >>= \case
+              timedAtomically "addQueueRetry" (addQueue st $ qRec ids) >>= \case
                 Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec
                 Left e -> pure $ ERR e
                 Right _ -> do
@@ -269,7 +269,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
             logCreateById s rId =
-              atomically (getQueue st SRecipient rId) >>= \case
+              timedAtomically "logCreateById" (getQueue st SRecipient rId) >>= \case
                 Right q -> logCreateQueue s q
                 _ -> pure ()
 
@@ -281,7 +281,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         secureQueue_ :: QueueStore -> SndPublicVerifyKey -> m (Transmission BrokerMsg)
         secureQueue_ st sKey = do
           withLog $ \s -> logSecureQueue s queueId sKey
-          atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
+          timedAtomically "secureQueue_" $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> m (Transmission BrokerMsg)
         addQueueNotifier_ st nKey = (corrId,queueId,) <$> addNotifierRetry 3
@@ -290,7 +290,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             addNotifierRetry 0 = pure $ ERR INTERNAL
             addNotifierRetry n = do
               nId <- randomId =<< asks (queueIdBytes . config)
-              atomically (addQueueNotifier st queueId nId nKey) >>= \case
+              timedAtomically "addNotifierRetry" (addQueueNotifier st queueId nId nKey) >>= \case
                 Left DUPLICATE_ -> addNotifierRetry $ n - 1
                 Left e -> pure $ ERR e
                 Right _ -> do
@@ -300,11 +300,11 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
         suspendQueue_ st = do
           withLog (`logDeleteQueue` queueId)
-          okResp <$> atomically (suspendQueue st queueId)
+          okResp <$> timedAtomically "suspendQueue_" (suspendQueue st queueId)
 
         subscribeQueue :: RecipientId -> m (Transmission BrokerMsg)
         subscribeQueue rId =
-          atomically (getSubscription rId) >>= deliverMessage tryPeekMsg rId
+          timedAtomically "subscribeQueue" (getSubscription rId) >>= deliverMessage tryPeekMsg rId
 
         getSubscription :: RecipientId -> STM Sub
         getSubscription rId = do
@@ -318,7 +318,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               return s
 
         subscribeNotifications :: m (Transmission BrokerMsg)
-        subscribeNotifications = atomically $ do
+        subscribeNotifications = timedAtomically "subscribeNotifications" $ do
           subs <- readTVar ntfSubscriptions
           when (isNothing $ M.lookup queueId subs) $ do
             writeTBQueue ntfSubscribedQ (queueId, clnt)
@@ -327,7 +327,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
         acknowledgeMsg :: m (Transmission BrokerMsg)
         acknowledgeMsg =
-          atomically (withSub queueId $ \s -> const s <$$> tryTakeTMVar (delivered s))
+          timedAtomically "acknowledgeMsg" (withSub queueId $ \s -> const s <$$> tryTakeTMVar (delivered s))
             >>= \case
               Just (Just s) -> deliverMessage tryDelPeekMsg queueId s
               _ -> return $ err NO_MSG
@@ -339,7 +339,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         sendMessage st msgBody
           | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
           | otherwise = do
-            qr <- atomically $ getQueue st SSender queueId
+            qr <- timedAtomically "sendMessage" $ getQueue st SSender queueId
             either (return . err) storeMessage qr
           where
             storeMessage :: QueueRec -> m (Transmission BrokerMsg)
@@ -351,7 +351,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   Right msg -> do
                     ms <- asks msgStore
                     quota <- asks $ msgQueueQuota . config
-                    atomically $ do
+                    timedAtomically "storeMessage" $ do
                       q <- getMsgQueue ms (recipientId qr) quota
                       ifM (isFull q) (pure $ err QUOTA) $ do
                         trySendNotification
@@ -380,17 +380,17 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
           Sub {subThread = NoSub} -> do
             ms <- asks msgStore
             quota <- asks $ msgQueueQuota . config
-            q <- atomically $ getMsgQueue ms rId quota
-            atomically (tryPeek q) >>= \case
+            q <- timedAtomically "deliverMessage 1" $ getMsgQueue ms rId quota
+            timedAtomically "deliverMessage 2" (tryPeek q) >>= \case
               Nothing -> forkSub q $> ok
-              Just msg -> atomically setDelivered $> (corrId, rId, msgCmd msg)
+              Just msg -> timedAtomically "deliverMessage 3" setDelivered $> (corrId, rId, msgCmd msg)
           _ -> pure ok
           where
             forkSub :: MsgQueue -> m ()
             forkSub q = do
-              atomically . setSub $ \s -> s {subThread = SubPending}
+              timedAtomically "forkSub 1" . setSub $ \s -> s {subThread = SubPending}
               t <- forkIO $ subscriber q
-              atomically . setSub $ \case
+              timedAtomically "forkSub 2" . setSub $ \case
                 s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
                 s -> s
 
@@ -414,7 +414,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         delQueueAndMsgs st = do
           withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
-          atomically $
+          timedAtomically "delQueueAndMsgs" $
             deleteQueue st queueId >>= \case
               Left e -> pure $ err e
               Right _ -> delMsgQueue ms queueId $> ok
@@ -436,7 +436,7 @@ withLog action = do
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ByteString
 randomId n = do
   gVar <- asks idsDrg
-  atomically (randomBytes n gVar)
+  timedAtomically "randomId" (randomBytes n gVar)
 
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 randomBytes n gVar = do

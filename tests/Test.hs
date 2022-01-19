@@ -19,6 +19,6 @@ main = do
       describe "Protocol error tests" protocolErrorTests
       describe "Version range" versionRangeTests
     describe "SMP server via TLS" $ serverTests (transport @TLS)
-    describe "SMP server via WebSockets" $ serverTests (transport @WS)
+    xdescribe "SMP server via WebSockets" $ serverTests (transport @WS)
     describe "SMP client agent" $ agentTests (transport @TLS)
   removeDirectoryRecursive "tests/tmp"

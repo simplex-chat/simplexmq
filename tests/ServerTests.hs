@@ -32,13 +32,13 @@ serverTests :: ATransport -> Spec
 serverTests t = do
   describe "SMP syntax" $ syntaxTests t
   describe "SMP queues" $ do
-    describe "NEW and KEY commands, SEND messages" $ testCreateSecure t
+    xdescribe "NEW and KEY commands, SEND messages" $ testCreateSecure t
     describe "NEW, OFF and DEL commands, SEND messages" $ testCreateDelete t
     describe "Stress test" $ stressTest t
   describe "SMP messages" $ do
     describe "duplex communication over 2 SMP connections" $ testDuplex t
     describe "switch subscription to another TCP connection" $ testSwitchSub t
-  describe "Store log" $ testWithStoreLog t
+  xdescribe "Store log" $ testWithStoreLog t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
 
