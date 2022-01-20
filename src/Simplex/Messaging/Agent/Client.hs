@@ -67,11 +67,13 @@ import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
+type SMPClientVar = TMVar (Either AgentErrorType SMPClient)
+
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue SMPServerTransmission,
-    smpClients :: TVar (Map SMPServer (TMVar (Either AgentErrorType SMPClient))),
+    smpClients :: TVar (Map SMPServer SMPClientVar),
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     subscrConns :: TVar (Map ConnId SMPServer),
     connMsgsQueued :: TVar (Map ConnId Bool),
@@ -118,18 +120,22 @@ instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
-  readTVarIO smpClients
-    >>= maybe newSMPClient waitForSMPClient . M.lookup srv
+  atomically getClientVar >>= either newSMPClient waitForSMPClient
   where
+    getClientVar :: STM (Either SMPClientVar SMPClientVar)
+    getClientVar = maybe (Left <$> newClientVar) (pure . Right) . M.lookup srv =<< readTVar smpClients
+
+    newClientVar :: STM SMPClientVar
+    newClientVar = do
+      smpVar <- newEmptyTMVar
+      modifyTVar smpClients $ M.insert srv smpVar
+      pure smpVar
+
     waitForSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
     waitForSMPClient = liftIOEither . atomically . readTMVar
 
-    newSMPClient :: m SMPClient
-    newSMPClient = do
-      smpVar <- atomically $ do
-        smpVar <- newEmptyTMVar
-        modifyTVar smpClients $ M.insert srv smpVar
-        pure smpVar
+    newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
+    newSMPClient smpVar = do
       smpRes <- tryError connectClient
       atomically $ putTMVar smpVar smpRes
       case smpRes of
