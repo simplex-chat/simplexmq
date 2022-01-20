@@ -26,8 +26,6 @@ build-type:     Simple
 extra-source-files:
     README.md
     CHANGELOG.md
-    migrations/20220101_initial.sql
-    migrations/README.md
 
 library
   exposed-modules:
@@ -40,6 +38,7 @@ library
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Migrations
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
       Simplex.Messaging.Client
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.Ratchet
@@ -82,7 +81,6 @@ library
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
-    , file-embed >=0.0.14.0 && <=0.0.15.0
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
@@ -134,7 +132,6 @@ executable smp-agent
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
-    , file-embed >=0.0.14.0 && <=0.0.15.0
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
@@ -187,7 +184,6 @@ executable smp-server
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
-    , file-embed >=0.0.14.0 && <=0.0.15.0
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , http-types ==0.12.*
@@ -256,7 +252,6 @@ test-suite smp-server-test
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
-    , file-embed >=0.0.14.0 && <=0.0.15.0
     , filepath ==1.4.*
     , generic-random >=1.3 && <1.5
     , hspec ==2.7.*

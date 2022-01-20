@@ -16,29 +16,29 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations
 where
 
 import Control.Monad (forM_)
-import Data.FileEmbed (embedDir, makeRelativeToProject)
 import Data.Function (on)
 import Data.List (intercalate, sortBy)
 import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock (getCurrentTime)
-import Database.SQLite.Simple (Connection, Only (..))
+import Database.SQLite.Simple (Connection, Only (..), Query (..))
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
-import System.FilePath (takeBaseName, takeExtension)
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
 
 data Migration = Migration {name :: String, up :: Text}
   deriving (Show)
 
+schemaMigrations :: [(String, Query)]
+schemaMigrations =
+  [ ("20220101_initial", m20220101_initial)
+  ]
+
 -- | The list of migrations in ascending order by date
 app :: [Migration]
-app =
-  sortBy (compare `on` name) . map migration . filter sqlFile $
-    $(makeRelativeToProject "migrations" >>= embedDir)
+app = sortBy (compare `on` name) $ map migration schemaMigrations
   where
-    sqlFile (file, _) = takeExtension file == ".sql"
-    migration (file, qStr) = Migration {name = takeBaseName file, up = decodeUtf8 qStr}
+    migration (name, query) = Migration {name = name, up = fromQuery query}
 
 get :: Connection -> [Migration] -> IO (Either String [Migration])
 get conn migrations =
