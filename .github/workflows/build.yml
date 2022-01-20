@@ -19,7 +19,7 @@ jobs:
       - name: Setup Stack
         uses: haskell/actions/setup@v1
         with:
-          ghc-version: '8.8.4'
+          ghc-version: '8.8.4'  # TODO 8.10.7
           enable-stack: true
           stack-version: 'latest'
 
@@ -31,11 +31,12 @@ jobs:
 
       - name: Build & test
         id: build_test
+        shell: bash
         run: |
           stack build --test --force-dirty
           install_root=$(stack path --local-install-root)
           mv ${install_root}/bin/smp-server smp-server-ubuntu-20_04-x86-64
-      
+
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v')
         id: build_changelog
@@ -47,7 +48,18 @@ jobs:
           commitMode: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
+
+      - name: Extract release candidate
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: extract_rc
+        shell: bash
+        run: |
+          if [[ ${GITHUB_REF} == *rc* ]]; then
+            echo "::set-output name=rc::true"
+          else
+            echo "::set-output name=rc::false"
+          fi
+
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
@@ -56,6 +68,7 @@ jobs:
             See full changelog [here](https://github.com/simplex-chat/simplexmq/blob/master/CHANGELOG.md).
             Commits, chronological:
             ${{ steps.build_changelog.outputs.changelog }}
+          prerelease: ${{ steps.extract_rc.outputs.rc }}
           files: |
             LICENSE
             smp-server-ubuntu-20_04-x86-64
