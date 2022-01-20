@@ -65,7 +65,7 @@ where
 import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
-import Control.Monad.Trans.Except (throwE)
+import Control.Monad.Trans.Except (throwE, catchE)
 import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
@@ -182,7 +182,7 @@ runTransportServer started port serverParams server = do
     acceptConnection sock = do
       (newSock, _) <- accept sock
       -- ctx <- connectTLS serverParams newSock
-      getServerConnection sock
+      getServerConnection newSock
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
@@ -275,7 +275,7 @@ getTLS tlsPeer skt = do
     buffer <- newTVarIO ""
     getLock <- newTMVarIO ()
     handle <- getSocketHandle skt
-    pure TLS {tcpHandle = handle, tlsPeer, tlsUniq="", buffer, getLock}
+    pure TLS {tcpHandle = handle, tlsPeer, tlsUniq="abc", buffer, getLock}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -347,16 +347,10 @@ instance Transport TLS where
   closeConnection TLS {tcpHandle = h} = hClose h `E.catch` \(_ :: E.SomeException) -> pure ()
 
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tcpHandle} n = do
-    print $ "in cGet, n=" <> show n
-    bs <- B.hGet tcpHandle n
-    print bs
-    pure bs
+  cGet TLS {tcpHandle} n = B.hGet tcpHandle n
 
   cPut :: TLS -> ByteString -> IO ()
-  cPut TLS {tcpHandle} bs = do
-    print $ "in cPut, bs=" <> bs
-    B.hPut tcpHandle bs
+  cPut TLS {tcpHandle} bs = B.hPut tcpHandle bs
 
   -- getLn :: TLS -> IO ByteString
   -- getLn = fmap trimCR . B.hGetLine . tcpHandle
@@ -462,7 +456,7 @@ tGetBlock THandle {connection = c} =
 serverHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
 serverHandshake c kh = do
   let th@THandle {sessionId} = tHandle c
-  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
+  sendHandshake th (ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions})
   getHandshake th >>= \case
     ClientHandshake {smpVersion, keyHash}
       | keyHash /= kh ->

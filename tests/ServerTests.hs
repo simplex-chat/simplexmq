@@ -37,10 +37,10 @@ serverTests t = do
     describe "Stress test" $ stressTest t
   describe "SMP messages" $ do
     describe "duplex communication over 2 SMP connections" $ testDuplex t
-    describe "switch subscription to another TCP connection" $ testSwitchSub t
+    xdescribe "switch subscription to another TCP connection" $ testSwitchSub t
   xdescribe "Store log" $ testWithStoreLog t
   describe "Timing of AUTH error" $ testTiming t
-  describe "Message notifications" $ testMessageNotifications t
+  xdescribe "Message notifications" $ testMessageNotifications t
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission BrokerMsg
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
@@ -206,7 +206,7 @@ stressTest (ATransport t) =
 
 testDuplex :: ATransport -> Spec
 testDuplex (ATransport t) =
-  fit "should create 2 simplex connections and exchange messages" $
+  it "should create 2 simplex connections and exchange messages" $
     smpTest2 t $ \alice bob -> do
       (arPub, arKey) <- C.generateSignatureKeyPair C.SEd448
       (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
