@@ -36,6 +36,7 @@ module Simplex.Messaging.Agent.Client
   )
 where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
@@ -208,11 +209,11 @@ closeAgentClient c = liftIO $ do
   cancelActions $ smpQueueMsgDeliveries c
 
 closeSMPServerClients :: AgentClient -> IO ()
-closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ closeClient
+closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeClient)
   where
-    closeClient smpVar = do
-      atomically (tryReadTMVar smpVar) >>= \case
-        Just (Right smp) -> closeSMPClient smp
+    closeClient smpVar =
+      atomically (readTMVar smpVar) >>= \case
+        Right smp -> closeSMPClient smp `E.catch` \(_ :: E.SomeException) -> pure ()
         _ -> pure ()
 
 cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
