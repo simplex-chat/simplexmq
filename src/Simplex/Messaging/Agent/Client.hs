@@ -135,15 +135,16 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     waitForSMPClient = liftIOEither . atomically . readTMVar
 
     newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
-    newSMPClient smpVar = do
-      smpRes <- tryError connectClient
-      atomically $ putTMVar smpVar smpRes
-      case smpRes of
+    newSMPClient smpVar =
+      tryError connectClient >>= \r -> case r of
         Right smp -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
+          atomically $ putTMVar smpVar r
           pure smp
         Left e -> do
-          atomically . modifyTVar smpClients $ M.delete srv
+          atomically $ do
+            putTMVar smpVar r
+            modifyTVar smpClients $ M.delete srv
           throwError e
 
     connectClient :: m SMPClient
