@@ -347,10 +347,16 @@ instance Transport TLS where
   closeConnection TLS {tcpHandle = h} = hClose h `E.catch` \(_ :: E.SomeException) -> pure ()
 
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tcpHandle} = B.hGet tcpHandle
+  cGet TLS {tcpHandle} n = do
+    print $ "in cGet, n=" <> show n
+    bs <- B.hGet tcpHandle n
+    print bs
+    pure bs
 
   cPut :: TLS -> ByteString -> IO ()
-  cPut = B.hPut . tcpHandle
+  cPut TLS {tcpHandle} bs = do
+    print $ "in cPut, bs=" <> bs
+    B.hPut tcpHandle bs
 
   -- getLn :: TLS -> IO ByteString
   -- getLn = fmap trimCR . B.hGetLine . tcpHandle

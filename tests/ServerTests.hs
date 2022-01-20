@@ -206,7 +206,7 @@ stressTest (ATransport t) =
 
 testDuplex :: ATransport -> Spec
 testDuplex (ATransport t) =
-  it "should create 2 simplex connections and exchange messages" $
+  fit "should create 2 simplex connections and exchange messages" $
     smpTest2 t $ \alice bob -> do
       (arPub, arKey) <- C.generateSignatureKeyPair C.SEd448
       (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
