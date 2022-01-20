@@ -165,7 +165,9 @@ runTransportServer started port serverParams server = do
   E.bracket
     (liftIO $ startTCPServer started port)
     (liftIO . closeServer clients)
-    $ \sock -> forever $ connectClients sock clients `E.catch` \(_ :: E.SomeException) -> pure ()
+    $ \listenSock -> forever $ do
+      (clientSock, _) <- liftIO $ accept listenSock
+      forkIO $ connectClients clientSock clients `E.catch` \(_ :: E.SomeException) -> pure ()
   where
     connectClients :: Socket -> TVar (Set ThreadId) -> m ()
     connectClients sock clients = do
@@ -178,9 +180,8 @@ runTransportServer started port serverParams server = do
       close sock
       void . atomically $ tryPutTMVar started False
     acceptConnection :: Socket -> IO c
-    acceptConnection sock = do
-      (newSock, _) <- accept sock
-      ctx <- connectTLS serverParams newSock
+    acceptConnection clientSock = do
+      ctx <- connectTLS serverParams clientSock
       getServerConnection ctx
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
@@ -494,6 +495,7 @@ serverHandshake c kh = do
 clientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
 clientHandshake c keyHash = do
   let th@THandle {sessionId} = tHandle c
+  liftIO $ putStrLn $ "connecting " <> show sessionId
   ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
   if sessionId /= sessId
     then throwE TEBadSession
