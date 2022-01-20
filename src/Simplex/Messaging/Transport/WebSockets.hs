@@ -2,98 +2,98 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Simplex.Messaging.Transport.WebSockets (WS (..)) where
+module Simplex.Messaging.Transport.WebSockets where
 
-import qualified Control.Exception as E
-import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as BL
-import qualified Network.TLS as T
-import Network.WebSockets
-import Network.WebSockets.Stream (Stream)
-import qualified Network.WebSockets.Stream as S
-import Simplex.Messaging.Transport
-  ( TProxy,
-    Transport (..),
-    TransportError (..),
-    TransportPeer (..),
-    closeTLS,
-    trimCR,
-    withTlsUnique,
-  )
+-- import qualified Control.Exception as E
+-- import Data.ByteString.Char8 (ByteString)
+-- import qualified Data.ByteString.Char8 as B
+-- import qualified Data.ByteString.Lazy as BL
+-- import qualified Network.TLS as T
+-- import Network.WebSockets
+-- import Network.WebSockets.Stream (Stream)
+-- import qualified Network.WebSockets.Stream as S
+-- import Simplex.Messaging.Transport
+--   ( TProxy,
+--     Transport (..),
+--     TransportError (..),
+--     TransportPeer (..),
+--     closeTLS,
+--     trimCR,
+--     withTlsUnique,
+--   )
 
-data WS = WS
-  { wsPeer :: TransportPeer,
-    tlsUniq :: ByteString,
-    wsStream :: Stream,
-    wsConnection :: Connection
-  }
+-- data WS = WS
+--   { wsPeer :: TransportPeer,
+--     tlsUniq :: ByteString,
+--     wsStream :: Stream,
+--     wsConnection :: Connection
+--   }
 
-websocketsOpts :: ConnectionOptions
-websocketsOpts =
-  defaultConnectionOptions
-    { connectionCompressionOptions = NoCompression,
-      connectionFramePayloadSizeLimit = SizeLimit $ 16 * 1024, -- TODO move to Protocol
-      connectionMessageDataSizeLimit = SizeLimit 65536
-    }
+-- websocketsOpts :: ConnectionOptions
+-- websocketsOpts =
+--   defaultConnectionOptions
+--     { connectionCompressionOptions = NoCompression,
+--       connectionFramePayloadSizeLimit = SizeLimit $ 16 * 1024, -- TODO move to Protocol
+--       connectionMessageDataSizeLimit = SizeLimit 65536
+--     }
 
-instance Transport WS where
-  transportName :: TProxy WS -> String
-  transportName _ = "WebSockets"
+-- instance Transport WS where
+--   transportName :: TProxy WS -> String
+--   transportName _ = "WebSockets"
 
-  transportPeer :: WS -> TransportPeer
-  transportPeer = wsPeer
+--   transportPeer :: WS -> TransportPeer
+--   transportPeer = wsPeer
 
-  getServerConnection :: T.Context -> IO WS
-  getServerConnection = getWS TServer
+--   getServerConnection :: T.Context -> IO WS
+--   getServerConnection = getWS TServer
 
-  getClientConnection :: T.Context -> IO WS
-  getClientConnection = getWS TClient
+--   getClientConnection :: T.Context -> IO WS
+--   getClientConnection = getWS TClient
 
-  tlsUnique :: WS -> ByteString
-  tlsUnique = tlsUniq
+--   tlsUnique :: WS -> ByteString
+--   tlsUnique = tlsUniq
 
-  closeConnection :: WS -> IO ()
-  closeConnection = S.close . wsStream
+--   closeConnection :: WS -> IO ()
+--   closeConnection = S.close . wsStream
 
-  cGet :: WS -> Int -> IO ByteString
-  cGet c n = do
-    s <- receiveData (wsConnection c)
-    if B.length s == n
-      then pure s
-      else E.throwIO TEBadBlock
+--   cGet :: WS -> Int -> IO ByteString
+--   cGet c n = do
+--     s <- receiveData (wsConnection c)
+--     if B.length s == n
+--       then pure s
+--       else E.throwIO TEBadBlock
 
-  cPut :: WS -> ByteString -> IO ()
-  cPut = sendBinaryData . wsConnection
+--   cPut :: WS -> ByteString -> IO ()
+--   cPut = sendBinaryData . wsConnection
 
-  getLn :: WS -> IO ByteString
-  getLn c = do
-    s <- trimCR <$> receiveData (wsConnection c)
-    if B.null s || B.last s /= '\n'
-      then E.throwIO TEBadBlock
-      else pure $ B.init s
+--   getLn :: WS -> IO ByteString
+--   getLn c = do
+--     s <- trimCR <$> receiveData (wsConnection c)
+--     if B.null s || B.last s /= '\n'
+--       then E.throwIO TEBadBlock
+--       else pure $ B.init s
 
-getWS :: TransportPeer -> T.Context -> IO WS
-getWS wsPeer cxt = withTlsUnique wsPeer cxt connectWS
-  where
-    connectWS tlsUniq = do
-      s <- makeTLSContextStream cxt
-      wsConnection <- connectPeer wsPeer s
-      pure $ WS {wsPeer, tlsUniq, wsStream = s, wsConnection}
-    connectPeer :: TransportPeer -> Stream -> IO Connection
-    connectPeer TServer = acceptClientRequest
-    connectPeer TClient = sendClientRequest
-    acceptClientRequest s = makePendingConnectionFromStream s websocketsOpts >>= acceptRequest
-    sendClientRequest s = newClientConnection s "" "/" websocketsOpts []
+-- getWS :: TransportPeer -> T.Context -> IO WS
+-- getWS wsPeer cxt = withTlsUnique wsPeer cxt connectWS
+--   where
+--     connectWS tlsUniq = do
+--       s <- makeTLSContextStream cxt
+--       wsConnection <- connectPeer wsPeer s
+--       pure $ WS {wsPeer, tlsUniq, wsStream = s, wsConnection}
+--     connectPeer :: TransportPeer -> Stream -> IO Connection
+--     connectPeer TServer = acceptClientRequest
+--     connectPeer TClient = sendClientRequest
+--     acceptClientRequest s = makePendingConnectionFromStream s websocketsOpts >>= acceptRequest
+--     sendClientRequest s = newClientConnection s "" "/" websocketsOpts []
 
-makeTLSContextStream :: T.Context -> IO Stream
-makeTLSContextStream cxt =
-  S.makeStream readStream writeStream
-  where
-    readStream :: IO (Maybe ByteString)
-    readStream =
-      (Just <$> T.recvData cxt) `E.catch` \case
-        T.Error_EOF -> pure Nothing
-        e -> E.throwIO e
-    writeStream :: Maybe BL.ByteString -> IO ()
-    writeStream = maybe (closeTLS cxt) (T.sendData cxt)
+-- makeTLSContextStream :: T.Context -> IO Stream
+-- makeTLSContextStream cxt =
+--   S.makeStream readStream writeStream
+--   where
+--     readStream :: IO (Maybe ByteString)
+--     readStream =
+--       (Just <$> T.recvData cxt) `E.catch` \case
+--         T.Error_EOF -> pure Nothing
+--         e -> E.throwIO e
+--     writeStream :: Maybe BL.ByteString -> IO ()
+--     writeStream = maybe (closeTLS cxt) (T.sendData cxt)

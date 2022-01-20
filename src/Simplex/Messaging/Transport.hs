@@ -94,6 +94,7 @@ import Simplex.Messaging.Parsers (parse, parseRead1)
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
 import System.Exit (exitFailure)
+import System.IO
 import System.IO.Error
 import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Concurrent
@@ -110,7 +111,7 @@ supportedSMPVersions :: VersionRange
 supportedSMPVersions = mkVersionRange 1 1
 
 simplexMQVersion :: String
-simplexMQVersion = "1.0.2"
+simplexMQVersion = "1.0.2-rc02"
 
 -- * Transport connection class
 
@@ -123,10 +124,10 @@ class Transport c where
   transportPeer :: c -> TransportPeer
 
   -- | Upgrade server TLS context to connection (used in the server)
-  getServerConnection :: T.Context -> IO c
+  getServerConnection :: Socket -> IO c
 
   -- | Upgrade client TLS context to connection (used in the client)
-  getClientConnection :: T.Context -> IO c
+  getClientConnection :: Socket -> IO c
 
   -- | tls-unique channel binding per RFC5929
   tlsUnique :: c -> ByteString
@@ -180,8 +181,8 @@ runTransportServer started port serverParams server = do
     acceptConnection :: Socket -> IO c
     acceptConnection sock = do
       (newSock, _) <- accept sock
-      ctx <- connectTLS serverParams newSock
-      getServerConnection ctx
+      -- ctx <- connectTLS serverParams newSock
+      getServerConnection sock
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
@@ -225,8 +226,8 @@ startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      ctx <- connectTLS clientParams sock
-      getClientConnection ctx
+      -- ctx <- connectTLS clientParams sock
+      getClientConnection sock
 
 loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
 loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
@@ -254,7 +255,7 @@ loadFingerprint certificateFile = do
 -- * TLS Transport
 
 data TLS = TLS
-  { tlsContext :: T.Context,
+  { tcpHandle :: Handle,
     tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
     buffer :: TVar ByteString,
@@ -268,13 +269,13 @@ connectTLS params sock =
       `E.catch` \(e :: E.SomeException) -> putStrLn ("exception: " <> show e) >> E.throwIO e
     pure ctx
 
-getTLS :: TransportPeer -> T.Context -> IO TLS
-getTLS tlsPeer cxt = withTlsUnique tlsPeer cxt newTLS
-  where
-    newTLS tlsUniq = do
-      buffer <- newTVarIO ""
-      getLock <- newTMVarIO ()
-      pure TLS {tlsContext = cxt, tlsPeer, tlsUniq, buffer, getLock}
+getTLS :: TransportPeer -> Socket -> IO TLS
+-- getTLS tlsPeer skt = withTlsUnique tlsPeer cxt newTLS
+getTLS tlsPeer skt = do
+    buffer <- newTVarIO ""
+    getLock <- newTMVarIO ()
+    handle <- getSocketHandle skt
+    pure TLS {tcpHandle = handle, tlsPeer, tlsUniq="", buffer, getLock}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -329,54 +330,30 @@ supportedParameters =
       T.supportedGroups = [T.X448, T.X25519]
     }
 
+getSocketHandle :: Socket -> IO Handle
+getSocketHandle conn = do
+  h <- socketToHandle conn ReadWriteMode
+  hSetBinaryMode h True
+  hSetNewlineMode h NewlineMode {inputNL = CRLF, outputNL = CRLF}
+  hSetBuffering h LineBuffering
+  return h
+
 instance Transport TLS where
   transportName _ = "TLS"
   transportPeer = tlsPeer
   getServerConnection = getTLS TServer
   getClientConnection = getTLS TClient
   tlsUnique = tlsUniq
-  closeConnection tls = closeTLS $ tlsContext tls
+  closeConnection TLS {tcpHandle = h} = hClose h `E.catch` \(_ :: E.SomeException) -> pure ()
 
   cGet :: TLS -> Int -> IO ByteString
-  cGet TLS {tlsContext, buffer, getLock} n =
-    E.bracket_
-      (atomically $ takeTMVar getLock)
-      (atomically $ putTMVar getLock ())
-      $ do
-        b <- readChunks =<< readTVarIO buffer
-        let (s, b') = B.splitAt n b
-        atomically $ writeTVar buffer b'
-        pure s
-    where
-      readChunks :: ByteString -> IO ByteString
-      readChunks b
-        | B.length b >= n = pure b
-        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
-      handleEOF = \case
-        T.Error_EOF -> E.throwIO TEBadBlock
-        e -> E.throwIO e
+  cGet TLS {tcpHandle} = B.hGet tcpHandle
 
   cPut :: TLS -> ByteString -> IO ()
-  cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
+  cPut = B.hPut . tcpHandle
 
   getLn :: TLS -> IO ByteString
-  getLn TLS {tlsContext, buffer, getLock} = do
-    E.bracket_
-      (atomically $ takeTMVar getLock)
-      (atomically $ putTMVar getLock ())
-      $ do
-        b <- readChunks =<< readTVarIO buffer
-        let (s, b') = B.break (== '\n') b
-        atomically $ writeTVar buffer (B.drop 1 b') -- drop '\n' we made a break at
-        pure $ trimCR s
-    where
-      readChunks :: ByteString -> IO ByteString
-      readChunks b
-        | B.elem '\n' b = pure b
-        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
-      handleEOF = \case
-        T.Error_EOF -> E.throwIO TEBadBlock
-        e -> E.throwIO e
+  getLn = fmap trimCR . B.hGetLine . tcpHandle
 
 -- | Trim trailing CR from ByteString.
 trimCR :: ByteString -> ByteString

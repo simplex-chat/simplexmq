@@ -23,7 +23,7 @@ import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadFingerprint, simplexMQVersion)
-import Simplex.Messaging.Transport.WebSockets (WS)
+-- import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -274,7 +274,8 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
 
     mkServerConfig storeLog =
       ServerConfig
-        { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
+        { transports = [(port, transport @TLS)],
+        -- { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
           tbqSize = 16,
           serverTbqSize = 128,
           msgQueueQuota = 256,

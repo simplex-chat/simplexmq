@@ -64,7 +64,7 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake, runTransportClient)
-import Simplex.Messaging.Transport.WebSockets (WS)
+-- import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.Timeout (timeout)
 
@@ -166,7 +166,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ dis
     useTransport :: (ServiceName, ATransport)
     useTransport = case port smpServer of
       "" -> defaultTransport cfg
-      "80" -> ("80", transport @WS)
+      -- "80" -> ("80", transport @WS)
       p -> (p, transport @TLS)
 
     client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError (THandle c)) -> c -> IO ()

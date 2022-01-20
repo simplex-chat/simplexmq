@@ -6,7 +6,7 @@ import CoreTests.ProtocolErrorTests
 import CoreTests.VersionRangeTests
 import ServerTests
 import Simplex.Messaging.Transport (TLS, Transport (..))
-import Simplex.Messaging.Transport.WebSockets (WS)
+-- import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import Test.Hspec
 
@@ -19,6 +19,6 @@ main = do
       describe "Protocol error tests" protocolErrorTests
       describe "Version range" versionRangeTests
     describe "SMP server via TLS" $ serverTests (transport @TLS)
-    xdescribe "SMP server via WebSockets" $ serverTests (transport @WS)
+    -- xdescribe "SMP server via WebSockets" $ serverTests (transport @WS)
     describe "SMP client agent" $ agentTests (transport @TLS)
   removeDirectoryRecursive "tests/tmp"
