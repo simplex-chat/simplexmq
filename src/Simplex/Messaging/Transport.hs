@@ -110,7 +110,7 @@ supportedSMPVersions :: VersionRange
 supportedSMPVersions = mkVersionRange 1 1
 
 simplexMQVersion :: String
-simplexMQVersion = "1.0.1"
+simplexMQVersion = "1.0.2-rc05"
 
 -- * Transport connection class
 
@@ -161,27 +161,28 @@ data ATransport = forall c. Transport c => ATransport (TProxy c)
 -- All accepted connections are passed to the passed function.
 runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
 runTransportServer started port serverParams server = do
-  clients <- newTVarIO S.empty
-  E.bracket
-    (liftIO $ startTCPServer started port)
-    (liftIO . closeServer clients)
-    $ \sock -> forever $ connectClients sock clients `E.catch` \(_ :: E.SomeException) -> pure ()
+  u <- askUnliftIO
+  liftIO $ do
+    clients <- newTVarIO S.empty
+    E.bracket
+      (startTCPServer started port)
+      (closeServer clients)
+      $ \sock -> forever $ do
+        (connSock, _) <- accept sock
+        tid <- forkIO $ connectClient u connSock `E.catch` \(_ :: E.SomeException) -> pure ()
+        atomically . modifyTVar clients $ S.insert tid
   where
-    connectClients :: Socket -> TVar (Set ThreadId) -> m ()
-    connectClients sock clients = do
-      c <- liftIO $ acceptConnection sock
-      tid <- server c `forkFinally` const (liftIO $ closeConnection c)
-      atomically . modifyTVar clients $ S.insert tid
+    connectClient :: UnliftIO m -> Socket -> IO ()
+    connectClient u connSock =
+      E.bracket
+        (connectTLS serverParams connSock >>= getServerConnection)
+        closeConnection
+        (unliftIO u . server)
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
     closeServer clients sock = do
       readTVarIO clients >>= mapM_ killThread
       close sock
       void . atomically $ tryPutTMVar started False
-    acceptConnection :: Socket -> IO c
-    acceptConnection sock = do
-      (newSock, _) <- accept sock
-      ctx <- connectTLS serverParams newSock
-      getServerConnection ctx
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
