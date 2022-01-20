@@ -61,7 +61,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (bshow, liftEitherError, liftError)
+import Simplex.Messaging.Util (bshow, liftEitherError, liftError, liftIOEither, tryError)
 import Simplex.Messaging.Version
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
@@ -71,7 +71,7 @@ data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue SMPServerTransmission,
-    smpClients :: TVar (Map SMPServer SMPClient),
+    smpClients :: TVar (Map SMPServer (TMVar (Either AgentErrorType SMPClient))),
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     subscrConns :: TVar (Map ConnId SMPServer),
     connMsgsQueued :: TVar (Map ConnId Bool),
@@ -119,14 +119,26 @@ instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
   readTVarIO smpClients
-    >>= maybe newSMPClient return . M.lookup srv
+    >>= maybe newSMPClient waitForSMPClient . M.lookup srv
   where
+    waitForSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
+    waitForSMPClient = liftIOEither . atomically . readTMVar
+
     newSMPClient :: m SMPClient
     newSMPClient = do
-      smp <- connectClient
-      logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-      atomically . modifyTVar smpClients $ M.insert srv smp
-      return smp
+      smpVar <- atomically $ do
+        smpVar <- newEmptyTMVar
+        modifyTVar smpClients $ M.insert srv smpVar
+        pure smpVar
+      smpRes <- tryError connectClient
+      atomically $ putTMVar smpVar smpRes
+      case smpRes of
+        Right smp -> do
+          logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
+          pure smp
+        Left e -> do
+          atomically . modifyTVar smpClients $ M.delete srv
+          throwError e
 
     connectClient :: m SMPClient
     connectClient = do
@@ -189,7 +201,12 @@ closeAgentClient c = liftIO $ do
   cancelActions $ smpQueueMsgDeliveries c
 
 closeSMPServerClients :: AgentClient -> IO ()
-closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ closeSMPClient
+closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ closeClient
+  where
+    closeClient smpVar = do
+      atomically (tryReadTMVar smpVar) >>= \case
+        Just (Right smp) -> closeSMPClient smp
+        _ -> pure ()
 
 cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
 cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel
