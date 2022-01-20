@@ -165,11 +165,14 @@ runTransportServer started port serverParams server = do
   E.bracket
     (liftIO $ startTCPServer started port)
     (liftIO . closeServer clients)
-    $ \sock -> forever $ connectClients sock clients `E.catch` \(_ :: E.SomeException) -> pure ()
+    $ \listenSock -> forever $ do
+      (clientSock, _) <- liftIO $ accept listenSock
+      forkIO $ connectClient clientSock clients `E.catch` \(e :: E.SomeException) -> liftIO $ print e
   where
-    connectClients :: Socket -> TVar (Set ThreadId) -> m ()
-    connectClients sock clients = do
-      c <- liftIO $ acceptConnection sock
+    connectClient :: Socket -> TVar (Set ThreadId) -> m ()
+    connectClient clientSock clients = do
+      ctx <- liftIO $ connectTLS serverParams clientSock
+      c <- liftIO $ getServerConnection ctx
       tid <- server c `forkFinally` const (liftIO $ closeConnection c)
       atomically . modifyTVar clients $ S.insert tid
     closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
@@ -177,11 +180,6 @@ runTransportServer started port serverParams server = do
       readTVarIO clients >>= mapM_ killThread
       close sock
       void . atomically $ tryPutTMVar started False
-    acceptConnection :: Socket -> IO c
-    acceptConnection sock = do
-      (newSock, _) <- accept sock
-      ctx <- connectTLS serverParams newSock
-      getServerConnection ctx
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
