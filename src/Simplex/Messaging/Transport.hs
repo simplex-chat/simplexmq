@@ -352,8 +352,8 @@ instance Transport TLS where
   cPut :: TLS -> ByteString -> IO ()
   cPut = B.hPut . tcpHandle
 
-  getLn :: TLS -> IO ByteString
-  getLn = fmap trimCR . B.hGetLine . tcpHandle
+  -- getLn :: TLS -> IO ByteString
+  -- getLn = fmap trimCR . B.hGetLine . tcpHandle
 
 -- | Trim trailing CR from ByteString.
 trimCR :: ByteString -> ByteString

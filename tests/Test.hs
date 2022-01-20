@@ -20,5 +20,5 @@ main = do
       describe "Version range" versionRangeTests
     describe "SMP server via TLS" $ serverTests (transport @TLS)
     -- xdescribe "SMP server via WebSockets" $ serverTests (transport @WS)
-    describe "SMP client agent" $ agentTests (transport @TLS)
+    -- describe "SMP client agent" $ agentTests (transport @TLS)
   removeDirectoryRecursive "tests/tmp"
