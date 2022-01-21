@@ -55,7 +55,7 @@ dependencies:
   - template-haskell == 2.16.*
   - text == 1.2.*
   - time == 1.9.*
-  - tls == 1.5.*
+  - tls >= 1.5.7 && < 1.6
   - transformers == 0.5.*
   - unliftio == 0.2.*
   - unliftio-core == 0.2.*
