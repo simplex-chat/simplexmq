@@ -66,7 +66,8 @@ jobs:
         with:
           body: |
             See full changelog [here](https://github.com/simplex-chat/simplexmq/blob/master/CHANGELOG.md).
-            Commits, chronological:
+
+            Commits:
             ${{ steps.build_changelog.outputs.changelog }}
           prerelease: ${{ steps.extract_release_candidate.outputs.release_candidate }}
           files: |
