@@ -139,7 +139,7 @@ if [[ -n "$API_TOKEN" ]]; then
   curl \
     -s -H "Content-Type: application/json" \
     -H "Authorization: Bearer $API_TOKEN" \
-    -X PUT -d "{\"tags\":[\"$server_address\",\"#$fingerprint\",\"$version\"]}" \
+    -X PUT -d "{\"tags\":[\"$server_address\",\"$fingerprint\",\"$version\"]}" \
     https://api.linode.com/v4/linode/instances/$LINODE_ID
 fi
 
@@ -150,7 +150,7 @@ Description=SMP server systemd service
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c "$binary start"
+ExecStart=/bin/sh -c "exec /opt/simplex/bin/smp-server start >> /var/opt/simplex/smp-server.log 2>&1"
 
 [Install]
 WantedBy=multi-user.target
