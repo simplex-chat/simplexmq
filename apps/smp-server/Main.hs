@@ -22,12 +22,13 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadFingerprint, simplexMQVersion)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), simplexMQVersion)
+import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (BufferMode (..), IOMode (..), hGetLine, withFile, hSetBuffering, stderr, stdout)
+import System.IO (BufferMode (..), IOMode (..), hGetLine, hSetBuffering, stderr, stdout, withFile)
 import System.Process (readCreateProcess, shell)
 import Text.Read (readMaybe)
 

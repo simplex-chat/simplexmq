@@ -36,15 +36,11 @@ module Simplex.Messaging.Transport
     ATransport (..),
     TransportPeer (..),
 
-    -- * Transport over TLS
-    runTransportServer,
-    runTransportClient,
-    loadTLSServerParams,
-    loadFingerprint,
-
     -- * TLS Transport
     TLS (..),
+    connectTLS,
     closeTLS,
+    supportedParameters,
     withTlsUnique,
 
     -- * SMP transport
@@ -64,9 +60,7 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Monad.Except
-import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
-import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
@@ -75,14 +69,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
-import Data.Set (Set)
-import qualified Data.Set as S
-import qualified Data.X509 as X
-import qualified Data.X509.CertificateStore as XS
-import Data.X509.Validation (Fingerprint (..))
-import qualified Data.X509.Validation as XV
 import GHC.Generics (Generic)
-import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
 import Network.Socket
@@ -93,11 +80,8 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse, parseRead1)
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
-import System.Exit (exitFailure)
-import System.IO.Error
 import Test.QuickCheck (Arbitrary (..))
-import UnliftIO.Concurrent
-import UnliftIO.Exception (Exception, IOException)
+import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -154,104 +138,6 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
--- * Transport over TLS
-
--- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
---
--- All accepted connections are passed to the passed function.
-runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
-runTransportServer started port serverParams server = do
-  u <- askUnliftIO
-  liftIO $ do
-    clients <- newTVarIO S.empty
-    E.bracket
-      (startTCPServer started port)
-      (closeServer clients)
-      $ \sock -> forever $ do
-        (connSock, _) <- accept sock
-        tid <- forkIO $ connectClient u connSock `E.catch` \(_ :: E.SomeException) -> pure ()
-        atomically . modifyTVar clients $ S.insert tid
-  where
-    connectClient :: UnliftIO m -> Socket -> IO ()
-    connectClient u connSock =
-      E.bracket
-        (connectTLS serverParams connSock >>= getServerConnection)
-        closeConnection
-        (unliftIO u . server)
-    closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
-    closeServer clients sock = do
-      readTVarIO clients >>= mapM_ killThread
-      close sock
-      void . atomically $ tryPutTMVar started False
-
-startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
-startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
-  where
-    resolve =
-      let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-       in head <$> getAddrInfo (Just hints) Nothing (Just port)
-    open addr = do
-      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-      setSocketOption sock ReuseAddr 1
-      withFdSocket sock setCloseOnExecIfNeeded
-      bind sock $ addrAddress addr
-      listen sock 1024
-      return sock
-    setStarted sock = atomically (tryPutTMVar started True) >> pure sock
-
--- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> (c -> m a) -> m a
-runTransportClient host port keyHash client = do
-  let clientParams = mkTLSClientParams host port keyHash
-  c <- liftIO $ startTCPClient host port clientParams
-  client c `E.finally` liftIO (closeConnection c)
-
-startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> IO c
-startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
-  where
-    err :: IOException
-    err = mkIOError NoSuchThing "no address" Nothing Nothing
-
-    resolve :: IO [AddrInfo]
-    resolve =
-      let hints = defaultHints {addrSocketType = Stream}
-       in getAddrInfo (Just hints) (Just host) (Just port)
-
-    tryOpen :: IOException -> [AddrInfo] -> IO c
-    tryOpen e [] = E.throwIO e
-    tryOpen _ (addr : as) =
-      E.try (open addr) >>= either (`tryOpen` as) pure
-
-    open :: AddrInfo -> IO c
-    open addr = do
-      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-      connect sock $ addrAddress addr
-      ctx <- connectTLS clientParams sock
-      getClientConnection ctx
-
-loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
-loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
-  fromCredential <$> loadServerCredential
-  where
-    loadServerCredential :: IO T.Credential
-    loadServerCredential =
-      T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
-        Right credential -> pure credential
-        Left _ -> putStrLn "invalid credential" >> exitFailure
-    fromCredential :: T.Credential -> T.ServerParams
-    fromCredential credential =
-      def
-        { T.serverWantClientCert = False,
-          T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
-          T.serverHooks = def,
-          T.serverSupported = supportedParameters
-        }
-
-loadFingerprint :: FilePath -> IO Fingerprint
-loadFingerprint certificateFile = do
-  (cert : _) <- SX.readSignedObject certificateFile
-  pure $ XV.getFingerprint (cert :: X.SignedExact X.Certificate) X.HashSHA256
-
 -- * TLS Transport
 
 data TLS = TLS
@@ -289,33 +175,6 @@ closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
-
-mkTLSClientParams :: HostName -> ServiceName -> C.KeyHash -> T.ClientParams
-mkTLSClientParams host port keyHash = do
-  let p = B.pack port
-  (T.defaultParamsClient host p)
-    { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p},
-      T.clientSupported = supportedParameters
-    }
-
-validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
-validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, caCert]) =
-  if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
-    then x509validate
-    else pure [XV.UnknownCA]
-  where
-    x509validate :: IO [XV.FailedReason]
-    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
-      where
-        hooks = XV.defaultHooks
-        checks = XV.defaultChecks
-        certStore = XS.makeCertificateStore sc
-        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
-        serviceID = (host, port)
-validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
 
 supportedParameters :: T.Supported
 supportedParameters =

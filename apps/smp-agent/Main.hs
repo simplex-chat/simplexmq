@@ -6,8 +6,8 @@ module Main where
 
 import Control.Logger.Simple
 import qualified Data.List.NonEmpty as L
-import Simplex.Messaging.Agent (runSMPAgent)
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Server (runSMPAgent)
 import Simplex.Messaging.Transport (TLS, Transport (..))
 
 cfg :: AgentConfig

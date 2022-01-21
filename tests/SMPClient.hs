@@ -21,6 +21,7 @@ import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (openReadStoreLog)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
