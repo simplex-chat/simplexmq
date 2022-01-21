@@ -60,9 +60,7 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Monad.Except
-import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
-import qualified Crypto.Store.X509 as SX
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
@@ -71,14 +69,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
-import Data.Set (Set)
-import qualified Data.Set as S
-import qualified Data.X509 as X
-import qualified Data.X509.CertificateStore as XS
-import Data.X509.Validation (Fingerprint (..))
-import qualified Data.X509.Validation as XV
 import GHC.Generics (Generic)
-import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
 import Network.Socket
@@ -89,11 +80,8 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse, parseRead1)
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
-import System.Exit (exitFailure)
-import System.IO.Error
 import Test.QuickCheck (Arbitrary (..))
-import UnliftIO.Concurrent
-import UnliftIO.Exception (Exception, IOException)
+import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 

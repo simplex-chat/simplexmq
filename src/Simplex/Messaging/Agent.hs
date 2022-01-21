@@ -59,7 +59,6 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
@@ -67,7 +66,6 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Database.SQLite.Simple (SQLError)
@@ -84,8 +82,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), simplexMQVersion)
-import Simplex.Messaging.Transport.Server (loadTLSServerParams, runTransportServer)
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
 import Simplex.Messaging.Version
 import System.Random (randomR)
