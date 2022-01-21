@@ -26,11 +26,7 @@
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent
-  ( -- * SMP agent over TCP
-    runSMPAgent,
-    runSMPAgentBlocking,
-
-    -- * queue-based SMP agent
+  ( -- * queue-based SMP agent
     getAgentClient,
     runAgentClient,
 
@@ -51,6 +47,7 @@ module Simplex.Messaging.Agent
     ackMessage,
     suspendConnection,
     deleteConnection,
+    logConnection,
   )
 where
 
@@ -87,40 +84,14 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), loadTLSServerParams, runTransportServer, simplexMQVersion)
+import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), simplexMQVersion)
+import Simplex.Messaging.Transport.Server (loadTLSServerParams, runTransportServer)
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-
--- | Runs an SMP agent as a TCP service using passed configuration.
---
--- See a full agent executable here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-agent/Main.hs
-runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> m ()
-runSMPAgent t cfg = do
-  started <- newEmptyTMVarIO
-  runSMPAgentBlocking t started cfg
-
--- | Runs an SMP agent as a TCP service using passed configuration with signalling.
---
--- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
--- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> m ()
-runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} = do
-  runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
-  where
-    smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
-    smpAgent _ = do
-      -- tlsServerParams is not in Env to avoid breaking functional API w/t key and certificate generation
-      tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-      runTransportServer started tcpPort tlsServerParams $ \(h :: c) -> do
-        liftIO . putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
-        c <- getAgentClient
-        logConnection c True
-        race_ (connectClient h c) (runAgentClient c)
-          `E.finally` disconnectAgentClient c
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
@@ -186,9 +157,6 @@ withAgentEnv c = (`runReaderT` agentEnv c)
 getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
 getAgentClient = ask >>= atomically . newAgentClient
 
-connectClient :: Transport c => MonadUnliftIO m => c -> AgentClient -> m ()
-connectClient h c = race_ (send h c) (receive h c)
-
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
 logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
@@ -197,28 +165,6 @@ logConnection c connected =
 -- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
 runAgentClient :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 runAgentClient c = race_ (subscriber c) (client c)
-
-receive :: forall c m. (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
-receive h c@AgentClient {rcvQ, subQ} = forever $ do
-  (corrId, connId, cmdOrErr) <- tGet SClient h
-  case cmdOrErr of
-    Right cmd -> write rcvQ (corrId, connId, cmd)
-    Left e -> write subQ (corrId, connId, ERR e)
-  where
-    write :: TBQueue (ATransmission p) -> ATransmission p -> m ()
-    write q t = do
-      logClient c "-->" t
-      atomically $ writeTBQueue q t
-
-send :: (Transport c, MonadUnliftIO m) => c -> AgentClient -> m ()
-send h c@AgentClient {subQ} = forever $ do
-  t <- atomically $ readTBQueue subQ
-  tPut h t
-  logClient c "<--" t
-
-logClient :: MonadUnliftIO m => AgentClient -> ByteString -> ATransmission a -> m ()
-logClient AgentClient {clientId} dir (corrId, connId, cmd) = do
-  logInfo . decodeUtf8 $ B.unwords [bshow clientId, dir, "A :", corrId, connId, B.takeWhile (/= ' ') $ serializeCommand cmd]
 
 client :: forall m. (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 client c@AgentClient {rcvQ, subQ} = forever $ do

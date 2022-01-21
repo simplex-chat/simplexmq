@@ -20,12 +20,13 @@ import SMPClient
     withSmpServerOn,
     withSmpServerThreadOn,
   )
-import Simplex.Messaging.Agent (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
