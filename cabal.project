@@ -1,1 +1,7 @@
 packages: .
+
+-- source-repository-package
+--   type: git
+--   location: git://github.com/simplex-chat/hs-tls.git
+--   tag: f6cc753611f80af300401cfae63846e9d7c40d9e
+--   subdir: core
