@@ -52,12 +52,12 @@ curl -L -o $binary https://github.com/simplex-chat/simplexmq/releases/latest/dow
 chmod +x $binary
 
 # / Add to PATH
-cat <<EOT >> /etc/profile.d/simplex.sh
+cat > /etc/profile.d/simplex.sh << EOF
 #!/bin/bash
 
 export PATH="$PATH:$bin_dir"
 
-EOT
+EOF
 # Add to PATH /
 
 # Source and test PATH
@@ -94,13 +94,13 @@ fi
 on_login_script="/opt/simplex/on_login.sh"
 
 # / Welcome script
-cat <<EOT >> $on_login_script
+cat > $on_login_script << EOF
 #!/bin/bash
 
 fingerprint=\$1
 server_address=\$2
 
-cat <<EOF
+cat << EOF2
 ********************************************************************************
 
 SMP server address: smp://\$fingerprint@\$server_address
@@ -111,9 +111,9 @@ All ports are BLOCKED except 22 (SSH), 443 (HTTPS), 5223 (SMP server).
 
 ********************************************************************************
 To stop seeing this message delete line - bash /opt/simplex/on_login.sh - from /root/.bashrc
-EOF
+EOF2
 
-EOT
+EOF
 # Welcome script /
 
 chmod +x $on_login_script
@@ -144,18 +144,18 @@ if [[ -n "$API_TOKEN" ]]; then
 fi
 
 # / Create systemd service
-cat <<EOT >> /etc/systemd/system/smp-server.service
+cat > /etc/systemd/system/smp-server.service << EOF
 [Unit]
-Description=SMP server systemd service
+Description=SMP server
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c "exec /opt/simplex/bin/smp-server start >> /var/opt/simplex/smp-server.log 2>&1"
+ExecStart=/bin/sh -c "exec $binary start >> /var/opt/simplex/smp-server.log 2>&1"
 
 [Install]
 WantedBy=multi-user.target
 
-EOT
+EOF
 # Create systemd service /
 
 # Start systemd service
