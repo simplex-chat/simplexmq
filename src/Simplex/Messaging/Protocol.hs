@@ -90,6 +90,8 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
+import Data.Aeson (ToJSON (..))
+import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -107,7 +109,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
@@ -413,6 +415,15 @@ newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
 instance IsString CorrId where
   fromString = CorrId . fromString
 
+instance StrEncoding CorrId where
+  strEncode (CorrId cId) = strEncode cId
+  strDecode s = CorrId <$> strDecode s
+  strP = CorrId <$> strP
+
+instance ToJSON CorrId where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
 -- | Queue IDs and keys
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
@@ -462,7 +473,7 @@ data ErrorType
   | -- | incorrect SMP session ID (TLS Finished message / tls-unique binding RFC5929)
     SESSION
   | -- | SMP command is unknown or has invalid syntax
-    CMD CommandError
+    CMD {cmdErr :: CommandError}
   | -- | command authorization error - bad signature or non-existing SMP queue
     AUTH
   | -- | SMP queue capacity is exceeded on the server
@@ -477,6 +488,16 @@ data ErrorType
     DUPLICATE_ -- TODO remove, not part of SMP protocol
   deriving (Eq, Generic, Read, Show)
 
+instance ToJSON ErrorType where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance StrEncoding ErrorType where
+  strEncode = \case
+    CMD e -> "CMD " <> bshow e
+    e -> bshow e
+  strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
+
 -- | SMP command error type.
 data CommandError
   = -- | unknown command
@@ -490,6 +511,10 @@ data CommandError
   | -- | transmission has no required queue ID
     NO_QUEUE
   deriving (Eq, Generic, Read, Show)
+
+instance ToJSON CommandError where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
