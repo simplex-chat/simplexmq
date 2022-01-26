@@ -91,6 +91,7 @@ where
 import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
 import Data.Aeson (ToJSON (..))
+import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -472,7 +473,7 @@ data ErrorType
   | -- | incorrect SMP session ID (TLS Finished message / tls-unique binding RFC5929)
     SESSION
   | -- | SMP command is unknown or has invalid syntax
-    CMD CommandError
+    CMD {cmdErr :: CommandError}
   | -- | command authorization error - bad signature or non-existing SMP queue
     AUTH
   | -- | SMP queue capacity is exceeded on the server
@@ -488,11 +489,13 @@ data ErrorType
   deriving (Eq, Generic, Read, Show)
 
 instance ToJSON ErrorType where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 instance StrEncoding ErrorType where
-  strEncode = bshow
+  strEncode = \case
+    CMD e -> "CMD " <> bshow e
+    e -> bshow e
   strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
 
 -- | SMP command error type.
@@ -509,9 +512,9 @@ data CommandError
     NO_QUEUE
   deriving (Eq, Generic, Read, Show)
 
-instance StrEncoding CommandError where
-  strEncode = bshow
-  strP = parseRead1
+instance ToJSON CommandError where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 

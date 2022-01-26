@@ -93,5 +93,6 @@ sumTypeJSON :: (String -> String) -> J.Options
 sumTypeJSON tagModifier =
   J.defaultOptions
     { J.sumEncoding = J.TaggedObject "type" "data",
-      J.constructorTagModifier = tagModifier
+      J.constructorTagModifier = tagModifier,
+      J.omitNothingFields = True
     }

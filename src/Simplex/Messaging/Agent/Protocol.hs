@@ -660,17 +660,17 @@ instance FromJSON MsgErrorType where
 -- | Error type used in errors sent to agent clients.
 data AgentErrorType
   = -- | command or response error
-    CMD CommandErrorType
+    CMD {cmdErr :: CommandErrorType}
   | -- | connection errors
-    CONN ConnectionErrorType
+    CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
-    SMP ErrorType
+    SMP {smpErr :: ErrorType}
   | -- | SMP server errors
-    BROKER BrokerErrorType
+    BROKER {brokerErr :: BrokerErrorType}
   | -- | errors of other agents
-    AGENT SMPAgentError
+    AGENT {agentErr :: SMPAgentError}
   | -- | agent implementation or dependency errors
-    INTERNAL String
+    INTERNAL {internalErr :: String}
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance ToJSON AgentErrorType where
@@ -716,13 +716,13 @@ instance ToJSON ConnectionErrorType where
 -- | SMP server errors.
 data BrokerErrorType
   = -- | invalid server response (failed to parse)
-    RESPONSE ErrorType
+    RESPONSE {smpErr :: ErrorType}
   | -- | unexpected response
     UNEXPECTED
   | -- | network error
     NETWORK
   | -- | handshake or other transport error
-    TRANSPORT TransportError
+    TRANSPORT {transportErr :: TransportError}
   | -- | command response timeout
     TIMEOUT
   deriving (Eq, Generic, Read, Show, Exception)
@@ -750,16 +750,23 @@ instance ToJSON SMPAgentError where
 
 instance StrEncoding AgentErrorType where
   strP =
-    "SMP " *> (SMP <$> strP)
+    "CMD " *> (CMD <$> parseRead1)
+      <|> "CONN " *> (CONN <$> parseRead1)
+      <|> "SMP " *> (SMP <$> strP)
       <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> strP)
       <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
+      <|> "BROKER " *> (BROKER <$> parseRead1)
+      <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
-      <|> parseRead2
   strEncode = \case
+    CMD e -> "CMD " <> bshow e
+    CONN e -> "CONN " <> bshow e
     SMP e -> "SMP " <> strEncode e
     BROKER (RESPONSE e) -> "BROKER RESPONSE " <> strEncode e
     BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
-    e -> bshow e
+    BROKER e -> "BROKER " <> bshow e
+    AGENT e -> "AGENT " <> bshow e
+    INTERNAL e -> "INTERNAL " <> bshow e
 
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 

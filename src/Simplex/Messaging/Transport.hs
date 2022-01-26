@@ -289,7 +289,7 @@ data TransportError
   | -- | incorrect session ID
     TEBadSession
   | -- | transport handshake error
-    TEHandshake HandshakeError
+    TEHandshake {handshakeErr :: HandshakeError}
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance ToJSON TransportError where
