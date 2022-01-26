@@ -391,10 +391,10 @@ sendMessage (h1, name1) (h2, name2) msg = do
   ("m1", name2', Right (MID mId)) <- h1 #: ("m1", name2, "SEND :" <> msg)
   name2' `shouldBe` name2
   h1 <#= \case ("", n, SENT m) -> n == name2 && m == mId; _ -> False
-  ("", name1', Right (MSG MsgMeta {recipient = (msgId, _)} msg')) <- (h2 <#:)
+  ("", name1', Right (MSG MsgMeta {recipient = (msgId', _)} msg')) <- (h2 <#:)
   name1' `shouldBe` name1
   msg' `shouldBe` msg
-  h2 #: ("m2", name1, "ACK " <> bshow msgId) =#> \case ("m2", n, OK) -> n == name1; _ -> False
+  h2 #: ("m2", name1, "ACK " <> bshow msgId') =#> \case ("m2", n, OK) -> n == name1; _ -> False
 
 -- connect' :: forall c. Transport c => c -> c -> IO (ByteString, ByteString)
 -- connect' h1 h2 = do

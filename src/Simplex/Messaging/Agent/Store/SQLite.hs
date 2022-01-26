@@ -569,9 +569,9 @@ instance ToField AMsgType where toField = toField . smpEncode
 
 instance FromField AMsgType where fromField = blobFieldParser smpP
 
-instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
+instance ToField MsgIntegrity where toField = toField . strEncode
 
-instance FromField MsgIntegrity where fromField = blobFieldParser msgIntegrityP
+instance FromField MsgIntegrity where fromField = blobFieldParser strP
 
 instance ToField SMPQueueUri where toField = toField . strEncode
 

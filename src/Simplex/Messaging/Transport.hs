@@ -61,6 +61,8 @@ where
 import Control.Applicative ((<|>))
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
+import Data.Aeson (ToJSON)
+import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
@@ -77,7 +79,7 @@ import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (parse, parseRead1)
+import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -290,6 +292,10 @@ data TransportError
     TEHandshake HandshakeError
   deriving (Eq, Generic, Read, Show, Exception)
 
+instance ToJSON TransportError where
+  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "TE"
+  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "TE"
+
 -- | Transport handshake error.
 data HandshakeError
   = -- | parsing error
@@ -299,6 +305,10 @@ data HandshakeError
   | -- | incorrect server identity
     IDENTITY
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance ToJSON HandshakeError where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 instance Arbitrary TransportError where arbitrary = genericArbitraryU
 

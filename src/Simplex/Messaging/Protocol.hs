@@ -90,6 +90,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
+import Data.Aeson (ToJSON (..))
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -107,7 +108,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
@@ -413,6 +414,15 @@ newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
 instance IsString CorrId where
   fromString = CorrId . fromString
 
+instance StrEncoding CorrId where
+  strEncode (CorrId cId) = strEncode cId
+  strDecode s = CorrId <$> strDecode s
+  strP = CorrId <$> strP
+
+instance ToJSON CorrId where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
 -- | Queue IDs and keys
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
@@ -477,6 +487,14 @@ data ErrorType
     DUPLICATE_ -- TODO remove, not part of SMP protocol
   deriving (Eq, Generic, Read, Show)
 
+instance ToJSON ErrorType where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance StrEncoding ErrorType where
+  strEncode = bshow
+  strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
+
 -- | SMP command error type.
 data CommandError
   = -- | unknown command
@@ -490,6 +508,10 @@ data CommandError
   | -- | transmission has no required queue ID
     NO_QUEUE
   deriving (Eq, Generic, Read, Show)
+
+instance StrEncoding CommandError where
+  strEncode = bshow
+  strP = parseRead1
 
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 

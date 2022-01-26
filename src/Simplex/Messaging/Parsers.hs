@@ -4,13 +4,14 @@
 module Simplex.Messaging.Parsers where
 
 import Control.Monad.Trans.Except
+import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlphaNum)
+import Data.Char (isAlphaNum, toLower)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
 import Data.Typeable (Typeable)
@@ -78,3 +79,19 @@ blobFieldDecoder dec = \case
       Right k -> Ok k
       Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
   f -> returnError ConversionFailed f "expecting SQLBlob column type"
+
+fstToLower :: String -> String
+fstToLower "" = ""
+fstToLower (h : t) = toLower h : t
+
+dropPrefix :: String -> String -> String
+dropPrefix pfx s =
+  let (p, rest) = splitAt (length pfx) s
+   in fstToLower $ if p == pfx then rest else s
+
+sumTypeJSON :: (String -> String) -> J.Options
+sumTypeJSON tagModifier =
+  J.defaultOptions
+    { J.sumEncoding = J.TaggedObject "type" "data",
+      J.constructorTagModifier = tagModifier
+    }
