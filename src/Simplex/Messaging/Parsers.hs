@@ -89,10 +89,30 @@ dropPrefix pfx s =
   let (p, rest) = splitAt (length pfx) s
    in fstToLower $ if p == pfx then rest else s
 
+enumJSON :: (String -> String) -> J.Options
+enumJSON tagModifier =
+  J.defaultOptions
+    { J.constructorTagModifier = tagModifier,
+      J.allNullaryToStringTag = True
+    }
+
 sumTypeJSON :: (String -> String) -> J.Options
-sumTypeJSON tagModifier =
+sumTypeJSON = singleFieldJSON
+
+taggedObjectJSON :: (String -> String) -> J.Options
+taggedObjectJSON tagModifier =
   J.defaultOptions
     { J.sumEncoding = J.TaggedObject "type" "data",
       J.constructorTagModifier = tagModifier,
+      J.nullaryToObject = True,
+      J.omitNothingFields = True
+    }
+
+singleFieldJSON :: (String -> String) -> J.Options
+singleFieldJSON tagModifier =
+  J.defaultOptions
+    { J.sumEncoding = J.ObjectWithSingleField,
+      J.constructorTagModifier = tagModifier,
+      J.nullaryToObject = True,
       J.omitNothingFields = True
     }
