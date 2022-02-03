@@ -32,8 +32,6 @@ import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import qualified Database.SQLite.Simple.FromField as SF
 import qualified Database.SQLite.Simple.ToField as ST
--- import Database.SQLite.Simple.FromField (FromField (..))
--- import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.Generics
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
