@@ -16,16 +16,18 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
-module Simplex.Messaging.Agent.Store.Postgres
-  ( PostgresStore (..),
-    createPostgresStore,
-    connectPostgresStore,
-    withConnection,
-    withTransaction,
-    fromTextField_,
-    firstRow,
-  )
-where
+module Simplex.Messaging.Agent.Store.Postgres where
+
+-- module Simplex.Messaging.Agent.Store.Postgres
+--   ( PostgresStore (..),
+--     createPostgresStore,
+--     connectPostgresStore,
+--     withConnection,
+--     withTransaction,
+--     fromTextField_,
+--     firstRow,
+--   )
+-- where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
@@ -43,6 +45,7 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
+-- import Database.PostgreSQL.Simple
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, ToRow, field)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
@@ -68,7 +71,7 @@ import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
 import qualified UnliftIO.Exception as E
 
--- * SQLite Store implementation
+-- * Postgres Store implementation
 
 data PostgresStore = PostgresStore
   { dbFilePath :: FilePath,

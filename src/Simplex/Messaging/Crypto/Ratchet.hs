@@ -30,8 +30,10 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Typeable (Typeable)
 import Data.Word (Word32)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
+import qualified Database.SQLite.Simple.FromField as SF
+import qualified Database.SQLite.Simple.ToField as ST
+-- import Database.SQLite.Simple.FromField (FromField (..))
+-- import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.Generics
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
@@ -197,13 +199,13 @@ instance ToJSON RatchetKey where
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
 
-instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
+instance AlgorithmI a => ST.ToField (Ratchet a) where toField = ST.toField . LB.toStrict . J.encode
 
-instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
+instance (AlgorithmI a, Typeable a) => SF.FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 
-instance ToField MessageKey where toField = toField . smpEncode
+instance ST.ToField MessageKey where toField = ST.toField . smpEncode
 
-instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
+instance SF.FromField MessageKey where fromField = blobFieldDecoder smpDecode
 
 -- | Sending ratchet initialization, equivalent to RatchetInitAliceHE in double ratchet spec
 --

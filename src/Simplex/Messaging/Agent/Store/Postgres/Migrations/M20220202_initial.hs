@@ -8,6 +8,10 @@ import Database.SQLite.Simple.QQ (sql)
 m20220202_initial :: Query
 m20220202_initial =
   [sql|
+-- for easy testing
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+
 CREATE TABLE servers (
   host TEXT NOT NULL,
   port TEXT NOT NULL,
