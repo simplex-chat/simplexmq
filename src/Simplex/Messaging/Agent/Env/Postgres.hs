@@ -20,8 +20,8 @@ import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Agent.Store.SQLite
-import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Postgres
+import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import System.Random (StdGen, newStdGen)
@@ -72,7 +72,7 @@ defaultAgentConfig =
 
 data Env = Env
   { config :: AgentConfig,
-    store :: SQLiteStore,
+    store :: PostgresStore,
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen
@@ -81,7 +81,7 @@ data Env = Env
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv cfg = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
+  store <- liftIO $ createPostgresStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   return Env {config = cfg, store, idsDrg, clientCounter, randomServer}

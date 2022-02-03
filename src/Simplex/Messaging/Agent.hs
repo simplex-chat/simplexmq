@@ -70,11 +70,11 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
-import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Env.Postgres
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
+import Simplex.Messaging.Agent.Store.Postgres (PostgresStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -172,7 +172,7 @@ client c@AgentClient {rcvQ, subQ} = forever $ do
 
 withStore ::
   AgentMonad m =>
-  (forall m'. (MonadUnliftIO m', MonadError StoreError m') => SQLiteStore -> m' a) ->
+  (forall m'. (MonadUnliftIO m', MonadError StoreError m') => PostgresStore -> m' a) ->
   m a
 withStore action = do
   st <- asks store

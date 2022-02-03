@@ -17,9 +17,9 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Store.Postgres
-  ( SQLiteStore (..),
-    createSQLiteStore,
-    connectSQLiteStore,
+  ( PostgresStore (..),
+    createPostgresStore,
+    connectPostgresStore,
     withConnection,
     withTransaction,
     fromTextField_,
@@ -52,8 +52,8 @@ import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
-import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Postgres.Migrations (Migration)
+import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
@@ -70,22 +70,22 @@ import qualified UnliftIO.Exception as E
 
 -- * SQLite Store implementation
 
-data SQLiteStore = SQLiteStore
+data PostgresStore = PostgresStore
   { dbFilePath :: FilePath,
     dbConnPool :: TBQueue DB.Connection,
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> Int -> [Migration] -> IO SQLiteStore
-createSQLiteStore dbFilePath poolSize migrations = do
+createPostgresStore :: FilePath -> Int -> [Migration] -> IO PostgresStore
+createPostgresStore dbFilePath poolSize migrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
-  st <- connectSQLiteStore dbFilePath poolSize
+  st <- connectPostgresStore dbFilePath poolSize
   checkThreadsafe st
   migrateSchema st migrations
   pure st
 
-checkThreadsafe :: SQLiteStore -> IO ()
+checkThreadsafe :: PostgresStore -> IO ()
 checkThreadsafe st = withConnection st $ \db -> do
   compileOptions <- DB.query_ db "pragma COMPILE_OPTIONS;" :: IO [[Text]]
   let threadsafeOption = find (T.isPrefixOf "THREADSAFE=") (concat compileOptions)
@@ -94,7 +94,7 @@ checkThreadsafe st = withConnection st $ \db -> do
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
     _ -> return ()
 
-migrateSchema :: SQLiteStore -> [Migration] -> IO ()
+migrateSchema :: PostgresStore -> [Migration] -> IO ()
 migrateSchema st migrations = withConnection st $ \db -> do
   Migrations.initialize db
   Migrations.get db migrations >>= \case
@@ -115,13 +115,13 @@ confirmOrExit s = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-connectSQLiteStore :: FilePath -> Int -> IO SQLiteStore
-connectSQLiteStore dbFilePath poolSize = do
+connectPostgresStore :: FilePath -> Int -> IO PostgresStore
+connectPostgresStore dbFilePath poolSize = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConnPool <- newTBQueueIO $ toEnum poolSize
   replicateM_ poolSize $
     connectDB dbFilePath >>= atomically . writeTBQueue dbConnPool
-  pure SQLiteStore {dbFilePath, dbConnPool, dbNew}
+  pure PostgresStore {dbFilePath, dbConnPool, dbNew}
 
 connectDB :: FilePath -> IO DB.Connection
 connectDB path = do
@@ -137,13 +137,13 @@ handleSQLError err e
   | DB.sqlError e == DB.ErrorConstraint = err
   | otherwise = SEInternal $ bshow e
 
-withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withConnection SQLiteStore {dbConnPool} =
+withConnection :: PostgresStore -> (DB.Connection -> IO a) -> IO a
+withConnection PostgresStore {dbConnPool} =
   bracket
     (atomically $ readTBQueue dbConnPool)
     (atomically . writeTBQueue dbConnPool)
 
-withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
+withTransaction :: forall a. PostgresStore -> (DB.Connection -> IO a) -> IO a
 withTransaction st action = withConnection st $ loop 100 100_000
   where
     loop :: Int -> Int -> DB.Connection -> IO a
@@ -157,7 +157,7 @@ withTransaction st action = withConnection st $ loop 100 100_000
 
 createConn_ ::
   (MonadUnliftIO m, MonadError StoreError m) =>
-  SQLiteStore ->
+  PostgresStore ->
   TVar ChaChaDRG ->
   ConnData ->
   (DB.Connection -> ByteString -> IO ()) ->
@@ -168,27 +168,27 @@ createConn_ st gVar cData create =
       ConnData {connId = ""} -> createWithRandomId gVar $ create db
       ConnData {connId} -> create db connId $> Right connId
 
-instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
-  createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
+instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore PostgresStore m where
+  createRcvConn :: PostgresStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createRcvConn st gVar cData q@RcvQueue {server} cMode =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
       DB.execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, cMode)
       insertRcvQueue_ db connId q
 
-  createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
+  createSndConn :: PostgresStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   createSndConn st gVar cData q@SndQueue {server} =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
       DB.execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, SCMInvitation)
       insertSndQueue_ db connId q
 
-  getConn :: SQLiteStore -> ConnId -> m SomeConn
+  getConn :: PostgresStore -> ConnId -> m SomeConn
   getConn st connId =
     liftIOEither . withTransaction st $ \db ->
       getConn_ db connId
 
-  getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
+  getRcvConn :: PostgresStore -> SMPServer -> SMP.RecipientId -> m SomeConn
   getRcvConn st SMPServer {host, port} rcvId =
     liftIOEither . withTransaction st $ \db ->
       DB.queryNamed
@@ -203,7 +203,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           [Only connId] -> getConn_ db connId
           _ -> pure $ Left SEConnNotFound
 
-  deleteConn :: SQLiteStore -> ConnId -> m ()
+  deleteConn :: PostgresStore -> ConnId -> m ()
   deleteConn st connId =
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -211,7 +211,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         "DELETE FROM connections WHERE conn_id = :conn_id;"
         [":conn_id" := connId]
 
-  upgradeRcvConnToDuplex :: SQLiteStore -> ConnId -> SndQueue -> m ()
+  upgradeRcvConnToDuplex :: PostgresStore -> ConnId -> SndQueue -> m ()
   upgradeRcvConnToDuplex st connId sq@SndQueue {server} =
     liftIOEither . withTransaction st $ \db ->
       getConn_ db connId >>= \case
@@ -222,7 +222,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
         _ -> pure $ Left SEConnNotFound
 
-  upgradeSndConnToDuplex :: SQLiteStore -> ConnId -> RcvQueue -> m ()
+  upgradeSndConnToDuplex :: PostgresStore -> ConnId -> RcvQueue -> m ()
   upgradeSndConnToDuplex st connId rq@RcvQueue {server} =
     liftIOEither . withTransaction st $ \db ->
       getConn_ db connId >>= \case
@@ -233,7 +233,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
         _ -> pure $ Left SEConnNotFound
 
-  setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
+  setRcvQueueStatus :: PostgresStore -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueStatus st RcvQueue {rcvId, server = SMPServer {host, port}} status =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
@@ -246,7 +246,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
-  setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.DhSecretX25519 -> m ()
+  setRcvQueueConfirmedE2E :: PostgresStore -> RcvQueue -> C.DhSecretX25519 -> m ()
   setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eDhSecret =
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -264,7 +264,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           ":rcv_id" := rcvId
         ]
 
-  setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
+  setSndQueueStatus :: PostgresStore -> SndQueue -> QueueStatus -> m ()
   setSndQueueStatus st SndQueue {sndId, server = SMPServer {host, port}} status =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
@@ -277,7 +277,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
-  createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
+  createConfirmation :: PostgresStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}, ratchetState} =
     liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \confirmationId ->
@@ -289,7 +289,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           |]
           (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo)
 
-  acceptConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
+  acceptConfirmation :: PostgresStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
   acceptConfirmation st confirmationId ownConnInfo =
     liftIOEither . withTransaction st $ \db -> do
       DB.executeNamed
@@ -322,7 +322,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             ownConnInfo
           }
 
-  getAcceptedConfirmation :: SQLiteStore -> ConnId -> m AcceptedConfirmation
+  getAcceptedConfirmation :: PostgresStore -> ConnId -> m AcceptedConfirmation
   getAcceptedConfirmation st connId =
     liftIOEither . withTransaction st $ \db ->
       firstRow confirmation SEConfirmationNotFound $
@@ -344,7 +344,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             ownConnInfo
           }
 
-  removeConfirmations :: SQLiteStore -> ConnId -> m ()
+  removeConfirmations :: PostgresStore -> ConnId -> m ()
   removeConfirmations st connId =
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -355,7 +355,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":conn_id" := connId]
 
-  createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
+  createInvitation :: PostgresStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   createInvitation st gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
     liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \invitationId ->
@@ -367,7 +367,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           |]
           (invitationId, contactConnId, connReq, recipientConnInfo)
 
-  getInvitation :: SQLiteStore -> InvitationId -> m Invitation
+  getInvitation :: PostgresStore -> InvitationId -> m Invitation
   getInvitation st invitationId =
     liftIOEither . withTransaction st $ \db ->
       firstRow invitation SEInvitationNotFound $
@@ -384,7 +384,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       invitation (contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted) =
         Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
 
-  acceptInvitation :: SQLiteStore -> InvitationId -> ConnInfo -> m ()
+  acceptInvitation :: PostgresStore -> InvitationId -> ConnInfo -> m ()
   acceptInvitation st invitationId ownConnInfo =
     liftIO . withTransaction st $ \db -> do
       DB.executeNamed
@@ -399,7 +399,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           ":invitation_id" := invitationId
         ]
 
-  deleteInvitation :: SQLiteStore -> ConnId -> InvitationId -> m ()
+  deleteInvitation :: PostgresStore -> ConnId -> InvitationId -> m ()
   deleteInvitation st contactConnId invId =
     liftIOEither . withTransaction st $ \db ->
       runExceptT $
@@ -408,7 +408,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             liftIO $ DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, invId)
           _ -> throwError SEConnNotFound
 
-  updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+  updateRcvIds :: PostgresStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
   updateRcvIds st connId =
     liftIO . withTransaction st $ \db -> do
       (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ db connId
@@ -417,14 +417,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       updateLastIdsRcv_ db connId internalId internalRcvId
       pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
 
-  createRcvMsg :: SQLiteStore -> ConnId -> RcvMsgData -> m ()
+  createRcvMsg :: PostgresStore -> ConnId -> RcvMsgData -> m ()
   createRcvMsg st connId rcvMsgData =
     liftIO . withTransaction st $ \db -> do
       insertRcvMsgBase_ db connId rcvMsgData
       insertRcvMsgDetails_ db connId rcvMsgData
       updateHashRcv_ db connId rcvMsgData
 
-  updateSndIds :: SQLiteStore -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
+  updateSndIds :: PostgresStore -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   updateSndIds st connId =
     liftIO . withTransaction st $ \db -> do
       (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ db connId
@@ -433,14 +433,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       updateLastIdsSnd_ db connId internalId internalSndId
       pure (internalId, internalSndId, prevSndHash)
 
-  createSndMsg :: SQLiteStore -> ConnId -> SndMsgData -> m ()
+  createSndMsg :: PostgresStore -> ConnId -> SndMsgData -> m ()
   createSndMsg st connId sndMsgData =
     liftIO . withTransaction st $ \db -> do
       insertSndMsgBase_ db connId sndMsgData
       insertSndMsgDetails_ db connId sndMsgData
       updateHashSnd_ db connId sndMsgData
 
-  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody, InternalTs))
+  getPendingMsgData :: PostgresStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody, InternalTs))
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
       rq_ <- liftIO $ getRcvQueueByConnId_ db connId
@@ -457,13 +457,13 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             (connId, msgId)
       pure (rq_, msgData)
 
-  getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
+  getPendingMsgs :: PostgresStore -> ConnId -> m [InternalId]
   getPendingMsgs st connId =
     liftIO . withTransaction st $ \db ->
       map fromOnly
         <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_id = ?" (Only connId)
 
-  checkRcvMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
+  checkRcvMsg :: PostgresStore -> ConnId -> InternalId -> m ()
   checkRcvMsg st connId msgId =
     liftIOEither . withTransaction st $ \db ->
       hasMsg
@@ -479,17 +479,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       hasMsg :: [(ConnId, InternalId)] -> Either StoreError ()
       hasMsg r = if null r then Left SEMsgNotFound else Right ()
 
-  deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
+  deleteMsg :: PostgresStore -> ConnId -> InternalId -> m ()
   deleteMsg st connId msgId =
     liftIO . withTransaction st $ \db ->
       DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
 
-  createRatchetX3dhKeys :: SQLiteStore -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
+  createRatchetX3dhKeys :: PostgresStore -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
   createRatchetX3dhKeys st connId x3dhPrivKey1 x3dhPrivKey2 =
     liftIO . withTransaction st $ \db ->
       DB.execute db "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2) VALUES (?, ?, ?)" (connId, x3dhPrivKey1, x3dhPrivKey2)
 
-  getRatchetX3dhKeys :: SQLiteStore -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
+  getRatchetX3dhKeys :: PostgresStore -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
   getRatchetX3dhKeys st connId =
     liftIOEither . withTransaction st $ \db ->
       fmap hasKeys $
@@ -500,7 +500,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         Right (Just k1, Just k2) -> Right (k1, k2)
         _ -> Left SEX3dhKeysNotFound
 
-  createRatchet :: SQLiteStore -> ConnId -> RatchetX448 -> m ()
+  createRatchet :: PostgresStore -> ConnId -> RatchetX448 -> m ()
   createRatchet st connId rc =
     liftIO . withTransaction st $ \db -> do
       DB.executeNamed
@@ -515,7 +515,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":conn_id" := connId, ":ratchet_state" := rc]
 
-  getRatchet :: SQLiteStore -> ConnId -> m RatchetX448
+  getRatchet :: PostgresStore -> ConnId -> m RatchetX448
   getRatchet st connId =
     liftIOEither . withTransaction st $ \db ->
       ratchet
@@ -524,7 +524,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       ratchet (Only (Just rc) : _) = Right rc
       ratchet _ = Left SERatchetNotFound
 
-  getSkippedMsgKeys :: SQLiteStore -> ConnId -> m SkippedMsgKeys
+  getSkippedMsgKeys :: PostgresStore -> ConnId -> m SkippedMsgKeys
   getSkippedMsgKeys st connId =
     liftIO . withTransaction st $ \db ->
       skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
@@ -534,7 +534,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         where
           addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
 
-  updateRatchet :: SQLiteStore -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
+  updateRatchet :: PostgresStore -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
   updateRatchet st connId rc skipped =
     liftIO . withTransaction st $ \db -> do
       DB.execute db "UPDATE ratchets SET ratchet_state = ? WHERE conn_id = ?" (rc, connId)

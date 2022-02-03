@@ -19,7 +19,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Text.Encoding (decodeUtf8)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Env.Postgres
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Transport (ATransport (..), TProxy, Transport (..), simplexMQVersion)
 import Simplex.Messaging.Transport.Server (loadTLSServerParams, runTransportServer)

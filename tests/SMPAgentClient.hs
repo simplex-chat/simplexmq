@@ -20,7 +20,7 @@ import SMPClient
     withSmpServerOn,
     withSmpServerThreadOn,
   )
-import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Env.Postgres
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
