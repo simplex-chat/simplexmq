@@ -12,11 +12,11 @@ data RetryInterval = RetryInterval
     maxInterval :: Int
   }
 
-withRetryInterval :: forall m. MonadIO m => RetryInterval -> (m () -> m ()) -> m ()
+withRetryInterval :: forall a m. MonadIO m => RetryInterval -> (m a -> m a) -> m a
 withRetryInterval RetryInterval {initialInterval, increaseAfter, maxInterval} action =
   callAction 0 initialInterval
   where
-    callAction :: Int -> Int -> m ()
+    callAction :: Int -> Int -> m a
     callAction elapsedTime delay = action loop
       where
         loop = do
