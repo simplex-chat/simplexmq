@@ -82,8 +82,7 @@ data Env = Env
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv cfg@AgentConfig {dbConnInfo, dbPoolSize} = do
   idsDrg <- newTVarIO =<< drgNew
-  -- store <- liftIO $ createPostgresStore dbConnInfo dbPoolSize Migrations.app
-  store <- liftIO $ createPostgresStore dbConnInfo dbPoolSize
+  store <- liftIO $ createPostgresStore dbConnInfo dbPoolSize Migrations.app
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   return Env {config = cfg, store, idsDrg, clientCounter, randomServer}

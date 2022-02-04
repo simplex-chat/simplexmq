@@ -16,18 +16,16 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
-module Simplex.Messaging.Agent.Store.Postgres where
-
--- module Simplex.Messaging.Agent.Store.Postgres
---   ( PostgresStore (..),
---     createPostgresStore,
---     connectPostgresStore,
---     withConnection,
---     withTransaction,
---     fromTextField_,
---     firstRow,
---   )
--- where
+module Simplex.Messaging.Agent.Store.Postgres
+  ( PostgresStore (..),
+    createPostgresStore,
+    connectPostgresStore,
+    withConnection,
+    withTransaction,
+    fromTextField_,
+    firstRow,
+  )
+where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
@@ -39,8 +37,6 @@ import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
--- import Simplex.Messaging.Agent.Store.Postgres.Migrations (Migration)
-
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower)
 import Data.Functor (($>))
@@ -49,7 +45,7 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
-import Database.PostgreSQL.Simple (FromRow, Only (..), Query, SqlError, ToRow)
+import Database.PostgreSQL.Simple (FromRow, Only (..), Query, SqlError, ToRow, withSavepoint)
 import qualified Database.PostgreSQL.Simple as DB
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.FromField
@@ -62,6 +58,7 @@ import qualified Database.PostgreSQL.Simple.TypeInfo.Static
 import GHC.Word (Word32)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.Postgres.Migrations (Migration)
 import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -85,26 +82,25 @@ data PostgresStore = PostgresStore
     dbNew :: Bool
   }
 
-createPostgresStore :: DB.ConnectInfo -> Int -> IO PostgresStore
--- createPostgresStore :: DB.ConnectInfo -> Int -> [Migration] -> IO PostgresStore
-createPostgresStore dbConnInfo poolSize = do
+createPostgresStore :: DB.ConnectInfo -> Int -> [Migration] -> IO PostgresStore
+createPostgresStore dbConnInfo poolSize migrations = do
   st <- connectPostgresStore dbConnInfo poolSize
-  -- migrateSchema st migrations
+  migrateSchema st migrations
   pure st
 
--- migrateSchema :: PostgresStore -> [Migration] -> IO ()
--- migrateSchema st migrations = withConnection st $ \db -> do
---   Migrations.initialize db
---   Migrations.get db migrations >>= \case
---     Left e -> confirmOrExit $ "Database error: " <> e
---     Right [] -> pure ()
---     Right ms -> do
---       unless (dbNew st) $ do
---         confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
---         -- TODO backup
---         -- let f = dbFilePath st
---         -- copyFile f (f <> ".bak")
---       Migrations.run db ms
+migrateSchema :: PostgresStore -> [Migration] -> IO ()
+migrateSchema st migrations = withConnection st $ \db -> do
+  Migrations.initialize db
+  Migrations.get db migrations >>= \case
+    Left e -> confirmOrExit $ "Database error: " <> e
+    Right [] -> pure ()
+    Right ms -> do
+      unless (dbNew st) $ do
+        confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
+      -- TODO backup
+      -- let f = dbFilePath st
+      -- copyFile f (f <> ".bak")
+      Migrations.run db ms
 
 confirmOrExit :: String -> IO ()
 confirmOrExit s = do
@@ -168,11 +164,14 @@ createConn_ ::
   ConnData ->
   (DB.Connection -> ByteString -> IO ()) ->
   m ByteString
-createConn_ st gVar cData create =
-  liftIOEither . checkConstraint SEConnDuplicate . withTransaction st $ \db ->
+createConn_ st gVar cData create = do
+  connId <- liftIOEither . checkConstraint SEConnDuplicate . withTransaction st $ \db ->
     case cData of
       ConnData {connId = ""} -> createWithRandomId gVar $ create db
       ConnData {connId} -> create db connId $> Right connId
+  conn <- liftIO $ withTransaction st $ \db -> getConn_ db connId
+  liftIO $ print conn
+  pure connId
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore PostgresStore m where
   createRcvConn :: PostgresStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
@@ -185,9 +184,13 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore PostgresS
   createSndConn :: PostgresStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   createSndConn st gVar cData q@SndQueue {server} =
     createConn_ st gVar cData $ \db connId -> do
+      print "upsertServer_ db server"
       upsertServer_ db server
+      print "execute db \"INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)\" (connId, SCMInvitation)"
       execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, SCMInvitation)
-      insertSndQueue_ db connId q
+      print "insertSndQueue_ db connId q"
+      insertSndQueue_ db connId q -- ! fails here - comment this line to see data written to db
+      print "after insertSndQueue_ db connId q"
 
   getConn :: PostgresStore -> ConnId -> m SomeConn
   getConn st connId =

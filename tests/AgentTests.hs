@@ -38,7 +38,7 @@ agentTests (ATransport t) = do
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
-    fit "should connect via one server and one agent" $
+    it "should connect via one server and one agent" $
       smpAgentTest2_1_1 $ testDuplexConnection t
     it "should connect via one server and one agent (random IDs)" $
       smpAgentTest2_1_1 $ testDuplexConnRandomIds t
@@ -424,7 +424,7 @@ syntaxTests t = do
 
   describe "JOIN" $ do
     describe "valid" $ do
-      it "using same server as in invitation" $
+      fit "using same server as in invitation" $
         ( "311",
           "a",
           "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F"
