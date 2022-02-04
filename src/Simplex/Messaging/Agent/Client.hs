@@ -170,8 +170,8 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
           liftIO $ print "inside tryConnectAsync"
           u <- askUnliftIO
           a <- liftIO $ async . unliftIO u $ connectAsync
-          -- this is to trigger tryReconnectClient, to be refactored;
-          -- would probably make more sense if loop was in connectClient
+          -- this is to trigger tryReconnectClient (for agent's client to be notified client connected),
+          -- probably should be refactored; would probably make more sense if loop was in connectClient
           liftIO $ clientDisconnected u
           atomically $ modifyTVar (asyncClients c) (a :)
         connectAsync :: m SMPClient
@@ -340,13 +340,13 @@ newRcvQueue_ a c srv = do
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
+  addSubscription c rq connId
   withLogSMP c server rcvId "SUB" $ \smp -> do
     liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
       Left e -> case e of
-        SMPNetworkError -> addSubscription c rq connId >> throwError SMPNetworkError
-        e' -> throwError e'
+        SMPNetworkError -> throwError SMPNetworkError
+        e' -> removeSubscription c connId >> throwError e'
       Right _ -> pure ()
-  addSubscription c rq connId
 
 addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
@@ -357,7 +357,7 @@ addSubscription c rq@RcvQueue {server} connId = atomically $ do
     addSub (Just cs) = M.insert connId rq cs
     addSub _ = M.singleton connId rq
 
-removeSubscription :: AgentMonad m => AgentClient -> ConnId -> m ()
+removeSubscription :: MonadUnliftIO m => AgentClient -> ConnId -> m ()
 removeSubscription AgentClient {subscrConns, subscrSrvrs} connId = atomically $ do
   cs <- readTVar subscrConns
   writeTVar subscrConns $ M.delete connId cs
