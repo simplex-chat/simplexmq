@@ -135,9 +135,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       modifyTVar smpClients $ M.insert srv smpVar
       pure smpVar
 
-    -- waitForSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
-    -- waitForSMPClient = liftIOEither . atomically . readTMVar
-
     waitForSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
     waitForSMPClient smpVar = do
       SMPClientConfig {tcpTimeout} <- asks $ smpCfg . config
@@ -146,19 +143,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
         Just (Right smpClient) -> Right smpClient
         Just (Left e) -> Left e
         Nothing -> Left $ BROKER NETWORK -- TODO ? new BROKER CONNECTING error
-
-    -- newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
-    -- newSMPClient smpVar =
-    --   tryError connectClient >>= \r -> case r of
-    --     Right smp -> do
-    --       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-    --       atomically $ putTMVar smpVar r
-    --       pure smp
-    --     Left e -> do
-    --       atomically $ do
-    --         putTMVar smpVar r
-    --         modifyTVar smpClients $ M.delete srv
-    --       throwError e
 
     -- TODO ? loop could be inside connectClient function
     newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
@@ -205,25 +189,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
                   modifyTVar smpClients $ M.delete srv
                 throwError e
 
-    -- newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
-    -- newSMPClient smpVar = do
-    --   ri <- asks $ reconnectInterval . config
-    --   withRetryInterval ri $ \tryConnect ->
-    --     tryError connectClient >>= \r -> case r of
-    --       Right smp -> do
-    --         logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-    --         atomically $ putTMVar smpVar r
-    --         pure smp
-    --       Left (BROKER NETWORK) -> do
-    --         liftIO . print $ "Agent couldn't connect to " <> showServer srv <> " , will retry"
-    --         tryConnect
-    --       Left e -> do
-    --         liftIO . print $ "Agent couldn't connect to " <> showServer srv
-    --         atomically $ do
-    --           putTMVar smpVar r
-    --           modifyTVar smpClients $ M.delete srv
-    --         throwError e
-
     connectClient :: m SMPClient
     connectClient = do
       cfg <- asks $ smpCfg . config
@@ -233,22 +198,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       where
         internalError :: IOException -> m SMPClient
         internalError = throwError . INTERNAL . show
-
-    -- connectClient :: m SMPClient
-    -- connectClient = do
-    --   cfg <- asks $ smpCfg . config
-    --   u <- askUnliftIO
-    --   liftEitherError smpClientError $ (liftIO $ tryConnect cfg u)
-    --   where
-    --     tryConnect cfg u = do
-    --       res <- liftIO $ getSMPClient srv cfg msgQ (clientDisconnected u)
-    --       case res of
-    --         Left e -> case e of
-    --           SMPNetworkError -> tryConnect cfg u
-    --           e' -> Left e'
-    --         Right smpClient -> Right smpClient
-    --     internalError :: IOException -> m SMPClient
-    --     internalError = throwError . INTERNAL . show
 
     clientDisconnected :: UnliftIO m -> IO ()
     clientDisconnected u = do
@@ -290,24 +239,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
                 e -> throwError e
             addSubscription c rq connId
             liftIO $ notifySub UP connId
-
-    -- reconnectClient :: Map ConnId RcvQueue -> m ()
-    -- reconnectClient cs = do
-    --   withAgentLock c . withSMP c srv $ \smp -> do
-    --     subs <- readTVarIO $ subscrConns c
-    --     forM_ (M.toList cs) $ \(connId, rq) ->
-    --       when (isNothing $ M.lookup connId subs) $
-    --         trySubscribe smp connId rq
-    --   where
-    --     trySubscribe smp connId rq@RcvQueue {rcvPrivateKey, rcvId} = do
-    --       liftIO . print $ "Trying to subscribe to " <> show connId
-    --       subscribeSMPQueue smp rcvPrivateKey rcvId
-    --         `catchError` \case
-    --           SMPNetworkError -> trySubscribe smp connId rq
-    --           SMPServerError e -> liftIO $ notifySub (ERR $ SMP e) connId
-    --           e -> throwError e
-    --       addSubscription c rq connId
-    --       liftIO $ notifySub UP connId
 
     notifySub :: ACommand 'Agent -> ConnId -> IO ()
     notifySub cmd connId = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
