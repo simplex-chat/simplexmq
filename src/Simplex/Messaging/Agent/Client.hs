@@ -62,8 +62,9 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (bshow, liftEitherError, liftError, liftIOEither, tryError)
+import Simplex.Messaging.Util (bshow, liftEitherError, liftError, tryError)
 import Simplex.Messaging.Version
+import System.Timeout (timeout)
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -81,6 +82,7 @@ data AgentClient = AgentClient
     smpQueueMsgQueues :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId)),
     smpQueueMsgDeliveries :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (Async ())),
     reconnections :: TVar [Async ()],
+    asyncClients :: TVar [Async SMPClient],
     clientId :: Int,
     agentEnv :: Env,
     smpSubscriber :: Async (),
@@ -100,9 +102,10 @@ newAgentClient agentEnv = do
   smpQueueMsgQueues <- newTVar M.empty
   smpQueueMsgDeliveries <- newTVar M.empty
   reconnections <- newTVar []
+  asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -132,8 +135,17 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       modifyTVar smpClients $ M.insert srv smpVar
       pure smpVar
 
+    -- waitForSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
+    -- waitForSMPClient = liftIOEither . atomically . readTMVar
+
     waitForSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
-    waitForSMPClient = liftIOEither . atomically . readTMVar
+    waitForSMPClient smpVar = do
+      SMPClientConfig {tcpTimeout} <- asks $ smpCfg . config
+      smpClient_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar smpVar) -- timeout is arbitrary
+      liftEither $ case smpClient_ of
+        Just (Right smpClient) -> Right smpClient
+        Just (Left e) -> Left e
+        Nothing -> Left $ BROKER NETWORK -- TODO ? new BROKER CONNECTING error
 
     -- newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
     -- newSMPClient smpVar =
@@ -148,24 +160,69 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     --         modifyTVar smpClients $ M.delete srv
     --       throwError e
 
+    -- TODO ? loop could be inside connectClient function
     newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
-    newSMPClient smpVar = do
-      ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \tryConnect ->
-        tryError connectClient >>= \r -> case r of
-          Right smp -> do
-            logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-            atomically $ putTMVar smpVar r
-            pure smp
-          Left (BROKER NETWORK) -> do
-            liftIO . print $ "Agent couldn't connect to " <> showServer srv <> " , will retry"
-            tryConnect
-          Left e -> do
-            liftIO . print $ "Agent couldn't connect to " <> showServer srv
-            atomically $ do
-              putTMVar smpVar r
-              modifyTVar smpClients $ M.delete srv
-            throwError e
+    newSMPClient smpVar =
+      tryError connectClient >>= \r -> case r of
+        Right smp -> do
+          logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
+          atomically $ putTMVar smpVar r
+          pure smp
+        Left (BROKER NETWORK) -> do
+          -- same on BROKER TIMEOUT?
+          liftIO . print $ "Agent couldn't connect to " <> showServer srv <> ", will retry"
+          tryConnectAsync
+          atomically $ do
+            putTMVar smpVar r
+          throwError $ BROKER NETWORK
+        Left e -> do
+          atomically $ do
+            putTMVar smpVar r
+            modifyTVar smpClients $ M.delete srv
+          throwError e
+      where
+        tryConnectAsync :: m ()
+        tryConnectAsync = do
+          liftIO $ print "inside tryConnectAsync"
+          u <- askUnliftIO
+          a <- liftIO $ async . unliftIO u $ connectAsync
+          atomically $ modifyTVar (asyncClients c) (a :)
+        connectAsync :: m SMPClient
+        connectAsync = do
+          liftIO $ print "inside connectAsync"
+          ri <- asks $ reconnectInterval . config
+          withRetryInterval ri $ \connectAsyncLoop -> do
+            liftIO $ print "inside connectAsyncLoop"
+            tryError connectClient >>= \r -> case r of
+              Right smp -> do
+                logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
+                atomically $ putTMVar smpVar r
+                pure smp
+              Left (BROKER NETWORK) -> connectAsyncLoop
+              Left e -> do
+                atomically $ do
+                  putTMVar smpVar r
+                  modifyTVar smpClients $ M.delete srv
+                throwError e
+
+    -- newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
+    -- newSMPClient smpVar = do
+    --   ri <- asks $ reconnectInterval . config
+    --   withRetryInterval ri $ \tryConnect ->
+    --     tryError connectClient >>= \r -> case r of
+    --       Right smp -> do
+    --         logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
+    --         atomically $ putTMVar smpVar r
+    --         pure smp
+    --       Left (BROKER NETWORK) -> do
+    --         liftIO . print $ "Agent couldn't connect to " <> showServer srv <> " , will retry"
+    --         tryConnect
+    --       Left e -> do
+    --         liftIO . print $ "Agent couldn't connect to " <> showServer srv
+    --         atomically $ do
+    --           putTMVar smpVar r
+    --           modifyTVar smpClients $ M.delete srv
+    --         throwError e
 
     connectClient :: m SMPClient
     connectClient = do
@@ -181,18 +238,15 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     -- connectClient = do
     --   cfg <- asks $ smpCfg . config
     --   u <- askUnliftIO
-    --   res <- liftIO $ getSMPClient srv cfg msgQ (clientDisconnected u)
-    --   case res of
-    --     Left e -> case e of
-    --       SMPNetworkError -> loop
-    --       e' -> liftEitherError smpClientError
-    --     Right _ -> pure ()
-    --   -- ((getSMPClient srv cfg msgQ (clientDisconnected u)) >>= \case
-    --   --   Left e -> case e of
-    --   --     SMPNetworkError -> getSMPClient srv cfg msgQ $ clientDisconnected u
-    --   --     e' -> liftEitherError smpClientError
-    --   --   Right _ -> pure ()) `E.catch` internalError
+    --   liftEitherError smpClientError $ (liftIO $ tryConnect cfg u)
     --   where
+    --     tryConnect cfg u = do
+    --       res <- liftIO $ getSMPClient srv cfg msgQ (clientDisconnected u)
+    --       case res of
+    --         Left e -> case e of
+    --           SMPNetworkError -> tryConnect cfg u
+    --           e' -> Left e'
+    --         Right smpClient -> Right smpClient
     --     internalError :: IOException -> m SMPClient
     --     internalError = throwError . INTERNAL . show
 
@@ -262,6 +316,7 @@ closeAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 closeAgentClient c = liftIO $ do
   closeSMPServerClients c
   cancelActions $ reconnections c
+  cancelActions $ asyncClients c
   cancelActions $ smpQueueMsgDeliveries c
 
 closeSMPServerClients :: AgentClient -> IO ()
@@ -272,7 +327,7 @@ closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeCli
         Right smp -> closeSMPClient smp `E.catch` \(_ :: E.SomeException) -> pure ()
         _ -> pure ()
 
-cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
+cancelActions :: Foldable f => TVar (f (Async a)) -> IO ()
 cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel
 
 withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
@@ -350,19 +405,13 @@ newRcvQueue_ a c srv = do
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
-  withLogSMP c server rcvId "SUB" $ \smp ->
-    subscribeSMPQueue smp rcvPrivateKey rcvId
+  withLogSMP c server rcvId "SUB" $ \smp -> do
+    liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
+      Left e -> case e of
+        SMPNetworkError -> addSubscription c rq connId >> throwError SMPNetworkError
+        e' -> throwError e'
+      Right _ -> pure ()
   addSubscription c rq connId
-
--- subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
--- subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
---   withLogSMP c server rcvId "SUB" $ \smp -> do
---     liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
---       Left e -> case e of
---         SMPNetworkError -> addSubscription c rq connId >> throwError SMPNetworkError
---         e' -> throwError e'
---       Right _ -> pure ()
---   addSubscription c rq connId
 
 addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
