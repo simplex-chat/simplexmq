@@ -170,10 +170,10 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
           liftIO $ print "inside tryConnectAsync"
           u <- askUnliftIO
           a <- liftIO $ async . unliftIO u $ connectAsync
+          atomically $ modifyTVar (asyncClients c) (a :)
           -- this is to trigger tryReconnectClient (for agent's client to be notified client connected),
           -- probably should be refactored; would probably make more sense if loop was in connectClient
           liftIO $ clientDisconnected u
-          atomically $ modifyTVar (asyncClients c) (a :)
         connectAsync :: m SMPClient
         connectAsync = do
           liftIO $ print "inside connectAsync"
