@@ -38,7 +38,7 @@ agentTests (ATransport t) = do
   describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
-    it "should connect via one server and one agent" $
+    fit "should connect via one server and one agent" $
       smpAgentTest2_1_1 $ testDuplexConnection t
     it "should connect via one server and one agent (random IDs)" $
       smpAgentTest2_1_1 $ testDuplexConnRandomIds t
@@ -329,7 +329,7 @@ testMsgDeliveryAgentRestart t bob = do
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
-  removeFile testDB
+  -- removeFile testDB
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort

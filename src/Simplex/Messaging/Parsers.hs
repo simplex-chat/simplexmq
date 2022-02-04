@@ -15,10 +15,13 @@ import Data.Char (isAlphaNum, toLower)
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
 import Data.Typeable (Typeable)
+import qualified Database.PostgreSQL.Simple.FromField as PF
+import qualified Database.PostgreSQL.Simple.Internal as PI
+import qualified Database.PostgreSQL.Simple.Ok as PO
 import Database.SQLite.Simple (ResultError (..), SQLData (..))
-import Database.SQLite.Simple.FromField (FieldParser, returnError)
-import Database.SQLite.Simple.Internal (Field (..))
-import Database.SQLite.Simple.Ok (Ok (Ok))
+import qualified Database.SQLite.Simple.FromField as SF
+import qualified Database.SQLite.Simple.Internal as SI
+import qualified Database.SQLite.Simple.Ok as SO
 import Simplex.Messaging.Util ((<$?>))
 import Text.Read (readMaybe)
 
@@ -69,16 +72,24 @@ wordEnd c = c == ' ' || c == '\n'
 parseString :: (ByteString -> Either String a) -> (String -> a)
 parseString p = either error id . p . B.pack
 
-blobFieldParser :: Typeable k => Parser k -> FieldParser k
+blobFieldParser :: Typeable k => Parser k -> SF.FieldParser k
 blobFieldParser = blobFieldDecoder . parseAll
 
-blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> FieldParser k
+blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> SF.FieldParser k
 blobFieldDecoder dec = \case
-  f@(Field (SQLBlob b) _) ->
+  f@(SI.Field (SQLBlob b) _) ->
     case dec b of
-      Right k -> Ok k
-      Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
-  f -> returnError ConversionFailed f "expecting SQLBlob column type"
+      Right k -> SO.Ok k
+      Left e -> SF.returnError SF.ConversionFailed f ("couldn't parse field: " ++ e)
+  f -> SF.returnError SF.ConversionFailed f "expecting SQLBlob column type"
+
+-- blobFieldDecoderPostgres :: Typeable k => (ByteString -> Either String k) -> PF.FieldParser k
+-- blobFieldDecoderPostgres dec = \case
+--   f@(PI.Field b _ _) ->
+--     case dec b of
+--       Right k -> PO.Ok k
+--       Left e -> PF.returnError PF.ConversionFailed f ("couldn't parse field: " ++ e)
+--   f -> PF.returnError PF.ConversionFailed f "expecting SQLBlob column type"
 
 fstToLower :: String -> String
 fstToLower "" = ""

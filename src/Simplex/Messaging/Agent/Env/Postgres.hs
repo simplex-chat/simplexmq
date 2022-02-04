@@ -16,6 +16,7 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
+import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
@@ -33,7 +34,7 @@ data AgentConfig = AgentConfig
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    dbFile :: FilePath,
+    dbConnInfo :: ConnectInfo,
     dbPoolSize :: Int,
     smpCfg :: SMPClientConfig,
     reconnectInterval :: RetryInterval,
@@ -51,7 +52,7 @@ defaultAgentConfig =
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 16,
-      dbFile = "smp-agent.db",
+      dbConnInfo = defaultConnectInfo {connectDatabase = "agent_poc_1"},
       dbPoolSize = 4,
       smpCfg = smpDefaultConfig,
       reconnectInterval =
@@ -79,9 +80,10 @@ data Env = Env
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv cfg = do
+newSMPAgentEnv cfg@AgentConfig {dbConnInfo, dbPoolSize} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createPostgresStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
+  -- store <- liftIO $ createPostgresStore dbConnInfo dbPoolSize Migrations.app
+  store <- liftIO $ createPostgresStore dbConnInfo dbPoolSize
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   return Env {config = cfg, store, idsDrg, clientCounter, randomServer}

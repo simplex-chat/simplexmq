@@ -10,6 +10,7 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
 import qualified Data.List.NonEmpty as L
+import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Network.Socket (HostName, ServiceName)
 import SMPClient
   ( serverBracket,
@@ -43,14 +44,23 @@ agentTestPort2 = "5011"
 agentTestPort3 :: ServiceName
 agentTestPort3 = "5012"
 
-testDB :: String
-testDB = "tests/tmp/smp-agent.test.protocol.db"
+-- testDB :: String
+-- testDB = "tests/tmp/smp-agent.test.protocol.db"
 
-testDB2 :: String
-testDB2 = "tests/tmp/smp-agent2.test.protocol.db"
+testDB :: ConnectInfo
+testDB = defaultConnectInfo {connectDatabase = "agent_poc_1"}
 
-testDB3 :: String
-testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
+-- testDB2 :: String
+-- testDB2 = "tests/tmp/smp-agent2.test.protocol.db"
+
+testDB2 :: ConnectInfo
+testDB2 = defaultConnectInfo {connectDatabase = "agent_poc_2"}
+
+-- testDB3 :: String
+-- testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
+
+testDB3 :: ConnectInfo
+testDB3 = defaultConnectInfo {connectDatabase = "agent_poc_3"}
 
 smpAgentTest :: forall c. Transport c => TProxy c -> ARawTransmission -> IO ARawTransmission
 smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> tGetRaw h
@@ -71,10 +81,10 @@ runSmpAgentServerTest test =
 smpAgentServerTest :: Transport c => ((ThreadId, ThreadId) -> c -> IO ()) -> Expectation
 smpAgentServerTest test' = runSmpAgentServerTest test' `shouldReturn` ()
 
-runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => [(ServiceName, ServiceName, String)] -> ([c] -> m a) -> m a
+runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => [(ServiceName, ServiceName, ConnectInfo)] -> ([c] -> m a) -> m a
 runSmpAgentTestN agents test = withSmpServer t $ run agents []
   where
-    run :: [(ServiceName, ServiceName, String)] -> [c] -> m a
+    run :: [(ServiceName, ServiceName, ConnectInfo)] -> [c] -> m a
     run [] hs = test hs
     run (a@(p, _, _) : as) hs = withSmpAgentOn t a $ testSMPAgentClientOn p $ \h -> run as (h : hs)
     t = transport @c
@@ -87,7 +97,7 @@ runSmpAgentTestN_1 nClients test = withSmpServer t . withSmpAgent t $ run nClien
     run n hs = testSMPAgentClient $ \h -> run (n - 1) (h : hs)
     t = transport @c
 
-smpAgentTestN :: Transport c => [(ServiceName, ServiceName, String)] -> ([c] -> IO ()) -> Expectation
+smpAgentTestN :: Transport c => [(ServiceName, ServiceName, ConnectInfo)] -> ([c] -> IO ()) -> Expectation
 smpAgentTestN agents test' = runSmpAgentTestN agents test' `shouldReturn` ()
 
 smpAgentTestN_1 :: Transport c => Int -> ([c] -> IO ()) -> Expectation
@@ -159,7 +169,7 @@ cfg =
     { tcpPort = agentTestPort,
       smpServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
       tbqSize = 1,
-      dbFile = testDB,
+      dbConnInfo = testDB,
       smpCfg =
         smpDefaultConfig
           { qSize = 1,
@@ -172,17 +182,17 @@ cfg =
       certificateFile = "tests/fixtures/server.crt"
     }
 
-withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, ConnectInfo) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
+  let cfg' = cfg {tcpPort = port', dbConnInfo = db', smpServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg')
         afterProcess
 
-withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
-withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ removeFile db'
+withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, ConnectInfo) -> (ThreadId -> m a) -> m a
+withSmpAgentThreadOn t a@(_, _, db') = withSmpAgentThreadOn_ t a $ pure () -- $ removeFile db'
 
-withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m a -> m a
+withSmpAgentOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, ConnectInfo) -> m a -> m a
 withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort', db') . const
 
 withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a

@@ -2,8 +2,8 @@
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20220202_initial where
 
-import Database.SQLite.Simple (Query)
-import Database.SQLite.Simple.QQ (sql)
+import Database.PostgreSQL.Simple (Query)
+import Database.PostgreSQL.Simple.SqlQQ (sql)
 
 m20220202_initial :: Query
 m20220202_initial =
