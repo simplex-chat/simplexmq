@@ -154,7 +154,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
           pure smp
         Left (BROKER NETWORK) -> do
           -- same on BROKER TIMEOUT?
-          liftIO . print $ "Agent couldn't connect to " <> showServer srv <> ", will retry"
           tryConnectAsync
           atomically $ do
             putTMVar smpVar r
@@ -167,7 +166,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       where
         tryConnectAsync :: m ()
         tryConnectAsync = do
-          liftIO $ print "inside tryConnectAsync"
           u <- askUnliftIO
           a <- liftIO $ async . unliftIO u $ connectAsync
           atomically $ modifyTVar (asyncClients c) (a :)
@@ -176,13 +174,10 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
           liftIO $ clientDisconnected u
         connectAsync :: m SMPClient
         connectAsync = do
-          liftIO $ print "inside connectAsync"
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \connectAsyncLoop -> do
-            liftIO $ print "inside connectAsyncLoop"
             tryError connectClient >>= \r -> case r of
               Right smp -> do
-                liftIO $ print "inside Right smp"
                 logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
                 atomically $ putTMVar smpVar r
                 pure smp
