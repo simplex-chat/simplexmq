@@ -155,7 +155,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
         Left (BROKER NETWORK) -> do
           -- same on BROKER TIMEOUT?
           tryConnectAsync
-          atomically $ putTMVar smpVar r
           throwError $ BROKER NETWORK
         Left e -> do
           atomically $ do
