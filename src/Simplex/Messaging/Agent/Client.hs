@@ -82,7 +82,7 @@ data AgentClient = AgentClient
     smpQueueMsgQueues :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId)),
     smpQueueMsgDeliveries :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (Async ())),
     reconnections :: TVar [Async ()],
-    asyncClients :: TVar [Async SMPClient],
+    asyncClients :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
     smpSubscriber :: Async (),
@@ -155,8 +155,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
         Left (BROKER NETWORK) -> do
           -- same on BROKER TIMEOUT?
           tryConnectAsync
-          atomically $ do
-            putTMVar smpVar r
+          atomically $ putTMVar smpVar r
           throwError $ BROKER NETWORK
         Left e -> do
           atomically $ do
@@ -172,16 +171,15 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
           -- this is to trigger tryReconnectClient (for agent's client to be notified client connected),
           -- probably should be refactored; would probably make more sense if loop was in connectClient
           liftIO $ clientDisconnected u
-        connectAsync :: m SMPClient
+        connectAsync :: m ()
         connectAsync = do
           ri <- asks $ reconnectInterval . config
-          withRetryInterval ri $ \connectAsyncLoop -> do
+          withRetryInterval ri $ \loop -> do
             tryError connectClient >>= \r -> case r of
-              Right smp -> do
+              Right _ -> do
                 logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
                 atomically $ putTMVar smpVar r
-                pure smp
-              Left (BROKER NETWORK) -> connectAsyncLoop
+              Left (BROKER NETWORK) -> loop
               Left e -> do
                 atomically $ do
                   putTMVar smpVar r
@@ -257,7 +255,7 @@ closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeCli
         Right smp -> closeSMPClient smp `E.catch` \(_ :: E.SomeException) -> pure ()
         _ -> pure ()
 
-cancelActions :: Foldable f => TVar (f (Async a)) -> IO ()
+cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
 cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel
 
 withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
