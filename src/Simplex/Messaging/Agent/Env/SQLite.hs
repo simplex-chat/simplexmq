@@ -35,6 +35,7 @@ data AgentConfig = AgentConfig
     tbqSize :: Natural,
     dbFile :: FilePath,
     dbPoolSize :: Int,
+    yesToMigrations :: Bool,
     smpCfg :: SMPClientConfig,
     reconnectInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
@@ -53,6 +54,7 @@ defaultAgentConfig =
       tbqSize = 16,
       dbFile = "smp-agent.db",
       dbPoolSize = 4,
+      yesToMigrations = False,
       smpCfg = smpDefaultConfig,
       reconnectInterval =
         RetryInterval
@@ -79,9 +81,9 @@ data Env = Env
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv cfg = do
+newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
+  store <- liftIO $ createSQLiteStore dbFile dbPoolSize Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  return Env {config = cfg, store, idsDrg, clientCounter, randomServer}
+  return Env {config, store, idsDrg, clientCounter, randomServer}

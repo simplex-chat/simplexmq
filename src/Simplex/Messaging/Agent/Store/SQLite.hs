@@ -76,13 +76,13 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> Int -> [Migration] -> IO SQLiteStore
-createSQLiteStore dbFilePath poolSize migrations = do
+createSQLiteStore :: FilePath -> Int -> [Migration] -> Bool -> IO SQLiteStore
+createSQLiteStore dbFilePath poolSize migrations yesToMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   st <- connectSQLiteStore dbFilePath poolSize
   checkThreadsafe st
-  migrateSchema st migrations
+  migrateSchema st migrations yesToMigrations
   pure st
 
 checkThreadsafe :: SQLiteStore -> IO ()
@@ -94,15 +94,16 @@ checkThreadsafe st = withConnection st $ \db -> do
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
     _ -> return ()
 
-migrateSchema :: SQLiteStore -> [Migration] -> IO ()
-migrateSchema st migrations = withConnection st $ \db -> do
+migrateSchema :: SQLiteStore -> [Migration] -> Bool -> IO ()
+migrateSchema st migrations yesToMigrations = withConnection st $ \db -> do
   Migrations.initialize db
   Migrations.get db migrations >>= \case
     Left e -> confirmOrExit $ "Database error: " <> e
     Right [] -> pure ()
     Right ms -> do
       unless (dbNew st) $ do
-        confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
+        unless yesToMigrations $
+          confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
         let f = dbFilePath st
         copyFile f (f <> ".bak")
       Migrations.run db ms
