@@ -65,6 +65,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError, tryError)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
+import qualified UnliftIO as U
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -164,11 +165,11 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       where
         tryConnectAsync :: m ()
         tryConnectAsync = do
-          u <- askUnliftIO
-          a <- liftIO $ async . unliftIO u $ connectAsync
+          a <- U.async connectAsync
           atomically $ modifyTVar (asyncClients c) (a :)
           -- this is to trigger tryReconnectClient (for agent's client to be notified client connected),
           -- probably should be refactored; would probably make more sense if loop was in connectClient
+          u <- askUnliftIO
           liftIO $ clientDisconnected u
         connectAsync :: m ()
         connectAsync = do
