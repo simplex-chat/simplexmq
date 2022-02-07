@@ -65,6 +65,8 @@ agentTests (ATransport t) = do
   describe "Message delivery" $ do
     it "should deliver messages after losing server connection and re-connecting" $
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
+    -- it "should connect to the server when server goes up if it initially was down" $
+    --   smpAgentTest1_1_1 $ testServerConnectionAfterError t
     it "should deliver pending messages after agent restarting" $
       smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
     it "should concurrently deliver messages to connections without blocking" $
@@ -299,6 +301,17 @@ testMsgDeliveryServerRestart t alice bob = do
   removeFile testStoreLogFile
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+
+-- testServerConnectionAfterError :: Transport c => TProxy c -> c -> IO ()
+-- testServerConnectionAfterError t bob = do
+--   withAgent $ \alice -> do
+--     withServer $ do
+--       connect (bob, "bob") (alice, "alice")
+
+--     bob <# ("", "alice", DOWN)
+--     alice #: ("2", "bob", "SEND 11\nhello again") #> ("2", "bob", MID 5)
+--     alice #:# "nothing else delivered before the server is restarted"
+--     bob #:# "nothing else delivered before the server is restarted"
 
 testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
 testMsgDeliveryAgentRestart t bob = do

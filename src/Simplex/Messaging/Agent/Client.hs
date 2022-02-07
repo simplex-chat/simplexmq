@@ -37,7 +37,7 @@ module Simplex.Messaging.Agent.Client
 where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.Async (Async, async, uninterruptibleCancel)
+import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
@@ -65,7 +65,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftEitherError, liftError, tryError)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import qualified UnliftIO as U
+import UnliftIO (async)
 import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -78,6 +78,7 @@ data AgentClient = AgentClient
     msgQ :: TBQueue SMPServerTransmission,
     smpClients :: TVar (Map SMPServer SMPClientVar),
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
+    pendingSubscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     subscrConns :: TVar (Map ConnId SMPServer),
     connMsgsQueued :: TVar (Map ConnId Bool),
     smpQueueMsgQueues :: TVar (Map (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId)),
@@ -98,6 +99,7 @@ newAgentClient agentEnv = do
   msgQ <- newTBQueue qSize
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
+  pendingSubscrSrvrs <- newTVar M.empty
   subscrConns <- newTVar M.empty
   connMsgsQueued <- newTVar M.empty
   smpQueueMsgQueues <- newTVar M.empty
@@ -106,7 +108,7 @@ newAgentClient agentEnv = do
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -139,52 +141,37 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     waitForSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
     waitForSMPClient smpVar = do
       SMPClientConfig {tcpTimeout} <- asks $ smpCfg . config
-      smpClient_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar smpVar) -- timeout is arbitrary
+      smpClient_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar smpVar)
       liftEither $ case smpClient_ of
         Just (Right smpClient) -> Right smpClient
         Just (Left e) -> Left e
-        Nothing -> Left $ BROKER NETWORK -- TODO ? new BROKER CONNECTING error
+        Nothing -> Left $ BROKER TIMEOUT
 
-    -- TODO ? loop could be inside connectClient function
     newSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
-    newSMPClient smpVar =
-      tryError connectClient >>= \r -> case r of
-        Right smp -> do
-          logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-          atomically $ putTMVar smpVar r
-          pure smp
-        Left (BROKER NETWORK) -> do
-          -- same on BROKER TIMEOUT?
-          tryConnectAsync
-          throwError $ BROKER NETWORK
-        Left e -> do
-          atomically $ do
-            putTMVar smpVar r
-            modifyTVar smpClients $ M.delete srv
-          throwError e
+    newSMPClient smpVar = tryConnectClient pure tryConnectAsync
       where
+        tryConnectClient :: (SMPClient -> m a) -> m () -> m a
+        tryConnectClient successAction retryAction =
+          tryError connectClient >>= \r -> case r of
+            Right smp -> do
+              logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
+              atomically $ putTMVar smpVar r
+              successAction smp
+            Left e -> do
+              if e == BROKER NETWORK || e == BROKER TIMEOUT
+                then retryAction
+                else atomically $ do
+                  putTMVar smpVar (Left e)
+                  modifyTVar smpClients $ M.delete srv
+              throwError e
         tryConnectAsync :: m ()
         tryConnectAsync = do
-          a <- U.async connectAsync
+          a <- async connectAsync
           atomically $ modifyTVar (asyncClients c) (a :)
-          -- this is to trigger tryReconnectClient (for agent's client to be notified client connected),
-          -- probably should be refactored; would probably make more sense if loop was in connectClient
-          u <- askUnliftIO
-          liftIO $ clientDisconnected u
         connectAsync :: m ()
         connectAsync = do
           ri <- asks $ reconnectInterval . config
-          withRetryInterval ri $ \loop -> do
-            tryError connectClient >>= \r -> case r of
-              Right _ -> do
-                logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-                atomically $ putTMVar smpVar r
-              Left (BROKER NETWORK) -> loop
-              Left e -> do
-                atomically $ do
-                  putTMVar smpVar r
-                  modifyTVar smpClients $ M.delete srv
-                throwError e
+          withRetryInterval ri $ \loop -> void $ tryConnectClient (const reconnectClient) loop
 
     connectClient :: m SMPClient
     connectClient = do
@@ -207,33 +194,43 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       cs <- M.lookup srv <$> readTVar (subscrSrvrs c)
       modifyTVar (subscrSrvrs c) $ M.delete srv
       modifyTVar (subscrConns c) $ maybe id (deleteKeys . M.keysSet) cs
+      mapM_ (modifyTVar (pendingSubscrSrvrs c) . addPendingSubs) cs
       return cs
       where
+        addPendingSubs :: Map ConnId RcvQueue -> Map SMPServer (Map ConnId RcvQueue) -> Map SMPServer (Map ConnId RcvQueue)
+        addPendingSubs cs = M.alter (Just . addSubs cs) srv
+        addSubs cs = maybe cs (M.union cs)
         deleteKeys :: Ord k => Set k -> Map k a -> Map k a
         deleteKeys ks m = S.foldr' M.delete m ks
 
     serverDown :: UnliftIO m -> Map ConnId RcvQueue -> IO ()
     serverDown u cs = unless (M.null cs) $ do
       mapM_ (notifySub DOWN) $ M.keysSet cs
-      a <- async . unliftIO u $ tryReconnectClient cs
+      unliftIO u reconnectServer
+
+    reconnectServer :: m ()
+    reconnectServer = do
+      a <- async tryReconnectClient
       atomically $ modifyTVar (reconnections c) (a :)
 
-    tryReconnectClient :: Map ConnId RcvQueue -> m ()
-    tryReconnectClient cs = do
+    tryReconnectClient :: m ()
+    tryReconnectClient = do
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \loop ->
-        reconnectClient cs `catchError` const loop
+        reconnectClient `catchError` const loop
 
-    reconnectClient :: Map ConnId RcvQueue -> m ()
-    reconnectClient cs = do
+    reconnectClient :: m ()
+    reconnectClient = do
       withAgentLock c . withSMP c srv $ \smp -> do
         subs <- readTVarIO $ subscrConns c
-        forM_ (M.toList cs) $ \(connId, rq@RcvQueue {rcvPrivateKey, rcvId}) ->
+        cs <- M.lookup srv <$> readTVarIO (pendingSubscrSrvrs c)
+        forM_ (maybe [] M.toList cs) $ \(connId, rq@RcvQueue {rcvPrivateKey, rcvId}) ->
           when (isNothing $ M.lookup connId subs) $ do
             subscribeSMPQueue smp rcvPrivateKey rcvId
               `catchError` \case
-                SMPServerError e -> liftIO $ notifySub (ERR $ SMP e) connId
-                e -> throwError e
+                e@SMPResponseTimeout -> throwError e
+                e@SMPNetworkError -> throwError e
+                e -> liftIO $ notifySub (ERR $ smpClientError e) connId
             addSubscription c rq connId
             liftIO $ notifySub UP connId
 
@@ -333,30 +330,40 @@ newRcvQueue_ a c srv = do
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
-  addSubscription c rq connId
+  addPendingSubscription c rq connId
   withLogSMP c server rcvId "SUB" $ \smp -> do
     liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
-      Left e -> case e of
-        SMPNetworkError -> throwError SMPNetworkError
-        e' -> removeSubscription c connId >> throwError e'
-      Right _ -> pure ()
+      Left e -> do
+        atomically . when (e /= SMPNetworkError && e /= SMPResponseTimeout) $
+          removePendingSubscription c server connId
+        throwError e
+      Right _ -> addSubscription c rq connId
 
 addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
   modifyTVar (subscrConns c) $ M.insert connId server
-  modifyTVar (subscrSrvrs c) $ M.alter (Just . addSub) server
+  addSubs_ (subscrSrvrs c) rq connId
+  removePendingSubscription c server connId
+
+addPendingSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
+addPendingSubscription c rq connId =
+  atomically $ addSubs_ (pendingSubscrSrvrs c) rq connId
+
+addSubs_ :: TVar (Map SMPServer (Map ConnId RcvQueue)) -> RcvQueue -> ConnId -> STM ()
+addSubs_ ss rq@RcvQueue {server} connId = modifyTVar ss $ M.alter (Just . addSub) server
   where
-    addSub :: Maybe (Map ConnId RcvQueue) -> Map ConnId RcvQueue
-    addSub (Just cs) = M.insert connId rq cs
-    addSub _ = M.singleton connId rq
+    addSub = maybe (M.singleton connId rq) (M.insert connId rq)
 
 removeSubscription :: MonadUnliftIO m => AgentClient -> ConnId -> m ()
-removeSubscription AgentClient {subscrConns, subscrSrvrs} connId = atomically $ do
-  cs <- readTVar subscrConns
-  writeTVar subscrConns $ M.delete connId cs
-  mapM_
-    (modifyTVar subscrSrvrs . M.alter (>>= delSub))
-    (M.lookup connId cs)
+removeSubscription c@AgentClient {subscrConns} connId = atomically $ do
+  server_ <- stateTVar subscrConns $ \cs -> (M.lookup connId cs, M.delete connId cs)
+  mapM_ (\server -> removeSubs_ (subscrSrvrs c) server connId) server_
+
+removePendingSubscription :: AgentClient -> SMPServer -> ConnId -> STM ()
+removePendingSubscription c = removeSubs_ (pendingSubscrSrvrs c)
+
+removeSubs_ :: TVar (Map SMPServer (Map ConnId RcvQueue)) -> SMPServer -> ConnId -> STM ()
+removeSubs_ ss server connId = modifyTVar ss $ M.update delSub server
   where
     delSub :: Map ConnId RcvQueue -> Maybe (Map ConnId RcvQueue)
     delSub cs =
