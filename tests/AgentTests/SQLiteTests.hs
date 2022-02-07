@@ -51,7 +51,7 @@ createStore = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  createSQLiteStore (testDB <> show r) 4 Migrations.app
+  createSQLiteStore (testDB <> show r) 4 Migrations.app True
 
 removeStore :: SQLiteStore -> IO ()
 removeStore store = do
