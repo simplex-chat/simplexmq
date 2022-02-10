@@ -62,9 +62,11 @@ agentTests (ATransport t) = do
       smpAgentTest3_1_1 $ testSubscription t
     it "should send notifications to client when server disconnects" $
       smpAgentServerTest $ testSubscrNotification t
-  describe "Message delivery" $ do
+  describe "Message delivery and server reconnection" $ do
     it "should deliver messages after losing server connection and re-connecting" $
       smpAgentTest2_2_2_needs_server $ testMsgDeliveryServerRestart t
+    it "should connect to the server when server goes up if it initially was down" $
+      smpAgentTestN [] $ testServerConnectionAfterError t
     it "should deliver pending messages after agent restarting" $
       smpAgentTest1_1_1 $ testMsgDeliveryAgentRestart t
     it "should concurrently deliver messages to connections without blocking" $
@@ -299,6 +301,43 @@ testMsgDeliveryServerRestart t alice bob = do
   removeFile testStoreLogFile
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+
+testServerConnectionAfterError :: forall c. Transport c => TProxy c -> [c] -> IO ()
+testServerConnectionAfterError t _ = do
+  withAgent1 $ \bob -> do
+    withAgent2 $ \alice -> do
+      withServer $ do
+        connect (bob, "bob") (alice, "alice")
+
+      bob <# ("", "alice", DOWN)
+      alice <# ("", "bob", DOWN)
+      alice #: ("1", "bob", "SEND 5\nhello") #> ("1", "bob", MID 4)
+      alice #:# "nothing else delivered before the server is restarted"
+      bob #:# "nothing else delivered before the server is restarted"
+
+  withAgent1 $ \bob -> do
+    withAgent2 $ \alice -> do
+      bob #: ("1", "alice", "SUB") #> ("1", "alice", ERR (BROKER NETWORK))
+      alice #: ("1", "bob", "SUB") #> ("1", "bob", ERR (BROKER NETWORK))
+      withServer $ do
+        alice <#= \case ("", "bob", cmd) -> cmd == UP || cmd == SENT 4; _ -> False
+        alice <#= \case ("", "bob", cmd) -> cmd == UP || cmd == SENT 4; _ -> False
+        bob <# ("", "alice", UP)
+        bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+        bob #: ("2", "alice", "ACK 4") #> ("2", "alice", OK)
+        alice #: ("1", "bob", "SEND 11\nhello again") #> ("1", "bob", MID 5)
+        alice <# ("", "bob", SENT 5)
+        bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
+
+  removeFile testStoreLogFile
+  removeFile testDB
+  removeFile testDB2
+  where
+    withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
+    withAgent1 = withAgent agentTestPort testDB
+    withAgent2 = withAgent agentTestPort2 testDB2
+    withAgent :: String -> String -> (c -> IO a) -> IO a
+    withAgent agentPort agentDB = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) (pure ()) . const . testSMPAgentClientOn agentPort
 
 testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
 testMsgDeliveryAgentRestart t bob = do
