@@ -326,6 +326,9 @@ testServerConnectionAfterError t _ = do
         bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
         alice #: ("1", "bob", "SEND 11\nhello again") #> ("1", "bob", MID 5)
         alice <# ("", "bob", SENT 5)
+
+  removeFile testStoreLogFile
+  removeFile testDB
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent1 = withAgent agentTestPort
