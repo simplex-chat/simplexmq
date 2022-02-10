@@ -324,17 +324,20 @@ testServerConnectionAfterError t _ = do
         alice <# ("", "bob", SENT 4)
         alice <# ("", "bob", UP)
         bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
+        bob #: ("2", "alice", "ACK 4") #> ("2", "alice", OK)
         alice #: ("1", "bob", "SEND 11\nhello again") #> ("1", "bob", MID 5)
         alice <# ("", "bob", SENT 5)
+        bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
 
   removeFile testStoreLogFile
   removeFile testDB
+  removeFile testDB2
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
-    withAgent1 = withAgent agentTestPort
-    withAgent2 = withAgent agentTestPort2
-    withAgent :: String -> (c -> IO a) -> IO a
-    withAgent agentPort = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, testDB) (pure ()) . const . testSMPAgentClientOn agentPort
+    withAgent1 = withAgent agentTestPort testDB
+    withAgent2 = withAgent agentTestPort2 testDB2
+    withAgent :: String -> String -> (c -> IO a) -> IO a
+    withAgent agentPort agentDB = withSmpAgentThreadOn_ (ATransport t) (agentPort, testPort2, agentDB) (pure ()) . const . testSMPAgentClientOn agentPort
 
 testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
 testMsgDeliveryAgentRestart t bob = do
