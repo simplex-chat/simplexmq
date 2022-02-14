@@ -305,16 +305,6 @@ subscribeConnection' c connId =
     SomeConn _ (DuplexConnection _ rq sq) -> do
       resumeMsgDelivery c connId sq
       subscribeQueue c rq connId
-      case status (sq :: SndQueue) of
-        Confirmed -> do
-          -- TODO if there is no confirmation saved, just update the status without securing the queue
-          AcceptedConfirmation {senderConf = SMPConfirmation {senderKey}} <-
-            withStore (`getAcceptedConfirmation` connId)
-          secureQueue c rq senderKey
-          withStore $ \st -> setRcvQueueStatus st rq Secured
-        Secured -> pure ()
-        Active -> pure ()
-        _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (SndConnection _ sq) -> do
       resumeMsgDelivery c connId sq
       case status (sq :: SndQueue) of
