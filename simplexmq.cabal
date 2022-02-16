@@ -27,7 +27,7 @@ extra-source-files:
     README.md
     CHANGELOG.md
 
-if (os(android))
+if (os(linux))
   ghc-option: -DANDROID
 
 library
