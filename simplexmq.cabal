@@ -27,8 +27,8 @@ extra-source-files:
     README.md
     CHANGELOG.md
 
-if (android)
-  ghc-flag: -DANDROID
+if (os(android))
+  ghc-option: -DANDROID
 
 library
   exposed-modules:
