@@ -98,10 +98,10 @@ enumJSON tagModifier =
     }
 
 sumTypeJSON :: (String -> String) -> J.Options
-#if defined(ANDROID)
-sumTypeJSON = taggedObjectJSON
-#else
+#if defined(IOS)
 sumTypeJSON = singleFieldJSON
+#else
+sumTypeJSON = taggedObjectJSON
 #endif
 
 taggedObjectJSON :: (String -> String) -> J.Options

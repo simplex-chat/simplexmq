@@ -27,8 +27,8 @@ extra-source-files:
     README.md
     CHANGELOG.md
 
-if (os(linux))
-  ghc-option: -DANDROID
+if (os(darwin))
+  ghc-option: -DIOS
 
 library
   exposed-modules:
