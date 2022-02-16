@@ -27,6 +27,9 @@ extra-source-files:
     README.md
     CHANGELOG.md
 
+if (android)
+  ghc-flag: -DANDROID
+
 library
   exposed-modules:
       Simplex.Messaging.Agent

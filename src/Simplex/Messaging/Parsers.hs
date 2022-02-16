@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -97,7 +98,11 @@ enumJSON tagModifier =
     }
 
 sumTypeJSON :: (String -> String) -> J.Options
+#if defined(ANDROID)
+sumTypeJSON = taggedObjectJSON
+#else
 sumTypeJSON = singleFieldJSON
+#endif
 
 taggedObjectJSON :: (String -> String) -> J.Options
 taggedObjectJSON tagModifier =
