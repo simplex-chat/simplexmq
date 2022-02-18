@@ -27,9 +27,6 @@ extra-source-files:
     README.md
     CHANGELOG.md
 
-if (os(darwin))
-  ghc-option: -DIOS
-
 library
   exposed-modules:
       Simplex.Messaging.Agent
