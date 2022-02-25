@@ -107,7 +107,7 @@ data SMPClientConfig = SMPClientConfig
 smpDefaultConfig :: SMPClientConfig
 smpDefaultConfig =
   SMPClientConfig
-    { qSize = 16,
+    { qSize = 64,
       defaultTransport = ("5223", transport @TLS),
       tcpTimeout = 4_000_000,
       smpPing = 30_000_000
