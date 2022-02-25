@@ -109,6 +109,7 @@ taggedObjectJSON tagModifier =
   J.defaultOptions
     { J.sumEncoding = J.TaggedObject "type" "data",
       J.constructorTagModifier = tagModifier,
+      J.allNullaryToStringTag = False,
       J.nullaryToObject = True,
       J.omitNothingFields = True
     }
@@ -118,6 +119,7 @@ singleFieldJSON tagModifier =
   J.defaultOptions
     { J.sumEncoding = J.ObjectWithSingleField,
       J.constructorTagModifier = tagModifier,
+      J.allNullaryToStringTag = False,
       J.nullaryToObject = True,
       J.omitNothingFields = True
     }
