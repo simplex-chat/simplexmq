@@ -420,7 +420,6 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogSMP c server rcvId "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
--- TODO this is just wrong
 sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
 sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} agentMsg =
   withLogSMP_ c server sndId "SEND <MSG>" $ \smp -> do
