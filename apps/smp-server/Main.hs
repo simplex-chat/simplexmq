@@ -277,8 +277,8 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
       ServerConfig
         { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
           tbqSize = 16,
-          serverTbqSize = 128,
-          msgQueueQuota = 256,
+          serverTbqSize = 64,
+          msgQueueQuota = 128,
           queueIdBytes = 24,
           msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
           caCertificateFile = caCrtFile,
