@@ -45,9 +45,10 @@ ufw allow https
 ufw allow 5223
 
 # Increase file descriptors limit
-echo 'fs.file-max = 65536' >> /etc/sysctl.conf
-echo 'root soft nofile 65535' >> /etc/security/limits.conf
-echo 'root hard nofile 65535' >> /etc/security/limits.conf
+echo 'fs.file-max = 1000000' >> /etc/sysctl.conf
+echo 'fs.inode-max = 1000000' >> /etc/sysctl.conf
+echo 'root soft nofile unlimited' >> /etc/security/limits.conf
+echo 'root hard nofile unlimited' >> /etc/security/limits.conf
 
 # Download latest release
 bin_dir="/opt/simplex/bin"
@@ -158,8 +159,8 @@ Type=simple
 ExecStart=/bin/sh -c "exec $binary start >> /var/opt/simplex/smp-server.log 2>&1"
 Restart=always
 RestartSec=10
-LimitNOFILE=65535
-LimitNOFILESoft=65535
+LimitNOFILE=1000000
+LimitNOFILESoft=1000000
 
 [Install]
 WantedBy=multi-user.target
