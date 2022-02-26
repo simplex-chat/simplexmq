@@ -16,3 +16,8 @@ brew install hashicorp/tap/packer
 cd ./scripts/smp-server-digitalocean-droplet
 DIGITALOCEAN_TOKEN=$YOUR_TOKEN packer build -on-error=ask -color=false ./marketplace-image.json
 ```
+
+**TODO** (see Linode script)
+
+- Increase file descriptors limit
+- Configure Restart for systemd service
