@@ -47,6 +47,7 @@ module Simplex.Messaging.Agent
     ackMessage,
     suspendConnection,
     deleteConnection,
+    useServers,
     logConnection,
   )
 where
@@ -143,6 +144,10 @@ suspendConnection c = withAgentEnv c . suspendConnection' c
 deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnection c = withAgentEnv c . deleteConnection' c
 
+-- | Change servers to be used for creating new queues
+useServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
+useServers c = withAgentEnv c . useServers' c
+
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
 
@@ -209,7 +214,7 @@ processCommand c (connId, cmd) = case cmd of
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId cMode = do
-  srv <- getSMPServer
+  srv <- getSMPServer c
   (rq, qUri) <- newRcvQueue c srv
   g <- asks idsDrg
   let cData = ConnData {connId}
@@ -258,7 +263,7 @@ joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInf
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()
 createReplyQueue c connId sq = do
-  srv <- getSMPServer
+  srv <- getSMPServer c
   (rq, qUri) <- newRcvQueue c srv
   -- TODO reply queue version should be the same as send queue, ignoring it in v1
   let qInfo = toVersionT qUri SMP.smpClientVersion
@@ -472,9 +477,15 @@ deleteConnection' c connId =
       removeSubscription c connId
       withStore (`deleteConn` connId)
 
-getSMPServer :: AgentMonad m => m SMPServer
-getSMPServer =
-  asks (smpServers . config) >>= \case
+-- | Change servers to be used for creating new queues, in Reader monad
+useServers' :: forall m. AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
+useServers' c servers = do
+  atomically $ writeTVar (smpServers c) servers
+
+getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
+getSMPServer c = do
+  smpServers <- readTVarIO $ smpServers c
+  case smpServers of
     srv :| [] -> pure srv
     servers -> do
       gen <- asks randomServer

@@ -157,7 +157,7 @@ cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      smpServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
+      initialSmpServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
@@ -174,7 +174,7 @@ cfg =
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
+  let cfg' = cfg {tcpPort = port', dbFile = db', initialSmpServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg')
         afterProcess
