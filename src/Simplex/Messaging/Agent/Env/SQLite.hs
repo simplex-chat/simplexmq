@@ -51,7 +51,7 @@ defaultAgentConfig =
       initialSmpServers = undefined, -- TODO move it elsewhere?
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
-      tbqSize = 16,
+      tbqSize = 64,
       dbFile = "smp-agent.db",
       dbPoolSize = 4,
       yesToMigrations = False,
@@ -62,7 +62,7 @@ defaultAgentConfig =
             increaseAfter = 10 * second,
             maxInterval = 10 * second
           },
-      helloTimeout = 7 * nominalDay,
+      helloTimeout = 2 * nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",

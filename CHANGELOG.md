@@ -1,3 +1,15 @@
+# 1.0.3
+
+SMP server:
+- Reduce server message queue quota to 128 messages.
+
+SMP agent:
+- Add "yes to migrations" option.
+- Make new SMP client attempt to reconnect on network error.
+- Reduce connection handshake expiration to 2 days.
+
+JSON encoding of types used in simplex-chat, some other minor adjustments.
+
 # 1.0.2
 
 General:
