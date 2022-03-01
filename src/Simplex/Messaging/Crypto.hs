@@ -734,6 +734,10 @@ instance ToField KeyHash where toField = toField . strEncode
 
 instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 
+instance ToJSON KeyHash where
+  toJSON = strToJSON . unKeyHash
+  toEncoding = strToJEncoding . unKeyHash
+
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)

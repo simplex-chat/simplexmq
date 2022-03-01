@@ -47,7 +47,7 @@ module Simplex.Messaging.Agent
     ackMessage,
     suspendConnection,
     deleteConnection,
-    useServers,
+    setSmpServers,
     logConnection,
   )
 where
@@ -145,8 +145,8 @@ deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnection c = withAgentEnv c . deleteConnection' c
 
 -- | Change servers to be used for creating new queues
-useServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
-useServers c = withAgentEnv c . useServers' c
+setSmpServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
+setSmpServers c = withAgentEnv c . setSmpServers' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -478,8 +478,8 @@ deleteConnection' c connId =
       withStore (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
-useServers' :: forall m. AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
-useServers' c servers = do
+setSmpServers' :: forall m. AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
+setSmpServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer

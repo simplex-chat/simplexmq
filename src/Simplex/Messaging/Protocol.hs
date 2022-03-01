@@ -378,7 +378,7 @@ data SMPServer = SMPServer
     port :: ServiceName,
     keyHash :: C.KeyHash
   }
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic)
 
 instance IsString SMPServer where
   fromString = parseString strDecode
@@ -398,6 +398,10 @@ instance StrEncoding SMPServer where
     keyHash <- strP <* A.char '@'
     SrvLoc host port <- strP
     pure SMPServer {host, port, keyHash}
+
+instance ToJSON SMPServer where
+  toJSON = J.genericToJSON J.defaultOptions
+  toEncoding = J.genericToEncoding J.defaultOptions
 
 data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
