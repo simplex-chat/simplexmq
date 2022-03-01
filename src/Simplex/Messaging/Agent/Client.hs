@@ -99,7 +99,7 @@ newAgentClient agentEnv = do
   rcvQ <- newTBQueue qSize
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
-  smpServers <- newTVar $ initialSmpServers (config agentEnv)
+  smpServers <- newTVar $ initialSMPServers (config agentEnv)
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   pendingSubscrSrvrs <- newTVar M.empty

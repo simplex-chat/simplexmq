@@ -11,7 +11,7 @@ import Simplex.Messaging.Agent.Server (runSMPAgent)
 import Simplex.Messaging.Transport (TLS, Transport (..))
 
 cfg :: AgentConfig
-cfg = defaultAgentConfig {initialSmpServers = L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"]}
+cfg = defaultAgentConfig {initialSMPServers = L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"]}
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}

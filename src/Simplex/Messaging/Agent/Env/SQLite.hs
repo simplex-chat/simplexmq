@@ -29,7 +29,7 @@ import UnliftIO.STM
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
-    initialSmpServers :: NonEmpty SMPServer,
+    initialSMPServers :: NonEmpty SMPServer,
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
@@ -48,7 +48,7 @@ defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
-      initialSmpServers = undefined, -- TODO move it elsewhere?
+      initialSMPServers = undefined, -- TODO move it elsewhere?
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
