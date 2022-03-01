@@ -59,26 +59,26 @@ testAgentClient = do
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
-    -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
-    4 <- sendMessage alice bobId "hello"
-    get alice ##> ("", bobId, SENT 4)
-    5 <- sendMessage alice bobId "how are you?"
+    -- message IDs 1 to 4 get assigned to control messages, so first MSG is assigned ID 5
+    5 <- sendMessage alice bobId "hello"
     get alice ##> ("", bobId, SENT 5)
+    6 <- sendMessage alice bobId "how are you?"
+    get alice ##> ("", bobId, SENT 6)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-    ackMessage bob aliceId 4
-    get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
     ackMessage bob aliceId 5
-    6 <- sendMessage bob aliceId "hello too"
-    get bob ##> ("", aliceId, SENT 6)
-    7 <- sendMessage bob aliceId "message 1"
+    get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    ackMessage bob aliceId 6
+    7 <- sendMessage bob aliceId "hello too"
     get bob ##> ("", aliceId, SENT 7)
+    8 <- sendMessage bob aliceId "message 1"
+    get bob ##> ("", aliceId, SENT 8)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
-    ackMessage alice bobId 6
-    get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessage alice bobId 7
+    get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
+    ackMessage alice bobId 8
     suspendConnection alice bobId
-    8 <- sendMessage bob aliceId "message 2"
-    get bob ##> ("", aliceId, MERR 8 (SMP AUTH))
+    9 <- sendMessage bob aliceId "message 2"
+    get bob ##> ("", aliceId, MERR 9 (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   pure ()
@@ -161,11 +161,11 @@ testAsyncHelloTimeout = do
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings alice bobId bob aliceId = do
-  4 <- sendMessage alice bobId "hello"
-  get alice ##> ("", bobId, SENT 4)
+  5 <- sendMessage alice bobId "hello"
+  get alice ##> ("", bobId, SENT 5)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-  ackMessage bob aliceId 4
-  5 <- sendMessage bob aliceId "hello too"
-  get bob ##> ("", aliceId, SENT 5)
+  ackMessage bob aliceId 5
+  6 <- sendMessage bob aliceId "hello too"
+  get bob ##> ("", aliceId, SENT 6)
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
-  ackMessage alice bobId 5
+  ackMessage alice bobId 6

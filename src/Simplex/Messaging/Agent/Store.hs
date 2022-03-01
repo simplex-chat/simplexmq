@@ -62,7 +62,7 @@ class Monad m => MonadAgentStore s m where
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
-  getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody, InternalTs))
+  getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, (AgentMessageType, MsgBody, InternalTs))
   getPendingMsgs :: s -> ConnId -> m [InternalId]
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   deleteMsg :: s -> ConnId -> InternalId -> m ()
@@ -102,8 +102,11 @@ data SndQueue = SndQueue
   { server :: SMPServer,
     -- | sender queue ID
     sndId :: SMP.SenderId,
-    -- | key used by the sender to sign transmissions
+    -- | key pair used by the sender to sign transmissions
+    sndPublicKey :: Maybe C.APublicVerifyKey,
     sndPrivateKey :: SndPrivateSignKey,
+    -- | DH public key used to negotiate per-queue e2e encryption
+    e2ePubKey :: Maybe C.PublicKeyX25519,
     -- | shared DH secret agreed for simple per-queue e2e encryption
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
@@ -221,7 +224,7 @@ type PrevSndMsgHash = MsgHash
 
 data RcvMsgData = RcvMsgData
   { msgMeta :: MsgMeta,
-    msgType :: AMsgType,
+    msgType :: AgentMessageType,
     msgBody :: MsgBody,
     internalRcvId :: InternalRcvId,
     internalHash :: MsgHash,
@@ -232,7 +235,7 @@ data SndMsgData = SndMsgData
   { internalId :: InternalId,
     internalSndId :: InternalSndId,
     internalTs :: InternalTs,
-    msgType :: AMsgType,
+    msgType :: AgentMessageType,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash

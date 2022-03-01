@@ -441,7 +441,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       insertSndMsgDetails_ db connId sndMsgData
       updateHashSnd_ db connId sndMsgData
 
-  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody, InternalTs))
+  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AgentMessageType, MsgBody, InternalTs))
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
       rq_ <- liftIO $ getRcvQueueByConnId_ db connId
@@ -566,9 +566,9 @@ instance ToField InternalId where toField (InternalId x) = toField x
 
 instance FromField InternalId where fromField x = InternalId <$> fromField x
 
-instance ToField AMsgType where toField = toField . smpEncode
+instance ToField AgentMessageType where toField = toField . smpEncode
 
-instance FromField AMsgType where fromField = blobFieldParser smpP
+instance FromField AgentMessageType where fromField = blobFieldParser smpP
 
 instance ToField MsgIntegrity where toField = toField . strEncode
 
@@ -656,46 +656,25 @@ upsertServer_ dbConn SMPServer {host, port, keyHash} = do
 
 insertRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 insertRcvQueue_ dbConn connId RcvQueue {..} = do
-  DB.executeNamed
+  DB.execute
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status)
-      VALUES
-        (:host,:port,:rcv_id,:conn_id,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_dh_secret,:snd_id,:status);
+        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status) VALUES (?,?,?,?,?,?,?,?,?,?);
     |]
-    [ ":host" := host server,
-      ":port" := port server,
-      ":rcv_id" := rcvId,
-      ":conn_id" := connId,
-      ":rcv_private_key" := rcvPrivateKey,
-      ":rcv_dh_secret" := rcvDhSecret,
-      ":e2e_priv_key" := e2ePrivKey,
-      ":e2e_dh_secret" := e2eDhSecret,
-      ":snd_id" := sndId,
-      ":status" := status
-    ]
+    (host server, port server, rcvId, connId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status)
 
 -- * createSndConn helpers
 
 insertSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO ()
 insertSndQueue_ dbConn connId SndQueue {..} = do
-  DB.executeNamed
+  DB.execute
     dbConn
     [sql|
       INSERT INTO snd_queues
-        ( host, port, snd_id, conn_id, snd_private_key, e2e_dh_secret, status)
-      VALUES
-        (:host,:port,:snd_id,:conn_id,:snd_private_key,:e2e_dh_secret,:status);
+        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status) VALUES (?,?,?,?,?, ?,?, ?,?);
     |]
-    [ ":host" := host server,
-      ":port" := port server,
-      ":snd_id" := sndId,
-      ":conn_id" := connId,
-      ":snd_private_key" := sndPrivateKey,
-      ":e2e_dh_secret" := e2eDhSecret,
-      ":status" := status
-    ]
+    (host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)
 
 -- * getConn helpers
 
@@ -746,16 +725,16 @@ getSndQueueByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.e2e_dh_secret, q.status
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2eDhSecret, status)] =
+    sndQueue [(keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)] =
       let server = SMPServer host port keyHash
-       in Just SndQueue {server, sndId, sndPrivateKey, e2eDhSecret, status}
+       in Just SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status}
     sndQueue _ = Nothing
 
 -- * updateRcvIds helpers
