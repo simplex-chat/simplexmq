@@ -90,7 +90,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
-import Data.Aeson (ToJSON (..))
+import Data.Aeson (ToJSON (..), FromJSON (..))
 import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -378,7 +378,7 @@ data SMPServer = SMPServer
     port :: ServiceName,
     keyHash :: C.KeyHash
   }
-  deriving (Eq, Ord, Show, Generic)
+  deriving (Eq, Ord, Show)
 
 instance IsString SMPServer where
   fromString = parseString strDecode
@@ -399,9 +399,12 @@ instance StrEncoding SMPServer where
     SrvLoc host port <- strP
     pure SMPServer {host, port, keyHash}
 
+instance FromJSON SMPServer where
+  parseJSON = strParseJSON "SMPServer"
+
 instance ToJSON SMPServer where
-  toJSON = J.genericToJSON J.defaultOptions
-  toEncoding = J.genericToEncoding J.defaultOptions
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
