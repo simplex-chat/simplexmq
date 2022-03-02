@@ -76,13 +76,13 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> Int -> [Migration] -> IO SQLiteStore
-createSQLiteStore dbFilePath poolSize migrations = do
+createSQLiteStore :: FilePath -> Int -> [Migration] -> Bool -> IO SQLiteStore
+createSQLiteStore dbFilePath poolSize migrations yesToMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   st <- connectSQLiteStore dbFilePath poolSize
   checkThreadsafe st
-  migrateSchema st migrations
+  migrateSchema st migrations yesToMigrations
   pure st
 
 checkThreadsafe :: SQLiteStore -> IO ()
@@ -94,15 +94,16 @@ checkThreadsafe st = withConnection st $ \db -> do
     Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
     _ -> return ()
 
-migrateSchema :: SQLiteStore -> [Migration] -> IO ()
-migrateSchema st migrations = withConnection st $ \db -> do
+migrateSchema :: SQLiteStore -> [Migration] -> Bool -> IO ()
+migrateSchema st migrations yesToMigrations = withConnection st $ \db -> do
   Migrations.initialize db
   Migrations.get db migrations >>= \case
     Left e -> confirmOrExit $ "Database error: " <> e
     Right [] -> pure ()
     Right ms -> do
       unless (dbNew st) $ do
-        confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
+        unless yesToMigrations $
+          confirmOrExit "The app has a newer version than the database - it will be backed up and upgraded."
         let f = dbFilePath st
         copyFile f (f <> ".bak")
       Migrations.run db ms
@@ -440,7 +441,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       insertSndMsgDetails_ db connId sndMsgData
       updateHashSnd_ db connId sndMsgData
 
-  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AMsgType, MsgBody))
+  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AgentMessageType, MsgBody, InternalTs))
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
       rq_ <- liftIO $ getRcvQueueByConnId_ db connId
@@ -449,7 +450,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           DB.query
             db
             [sql|
-                SELECT m.msg_type, m.msg_body
+                SELECT m.msg_type, m.msg_body, m.internal_ts
                 FROM messages m
                 JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
                 WHERE m.conn_id = ? AND m.internal_id = ?
@@ -565,13 +566,13 @@ instance ToField InternalId where toField (InternalId x) = toField x
 
 instance FromField InternalId where fromField x = InternalId <$> fromField x
 
-instance ToField AMsgType where toField = toField . smpEncode
+instance ToField AgentMessageType where toField = toField . smpEncode
 
-instance FromField AMsgType where fromField = blobFieldParser smpP
+instance FromField AgentMessageType where fromField = blobFieldParser smpP
 
-instance ToField MsgIntegrity where toField = toField . serializeMsgIntegrity
+instance ToField MsgIntegrity where toField = toField . strEncode
 
-instance FromField MsgIntegrity where fromField = blobFieldParser msgIntegrityP
+instance FromField MsgIntegrity where fromField = blobFieldParser strP
 
 instance ToField SMPQueueUri where toField = toField . strEncode
 
@@ -655,46 +656,25 @@ upsertServer_ dbConn SMPServer {host, port, keyHash} = do
 
 insertRcvQueue_ :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 insertRcvQueue_ dbConn connId RcvQueue {..} = do
-  DB.executeNamed
+  DB.execute
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status)
-      VALUES
-        (:host,:port,:rcv_id,:conn_id,:rcv_private_key,:rcv_dh_secret,:e2e_priv_key,:e2e_dh_secret,:snd_id,:status);
+        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status) VALUES (?,?,?,?,?,?,?,?,?,?);
     |]
-    [ ":host" := host server,
-      ":port" := port server,
-      ":rcv_id" := rcvId,
-      ":conn_id" := connId,
-      ":rcv_private_key" := rcvPrivateKey,
-      ":rcv_dh_secret" := rcvDhSecret,
-      ":e2e_priv_key" := e2ePrivKey,
-      ":e2e_dh_secret" := e2eDhSecret,
-      ":snd_id" := sndId,
-      ":status" := status
-    ]
+    (host server, port server, rcvId, connId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status)
 
 -- * createSndConn helpers
 
 insertSndQueue_ :: DB.Connection -> ConnId -> SndQueue -> IO ()
 insertSndQueue_ dbConn connId SndQueue {..} = do
-  DB.executeNamed
+  DB.execute
     dbConn
     [sql|
       INSERT INTO snd_queues
-        ( host, port, snd_id, conn_id, snd_private_key, e2e_dh_secret, status)
-      VALUES
-        (:host,:port,:snd_id,:conn_id,:snd_private_key,:e2e_dh_secret,:status);
+        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status) VALUES (?,?,?,?,?, ?,?, ?,?);
     |]
-    [ ":host" := host server,
-      ":port" := port server,
-      ":snd_id" := sndId,
-      ":conn_id" := connId,
-      ":snd_private_key" := sndPrivateKey,
-      ":e2e_dh_secret" := e2eDhSecret,
-      ":status" := status
-    ]
+    (host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)
 
 -- * getConn helpers
 
@@ -745,16 +725,16 @@ getSndQueueByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.e2e_dh_secret, q.status
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2eDhSecret, status)] =
+    sndQueue [(keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)] =
       let server = SMPServer host port keyHash
-       in Just SndQueue {server, sndId, sndPrivateKey, e2eDhSecret, status}
+       in Just SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status}
     sndQueue _ = Nothing
 
 -- * updateRcvIds helpers

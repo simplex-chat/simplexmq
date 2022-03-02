@@ -1,3 +1,13 @@
+{-# LANGUAGE QuasiQuotes #-}
+
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial where
+
+import Database.SQLite.Simple (Query)
+import Database.SQLite.Simple.QQ (sql)
+
+m20220101_initial :: Query
+m20220101_initial =
+  [sql|
 CREATE TABLE servers (
   host TEXT NOT NULL,
   port TEXT NOT NULL,
@@ -135,3 +145,4 @@ CREATE TABLE skipped_messages (
   msg_n INTEGER NOT NULL,
   msg_key BLOB NOT NULL
 );
+|]

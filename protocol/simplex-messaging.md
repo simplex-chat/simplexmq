@@ -835,7 +835,7 @@ smpVersion = 2*2OCTET ; Word16 version number
 pad = *OCTET
 ```
 
-For TLS 1.3 transport client should assert that `sessionIdentifier` is equal to `tls-unique` channel binding defined in [RFC 5929][14] (TLS Finished message struct); we pass it in `serverHello` block to allow communication over some other transport protocol (possibly, with another channel binding).
+For TLS transport client should assert that `sessionIdentifier` is equal to `tls-unique` channel binding defined in [RFC 5929][14] (TLS Finished message struct); we pass it in `serverHello` block to allow communication over some other transport protocol (possibly, with another channel binding).
 
 [1]: https://en.wikipedia.org/wiki/Man-in-the-middle_attack
 [2]: https://en.wikipedia.org/wiki/End-to-end_encryption

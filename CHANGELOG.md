@@ -1,3 +1,28 @@
+# 1.0.3
+
+SMP server:
+- Reduce server message queue quota to 128 messages.
+
+SMP agent:
+- Add "yes to migrations" option.
+- Make new SMP client attempt to reconnect on network error.
+- Reduce connection handshake expiration to 2 days.
+
+JSON encoding of types used in simplex-chat, some other minor adjustments.
+
+# 1.0.2
+
+General:
+- Enable TLS 1.3 parameters for TLS handshake (server and client).
+- Switch from hs-tls fork to original repo now that it supports getFinished and getPeerFinished APIs for both TLS 1.2 and TLS 1.3.
+
+SMP server:
+- Perform TLS handshake in a separate thread per-connection.
+
+SMP agent:
+- Cease attempts to send HELLO after one week timeout.
+- Coalesce requests to connect to SMP servers, to have 1 connection per server.
+
 # 1.0.1
 
 SMP server:

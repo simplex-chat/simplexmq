@@ -23,7 +23,8 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 

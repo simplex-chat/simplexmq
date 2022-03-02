@@ -46,9 +46,9 @@ module Simplex.Messaging.Agent.Protocol
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
+    AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
-    AMsgType (..),
     SMPServer (..),
     SrvLoc (..),
     SMPQueueUri (..),
@@ -83,19 +83,13 @@ module Simplex.Messaging.Agent.Protocol
 
     -- * Encode/decode
     serializeCommand,
-    serializeMsgIntegrity,
     connMode,
     connMode',
-    serializeAgentError,
-    serializeSmpErrorType,
     commandP,
     connModeT,
-    msgIntegrityP,
-    agentErrorTypeP,
-    smpErrorTypeP,
     serializeQueueStatus,
     queueStatusT,
-    aMessageType,
+    agentMessageType,
 
     -- * TCP transport functions
     tPut,
@@ -108,6 +102,7 @@ where
 import Control.Applicative (optional, (<|>))
 import Control.Monad.IO.Class
 import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
@@ -131,7 +126,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (base64P, parse, parseRead, parseRead1, parseRead2, tsISO8601P)
+import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( ErrorType,
     MsgBody,
@@ -305,7 +300,7 @@ data AgentMsgEnvelope
       }
   | AgentInvitation -- the connInfo in contactInvite is only encrypted with per-queue E2E, not with double ratchet,
       { agentVersion :: Version,
-        connReq :: (ConnectionRequestUri 'CMInvitation),
+        connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
   deriving (Show)
@@ -348,6 +343,31 @@ instance Encoding AgentMessage where
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
+data AgentMessageType = AM_CONN_INFO | AM_HELLO_ | AM_REPLY_ | AM_A_MSG_
+  deriving (Eq, Show)
+
+instance Encoding AgentMessageType where
+  smpEncode = \case
+    AM_CONN_INFO -> "C"
+    AM_HELLO_ -> "H"
+    AM_REPLY_ -> "R"
+    AM_A_MSG_ -> "M"
+  smpP =
+    A.anyChar >>= \case
+      'C' -> pure AM_CONN_INFO
+      'H' -> pure AM_HELLO_
+      'R' -> pure AM_REPLY_
+      'M' -> pure AM_A_MSG_
+      _ -> fail "bad AgentMessageType"
+
+agentMessageType :: AgentMessage -> AgentMessageType
+agentMessageType = \case
+  AgentConnInfo _ -> AM_CONN_INFO
+  AgentMessage _ aMsg -> case aMsg of
+    HELLO -> AM_HELLO_
+    REPLY _ -> AM_REPLY_
+    A_MSG _ -> AM_A_MSG_
+
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
     sndMsgId :: AgentMsgId,
@@ -375,12 +395,6 @@ instance Encoding AMsgType where
       'R' -> pure REPLY_
       'M' -> pure A_MSG_
       _ -> fail "bad AMsgType"
-
-aMessageType :: AMessage -> AMsgType
-aMessageType = \case
-  HELLO -> HELLO_
-  REPLY _ -> REPLY_
-  A_MSG _ -> A_MSG_
 
 -- | Messages sent between SMP agents once SMP queue is secured.
 --
@@ -618,28 +632,69 @@ queueStatusT = \case
 type AgentMsgId = Int64
 
 -- | Result of received message integrity validation.
-data MsgIntegrity = MsgOk | MsgError MsgErrorType
-  deriving (Eq, Show)
+data MsgIntegrity = MsgOk | MsgError {errorInfo :: MsgErrorType}
+  deriving (Eq, Show, Generic)
+
+instance StrEncoding MsgIntegrity where
+  strP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> strP)
+  strEncode = \case
+    MsgOk -> "OK"
+    MsgError e -> "ERR" <> strEncode e
+
+instance ToJSON MsgIntegrity where
+  toJSON = J.genericToJSON $ sumTypeJSON fstToLower
+  toEncoding = J.genericToEncoding $ sumTypeJSON fstToLower
+
+instance FromJSON MsgIntegrity where
+  parseJSON = J.genericParseJSON $ sumTypeJSON fstToLower
 
 -- | Error of message integrity validation.
-data MsgErrorType = MsgSkipped AgentMsgId AgentMsgId | MsgBadId AgentMsgId | MsgBadHash | MsgDuplicate
-  deriving (Eq, Show)
+data MsgErrorType
+  = MsgSkipped {fromMsgId :: AgentMsgId, toMsgId :: AgentMsgId}
+  | MsgBadId {msgId :: AgentMsgId}
+  | MsgBadHash
+  | MsgDuplicate
+  deriving (Eq, Show, Generic)
+
+instance StrEncoding MsgErrorType where
+  strP =
+    "ID " *> (MsgBadId <$> A.decimal)
+      <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
+      <|> "HASH" $> MsgBadHash
+      <|> "DUPLICATE" $> MsgDuplicate
+  strEncode = \case
+    MsgSkipped fromMsgId toMsgId ->
+      B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
+    MsgBadId aMsgId -> "ID " <> bshow aMsgId
+    MsgBadHash -> "HASH"
+    MsgDuplicate -> "DUPLICATE"
+
+instance ToJSON MsgErrorType where
+  toJSON = J.genericToJSON $ sumTypeJSON fstToLower
+  toEncoding = J.genericToEncoding $ sumTypeJSON fstToLower
+
+instance FromJSON MsgErrorType where
+  parseJSON = J.genericParseJSON $ sumTypeJSON fstToLower
 
 -- | Error type used in errors sent to agent clients.
 data AgentErrorType
   = -- | command or response error
-    CMD CommandErrorType
+    CMD {cmdErr :: CommandErrorType}
   | -- | connection errors
-    CONN ConnectionErrorType
+    CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
-    SMP ErrorType
+    SMP {smpErr :: ErrorType}
   | -- | SMP server errors
-    BROKER BrokerErrorType
+    BROKER {brokerErr :: BrokerErrorType}
   | -- | errors of other agents
-    AGENT SMPAgentError
+    AGENT {agentErr :: SMPAgentError}
   | -- | agent implementation or dependency errors
-    INTERNAL String
+    INTERNAL {internalErr :: String}
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance ToJSON AgentErrorType where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 -- | SMP agent protocol command or response error.
 data CommandErrorType
@@ -655,6 +710,10 @@ data CommandErrorType
     LARGE
   deriving (Eq, Generic, Read, Show, Exception)
 
+instance ToJSON CommandErrorType where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
+
 -- | Connection error.
 data ConnectionErrorType
   = -- | connection is not in the database
@@ -663,21 +722,33 @@ data ConnectionErrorType
     DUPLICATE
   | -- | connection is simplex, but operation requires another queue
     SIMPLEX
+  | -- | connection not accepted on join HELLO after timeout
+    NOT_ACCEPTED
+  | -- | connection not available on reply confirmation/HELLO after timeout
+    NOT_AVAILABLE
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance ToJSON ConnectionErrorType where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 -- | SMP server errors.
 data BrokerErrorType
   = -- | invalid server response (failed to parse)
-    RESPONSE ErrorType
+    RESPONSE {smpErr :: ErrorType}
   | -- | unexpected response
     UNEXPECTED
   | -- | network error
     NETWORK
   | -- | handshake or other transport error
-    TRANSPORT TransportError
+    TRANSPORT {transportErr :: TransportError}
   | -- | command response timeout
     TIMEOUT
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance ToJSON BrokerErrorType where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 -- | Errors of another SMP agent.
 -- TODO encode/decode without A prefix
@@ -691,6 +762,30 @@ data SMPAgentError
   | -- | cannot decrypt message
     A_ENCRYPTION
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance ToJSON SMPAgentError where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance StrEncoding AgentErrorType where
+  strP =
+    "CMD " *> (CMD <$> parseRead1)
+      <|> "CONN " *> (CONN <$> parseRead1)
+      <|> "SMP " *> (SMP <$> strP)
+      <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> strP)
+      <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
+      <|> "BROKER " *> (BROKER <$> parseRead1)
+      <|> "AGENT " *> (AGENT <$> parseRead1)
+      <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
+  strEncode = \case
+    CMD e -> "CMD " <> bshow e
+    CONN e -> "CONN " <> bshow e
+    SMP e -> "SMP " <> strEncode e
+    BROKER (RESPONSE e) -> "BROKER RESPONSE " <> strEncode e
+    BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
+    BROKER e -> "BROKER " <> bshow e
+    AGENT e -> "AGENT " <> bshow e
+    INTERNAL e -> "INTERNAL " <> bshow e
 
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 
@@ -742,27 +837,17 @@ commandP =
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
-    msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> agentErrorTypeP
+    msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
     message = ACmd SAgent .: MSG <$> msgMetaP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
     msgMetaP = do
-      integrity <- msgIntegrityP
+      integrity <- strP
       recipient <- " R=" *> partyMeta A.decimal
       broker <- " B=" *> partyMeta base64P
       sndMsgId <- " S=" *> A.decimal
       pure MsgMeta {integrity, recipient, broker, sndMsgId}
     partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
-    agentError = ACmd SAgent . ERR <$> agentErrorTypeP
-
--- | Message integrity validation result parser.
-msgIntegrityP :: Parser MsgIntegrity
-msgIntegrityP = "OK" $> MsgOk <|> "ERR " *> (MsgError <$> msgErrorType)
-  where
-    msgErrorType =
-      "ID " *> (MsgBadId <$> A.decimal)
-        <|> "IDS " *> (MsgSkipped <$> A.decimal <* A.space <*> A.decimal)
-        <|> "HASH" $> MsgBadHash
-        <|> "DUPLICATE" $> MsgDuplicate
+    agentError = ACmd SAgent . ERR <$> strP
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse commandP $ CMD SYNTAX
@@ -786,13 +871,13 @@ serializeCommand = \case
   SEND msgBody -> "SEND " <> serializeBinary msgBody
   MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
-  MERR mId e -> B.unwords ["MERR", bshow mId, serializeAgentError e]
+  MERR mId e -> B.unwords ["MERR", bshow mId, strEncode e]
   MSG msgMeta msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, serializeBinary msgBody]
   ACK mId -> "ACK " <> bshow mId
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
-  ERR e -> "ERR " <> serializeAgentError e
+  ERR e -> "ERR " <> strEncode e
   OK -> "OK"
   where
     showTs :: UTCTime -> ByteString
@@ -800,48 +885,11 @@ serializeCommand = \case
     serializeMsgMeta :: MsgMeta -> ByteString
     serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
       B.unwords
-        [ serializeMsgIntegrity integrity,
+        [ strEncode integrity,
           "R=" <> bshow rmId <> "," <> showTs rTs,
           "B=" <> encode bmId <> "," <> showTs bTs,
           "S=" <> bshow sndMsgId
         ]
-
--- | Serialize message integrity validation result.
-serializeMsgIntegrity :: MsgIntegrity -> ByteString
-serializeMsgIntegrity = \case
-  MsgOk -> "OK"
-  MsgError e ->
-    "ERR " <> case e of
-      MsgSkipped fromMsgId toMsgId ->
-        B.unwords ["NO_ID", bshow fromMsgId, bshow toMsgId]
-      MsgBadId aMsgId -> "ID " <> bshow aMsgId
-      MsgBadHash -> "HASH"
-      MsgDuplicate -> "DUPLICATE"
-
--- | SMP agent protocol error parser.
-agentErrorTypeP :: Parser AgentErrorType
-agentErrorTypeP =
-  "SMP " *> (SMP <$> smpErrorTypeP)
-    <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> smpErrorTypeP)
-    <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
-    <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
-    <|> parseRead2
-
--- | Serialize SMP agent protocol error.
-serializeAgentError :: AgentErrorType -> ByteString
-serializeAgentError = \case
-  SMP e -> "SMP " <> serializeSmpErrorType e
-  BROKER (RESPONSE e) -> "BROKER RESPONSE " <> serializeSmpErrorType e
-  BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
-  e -> bshow e
-
--- | SMP error parser.
-smpErrorTypeP :: Parser ErrorType
-smpErrorTypeP = "CMD " *> (SMP.CMD <$> parseRead1) <|> parseRead1
-
--- | Serialize SMP error.
-serializeSmpErrorType :: ErrorType -> ByteString
-serializeSmpErrorType = bshow
 
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body

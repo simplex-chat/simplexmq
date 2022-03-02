@@ -22,12 +22,13 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadFingerprint, simplexMQVersion)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), simplexMQVersion)
+import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (BufferMode (..), IOMode (..), hGetLine, withFile, hSetBuffering, stderr, stdout)
+import System.IO (BufferMode (..), IOMode (..), hGetLine, hSetBuffering, stderr, stdout, withFile)
 import System.Process (readCreateProcess, shell)
 import Text.Read (readMaybe)
 
@@ -276,8 +277,8 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
       ServerConfig
         { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
           tbqSize = 16,
-          serverTbqSize = 128,
-          msgQueueQuota = 256,
+          serverTbqSize = 64,
+          msgQueueQuota = 128,
           queueIdBytes = 24,
           msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
           caCertificateFile = caCrtFile,
