@@ -25,13 +25,15 @@ import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
 
 data Migration = Migration {name :: String, up :: Text}
   deriving (Show)
 
 schemaMigrations :: [(String, Query)]
 schemaMigrations =
-  [ ("20220101_initial", m20220101_initial)
+  [ ("20220101_initial", m20220101_initial),
+    ("20220301_snd_queue_keys", m20220301_snd_queue_keys)
   ]
 
 -- | The list of migrations in ascending order by date

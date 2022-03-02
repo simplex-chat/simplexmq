@@ -46,9 +46,9 @@ module Simplex.Messaging.Agent.Protocol
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
+    AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
-    AMsgType (..),
     SMPServer (..),
     SrvLoc (..),
     SMPQueueUri (..),
@@ -89,7 +89,7 @@ module Simplex.Messaging.Agent.Protocol
     connModeT,
     serializeQueueStatus,
     queueStatusT,
-    aMessageType,
+    agentMessageType,
 
     -- * TCP transport functions
     tPut,
@@ -343,6 +343,31 @@ instance Encoding AgentMessage where
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
+data AgentMessageType = AM_CONN_INFO | AM_HELLO_ | AM_REPLY_ | AM_A_MSG_
+  deriving (Eq, Show)
+
+instance Encoding AgentMessageType where
+  smpEncode = \case
+    AM_CONN_INFO -> "C"
+    AM_HELLO_ -> "H"
+    AM_REPLY_ -> "R"
+    AM_A_MSG_ -> "M"
+  smpP =
+    A.anyChar >>= \case
+      'C' -> pure AM_CONN_INFO
+      'H' -> pure AM_HELLO_
+      'R' -> pure AM_REPLY_
+      'M' -> pure AM_A_MSG_
+      _ -> fail "bad AgentMessageType"
+
+agentMessageType :: AgentMessage -> AgentMessageType
+agentMessageType = \case
+  AgentConnInfo _ -> AM_CONN_INFO
+  AgentMessage _ aMsg -> case aMsg of
+    HELLO -> AM_HELLO_
+    REPLY _ -> AM_REPLY_
+    A_MSG _ -> AM_A_MSG_
+
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
     sndMsgId :: AgentMsgId,
@@ -370,12 +395,6 @@ instance Encoding AMsgType where
       'R' -> pure REPLY_
       'M' -> pure A_MSG_
       _ -> fail "bad AMsgType"
-
-aMessageType :: AMessage -> AMsgType
-aMessageType = \case
-  HELLO -> HELLO_
-  REPLY _ -> REPLY_
-  A_MSG _ -> A_MSG_
 
 -- | Messages sent between SMP agents once SMP queue is secured.
 --
@@ -705,7 +724,7 @@ data ConnectionErrorType
     SIMPLEX
   | -- | connection not accepted on join HELLO after timeout
     NOT_ACCEPTED
-  | -- | connection not available on reply HELLO after timeout
+  | -- | connection not available on reply confirmation/HELLO after timeout
     NOT_AVAILABLE
   deriving (Eq, Generic, Read, Show, Exception)
 
