@@ -724,7 +724,7 @@ data ConnectionErrorType
     SIMPLEX
   | -- | connection not accepted on join HELLO after timeout
     NOT_ACCEPTED
-  | -- | connection not available on reply HELLO after timeout
+  | -- | connection not available on reply confirmation/HELLO after timeout
     NOT_AVAILABLE
   deriving (Eq, Generic, Read, Show, Exception)
 
