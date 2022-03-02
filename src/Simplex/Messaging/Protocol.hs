@@ -90,7 +90,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
-import Data.Aeson (ToJSON (..), FromJSON (..))
+import Data.Aeson (ToJSON (..))
 import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -398,9 +398,6 @@ instance StrEncoding SMPServer where
     keyHash <- strP <* A.char '@'
     SrvLoc host port <- strP
     pure SMPServer {host, port, keyHash}
-
-instance FromJSON SMPServer where
-  parseJSON = strParseJSON "SMPServer"
 
 instance ToJSON SMPServer where
   toJSON = strToJSON
