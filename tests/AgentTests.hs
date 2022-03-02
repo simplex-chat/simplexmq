@@ -34,8 +34,8 @@ agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
   describe "Connection request" connectionRequestTests
   describe "Double ratchet tests" doubleRatchetTests
-  xdescribe "Functional API" $ functionalAPITests (ATransport t)
-  xdescribe "SQLite store" storeTests
+  describe "Functional API" $ functionalAPITests (ATransport t)
+  describe "SQLite store" storeTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
     it "should connect via one server and one agent" $

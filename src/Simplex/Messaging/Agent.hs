@@ -241,8 +241,13 @@ joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2
         connId' <- createSndConn st g cData sq
         createRatchet st connId' rc
         pure connId'
-      enqueueConfirmation c connId' sq cInfo $ Just e2eSndParams
-      pure connId'
+      tryError (confirmQueue c connId' sq cInfo $ Just e2eSndParams) >>= \case
+        Right _ -> do
+          void $ enqueueMessage c connId' sq HELLO
+          pure connId'
+        Left e -> do
+          withStore (`deleteConn` connId')
+          throwError e
     _ -> throwError $ AGENT A_VERSION
 joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo =
   case ( qUri `compatibleVersion` SMP.smpClientVRange,
@@ -323,26 +328,6 @@ sendMessage' c connId msg =
   where
     enqueueMsg :: SndQueue -> m AgentMsgId
     enqueueMsg sq = enqueueMessage c connId sq $ A_MSG msg
-
-enqueueConfirmation :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
-enqueueConfirmation c connId sq connInfo e2eEncryption = do
-  resumeMsgDelivery c connId sq
-  msgId <- storeConfirmation
-  queuePendingMsgs c connId sq [msgId]
-  where
-    storeConfirmation :: m InternalId
-    storeConfirmation = do
-      internalTs <- liftIO getCurrentTime
-      (internalId, internalSndId, prevMsgHash) <- withStore (`updateSndIds` connId)
-      let agentMsg = AgentConnInfo connInfo
-          agentMsgStr = smpEncode agentMsg
-          internalHash = C.sha256Hash agentMsgStr
-      encConnInfo <- agentRatchetEncrypt connId agentMsgStr e2eEncConnInfoLength
-      let msgBody = smpEncode $ AgentConfirmation {agentVersion = smpAgentVersion, e2eEncryption, encConnInfo}
-          msgType = agentMessageType agentMsg
-          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, internalHash, prevMsgHash}
-      withStore $ \st -> createSndMsg st connId msgData
-      pure internalId
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> AMessage -> m AgentMsgId
 enqueueMessage c connId sq aMessage = do
@@ -675,6 +660,38 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
           | extSndId > prevExtSndId + 1 = MsgError $ MsgSkipped (prevExtSndId + 1) (extSndId - 1)
           | internalPrevMsgHash /= receivedPrevMsgHash = MsgError MsgBadHash
           | otherwise = MsgError MsgDuplicate -- this case is not possible
+
+confirmQueue :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
+confirmQueue c connId sq connInfo e2eEncryption = do
+  _ <- withStore (`updateSndIds` connId)
+  msg <- mkConfirmation
+  sendConfirmation c sq msg
+  withStore $ \st -> setSndQueueStatus st sq Confirmed
+  where
+    mkConfirmation :: m MsgBody
+    mkConfirmation = do
+      encConnInfo <- agentRatchetEncrypt connId (smpEncode $ AgentConnInfo connInfo) e2eEncConnInfoLength
+      pure . smpEncode $ AgentConfirmation {agentVersion = smpAgentVersion, e2eEncryption, encConnInfo}
+
+enqueueConfirmation :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
+enqueueConfirmation c connId sq connInfo e2eEncryption = do
+  resumeMsgDelivery c connId sq
+  msgId <- storeConfirmation
+  queuePendingMsgs c connId sq [msgId]
+  where
+    storeConfirmation :: m InternalId
+    storeConfirmation = do
+      internalTs <- liftIO getCurrentTime
+      (internalId, internalSndId, prevMsgHash) <- withStore (`updateSndIds` connId)
+      let agentMsg = AgentConnInfo connInfo
+          agentMsgStr = smpEncode agentMsg
+          internalHash = C.sha256Hash agentMsgStr
+      encConnInfo <- agentRatchetEncrypt connId agentMsgStr e2eEncConnInfoLength
+      let msgBody = smpEncode $ AgentConfirmation {agentVersion = smpAgentVersion, e2eEncryption, encConnInfo}
+          msgType = agentMessageType agentMsg
+          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, internalHash, prevMsgHash}
+      withStore $ \st -> createSndMsg st connId msgData
+      pure internalId
 
 -- encoded AgentMessage -> encoded EncAgentMessage
 agentRatchetEncrypt :: AgentMonad m => ConnId -> ByteString -> Int -> m ByteString
