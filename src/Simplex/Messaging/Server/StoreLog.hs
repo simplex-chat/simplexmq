@@ -24,6 +24,9 @@ module Simplex.Messaging.Server.StoreLog
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM.TMVar
+import Control.Exception (bracket_)
 import Control.Monad (unless)
 import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
@@ -112,17 +115,17 @@ openReadStoreLog f = do
 
 storeLogFilePath :: StoreLog a -> FilePath
 storeLogFilePath = \case
-  WriteStoreLog f _ -> f
+  WriteStoreLog f _ _ -> f
   ReadStoreLog f _ -> f
 
 closeStoreLog :: StoreLog a -> IO ()
 closeStoreLog = \case
-  WriteStoreLog _ h -> hClose h
+  WriteStoreLog _ h _ -> hClose h
   ReadStoreLog _ h -> hClose h
 
 writeStoreLogRecord :: StoreLog 'WriteMode -> StoreLogRecord -> IO ()
 writeStoreLogRecord (WriteStoreLog _ h lock) r =
-  E.bracket_
+  bracket_
     (atomically $ takeTMVar lock)
     (atomically $ putTMVar lock ())
     $ do
