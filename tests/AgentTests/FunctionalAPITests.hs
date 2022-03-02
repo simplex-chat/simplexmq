@@ -10,7 +10,7 @@ module AgentTests.FunctionalAPITests (functionalAPITests) where
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
 import SMPAgentClient
-import SMPClient (withSmpServer)
+import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
@@ -44,6 +44,8 @@ functionalAPITests t = do
       withSmpServer t testAsyncJoiningOfflineBeforeActivation
     it "should connect with both clients going offline" $
       withSmpServer t testAsyncBothOffline
+    it "should connect on the second attempt if server was offline" $
+      testAsyncServerOffline t
     it "should notify after HELLO timeout" $
       withSmpServer t testAsyncHelloTimeout
 
@@ -146,6 +148,30 @@ testAsyncBothOffline = do
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
     get bob' ##> ("", aliceId, CON)
     exchangeGreetings alice' bobId bob' aliceId
+  pure ()
+
+testAsyncServerOffline :: ATransport -> IO ()
+testAsyncServerOffline t = do
+  alice <- getSMPAgentClient cfg
+  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  -- create connection and shutdown the server
+  Right (bobId, cReq) <- withSmpServerStoreLogOn t testPort $ \_ ->
+    runExceptT $ createConnection alice SCMInvitation
+  -- connection fails
+  Left (BROKER NETWORK) <- runExceptT $ joinConnection bob cReq "bob's connInfo"
+  ("", bobId1, DOWN) <- get alice
+  bobId1 `shouldBe` bobId
+  -- connection succeeds after server start
+  Right () <- withSmpServerStoreLogOn t testPort $ \_ -> runExceptT $ do
+    ("", bobId2, UP) <- get alice
+    liftIO $ bobId2 `shouldBe` bobId
+    aliceId <- joinConnection bob cReq "bob's connInfo"
+    ("", _, CONF confId "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, CON)
+    exchangeGreetings alice bobId bob aliceId
   pure ()
 
 testAsyncHelloTimeout :: IO ()
