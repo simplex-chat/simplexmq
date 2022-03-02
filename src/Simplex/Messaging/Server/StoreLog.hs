@@ -53,7 +53,7 @@ import System.IO
 -- constructors are not exported, openWriteStoreLog and openReadStoreLog should be used instead
 data StoreLog (a :: IOMode) where
   ReadStoreLog :: FilePath -> Handle -> StoreLog 'ReadMode
-  WriteStoreLog :: FilePath -> Handle -> StoreLog 'WriteMode
+  WriteStoreLog :: FilePath -> Handle -> TMVar () -> StoreLog 'WriteMode
 
 data StoreLogRecord
   = CreateQueue QueueRec
@@ -103,7 +103,7 @@ instance StrEncoding StoreLogRecord where
       <|> "ACK " *> (AcknowledgeMsg <$> strP_ <*> strP)
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
-openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
+openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode <*> newTMVarIO ()
 
 openReadStoreLog :: FilePath -> IO (StoreLog 'ReadMode)
 openReadStoreLog f = do
@@ -121,9 +121,13 @@ closeStoreLog = \case
   ReadStoreLog _ h -> hClose h
 
 writeStoreLogRecord :: StoreLog 'WriteMode -> StoreLogRecord -> IO ()
-writeStoreLogRecord (WriteStoreLog _ h) r = do
-  B.hPutStrLn h $ strEncode r
-  hFlush h
+writeStoreLogRecord (WriteStoreLog _ h lock) r =
+  E.bracket_
+    (atomically $ takeTMVar lock)
+    (atomically $ putTMVar lock ())
+    $ do
+      B.hPutStrLn h $ strEncode r
+      hFlush h
 
 logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
 logCreateQueue s = writeStoreLogRecord s . CreateQueue
