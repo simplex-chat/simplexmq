@@ -9,6 +9,7 @@
 
 module Simplex.Messaging.Server.StoreLog
   ( StoreLog, -- constructors are not exported
+    QueueData (..),
     openWriteStoreLog,
     openReadStoreLog,
     storeLogFilePath,
@@ -24,22 +25,14 @@ module Simplex.Messaging.Server.StoreLog
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Concurrent.STM (atomically)
-import Control.Concurrent.STM.TMVar
+import Control.Concurrent.STM
 import Control.Exception (bracket_)
-import Control.Monad (unless)
-import Data.Bifunctor (first, second)
-import Data.ByteString.Char8 (ByteString)
+import Control.Monad
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:))
-import Data.Either (partitionEithers)
-import Data.Functor (($>))
-import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Sequence (Seq (..), (|>))
-import qualified Data.Sequence as Seq
+import Numeric.Natural
 import Simplex.Messaging.Encoding.String
   ( Str (Str),
     StrEncoding (..),
@@ -49,6 +42,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore (Message (..))
 import Simplex.Messaging.Server.QueueStore (QueueRec (..), QueueStatus (..))
 import Simplex.Messaging.Transport (trimCR)
+import Simplex.Messaging.Util (ifM, snapshotTBQueue)
 import System.Directory (doesFileExist)
 import System.IO
 
@@ -150,48 +144,71 @@ logCreateMsg s = writeStoreLogRecord s .: CreateMsg
 logAcknowledgeMsg :: StoreLog 'WriteMode -> RecipientId -> MsgId -> IO ()
 logAcknowledgeMsg s = writeStoreLogRecord s .: AcknowledgeMsg
 
-type QueueData = (QueueRec, Seq Message)
+data QueueData = QueueData
+  { queueRec :: TVar QueueRec,
+    pendingAck :: TVar (Maybe MsgId),
+    messageQueue :: TBQueue Message
+  }
 
-readWriteStoreLog :: StoreLog 'ReadMode -> IO (Map RecipientId QueueData, StoreLog 'WriteMode)
-readWriteStoreLog s@(ReadStoreLog f _) = do
-  qd <- readQueueData s
+readWriteStoreLog :: StoreLog 'ReadMode -> Natural -> IO (Map RecipientId QueueData, StoreLog 'WriteMode)
+readWriteStoreLog s@(ReadStoreLog f _) quota = do
+  qd <- readQueueData s quota
   closeStoreLog s
   s' <- openWriteStoreLog f
   writeQueueData s' qd
   pure (qd, s')
 
 writeQueueData :: StoreLog 'WriteMode -> Map RecipientId QueueData -> IO ()
-writeQueueData s = mapM_ logQueueData . M.filter (active . fst)
+writeQueueData s = mapM_ logQueueData
   where
-    active QueueRec {status} = status == QueueActive
-    logQueueData (q, ms) = do
-      logCreateQueue s q
-      mapM_ (logCreateMsg s $ recipientId q) ms
+    logQueueData qd = do
+      (q, ms) <- atomically $ getQueueData qd
+      when (status q == QueueActive) $ do
+        logCreateQueue s q
+        mapM_ (logCreateMsg s $ recipientId q) ms
+    getQueueData QueueData {queueRec, messageQueue} = (,) <$> readTVar queueRec <*> snapshotTBQueue messageQueue
 
-type LogParsingError = (String, ByteString)
-
-readQueueData :: StoreLog 'ReadMode -> IO (Map RecipientId QueueData)
-readQueueData (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLog
+readQueueData :: StoreLog 'ReadMode -> Natural -> IO (Map RecipientId QueueData)
+readQueueData (ReadStoreLog _ h) quota = processLogLine M.empty
   where
-    procStoreLog :: LB.ByteString -> ([LogParsingError], Map RecipientId QueueData)
-    procStoreLog = second (foldl' procLogRecord M.empty) . partitionEithers . map parseLogRecord . LB.lines
-    returnResult :: ([LogParsingError], Map RecipientId QueueData) -> IO (Map RecipientId QueueData)
-    returnResult (errs, res) = mapM_ printError errs $> res
-    parseLogRecord :: LB.ByteString -> Either LogParsingError StoreLogRecord
-    parseLogRecord = (\s -> first (,s) $ strDecode s) . trimCR . LB.toStrict
-    procLogRecord :: Map RecipientId QueueData -> StoreLogRecord -> Map RecipientId QueueData
-    procLogRecord m = \case
-      CreateQueue q -> M.insert (recipientId q) (q, Seq.empty) m
-      SecureQueue qId sKey -> M.adjust (first $ \q -> q {senderKey = Just sKey}) qId m
-      AddNotifier qId nId nKey -> M.adjust (first $ \q -> q {notifier = Just (nId, nKey)}) qId m
-      DeleteQueue qId -> M.delete qId m
-      CreateMsg rId msg -> M.adjust (second (|> msg)) rId m
-      AcknowledgeMsg rId msgId -> M.adjust (second $ ackMsg msgId) rId m
+    processLogLine m = ifM (hIsEOF h) (pure m) $ do
+      s <- trimCR <$> B.hGetLine h
+      case strDecode s of
+        Left e -> printError (e, s) >> processLogLine m
+        Right r -> case r of
+          CreateQueue q -> do
+            qd <- atomically $ newQueueData q
+            processLogLine $ M.insert (recipientId q) qd m
+          SecureQueue rId sKey ->
+            updateQueue rId $ \QueueData {queueRec} ->
+              atomically $ modifyTVar queueRec $ \q -> q {senderKey = Just sKey}
+          AddNotifier rId nId nKey ->
+            updateQueue rId $ \QueueData {queueRec} ->
+              atomically $ modifyTVar queueRec $ \q -> q {notifier = Just (nId, nKey)}
+          DeleteQueue rId -> processLogLine $ M.delete rId m
+          CreateMsg rId msg@Message {msgId} ->
+            updateQueue rId $ \QueueData {pendingAck, messageQueue} -> atomically $ do
+              readTVar pendingAck >>= \case
+                Just msgId'
+                  | msgId' == msgId -> pure ()
+                  | otherwise -> writeTBQueue messageQueue msg
+                _ -> writeTBQueue messageQueue msg
+          AcknowledgeMsg rId msgId' ->
+            updateQueue rId $ \QueueData {pendingAck, messageQueue} -> atomically $ do
+              tryPeekTBQueue messageQueue >>= \case
+                Just Message {msgId}
+                  | msgId' == msgId -> void $ readTBQueue messageQueue
+                  | otherwise -> writeTVar pendingAck $ Just msgId'
+                _ -> writeTVar pendingAck $ Just msgId'
       where
-        ackMsg msgId' = \case
-          Seq.Empty -> Seq.Empty
-          s@(Message {msgId} :<| s')
-            | msgId' == msgId -> s'
-            | otherwise -> s
-    printError :: LogParsingError -> IO ()
+        updateQueue qId f = do
+          case M.lookup qId m of
+            Just qd -> f qd
+            _ -> pure ()
+          processLogLine m
+    newQueueData q = do
+      queueRec <- newTVar q
+      pendingAck <- newTVar Nothing
+      messageQueue <- newTBQueue quota
+      pure QueueData {queueRec, pendingAck, messageQueue}
     printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s

@@ -2,6 +2,8 @@
 
 module Simplex.Messaging.Util where
 
+import Control.Concurrent.STM (STM)
+import Control.Concurrent.STM.TBQueue
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
@@ -61,3 +63,15 @@ ifM ba t f = ba >>= \b -> if b then t else f
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM b = ifM b $ pure ()
 {-# INLINE unlessM #-}
+
+snapshotTBQueue :: TBQueue a -> STM [a]
+snapshotTBQueue q = do
+  xs <- flushTBQueue q
+  mapM_ (writeTBQueue q) xs
+  pure xs
+
+-- snapshotTBQueue :: TBQueue a -> STM [a]
+-- snapshotTBQueue (TBQueue _ read _ write _) = do
+--   xs <- readTVar read
+--   ys <- readTVar write
+--   return $ if null xs && null is then [] else xs ++ reverse ys

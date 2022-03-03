@@ -23,6 +23,9 @@ newMsgStore :: STM STMMsgStore
 newMsgStore = newTVar $ MsgStoreData M.empty
 
 instance MonadMsgStore STMMsgStore MsgQueue STM where
+  setMsgQueue :: STMMsgStore -> RecipientId -> MsgQueue -> STM ()
+  setMsgQueue store rId q = modifyTVar store $ \m -> m {messages = M.insert rId q $ messages m}
+
   getMsgQueue :: STMMsgStore -> RecipientId -> Natural -> STM MsgQueue
   getMsgQueue store rId quota = do
     m <- messages <$> readTVar store

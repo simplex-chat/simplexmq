@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -18,7 +19,7 @@ import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.MsgStore (getMsgQueue, writeMsg)
+import Simplex.Messaging.Server.MsgStore (setMsgQueue)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -105,6 +106,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
   s' <- restoreQueueData queueStore msgStore `mapM` storeLog (config :: ServerConfig)
+  liftIO $ putStrLn "restored log"
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
@@ -112,9 +114,9 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   where
     restoreQueueData :: QueueStore -> STMMsgStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueueData queueStore msgStore s = do
-      (queueData, s') <- liftIO $ readWriteStoreLog s
-      let queues = M.map fst queueData
-          msgs = M.map snd queueData
+      (queueData, s') <- liftIO $ readWriteStoreLog s msgQueueQuota
+      queues <- atomically $ mapM (readTVar . queueRec) queueData
+      let msgs = M.map messageQueue queueData
       atomically $ do
         modifyTVar queueStore $ \d ->
           d
@@ -122,9 +124,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
               senders = M.foldr' addSender M.empty queues,
               notifiers = M.foldr' addNotifier M.empty queues
             }
-        forM_ (M.assocs msgs) $ \(rId, ms) -> do
-          mq <- getMsgQueue msgStore rId msgQueueQuota
-          mapM_ (writeMsg mq) ms
+        forM_ (M.assocs msgs) $ \(rId, mq) ->
+          setMsgQueue msgStore rId $ MsgQueue mq
       pure s'
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)

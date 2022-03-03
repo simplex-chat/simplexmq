@@ -21,6 +21,7 @@ instance StrEncoding Message where
     pure Message {msgId, ts, msgBody}
 
 class MonadMsgStore s q m | s -> q where
+  setMsgQueue :: s -> RecipientId -> q -> m ()
   getMsgQueue :: s -> RecipientId -> Natural -> m q
   delMsgQueue :: s -> RecipientId -> m ()
 
