@@ -384,11 +384,13 @@ showServer SMPServer {host, port} =
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 
--- TODO maybe package E2ERatchetParams into SMPConfirmation
 sendConfirmation :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
-sendConfirmation c SndQueue {server, sndId} encConfirmation =
-  withLogSMP_ c server sndId "SEND <CONF>" $ \smp ->
-    liftSMP $ sendSMPMessage smp Nothing sndId encConfirmation
+sendConfirmation c sq@SndQueue {server, sndId, sndPublicKey = Just sndPublicKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation =
+  withLogSMP_ c server sndId "SEND <CONF>" $ \smp -> do
+    let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
+    msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
+    liftSMP $ sendSMPMessage smp Nothing sndId msg
+sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> Compatible SMPQueueInfo -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) connReq connInfo =
