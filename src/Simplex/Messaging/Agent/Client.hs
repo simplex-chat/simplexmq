@@ -47,6 +47,7 @@ import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
@@ -76,6 +77,7 @@ data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue SMPServerTransmission,
+    smpServers :: TVar (NonEmpty SMPServer),
     smpClients :: TVar (Map SMPServer SMPClientVar),
     subscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
     pendingSubscrSrvrs :: TVar (Map SMPServer (Map ConnId RcvQueue)),
@@ -97,6 +99,7 @@ newAgentClient agentEnv = do
   rcvQ <- newTBQueue qSize
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
+  smpServers <- newTVar $ initialSMPServers (config agentEnv)
   smpClients <- newTVar M.empty
   subscrSrvrs <- newTVar M.empty
   pendingSubscrSrvrs <- newTVar M.empty
@@ -108,7 +111,7 @@ newAgentClient agentEnv = do
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {rcvQ, subQ, msgQ, smpClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {rcvQ, subQ, msgQ, smpServers, smpClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)

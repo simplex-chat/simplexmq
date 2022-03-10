@@ -399,6 +399,10 @@ instance StrEncoding SMPServer where
     SrvLoc host port <- strP
     pure SMPServer {host, port, keyHash}
 
+instance ToJSON SMPServer where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
 data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
 
