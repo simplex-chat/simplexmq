@@ -149,6 +149,7 @@ import Data.String
 import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.X509
+import qualified Database.PostgreSQL.Simple as PDB
 import qualified Database.PostgreSQL.Simple.FromField as PF
 import qualified Database.PostgreSQL.Simple.ToField as PT
 import qualified Database.PostgreSQL.Simple.TypeInfo as PTI
@@ -161,6 +162,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
+import qualified Database.PostgreSQL.Simple as PDB
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -584,7 +586,7 @@ instance AlgorithmI a => PT.ToField (PrivateKey a) where toField = PT.toField . 
 
 instance AlgorithmI a => PT.ToField (PublicKey a) where toField = PT.toField . encodePubKey
 
-instance PT.ToField (DhSecret a) where toField = PT.toField . dhBytes'
+instance PT.ToField (DhSecret a) where toField = PT.toField . PDB.Binary . dhBytes'
 
 instance PF.FromField APrivateSignKey where fromField = fromByteStringField decodePrivKey
 
@@ -598,7 +600,8 @@ instance (Typeable a, AlgorithmI a) => PF.FromField (PrivateKey a) where fromFie
 
 instance (Typeable a, AlgorithmI a) => PF.FromField (PublicKey a) where fromField = fromByteStringField decodePubKey
 
-instance (Typeable a, AlgorithmI a) => PF.FromField (DhSecret a) where fromField = fromByteStringField strDecode
+-- instance (Typeable a, AlgorithmI a) => PF.FromField (DhSecret a) where fromField = fromByteStringField strDecode
+instance (Typeable a, AlgorithmI a) => PF.FromField (DhSecret a) where fromField x = fromByteStringField strDecode x
 
 instance IsString (Maybe ASignature) where
   fromString = parseString $ decode >=> decodeSignature

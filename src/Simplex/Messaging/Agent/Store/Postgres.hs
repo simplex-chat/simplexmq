@@ -73,6 +73,8 @@ import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
 import qualified UnliftIO.Exception as E
+import Network.Socket (HostName, ServiceName)
+import Simplex.Messaging.Crypto (KeyHash)
 
 -- * Postgres Store implementation
 
@@ -169,6 +171,7 @@ createConn_ st gVar cData create = do
     case cData of
       ConnData {connId = ""} -> createWithRandomId gVar $ create db
       ConnData {connId} -> create db connId $> Right connId
+  liftIO $ print "before: getConn_ db connId"
   conn <- liftIO $ withTransaction st $ \db -> getConn_ db connId
   liftIO $ print conn
   pure connId
@@ -184,13 +187,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore PostgresS
   createSndConn :: PostgresStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   createSndConn st gVar cData q@SndQueue {server} =
     createConn_ st gVar cData $ \db connId -> do
-      print "upsertServer_ db server"
       upsertServer_ db server
-      print "execute db \"INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)\" (connId, SCMInvitation)"
       execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, SCMInvitation)
-      print "insertSndQueue_ db connId q"
-      insertSndQueue_ db connId q -- ! fails here - comment this line to see data written to db
-      print "after insertSndQueue_ db connId q"
+      insertSndQueue_ db connId q
 
   getConn :: PostgresStore -> ConnId -> m SomeConn
   getConn st connId =
@@ -694,7 +693,7 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
       VALUES
         (?,?,?,?,?,?,?);
     |]
-    (host server, port server, sndId, connId, sndPrivateKey, e2eDhSecret, status)
+    (host server, port server, DB.Binary sndId, connId, sndPrivateKey, e2eDhSecret, status)
 
 -- * getConn helpers
 
@@ -703,8 +702,13 @@ getConn_ dbConn connId =
   getConnData_ dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
     Just (connData, cMode) -> do
+      liftIO $ print "before: getRcvQueueByConnId_ dbConn connId"
       rQ <- getRcvQueueByConnId_ dbConn connId
+      liftIO $ print $ "rQ: " <> show rQ
+      liftIO $ print "before: getSndQueueByConnId_ dbConn connId"
       sQ <- getSndQueueByConnId_ dbConn connId
+      liftIO $ print $ "sQ: " <> show sQ
+      liftIO $ print "after: getSndQueueByConnId_ dbConn connId"
       pure $ case (rQ, sQ, cMode) of
         (Just rcvQ, Just sndQ, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection connData rcvQ sndQ)
         (Just rcvQ, Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection connData rcvQ)
@@ -740,9 +744,34 @@ getRcvQueueByConnId_ dbConn connId =
     rcvQueue _ = Nothing
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
-getSndQueueByConnId_ dbConn connId =
-  sndQueue
-    <$> DB.query
+getSndQueueByConnId_ dbConn connId = do
+  -- sndQueue
+  --   <$> DB.query
+  --     dbConn
+  --     -- [sql|
+  --     --   SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.e2e_dh_secret, q.status
+  --     --   FROM snd_queues q
+  --     --   INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+  --     --   WHERE q.conn_id = ?;
+  --     -- |]
+  --     [sql|
+  --       SELECT s.key_hash, q.host, q.port, q.snd_private_key, q.status
+  --       FROM snd_queues q
+  --       INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+  --       WHERE q.conn_id = ?;
+  --     |]
+  --     (Only connId)
+  print "inside: getSndQueueByConnId_"
+  -- r1 <- (DB.query
+  --     dbConn
+  --     [sql|
+  --       SELECT host, port, key_hash
+  --       FROM servers
+  --       WHERE host = ?
+  --     |]
+  --     (DB.Only ("localhost" :: HostName))) :: (IO [(HostName, ServiceName, KeyHash)])
+  -- putStrLn $ show r1
+  r <- DB.query
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_private_key, q.e2e_dh_secret, q.status
@@ -750,12 +779,26 @@ getSndQueueByConnId_ dbConn connId =
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
-      (Only connId)
+      -- [sql|
+      --   SELECT q.host, q.port, q.status
+      --   FROM snd_queues q
+      --   INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+      --   WHERE q.conn_id = ?;
+      -- |]
+      (DB.Only connId)
+  print $ "r: " <> show r
+  let q = sndQueue r
+  print $ "q: " <> show q
+  pure q
   where
-    sndQueue [(keyHash, host, port, sndId, sndPrivateKey, e2eDhSecret, status)] =
+    sndQueue [(keyHash, host, port, DB.Binary sndId, sndPrivateKey, e2eDhSecret, status)] =
       let server = SMPServer host port keyHash
        in Just SndQueue {server, sndId, sndPrivateKey, e2eDhSecret, status}
     sndQueue _ = Nothing
+    -- sndQueue [(host, port, status)] = do
+    --   let server = SMPServer host port "abcd"
+    --    in Just SndQueue {server, sndId="3456", sndPrivateKey=(C.APrivateSignKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"), e2eDhSecret="MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o=", status}
+    -- sndQueue _ = Nothing
 
 -- * updateRcvIds helpers
 
