@@ -70,11 +70,11 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
-import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Env.Postgres
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
+import Simplex.Messaging.Agent.Store.Postgres (PostgresStore)
 import Simplex.Messaging.Client (SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -172,18 +172,22 @@ client c@AgentClient {rcvQ, subQ} = forever $ do
 
 withStore ::
   AgentMonad m =>
-  (forall m'. (MonadUnliftIO m', MonadError StoreError m') => SQLiteStore -> m' a) ->
+  (forall m'. (MonadUnliftIO m', MonadError StoreError m') => PostgresStore -> m' a) ->
   m a
 withStore action = do
   st <- asks store
   runExceptT (action st `E.catch` handleInternal) >>= \case
     Right c -> return c
-    Left e -> throwError $ storeError e
+    Left e -> do
+      liftIO $ print e
+      throwError $ storeError e
   where
     -- TODO when parsing exception happens in store, the agent hangs;
     -- changing SQLError to SomeException does not help
-    handleInternal :: (MonadError StoreError m') => SQLError -> m' a
-    handleInternal e = throwError . SEInternal $ bshow e
+    handleInternal :: (MonadUnliftIO m', MonadError StoreError m') => SQLError -> m' a
+    handleInternal e = do
+      liftIO $ print e
+      throwError . SEInternal $ bshow e
     storeError :: StoreError -> AgentErrorType
     storeError = \case
       SEConnNotFound -> CONN NOT_FOUND
@@ -238,8 +242,11 @@ joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2
       g <- asks idsDrg
       let cData = ConnData {connId}
       connId' <- withStore $ \st -> do
+        liftIO $ print "before: createSndConn st g cData sq"
         connId' <- createSndConn st g cData sq
+        liftIO $ print "before: createRatchet st connId' rc"
         createRatchet st connId' rc
+        liftIO $ print "after: createRatchet st connId' rc"
         pure connId'
       confirmQueue c connId' sq smpConf $ Just e2eSndParams
       void $ enqueueMessage c connId' sq HELLO
@@ -621,9 +628,12 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                 Nothing -> notify . ERR $ AGENT A_VERSION
                 Just qInfo' -> do
                   (sq, smpConf) <- newSndQueue qInfo' ownConnInfo
+                  liftIO $ print "before: upgradeRcvConnToDuplex st connId sq"
                   withStore $ \st -> upgradeRcvConnToDuplex st connId sq
                   confirmQueue c connId sq smpConf Nothing
+                  liftIO $ print "before: `removeConfirmations` connId"
                   withStore (`removeConfirmations` connId)
+                  liftIO $ print "after: `removeConfirmations` connId"
                   void $ enqueueMessage c connId sq HELLO
             _ -> prohibited
 

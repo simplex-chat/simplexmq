@@ -12,7 +12,7 @@ import Control.Monad.IO.Unlift
 import SMPAgentClient
 import SMPClient (withSmpServer)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
+import Simplex.Messaging.Agent.Env.Postgres (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..))
@@ -50,7 +50,7 @@ functionalAPITests t = do
 testAgentClient :: IO ()
 testAgentClient = do
   alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  bob <- getSMPAgentClient cfg {dbConnInfo = testDB2}
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
@@ -94,7 +94,7 @@ testAgentClient = do
 testAsyncInitiatingOffline :: IO ()
 testAsyncInitiatingOffline = do
   alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  bob <- getSMPAgentClient cfg {dbConnInfo = testDB2}
   Right () <- runExceptT $ do
     (bobId, cReq) <- createConnection alice SCMInvitation
     disconnectAgentClient alice
@@ -112,14 +112,14 @@ testAsyncInitiatingOffline = do
 testAsyncJoiningOfflineBeforeActivation :: IO ()
 testAsyncJoiningOfflineBeforeActivation = do
   alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  bob <- getSMPAgentClient cfg {dbConnInfo = testDB2}
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     disconnectAgentClient bob
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
-    bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
+    bob' <- liftIO $ getSMPAgentClient cfg {dbConnInfo = testDB2}
     subscribeConnection bob' aliceId
     get alice ##> ("", bobId, CON)
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
@@ -130,7 +130,7 @@ testAsyncJoiningOfflineBeforeActivation = do
 testAsyncBothOffline :: IO ()
 testAsyncBothOffline = do
   alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  bob <- getSMPAgentClient cfg {dbConnInfo = testDB2}
   Right () <- runExceptT $ do
     (bobId, cReq) <- createConnection alice SCMInvitation
     disconnectAgentClient alice
@@ -140,7 +140,7 @@ testAsyncBothOffline = do
     subscribeConnection alice' bobId
     ("", _, CONF confId "bob's connInfo") <- get alice'
     allowConnection alice' bobId confId "alice's connInfo"
-    bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
+    bob' <- liftIO $ getSMPAgentClient cfg {dbConnInfo = testDB2}
     subscribeConnection bob' aliceId
     get alice' ##> ("", bobId, CON)
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
@@ -151,7 +151,7 @@ testAsyncBothOffline = do
 testAsyncHelloTimeout :: IO ()
 testAsyncHelloTimeout = do
   alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2, helloTimeout = 1}
+  bob <- getSMPAgentClient cfg {dbConnInfo = testDB2, helloTimeout = 1}
   Right () <- runExceptT $ do
     (_, cReq) <- createConnection alice SCMInvitation
     disconnectAgentClient alice

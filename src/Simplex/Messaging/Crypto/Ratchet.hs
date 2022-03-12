@@ -30,8 +30,12 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Typeable (Typeable)
 import Data.Word (Word32)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
+import qualified Database.PostgreSQL.Simple.FromField as PF
+import qualified Database.PostgreSQL.Simple.ToField as PT
+import qualified Database.PostgreSQL.Simple.TypeInfo as PTI
+import qualified Database.PostgreSQL.Simple.TypeInfo.Static as PTIS
+import qualified Database.SQLite.Simple.FromField as SF
+import qualified Database.SQLite.Simple.ToField as ST
 import GHC.Generics
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
@@ -197,13 +201,32 @@ instance ToJSON RatchetKey where
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
 
-instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
+instance AlgorithmI a => ST.ToField (Ratchet a) where toField = ST.toField . LB.toStrict . J.encode
 
-instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
+instance AlgorithmI a => PT.ToField (Ratchet a) where toField = PT.toField . LB.toStrict . J.encode
 
-instance ToField MessageKey where toField = toField . smpEncode
+instance (AlgorithmI a, Typeable a) => PF.FromField (Ratchet a) where fromField = fromByteStringField J.eitherDecodeStrict'
 
-instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
+instance (AlgorithmI a, Typeable a) => SF.FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
+
+instance ST.ToField MessageKey where toField = ST.toField . smpEncode
+
+instance PT.ToField MessageKey where toField = PT.toField . smpEncode
+
+instance SF.FromField MessageKey where fromField = blobFieldDecoder smpDecode
+
+instance PF.FromField MessageKey where fromField = fromByteStringField smpDecode
+
+fromByteStringField :: Typeable a => (ByteString -> Either String a) -> PF.Field -> Maybe ByteString -> PF.Conversion a
+fromByteStringField dec f mdata =
+  if PF.typeOid f /= PTI.typoid PTIS.bytea
+    then PF.returnError PF.Incompatible f ""
+    else case mdata of
+      Nothing -> PF.returnError PF.UnexpectedNull f ""
+      Just dat ->
+        case dec dat of
+          Right x -> return x
+          _ -> PF.returnError PF.ConversionFailed f (B.unpack dat)
 
 -- | Sending ratchet initialization, equivalent to RatchetInitAliceHE in double ratchet spec
 --

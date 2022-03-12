@@ -149,14 +149,20 @@ import Data.String
 import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.X509
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
+import qualified Database.PostgreSQL.Simple as PDB
+import qualified Database.PostgreSQL.Simple.FromField as PF
+import qualified Database.PostgreSQL.Simple.ToField as PT
+import qualified Database.PostgreSQL.Simple.TypeInfo as PTI
+import qualified Database.PostgreSQL.Simple.TypeInfo.Static as PTIS
+import qualified Database.SQLite.Simple.FromField as SF
+import qualified Database.SQLite.Simple.ToField as ST
 import GHC.TypeLits (ErrorMessage (..), TypeError)
 import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
+import qualified Database.PostgreSQL.Simple as PDB
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -540,33 +546,62 @@ generateKeyPair' = case sAlgorithm @a of
       let k = X448.toPublic pk
        in pure (PublicKeyX448 k, PrivateKeyX448 pk k)
 
-instance ToField APrivateSignKey where toField = toField . encodePrivKey
+instance ST.ToField APrivateSignKey where toField = ST.toField . encodePrivKey
 
-instance ToField APublicVerifyKey where toField = toField . encodePubKey
+instance ST.ToField APublicVerifyKey where toField = ST.toField . encodePubKey
 
-instance ToField APrivateDhKey where toField = toField . encodePrivKey
+instance ST.ToField APrivateDhKey where toField = ST.toField . encodePrivKey
 
-instance ToField APublicDhKey where toField = toField . encodePubKey
+instance ST.ToField APublicDhKey where toField = ST.toField . encodePubKey
 
-instance AlgorithmI a => ToField (PrivateKey a) where toField = toField . encodePrivKey
+instance AlgorithmI a => ST.ToField (PrivateKey a) where toField = ST.toField . encodePrivKey
 
-instance AlgorithmI a => ToField (PublicKey a) where toField = toField . encodePubKey
+instance AlgorithmI a => ST.ToField (PublicKey a) where toField = ST.toField . encodePubKey
 
-instance ToField (DhSecret a) where toField = toField . dhBytes'
+instance ST.ToField (DhSecret a) where toField = ST.toField . dhBytes'
 
-instance FromField APrivateSignKey where fromField = blobFieldDecoder decodePrivKey
+instance SF.FromField APrivateSignKey where fromField = blobFieldDecoder decodePrivKey
 
-instance FromField APublicVerifyKey where fromField = blobFieldDecoder decodePubKey
+instance SF.FromField APublicVerifyKey where fromField = blobFieldDecoder decodePubKey
 
-instance FromField APrivateDhKey where fromField = blobFieldDecoder decodePrivKey
+instance SF.FromField APrivateDhKey where fromField = blobFieldDecoder decodePrivKey
 
-instance FromField APublicDhKey where fromField = blobFieldDecoder decodePubKey
+instance SF.FromField APublicDhKey where fromField = blobFieldDecoder decodePubKey
 
-instance (Typeable a, AlgorithmI a) => FromField (PrivateKey a) where fromField = blobFieldDecoder decodePrivKey
+instance (Typeable a, AlgorithmI a) => SF.FromField (PrivateKey a) where fromField = blobFieldDecoder decodePrivKey
 
-instance (Typeable a, AlgorithmI a) => FromField (PublicKey a) where fromField = blobFieldDecoder decodePubKey
+instance (Typeable a, AlgorithmI a) => SF.FromField (PublicKey a) where fromField = blobFieldDecoder decodePubKey
 
-instance (Typeable a, AlgorithmI a) => FromField (DhSecret a) where fromField = blobFieldDecoder strDecode
+instance (Typeable a, AlgorithmI a) => SF.FromField (DhSecret a) where fromField = blobFieldDecoder strDecode
+
+instance PT.ToField APrivateSignKey where toField = PT.toField . encodePrivKey
+
+instance PT.ToField APublicVerifyKey where toField = PT.toField . encodePubKey
+
+instance PT.ToField APrivateDhKey where toField = PT.toField . encodePrivKey
+
+instance PT.ToField APublicDhKey where toField = PT.toField . encodePubKey
+
+instance AlgorithmI a => PT.ToField (PrivateKey a) where toField = PT.toField . encodePrivKey
+
+instance AlgorithmI a => PT.ToField (PublicKey a) where toField = PT.toField . encodePubKey
+
+instance PT.ToField (DhSecret a) where toField = PT.toField . PDB.Binary . dhBytes'
+
+instance PF.FromField APrivateSignKey where fromField = fromByteStringField decodePrivKey
+
+instance PF.FromField APublicVerifyKey where fromField = fromByteStringField decodePubKey
+
+instance PF.FromField APrivateDhKey where fromField = fromByteStringField decodePrivKey
+
+instance PF.FromField APublicDhKey where fromField = fromByteStringField decodePubKey
+
+instance (Typeable a, AlgorithmI a) => PF.FromField (PrivateKey a) where fromField = fromByteStringField decodePrivKey
+
+instance (Typeable a, AlgorithmI a) => PF.FromField (PublicKey a) where fromField = fromByteStringField decodePubKey
+
+-- instance (Typeable a, AlgorithmI a) => PF.FromField (DhSecret a) where fromField = fromByteStringField strDecode
+instance (Typeable a, AlgorithmI a) => PF.FromField (DhSecret a) where fromField x = fromByteStringField strDecode x
 
 instance IsString (Maybe ASignature) where
   fromString = parseString $ decode >=> decodeSignature
@@ -690,9 +725,13 @@ validSignatureSize n =
 newtype Key = Key {unKey :: ByteString}
   deriving (Eq, Ord, Show)
 
-instance ToField Key where toField = toField . unKey
+instance ST.ToField Key where toField = ST.toField . unKey
 
-instance FromField Key where fromField f = Key <$> fromField f
+instance PT.ToField Key where toField = PT.toField . unKey
+
+instance SF.FromField Key where fromField f = Key <$> SF.fromField f
+
+instance PF.FromField Key where fromField f = PF.fromField f
 
 instance ToJSON Key where
   toJSON = strToJSON . unKey
@@ -730,9 +769,27 @@ instance StrEncoding KeyHash where
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP
 
-instance ToField KeyHash where toField = toField . strEncode
+instance ST.ToField KeyHash where toField = ST.toField . strEncode
 
-instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
+instance SF.FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
+
+instance PT.ToField KeyHash where toField = PT.toField . strEncode
+
+-- TODO
+-- instance PF.FromField KeyHash where fromField = blobFieldDecoderPostgres $ parseAll strP
+
+instance PF.FromField KeyHash where fromField = fromByteStringField $ parseAll strP
+
+fromByteStringField :: Typeable a => (ByteString -> Either String a) -> PF.Field -> Maybe ByteString -> PF.Conversion a
+fromByteStringField dec f mdata =
+  if PF.typeOid f /= PTI.typoid PTIS.bytea
+    then PF.returnError PF.Incompatible f ""
+    else case mdata of
+      Nothing -> PF.returnError PF.UnexpectedNull f ""
+      Just dat ->
+        case dec dat of
+          Right x -> return x
+          _ -> PF.returnError PF.ConversionFailed f (B.unpack dat)
 
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString

@@ -13,6 +13,7 @@ import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
+import AgentTests.PostgresTests (postgresStoreTests)
 import Control.Concurrent
 import Control.Monad (forM_)
 import Data.ByteString.Char8 (ByteString)
@@ -36,6 +37,7 @@ agentTests (ATransport t) = do
   describe "Double ratchet tests" doubleRatchetTests
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "SQLite store" storeTests
+  describe "Postgres store" postgresStoreTests
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
     it "should connect via one server and one agent" $
@@ -329,7 +331,7 @@ testMsgDeliveryAgentRestart t bob = do
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
-  removeFile testDB
+  -- removeFile testDB
   where
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent = withSmpAgentThreadOn_ (ATransport t) (agentTestPort, testPort, testDB) (pure ()) . const . testSMPAgentClientOn agentTestPort
@@ -422,6 +424,7 @@ syntaxTests t = do
       -- TODO: add tests with defined connection id
       it "with incorrect parameter" $ ("222", "", "NEW hi") >#> ("222", "", "ERR CMD SYNTAX")
 
+  -- focus this test to test postgres
   describe "JOIN" $ do
     describe "valid" $ do
       it "using same server as in invitation" $
