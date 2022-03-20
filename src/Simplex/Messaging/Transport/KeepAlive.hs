@@ -6,13 +6,13 @@ module Simplex.Messaging.Transport.KeepAlive where
 import Foreign.C (CInt (..))
 import Network.Socket
 
-foreign import capi "sys/socket.h value TCP_KEEPCNT" tcpKeepCnt :: CInt
+foreign import capi "netinet/tcp.h value TCP_KEEPCNT" tcpKeepCnt :: CInt
 
-foreign import capi "sys/socket.h value TCP_KEEPIDLE" tcpKeepIdle :: CInt
+foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" tcpKeepIdle :: CInt
 
-foreign import capi "sys/socket.h value TCP_KEEPINTVL" tcpKeepIntvl :: CInt
+foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" tcpKeepIntvl :: CInt
 
-foreign import capi "sys/socket.h value SOL_TCP" solTcp :: CInt
+foreign import capi "netinet/tcp.h value SOL_TCP" solTcp :: CInt
 
 data KeepAliveOpts = KeepAliveOpts
   { keepCnt :: Int,
