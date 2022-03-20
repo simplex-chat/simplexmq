@@ -110,7 +110,7 @@ smpDefaultConfig =
     { qSize = 64,
       defaultTransport = ("5223", transport @TLS),
       tcpTimeout = 4_000_000,
-      smpPing = 30_000_000
+      smpPing = 3_600_000_000 -- 1 hour
     }
 
 data Request = Request

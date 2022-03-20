@@ -20,6 +20,7 @@ import Network.Socket
 import qualified Network.TLS as T
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.KeepAlive
 import System.IO.Error
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -51,6 +52,7 @@ startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
+      setSocketKeepAlive sock defaultKeepAlive
       ctx <- connectTLS clientParams sock
       getClientConnection ctx
 
