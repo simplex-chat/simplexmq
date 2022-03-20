@@ -2,5 +2,5 @@ packages: .
 
 source-repository-package
     type: git
-    location: git://github.com/simplex-chat/aeson.git
+    location: https://github.com/simplex-chat/aeson.git
     tag: 3eb66f9a68f103b5f1489382aad89f5712a64db7
