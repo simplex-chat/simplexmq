@@ -15,9 +15,9 @@ foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" tcpKeepIntvl :: CInt
 foreign import capi "netinet/tcp.h value SOL_TCP" solTcp :: CInt
 
 data KeepAliveOpts = KeepAliveOpts
-  { keepCnt :: CInt,
-    keepIdle :: CInt,
-    keepIntvl :: CInt
+  { keepCnt :: Int,
+    keepIdle :: Int,
+    keepIntvl :: Int
   }
 
 defaultKeepAlive :: KeepAliveOpts
@@ -35,6 +35,6 @@ setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
   -- putStrLn $ "tcpKeepCnt: " <> show tcpKeepCnt
   -- putStrLn $ "tcpKeepIdle: " <> show tcpKeepIdle
   -- putStrLn $ "tcpKeepIntvl: " <> show tcpKeepIntvl
-  setSockOpt sock (SockOpt solTcp tcpKeepCnt) keepCnt
-  setSockOpt sock (SockOpt solTcp tcpKeepIdle) keepIdle
-  setSockOpt sock (SockOpt solTcp tcpKeepIntvl) keepIntvl
+  setSocketOption sock (SockOpt solTcp tcpKeepCnt) keepCnt
+  setSocketOption sock (SockOpt solTcp tcpKeepIdle) keepIdle
+  setSocketOption sock (SockOpt solTcp tcpKeepIntvl) keepIntvl
