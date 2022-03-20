@@ -1,4 +1,5 @@
 {-# LANGUAGE CApiFFI #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Transport.KeepAlive where
@@ -8,11 +9,15 @@ import Network.Socket
 
 foreign import capi "netinet/tcp.h value TCP_KEEPCNT" tcpKeepCnt :: CInt
 
-foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" tcpKeepIdle :: CInt
-
 foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" tcpKeepIntvl :: CInt
 
+#if defined(darwin_HOST_OS)
+foreign import capi "netinet/tcp.h value TCP_KEEPALIVE" tcpKeepIdle :: CInt
+foreign import capi "netinet/in.h value IPPROTO_TCP" solTcp :: CInt
+#else
+foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" tcpKeepIdle :: CInt
 foreign import capi "netinet/tcp.h value SOL_TCP" solTcp :: CInt
+#endif
 
 data KeepAliveOpts = KeepAliveOpts
   { keepCnt :: Int,
@@ -31,10 +36,6 @@ defaultKeepAlive =
 setSocketKeepAlive :: Socket -> KeepAliveOpts -> IO ()
 setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
   setSocketOption sock KeepAlive 1
-  putStrLn $ "solTcp: " <> show solTcp
-  putStrLn $ "tcpKeepCnt: " <> show tcpKeepCnt
-  putStrLn $ "tcpKeepIdle: " <> show tcpKeepIdle
-  putStrLn $ "tcpKeepIntvl: " <> show tcpKeepIntvl
   setSocketOption sock (SockOpt solTcp tcpKeepCnt) keepCnt
   setSocketOption sock (SockOpt solTcp tcpKeepIdle) keepIdle
   setSocketOption sock (SockOpt solTcp tcpKeepIntvl) keepIntvl
