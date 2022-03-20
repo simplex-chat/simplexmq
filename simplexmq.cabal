@@ -41,6 +41,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220320_server_ips
       Simplex.Messaging.Client
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.Ratchet

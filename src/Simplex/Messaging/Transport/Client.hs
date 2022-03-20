@@ -75,7 +75,7 @@ validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, 
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
         hooks = XV.defaultHooks
-        checks = XV.defaultChecks
+        checks = XV.defaultChecks {XV.checkFQHN = False}
         certStore = XS.makeCertificateStore sc
         cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
         serviceID = (host, port)

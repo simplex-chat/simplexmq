@@ -468,7 +468,7 @@ syntaxTests t = do
           "a",
           "JOIN https://simpex.chat/invitation#/?smp=smp%3A%2F%2F"
             <> urlEncode True "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
-            <> "%40localhost%3A5001%2F3456-w%3D%3D%23"
+            <> "%40127.0.0.1%3A5001%2F3456-w%3D%3D%23"
             <> urlEncode True sampleDhKey
             <> "&v=1"
             <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"

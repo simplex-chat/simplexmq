@@ -29,7 +29,7 @@ import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, takeTMVar)
 import UnliftIO.Timeout (timeout)
 
 testHost :: HostName
-testHost = "localhost"
+testHost = "127.0.0.1"
 
 testPort :: ServiceName
 testPort = "5001"
