@@ -5,8 +5,8 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220320_server_ips wher
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
-m20220301_snd_queue_keys :: Query
-m20220301_snd_queue_keys =
+m20220320_server_ips :: Query
+m20220320_server_ips =
   [sql|
 UPDATE servers SET host = '178.79.168.175' WHERE host = 'smp8.simplex.im';
 UPDATE servers SET host = '178.79.169.107' WHERE host = 'smp9.simplex.im';
