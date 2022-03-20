@@ -31,10 +31,10 @@ defaultKeepAlive =
 setSocketKeepAlive :: Socket -> KeepAliveOpts -> IO ()
 setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
   setSocketOption sock KeepAlive 1
-  -- putStrLn $ "solTcp: " <> show solTcp
-  -- putStrLn $ "tcpKeepCnt: " <> show tcpKeepCnt
-  -- putStrLn $ "tcpKeepIdle: " <> show tcpKeepIdle
-  -- putStrLn $ "tcpKeepIntvl: " <> show tcpKeepIntvl
+  putStrLn $ "solTcp: " <> show solTcp
+  putStrLn $ "tcpKeepCnt: " <> show tcpKeepCnt
+  putStrLn $ "tcpKeepIdle: " <> show tcpKeepIdle
+  putStrLn $ "tcpKeepIntvl: " <> show tcpKeepIntvl
   setSocketOption sock (SockOpt solTcp tcpKeepCnt) keepCnt
   setSocketOption sock (SockOpt solTcp tcpKeepIdle) keepIdle
   setSocketOption sock (SockOpt solTcp tcpKeepIntvl) keepIntvl
