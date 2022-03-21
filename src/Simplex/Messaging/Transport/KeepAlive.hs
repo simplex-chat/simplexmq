@@ -25,10 +25,10 @@ data KeepAliveOpts = KeepAliveOpts
     keepIntvl :: Int
   }
 
-defaultKeepAlive :: KeepAliveOpts
-defaultKeepAlive =
+defaultKeepAliveOpts :: KeepAliveOpts
+defaultKeepAliveOpts =
   KeepAliveOpts
-    { keepCnt = 2,
+    { keepCnt = 4,
       keepIdle = 30,
       keepIntvl = 15
     }

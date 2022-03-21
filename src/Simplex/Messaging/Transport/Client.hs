@@ -26,14 +26,14 @@ import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> (c -> m a) -> m a
-runTransportClient host port keyHash client = do
+runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTransportClient host port keyHash keepAliveOpts client = do
   let clientParams = mkTLSClientParams host port keyHash
-  c <- liftIO $ startTCPClient host port clientParams
+  c <- liftIO $ startTCPClient host port clientParams keepAliveOpts
   client c `E.finally` liftIO (closeConnection c)
 
-startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> IO c
-startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
+startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> Maybe KeepAliveOpts  -> IO c
+startTCPClient host port clientParams keepAliveOpts = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
     err = mkIOError NoSuchThing "no address" Nothing Nothing
@@ -52,7 +52,7 @@ startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       connect sock $ addrAddress addr
-      setSocketKeepAlive sock defaultKeepAlive
+      mapM_ (setSocketKeepAlive sock) keepAliveOpts
       ctx <- connectTLS clientParams sock
       getClientConnection ctx
 

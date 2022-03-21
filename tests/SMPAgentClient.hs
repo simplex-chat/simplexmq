@@ -27,6 +27,7 @@ import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.KeepAlive
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
@@ -190,7 +191,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient agentTestHost port' testKeyHash $ \h -> do
+  runTransportClient agentTestHost port' testKeyHash (Just defaultKeepAliveOpts) $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h
