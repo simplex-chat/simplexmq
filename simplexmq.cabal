@@ -57,6 +57,7 @@ library
       Simplex.Messaging.Server.StoreLog
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.Client
+      Simplex.Messaging.Transport.KeepAlive
       Simplex.Messaging.Transport.Server
       Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
@@ -91,7 +92,7 @@ library
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.*
+    , network ==3.1.2.*
     , network-transport ==0.5.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
@@ -142,7 +143,7 @@ executable smp-agent
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.*
+    , network ==3.1.2.*
     , network-transport ==0.5.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
@@ -195,7 +196,7 @@ executable smp-server
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.*
+    , network ==3.1.2.*
     , network-transport ==0.5.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -264,7 +265,7 @@ test-suite smp-server-test
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.*
+    , network ==3.1.2.*
     , network-transport ==0.5.*
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*

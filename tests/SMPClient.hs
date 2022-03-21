@@ -22,6 +22,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (openReadStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.KeepAlive
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -45,7 +46,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTransportClient testHost testPort testKeyHash $ \h ->
+  runTransportClient testHost testPort testKeyHash (Just defaultKeepAliveOpts) $ \h ->
     liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e

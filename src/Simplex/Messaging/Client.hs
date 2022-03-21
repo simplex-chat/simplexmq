@@ -65,6 +65,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake)
 import Simplex.Messaging.Transport.Client (runTransportClient)
+import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
 import System.Timeout (timeout)
@@ -99,6 +100,8 @@ data SMPClientConfig = SMPClientConfig
     defaultTransport :: (ServiceName, ATransport),
     -- | timeout of TCP commands (microseconds)
     tcpTimeout :: Int,
+    -- | TCP keep-alive options, Nothing to skip enabling keep-alive
+    tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds)
     smpPing :: Int
   }
@@ -110,7 +113,8 @@ smpDefaultConfig =
     { qSize = 64,
       defaultTransport = ("5223", transport @TLS),
       tcpTimeout = 4_000_000,
-      smpPing = 30_000_000
+      tcpKeepAlive = Just defaultKeepAliveOpts,
+      smpPing = 1_200_000_000 -- 20min
     }
 
 data Request = Request
@@ -126,7 +130,7 @@ type Response = Either SMPClientError BrokerMsg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO (Either SMPClientError SMPClient)
-getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ disconnected =
+getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing} msgQ disconnected =
   atomically mkSMPClient >>= runClient useTransport
   where
     mkSMPClient :: STM SMPClient
@@ -155,7 +159,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, smpPing} msgQ dis
       thVar <- newEmptyTMVarIO
       action <-
         async $
-          runTransportClient (host smpServer) port' (keyHash smpServer) (client t c thVar)
+          runTransportClient (host smpServer) port' (keyHash smpServer) tcpKeepAlive (client t c thVar)
             `finally` atomically (putTMVar thVar $ Left SMPNetworkError)
       th_ <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case th_ of
