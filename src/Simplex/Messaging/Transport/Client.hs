@@ -32,7 +32,7 @@ runTransportClient host port keyHash keepAliveOpts client = do
   c <- liftIO $ startTCPClient host port clientParams keepAliveOpts
   client c `E.finally` liftIO (closeConnection c)
 
-startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> Maybe KeepAliveOpts  -> IO c
+startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> Maybe KeepAliveOpts -> IO c
 startTCPClient host port clientParams keepAliveOpts = withSocketsDo $ resolve >>= tryOpen err
   where
     err :: IOException
