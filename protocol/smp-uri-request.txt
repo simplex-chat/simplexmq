@@ -13,4 +13,4 @@ Change controller: Evgeny Poberezkin <ep@simplex.chat>
 
 References:
 The syntax for message queue URIs in the latest version of SimpleX Messaging Protocol:
-https://github.com/simplex-chat/simplexmq/blob/v5/protocol/simplex-messaging.md#smp-queue-uri
+https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#smp-queue-uri
