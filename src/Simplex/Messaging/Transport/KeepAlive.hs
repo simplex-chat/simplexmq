@@ -12,13 +12,20 @@ _SOL_TCP = 6
 
 #if defined(darwin_HOST_OS)
 foreign import capi "netinet/tcp.h value TCP_KEEPALIVE" _TCP_KEEPIDLE :: CInt
-#else
-foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" _TCP_KEEPIDLE :: CInt
-#endif
 
 foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" _TCP_KEEPINTVL :: CInt
 
 foreign import capi "netinet/tcp.h value TCP_KEEPCNT" _TCP_KEEPCNT :: CInt
+#else
+_TCP_KEEPIDLE :: CInt
+_TCP_KEEPIDLE = 4
+
+_TCP_KEEPINTVL :: CInt
+_TCP_KEEPINTVL = 5
+
+_TCP_KEEPCNT :: CInt
+_TCP_KEEPCNT = 6
+#endif
 
 data KeepAliveOpts = KeepAliveOpts
   { keepIdle :: Int,
