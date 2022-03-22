@@ -7,35 +7,36 @@ module Simplex.Messaging.Transport.KeepAlive where
 import Foreign.C (CInt (..))
 import Network.Socket
 
-foreign import capi "netinet/tcp.h value TCP_KEEPCNT" tcpKeepCnt :: CInt
-
-foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" tcpKeepIntvl :: CInt
+_SOL_TCP :: CInt
+_SOL_TCP = 6
 
 #if defined(darwin_HOST_OS)
-foreign import capi "netinet/tcp.h value TCP_KEEPALIVE" tcpKeepIdle :: CInt
-foreign import capi "netinet/in.h value IPPROTO_TCP" solTcp :: CInt
+foreign import capi "netinet/tcp.h value TCP_KEEPALIVE" _TCP_KEEPIDLE :: CInt
 #else
-foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" tcpKeepIdle :: CInt
-foreign import capi "netinet/tcp.h value SOL_TCP" solTcp :: CInt
+foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" _TCP_KEEPIDLE :: CInt
 #endif
 
+foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" _TCP_KEEPINTVL :: CInt
+
+foreign import capi "netinet/tcp.h value TCP_KEEPCNT" _TCP_KEEPCNT :: CInt
+
 data KeepAliveOpts = KeepAliveOpts
-  { keepCnt :: Int,
-    keepIdle :: Int,
-    keepIntvl :: Int
+  { keepIdle :: Int,
+    keepIntvl :: Int,
+    keepCnt :: Int
   }
 
 defaultKeepAliveOpts :: KeepAliveOpts
 defaultKeepAliveOpts =
   KeepAliveOpts
-    { keepCnt = 4,
-      keepIdle = 30,
-      keepIntvl = 15
+    { keepIdle = 30,
+      keepIntvl = 15,
+      keepCnt = 4
     }
 
 setSocketKeepAlive :: Socket -> KeepAliveOpts -> IO ()
 setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
   setSocketOption sock KeepAlive 1
-  setSocketOption sock (SockOpt solTcp tcpKeepCnt) keepCnt
-  setSocketOption sock (SockOpt solTcp tcpKeepIdle) keepIdle
-  setSocketOption sock (SockOpt solTcp tcpKeepIntvl) keepIntvl
+  setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPIDLE) keepIdle
+  setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPINTVL) keepIntvl
+  setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPCNT) keepCnt
