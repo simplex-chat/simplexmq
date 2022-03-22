@@ -16,17 +16,17 @@ TCP service using the same TLS transport as SMP server, with the fixed size bloc
 
 Command:
 
-`%s"CREATE " ntfSmpQueueURI token subPublicKey`
+`%s"CREATE " ntfSmpQueueURI ntfPrivateKey token subPublicKey`
 
 Response:
 
-`s%"ID " ntfSubscriptionId`
+`s%"OK"`
 
 #### Check subscription status
 
 Command:
 
-`%s"CHECK " ntfSubscriptionId`
+`%s"CHECK " ntfSmpQueueURI`
 
 Response:
 
@@ -39,7 +39,7 @@ status = %s"ERR AUTH" / "ERR SMP AUTH" / %s"ERR SMP TIMEOUT" / %s"ACTIVE" / %s"P
 
 Command:
 
-`%s"TOKEN " ntfSubscriptionId token`
+`%s"TOKEN " ntfSmpQueueURI token`
 
 Response:
 
@@ -49,7 +49,7 @@ Response:
 
 Command:
 
-`%s"DELETE " SP ntfSubscriptionId`
+`%s"DELETE " SP ntfSmpQueueURI`
 
 Response:
 
@@ -62,7 +62,7 @@ See [migration](../src/Simplex/Messaging/Agent/Store/SQLite/Migrations/M20220322
 ### Agent code
 
 ```haskell
-data NotificationOpts = NotificationOpts
+data NtfOptions = NtfOptions
   { ntfServer :: Server, -- same type as for SMP servers, probably will be renamed
     ntfToken :: ByteString,
     ntfInitialCheckDelay :: Int, -- initial check delay after subscription is created, seconds
@@ -71,14 +71,20 @@ data NotificationOpts = NotificationOpts
 
 data AgentConfig = AgentConfig {
   -- ...
-  notificationOpts :: TVar (Maybe NotificationOpts)
+  initialNtfOpts :: Maybe NtfOptions
+  -- ...
+  }
+
+data AgentClient = AgentClient {
+  -- ...
+  ntfOpts :: TVar (Maybe NtfOptions)
   -- ...
   }
 ```
 
-A configuration parameter `notificationOpts :: TVar (Maybe NotificationOpts)` - if it is set or changes the agent would automatically manage subscriptions as SMP queues are subscribed/created/deleted and as the token or server changes.
+A configuration parameter `initialNtfOpts :: Maybe NtfOptions` - if it is set or changes the agent would automatically manage subscriptions as SMP queues are subscribed/created/deleted and as the token or server changes.
 
-There will be two loops - one to monitor the changes in the configuration parameters and another to manage subscriptions. Possibly, instead of the first look there would be a method to update it in which case AgentConfig would have the initial token/server and there would be a method to change them. Or possibly there should be no initial settings at all, as we don't know the token until we start? But we do know the server. Maybe they should be split into different types - initial configuration and token. The token will only be set once per application start and the server can change while the application is running.
+There will be a method to update notifications configuration in case token or server changes.
 
 All subscriptions will be managed in a separate subscription management loop, that would always take the earliest un-updated subscription that requires some action (ntf_sub_action column) and perform this action - the table of subscription would serve both as the table of existing subscriptions and required actions.
 
