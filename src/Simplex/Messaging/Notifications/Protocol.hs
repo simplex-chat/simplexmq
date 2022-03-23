@@ -19,47 +19,55 @@ data RawNtfTransmission = RawNtfTransmission
     message :: ByteString
   }
 
-data NtfServerCommand
-  = NtfCreate DeviceToken SMPQueueNtfUri C.APublicVerifyKey C.PublicKeyX25519
-  | NtfCheck
-  | NtfToken DeviceToken
-  | NtfDelete
+-- | Parsed notifications server transmission without signature, size and session ID.
+type NtfTransmission c = (CorrId, NtfSubsciptionId, c)
 
-instance Encoding NtfServerCommand where
+-- | signed parsed transmission, with original raw bytes and parsing error.
+type SignedNtfTransmission c = (Maybe C.ASignature, Signed, Transmission (Either ErrorType c))
+
+type Signed = ByteString
+
+data NtfCommand
+  = NCCreate DeviceToken SMPQueueNtfUri C.APublicVerifyKey C.PublicKeyX25519
+  | NCCheck
+  | NCToken DeviceToken
+  | NCDelete
+
+instance Encoding NtfCommand where
   smpEncode = \case
-    NtfCreate token smpQueue verifyKey dhKey -> "CREATE " <> smpEncode (token, smpQueue, verifyKey, dhKey)
-    NtfCheck -> "CHECK"
-    NtfToken token -> "TOKEN " <> smpEncode token
-    NtfDelete -> "DELETE"
+    NCCreate token smpQueue verifyKey dhKey -> "CREATE " <> smpEncode (token, smpQueue, verifyKey, dhKey)
+    NCCheck -> "CHECK"
+    NCToken token -> "TOKEN " <> smpEncode token
+    NCDelete -> "DELETE"
   smpP =
     A.takeTill (== ' ') >>= \case
       "CREATE" -> do
         (token, smpQueue, verifyKey, dhKey) <- A.space *> smpP
-        pure $ NtfCreate token smpQueue verifyKey dhKey
-      "CHECK" -> pure NtfCheck
-      "TOKEN" -> NtfToken <$> (A.space *> smpP)
-      "DELETE" -> pure NtfDelete
-      _ -> fail "bad NtfServerCommand"
+        pure $ NCCreate token smpQueue verifyKey dhKey
+      "CHECK" -> pure NCCheck
+      "TOKEN" -> NCToken <$> (A.space *> smpP)
+      "DELETE" -> pure NCDelete
+      _ -> fail "bad NtfCommand"
 
-data NtfServerResponse
-  = NtfSubId NtfSubsciptionId
-  | NtfOk
-  | NtfErr NtfError
-  | NtfStat NtfStatus
+data NtfResponse
+  = NRSubId NtfSubsciptionId
+  | NROk
+  | NRErr NtfError
+  | NRStat NtfStatus
 
-instance Encoding NtfServerResponse where
+instance Encoding NtfResponse where
   smpEncode = \case
-    NtfSubId subId -> "ID " <> smpEncode subId
-    NtfOk -> "OK"
-    NtfErr err -> "ERR " <> smpEncode err
-    NtfStat stat -> "STAT " <> smpEncode stat
+    NRSubId subId -> "ID " <> smpEncode subId
+    NROk -> "OK"
+    NRErr err -> "ERR " <> smpEncode err
+    NRStat stat -> "STAT " <> smpEncode stat
   smpP =
     A.takeTill (== ' ') >>= \case
-      "ID" -> NtfSubId <$> (A.space *> smpP)
-      "OK" -> pure NtfOk
-      "ERR" -> NtfErr <$> (A.space *> smpP)
-      "STAT" -> NtfStat <$> (A.space *> smpP)
-      _ -> fail "bad NtfServerResponse"
+      "ID" -> NRSubId <$> (A.space *> smpP)
+      "OK" -> pure NROk
+      "ERR" -> NRErr <$> (A.space *> smpP)
+      "STAT" -> NRStat <$> (A.space *> smpP)
+      _ -> fail "bad NtfResponse"
 
 data SMPQueueNtfUri = SMPQueueNtfUri
   { smpServer :: SMPServer,

@@ -6,7 +6,7 @@ module Simplex.Messaging.Transport.Server
   ( runTransportServer,
     loadTLSServerParams,
     loadFingerprint,
-    serverHandshake,
+    smpServerHandshake,
   )
 where
 

@@ -53,6 +53,7 @@ library
       Simplex.Messaging.Notifications.Server
       Simplex.Messaging.Notifications.Server.Env
       Simplex.Messaging.Notifications.Server.Subscriptions
+      Simplex.Messaging.Notifications.Transport
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server
