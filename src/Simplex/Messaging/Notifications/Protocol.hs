@@ -20,22 +20,22 @@ data RawNtfTransmission = RawNtfTransmission
   }
 
 data NtfServerCommand
-  = NtfCreate SMPQueueNtfUri NtfPrivateSignKey DeviceToken C.APublicVerifyKey
+  = NtfCreate DeviceToken SMPQueueNtfUri C.APublicVerifyKey C.PublicKeyX25519
   | NtfCheck
   | NtfToken DeviceToken
   | NtfDelete
 
 instance Encoding NtfServerCommand where
   smpEncode = \case
-    NtfCreate smpQueue ntfPrivKey token pubKey -> "CREATE " <> smpEncode (smpQueue, ntfPrivKey, token, pubKey)
+    NtfCreate token smpQueue verifyKey dhKey -> "CREATE " <> smpEncode (token, smpQueue, verifyKey, dhKey)
     NtfCheck -> "CHECK"
     NtfToken token -> "TOKEN " <> smpEncode token
     NtfDelete -> "DELETE"
   smpP =
     A.takeTill (== ' ') >>= \case
       "CREATE" -> do
-        (smpQueue, ntfPrivKey, token, pubKey) <- A.space *> smpP
-        pure $ NtfCreate smpQueue ntfPrivKey token pubKey
+        (token, smpQueue, verifyKey, dhKey) <- A.space *> smpP
+        pure $ NtfCreate token smpQueue verifyKey dhKey
       "CHECK" -> pure NtfCheck
       "TOKEN" -> NtfToken <$> (A.space *> smpP)
       "DELETE" -> pure NtfDelete
@@ -63,12 +63,15 @@ instance Encoding NtfServerResponse where
 
 data SMPQueueNtfUri = SMPQueueNtfUri
   { smpServer :: SMPServer,
-    notifierId :: NotifierId
+    notifierId :: NotifierId,
+    notifierKey :: NtfPrivateSignKey
   }
 
 instance Encoding SMPQueueNtfUri where
-  smpEncode SMPQueueNtfUri {smpServer, notifierId} = smpEncode (smpServer, notifierId)
-  smpP = uncurry SMPQueueNtfUri <$> smpP
+  smpEncode SMPQueueNtfUri {smpServer, notifierId, notifierKey} = smpEncode (smpServer, notifierId, notifierKey)
+  smpP = do
+    (smpServer, notifierId, notifierKey) <- smpP
+    pure $ SMPQueueNtfUri smpServer notifierId notifierKey
 
 newtype DeviceToken = DeviceToken ByteString
 
