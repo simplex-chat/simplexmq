@@ -284,6 +284,12 @@ instance Eq APrivateSignKey where
 
 deriving instance Show APrivateSignKey
 
+instance Encoding APrivateSignKey where
+  smpEncode = smpEncode . encodePrivKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePrivKey
+  {-# INLINE smpDecode #-}
+
 data APublicVerifyKey
   = forall a.
     (AlgorithmI a, SignatureAlgorithm a) =>
