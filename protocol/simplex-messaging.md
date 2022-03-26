@@ -770,7 +770,7 @@ The syntax for error responses:
 ```abnf
 error = %s"ERR " errorType
 errorType = %s"BLOCK" / %s"SESSION" / %s"CMD " cmdError / %s"AUTH" / %s"LARGE_MSG" /%s"INTERNAL"
-cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_QUEUE"
+cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_ENTITY"
 ```
 
 Server implementations must aim to respond within the same time for each command in all cases when `"ERR AUTH"` response is required to prevent timing attacks (e.g., the server should perform signature verification even when the queue does not exist on the server or the signature of different size is sent, using any RSA key with the same size as the signature size).

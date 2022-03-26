@@ -1,31 +1,40 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Notifications.Protocol where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.Maybe (isNothing)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 
-data RawNtfTransmission = RawNtfTransmission
-  { signature :: ByteString,
-    signed :: ByteString,
-    sessId :: ByteString,
-    corrId :: ByteString,
-    subscriptionId :: ByteString,
-    message :: ByteString
-  }
+data NtfCommandTag
+  = NCCreate_
+  | NCCheck_
+  | NCToken_
+  | NCDelete_
+  deriving (Show)
 
--- | Parsed notifications server transmission without signature, size and session ID.
-type NtfTransmission c = (CorrId, NtfSubsciptionId, c)
+instance Encoding NtfCommandTag where
+  smpEncode = \case
+    NCCreate_ -> "CREATE"
+    NCCheck_ -> "CHECK"
+    NCToken_ -> "TOKEN"
+    NCDelete_ -> "DELETE"
+  smpP = messageTagP
 
--- | signed parsed transmission, with original raw bytes and parsing error.
-type SignedNtfTransmission c = (Maybe C.ASignature, Signed, Transmission (Either ErrorType c))
-
-type Signed = ByteString
+instance ProtocolMsgTag NtfCommandTag where
+  decodeTag = \case
+    "CREATE" -> Just NCCreate_
+    "CHECK" -> Just NCCheck_
+    "TOKEN" -> Just NCToken_
+    "DELETE" -> Just NCDelete_
+    _ -> Nothing
 
 data NtfCommand
   = NCCreate DeviceToken SMPQueueNtfUri C.APublicVerifyKey C.PublicKeyX25519
@@ -33,41 +42,87 @@ data NtfCommand
   | NCToken DeviceToken
   | NCDelete
 
-instance Encoding NtfCommand where
+instance Protocol NtfCommand where
+  type Tag NtfCommand = NtfCommandTag
+  encodeProtocol = \case
+    NCCreate token smpQueue verifyKey dhKey -> e (NCCreate_, ' ', token, smpQueue, verifyKey, dhKey)
+    NCCheck -> e NCCheck_
+    NCToken token -> e (NCToken_, ' ', token)
+    NCDelete -> e NCDelete_
+    where
+      e :: Encoding a => a -> ByteString
+      e = smpEncode
+
+  protocolP = \case
+    NCCreate_ -> NCCreate <$> _smpP <*> smpP <*> smpP <*> smpP
+    NCCheck_ -> pure NCCheck
+    NCToken_ -> NCToken <$> _smpP
+    NCDelete_ -> pure NCDelete
+
+  checkCredentials (sig, _, subId, _) cmd = case cmd of
+    -- CREATE must have signature but NOT subscription ID
+    NCCreate {}
+      | isNothing sig -> Left $ CMD NO_AUTH
+      | not (B.null subId) -> Left $ CMD HAS_AUTH
+      | otherwise -> Right cmd
+    -- other client commands must have both signature and subscription ID
+    _
+      | isNothing sig || B.null subId -> Left $ CMD NO_AUTH
+      | otherwise -> Right cmd
+
+data NtfResponseTag
+  = NRSubId_
+  | NROk_
+  | NRErr_
+  | NRStat_
+  deriving (Show)
+
+instance Encoding NtfResponseTag where
   smpEncode = \case
-    NCCreate token smpQueue verifyKey dhKey -> "CREATE " <> smpEncode (token, smpQueue, verifyKey, dhKey)
-    NCCheck -> "CHECK"
-    NCToken token -> "TOKEN " <> smpEncode token
-    NCDelete -> "DELETE"
-  smpP =
-    A.takeTill (== ' ') >>= \case
-      "CREATE" -> do
-        (token, smpQueue, verifyKey, dhKey) <- A.space *> smpP
-        pure $ NCCreate token smpQueue verifyKey dhKey
-      "CHECK" -> pure NCCheck
-      "TOKEN" -> NCToken <$> (A.space *> smpP)
-      "DELETE" -> pure NCDelete
-      _ -> fail "bad NtfCommand"
+    NRSubId_ -> "ID"
+    NROk_ -> "OK"
+    NRErr_ -> "ERR"
+    NRStat_ -> "STAT"
+  smpP = messageTagP
+
+instance ProtocolMsgTag NtfResponseTag where
+  decodeTag = \case
+    "ID" -> Just NRSubId_
+    "OK" -> Just NROk_
+    "ERR" -> Just NRErr_
+    "STAT" -> Just NRStat_
+    _ -> Nothing
 
 data NtfResponse
-  = NRSubId NtfSubsciptionId C.PublicKeyX25519
+  = NRSubId C.PublicKeyX25519
   | NROk
-  | NRErr NtfError
+  | NRErr ErrorType
   | NRStat NtfStatus
 
-instance Encoding NtfResponse where
-  smpEncode = \case
-    NRSubId subId dhKey -> "ID " <> smpEncode (subId, dhKey)
-    NROk -> "OK"
-    NRErr err -> "ERR " <> smpEncode err
-    NRStat stat -> "STAT " <> smpEncode stat
-  smpP =
-    A.takeTill (== ' ') >>= \case
-      "ID" -> uncurry NRSubId <$> (A.space *> smpP)
-      "OK" -> pure NROk
-      "ERR" -> NRErr <$> (A.space *> smpP)
-      "STAT" -> NRStat <$> (A.space *> smpP)
-      _ -> fail "bad NtfResponse"
+instance Protocol NtfResponse where
+  type Tag NtfResponse = NtfResponseTag
+  encodeProtocol = \case
+    NRSubId dhKey -> e (NRSubId_, ' ', dhKey)
+    NROk -> e NROk_
+    NRErr err -> e (NRErr_, ' ', err)
+    NRStat stat -> e (NRStat_, ' ', stat)
+    where
+      e :: Encoding a => a -> ByteString
+      e = smpEncode
+
+  protocolP = \case
+    NRSubId_ -> NRSubId <$> _smpP
+    NROk_ -> pure NROk
+    NRErr_ -> NRErr <$> _smpP
+    NRStat_ -> NRStat <$> _smpP
+
+  checkCredentials (_, _, subId, _) cmd = case cmd of
+    -- ERR response does not always have subscription ID
+    NRErr _ -> Right cmd
+    -- other server responses must have subscription ID
+    _
+      | B.null subId -> Left $ CMD NO_ENTITY
+      | otherwise -> Right cmd
 
 data SMPQueueNtfUri = SMPQueueNtfUri
   { smpServer :: SMPServer,
@@ -87,24 +142,7 @@ instance Encoding DeviceToken where
   smpEncode (DeviceToken t) = smpEncode t
   smpP = DeviceToken <$> smpP
 
-newtype NtfSubsciptionId = NtfSubsciptionId ByteString
-  deriving (Eq, Ord)
-
-instance Encoding NtfSubsciptionId where
-  smpEncode (NtfSubsciptionId t) = smpEncode t
-  smpP = NtfSubsciptionId <$> smpP
-
-data NtfError = NtfErrSyntax | NtfErrAuth
-
-instance Encoding NtfError where
-  smpEncode = \case
-    NtfErrSyntax -> "SYNTAX"
-    NtfErrAuth -> "AUTH"
-  smpP =
-    A.takeTill (== ' ') >>= \case
-      "SYNTAX" -> pure NtfErrSyntax
-      "AUTH" -> pure NtfErrAuth
-      _ -> fail "bad NtfError"
+type NtfSubsciptionId = ByteString
 
 data NtfStatus = NSPending | NSActive | NSEnd | NSSMPAuth
 

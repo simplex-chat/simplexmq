@@ -5,7 +5,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (NotifierId, NtfPrivateSignKey, SMPServer)
+import Simplex.Messaging.Protocol (ErrorType (..), NotifierId, NtfPrivateSignKey, SMPServer)
 
 type NtfSubscriptionsData = Map NtfSubsciptionId NtfSubsciptionRec
 
@@ -17,9 +17,9 @@ data NtfSubsciptionRec = NtfSubsciptionRec
     notifierKey :: NtfPrivateSignKey,
     token :: DeviceToken,
     status :: TVar NtfStatus,
-    subKey :: C.APublicVerifyKey,
+    subVerifyKey :: C.APublicVerifyKey,
     subDHSecret :: C.DhSecretX25519
   }
 
-getNtfSubscription :: NtfSubscriptions -> NtfSubsciptionId -> STM (Maybe NtfSubsciptionRec)
-getNtfSubscription st subId = M.lookup subId <$> readTVar st
+getNtfSubscription :: NtfSubscriptions -> NtfSubsciptionId -> STM (Either ErrorType NtfSubsciptionRec)
+getNtfSubscription st subId = maybe (Left AUTH) Right . M.lookup subId <$> readTVar st
