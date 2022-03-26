@@ -50,20 +50,20 @@ instance Encoding NtfCommand where
       _ -> fail "bad NtfCommand"
 
 data NtfResponse
-  = NRSubId NtfSubsciptionId
+  = NRSubId NtfSubsciptionId C.PublicKeyX25519
   | NROk
   | NRErr NtfError
   | NRStat NtfStatus
 
 instance Encoding NtfResponse where
   smpEncode = \case
-    NRSubId subId -> "ID " <> smpEncode subId
+    NRSubId subId dhKey -> "ID " <> smpEncode (subId, dhKey)
     NROk -> "OK"
     NRErr err -> "ERR " <> smpEncode err
     NRStat stat -> "STAT " <> smpEncode stat
   smpP =
     A.takeTill (== ' ') >>= \case
-      "ID" -> NRSubId <$> (A.space *> smpP)
+      "ID" -> uncurry NRSubId <$> (A.space *> smpP)
       "OK" -> pure NROk
       "ERR" -> NRErr <$> (A.space *> smpP)
       "STAT" -> NRStat <$> (A.space *> smpP)
