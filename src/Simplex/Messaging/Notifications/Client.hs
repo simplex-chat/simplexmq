@@ -1,1 +1,0 @@
-module Simplex.Messaging.Notifications.Client where
