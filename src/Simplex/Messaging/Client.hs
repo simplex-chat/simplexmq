@@ -114,7 +114,7 @@ smpDefaultConfig =
       defaultTransport = ("5223", transport @TLS),
       tcpTimeout = 4_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
-      smpPing = 1_200_000_000 -- 20min
+      smpPing = 600_000_000 -- 10min
     }
 
 data Request = Request
