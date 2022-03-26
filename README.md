@@ -27,9 +27,9 @@ SimpleXMQ is implemented in Haskell - it benefits from robust software transacti
 
 ### SMP server
 
-[SMP server](https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs) can be run on any Linux distribution without any dependencies, including low power/low memory devices.
+[SMP server](https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs) can be run on any Linux distribution, including low power/low memory devices. OpenSSL library is required for initialization.
 
-To initialize the server use `smp-server init` command - it will generate keys and certificates for TLS transport. The fingerprint of offline certificate is used as part of the server address to protect client/server connection against man-in-the-middle attacks: `smp://<fingerprint>@<hostname>[:5223]`.
+To initialize the server use `smp-server init -n <fqdn>` (or `smp-server init --ip <ip>` for IP based address) command - it will generate keys and certificates for TLS transport. The fingerprint of offline certificate is used as part of the server address to protect client/server connection against man-in-the-middle attacks: `smp://<fingerprint>@<hostname>[:5223]`.
 
 SMP server uses in-memory persistence with an optional append-only log of created queues that allows to re-start the server without losing the connections. This log is compacted on every server restart, permanently removing suspended and removed queues.
 
@@ -86,6 +86,26 @@ You can either run your own SMP server locally or deploy using [Linode StackScri
 `smp://PQUV2eL0t7OStZOoAsPEV2QYWt4-xilbakvGUGOItUo=@smp6.simplex.im`
 
 It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI.
+
+## Deploy SMP server on Linux
+
+You can run your SMP server as a Linux process, optionally using a service manager for booting and restarts.
+
+- For Ubuntu you can download a binary from [the latest release](https://github.com/simplex-chat/simplexmq/releases).
+
+  If you're using other Linux distribution and the binary is incompatible with it, you can build from source using [Haskell stack](https://docs.haskellstack.org/en/stable/README/):
+
+  ```shell
+  curl -sSL https://get.haskellstack.org/ | sh
+  ...
+  stack install
+  ```
+
+- Initialize SMP server with `smp-server init [-l] -n <fqdn>` or `smp-server init [-l] --ip <ip>` - depending on how you initialize it, either FQDN or IP will be used for server's address.
+
+- Run `smp-server start` to start SMP server, or you can configure a service manager to run it as a service.
+
+See [this section](#smp-server) for more information. Run `smp-server -h` and `smp-server init -h` for explanation of commands and options.
 
 [<img alt="Linode" src="https://raw.githubusercontent.com/simplex-chat/simplexmq/master/img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
 

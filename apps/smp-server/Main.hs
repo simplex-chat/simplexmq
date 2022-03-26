@@ -131,8 +131,7 @@ cliCommandP =
                 <*> strOption
                   ( long "ip"
                       <> help
-                        "Server IP address used as Subject Alternative Name for TLS online certificate, \
-                        \also used as Common Name if FQDN is not supplied"
+                        "Server IP address, used as Common Name for TLS online certificate if FQDN is not supplied"
                       <> value "127.0.0.1"
                       <> showDefault
                       <> metavar "IP"
@@ -140,7 +139,7 @@ cliCommandP =
                 <*> (optional . strOption)
                   ( long "fqdn"
                       <> short 'n'
-                      <> help "Server FQDN used as Common Name and Subject Alternative Name for TLS online certificate"
+                      <> help "Server FQDN used as Common Name for TLS online certificate"
                       <> showDefault
                       <> metavar "FQDN"
                   )
