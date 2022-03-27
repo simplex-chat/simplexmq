@@ -166,6 +166,7 @@ instance Encoding DeviceToken where
 type NtfSubsciptionId = ByteString
 
 data NtfStatus = NSNew | NSPending | NSActive | NSEnd | NSSMPAuth
+  deriving (Eq)
 
 instance Encoding NtfStatus where
   smpEncode = \case

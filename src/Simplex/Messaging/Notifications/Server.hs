@@ -155,8 +155,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} =
             let dhSecret = C.dh' (dhPubKey newSub) privDhKey
             atomically (updateNtfSub st sub newSub dhSecret) >>= \case
               Nothing -> pure $ NRErr INTERNAL
-              _ -> pure $ NRSubId pubDhKey
-            where
+              _ -> atomically $ do
+                whenM ((== NSEnd) <$> readTVar status) $ writeTBQueue subQ sub
+                pure $ NRSubId pubDhKey
           NCCheck -> NRStat <$> readTVarIO status
           NCToken t -> atomically (writeTVar token t) $> NROk
           NCDelete -> do
