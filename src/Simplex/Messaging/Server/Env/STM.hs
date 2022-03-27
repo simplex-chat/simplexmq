@@ -111,15 +111,12 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} 
   return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
-    restoreQueues queueStore s = do
-      (queues, s') <- liftIO $ readWriteStoreLog s
-      atomically $
-        modifyTVar' queueStore $ \d ->
-          d
-            { queues,
-              senders = M.foldr' addSender M.empty queues,
-              notifiers = M.foldr' addNotifier M.empty queues
-            }
+    restoreQueues QueueStore {queues, senders, notifiers} s = do
+      (qs, s') <- liftIO $ readWriteStoreLog s
+      atomically $ do
+        writeTVar (TM.tVar queues) qs
+        writeTVar (TM.tVar senders) $ M.foldr' addSender M.empty qs
+        writeTVar (TM.tVar notifiers) $ M.foldr' addNotifier M.empty qs
       pure s'
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)
