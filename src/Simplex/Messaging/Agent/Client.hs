@@ -343,15 +343,15 @@ subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
 addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
   TM.insert connId server $ subscrConns c
-  addSubs_ (subscrSrvrs c) rq connId
+  addSubs_ rq connId $ subscrSrvrs c
   removePendingSubscription c server connId
 
 addPendingSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addPendingSubscription c rq connId =
-  atomically $ addSubs_ (pendingSubscrSrvrs c) rq connId
+  atomically . addSubs_ rq connId $ pendingSubscrSrvrs c
 
-addSubs_ :: TMap SMPServer (Map ConnId RcvQueue) -> RcvQueue -> ConnId -> STM ()
-addSubs_ ss rq@RcvQueue {server} connId = TM.alter (Just . addSub) server ss
+addSubs_ :: RcvQueue -> ConnId -> TMap SMPServer (Map ConnId RcvQueue) -> STM ()
+addSubs_ rq@RcvQueue {server} connId = TM.alter (Just . addSub) server
   where
     addSub = maybe (M.singleton connId rq) (M.insert connId rq)
 
@@ -361,7 +361,7 @@ removeSubscription c@AgentClient {subscrConns} connId = atomically $ do
   mapM_ (\server -> removeSubs_ (subscrSrvrs c) server connId) server_
 
 removePendingSubscription :: AgentClient -> SMPServer -> ConnId -> STM ()
-removePendingSubscription c = removeSubs_ (pendingSubscrSrvrs c)
+removePendingSubscription = removeSubs_ . pendingSubscrSrvrs
 
 removeSubs_ :: TMap SMPServer (Map ConnId RcvQueue) -> SMPServer -> ConnId -> STM ()
 removeSubs_ ss server connId = TM.update delSub server ss
