@@ -58,6 +58,10 @@ ifM :: Monad m => m Bool -> m a -> m a -> m a
 ifM ba t f = ba >>= \b -> if b then t else f
 {-# INLINE ifM #-}
 
+whenM :: Monad m => m Bool -> m () -> m ()
+whenM b a = ifM b a $ pure ()
+{-# INLINE whenM #-}
+
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM b = ifM b $ pure ()
 {-# INLINE unlessM #-}

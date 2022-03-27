@@ -170,7 +170,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
         tryConnectAsync :: m ()
         tryConnectAsync = do
           a <- async connectAsync
-          atomically $ modifyTVar (asyncClients c) (a :)
+          atomically $ modifyTVar' (asyncClients c) (a :)
         connectAsync :: m ()
         connectAsync = do
           ri <- asks $ reconnectInterval . config
@@ -196,8 +196,8 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       TM.delete srv smpClients
       cs_ <- TM.lookupDelete srv $ subscrSrvrs c
       forM_ cs_ $ \cs -> do
-        modifyTVar (TM.tVar $ subscrConns c) (`M.withoutKeys` M.keysSet cs)
-        modifyTVar (TM.tVar $ pendingSubscrSrvrs c) $ addPendingSubs cs
+        modifyTVar' (TM.tVar $ subscrConns c) (`M.withoutKeys` M.keysSet cs)
+        modifyTVar' (TM.tVar $ pendingSubscrSrvrs c) $ addPendingSubs cs
       return cs_
       where
         addPendingSubs :: Map ConnId RcvQueue -> Map SMPServer (Map ConnId RcvQueue) -> Map SMPServer (Map ConnId RcvQueue)
@@ -212,7 +212,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     reconnectServer :: m ()
     reconnectServer = do
       a <- async tryReconnectClient
-      atomically $ modifyTVar (reconnections c) (a :)
+      atomically $ modifyTVar' (reconnections c) (a :)
 
     tryReconnectClient :: m ()
     tryReconnectClient = do

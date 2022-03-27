@@ -41,7 +41,7 @@ runTransportServer started port serverParams server = do
       $ \sock -> forever $ do
         (connSock, _) <- accept sock
         tid <- forkIO $ connectClient u connSock `E.catch` \(_ :: E.SomeException) -> pure ()
-        atomically . modifyTVar clients $ S.insert tid
+        atomically . modifyTVar' clients $ S.insert tid
   where
     connectClient :: UnliftIO m -> Socket -> IO ()
     connectClient u connSock =
