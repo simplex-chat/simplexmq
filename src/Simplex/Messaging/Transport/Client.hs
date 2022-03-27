@@ -2,7 +2,7 @@
 
 module Simplex.Messaging.Transport.Client
   ( runTransportClient,
-    clientHandshake,
+    smpClientHandshake,
   )
 where
 

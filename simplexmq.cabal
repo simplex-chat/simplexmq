@@ -47,6 +47,13 @@ library
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
+      Simplex.Messaging.Notifications.Client
+      Simplex.Messaging.Notifications.Client.Env
+      Simplex.Messaging.Notifications.Protocol
+      Simplex.Messaging.Notifications.Server
+      Simplex.Messaging.Notifications.Server.Env
+      Simplex.Messaging.Notifications.Server.Subscriptions
+      Simplex.Messaging.Notifications.Transport
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server

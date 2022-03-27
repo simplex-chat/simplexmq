@@ -37,7 +37,7 @@ module Simplex.Messaging.Protocol
     e2eEncMessageLength,
 
     -- * SMP protocol types
-    Protocol,
+    Protocol (..),
     Command (..),
     Party (..),
     Cmd (..),
@@ -74,9 +74,11 @@ module Simplex.Messaging.Protocol
     MsgBody,
 
     -- * Parse and serialize
+    ProtocolMsgTag (..),
+    messageTagP,
     encodeTransmission,
     transmissionP,
-    encodeProtocol,
+    _smpP,
 
     -- * TCP transport functions
     tPut,
@@ -174,7 +176,7 @@ data RawTransmission = RawTransmission
     signed :: ByteString,
     sessId :: ByteString,
     corrId :: ByteString,
-    queueId :: ByteString,
+    entityId :: ByteString,
     command :: ByteString
   }
 
@@ -512,8 +514,8 @@ data CommandError
     NO_AUTH
   | -- | transmission has credentials that are not allowed for this command
     HAS_AUTH
-  | -- | transmission has no required queue ID
-    NO_QUEUE
+  | -- | transmission has no required entity ID (e.g. SMP queue)
+    NO_ENTITY
   deriving (Eq, Generic, Read, Show)
 
 instance ToJSON CommandError where
@@ -534,9 +536,9 @@ transmissionP = do
     trn signature signed = do
       sessId <- smpP
       corrId <- smpP
-      queueId <- smpP
+      entityId <- smpP
       command <- A.takeByteString
-      pure RawTransmission {signature, signed, sessId, corrId, queueId, command}
+      pure RawTransmission {signature, signed, sessId, corrId, entityId, command}
 
 class Protocol msg where
   type Tag msg
@@ -571,7 +573,7 @@ instance PartyI p => Protocol (Command p) where
       | otherwise -> Right cmd
     -- SEND must have queue ID, signature is not always required
     SEND _
-      | B.null queueId -> Left $ CMD NO_QUEUE
+      | B.null queueId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     -- PING must not have queue ID or signature
     PING
@@ -640,7 +642,7 @@ instance Protocol BrokerMsg where
       | otherwise -> Left $ CMD HAS_AUTH
     -- other broker responses must have queue ID
     _
-      | B.null queueId -> Left $ CMD NO_QUEUE
+      | B.null queueId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
 
 _smpP :: Encoding a => Parser a
@@ -695,14 +697,15 @@ instance Encoding CommandError where
     SYNTAX -> "SYNTAX"
     NO_AUTH -> "NO_AUTH"
     HAS_AUTH -> "HAS_AUTH"
-    NO_QUEUE -> "NO_QUEUE"
+    NO_ENTITY -> "NO_ENTITY"
   smpP =
     A.takeTill (== ' ') >>= \case
       "UNKNOWN" -> pure UNKNOWN
       "SYNTAX" -> pure SYNTAX
       "NO_AUTH" -> pure NO_AUTH
       "HAS_AUTH" -> pure HAS_AUTH
-      "NO_QUEUE" -> pure NO_QUEUE
+      "NO_ENTITY" -> pure NO_ENTITY
+      "NO_QUEUE" -> pure NO_ENTITY
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
@@ -727,9 +730,9 @@ tGet th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m (SignedTransmission cmd)
     decodeParseValidate = \case
-      Right RawTransmission {signature, signed, sessId, corrId, queueId, command}
+      Right RawTransmission {signature, signed, sessId, corrId, entityId, command}
         | sessId == sessionId ->
-          let decodedTransmission = (,corrId,queueId,command) <$> C.decodeSignature signature
+          let decodedTransmission = (,corrId,entityId,command) <$> C.decodeSignature signature
            in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
         | otherwise -> pure (Nothing, "", (CorrId corrId, "", Left SESSION))
       Left _ -> tError ""
@@ -738,6 +741,6 @@ tGet th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
     tError corrId = pure (Nothing, "", (CorrId corrId, "", Left BLOCK))
 
     tParseValidate :: ByteString -> SignedRawTransmission -> m (SignedTransmission cmd)
-    tParseValidate signed t@(sig, corrId, queueId, command) = do
+    tParseValidate signed t@(sig, corrId, entityId, command) = do
       let cmd = parseProtocol command >>= checkCredentials t
-      pure (sig, signed, (CorrId corrId, queueId, cmd))
+      pure (sig, signed, (CorrId corrId, entityId, cmd))

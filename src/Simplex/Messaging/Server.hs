@@ -23,7 +23,7 @@
 -- and optional append only log of SMP queue records.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
-module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking) where
+module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking, verifyCmdSignature, dummyVerifyCmd) where
 
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
@@ -121,7 +121,7 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
     runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
     runClient _ h = do
       kh <- asks serverIdentity
-      liftIO (runExceptT $ serverHandshake h kh) >>= \case
+      liftIO (runExceptT $ smpServerHandshake h kh) >>= \case
         Right th -> runClientTransport th
         Left _ -> pure ()
 
@@ -176,8 +176,8 @@ verifyTransmission ::
   forall m. (MonadUnliftIO m, MonadReader Env m) => Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> m Bool
 verifyTransmission sig_ signed queueId cmd = do
   case cmd of
-    Cmd SRecipient (NEW k _) -> pure $ verifySignature k
-    Cmd SRecipient _ -> verifyCmd SRecipient $ verifySignature . recipientKey
+    Cmd SRecipient (NEW k _) -> pure $ verifyCmdSignature sig_ signed k
+    Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
     Cmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure True
     Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap snd . notifier
@@ -186,18 +186,21 @@ verifyTransmission sig_ signed queueId cmd = do
     verifyCmd party f = do
       st <- asks queueStore
       q <- atomically $ getQueue st party queueId
-      pure $ either (const $ maybe False dummyVerify sig_ `seq` False) f q
+      pure $ either (const $ maybe False (dummyVerifyCmd signed) sig_ `seq` False) f q
     verifyMaybe :: Maybe C.APublicVerifyKey -> Bool
-    verifyMaybe = maybe (isNothing sig_) verifySignature
-    verifySignature :: C.APublicVerifyKey -> Bool
-    verifySignature key = maybe False (verify key) sig_
+    verifyMaybe = maybe (isNothing sig_) $ verifyCmdSignature sig_ signed
+
+verifyCmdSignature :: Maybe C.ASignature -> ByteString -> C.APublicVerifyKey -> Bool
+verifyCmdSignature sig_ signed key = maybe False (verify key) sig_
+  where
     verify :: C.APublicVerifyKey -> C.ASignature -> Bool
     verify (C.APublicVerifyKey a k) sig@(C.ASignature a' s) =
       case (testEquality a a', C.signatureSize k == C.signatureSize s) of
         (Just Refl, True) -> C.verify' k s signed
-        _ -> dummyVerify sig `seq` False
-    dummyVerify :: C.ASignature -> Bool
-    dummyVerify (C.ASignature _ s) = C.verify' (dummyPublicKey s) s signed
+        _ -> dummyVerifyCmd signed sig `seq` False
+
+dummyVerifyCmd :: ByteString -> C.ASignature -> Bool
+dummyVerifyCmd signed (C.ASignature _ s) = C.verify' (dummyPublicKey s) s signed
 
 -- These dummy keys are used with `dummyVerify` function to mitigate timing attacks
 -- by having the same time of the response whether a queue exists or nor, for all valid key/signature sizes

@@ -63,8 +63,8 @@ import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError, clientHandshake)
-import Simplex.Messaging.Transport.Client (runTransportClient)
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError)
+import Simplex.Messaging.Transport.Client (runTransportClient, smpClientHandshake)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
@@ -175,7 +175,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, tcpKeepAlive, smp
 
     client :: forall c. Transport c => TProxy c -> SMPClient -> TMVar (Either SMPClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =
-      runExceptT (clientHandshake h $ keyHash smpServer) >>= \case
+      runExceptT (smpClientHandshake h $ keyHash smpServer) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ SMPTransportError e
         Right th@THandle {sessionId} -> do
           atomically $ do

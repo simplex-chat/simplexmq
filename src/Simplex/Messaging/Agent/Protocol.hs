@@ -539,7 +539,6 @@ data SMPQueueUri = SMPQueueUri
   }
   deriving (Eq, Show)
 
--- TODO change SMP queue URI format to include version range and allow unknown parameters
 instance StrEncoding SMPQueueUri where
   -- v1 uses short SMP queue URI format
   strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVRange = _vr, dhPublicKey = k} =
