@@ -163,7 +163,7 @@ data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
 deriving instance Show Cmd
 
 -- | Parsed SMP transmission without signature, size and session ID.
-type Transmission c = (CorrId, QueueId, c)
+type Transmission c = (CorrId, EntityId, c)
 
 -- | signed parsed transmission, with original raw bytes and parsing error.
 type SignedTransmission c = (Maybe C.ASignature, Signed, Transmission (Either ErrorType c))
@@ -196,7 +196,9 @@ type SenderId = QueueId
 type NotifierId = QueueId
 
 -- | SMP queue ID on the server.
-type QueueId = ByteString
+type QueueId = EntityId
+
+type EntityId = ByteString
 
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
@@ -266,7 +268,7 @@ class ProtocolMsgTag t where
 
 messageTagP :: ProtocolMsgTag t => Parser t
 messageTagP =
-  maybe (fail "bad command") pure . decodeTag
+  maybe (fail "bad message") pure . decodeTag
     =<< (A.takeTill (== ' ') <* optional A.space)
 
 instance PartyI p => Encoding (CommandTag p) where

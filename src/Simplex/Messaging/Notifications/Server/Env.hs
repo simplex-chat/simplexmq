@@ -16,15 +16,17 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Subscriptions
-import Simplex.Messaging.Protocol (Transmission)
+import Simplex.Messaging.Protocol (CorrId, Transmission)
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import UnliftIO.STM
 
 data NtfServerConfig = NtfServerConfig
   { transports :: [(ServiceName, ATransport)],
-    subscriptionIdBytes :: Int,
-    tbqSize :: Natural,
+    subIdBytes :: Int,
+    clientQSize :: Natural,
+    subQSize :: Natural,
+    pushQSize :: Natural,
     smpCfg :: SMPClientConfig,
     reconnectInterval :: RetryInterval,
     -- CA certificate private key is not needed for initialization
@@ -33,26 +35,51 @@ data NtfServerConfig = NtfServerConfig
     certificateFile :: FilePath
   }
 
+data Notification = Notification
+
 data NtfEnv = NtfEnv
   { config :: NtfServerConfig,
-    serverIdentity :: C.KeyHash,
-    store :: NtfSubscriptions,
+    subscriber :: NtfSubscriber,
+    pushServer :: NtfPushServer,
+    store :: NtfSubscriptionsStore,
     idsDrg :: TVar ChaChaDRG,
+    serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
     serverIdentity :: C.KeyHash
   }
 
 newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
-newNtfServerEnv config@NtfServerConfig {caCertificateFile, certificateFile, privateKeyFile} = do
+newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, caCertificateFile, certificateFile, privateKeyFile} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- newTVarIO M.empty
+  store <- atomically newNtfSubscriptionsStore
+  subscriber <- atomically $ newNtfSubscriber subQSize
+  pushServer <- atomically $ newNtfPushServer pushQSize
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
-  let serverIdentity = C.KeyHash fp
-  pure NtfEnv {config, store, idsDrg, tlsServerParams, serverIdentity}
+  pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
+
+newtype NtfSubscriber = NtfSubscriber
+  { subQ :: TBQueue NtfSubsciption
+  }
+
+newNtfSubscriber :: Natural -> STM NtfSubscriber
+newNtfSubscriber qSize = do
+  subQ <- newTBQueue qSize
+  pure NtfSubscriber {subQ}
+
+newtype NtfPushServer = NtfPushServer
+  { pushQ :: TBQueue (NtfSubsciption, Notification)
+  }
+
+newNtfPushServer :: Natural -> STM NtfPushServer
+newNtfPushServer qSize = do
+  pushQ <- newTBQueue qSize
+  pure NtfPushServer {pushQ}
+
+data NtfRequest = NRCreate CorrId NewNtfSubscription | NRCommand NtfSubsciption (Transmission NtfCommand)
 
 data NtfServerClient = NtfServerClient
-  { rcvQ :: TBQueue (Transmission NtfCommand),
+  { rcvQ :: TBQueue NtfRequest,
     sndQ :: TBQueue (Transmission NtfResponse),
     sessionId :: ByteString,
     connected :: TVar Bool
