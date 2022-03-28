@@ -25,7 +25,6 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking) where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -47,6 +46,8 @@ import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
@@ -92,8 +93,8 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
       MonadUnliftIO m' =>
       Server ->
       (Server -> TBQueue (QueueId, Client)) ->
-      (Server -> TVar (M.Map QueueId Client)) ->
-      (Client -> TVar (M.Map QueueId s)) ->
+      (Server -> TMap QueueId Client) ->
+      (Client -> TMap QueueId s) ->
       (s -> m' ()) ->
       m' ()
     serverThread s subQ subs clientSubs unsub = forever $ do
@@ -110,13 +111,13 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
                   else do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
-          stateTVar (subs s) (\cs -> (M.lookup qId cs, M.insert qId clnt cs))
+          TM.lookupInsert qId clnt (subs s)
             >>= fmap join . mapM clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> m' (Maybe s)
         endPreviousSubscriptions (qId, c) = do
           void . forkIO . atomically $
             writeTBQueue (sndQ c) (CorrId "", qId, END)
-          atomically . stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
+          atomically $ TM.lookupDelete qId (clientSubs c)
 
     runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
     runClient _ h = do
@@ -136,10 +137,10 @@ runClientTransport th@THandle {sessionId} = do
 clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 clientDisconnected c@Client {subscriptions, connected} = do
   atomically $ writeTVar connected False
-  subs <- readTVarIO subscriptions
+  subs <- readTVarIO $ TM.tVar subscriptions
   mapM_ cancelSub subs
   cs <- asks $ subscribers . server
-  atomically . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
+  atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
   where
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
@@ -309,21 +310,19 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
         getSubscription :: RecipientId -> STM Sub
         getSubscription rId = do
-          subs <- readTVar subscriptions
-          case M.lookup rId subs of
+          TM.lookup rId subscriptions >>= \case
             Just s -> tryTakeTMVar (delivered s) $> s
             Nothing -> do
               writeTBQueue subscribedQ (rId, clnt)
               s <- newSubscription
-              writeTVar subscriptions $ M.insert rId s subs
+              TM.insert rId s subscriptions
               return s
 
         subscribeNotifications :: m (Transmission BrokerMsg)
         subscribeNotifications = atomically $ do
-          subs <- readTVar ntfSubscriptions
-          when (isNothing $ M.lookup queueId subs) $ do
+          whenM (isNothing <$> TM.lookup queueId ntfSubscriptions) $ do
             writeTBQueue ntfSubscribedQ (queueId, clnt)
-            writeTVar ntfSubscriptions $ M.insert queueId () subs
+            TM.insert queueId () ntfSubscriptions
           pure ok
 
         acknowledgeMsg :: m (Transmission BrokerMsg)
@@ -334,7 +333,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               _ -> return $ err NO_MSG
 
         withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
-        withSub rId f = readTVar subscriptions >>= mapM f . M.lookup rId
+        withSub rId f = mapM f =<< TM.lookup rId subscriptions
 
         sendMessage :: QueueStore -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage st msgBody
@@ -369,7 +368,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 trySendNotification :: STM ()
                 trySendNotification =
                   forM_ (notifier qr) $ \(nId, _) ->
-                    mapM_ (writeNtf nId) . M.lookup nId =<< readTVar notifiers
+                    mapM_ (writeNtf nId) =<< TM.lookup nId notifiers
 
                 writeNtf :: NotifierId -> Client -> STM ()
                 writeNtf nId Client {sndQ = q} =
@@ -403,7 +402,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               void setDelivered
 
             setSub :: (Sub -> Sub) -> STM ()
-            setSub f = modifyTVar subscriptions $ M.adjust f rId
+            setSub f = TM.adjust f rId subscriptions
 
             setDelivered :: STM (Maybe Bool)
             setDelivered = withSub rId $ \s -> tryPutTMVar (delivered s) ()
