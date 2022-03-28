@@ -35,7 +35,7 @@ instance MonadMsgStore STMMsgStore MsgQueue STM where
 
   delMsgQueue :: STMMsgStore -> RecipientId -> STM ()
   delMsgQueue store rId =
-    modifyTVar store $ MsgStoreData . M.delete rId . messages
+    modifyTVar' store $ MsgStoreData . M.delete rId . messages
 
 instance MonadMsgQueue MsgQueue STM where
   isFull :: MsgQueue -> STM Bool

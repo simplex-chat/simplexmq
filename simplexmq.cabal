@@ -61,6 +61,7 @@ library
       Simplex.Messaging.Server.QueueStore
       Simplex.Messaging.Server.QueueStore.STM
       Simplex.Messaging.Server.StoreLog
+      Simplex.Messaging.TMap
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.Client
       Simplex.Messaging.Transport.KeepAlive
