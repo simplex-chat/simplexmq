@@ -137,7 +137,7 @@ runClientTransport th@THandle {sessionId} = do
 clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 clientDisconnected c@Client {subscriptions, connected} = do
   atomically $ writeTVar connected False
-  subs <- readTVarIO $ TM.tVar subscriptions
+  subs <- readTVarIO subscriptions
   mapM_ cancelSub subs
   cs <- asks $ subscribers . server
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs

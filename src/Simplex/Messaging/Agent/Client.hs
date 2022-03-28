@@ -2,14 +2,11 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
@@ -57,6 +54,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client
+import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
@@ -67,7 +65,6 @@ import Simplex.Messaging.Util (bshow, liftEitherError, liftError, tryError)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 import UnliftIO (async, forConcurrently_)
-import UnliftIO.Exception (Exception, IOException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -115,18 +112,6 @@ newAgentClient agentEnv = do
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
-
-newtype InternalException e = InternalException {unInternalException :: e}
-  deriving (Eq, Show)
-
-instance Exception e => Exception (InternalException e)
-
-instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
-  withRunInIO :: ((forall a. ExceptT e m a -> IO a) -> IO b) -> ExceptT e m b
-  withRunInIO exceptToIO =
-    withExceptT unInternalException . ExceptT . E.try $
-      withRunInIO $ \run ->
-        exceptToIO $ run . (either (E.throwIO . InternalException) return <=< runExceptT)
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
@@ -181,10 +166,6 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       cfg <- asks $ smpCfg . config
       u <- askUnliftIO
       liftEitherError smpClientError (getSMPClient srv cfg msgQ $ clientDisconnected u)
-        `E.catch` internalError
-      where
-        internalError :: IOException -> m SMPClient
-        internalError = throwError . INTERNAL . show
 
     clientDisconnected :: UnliftIO m -> IO ()
     clientDisconnected u = do
@@ -196,8 +177,8 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
       TM.delete srv smpClients
       cs_ <- TM.lookupDelete srv $ subscrSrvrs c
       forM_ cs_ $ \cs -> do
-        modifyTVar' (TM.tVar $ subscrConns c) (`M.withoutKeys` M.keysSet cs)
-        modifyTVar' (TM.tVar $ pendingSubscrSrvrs c) $ addPendingSubs cs
+        modifyTVar' (subscrConns c) (`M.withoutKeys` M.keysSet cs)
+        modifyTVar' (pendingSubscrSrvrs c) $ addPendingSubs cs
       return cs_
       where
         addPendingSubs :: Map ConnId RcvQueue -> Map SMPServer (Map ConnId RcvQueue) -> Map SMPServer (Map ConnId RcvQueue)
@@ -222,31 +203,32 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
 
     reconnectClient :: m ()
     reconnectClient = do
+      -- TODO check failing tests if withAgentLock removed
       withAgentLock c . withSMP c srv $ \smp -> do
-        subs <- readTVarIO . TM.tVar $ subscrConns c
+        subs <- readTVarIO $ subscrConns c
         cs <- atomically . TM.lookup srv $ pendingSubscrSrvrs c
         forConcurrently_ (maybe [] M.toList cs) $ \(connId, rq@RcvQueue {rcvPrivateKey, rcvId}) ->
           when (isNothing $ M.lookup connId subs) $ do
-            subscribeSMPQueue smp rcvPrivateKey rcvId
+            (subscribeSMPQueue smp rcvPrivateKey rcvId >> addSubscription c rq connId >> liftIO (notifySub UP connId))
               `catchError` \case
                 e@SMPResponseTimeout -> throwError e
                 e@SMPNetworkError -> throwError e
-                e -> liftIO $ notifySub (ERR $ smpClientError e) connId
-            addSubscription c rq connId
-            liftIO $ notifySub UP connId
+                e -> do
+                  liftIO $ notifySub (ERR $ smpClientError e) connId
+                  atomically $ removePendingSubscription c srv connId
 
     notifySub :: ACommand 'Agent -> ConnId -> IO ()
     notifySub cmd connId = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
 
-closeAgentClient :: MonadUnliftIO m => AgentClient -> m ()
+closeAgentClient :: MonadIO m => AgentClient -> m ()
 closeAgentClient c = liftIO $ do
   closeSMPServerClients c
   cancelActions $ reconnections c
   cancelActions $ asyncClients c
-  cancelActions . TM.tVar $ smpQueueMsgDeliveries c
+  cancelActions $ smpQueueMsgDeliveries c
 
 closeSMPServerClients :: AgentClient -> IO ()
-closeSMPServerClients c = readTVarIO (TM.tVar $ smpClients c) >>= mapM_ (forkIO . closeClient)
+closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeClient)
   where
     closeClient smpVar =
       atomically (readTMVar smpVar) >>= \case
@@ -295,7 +277,8 @@ smpClientError = \case
   SMPResponseTimeout -> BROKER TIMEOUT
   SMPNetworkError -> BROKER NETWORK
   SMPTransportError e -> BROKER $ TRANSPORT e
-  e -> INTERNAL $ show e
+  e@SMPSignatureError {} -> INTERNAL $ show e
+  e@SMPIOError {} -> INTERNAL $ show e
 
 newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri)
 newRcvQueue c srv =
@@ -340,13 +323,13 @@ subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
         throwError e
       Right _ -> addSubscription c rq connId
 
-addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
+addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
   TM.insert connId server $ subscrConns c
   addSubs_ rq connId $ subscrSrvrs c
   removePendingSubscription c server connId
 
-addPendingSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
+addPendingSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addPendingSubscription c rq connId =
   atomically . addSubs_ rq connId $ pendingSubscrSrvrs c
 
@@ -355,7 +338,7 @@ addSubs_ rq@RcvQueue {server} connId = TM.alter (Just . addSub) server
   where
     addSub = maybe (M.singleton connId rq) (M.insert connId rq)
 
-removeSubscription :: MonadUnliftIO m => AgentClient -> ConnId -> m ()
+removeSubscription :: MonadIO m => AgentClient -> ConnId -> m ()
 removeSubscription c@AgentClient {subscrConns} connId = atomically $ do
   server_ <- TM.lookupDelete connId subscrConns
   mapM_ (\server -> removeSubs_ (subscrSrvrs c) server connId) server_
@@ -371,7 +354,7 @@ removeSubs_ ss server connId = TM.update delSub server ss
       let cs' = M.delete connId cs
        in if M.null cs' then Nothing else Just cs'
 
-logServer :: AgentMonad m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
+logServer :: MonadIO m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 

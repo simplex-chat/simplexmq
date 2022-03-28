@@ -128,7 +128,8 @@ type Response = Either SMPClientError BrokerMsg
 -- as 'SMPServerTransmission' includes server information.
 getSMPClient :: SMPServer -> SMPClientConfig -> TBQueue SMPServerTransmission -> IO () -> IO (Either SMPClientError SMPClient)
 getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing} msgQ disconnected =
-  atomically mkSMPClient >>= runClient useTransport
+  (atomically mkSMPClient >>= runClient useTransport)
+    `catch` \(e :: IOException) -> pure . Left $ SMPIOError e
   where
     mkSMPClient :: STM SMPClient
     mkSMPClient = do
@@ -245,6 +246,8 @@ data SMPClientError
     SMPTransportError TransportError
   | -- | Error when cryptographically "signing" the command.
     SMPSignatureError C.CryptoError
+  | -- | IO Error
+    SMPIOError IOException
   deriving (Eq, Show, Exception)
 
 -- | Create a new SMP queue.
