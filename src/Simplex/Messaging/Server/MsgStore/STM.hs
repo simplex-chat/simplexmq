@@ -6,36 +6,31 @@
 
 module Simplex.Messaging.Server.MsgStore.STM where
 
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 import Numeric.Natural
 import Simplex.Messaging.Protocol (RecipientId)
 import Simplex.Messaging.Server.MsgStore
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import UnliftIO.STM
 
 newtype MsgQueue = MsgQueue {msgQueue :: TBQueue Message}
 
-newtype MsgStoreData = MsgStoreData {messages :: Map RecipientId MsgQueue}
-
-type STMMsgStore = TVar MsgStoreData
+type STMMsgStore = TMap RecipientId MsgQueue
 
 newMsgStore :: STM STMMsgStore
-newMsgStore = newTVar $ MsgStoreData M.empty
+newMsgStore = TM.empty
 
 instance MonadMsgStore STMMsgStore MsgQueue STM where
   getMsgQueue :: STMMsgStore -> RecipientId -> Natural -> STM MsgQueue
-  getMsgQueue store rId quota = do
-    m <- messages <$> readTVar store
-    maybe (newQ m) return $ M.lookup rId m
+  getMsgQueue st rId quota = maybe newQ pure =<< TM.lookup rId st
     where
-      newQ m' = do
+      newQ = do
         q <- MsgQueue <$> newTBQueue quota
-        writeTVar store . MsgStoreData $ M.insert rId q m'
+        TM.insert rId q st
         return q
 
   delMsgQueue :: STMMsgStore -> RecipientId -> STM ()
-  delMsgQueue store rId =
-    modifyTVar store $ MsgStoreData . M.delete rId . messages
+  delMsgQueue st rId = TM.delete rId st
 
 instance MonadMsgQueue MsgQueue STM where
   isFull :: MsgQueue -> STM Bool

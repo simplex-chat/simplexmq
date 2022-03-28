@@ -83,6 +83,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
 import Simplex.Messaging.Version
 import System.Random (randomR)
@@ -361,18 +362,13 @@ resumeMsgDelivery c connId sq@SndQueue {server, sndId} = do
   let qKey = (connId, server, sndId)
   unlessM (queueDelivering qKey) $
     async (runSmpQueueMsgDelivery c connId sq)
-      >>= atomically . modifyTVar (smpQueueMsgDeliveries c) . M.insert qKey
+      >>= \a -> atomically (TM.insert qKey a $ smpQueueMsgDeliveries c)
   unlessM connQueued $
     withStore (`getPendingMsgs` connId)
       >>= queuePendingMsgs c connId sq
   where
-    queueDelivering qKey = isJust . M.lookup qKey <$> readTVarIO (smpQueueMsgDeliveries c)
-    connQueued =
-      atomically $
-        isJust
-          <$> stateTVar
-            (connMsgsQueued c)
-            (\m -> (M.lookup connId m, M.insert connId True m))
+    queueDelivering qKey = atomically $ isJust <$> TM.lookup qKey (smpQueueMsgDeliveries c)
+    connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connMsgsQueued c)
 
 queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> [InternalId] -> m ()
 queuePendingMsgs c connId sq msgIds = atomically $ do
@@ -382,11 +378,11 @@ queuePendingMsgs c connId sq msgIds = atomically $ do
 getPendingMsgQ :: AgentClient -> ConnId -> SndQueue -> STM (TQueue InternalId)
 getPendingMsgQ c connId SndQueue {server, sndId} = do
   let qKey = (connId, server, sndId)
-  maybe (newMsgQueue qKey) pure . M.lookup qKey =<< readTVar (smpQueueMsgQueues c)
+  maybe (newMsgQueue qKey) pure =<< TM.lookup qKey (smpQueueMsgQueues c)
   where
     newMsgQueue qKey = do
       mq <- newTQueue
-      modifyTVar (smpQueueMsgQueues c) $ M.insert qKey mq
+      TM.insert qKey mq $ smpQueueMsgQueues c
       pure mq
 
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnId -> SndQueue -> m ()

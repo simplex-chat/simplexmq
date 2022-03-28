@@ -56,13 +56,13 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError)
 import Simplex.Messaging.Transport.Client (runTransportClient, smpClientHandshake)
 import Simplex.Messaging.Transport.KeepAlive
@@ -83,7 +83,7 @@ data SMPClient = SMPClient
     smpServer :: SMPServer,
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
-    sentCommands :: TVar (Map CorrId Request),
+    sentCommands :: TMap CorrId Request,
     sndQ :: TBQueue SentRawTransmission,
     rcvQ :: TBQueue (SignedTransmission BrokerMsg),
     msgQ :: TBQueue SMPServerTransmission
@@ -137,7 +137,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, tcpKeepAlive, smp
     mkSMPClient = do
       connected <- newTVar False
       clientCorrId <- newTVar 0
-      sentCommands <- newTVar M.empty
+      sentCommands <- TM.empty
       sndQ <- newTBQueue qSize
       rcvQ <- newTBQueue qSize
       return
@@ -202,11 +202,10 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, tcpKeepAlive, smp
       if B.null $ bs corrId
         then sendMsg qId respOrErr
         else do
-          cs <- readTVarIO sentCommands
-          case M.lookup corrId cs of
+          atomically (TM.lookup corrId sentCommands) >>= \case
             Nothing -> sendMsg qId respOrErr
             Just Request {queueId, responseVar} -> atomically $ do
-              modifyTVar sentCommands $ M.delete corrId
+              TM.delete corrId sentCommands
               putTMVar responseVar $
                 if queueId == qId
                   then case respOrErr of
@@ -368,6 +367,6 @@ sendSMPCommand SMPClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeou
     send :: CorrId -> SentRawTransmission -> STM (TMVar Response)
     send corrId t = do
       r <- newEmptyTMVar
-      modifyTVar sentCommands . M.insert corrId $ Request qId r
+      TM.insert corrId (Request qId r) sentCommands
       writeTBQueue sndQ t
       return r
