@@ -341,7 +341,7 @@ newRcvQueue_ a c srv = do
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
-  addPendingSubscription c rq connId
+  atomically $ addPendingSubscription c rq connId
   withLogSMP c server rcvId "SUB" $ \smp -> do
     liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
       Left e -> do
@@ -353,15 +353,14 @@ subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
 addSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
   TM.insert connId server $ subscrConns c
-  addSubs_ rq connId $ subscrSrvrs c
+  addSubs_ (subscrSrvrs c) rq connId
   removePendingSubscription c server connId
 
-addPendingSubscription :: MonadUnliftIO m => AgentClient -> RcvQueue -> ConnId -> m ()
-addPendingSubscription c rq connId =
-  atomically . addSubs_ rq connId $ pendingSubscrSrvrs c
+addPendingSubscription :: AgentClient -> RcvQueue -> ConnId -> STM ()
+addPendingSubscription = addSubs_ . pendingSubscrSrvrs
 
-addSubs_ :: RcvQueue -> ConnId -> TMap SMPServer (TMap ConnId RcvQueue) -> STM ()
-addSubs_ rq@RcvQueue {server} connId ss =
+addSubs_ :: TMap SMPServer (TMap ConnId RcvQueue) -> RcvQueue -> ConnId -> STM ()
+addSubs_ ss rq@RcvQueue {server} connId =
   TM.lookup server ss >>= \case
     Just m -> TM.insert connId rq m
     _ -> TM.singleton connId rq >>= \m -> TM.insert server m ss
