@@ -175,13 +175,14 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     removeClientAndSubs :: IO (Maybe (Map ConnId RcvQueue))
     removeClientAndSubs = atomically $ do
       TM.delete srv smpClients
-      cVar_ <- TM.lookupDelete srv $ subscrSrvrs c
-      forM cVar_ $ \cVar -> do
-        cs <- readTVar cVar
-        modifyTVar' (subscrConns c) (`M.withoutKeys` M.keysSet cs)
-        addPendingSubs cVar cs
-        pure cs
+      TM.lookupDelete srv (subscrSrvrs c) >>= mapM updateSubs
       where
+        updateSubs cVar = do
+          cs <- readTVar cVar
+          modifyTVar' (subscrConns c) (`M.withoutKeys` M.keysSet cs)
+          addPendingSubs cVar cs
+          pure cs
+
         addPendingSubs cVar cs = do
           let ps = pendingSubscrSrvrs c
           TM.lookup srv ps >>= \case

@@ -19,7 +19,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing)
 import Data.Set (Set)
 import Data.Text.Encoding
 import Numeric.Natural
@@ -43,16 +42,14 @@ data SMPClientAgentEvent
   | CADisconnected SMPServer (Set SMPSub)
   | CAReconnected SMPServer
   | CAResubscribed SMPServer SMPSub
-  | CASubError SMPSub SMPClientError
-  | CAError SMPClientError
+  | CASubError SMPServer SMPSub SMPClientError
 
 data SMPSubParty = SPRecipient | SPNotifier
   deriving (Eq, Ord)
 
-data SMPSubscription = SMPSubscription SMPSub C.APrivateSignKey
-  deriving (Eq)
+type SMPSub = (SMPSubParty, QueueId)
 
-type SMPSub = (SMPServer, SMPSubParty, QueueId)
+-- type SMPServerSub = (SMPServer, SMPSub)
 
 data SMPClientAgentConfig = SMPClientAgentConfig
   { smpCfg :: SMPClientConfig,
@@ -66,9 +63,8 @@ data SMPClientAgent = SMPClientAgent
     msgQ :: TBQueue SMPServerTransmission,
     agentQ :: TBQueue SMPClientAgentEvent,
     smpClients :: TMap SMPServer SMPClientVar,
-    srvSubs :: TMap SMPServer (TMap SMPSub SMPSubscription),
-    pendingSrvSubs :: TMap SMPServer (TMap SMPSub SMPSubscription),
-    subscriptions :: TMap SMPSub SMPServer,
+    srvSubs :: TMap SMPServer (TMap SMPSub C.APrivateSignKey),
+    pendingSrvSubs :: TMap SMPServer (TMap SMPSub C.APrivateSignKey),
     reconnections :: TVar [Async ()],
     asyncClients :: TVar [Async ()]
   }
@@ -92,10 +88,9 @@ newSMPClientAgent config@SMPClientAgentConfig {msgQSize, agentQSize} = do
   smpClients <- TM.empty
   srvSubs <- TM.empty
   pendingSrvSubs <- TM.empty
-  subscriptions <- TM.empty
   reconnections <- newTVar []
   asyncClients <- newTVar []
-  pure SMPClientAgent {config, msgQ, agentQ, smpClients, srvSubs, pendingSrvSubs, subscriptions, reconnections, asyncClients}
+  pure SMPClientAgent {config, msgQ, agentQ, smpClients, srvSubs, pendingSrvSubs, reconnections, asyncClients}
 
 getSMPServerClient' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO SMPClient
 getSMPServerClient' ca@SMPClientAgent {config, smpClients, msgQ} srv =
@@ -153,20 +148,23 @@ getSMPServerClient' ca@SMPClientAgent {config, smpClients, msgQ} srv =
       removeClientAndSubs >>= (`forM_` serverDown)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-    removeClientAndSubs :: IO (Maybe (Map SMPSub SMPSubscription))
+    removeClientAndSubs :: IO (Maybe (Map SMPSub C.APrivateSignKey))
     removeClientAndSubs = atomically $ do
       TM.delete srv smpClients
-      sVar_ <- TM.lookupDelete srv $ srvSubs ca
-      forM sVar_ $ \sVar -> do
-        ss <- readTVar sVar
-        modifyTVar' (subscriptions ca) (`M.withoutKeys` M.keysSet ss)
-        let ps = pendingSrvSubs ca
-        TM.lookup srv ps >>= \case
-          Just v -> TM.union ss v
-          _ -> TM.insert srv sVar ps
-        pure ss
+      TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs
+      where
+        updateSubs sVar = do
+          ss <- readTVar sVar
+          addPendingSubs sVar ss
+          pure ss
 
-    serverDown :: Map SMPSub SMPSubscription -> IO ()
+        addPendingSubs sVar ss = do
+          let ps = pendingSrvSubs ca
+          TM.lookup srv ps >>= \case
+            Just v -> TM.union ss v
+            _ -> TM.insert srv sVar ps
+
+    serverDown :: Map SMPSub C.APrivateSignKey -> IO ()
     serverDown ss = unless (M.null ss) . void . runExceptT $ do
       notify . CADisconnected srv $ M.keysSet ss
       reconnectServer
@@ -184,22 +182,25 @@ getSMPServerClient' ca@SMPClientAgent {config, smpClients, msgQ} srv =
     reconnectClient :: ExceptT SMPClientError IO ()
     reconnectClient = do
       withSMP ca srv $ \smp -> do
+        notify $ CAReconnected srv
         cs <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
-        forConcurrently_ (maybe [] M.assocs cs) $ \(s, sub) ->
-          whenM (atomically $ isNothing <$> TM.lookup s (subscriptions ca)) $
-            subscribe_ smp sub
-              `catchE` \case
-                e@SMPResponseTimeout -> throwE e
-                e@SMPNetworkError -> throwE e
-                e -> do
-                  notify $ CASubError s e
-                  atomically $ removePendingSubscription ca s
+        forConcurrently_ (maybe [] M.assocs cs) $ \sub@(s, _) ->
+          whenM (atomically $ hasSub (srvSubs ca) srv s) $
+            subscribe_ smp sub `catchE` handleError s
       where
-        subscribe_ :: SMPClient -> SMPSubscription -> ExceptT SMPClientError IO ()
-        subscribe_ smp sub@(SMPSubscription s _) = do
+        subscribe_ :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
+        subscribe_ smp sub@(s, _) = do
           smpSubscribe smp sub
-          atomically $ addSubscription ca sub
+          atomically $ addSubscription ca srv sub
           notify $ CAResubscribed srv s
+
+        handleError :: SMPSub -> SMPClientError -> ExceptT SMPClientError IO ()
+        handleError s = \case
+          e@SMPResponseTimeout -> throwE e
+          e@SMPNetworkError -> throwE e
+          e -> do
+            notify $ CASubError srv s e
+            atomically $ removePendingSubscription ca srv s
 
     notify :: SMPClientAgentEvent -> ExceptT SMPClientError IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt
@@ -233,35 +234,38 @@ showServer :: SMPServer -> ByteString
 showServer SMPServer {host, port} =
   B.pack $ host <> if null port then "" else ':' : port
 
-smpSubscribe :: SMPClient -> SMPSubscription -> ExceptT SMPClientError IO ()
-smpSubscribe smp (SMPSubscription (_, party, queueId) privKey) = subscribe_ smp privKey queueId
+smpSubscribe :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
+smpSubscribe smp ((party, queueId), privKey) = subscribe_ smp privKey queueId
   where
     subscribe_ = case party of
       SPRecipient -> subscribeSMPQueue
       SPNotifier -> subscribeSMPQueueNotifications
 
-addSubscription :: SMPClientAgent -> SMPSubscription -> STM ()
-addSubscription ca sub@(SMPSubscription s@(srv, _, _) _) = do
-  TM.insert s srv $ subscriptions ca
-  addSubs_ sub $ srvSubs ca
-  removePendingSubscription ca s
+addSubscription :: SMPClientAgent -> SMPServer -> (SMPSub, C.APrivateSignKey) -> STM ()
+addSubscription ca srv sub = do
+  addSub_ (srvSubs ca) srv sub
+  removePendingSubscription ca srv $ fst sub
 
-addPendingSubscription :: SMPClientAgent -> SMPSubscription -> STM ()
-addPendingSubscription ca sub = addSubs_ sub $ pendingSrvSubs ca
+addPendingSubscription :: SMPClientAgent -> SMPServer -> (SMPSub, C.APrivateSignKey) -> STM ()
+addPendingSubscription = addSub_ . pendingSrvSubs
 
-addSubs_ :: SMPSubscription -> TMap SMPServer (TMap SMPSub SMPSubscription) -> STM ()
-addSubs_ sub@(SMPSubscription s@(srv, _, _) _) subs =
+addSub_ :: TMap SMPServer (TMap SMPSub C.APrivateSignKey) -> SMPServer -> (SMPSub, C.APrivateSignKey) -> STM ()
+addSub_ subs srv (s, key) =
   TM.lookup srv subs >>= \case
-    Just m -> TM.insert s sub m
-    _ -> TM.singleton s sub >>= \v -> TM.insert srv v subs
+    Just m -> TM.insert s key m
+    _ -> TM.singleton s key >>= \v -> TM.insert srv v subs
 
-removeSubscription :: SMPClientAgent -> SMPSub -> STM ()
-removeSubscription ca@SMPClientAgent {subscriptions} s = do
-  TM.delete s subscriptions
-  removeSubs_ (srvSubs ca) s
+removeSubscription :: SMPClientAgent -> SMPServer -> SMPSub -> STM ()
+removeSubscription = removeSub_ . srvSubs
 
-removePendingSubscription :: SMPClientAgent -> SMPSub -> STM ()
-removePendingSubscription = removeSubs_ . pendingSrvSubs
+removePendingSubscription :: SMPClientAgent -> SMPServer -> SMPSub -> STM ()
+removePendingSubscription = removeSub_ . pendingSrvSubs
 
-removeSubs_ :: TMap SMPServer (TMap SMPSub SMPSubscription) -> SMPSub -> STM ()
-removeSubs_ subs s@(srv, _, _) = TM.lookup srv subs >>= mapM_ (TM.delete s)
+removeSub_ :: TMap SMPServer (TMap SMPSub C.APrivateSignKey) -> SMPServer -> SMPSub -> STM ()
+removeSub_ subs srv s = TM.lookup srv subs >>= mapM_ (TM.delete s)
+
+getSubKey :: TMap SMPServer (TMap SMPSub C.APrivateSignKey) -> SMPServer -> SMPSub -> STM (Maybe C.APrivateSignKey)
+getSubKey subs srv s = fmap join . mapM (TM.lookup s) =<< TM.lookup srv subs
+
+hasSub :: TMap SMPServer (TMap SMPSub C.APrivateSignKey) -> SMPServer -> SMPSub -> STM Bool
+hasSub subs srv s = maybe (pure False) (TM.member s) =<< TM.lookup srv subs
