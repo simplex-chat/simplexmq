@@ -79,7 +79,7 @@ instance MonadQueueStore QueueStore STM where
     TM.lookupDelete rId queues >>= \case
       Just q -> do
         TM.delete (senderId q) senders
-        forM_ (notifier q) $ \n -> TM.delete (fst n) notifiers
+        forM_ (notifier q) $ \(nId, _) -> TM.delete nId notifiers
         pure $ Right ()
       _ -> pure $ Left AUTH
 
