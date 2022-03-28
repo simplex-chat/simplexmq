@@ -114,7 +114,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} 
     restoreQueues QueueStore {queues, senders, notifiers} s = do
       (qs, s') <- liftIO $ readWriteStoreLog s
       atomically $ do
-        writeTVar (TM.tVar queues) qs
+        writeTVar (TM.tVar queues) =<< mapM newTVar qs
         writeTVar (TM.tVar senders) $ M.foldr' addSender M.empty qs
         writeTVar (TM.tVar notifiers) $ M.foldr' addNotifier M.empty qs
       pure s'
