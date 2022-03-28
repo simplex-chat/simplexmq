@@ -87,7 +87,7 @@ data SMPClient = SMPClient
   }
 
 -- | Type synonym for transmission from some SPM server queue.
-type SMPServerTransmission = (SMPServer, RecipientId, BrokerMsg)
+type SMPServerTransmission = (SMPServer, QueueId, BrokerMsg)
 
 -- | SMP client configuration.
 data SMPClientConfig = SMPClientConfig

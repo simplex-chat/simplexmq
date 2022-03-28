@@ -15,12 +15,14 @@ import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Subscriptions
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (ErrorType (..), Transmission, encodeTransmission, tGet, tPut)
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport)
 import Simplex.Messaging.Transport.Server (runTransportServer)
@@ -56,10 +58,47 @@ runNtfServerBlocking started cfg@NtfServerConfig {transports} = do
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
 
-ntfSubscriber :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> m ()
-ntfSubscriber NtfSubscriber {subQ} = forever $ do
-  sub <- atomically $ readTBQueue subQ
-  pure ()
+ntfSubscriber :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> m ()
+ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
+  raceAny_ [subscribe, receiveSMP, receiveAgent]
+  where
+    subscribe :: m ()
+    subscribe = forever $ do
+      NtfSubsciption {smpQueue} <- atomically $ readTBQueue subQ
+      let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
+      liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
+        Right _ -> pure () -- update subscription status
+        Left e -> pure ()
+
+    receiveSMP :: m ()
+    receiveSMP = forever $ do
+      (srv, ntfId, msg) <- atomically $ readTBQueue msgQ
+      case msg of
+        SMP.NMSG -> do
+          -- check when the last NMSG was received from this queue
+          -- update timestamp
+          -- check what was the last hidden notification was sent (and whether to this queue)
+          -- decide whether it should be sent as hidden or visible
+          -- construct and possibly encrypt notification
+          -- send it
+          pure ()
+        _ -> pure ()
+      pure ()
+
+    receiveAgent =
+      forever $
+        atomically (readTBQueue agentQ) >>= \case
+          CAConnected _ -> pure ()
+          CADisconnected srv subs -> do
+            -- update subscription statuses
+            pure ()
+          CAReconnected _ -> pure ()
+          CAResubscribed srv sub -> do
+            -- update subscription status
+            pure ()
+          CASubError srv sub err -> do
+            -- update subscription status
+            pure ()
 
 ntfPush :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
 ntfPush NtfPushServer {pushQ} = forever $ do

@@ -59,7 +59,7 @@ data SMPClientAgentConfig = SMPClientAgentConfig
   }
 
 data SMPClientAgent = SMPClientAgent
-  { config :: SMPClientAgentConfig,
+  { agentCfg :: SMPClientAgentConfig,
     msgQ :: TBQueue SMPServerTransmission,
     agentQ :: TBQueue SMPClientAgentEvent,
     smpClients :: TMap SMPServer SMPClientVar,
@@ -82,7 +82,7 @@ instance (MonadUnliftIO m, Exception e) => MonadUnliftIO (ExceptT e m) where
         exceptToIO $ run . (either (E.throwIO . InternalException) return <=< runExceptT)
 
 newSMPClientAgent :: SMPClientAgentConfig -> STM SMPClientAgent
-newSMPClientAgent config@SMPClientAgentConfig {msgQSize, agentQSize} = do
+newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} = do
   msgQ <- newTBQueue msgQSize
   agentQ <- newTBQueue agentQSize
   smpClients <- TM.empty
@@ -90,10 +90,10 @@ newSMPClientAgent config@SMPClientAgentConfig {msgQSize, agentQSize} = do
   pendingSrvSubs <- TM.empty
   reconnections <- newTVar []
   asyncClients <- newTVar []
-  pure SMPClientAgent {config, msgQ, agentQ, smpClients, srvSubs, pendingSrvSubs, reconnections, asyncClients}
+  pure SMPClientAgent {agentCfg, msgQ, agentQ, smpClients, srvSubs, pendingSrvSubs, reconnections, asyncClients}
 
 getSMPServerClient' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO SMPClient
-getSMPServerClient' ca@SMPClientAgent {config, smpClients, msgQ} srv =
+getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
   atomically getClientVar >>= either newSMPClient waitForSMPClient
   where
     getClientVar :: STM (Either SMPClientVar SMPClientVar)
@@ -107,7 +107,7 @@ getSMPServerClient' ca@SMPClientAgent {config, smpClients, msgQ} srv =
 
     waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
     waitForSMPClient smpVar = do
-      let SMPClientConfig {tcpTimeout} = smpCfg config
+      let SMPClientConfig {tcpTimeout} = smpCfg agentCfg
       smpClient_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar smpVar)
       liftEither $ case smpClient_ of
         Just (Right smpClient) -> Right smpClient
@@ -137,11 +137,11 @@ getSMPServerClient' ca@SMPClientAgent {config, smpClients, msgQ} srv =
           atomically $ modifyTVar' (asyncClients ca) (a :)
         connectAsync :: ExceptT SMPClientError IO ()
         connectAsync =
-          withRetryInterval (reconnectInterval config) $ \loop ->
+          withRetryInterval (reconnectInterval agentCfg) $ \loop ->
             void $ tryConnectClient (const reconnectClient) loop
 
     connectClient :: ExceptT SMPClientError IO SMPClient
-    connectClient = ExceptT $ getSMPClient srv (smpCfg config) msgQ clientDisconnected
+    connectClient = ExceptT $ getSMPClient srv (smpCfg agentCfg) msgQ clientDisconnected
 
     clientDisconnected :: IO ()
     clientDisconnected = do
@@ -176,7 +176,7 @@ getSMPServerClient' ca@SMPClientAgent {config, smpClients, msgQ} srv =
 
     tryReconnectClient :: ExceptT SMPClientError IO ()
     tryReconnectClient = do
-      withRetryInterval (reconnectInterval config) $ \loop ->
+      withRetryInterval (reconnectInterval agentCfg) $ \loop ->
         reconnectClient `catchE` const loop
 
     reconnectClient :: ExceptT SMPClientError IO ()
@@ -228,6 +228,20 @@ withSMP ca srv action = (getSMPServerClient' ca srv >>= action) `catchE` logSMPE
     logSMPError :: SMPClientError -> ExceptT SMPClientError IO a
     logSMPError e = do
       liftIO $ putStrLn $ "SMP error (" <> show srv <> "): " <> show e
+      throwE e
+
+subscribeQueue :: SMPClientAgent -> SMPServer -> (SMPSub, C.APrivateSignKey) -> ExceptT SMPClientError IO ()
+subscribeQueue ca srv sub = do
+  atomically $ addPendingSubscription ca srv sub
+  withSMP ca srv $ \smp -> subscribe_ smp `catchE` handleError
+  where
+    subscribe_ smp = do
+      smpSubscribe smp sub
+      atomically $ addSubscription ca srv sub
+
+    handleError e = do
+      atomically . when (e /= SMPNetworkError && e /= SMPResponseTimeout) $
+        removePendingSubscription ca srv $ fst sub
       throwE e
 
 showServer :: SMPServer -> ByteString

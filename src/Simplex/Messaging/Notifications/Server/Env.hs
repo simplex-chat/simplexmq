@@ -6,13 +6,12 @@ module Simplex.Messaging.Notifications.Server.Env where
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.Map.Strict as M
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Client
+import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Subscriptions
@@ -27,7 +26,7 @@ data NtfServerConfig = NtfServerConfig
     clientQSize :: Natural,
     subQSize :: Natural,
     pushQSize :: Natural,
-    smpCfg :: SMPClientConfig,
+    smpAgentCfg :: SMPClientAgentConfig,
     reconnectInterval :: RetryInterval,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
@@ -49,23 +48,25 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
-newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, caCertificateFile, certificateFile, privateKeyFile} = do
+newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, caCertificateFile, certificateFile, privateKeyFile} = do
   idsDrg <- newTVarIO =<< drgNew
   store <- atomically newNtfSubscriptionsStore
-  subscriber <- atomically $ newNtfSubscriber subQSize
+  subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
   pushServer <- atomically $ newNtfPushServer pushQSize
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
 
-newtype NtfSubscriber = NtfSubscriber
-  { subQ :: TBQueue NtfSubsciption
+data NtfSubscriber = NtfSubscriber
+  { subQ :: TBQueue NtfSubsciption,
+    smpAgent :: SMPClientAgent
   }
 
-newNtfSubscriber :: Natural -> STM NtfSubscriber
-newNtfSubscriber qSize = do
+newNtfSubscriber :: Natural -> SMPClientAgentConfig -> STM NtfSubscriber
+newNtfSubscriber qSize smpAgentCfg = do
+  smpAgent <- newSMPClientAgent smpAgentCfg
   subQ <- newTBQueue qSize
-  pure NtfSubscriber {subQ}
+  pure NtfSubscriber {smpAgent, subQ}
 
 newtype NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfSubsciption, Notification)

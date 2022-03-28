@@ -11,10 +11,11 @@ import Data.Set (Set)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), NotifierId, NtfPrivateSignKey, SMPServer)
+import Simplex.Messaging.TMap (TMap)
 
 data NtfSubscriptionsStore = NtfSubscriptionsStore
-  { subscriptions :: TVar (Map NtfSubsciptionId NtfSubsciption),
-    activeSubscriptions :: TVar (Map (SMPServer, NotifierId) NtfSubsciptionId)
+  { subscriptions :: TMap NtfSubsciptionId NtfSubsciption,
+    activeSubscriptions :: TMap (SMPServer, NotifierId) NtfSubsciptionId
   }
 
 newNtfSubscriptionsStore :: STM NtfSubscriptionsStore
