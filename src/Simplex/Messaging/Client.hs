@@ -112,7 +112,7 @@ smpDefaultConfig =
   SMPClientConfig
     { qSize = 64,
       defaultTransport = ("5223", transport @TLS),
-      tcpTimeout = 4_000_000,
+      tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
       smpPing = 300_000_000 -- 5 min
     }
