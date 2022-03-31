@@ -127,7 +127,8 @@ connectSQLiteStore dbFilePath poolSize = do
 connectDB :: FilePath -> IO DB.Connection
 connectDB path = do
   dbConn <- DB.open path
-  DB.execute_ dbConn "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;"
+  DB.execute_ dbConn "PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF; PRAGMA secure_delete = ON; PRAGMA auto_vacuum = FULL;"
+  DB.execute_ dbConn "VACUUM;"
   pure dbConn
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
