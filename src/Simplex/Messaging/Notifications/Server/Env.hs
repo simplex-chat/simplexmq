@@ -1,4 +1,7 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Notifications.Server.Env where
@@ -40,7 +43,7 @@ data NtfEnv = NtfEnv
   { config :: NtfServerConfig,
     subscriber :: NtfSubscriber,
     pushServer :: NtfPushServer,
-    store :: NtfSubscriptionsStore,
+    store :: NtfStore,
     idsDrg :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
@@ -50,7 +53,7 @@ data NtfEnv = NtfEnv
 newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
 newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, caCertificateFile, certificateFile, privateKeyFile} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- atomically newNtfSubscriptionsStore
+  store <- atomically newNtfStore
   subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
   pushServer <- atomically $ newNtfPushServer pushQSize
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
@@ -58,7 +61,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, caCert
   pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
 
 data NtfSubscriber = NtfSubscriber
-  { subQ :: TBQueue NtfSubsciption,
+  { subQ :: TBQueue (NtfEntityRec 'Subscription),
     smpAgent :: SMPClientAgent
   }
 
@@ -69,7 +72,7 @@ newNtfSubscriber qSize smpAgentCfg = do
   pure NtfSubscriber {smpAgent, subQ}
 
 newtype NtfPushServer = NtfPushServer
-  { pushQ :: TBQueue (NtfSubsciption, Notification)
+  { pushQ :: TBQueue (NtfTknData, Notification)
   }
 
 newNtfPushServer :: Natural -> STM NtfPushServer
@@ -77,7 +80,9 @@ newNtfPushServer qSize = do
   pushQ <- newTBQueue qSize
   pure NtfPushServer {pushQ}
 
-data NtfRequest = NRCreate CorrId NewNtfSubscription | NRCommand NtfSubsciption (Transmission NtfCommand)
+data NtfRequest
+  = NtfReqNew CorrId ANewNtfEntity
+  | forall e. NtfEntityI e => NtfReqCmd (SNtfEntity e) (NtfEntityRec e) (Transmission (NtfCommand e))
 
 data NtfServerClient = NtfServerClient
   { rcvQ :: TBQueue NtfRequest,

@@ -1,5 +1,7 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -21,7 +23,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Subscriptions
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (ErrorType (..), Transmission, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (ErrorType (..), SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport)
@@ -64,11 +66,12 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
   where
     subscribe :: m ()
     subscribe = forever $ do
-      NtfSubsciption {smpQueue} <- atomically $ readTBQueue subQ
-      let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
-      liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
-        Right _ -> pure () -- update subscription status
-        Left e -> pure ()
+      atomically (readTBQueue subQ) >>= \case
+        NtfSub NtfSubData {smpQueue} -> do
+          let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
+          liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
+            Right _ -> pure () -- update subscription status
+            Left e -> pure ()
 
     receiveSMP :: m ()
     receiveSMP = forever $ do
@@ -102,15 +105,16 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
 
 ntfPush :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
 ntfPush NtfPushServer {pushQ} = forever $ do
-  (NtfSubsciption {}, Notification {}) <- atomically $ readTBQueue pushQ
-  pure ()
+  atomically (readTBQueue pushQ) >>= \case
+    (NtfTknData {}, Notification {}) -> pure ()
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do
   qSize <- asks $ clientQSize . config
   c <- atomically $ newNtfServerClient qSize sessionId
   s <- asks subscriber
-  raceAny_ [send th c, client c s, receive th c]
+  ps <- asks pushServer
+  raceAny_ [send th c, client c s ps, receive th c]
     `finally` clientDisconnected c
 
 clientDisconnected :: MonadUnliftIO m => NtfServerClient -> m ()
@@ -118,14 +122,13 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
 receive th NtfServerClient {rcvQ, sndQ} = forever $ do
-  (sig, signed, (corrId, subId, cmdOrError)) <- tGet th
+  t@(sig, signed, (corrId, subId, cmdOrError)) <- tGet th
   case cmdOrError of
     Left e -> write sndQ (corrId, subId, NRErr e)
     Right cmd ->
-      verifyNtfTransmission sig signed subId cmd >>= \case
-        VRCreate newSub -> write rcvQ $ NRCreate corrId newSub
-        VRCommand sub -> write rcvQ $ NRCommand sub (corrId, subId, cmd)
-        VRFail -> write sndQ (corrId, subId, NRErr AUTH)
+      verifyNtfTransmission t cmd >>= \case
+        VRVerified req -> write rcvQ req
+        VRFailed -> write sndQ (corrId, subId, NRErr AUTH)
   where
     write q t = atomically $ writeTBQueue q t
 
@@ -134,27 +137,46 @@ send h NtfServerClient {sndQ, sessionId} = forever $ do
   t <- atomically $ readTBQueue sndQ
   liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
 
-data VerificationResult = VRCreate NewNtfSubscription | VRCommand NtfSubsciption | VRFail
+data VerificationResult = VRVerified NtfRequest | VRFailed
 
 verifyNtfTransmission ::
-  forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => Maybe C.ASignature -> ByteString -> NtfSubsciptionId -> NtfCommand -> m VerificationResult
-verifyNtfTransmission sig_ signed subId cmd = do
-  st <- asks store
+  forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => SignedTransmission NtfCmd -> NtfCmd -> m VerificationResult
+verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
   case cmd of
-    NCCreate newSub@NewNtfSubscription {smpQueue, verifyKey} -> verifyCreateCmd verifyKey newSub <$> atomically (getNtfSubViaSMPQueue st smpQueue)
-    _ -> verifySubCmd <$> atomically (getNtfSub st subId)
-  where
-    verifyCreateCmd k newSub sub_
-      | verifyCmdSignature sig_ signed k = case sub_ of
-        Just sub -> if k == subVerifyKey sub then VRCommand sub else VRFail
-        _ -> VRCreate newSub
-      | otherwise = VRFail
-    verifySubCmd = \case
-      Just sub -> if verifyCmdSignature sig_ signed $ subVerifyKey sub then VRCommand sub else VRFail
-      _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFail
+    NtfCmd SToken (TNEW n@(NewNtfTkn _ k _)) ->
+      -- TODO check that token is not already in store
+      pure $
+        if verifyCmdSignature sig_ signed k
+          then VRVerified (NtfReqNew corrId (ANE SToken n))
+          else VRFailed
+    NtfCmd SToken c -> do
+      st <- asks store
+      atomically (getNtfToken st entId) >>= \case
+        Just r@(NtfTkn NtfTknData {tknVerifyKey}) ->
+          pure $
+            if verifyCmdSignature sig_ signed tknVerifyKey
+              then VRVerified (NtfReqCmd SToken r (corrId, entId, c))
+              else VRFailed
+        _ -> pure VRFailed -- TODO dummy verification
+    _ -> pure VRFailed
 
-client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> m ()
-client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} =
+-- do
+--   st <- asks store
+--   case cmd of
+--     NCSubCreate tokenId smpQueue -> verifyCreateCmd verifyKey newSub <$> atomically (getNtfSubViaSMPQueue st smpQueue)
+--     _ -> verifySubCmd <$> atomically (getNtfSub st subId)
+--   where
+--     verifyCreateCmd k newSub sub_
+--       | verifyCmdSignature sig_ signed k = case sub_ of
+--         Just sub -> if k == subVerifyKey sub then VRCommand sub else VRFail
+--         _ -> VRCreate newSub
+--       | otherwise = VRFail
+--     verifySubCmd = \case
+--       Just sub -> if verifyCmdSignature sig_ signed $ subVerifyKey sub then VRCommand sub else VRFail
+--       _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFail
+
+client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
+client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
@@ -162,43 +184,73 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} =
   where
     processCommand :: NtfRequest -> m (Transmission NtfResponse)
     processCommand = \case
-      NRCreate corrId NewNtfSubscription {smpQueue, token, verifyKey, dhPubKey} -> do
+      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn _ _ dhPubKey)) -> do
         st <- asks store
-        (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
-        let dhSecret = C.dh' dhPubKey privDhKey
-        sub <- atomically $ mkNtfSubsciption smpQueue token verifyKey dhSecret
-        addSubRetry 3 st sub >>= \case
-          Nothing -> pure (corrId, "", NRErr INTERNAL)
-          Just sId -> do
-            atomically $ writeTBQueue subQ sub
-            pure (corrId, sId, NRSubId pubDhKey)
-        where
-          addSubRetry :: Int -> NtfSubscriptionsStore -> NtfSubsciption -> m (Maybe NtfSubsciptionId)
-          addSubRetry 0 _ _ = pure Nothing
-          addSubRetry n st sub = do
-            sId <- getId
-            -- create QueueRec record with these ids and keys
-            atomically (addNtfSub st sId sub) >>= \case
-              Nothing -> addSubRetry (n - 1) st sub
-              _ -> pure $ Just sId
-          getId :: m NtfSubsciptionId
-          getId = do
-            n <- asks $ subIdBytes . config
-            gVar <- asks idsDrg
-            atomically (randomBytes n gVar)
-      NRCommand sub@NtfSubsciption {token, status} (corrId, subId, cmd) ->
+        (srvDhPubKey, srvDrivDhKey) <- liftIO C.generateKeyPair'
+        let dhSecret = C.dh' dhPubKey srvDrivDhKey
+        tknId <- getId
+        atomically $ do
+          tkn <- mkNtfTknData newTkn dhSecret
+          addNtfToken st tknId tkn
+          writeTBQueue pushQ (tkn, Notification)
+        --     pure (corrId, sId, NRSubId pubDhKey)
+        pure (corrId, tknId, NRId srvDhPubKey)
+      NtfReqCmd SToken tkn (corrId, tknId, cmd) ->
+        (corrId,tknId,) <$> case cmd of
+          TNEW newTkn -> pure NROk -- TODO when duplicate token sent
+          TVFY code -> pure NROk
+          TDEL -> pure NROk
+          TCRN int -> pure NROk
+      NtfReqNew corrId (ANE SSubscription newSub) -> pure (corrId, "", NROk)
+      NtfReqCmd SSubscription sub (corrId, subId, cmd) ->
         (corrId,subId,) <$> case cmd of
-          NCCreate newSub -> do
-            st <- asks store
-            (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
-            let dhSecret = C.dh' (dhPubKey newSub) privDhKey
-            atomically (updateNtfSub st sub newSub dhSecret) >>= \case
-              Nothing -> pure $ NRErr INTERNAL
-              _ -> atomically $ do
-                whenM ((== NSEnd) <$> readTVar status) $ writeTBQueue subQ sub
-                pure $ NRSubId pubDhKey
-          NCCheck -> NRStat <$> readTVarIO status
-          NCToken t -> atomically (writeTVar token t) $> NROk
-          NCDelete -> do
-            st <- asks store
-            atomically (deleteNtfSub st subId) $> NROk
+          SNEW newSub -> pure NROk
+          SCHK -> pure NROk
+          SDEL -> pure NROk
+    getId :: m NtfEntityId
+    getId = do
+      n <- asks $ subIdBytes . config
+      gVar <- asks idsDrg
+      atomically (randomBytes n gVar)
+
+-- NReqCreate corrId tokenId smpQueue -> pure (corrId, "", NROk)
+-- do
+-- st <- asks store
+-- (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
+-- let dhSecret = C.dh' dhPubKey privDhKey
+-- sub <- atomically $ mkNtfSubsciption smpQueue token verifyKey dhSecret
+-- addSubRetry 3 st sub >>= \case
+--   Nothing -> pure (corrId, "", NRErr INTERNAL)
+--   Just sId -> do
+--     atomically $ writeTBQueue subQ sub
+--     pure (corrId, sId, NRSubId pubDhKey)
+-- where
+--   addSubRetry :: Int -> NtfSubscriptionsStore -> NtfSubsciption -> m (Maybe NtfSubsciptionId)
+--   addSubRetry 0 _ _ = pure Nothing
+--   addSubRetry n st sub = do
+--     sId <- getId
+--     -- create QueueRec record with these ids and keys
+--     atomically (addNtfSub st sId sub) >>= \case
+--       Nothing -> addSubRetry (n - 1) st sub
+--       _ -> pure $ Just sId
+--   getId :: m NtfSubsciptionId
+--   getId = do
+--     n <- asks $ subIdBytes . config
+--     gVar <- asks idsDrg
+--     atomically (randomBytes n gVar)
+-- NReqCommand sub@NtfSubsciption {tokenId, subStatus} (corrId, subId, cmd) ->
+--   (corrId,subId,) <$> case cmd of
+--     NCSubCreate tokenId smpQueue -> pure NROk
+-- do
+--   st <- asks store
+--   (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
+--   let dhSecret = C.dh' (dhPubKey newSub) privDhKey
+--   atomically (updateNtfSub st sub newSub dhSecret) >>= \case
+--     Nothing -> pure $ NRErr INTERNAL
+--     _ -> atomically $ do
+--       whenM ((== NSEnd) <$> readTVar status) $ writeTBQueue subQ sub
+--       pure $ NRSubId pubDhKey
+-- NCSubCheck -> NRStat <$> readTVarIO subStatus
+-- NCSubDelete -> do
+--   st <- asks store
+--   atomically (deleteNtfSub st subId) $> NROk
