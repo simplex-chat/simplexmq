@@ -9,6 +9,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -59,7 +60,7 @@ import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), Skipp
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldParser)
-import Simplex.Messaging.Protocol (MsgBody)
+import Simplex.Messaging.Protocol (MsgBody, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -207,7 +208,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       getConn_ db connId
 
   getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
-  getRcvConn st SMPServer {host, port} rcvId =
+  getRcvConn st ProtocolServer {host, port} rcvId =
     liftIOEither . withTransaction st $ \db ->
       DB.queryNamed
         db
@@ -252,7 +253,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         _ -> pure $ Left SEConnNotFound
 
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueStatus st RcvQueue {rcvId, server = SMPServer {host, port}} status =
+  setRcvQueueStatus st RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -265,7 +266,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
   setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.DhSecretX25519 -> m ()
-  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eDhSecret =
+  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret =
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
@@ -283,7 +284,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         ]
 
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
-  setSndQueueStatus st SndQueue {sndId, server = SMPServer {host, port}} status =
+  setSndQueueStatus st SndQueue {sndId, server = ProtocolServer {host, port}} status =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -657,7 +658,7 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
 -- * Server upsert helper
 
 upsertServer_ :: DB.Connection -> SMPServer -> IO ()
-upsertServer_ dbConn SMPServer {host, port, keyHash} = do
+upsertServer_ dbConn ProtocolServer {host, port, keyHash} = do
   DB.executeNamed
     dbConn
     [sql|

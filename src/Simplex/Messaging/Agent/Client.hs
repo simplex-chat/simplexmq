@@ -57,7 +57,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Protocol (QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -73,7 +73,7 @@ type SMPClientVar = TMVar (Either AgentErrorType SMPClient)
 data AgentClient = AgentClient
   { rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
-    msgQ :: TBQueue SMPServerTransmission,
+    msgQ :: TBQueue (ServerTransmission BrokerMsg),
     smpServers :: TVar (NonEmpty SMPServer),
     smpClients :: TMap SMPServer SMPClientVar,
     subscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
@@ -128,7 +128,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
 
     waitForSMPClient :: TMVar (Either AgentErrorType SMPClient) -> m SMPClient
     waitForSMPClient smpVar = do
-      SMPClientConfig {tcpTimeout} <- asks $ smpCfg . config
+      ProtocolClientConfig {tcpTimeout} <- asks $ smpCfg . config
       smpClient_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar smpVar)
       liftEither $ case smpClient_ of
         Just (Right smpClient) -> Right smpClient
@@ -165,7 +165,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     connectClient = do
       cfg <- asks $ smpCfg . config
       u <- askUnliftIO
-      liftEitherError smpClientError (getSMPClient srv cfg msgQ $ clientDisconnected u)
+      liftEitherError smpClientError (getProtocolClient srv cfg msgQ $ clientDisconnected u)
 
     clientDisconnected :: UnliftIO m -> IO ()
     clientDisconnected u = do
@@ -213,16 +213,16 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
           whenM (atomically $ isNothing <$> TM.lookup connId (subscrConns c)) $
             subscribe_ smp sub `catchError` handleError connId
       where
-        subscribe_ :: SMPClient -> (ConnId, RcvQueue) -> ExceptT SMPClientError IO ()
+        subscribe_ :: SMPClient -> (ConnId, RcvQueue) -> ExceptT ProtocolClientError IO ()
         subscribe_ smp (connId, rq@RcvQueue {rcvPrivateKey, rcvId}) = do
           subscribeSMPQueue smp rcvPrivateKey rcvId
           addSubscription c rq connId
           liftIO $ notifySub UP connId
 
-        handleError :: ConnId -> SMPClientError -> ExceptT SMPClientError IO ()
+        handleError :: ConnId -> ProtocolClientError -> ExceptT ProtocolClientError IO ()
         handleError connId = \case
-          e@SMPResponseTimeout -> throwError e
-          e@SMPNetworkError -> throwError e
+          e@PCEResponseTimeout -> throwError e
+          e@PCENetworkError -> throwError e
           e -> do
             liftIO $ notifySub (ERR $ smpClientError e) connId
             atomically $ removePendingSubscription c srv connId
@@ -242,7 +242,7 @@ closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeCli
   where
     closeClient smpVar =
       atomically (readTMVar smpVar) >>= \case
-        Right smp -> closeSMPClient smp `E.catch` \(_ :: E.SomeException) -> pure ()
+        Right smp -> closeProtocolClient smp `E.catch` \(_ :: E.SomeException) -> pure ()
         _ -> pure ()
 
 cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
@@ -270,25 +270,25 @@ withLogSMP_ c srv qId cmdStr action = do
   logServer "<--" c srv qId "OK"
   return res
 
-withSMP :: AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
+withSMP :: AgentMonad m => AgentClient -> SMPServer -> (SMPClient -> ExceptT ProtocolClientError IO a) -> m a
 withSMP c srv action = withSMP_ c srv $ liftSMP . action
 
-withLogSMP :: AgentMonad m => AgentClient -> SMPServer -> QueueId -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> m a
+withLogSMP :: AgentMonad m => AgentClient -> SMPServer -> QueueId -> ByteString -> (SMPClient -> ExceptT ProtocolClientError IO a) -> m a
 withLogSMP c srv qId cmdStr action = withLogSMP_ c srv qId cmdStr $ liftSMP . action
 
-liftSMP :: AgentMonad m => ExceptT SMPClientError IO a -> m a
+liftSMP :: AgentMonad m => ExceptT ProtocolClientError IO a -> m a
 liftSMP = liftError smpClientError
 
-smpClientError :: SMPClientError -> AgentErrorType
+smpClientError :: ProtocolClientError -> AgentErrorType
 smpClientError = \case
-  SMPServerError e -> SMP e
-  SMPResponseError e -> BROKER $ RESPONSE e
-  SMPUnexpectedResponse -> BROKER UNEXPECTED
-  SMPResponseTimeout -> BROKER TIMEOUT
-  SMPNetworkError -> BROKER NETWORK
-  SMPTransportError e -> BROKER $ TRANSPORT e
-  e@SMPSignatureError {} -> INTERNAL $ show e
-  e@SMPIOError {} -> INTERNAL $ show e
+  PCEProtocolError e -> SMP e
+  PCEResponseError e -> BROKER $ RESPONSE e
+  PCEUnexpectedResponse -> BROKER UNEXPECTED
+  PCEResponseTimeout -> BROKER TIMEOUT
+  PCENetworkError -> BROKER NETWORK
+  PCETransportError e -> BROKER $ TRANSPORT e
+  e@PCESignatureError {} -> INTERNAL $ show e
+  e@PCEIOError {} -> INTERNAL $ show e
 
 newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri)
 newRcvQueue c srv =
@@ -328,7 +328,7 @@ subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
   withLogSMP c server rcvId "SUB" $ \smp -> do
     liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
       Left e -> do
-        atomically . when (e /= SMPNetworkError && e /= SMPResponseTimeout) $
+        atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
           removePendingSubscription c server connId
         throwError e
       Right _ -> addSubscription c rq connId
@@ -365,7 +365,7 @@ logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 
 showServer :: SMPServer -> ByteString
-showServer SMPServer {host, port} =
+showServer ProtocolServer {host, port} =
   B.pack $ host <> if null port then "" else ':' : port
 
 logSecret :: ByteString -> ByteString

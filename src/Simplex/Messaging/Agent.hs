@@ -76,12 +76,13 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
-import Simplex.Messaging.Client (SMPServerTransmission)
+import Simplex.Messaging.Client (ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Notifications.Protocol (DeviceToken)
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (MsgBody)
+import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
@@ -148,6 +149,10 @@ deleteConnection c = withAgentEnv c . deleteConnection' c
 -- | Change servers to be used for creating new queues
 setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers c = withAgentEnv c . setSMPServers' c
+
+-- | Register device notifications token
+registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
+registerNtfToken c = withAgentEnv c . registerNtfToken' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -490,9 +495,12 @@ deleteConnection' c connId =
       withStore (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
-setSMPServers' :: forall m. AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
+setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
+
+registerNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
+registerNtfToken' c token = pure ()
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do
@@ -511,7 +519,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTransmission -> m ()
+processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
   withStore (\st -> getRcvConn st srv rId) >>= \case
     SomeConn SCDuplex (DuplexConnection cData rq _) -> processSMP SCDuplex cData rq

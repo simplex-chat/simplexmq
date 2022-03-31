@@ -106,6 +106,12 @@ instance Encoding ANewNtfEntity where
       'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP)
       _ -> fail "bad ANewNtfEntity"
 
+instance Protocol NtfResponse where
+  type ProtocolCommand NtfResponse = NtfCmd
+  protocolError = \case
+    NRErr e -> Just e
+    _ -> Nothing
+
 data NtfCommand (e :: NtfEntity) where
   -- | register new device token for notifications
   TNEW :: NewNtfEntity 'Token -> NtfCommand 'Token
@@ -124,7 +130,7 @@ data NtfCommand (e :: NtfEntity) where
 
 data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
 
-instance NtfEntityI e => Protocol (NtfCommand e) where
+instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
   encodeProtocol = \case
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
@@ -154,7 +160,7 @@ instance NtfEntityI e => Protocol (NtfCommand e) where
         | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 
-instance Protocol NtfCmd where
+instance ProtocolEncoding NtfCmd where
   type Tag NtfCmd = NtfCmdTag
   encodeProtocol (NtfCmd _ c) = encodeProtocol c
 
@@ -202,7 +208,7 @@ data NtfResponse
   | NRErr ErrorType
   | NRStat NtfSubStatus
 
-instance Protocol NtfResponse where
+instance ProtocolEncoding NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol = \case
     NRId dhKey -> e (NRId_, ' ', dhKey)
@@ -228,7 +234,7 @@ instance Protocol NtfResponse where
       | otherwise -> Right cmd
 
 data SMPQueueNtf = SMPQueueNtf
-  { smpServer :: SMPServer,
+  { smpServer :: ProtocolServer,
     notifierId :: NotifierId,
     notifierKey :: NtfPrivateSignKey
   }

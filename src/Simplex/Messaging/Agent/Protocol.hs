@@ -7,6 +7,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -49,7 +50,8 @@ module Simplex.Messaging.Agent.Protocol
     AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
-    SMPServer (..),
+    SMPServer,
+    pattern SMPServer,
     SrvLoc (..),
     SMPQueueUri (..),
     SMPQueueInfo (..),
@@ -131,9 +133,10 @@ import Simplex.Messaging.Protocol
   ( ErrorType,
     MsgBody,
     MsgId,
-    SMPServer (..),
+    SMPServer,
     SndPublicVerifyKey,
     SrvLoc (..),
+    pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)

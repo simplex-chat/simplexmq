@@ -36,7 +36,7 @@ data AgentConfig = AgentConfig
     dbFile :: FilePath,
     dbPoolSize :: Int,
     yesToMigrations :: Bool,
-    smpCfg :: SMPClientConfig,
+    smpCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
     caCertificateFile :: FilePath,
@@ -55,7 +55,7 @@ defaultAgentConfig =
       dbFile = "smp-agent.db",
       dbPoolSize = 4,
       yesToMigrations = False,
-      smpCfg = smpDefaultConfig,
+      smpCfg = defaultClientConfig,
       reconnectInterval =
         RetryInterval
           { initialInterval = second,
