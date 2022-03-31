@@ -142,7 +142,7 @@ connectDB :: FilePath -> IO DB.Connection
 connectDB path = do
   dbConn <- DB.open path
   DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
-  DB.execute_ dbConn "PRAGMA trusted_schema = OFF;"
+  -- DB.execute_ dbConn "PRAGMA trusted_schema = OFF;"
   DB.execute_ dbConn "PRAGMA secure_delete = ON;"
   DB.execute_ dbConn "PRAGMA auto_vacuum = FULL;"
   pure dbConn
