@@ -81,23 +81,9 @@ createSQLiteStore dbFilePath poolSize migrations yesToMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   st <- connectSQLiteStore dbFilePath poolSize
-  withConnection st $ \db -> DB.execute_ db "VACUUM;"
-  -- _printPragmas st
   checkThreadsafe st
   migrateSchema st migrations yesToMigrations
   pure st
-
-_printPragmas :: SQLiteStore -> IO ()
-_printPragmas st@SQLiteStore {dbFilePath} = withConnection st $ \db -> do
-  foreign_keys <- DB.query_ db "PRAGMA foreign_keys;" :: IO [[Int]]
-  print $ dbFilePath <> " foreign_keys: " <> show foreign_keys
-  -- when run via sqlite-simple query for trusted_schema seems to return empty list
-  trusted_schema <- DB.query_ db "PRAGMA trusted_schema;" :: IO [[Int]]
-  print $ dbFilePath <> " trusted_schema: " <> show trusted_schema
-  secure_delete <- DB.query_ db "PRAGMA secure_delete;" :: IO [[Int]]
-  print $ dbFilePath <> " secure_delete: " <> show secure_delete
-  auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
-  print $ dbFilePath <> " auto_vacuum: " <> show auto_vacuum
 
 checkThreadsafe :: SQLiteStore -> IO ()
 checkThreadsafe st = withConnection st $ \db -> do
@@ -145,7 +131,21 @@ connectDB path = do
   -- DB.execute_ dbConn "PRAGMA trusted_schema = OFF;"
   DB.execute_ dbConn "PRAGMA secure_delete = ON;"
   DB.execute_ dbConn "PRAGMA auto_vacuum = FULL;"
+  DB.execute_ dbConn "VACUUM;"
+  -- _printPragmas dbConn path
   pure dbConn
+
+_printPragmas :: DB.Connection -> FilePath -> IO ()
+_printPragmas db path = do
+  foreign_keys <- DB.query_ db "PRAGMA foreign_keys;" :: IO [[Int]]
+  print $ path <> " foreign_keys: " <> show foreign_keys
+  -- when run via sqlite-simple query for trusted_schema seems to return empty list
+  trusted_schema <- DB.query_ db "PRAGMA trusted_schema;" :: IO [[Int]]
+  print $ path <> " trusted_schema: " <> show trusted_schema
+  secure_delete <- DB.query_ db "PRAGMA secure_delete;" :: IO [[Int]]
+  print $ path <> " secure_delete: " <> show secure_delete
+  auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
+  print $ path <> " auto_vacuum: " <> show auto_vacuum
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
 checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
