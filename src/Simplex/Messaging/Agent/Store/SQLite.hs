@@ -131,7 +131,6 @@ connectDB path = do
   -- DB.execute_ dbConn "PRAGMA trusted_schema = OFF;"
   DB.execute_ dbConn "PRAGMA secure_delete = ON;"
   DB.execute_ dbConn "PRAGMA auto_vacuum = FULL;"
-  DB.execute_ dbConn "VACUUM;"
   -- _printPragmas dbConn path
   pure dbConn
 
