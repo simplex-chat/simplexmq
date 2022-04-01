@@ -78,16 +78,12 @@ data SQLiteStore = SQLiteStore
 
 createSQLiteStore :: FilePath -> Int -> [Migration] -> Bool -> IO SQLiteStore
 createSQLiteStore dbFilePath poolSize migrations yesToMigrations = do
-  createStore
-    `E.catch` \(e :: E.SomeException) -> putStrLn ("exception: " <> show e) >> E.throwIO e
-  where
-    createStore = do
-      let dbDir = takeDirectory dbFilePath
-      createDirectoryIfMissing False dbDir
-      st <- connectSQLiteStore dbFilePath poolSize
-      checkThreadsafe st
-      migrateSchema st migrations yesToMigrations
-      pure st
+  let dbDir = takeDirectory dbFilePath
+  createDirectoryIfMissing False dbDir
+  st <- connectSQLiteStore dbFilePath poolSize
+  checkThreadsafe st
+  migrateSchema st migrations yesToMigrations
+  pure st
 
 checkThreadsafe :: SQLiteStore -> IO ()
 checkThreadsafe st = withConnection st $ \db -> do
