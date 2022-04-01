@@ -19,7 +19,7 @@ import Data.Type.Equality
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Protocol
+import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util ((<$?>))
 
 data NtfEntity = Token | Subscription
@@ -50,6 +50,7 @@ data NtfCommandTag (e :: NtfEntity) where
   SNEW_ :: NtfCommandTag 'Subscription
   SCHK_ :: NtfCommandTag 'Subscription
   SDEL_ :: NtfCommandTag 'Subscription
+  PING_ :: NtfCommandTag 'Subscription
 
 deriving instance Show (NtfCommandTag e)
 
@@ -64,6 +65,7 @@ instance NtfEntityI e => Encoding (NtfCommandTag e) where
     SNEW_ -> "SNEW"
     SCHK_ -> "SCHK"
     SDEL_ -> "SDEL"
+    PING_ -> "PING"
   smpP = messageTagP
 
 instance Encoding NtfCmdTag where
@@ -79,6 +81,7 @@ instance ProtocolMsgTag NtfCmdTag where
     "SNEW" -> Just $ NCT SSubscription SNEW_
     "SCHK" -> Just $ NCT SSubscription SCHK_
     "SDEL" -> Just $ NCT SSubscription SDEL_
+    "PING" -> Just $ NCT SSubscription PING_
     _ -> Nothing
 
 instance NtfEntityI e => ProtocolMsgTag (NtfCommandTag e) where
@@ -108,6 +111,7 @@ instance Encoding ANewNtfEntity where
 
 instance Protocol NtfResponse where
   type ProtocolCommand NtfResponse = NtfCmd
+  protocolPing = NtfCmd SSubscription PING
   protocolError = \case
     NRErr e -> Just e
     _ -> Nothing
@@ -127,6 +131,8 @@ data NtfCommand (e :: NtfEntity) where
   SCHK :: NtfCommand 'Subscription
   -- | delete SMP subscription
   SDEL :: NtfCommand 'Subscription
+  -- | keep-alive command
+  PING :: NtfCommand 'Subscription
 
 data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
 
@@ -140,6 +146,7 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
     SNEW newSub -> e (SNEW_, ' ', newSub)
     SCHK -> e SCHK_
     SDEL -> e SDEL_
+    PING -> e PING_
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -150,6 +157,9 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
     TNEW {} -> sigNoEntity
     SNEW {} -> sigNoEntity
+    PING
+      | isNothing sig && B.null entityId -> Right cmd
+      | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and entity ID
     _
       | isNothing sig || B.null entityId -> Left $ CMD NO_AUTH
@@ -176,6 +186,7 @@ instance ProtocolEncoding NtfCmd where
         SNEW_ -> SNEW <$> _smpP
         SCHK_ -> pure SCHK
         SDEL_ -> pure SDEL
+        PING_ -> pure PING
 
   checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
 
@@ -184,6 +195,7 @@ data NtfResponseTag
   | NROk_
   | NRErr_
   | NRStat_
+  | NRPong_
   deriving (Show)
 
 instance Encoding NtfResponseTag where
@@ -192,6 +204,7 @@ instance Encoding NtfResponseTag where
     NROk_ -> "OK"
     NRErr_ -> "ERR"
     NRStat_ -> "STAT"
+    NRPong_ -> "PONG"
   smpP = messageTagP
 
 instance ProtocolMsgTag NtfResponseTag where
@@ -200,38 +213,50 @@ instance ProtocolMsgTag NtfResponseTag where
     "OK" -> Just NROk_
     "ERR" -> Just NRErr_
     "STAT" -> Just NRStat_
+    "PONG" -> Just NRPong_
     _ -> Nothing
 
 data NtfResponse
-  = NRId C.PublicKeyX25519
+  = NRId NtfEntityId C.PublicKeyX25519
   | NROk
   | NRErr ErrorType
   | NRStat NtfSubStatus
+  | NRPong
 
 instance ProtocolEncoding NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol = \case
-    NRId dhKey -> e (NRId_, ' ', dhKey)
+    NRId entId dhKey -> e (NRId_, ' ', entId, dhKey)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
     NRStat stat -> e (NRStat_, ' ', stat)
+    NRPong -> e NRPong_
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
   protocolP = \case
-    NRId_ -> NRId <$> _smpP
+    NRId_ -> NRId <$> _smpP <*> smpP
     NROk_ -> pure NROk
     NRErr_ -> NRErr <$> _smpP
     NRStat_ -> NRStat <$> _smpP
+    NRPong_ -> pure NRPong
 
-  checkCredentials (_, _, subId, _) cmd = case cmd of
+  checkCredentials (_, _, entId, _) cmd = case cmd of
+    -- ID response must not have queue ID
+    NRId {} -> noEntity
     -- ERR response does not always have entity ID
     NRErr _ -> Right cmd
+    -- PONG response must not have queue ID
+    NRPong -> noEntity
     -- other server responses must have entity ID
     _
-      | B.null subId -> Left $ CMD NO_ENTITY
+      | B.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
+    where
+      noEntity
+        | B.null entId = Right cmd
+        | otherwise = Left $ CMD HAS_AUTH
 
 data SMPQueueNtf = SMPQueueNtf
   { smpServer :: ProtocolServer,
@@ -263,7 +288,7 @@ instance Encoding DeviceToken where
 
 type NtfEntityId = ByteString
 
-type NtfSubsciptionId = NtfEntityId
+type NtfSubscriptionId = NtfEntityId
 
 type NtfTokenId = NtfEntityId
 

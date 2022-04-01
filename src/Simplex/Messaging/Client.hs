@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -84,7 +85,7 @@ data ProtocolClient msg = ProtocolClient
     sentCommands :: TMap CorrId (Request msg),
     sndQ :: TBQueue SentRawTransmission,
     rcvQ :: TBQueue (SignedTransmission msg),
-    msgQ :: TBQueue (ServerTransmission msg)
+    msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
 
 type SMPClient = ProtocolClient SMP.BrokerMsg
@@ -129,7 +130,7 @@ type Response msg = Either ProtocolClientError msg
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall msg. Protocol msg => ProtocolServer -> ProtocolClientConfig -> TBQueue (ServerTransmission msg) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
+getProtocolClient :: forall msg. Protocol msg => ProtocolServer -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
 getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing} msgQ disconnected =
   (atomically mkSMPClient >>= runClient useTransport)
     `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
@@ -183,6 +184,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
             writeTVar (connected c) True
             putTMVar thVar $ Right th
           let c' = c {sessionId} :: ProtocolClient msg
+          -- TODO remove ping if 0 is passed (or Nothing?)
           raceAny_ [send c' th, process c', receive c' th, ping c']
             `finally` disconnected
 
@@ -195,7 +197,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
     ping :: ProtocolClient msg -> IO ()
     ping c = forever $ do
       threadDelay smpPing
-      void . either throwIO pure =<< runExceptT (sendProtocolCommand c Nothing "" PING)
+      void . either throwIO pure =<< runExceptT (sendProtocolCommand c Nothing "" protocolPing)
 
     process :: ProtocolClient msg -> IO ()
     process ProtocolClient {rcvQ, sentCommands} = forever $ do
@@ -218,7 +220,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
 
     sendMsg :: QueueId -> Either ErrorType msg -> IO ()
     sendMsg qId = \case
-      Right cmd -> atomically $ writeTBQueue msgQ (protocolServer, qId, cmd)
+      Right cmd -> atomically $ mapM_ (`writeTBQueue` (protocolServer, qId, cmd)) msgQ
       -- TODO send everything else to errQ and log in agent
       _ -> return ()
 
@@ -264,7 +266,7 @@ createSMPQueue ::
   RcvPublicDhKey ->
   ExceptT ProtocolClientError IO QueueIdsKeys
 createSMPQueue c rpKey rKey dhKey =
-  sendProtocolCommand c (Just rpKey) "" (NEW rKey dhKey) >>= \case
+  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey) >>= \case
     IDS qik -> pure qik
     _ -> throwE PCEUnexpectedResponse
 
@@ -273,10 +275,10 @@ createSMPQueue c rpKey rKey dhKey =
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO ()
 subscribeSMPQueue c@ProtocolClient {protocolServer, msgQ} rpKey rId =
-  sendProtocolCommand c (Just rpKey) rId SUB >>= \case
+  sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> return ()
     cmd@MSG {} ->
-      lift . atomically $ writeTBQueue msgQ (protocolServer, rId, cmd)
+      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, rId, cmd)) msgQ
     _ -> throwE PCEUnexpectedResponse
 
 -- | Subscribe to the SMP queue notifications.
@@ -296,7 +298,7 @@ secureSMPQueue c rpKey rId senderKey = okSMPCommand (KEY senderKey) c rpKey rId
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#enable-notifications-command
 enableSMPQueueNotifications :: SMPClient -> RcvPrivateSignKey -> RecipientId -> NtfPublicVerifyKey -> ExceptT ProtocolClientError IO NotifierId
 enableSMPQueueNotifications c rpKey rId notifierKey =
-  sendProtocolCommand c (Just rpKey) rId (NKEY notifierKey) >>= \case
+  sendSMPCommand c (Just rpKey) rId (NKEY notifierKey) >>= \case
     NID nId -> pure nId
     _ -> throwE PCEUnexpectedResponse
 
@@ -305,7 +307,7 @@ enableSMPQueueNotifications c rpKey rId notifierKey =
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message
 sendSMPMessage :: SMPClient -> Maybe SndPrivateSignKey -> SenderId -> MsgBody -> ExceptT ProtocolClientError IO ()
 sendSMPMessage c spKey sId msg =
-  sendProtocolCommand c spKey sId (SEND msg) >>= \case
+  sendSMPCommand c spKey sId (SEND msg) >>= \case
     OK -> pure ()
     _ -> throwE PCEUnexpectedResponse
 
@@ -314,10 +316,10 @@ sendSMPMessage c spKey sId msg =
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
 ackSMPMessage :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT ProtocolClientError IO ()
 ackSMPMessage c@ProtocolClient {protocolServer, msgQ} rpKey rId =
-  sendProtocolCommand c (Just rpKey) rId ACK >>= \case
+  sendSMPCommand c (Just rpKey) rId ACK >>= \case
     OK -> return ()
     cmd@MSG {} ->
-      lift . atomically $ writeTBQueue msgQ (protocolServer, rId, cmd)
+      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, rId, cmd)) msgQ
     _ -> throwE PCEUnexpectedResponse
 
 -- | Irreversibly suspend SMP queue.
@@ -335,13 +337,16 @@ deleteSMPQueue = okSMPCommand DEL
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateSignKey -> QueueId -> ExceptT ProtocolClientError IO ()
 okSMPCommand cmd c pKey qId =
-  sendProtocolCommand c (Just pKey) qId cmd >>= \case
+  sendSMPCommand c (Just pKey) qId cmd >>= \case
     OK -> return ()
     _ -> throwE PCEUnexpectedResponse
 
 -- | Send SMP command
--- TODO sign all requests (SEND of SMP confirmation would be signed with the same key that is passed to the recipient)
-sendProtocolCommand :: forall p msg. PartyI p => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT ProtocolClientError IO msg
+sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT ProtocolClientError IO BrokerMsg
+sendSMPCommand c pKey qId = sendProtocolCommand c pKey qId . Cmd sParty
+
+-- | Send Protocol command
+sendProtocolCommand :: forall msg. ProtocolEncoding (ProtocolCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtocolCommand msg -> ExceptT ProtocolClientError IO msg
 sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
   t <- signTransmission $ encodeTransmission sessionId (corrId, qId, cmd)

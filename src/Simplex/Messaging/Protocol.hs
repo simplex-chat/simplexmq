@@ -552,12 +552,14 @@ transmissionP = do
       command <- A.takeByteString
       pure RawTransmission {signature, signed, sessId, corrId, entityId, command}
 
-class ProtocolEncoding msg => Protocol msg where
+class (ProtocolEncoding msg, ProtocolEncoding (ProtocolCommand msg)) => Protocol msg where
   type ProtocolCommand msg = cmd | cmd -> msg
+  protocolPing :: ProtocolCommand msg
   protocolError :: msg -> Maybe ErrorType
 
 instance Protocol BrokerMsg where
   type ProtocolCommand BrokerMsg = Cmd
+  protocolPing = Cmd SSender PING
   protocolError = \case
     ERR e -> Just e
     _ -> Nothing
@@ -654,7 +656,7 @@ instance ProtocolEncoding BrokerMsg where
     PONG_ -> pure PONG
 
   checkCredentials (_, _, queueId, _) cmd = case cmd of
-    -- IDS response must not have queue ID
+    -- IDS response should not have queue ID
     IDS _ -> Right cmd
     -- ERR response does not always have queue ID
     ERR _ -> Right cmd

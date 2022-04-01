@@ -58,6 +58,22 @@ data SMPClientAgentConfig = SMPClientAgentConfig
     agentQSize :: Natural
   }
 
+defaultSMPClientAgentConfig :: SMPClientAgentConfig
+defaultSMPClientAgentConfig =
+  SMPClientAgentConfig
+    { smpCfg = defaultClientConfig,
+      reconnectInterval =
+        RetryInterval
+          { initialInterval = second,
+            increaseAfter = 10 * second,
+            maxInterval = 10 * second
+          },
+      msgQSize = 64,
+      agentQSize = 64
+    }
+  where
+    second = 1000000
+
 data SMPClientAgent = SMPClientAgent
   { agentCfg :: SMPClientAgentConfig,
     msgQ :: TBQueue (ServerTransmission BrokerMsg),
@@ -141,7 +157,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
             void $ tryConnectClient (const reconnectClient) loop
 
     connectClient :: ExceptT ProtocolClientError IO SMPClient
-    connectClient = ExceptT $ getProtocolClient srv (smpCfg agentCfg) msgQ clientDisconnected
+    connectClient = ExceptT $ getProtocolClient srv (smpCfg agentCfg) (Just msgQ) clientDisconnected
 
     clientDisconnected :: IO ()
     clientDisconnected = do

@@ -194,7 +194,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
           addNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, Notification)
         --     pure (corrId, sId, NRSubId pubDhKey)
-        pure (corrId, tknId, NRId srvDhPubKey)
+        pure (corrId, "", NRId tknId srvDhPubKey)
       NtfReqCmd SToken tkn (corrId, tknId, cmd) ->
         (corrId,tknId,) <$> case cmd of
           TNEW newTkn -> pure NROk -- TODO when duplicate token sent
@@ -207,6 +207,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
           SNEW newSub -> pure NROk
           SCHK -> pure NROk
           SDEL -> pure NROk
+          PING -> pure NRPong
     getId :: m NtfEntityId
     getId = do
       n <- asks $ subIdBytes . config
