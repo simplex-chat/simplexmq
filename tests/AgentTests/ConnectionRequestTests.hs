@@ -11,7 +11,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (smpClientVRange)
+import Simplex.Messaging.Protocol (ProtocolServer (..), smpClientVRange)
 import Simplex.Messaging.Version
 import Test.Hspec
 
@@ -20,7 +20,7 @@ uri = "smp.simplex.im"
 
 srv :: SMPServer
 srv =
-  SMPServer
+  ProtocolServer
     { host = "smp.simplex.im",
       port = "5223",
       keyHash = C.KeyHash "\215m\248\251"

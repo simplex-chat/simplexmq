@@ -1,6 +1,11 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Notifications.Protocol where
@@ -8,154 +13,333 @@ module Simplex.Messaging.Notifications.Protocol where
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Kind
 import Data.Maybe (isNothing)
+import Data.Type.Equality
+import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Protocol
+import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
+import Simplex.Messaging.Util ((<$?>))
 
-data NtfCommandTag
-  = NCCreate_
-  | NCCheck_
-  | NCToken_
-  | NCDelete_
+data NtfEntity = Token | Subscription
   deriving (Show)
 
-instance Encoding NtfCommandTag where
+data SNtfEntity :: NtfEntity -> Type where
+  SToken :: SNtfEntity 'Token
+  SSubscription :: SNtfEntity 'Subscription
+
+instance TestEquality SNtfEntity where
+  testEquality SToken SToken = Just Refl
+  testEquality SSubscription SSubscription = Just Refl
+  testEquality _ _ = Nothing
+
+deriving instance Show (SNtfEntity e)
+
+class NtfEntityI (e :: NtfEntity) where sNtfEntity :: SNtfEntity e
+
+instance NtfEntityI 'Token where sNtfEntity = SToken
+
+instance NtfEntityI 'Subscription where sNtfEntity = SSubscription
+
+data NtfCommandTag (e :: NtfEntity) where
+  TNEW_ :: NtfCommandTag 'Token
+  TVFY_ :: NtfCommandTag 'Token
+  TDEL_ :: NtfCommandTag 'Token
+  TCRN_ :: NtfCommandTag 'Token
+  SNEW_ :: NtfCommandTag 'Subscription
+  SCHK_ :: NtfCommandTag 'Subscription
+  SDEL_ :: NtfCommandTag 'Subscription
+  PING_ :: NtfCommandTag 'Subscription
+
+deriving instance Show (NtfCommandTag e)
+
+data NtfCmdTag = forall e. NtfEntityI e => NCT (SNtfEntity e) (NtfCommandTag e)
+
+instance NtfEntityI e => Encoding (NtfCommandTag e) where
   smpEncode = \case
-    NCCreate_ -> "CREATE"
-    NCCheck_ -> "CHECK"
-    NCToken_ -> "TOKEN"
-    NCDelete_ -> "DELETE"
+    TNEW_ -> "TNEW"
+    TVFY_ -> "TVFY"
+    TDEL_ -> "TDEL"
+    TCRN_ -> "TCRN"
+    SNEW_ -> "SNEW"
+    SCHK_ -> "SCHK"
+    SDEL_ -> "SDEL"
+    PING_ -> "PING"
   smpP = messageTagP
 
-instance ProtocolMsgTag NtfCommandTag where
+instance Encoding NtfCmdTag where
+  smpEncode (NCT _ t) = smpEncode t
+  smpP = messageTagP
+
+instance ProtocolMsgTag NtfCmdTag where
   decodeTag = \case
-    "CREATE" -> Just NCCreate_
-    "CHECK" -> Just NCCheck_
-    "TOKEN" -> Just NCToken_
-    "DELETE" -> Just NCDelete_
+    "TNEW" -> Just $ NCT SToken TNEW_
+    "TVFY" -> Just $ NCT SToken TVFY_
+    "TDEL" -> Just $ NCT SToken TDEL_
+    "TCRN" -> Just $ NCT SToken TCRN_
+    "SNEW" -> Just $ NCT SSubscription SNEW_
+    "SCHK" -> Just $ NCT SSubscription SCHK_
+    "SDEL" -> Just $ NCT SSubscription SDEL_
+    "PING" -> Just $ NCT SSubscription PING_
     _ -> Nothing
 
-data NtfCommand
-  = NCCreate DeviceToken SMPQueueNtfUri C.APublicVerifyKey C.PublicKeyX25519
-  | NCCheck
-  | NCToken DeviceToken
-  | NCDelete
+instance NtfEntityI e => ProtocolMsgTag (NtfCommandTag e) where
+  decodeTag s = decodeTag s >>= (\(NCT _ t) -> checkEntity' t)
 
-instance Protocol NtfCommand where
-  type Tag NtfCommand = NtfCommandTag
+type NtfRegistrationCode = ByteString
+
+data NewNtfEntity (e :: NtfEntity) where
+  NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
+  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NewNtfEntity 'Subscription
+
+data ANewNtfEntity = forall e. NtfEntityI e => ANE (SNtfEntity e) (NewNtfEntity e)
+
+instance NtfEntityI e => Encoding (NewNtfEntity e) where
+  smpEncode = \case
+    NewNtfTkn tkn verifyKey dhPubKey -> smpEncode ('T', tkn, verifyKey, dhPubKey)
+    NewNtfSub tknId smpQueue -> smpEncode ('S', tknId, smpQueue)
+  smpP = (\(ANE _ c) -> checkEntity c) <$?> smpP
+
+instance Encoding ANewNtfEntity where
+  smpEncode (ANE _ e) = smpEncode e
+  smpP =
+    A.anyChar >>= \case
+      'T' -> ANE SToken <$> (NewNtfTkn <$> smpP <*> smpP <*> smpP)
+      'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP)
+      _ -> fail "bad ANewNtfEntity"
+
+instance Protocol NtfResponse where
+  type ProtocolCommand NtfResponse = NtfCmd
+  protocolPing = NtfCmd SSubscription PING
+  protocolError = \case
+    NRErr e -> Just e
+    _ -> Nothing
+
+data NtfCommand (e :: NtfEntity) where
+  -- | register new device token for notifications
+  TNEW :: NewNtfEntity 'Token -> NtfCommand 'Token
+  -- | verify token - uses e2e encrypted random string sent to the device via PN to confirm that the device has the token
+  TVFY :: NtfRegistrationCode -> NtfCommand 'Token
+  -- | delete token - all subscriptions will be removed and no more notifications will be sent
+  TDEL :: NtfCommand 'Token
+  -- | enable periodic background notification to fetch the new messages - interval is in minutes, minimum is 20, 0 to disable
+  TCRN :: Word16 -> NtfCommand 'Token
+  -- | create SMP subscription
+  SNEW :: NewNtfEntity 'Subscription -> NtfCommand 'Subscription
+  -- | check SMP subscription status (response is STAT)
+  SCHK :: NtfCommand 'Subscription
+  -- | delete SMP subscription
+  SDEL :: NtfCommand 'Subscription
+  -- | keep-alive command
+  PING :: NtfCommand 'Subscription
+
+data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
+
+instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
+  type Tag (NtfCommand e) = NtfCommandTag e
   encodeProtocol = \case
-    NCCreate token smpQueue verifyKey dhKey -> e (NCCreate_, ' ', token, smpQueue, verifyKey, dhKey)
-    NCCheck -> e NCCheck_
-    NCToken token -> e (NCToken_, ' ', token)
-    NCDelete -> e NCDelete_
+    TNEW newTkn -> e (TNEW_, ' ', newTkn)
+    TVFY code -> e (TVFY_, ' ', code)
+    TDEL -> e TDEL_
+    TCRN int -> e (TCRN_, ' ', int)
+    SNEW newSub -> e (SNEW_, ' ', newSub)
+    SCHK -> e SCHK_
+    SDEL -> e SDEL_
+    PING -> e PING_
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP = \case
-    NCCreate_ -> NCCreate <$> _smpP <*> smpP <*> smpP <*> smpP
-    NCCheck_ -> pure NCCheck
-    NCToken_ -> NCToken <$> _smpP
-    NCDelete_ -> pure NCDelete
+  protocolP tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP (NCT (sNtfEntity @e) tag)
 
-  checkCredentials (sig, _, subId, _) cmd = case cmd of
-    -- CREATE must have signature but NOT subscription ID
-    NCCreate {}
-      | isNothing sig -> Left $ CMD NO_AUTH
-      | not (B.null subId) -> Left $ CMD HAS_AUTH
-      | otherwise -> Right cmd
-    -- other client commands must have both signature and subscription ID
+  checkCredentials (sig, _, entityId, _) cmd = case cmd of
+    -- TNEW and SNEW must have signature but NOT token/subscription IDs
+    TNEW {} -> sigNoEntity
+    SNEW {} -> sigNoEntity
+    PING
+      | isNothing sig && B.null entityId -> Right cmd
+      | otherwise -> Left $ CMD HAS_AUTH
+    -- other client commands must have both signature and entity ID
     _
-      | isNothing sig || B.null subId -> Left $ CMD NO_AUTH
+      | isNothing sig || B.null entityId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
+    where
+      sigNoEntity
+        | isNothing sig = Left $ CMD NO_AUTH
+        | not (B.null entityId) = Left $ CMD HAS_AUTH
+        | otherwise = Right cmd
+
+instance ProtocolEncoding NtfCmd where
+  type Tag NtfCmd = NtfCmdTag
+  encodeProtocol (NtfCmd _ c) = encodeProtocol c
+
+  protocolP = \case
+    NCT SToken tag ->
+      NtfCmd SToken <$> case tag of
+        TNEW_ -> TNEW <$> _smpP
+        TVFY_ -> TVFY <$> _smpP
+        TDEL_ -> pure TDEL
+        TCRN_ -> TCRN <$> _smpP
+    NCT SSubscription tag ->
+      NtfCmd SSubscription <$> case tag of
+        SNEW_ -> SNEW <$> _smpP
+        SCHK_ -> pure SCHK
+        SDEL_ -> pure SDEL
+        PING_ -> pure PING
+
+  checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
 
 data NtfResponseTag
-  = NRSubId_
+  = NRId_
   | NROk_
   | NRErr_
   | NRStat_
+  | NRPong_
   deriving (Show)
 
 instance Encoding NtfResponseTag where
   smpEncode = \case
-    NRSubId_ -> "ID"
+    NRId_ -> "ID"
     NROk_ -> "OK"
     NRErr_ -> "ERR"
     NRStat_ -> "STAT"
+    NRPong_ -> "PONG"
   smpP = messageTagP
 
 instance ProtocolMsgTag NtfResponseTag where
   decodeTag = \case
-    "ID" -> Just NRSubId_
+    "ID" -> Just NRId_
     "OK" -> Just NROk_
     "ERR" -> Just NRErr_
     "STAT" -> Just NRStat_
+    "PONG" -> Just NRPong_
     _ -> Nothing
 
 data NtfResponse
-  = NRSubId C.PublicKeyX25519
+  = NRId NtfEntityId C.PublicKeyX25519
   | NROk
   | NRErr ErrorType
-  | NRStat NtfStatus
+  | NRStat NtfSubStatus
+  | NRPong
 
-instance Protocol NtfResponse where
+instance ProtocolEncoding NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol = \case
-    NRSubId dhKey -> e (NRSubId_, ' ', dhKey)
+    NRId entId dhKey -> e (NRId_, ' ', entId, dhKey)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
     NRStat stat -> e (NRStat_, ' ', stat)
+    NRPong -> e NRPong_
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
   protocolP = \case
-    NRSubId_ -> NRSubId <$> _smpP
+    NRId_ -> NRId <$> _smpP <*> smpP
     NROk_ -> pure NROk
     NRErr_ -> NRErr <$> _smpP
     NRStat_ -> NRStat <$> _smpP
+    NRPong_ -> pure NRPong
 
-  checkCredentials (_, _, subId, _) cmd = case cmd of
-    -- ERR response does not always have subscription ID
+  checkCredentials (_, _, entId, _) cmd = case cmd of
+    -- ID response must not have queue ID
+    NRId {} -> noEntity
+    -- ERR response does not always have entity ID
     NRErr _ -> Right cmd
-    -- other server responses must have subscription ID
+    -- PONG response must not have queue ID
+    NRPong -> noEntity
+    -- other server responses must have entity ID
     _
-      | B.null subId -> Left $ CMD NO_ENTITY
+      | B.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
+    where
+      noEntity
+        | B.null entId = Right cmd
+        | otherwise = Left $ CMD HAS_AUTH
 
-data SMPQueueNtfUri = SMPQueueNtfUri
-  { smpServer :: SMPServer,
+data SMPQueueNtf = SMPQueueNtf
+  { smpServer :: ProtocolServer,
     notifierId :: NotifierId,
     notifierKey :: NtfPrivateSignKey
   }
 
-instance Encoding SMPQueueNtfUri where
-  smpEncode SMPQueueNtfUri {smpServer, notifierId, notifierKey} = smpEncode (smpServer, notifierId, notifierKey)
+instance Encoding SMPQueueNtf where
+  smpEncode SMPQueueNtf {smpServer, notifierId, notifierKey} = smpEncode (smpServer, notifierId, notifierKey)
   smpP = do
     (smpServer, notifierId, notifierKey) <- smpP
-    pure $ SMPQueueNtfUri smpServer notifierId notifierKey
+    pure $ SMPQueueNtf smpServer notifierId notifierKey
 
-newtype DeviceToken = DeviceToken ByteString
+data PushPlatform = PPApple
+
+instance Encoding PushPlatform where
+  smpEncode = \case
+    PPApple -> "A"
+  smpP =
+    A.anyChar >>= \case
+      'A' -> pure PPApple
+      _ -> fail "bad PushPlatform"
+
+data DeviceToken = DeviceToken PushPlatform ByteString
 
 instance Encoding DeviceToken where
-  smpEncode (DeviceToken t) = smpEncode t
-  smpP = DeviceToken <$> smpP
+  smpEncode (DeviceToken p t) = smpEncode (p, t)
+  smpP = DeviceToken <$> smpP <*> smpP
 
-type NtfSubsciptionId = ByteString
+type NtfEntityId = ByteString
 
-data NtfStatus = NSPending | NSActive | NSEnd | NSSMPAuth
+type NtfSubscriptionId = NtfEntityId
 
-instance Encoding NtfStatus where
+type NtfTokenId = NtfEntityId
+
+data NtfSubStatus
+  = -- | state after SNEW
+    NSNew
+  | -- | pending connection/subscription to SMP server
+    NSPending
+  | -- | connected and subscribed to SMP server
+    NSActive
+  | -- | NEND received (we currently do not support it)
+    NSEnd
+  | -- | SMP AUTH error
+    NSSMPAuth
+  deriving (Eq)
+
+instance Encoding NtfSubStatus where
   smpEncode = \case
-    NSPending -> "PENDING"
+    NSNew -> "NEW"
+    NSPending -> "PENDING" -- e.g. after SMP server disconnect/timeout while ntf server is retrying to connect
     NSActive -> "ACTIVE"
     NSEnd -> "END"
     NSSMPAuth -> "SMP_AUTH"
   smpP =
     A.takeTill (== ' ') >>= \case
+      "NEW" -> pure NSNew
       "PENDING" -> pure NSPending
       "ACTIVE" -> pure NSActive
       "END" -> pure NSEnd
       "SMP_AUTH" -> pure NSSMPAuth
       _ -> fail "bad NtfError"
+
+data NtfTknStatus
+  = -- | state after registration (TNEW)
+    NTNew
+  | -- | if initial notification or verification failed (push provider error)
+    NTInvalid
+  | -- | if initial notification succeeded
+    NTConfirmed
+  | -- | after successful verification (TVFY)
+    NTActive
+  | -- | after it is no longer valid (push provider error)
+    NTExpired
+  deriving (Eq)
+
+checkEntity :: forall t e e'. (NtfEntityI e, NtfEntityI e') => t e' -> Either String (t e)
+checkEntity c = case testEquality (sNtfEntity @e) (sNtfEntity @e') of
+  Just Refl -> Right c
+  Nothing -> Left "bad command party"
+
+checkEntity' :: forall t p p'. (NtfEntityI p, NtfEntityI p') => t p' -> Maybe (t p)
+checkEntity' c = case testEquality (sNtfEntity @p) (sNtfEntity @p') of
+  Just Refl -> Just c
+  _ -> Nothing

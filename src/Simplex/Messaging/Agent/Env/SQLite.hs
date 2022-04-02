@@ -23,6 +23,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig, defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
@@ -36,7 +37,8 @@ data AgentConfig = AgentConfig
     dbFile :: FilePath,
     dbPoolSize :: Int,
     yesToMigrations :: Bool,
-    smpCfg :: SMPClientConfig,
+    smpCfg :: ProtocolClientConfig,
+    ntfCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
     caCertificateFile :: FilePath,
@@ -55,7 +57,8 @@ defaultAgentConfig =
       dbFile = "smp-agent.db",
       dbPoolSize = 4,
       yesToMigrations = False,
-      smpCfg = smpDefaultConfig,
+      smpCfg = defaultClientConfig,
+      ntfCfg = defaultClientConfig,
       reconnectInterval =
         RetryInterval
           { initialInterval = second,

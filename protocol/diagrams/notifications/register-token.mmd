@@ -1,0 +1,30 @@
+sequenceDiagram
+  participant M as mobile app
+  participant C as chat core
+  participant A as agent
+  participant P as push server
+  participant APN as APN
+
+  note over M, APN: get device token
+  M ->> APN: registerForRemoteNotifications()
+  APN ->> M: device token
+
+  note over M, P: register device token with push server
+  M ->> C: /_ntf register <token>
+  C ->> A: registerNtfToken(<token>)
+  A ->> P: TNEW
+  P ->> A: ID (tokenId)
+  A ->> C: registered
+  C ->> M: registered
+
+  note over M, APN: verify device token
+  P ->> APN: E2E encrypted code<br>in background<br>notification
+  APN ->> M: deliver background notification with e2ee verification token
+  M ->> C: /_ntf verify <e2ee code>
+  C ->> A: verifyNtfToken(<e2ee code>)
+  A ->> P: TVFY code
+  P ->> A: OK / ERR
+  A ->> C: verified
+  C ->> M: verified
+
+  note over M, APN: now token ID can be used

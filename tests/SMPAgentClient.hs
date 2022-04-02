@@ -24,7 +24,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
@@ -162,7 +162,7 @@ cfg =
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
-        smpDefaultConfig
+        defaultClientConfig
           { qSize = 1,
             defaultTransport = (testPort, transport @TLS),
             tcpTimeout = 500_000

@@ -11,6 +11,7 @@ module Simplex.Messaging.TMap
     adjust,
     update,
     alter,
+    alterF,
     union,
   )
 where
@@ -64,6 +65,12 @@ update f k m = modifyTVar' m $ M.update f k
 alter :: Ord k => (Maybe a -> Maybe a) -> k -> TMap k a -> STM ()
 alter f k m = modifyTVar' m $ M.alter f k
 {-# INLINE alter #-}
+
+alterF :: Ord k => (Maybe a -> STM (Maybe a)) -> k -> TMap k a -> STM ()
+alterF f k m = do
+  mv <- M.alterF f k =<< readTVar m
+  writeTVar m $! mv
+{-# INLINE alterF #-}
 
 union :: Ord k => Map k a -> TMap k a -> STM ()
 union m' m = modifyTVar' m $ M.union m'

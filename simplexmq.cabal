@@ -43,10 +43,12 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
       Simplex.Messaging.Client
+      Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
+      Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
       Simplex.Messaging.Notifications.Server
       Simplex.Messaging.Notifications.Server.Env

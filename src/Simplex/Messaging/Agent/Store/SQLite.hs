@@ -9,6 +9,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -59,7 +60,7 @@ import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), Skipp
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldParser)
-import Simplex.Messaging.Protocol (MsgBody)
+import Simplex.Messaging.Protocol (MsgBody, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -127,8 +128,25 @@ connectSQLiteStore dbFilePath poolSize = do
 connectDB :: FilePath -> IO DB.Connection
 connectDB path = do
   dbConn <- DB.open path
-  DB.execute_ dbConn "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;"
+  DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
+  -- DB.execute_ dbConn "PRAGMA trusted_schema = OFF;"
+  DB.execute_ dbConn "PRAGMA secure_delete = ON;"
+  DB.execute_ dbConn "PRAGMA auto_vacuum = FULL;"
+  DB.execute_ dbConn "VACUUM;"
+  -- _printPragmas dbConn path
   pure dbConn
+
+_printPragmas :: DB.Connection -> FilePath -> IO ()
+_printPragmas db path = do
+  foreign_keys <- DB.query_ db "PRAGMA foreign_keys;" :: IO [[Int]]
+  print $ path <> " foreign_keys: " <> show foreign_keys
+  -- when run via sqlite-simple query for trusted_schema seems to return empty list
+  trusted_schema <- DB.query_ db "PRAGMA trusted_schema;" :: IO [[Int]]
+  print $ path <> " trusted_schema: " <> show trusted_schema
+  secure_delete <- DB.query_ db "PRAGMA secure_delete;" :: IO [[Int]]
+  print $ path <> " secure_delete: " <> show secure_delete
+  auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
+  print $ path <> " auto_vacuum: " <> show auto_vacuum
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
 checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
@@ -190,7 +208,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       getConn_ db connId
 
   getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
-  getRcvConn st SMPServer {host, port} rcvId =
+  getRcvConn st ProtocolServer {host, port} rcvId =
     liftIOEither . withTransaction st $ \db ->
       DB.queryNamed
         db
@@ -235,7 +253,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         _ -> pure $ Left SEConnNotFound
 
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueStatus st RcvQueue {rcvId, server = SMPServer {host, port}} status =
+  setRcvQueueStatus st RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -248,7 +266,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
   setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.DhSecretX25519 -> m ()
-  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eDhSecret =
+  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret =
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
@@ -266,7 +284,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         ]
 
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
-  setSndQueueStatus st SndQueue {sndId, server = SMPServer {host, port}} status =
+  setSndQueueStatus st SndQueue {sndId, server = ProtocolServer {host, port}} status =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -640,7 +658,7 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
 -- * Server upsert helper
 
 upsertServer_ :: DB.Connection -> SMPServer -> IO ()
-upsertServer_ dbConn SMPServer {host, port, keyHash} = do
+upsertServer_ dbConn ProtocolServer {host, port, keyHash} = do
   DB.executeNamed
     dbConn
     [sql|
