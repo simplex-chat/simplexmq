@@ -13,7 +13,6 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural
-import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
@@ -30,7 +29,6 @@ data NtfServerConfig = NtfServerConfig
     subQSize :: Natural,
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
-    reconnectInterval :: RetryInterval,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,

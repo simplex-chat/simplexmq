@@ -19,7 +19,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
-import Simplex.Messaging.Server.StoreLog (openReadStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
@@ -60,19 +59,17 @@ cfg =
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      storeLog = Nothing,
+      storeLogFile = Nothing,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerStoreLogOn t port' client = do
-  s <- liftIO $ openReadStoreLog testStoreLogFile
+withSmpServerStoreLogOn t port' =
   serverBracket
-    (\started -> runSMPServerBlocking started cfg {transports = [(port', t)], storeLog = Just s})
+    (\started -> runSMPServerBlocking started cfg {transports = [(port', t)], storeLogFile = Just testStoreLogFile})
     (pure ())
-    client
 
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerThreadOn t port' =
