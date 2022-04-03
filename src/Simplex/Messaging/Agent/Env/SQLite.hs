@@ -2,6 +2,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Env.SQLite
@@ -23,8 +24,8 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
-import Simplex.Messaging.Client.Agent (SMPClientAgentConfig, defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Transport (TLS, Transport (..))
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
@@ -57,8 +58,8 @@ defaultAgentConfig =
       dbFile = "smp-agent.db",
       dbPoolSize = 4,
       yesToMigrations = False,
-      smpCfg = defaultClientConfig,
-      ntfCfg = defaultClientConfig,
+      smpCfg = defaultClientConfig {defaultTransport = ("5223", transport @TLS)},
+      ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       reconnectInterval =
         RetryInterval
           { initialInterval = second,
