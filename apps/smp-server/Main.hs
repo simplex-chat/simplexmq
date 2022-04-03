@@ -35,6 +35,7 @@ smpServerCLIConfig =
           serverCrtFile,
           fingerprintFile = combine cfgPath "fingerprint",
           defaultServerPort = "5223",
+          executableName = "smp-server",
           serverVersion = "SMP server v" <> simplexMQVersion,
           mkServerConfig = \storeLogFile transports ->
             ServerConfig

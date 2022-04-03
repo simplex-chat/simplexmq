@@ -41,21 +41,22 @@ data ServerCLIConfig cfg = ServerCLIConfig
     serverCrtFile :: FilePath,
     fingerprintFile :: FilePath,
     defaultServerPort :: ServiceName,
+    executableName :: String,
     serverVersion :: String,
     mkServerConfig :: Maybe FilePath -> [(ServiceName, ATransport)] -> cfg
   }
 
 protocolServerCLI :: ServerCLIConfig cfg -> (cfg -> IO ()) -> IO ()
-protocolServerCLI cliCfg@ServerCLIConfig {iniFile} server =
+protocolServerCLI cliCfg@ServerCLIConfig {iniFile, executableName} server =
   getCliCommand cliCfg >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
-        True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `smp-server start`."
+        True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer cliCfg opts
     Start ->
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError (runServer cliCfg server . mkIniOptions)
-        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `smp-server init`."
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> cleanup cliCfg >> putStrLn "Deleted configuration and log files"
 
 exitError :: String -> IO ()
@@ -104,7 +105,7 @@ cliCommandP ServerCLIConfig {cfgDir, logDir, iniFile} =
                 <$> switch
                   ( long "store-log"
                       <> short 'l'
-                      <> help "Enable store log for SMP queues persistence"
+                      <> help "Enable store log for persistence"
                   )
                 <*> option
                   (maybeReader readMaybe)
@@ -140,11 +141,11 @@ initializeServer cliCfg InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = 
   createX509
   fp <- saveFingerprint
   createIni
-  putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `smp-server start` to start server."
+  putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
   printServiceInfo cliCfg fp
   warnCAPrivateKeyFile
   where
-    ServerCLIConfig {cfgDir, logDir, iniFile, caKeyFile, caCrtFile, serverKeyFile, serverCrtFile, fingerprintFile, defaultServerPort} = cliCfg
+    ServerCLIConfig {cfgDir, logDir, iniFile, executableName, caKeyFile, caCrtFile, serverKeyFile, serverCrtFile, fingerprintFile, defaultServerPort} = cliCfg
     createX509 = do
       createOpensslCaConf
       createOpensslServerConf
@@ -201,12 +202,12 @@ initializeServer cliCfg InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = 
     createIni = do
       writeFile iniFile $
         "[STORE_LOG]\n\
-        \# The server uses STM memory to store SMP queues and messages,\n\
+        \# The server uses STM memory for persistence,\n\
         \# that will be lost on restart (e.g., as with redis).\n\
-        \# This option enables saving SMP queues to append only log,\n\
-        \# and restoring them when the server is started.\n\
-        \# Log is compacted on start (deleted queues are removed).\n\
-        \# The messages in the queues are not logged.\n"
+        \# This option enables saving memory to append only log,\n\
+        \# and restoring it when the server is started.\n\
+        \# Log is compacted on start (deleted objects are removed).\n\
+        \# The messages are not logged.\n"
           <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
           <> "[TRANSPORT]\n\
              \port: "
