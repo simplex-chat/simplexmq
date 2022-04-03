@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -7,10 +8,14 @@ module Simplex.Messaging.Notifications.Client where
 
 import Control.Monad.Except
 import Control.Monad.Trans.Except
+import Data.Time (UTCTime)
 import Data.Word (Word16)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Protocol (ProtocolServer)
+
+type NtfServer = ProtocolServer
 
 type NtfClient = ProtocolClient NtfResponse
 
@@ -53,3 +58,28 @@ okNtfCommand cmd c pKey entId =
   sendNtfCommand c (Just pKey) entId cmd >>= \case
     NROk -> return ()
     _ -> throwE PCEUnexpectedResponse
+
+data NtfTknAction = NTARegister | NTAVerify | NTACheck | NTADelete
+
+data NewStoreNtfToken = NewStoreNtfToken
+  { deviceToken :: DeviceToken,
+    ntfServer :: NtfServer,
+    ntfPrivKey :: C.APrivateSignKey,
+    ntfPubKey :: C.APublicVerifyKey
+  }
+
+data NtfToken = NtfToken
+  { deviceToken :: DeviceToken,
+    ntfServer :: NtfServer,
+    ntfTokenId :: NtfTokenId,
+    -- | key used by the ntf client to sign transmissions
+    ntfPrivKey :: C.APrivateSignKey,
+    -- | key used by the ntf server to verify transmissions
+    ntfPubKey :: C.APublicVerifyKey,
+    -- | shared DH secret used to encrypt/decrypt notifications e2e
+    ntfDhSecret :: C.DhSecretX25519,
+    -- | token status
+    ntfTknStatus :: NtfTknStatus,
+    -- | pending token action and the earliest time
+    ntfTknAction :: Maybe (NtfTknAction, UTCTime)
+  }

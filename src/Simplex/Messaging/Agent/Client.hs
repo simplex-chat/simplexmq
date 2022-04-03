@@ -8,7 +8,6 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
@@ -59,7 +58,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Notifications.Client (NtfClient)
+import Simplex.Messaging.Notifications.Client (NtfClient, NtfServer)
 import Simplex.Messaging.Notifications.Protocol (NtfResponse)
 import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -84,7 +83,7 @@ data AgentClient = AgentClient
     msgQ :: TBQueue (ServerTransmission BrokerMsg),
     smpServers :: TVar (NonEmpty SMPServer),
     smpClients :: TMap SMPServer SMPClientVar,
-    ntfClients :: TMap ProtocolServer NtfClientVar,
+    ntfClients :: TMap NtfServer NtfClientVar,
     subscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
     pendingSubscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
     subscrConns :: TMap ConnId SMPServer,
@@ -206,7 +205,7 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     notifySub :: ACommand 'Agent -> ConnId -> IO ()
     notifySub cmd connId = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
 
-getNtfServerClient :: forall m. AgentMonad m => AgentClient -> ProtocolServer -> m NtfClient
+getNtfServerClient :: forall m. AgentMonad m => AgentClient -> NtfServer -> m NtfClient
 getNtfServerClient c@AgentClient {ntfClients} srv =
   atomically (getClientVar srv ntfClients)
     >>= either

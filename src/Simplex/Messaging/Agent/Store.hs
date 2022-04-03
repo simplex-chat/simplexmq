@@ -20,6 +20,8 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff, SkippedMsgKeys)
+import Simplex.Messaging.Notifications.Client
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfTknStatus, NtfTokenId)
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgId,
@@ -74,6 +76,12 @@ class Monad m => MonadAgentStore s m where
   getRatchet :: s -> ConnId -> m RatchetX448
   getSkippedMsgKeys :: s -> ConnId -> m SkippedMsgKeys
   updateRatchet :: s -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
+
+  -- Notification device token persistence
+  createNtfToken :: s -> NewStoreNtfToken -> m ()
+  updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
+  updateNtfTokenStatus :: s -> NtfToken -> NtfTknStatus -> m ()
+  getDeviceNtfTokens :: s -> DeviceToken -> m [NtfToken]
 
 -- * Queue types
 

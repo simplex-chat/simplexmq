@@ -69,6 +69,7 @@ import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
+import Data.Word (Word16)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -80,7 +81,8 @@ import Simplex.Messaging.Client (ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Notifications.Protocol (DeviceToken)
+import Simplex.Messaging.Notifications.Client (NewStoreNtfToken (..))
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegistrationCode)
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -153,6 +155,14 @@ setSMPServers c = withAgentEnv c . setSMPServers' c
 -- | Register device notifications token
 registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 registerNtfToken c = withAgentEnv c . registerNtfToken' c
+
+-- | Verify device notifications token
+verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NtfRegistrationCode -> m ()
+verifyNtfToken c = withAgentEnv c .: verifyNtfToken' c
+
+-- | Enable/disable periodic notifications
+enableNtfCron :: AgentErrorMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
+enableNtfCron c = withAgentEnv c .: enableNtfCron' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -500,7 +510,15 @@ setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
 registerNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
-registerNtfToken' c token = pure ()
+registerNtfToken' c token = do
+  let token = NewStoreNtfToken {}
+  withStore $ \st -> createNtfToken st token
+
+verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> NtfRegistrationCode -> m ()
+verifyNtfToken' c token code = pure ()
+
+enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
+enableNtfCron' c token interval = pure ()
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do

@@ -322,11 +322,13 @@ instance Encoding NtfSubStatus where
       _ -> fail "bad NtfError"
 
 data NtfTknStatus
-  = -- | state after registration (TNEW)
+  = -- | Token created in DB
     NTNew
-  | -- | if initial notification or verification failed (push provider error)
+  | -- | state after registration (TNEW)
+    NTRegistered
+  | -- | if initial notification failed (push provider error) or verification failed
     NTInvalid
-  | -- | if initial notification succeeded
+  | -- | Token confirmed via notification (verification code received)
     NTConfirmed
   | -- | after successful verification (TVFY)
     NTActive
