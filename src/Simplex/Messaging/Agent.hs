@@ -48,6 +48,7 @@ module Simplex.Messaging.Agent
     suspendConnection,
     deleteConnection,
     setSMPServers,
+    registerNtfToken,
     logConnection,
   )
 where
@@ -81,7 +82,7 @@ import Simplex.Messaging.Client (ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Notifications.Client (NewStoreNtfToken (..))
+import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegistrationCode)
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
@@ -509,16 +510,46 @@ setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
-registerNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
-registerNtfToken' c token = do
-  let token = NewStoreNtfToken {}
-  withStore $ \st -> createNtfToken st token
+registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m ()
+registerNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    Just tkn@NtfToken {ntfTokenId, ntfTknAction} -> case (ntfTokenId, ntfTknAction) of
+      (Nothing, Just (NTARegister ntfPubKey)) -> registerToken tkn ntfPubKey
+      -- TODO request verification code again in case there is registration, but no verification code in DB
+      (Just tknId, Just (NTAVerify code)) -> pure ()
+      (Just tknId, Just NTACheck) -> pure ()
+      (Just tknId, Just NTADelete) -> pure ()
+      _ -> pure ()
+    _ ->
+      getNtfServer c >>= \case
+        Just ntfServer ->
+          asks (cmdSignAlg . config) >>= \case
+            C.SignAlg a -> do
+              (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
+              let tkn = newNtfToken deviceToken ntfServer ntfPrivKey ntfPubKey
+              withStore $ \st -> createNtfToken st tkn
+              registerToken tkn ntfPubKey
+        _ -> throwError $ CMD PROHIBITED
+  where
+    registerToken :: NtfToken -> C.APublicVerifyKey -> m ()
+    registerToken tkn ntfPubKey = do
+      (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
+      (tknId, srvDhPubKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
+      let dhSecret = C.dh' srvDhPubKey privDhKey
+      withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
 
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> NtfRegistrationCode -> m ()
-verifyNtfToken' c token code = pure ()
+verifyNtfToken' c deviceToken code =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    Just token -> pure ()
+    _ -> pure ()
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
-enableNtfCron' c token interval = pure ()
+enableNtfCron' c deviceToken interval = pure ()
+
+setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
+setNtfServers' c servers = do
+  atomically $ writeTVar (ntfServers c) servers
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do
@@ -527,8 +558,19 @@ getSMPServer c = do
     srv :| [] -> pure srv
     servers -> do
       gen <- asks randomServer
-      i <- atomically . stateTVar gen $ randomR (0, L.length servers - 1)
-      pure $ servers L.!! i
+      atomically . stateTVar gen $
+        first (servers L.!!) . randomR (0, L.length servers - 1)
+
+getNtfServer :: AgentMonad m => AgentClient -> m (Maybe NtfServer)
+getNtfServer c = do
+  ntfServers <- readTVarIO $ ntfServers c
+  case ntfServers of
+    [] -> pure Nothing
+    [srv] -> pure $ Just srv
+    servers -> do
+      gen <- asks randomServer
+      atomically . stateTVar gen $
+        first (Just . (servers !!)) . randomR (0, length servers - 1)
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do

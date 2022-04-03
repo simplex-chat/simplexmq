@@ -78,10 +78,10 @@ class Monad m => MonadAgentStore s m where
   updateRatchet :: s -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
 
   -- Notification device token persistence
-  createNtfToken :: s -> NewStoreNtfToken -> m ()
+  createNtfToken :: s -> NtfToken -> m ()
   updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
-  updateNtfTokenStatus :: s -> NtfToken -> NtfTknStatus -> m ()
-  getDeviceNtfTokens :: s -> DeviceToken -> m [NtfToken]
+  updateNtfToken :: s -> NtfToken -> NtfTknStatus -> NtfTknAction -> UTCTime -> m ()
+  getDeviceNtfToken :: s -> DeviceToken -> m (Maybe NtfToken) -- return current token if it exists and mark any old tokens for deletion
 
 -- * Queue types
 

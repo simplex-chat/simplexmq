@@ -8,6 +8,7 @@
 module Simplex.Messaging.Agent.Env.SQLite
   ( AgentConfig (..),
     defaultAgentConfig,
+    defaultReconnectInterval,
     Env (..),
     newSMPAgentEnv,
   )
@@ -25,6 +26,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Notifications.Client (NtfServer)
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
@@ -32,6 +34,7 @@ import UnliftIO.STM
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
     initialSMPServers :: NonEmpty SMPServer,
+    initialNtfServers :: [NtfServer],
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
@@ -47,11 +50,22 @@ data AgentConfig = AgentConfig
     certificateFile :: FilePath
   }
 
-defaultAgentConfig :: AgentConfig
-defaultAgentConfig =
+defaultReconnectInterval :: RetryInterval
+defaultReconnectInterval =
+  RetryInterval
+    { initialInterval = second,
+      increaseAfter = 10 * second,
+      maxInterval = 10 * second
+    }
+  where
+    second = 1_000_000
+
+defaultAgentConfig :: NonEmpty SMPServer -> [NtfServer] -> AgentConfig
+defaultAgentConfig initialSMPServers initialNtfServers =
   AgentConfig
     { tcpPort = "5224",
-      initialSMPServers = undefined, -- TODO move it elsewhere?
+      initialSMPServers,
+      initialNtfServers,
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
@@ -60,12 +74,7 @@ defaultAgentConfig =
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = ("5223", transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
-      reconnectInterval =
-        RetryInterval
-          { initialInterval = second,
-            increaseAfter = 10 * second,
-            maxInterval = 10 * second
-          },
+      reconnectInterval = defaultReconnectInterval,
       helloTimeout = 2 * nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
@@ -73,8 +82,6 @@ defaultAgentConfig =
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt"
     }
-  where
-    second = 1_000_000
 
 data Env = Env
   { config :: AgentConfig,

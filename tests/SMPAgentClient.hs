@@ -156,7 +156,7 @@ smpAgentTest1_1_1 test' =
 
 cfg :: AgentConfig
 cfg =
-  defaultAgentConfig
+  (defaultAgentConfig (L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"]) [])
     { tcpPort = agentTestPort,
       initialSMPServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
       tbqSize = 1,
@@ -167,7 +167,7 @@ cfg =
             defaultTransport = (testPort, transport @TLS),
             tcpTimeout = 500_000
           },
-      reconnectInterval = (reconnectInterval defaultAgentConfig) {initialInterval = 50_000},
+      reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"

@@ -24,11 +24,9 @@ CREATE TABLE ntf_tokens (
   ntf_port TEXT NOT NULL,
   tkn_id BLOB, -- token ID assigned by notifications server
   tkn_priv_key BLOB NOT NULL, -- private key to sign token commands
-  tkn_pub_key BLOB NOT NULL, -- public key to verify token commands - if it has to be sent to the server again, the same key needs to be sent
   tkn_dh_secret BLOB, -- DH secret for e2e encryption of notifications
   tkn_status TEXT NOT NULL,
   tkn_action TEXT,
-  tkn_action_ts TEXT, -- this is to check token status periodically to know when it was last checked
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL, -- this is to check token status periodically to know when it was last checked
   PRIMARY KEY (platform, device_token, ntf_host, ntf_port),
