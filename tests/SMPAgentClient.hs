@@ -9,6 +9,7 @@ module SMPAgentClient where
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
+import Data.List.NonEmpty
 import qualified Data.List.NonEmpty as L
 import Network.Socket (HostName, ServiceName)
 import SMPClient
@@ -154,11 +155,17 @@ smpAgentTest1_1_1 test' =
     _test [h] = test' h
     _test _ = error "expected 1 handle"
 
+initAgentServers :: InitialAgentServers
+initAgentServers =
+  InitialAgentServers
+    { smp = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
+      ntf = []
+    }
+
 cfg :: AgentConfig
 cfg =
-  (defaultAgentConfig (L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"]) [])
+  defaultAgentConfig
     { tcpPort = agentTestPort,
-      initialSMPServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
@@ -175,9 +182,10 @@ cfg =
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', initialSMPServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
+  let cfg' = cfg {tcpPort = port', dbFile = db'}
+      initServers' = initAgentServers {smp = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
-        (\started -> runSMPAgentBlocking t started cfg')
+        (\started -> runSMPAgentBlocking t started cfg' initServers')
         afterProcess
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a

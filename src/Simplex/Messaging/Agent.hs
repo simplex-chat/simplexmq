@@ -100,11 +100,11 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
-getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m AgentClient
+getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient
+      c <- getAgentClient initServers
       action <- async $ subscriber c `E.finally` disconnectAgentClient c
       pure c {smpSubscriber = action}
 
@@ -182,8 +182,8 @@ withAgentEnv c = (`runReaderT` agentEnv c)
 -- withAgentClient c = withAgentLock c . withAgentEnv c
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
-getAgentClient = ask >>= atomically . newAgentClient
+getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => InitialAgentServers -> m AgentClient
+getAgentClient initServers = ask >>= atomically . newAgentClient initServers
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
 logConnection c connected =

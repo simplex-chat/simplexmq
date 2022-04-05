@@ -271,6 +271,7 @@ instance Encoding SMPQueueNtf where
     pure $ SMPQueueNtf smpServer notifierId notifierKey
 
 data PushPlatform = PPApple
+  deriving (Show)
 
 instance Encoding PushPlatform where
   smpEncode = \case
@@ -281,6 +282,7 @@ instance Encoding PushPlatform where
       _ -> fail "bad PushPlatform"
 
 data DeviceToken = DeviceToken PushPlatform ByteString
+  deriving (Show)
 
 instance Encoding DeviceToken where
   smpEncode (DeviceToken p t) = smpEncode (p, t)

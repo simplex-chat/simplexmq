@@ -104,14 +104,14 @@ data AgentClient = AgentClient
     lock :: TMVar ()
   }
 
-newAgentClient :: Env -> STM AgentClient
-newAgentClient agentEnv = do
+newAgentClient :: InitialAgentServers -> Env -> STM AgentClient
+newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   let qSize = tbqSize $ config agentEnv
   rcvQ <- newTBQueue qSize
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
-  smpServers <- newTVar $ initialSMPServers (config agentEnv)
-  ntfServers <- newTVar $ initialNtfServers (config agentEnv)
+  smpServers <- newTVar smp
+  ntfServers <- newTVar ntf
   smpClients <- TM.empty
   ntfClients <- TM.empty
   subscrSrvrs <- TM.empty

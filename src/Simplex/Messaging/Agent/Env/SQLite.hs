@@ -7,6 +7,7 @@
 
 module Simplex.Messaging.Agent.Env.SQLite
   ( AgentConfig (..),
+    InitialAgentServers (..),
     defaultAgentConfig,
     defaultReconnectInterval,
     Env (..),
@@ -31,10 +32,13 @@ import Simplex.Messaging.Transport (TLS, Transport (..))
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
+data InitialAgentServers = InitialAgentServers
+  { smp :: NonEmpty SMPServer,
+    ntf :: [NtfServer]
+  }
+
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
-    initialSMPServers :: NonEmpty SMPServer,
-    initialNtfServers :: [NtfServer],
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
@@ -60,12 +64,10 @@ defaultReconnectInterval =
   where
     second = 1_000_000
 
-defaultAgentConfig :: NonEmpty SMPServer -> [NtfServer] -> AgentConfig
-defaultAgentConfig initialSMPServers initialNtfServers =
+defaultAgentConfig :: AgentConfig
+defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
-      initialSMPServers,
-      initialNtfServers,
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,

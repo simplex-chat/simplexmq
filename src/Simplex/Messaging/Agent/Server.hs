@@ -31,17 +31,17 @@ import UnliftIO.STM
 -- | Runs an SMP agent as a TCP service using passed configuration.
 --
 -- See a full agent executable here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-agent/Main.hs
-runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> m ()
-runSMPAgent t cfg = do
+runSMPAgent :: (MonadRandom m, MonadUnliftIO m) => ATransport -> AgentConfig -> InitialAgentServers -> m ()
+runSMPAgent t cfg initServers = do
   started <- newEmptyTMVarIO
-  runSMPAgentBlocking t started cfg
+  runSMPAgentBlocking t started cfg initServers
 
 -- | Runs an SMP agent as a TCP service using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> m ()
-runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} = do
+runSMPAgentBlocking :: (MonadRandom m, MonadUnliftIO m) => ATransport -> TMVar Bool -> AgentConfig -> InitialAgentServers -> m ()
+runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, caCertificateFile, certificateFile, privateKeyFile} initServers = do
   runReaderT (smpAgent t) =<< newSMPAgentEnv cfg
   where
     smpAgent :: forall c m'. (Transport c, MonadUnliftIO m', MonadReader Env m') => TProxy c -> m' ()
@@ -50,7 +50,7 @@ runSMPAgentBlocking (ATransport t) started cfg@AgentConfig {tcpPort, caCertifica
       tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
       runTransportServer started tcpPort tlsServerParams $ \(h :: c) -> do
         liftIO . putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
-        c <- getAgentClient
+        c <- getAgentClient initServers
         logConnection c True
         race_ (connectClient h c) (runAgentClient c)
           `E.finally` disconnectAgentClient c
