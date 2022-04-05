@@ -275,7 +275,7 @@ instance Encoding SMPQueueNtf where
     pure $ SMPQueueNtf smpServer notifierId notifierKey
 
 data PushProvider = PPApple
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
   smpEncode = \case
@@ -297,7 +297,7 @@ instance FromField PushProvider where fromField = fromTextField_ textDecode
 instance ToField PushProvider where toField = toField . textEncode
 
 data DeviceToken = DeviceToken PushProvider ByteString
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 instance Encoding DeviceToken where
   smpEncode (DeviceToken p t) = smpEncode (p, t)

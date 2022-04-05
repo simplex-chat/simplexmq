@@ -144,7 +144,7 @@ verifyNtfTransmission ::
 verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
   case cmd of
     NtfCmd SToken (TNEW n@(NewNtfTkn _ k _)) ->
-      -- TODO check that token is not already in store
+      -- TODO check that token is not already in store, if it is - verify that the saved key is the same
       pure $
         if verifyCmdSignature sig_ signed k
           then VRVerified (NtfReqNew corrId (ANE SToken n))

@@ -44,7 +44,7 @@ mkNtfTknData (NewNtfTkn token tknVerifyKey _) tknDhSecret = do
   tknStatus <- newTVar NTNew
   pure NtfTknData {token, tknStatus, tknVerifyKey, tknDhSecret}
 
-data NtfSubscriptionsStore = NtfSubscriptionsStore
+-- data NtfSubscriptionsStore = NtfSubscriptionsStore
 
 -- { subscriptions :: TMap NtfSubsciptionId NtfSubsciption,
 --   activeSubscriptions :: TMap (SMPServer, NotifierId) NtfSubsciptionId
@@ -70,7 +70,9 @@ getNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe (NtfEntityRec 'Token))
 getNtfToken st tknId = NtfTkn <$$> TM.lookup tknId (tokens st)
 
 addNtfToken :: NtfStore -> NtfTokenId -> NtfTknData -> STM ()
-addNtfToken st tknId tkn = pure ()
+addNtfToken st tknId tkn@NtfTknData {token} = do
+  TM.insert tknId tkn (tokens st)
+  TM.insert token tknId (tokenIds st)
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of
