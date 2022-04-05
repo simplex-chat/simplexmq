@@ -193,7 +193,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
           tkn <- mkNtfTknData newTkn dhSecret
           addNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, Notification)
-        --     pure (corrId, sId, NRSubId pubDhKey)
         pure (corrId, "", NRId tknId srvDhPubKey)
       NtfReqCmd SToken tkn (corrId, tknId, cmd) ->
         (corrId,tknId,) <$> case cmd of

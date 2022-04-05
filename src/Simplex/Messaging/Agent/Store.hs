@@ -80,7 +80,7 @@ class Monad m => MonadAgentStore s m where
   -- Notification device token persistence
   createNtfToken :: s -> NtfToken -> m ()
   updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
-  updateNtfToken :: s -> NtfToken -> NtfTknStatus -> NtfTknAction -> UTCTime -> m ()
+  updateNtfToken :: s -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
   getDeviceNtfToken :: s -> DeviceToken -> m (Maybe NtfToken) -- return current token if it exists and mark any old tokens for deletion
 
 -- * Queue types

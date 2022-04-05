@@ -63,6 +63,7 @@ data NtfTknAction
   = NTARegister C.APublicVerifyKey -- public key to send to the server
   | NTAVerify NtfRegistrationCode -- code to verify token
   | NTACheck
+  | NTACron Word16
   | NTADelete
 
 data NtfToken = NtfToken

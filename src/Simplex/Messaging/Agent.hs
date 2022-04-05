@@ -48,7 +48,11 @@ module Simplex.Messaging.Agent
     suspendConnection,
     deleteConnection,
     setSMPServers,
+    setNtfServers,
     registerNtfToken,
+    verifyNtfToken,
+    enableNtfCron,
+    deleteNtfToken,
     logConnection,
   )
 where
@@ -83,7 +87,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegistrationCode)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegistrationCode, NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -153,6 +157,9 @@ deleteConnection c = withAgentEnv c . deleteConnection' c
 setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers c = withAgentEnv c . setSMPServers' c
 
+setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
+setNtfServers c = withAgentEnv c . setNtfServers' c
+
 -- | Register device notifications token
 registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 registerNtfToken c = withAgentEnv c . registerNtfToken' c
@@ -164,6 +171,9 @@ verifyNtfToken c = withAgentEnv c .: verifyNtfToken' c
 -- | Enable/disable periodic notifications
 enableNtfCron :: AgentErrorMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
 enableNtfCron c = withAgentEnv c .: enableNtfCron' c
+
+deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
+deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -515,10 +525,14 @@ registerNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     Just tkn@NtfToken {ntfTokenId, ntfTknAction} -> case (ntfTokenId, ntfTknAction) of
       (Nothing, Just (NTARegister ntfPubKey)) -> registerToken tkn ntfPubKey
-      -- TODO request verification code again in case there is registration, but no verification code in DB
-      (Just tknId, Just (NTAVerify code)) -> pure ()
-      (Just tknId, Just NTACheck) -> pure ()
-      (Just tknId, Just NTADelete) -> pure ()
+      -- TODO request verification code again in case there is registration, but no verification code in DB - probably after some timeout?
+      (Just tknId, Just (NTAVerify code)) ->
+        t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
+      (Just tknId, Just (NTACron interval)) ->
+        t tkn (NTActive, Just NTACheck) $ agentNtfEnableCron c tknId tkn interval
+      (Just _tknId, Just NTACheck) -> pure ()
+      (Just tknId, Just NTADelete) ->
+        t tkn (NTExpired, Nothing) $ agentNtfDeleteToken c tknId tkn
       _ -> pure ()
     _ ->
       getNtfServer c >>= \case
@@ -531,21 +545,44 @@ registerNtfToken' c deviceToken =
               registerToken tkn ntfPubKey
         _ -> throwError $ CMD PROHIBITED
   where
+    t tkn = withToken tkn Nothing
     registerToken :: NtfToken -> C.APublicVerifyKey -> m ()
     registerToken tkn ntfPubKey = do
       (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
-      (tknId, srvDhPubKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
-      let dhSecret = C.dh' srvDhPubKey privDhKey
+      (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
+      let dhSecret = C.dh' srvPubDhKey privDhKey
       withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
 
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> NtfRegistrationCode -> m ()
 verifyNtfToken' c deviceToken code =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
-    Just token -> pure ()
-    _ -> pure ()
+    Just tkn@NtfToken {ntfTokenId = Just tknId} ->
+      withToken tkn (Just (NTConfirmed, NTAVerify code)) (NTActive, Just NTACheck) $
+        agentNtfVerifyToken c tknId tkn code
+    _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
-enableNtfCron' c deviceToken interval = pure ()
+enableNtfCron' c deviceToken interval =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive} ->
+      withToken tkn (Just (NTActive, NTACron interval)) (NTActive, Just NTACheck) $
+        agentNtfEnableCron c tknId tkn interval
+    _ -> throwError $ CMD PROHIBITED
+
+deleteNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
+deleteNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} ->
+      withToken tkn (Just (ntfTknStatus, NTADelete)) (NTExpired, Nothing) $
+        agentNtfDeleteToken c tknId tkn
+    _ -> throwError $ CMD PROHIBITED
+
+withToken :: AgentMonad m => NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
+withToken tkn from_ (toStatus, toAction_) f = do
+  forM_ from_ $ \(status, action) -> withStore $ \st -> updateNtfToken st tkn status (Just action)
+  res <- f
+  withStore $ \st -> updateNtfToken st tkn toStatus toAction_
+  pure res
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c servers = do
