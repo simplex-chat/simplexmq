@@ -9,7 +9,6 @@ module SMPAgentClient where
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
-import Data.List.NonEmpty
 import qualified Data.List.NonEmpty as L
 import Network.Socket (HostName, ServiceName)
 import SMPClient

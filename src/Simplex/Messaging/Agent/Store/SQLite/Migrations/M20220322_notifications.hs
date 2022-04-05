@@ -12,13 +12,13 @@ CREATE TABLE ntf_servers (
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
   ntf_key_hash BLOB NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (ntf_host, ntf_port)
 ) WITHOUT ROWID;
 
 CREATE TABLE ntf_tokens (
-  platform TEXT NOT NULL, -- apn
+  provider TEXT NOT NULL, -- apn
   device_token TEXT NOT NULL,
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
@@ -26,10 +26,10 @@ CREATE TABLE ntf_tokens (
   tkn_priv_key BLOB NOT NULL, -- private key to sign token commands
   tkn_dh_secret BLOB, -- DH secret for e2e encryption of notifications
   tkn_status TEXT NOT NULL,
-  tkn_action TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL, -- this is to check token status periodically to know when it was last checked
-  PRIMARY KEY (platform, device_token, ntf_host, ntf_port),
+  tkn_action BLOB,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')), -- this is to check token status periodically to know when it was last checked
+  PRIMARY KEY (provider, device_token, ntf_host, ntf_port),
   FOREIGN KEY (ntf_host, ntf_port) REFERENCES ntf_servers
     ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;

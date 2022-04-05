@@ -9,10 +9,16 @@ module Simplex.Messaging.Notifications.Client where
 
 import Control.Monad.Except
 import Control.Monad.Trans.Except
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Word (Word16)
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String (StrEncoding (strEncode), TextEncoding (..))
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Protocol (ProtocolServer)
 
 type NtfServer = ProtocolServer
@@ -65,6 +71,26 @@ data NtfTknAction
   | NTACheck
   | NTACron Word16
   | NTADelete
+
+instance Encoding NtfTknAction where
+  smpEncode = \case
+    NTARegister key -> smpEncode ('R', key)
+    NTAVerify code -> smpEncode ('V', code)
+    NTACheck -> "C"
+    NTACron interval -> smpEncode ('I', interval)
+    NTADelete -> "D"
+  smpP =
+    A.anyChar >>= \case
+      'R' -> NTARegister <$> smpP
+      'V' -> NTAVerify <$> smpP
+      'C' -> pure NTACheck
+      'I' -> NTACron <$> smpP
+      'D' -> pure NTADelete
+      _ -> fail "bad NtfTknAction"
+
+instance FromField NtfTknAction where fromField = blobFieldDecoder smpDecode
+
+instance ToField NtfTknAction where toField = toField . smpEncode
 
 data NtfToken = NtfToken
   { deviceToken :: DeviceToken,
