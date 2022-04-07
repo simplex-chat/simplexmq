@@ -42,7 +42,7 @@ data NtfTknData = NtfTknData
 
 mkNtfTknData :: NewNtfEntity 'Token -> C.DhSecretX25519 -> NtfRegCode -> STM NtfTknData
 mkNtfTknData (NewNtfTkn token tknVerifyKey _) tknDhSecret tknRegCode = do
-  tknStatus <- newTVar NTNew
+  tknStatus <- newTVar NTRegistered
   pure NtfTknData {token, tknStatus, tknVerifyKey, tknDhSecret, tknRegCode}
 
 -- data NtfSubscriptionsStore = NtfSubscriptionsStore

@@ -94,7 +94,7 @@ instance NtfEntityI e => ProtocolMsgTag (NtfCommandTag e) where
   decodeTag s = decodeTag s >>= (\(NCT _ t) -> checkEntity' t)
 
 newtype NtfRegCode = NtfRegCode ByteString
-  deriving (Show)
+  deriving (Eq, Show)
 
 instance Encoding NtfRegCode where
   smpEncode (NtfRegCode code) = smpEncode code

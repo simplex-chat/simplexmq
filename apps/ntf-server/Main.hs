@@ -39,6 +39,7 @@ ntfServerCLIConfig =
             NtfServerConfig
               { transports,
                 subIdBytes = 24,
+                regCodeBytes = 32,
                 clientQSize = 16,
                 subQSize = 64,
                 pushQSize = 128,

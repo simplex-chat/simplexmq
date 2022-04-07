@@ -106,7 +106,12 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
 ntfPush :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
 ntfPush NtfPushServer {pushQ} = forever $ do
   atomically (readTBQueue pushQ) >>= \case
-    (NtfTknData {}, notification) -> liftIO $ print $ J.encode notification
+    (NtfTknData {tknStatus}, notification) -> do
+      liftIO $ print $ J.encode notification
+      -- TODO status update should happen after the token status successfully sent
+      case notification of
+        PNVerification _ -> atomically $ writeTVar tknStatus NTConfirmed
+        _ -> pure ()
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do
@@ -195,10 +200,15 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
           addNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, PNVerification regCode)
         pure (corrId, "", NRId tknId srvDhPubKey)
-      NtfReqCmd SToken tkn (corrId, tknId, cmd) ->
+      NtfReqCmd SToken (NtfTkn NtfTknData {tknStatus, tknRegCode}) (corrId, tknId, cmd) -> do
+        status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW newTkn -> pure NROk -- TODO when duplicate token sent
-          TVFY code -> pure NROk
+          TVFY code -- this allows repeated verification for cases when client connection dropped before server response
+            | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
+              atomically $ writeTVar tknStatus NTActive
+              pure NROk
+            | otherwise -> pure $ NRErr AUTH
           TDEL -> pure NROk
           TCRN int -> pure NROk
       NtfReqNew corrId (ANE SSubscription newSub) -> pure (corrId, "", NROk)
