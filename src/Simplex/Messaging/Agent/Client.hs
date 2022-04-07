@@ -262,10 +262,10 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
     tryConnectClient :: (ProtocolClient msg -> m a) -> m () -> m a
     tryConnectClient successAction retryAction =
       tryError connectClient >>= \r -> case r of
-        Right smp -> do
+        Right client -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
           atomically $ putTMVar clientVar r
-          successAction smp
+          successAction client
         Left e -> do
           if e == BROKER NETWORK || e == BROKER TIMEOUT
             then retryAction
@@ -474,7 +474,7 @@ agentNtfRegisterToken :: AgentMonad m => AgentClient -> NtfToken -> C.APublicVer
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =
   withClient c ntfServer $ \ntf -> ntfRegisterToken ntf ntfPrivKey (NewNtfTkn deviceToken ntfPubKey pubDhKey)
 
-agentNtfVerifyToken :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> NtfRegistrationCode -> m ()
+agentNtfVerifyToken :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> NtfRegCode -> m ()
 agentNtfVerifyToken c tknId NtfToken {ntfServer, ntfPrivKey} code =
   withLogClient c ntfServer tknId "TVFY" $ \ntf -> ntfVerifyToken ntf ntfPrivKey tknId code
 

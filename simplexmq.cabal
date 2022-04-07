@@ -298,6 +298,8 @@ test-suite smp-server-test
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
       CoreTests.VersionRangeTests
+      NtfClient,
+      NtfServerTests
       ServerTests
       SMPAgentClient
       SMPClient

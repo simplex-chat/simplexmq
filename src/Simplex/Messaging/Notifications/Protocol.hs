@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -21,7 +22,8 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String (TextEncoding (..))
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util ((<$?>))
@@ -91,11 +93,30 @@ instance ProtocolMsgTag NtfCmdTag where
 instance NtfEntityI e => ProtocolMsgTag (NtfCommandTag e) where
   decodeTag s = decodeTag s >>= (\(NCT _ t) -> checkEntity' t)
 
-type NtfRegistrationCode = ByteString
+newtype NtfRegCode = NtfRegCode ByteString
+  deriving (Show)
+
+instance Encoding NtfRegCode where
+  smpEncode (NtfRegCode code) = smpEncode code
+  smpP = NtfRegCode <$> smpP
+
+instance StrEncoding NtfRegCode where
+  strEncode (NtfRegCode m) = strEncode m
+  strDecode s = NtfRegCode <$> strDecode s
+  strP = NtfRegCode <$> strP
+
+instance FromJSON NtfRegCode where
+  parseJSON = strParseJSON "NtfRegCode"
+
+instance ToJSON NtfRegCode where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 data NewNtfEntity (e :: NtfEntity) where
   NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
   NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NewNtfEntity 'Subscription
+
+deriving instance Show (NewNtfEntity e)
 
 data ANewNtfEntity = forall e. NtfEntityI e => ANE (SNtfEntity e) (NewNtfEntity e)
 
@@ -115,6 +136,7 @@ instance Encoding ANewNtfEntity where
 
 instance Protocol NtfResponse where
   type ProtocolCommand NtfResponse = NtfCmd
+  protocolClientHandshake = ntfClientHandshake
   protocolPing = NtfCmd SSubscription PING
   protocolError = \case
     NRErr e -> Just e
@@ -124,7 +146,7 @@ data NtfCommand (e :: NtfEntity) where
   -- | register new device token for notifications
   TNEW :: NewNtfEntity 'Token -> NtfCommand 'Token
   -- | verify token - uses e2e encrypted random string sent to the device via PN to confirm that the device has the token
-  TVFY :: NtfRegistrationCode -> NtfCommand 'Token
+  TVFY :: NtfRegCode -> NtfCommand 'Token
   -- | delete token - all subscriptions will be removed and no more notifications will be sent
   TDEL :: NtfCommand 'Token
   -- | enable periodic background notification to fetch the new messages - interval is in minutes, minimum is 20, 0 to disable
@@ -138,7 +160,11 @@ data NtfCommand (e :: NtfEntity) where
   -- | keep-alive command
   PING :: NtfCommand 'Subscription
 
+deriving instance Show (NtfCommand e)
+
 data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
+
+deriving instance Show NtfCmd
 
 instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
@@ -267,6 +293,7 @@ data SMPQueueNtf = SMPQueueNtf
     notifierId :: NotifierId,
     notifierKey :: NtfPrivateSignKey
   }
+  deriving (Show)
 
 instance Encoding SMPQueueNtf where
   smpEncode SMPQueueNtf {smpServer, notifierId, notifierKey} = smpEncode (smpServer, notifierId, notifierKey)
@@ -351,7 +378,7 @@ data NtfTknStatus
     NTActive
   | -- | after it is no longer valid (push provider error)
     NTExpired
-  deriving (Eq)
+  deriving (Eq, Show)
 
 instance TextEncoding NtfTknStatus where
   textEncode = \case

@@ -158,7 +158,7 @@ initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
     { smp = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
-      ntf = []
+      ntf = ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"]
     }
 
 cfg :: AgentConfig

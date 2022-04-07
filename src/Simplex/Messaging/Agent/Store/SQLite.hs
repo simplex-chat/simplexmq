@@ -589,6 +589,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
               t.tkn_id, t.tkn_priv_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
             FROM ntf_tokens t
             JOIN ntf_servers s USING (ntf_host, ntf_port)
+            WHERE t.provider = ? AND t.device_token = ?
           |]
           (provider, token)
     where
@@ -724,7 +725,7 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
     db
     [sql|
       INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (:host,:port,:key_hash)
-      ON CONFLICT (host, port) DO UPDATE SET
+      ON CONFLICT (ntf_host, ntf_port) DO UPDATE SET
         ntf_host=excluded.ntf_host,
         ntf_port=excluded.ntf_port,
         ntf_key_hash=excluded.ntf_key_hash;

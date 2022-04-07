@@ -36,13 +36,14 @@ data NtfTknData = NtfTknData
   { token :: DeviceToken,
     tknStatus :: TVar NtfTknStatus,
     tknVerifyKey :: C.APublicVerifyKey,
-    tknDhSecret :: C.DhSecretX25519
+    tknDhSecret :: C.DhSecretX25519,
+    tknRegCode :: NtfRegCode
   }
 
-mkNtfTknData :: NewNtfEntity 'Token -> C.DhSecretX25519 -> STM NtfTknData
-mkNtfTknData (NewNtfTkn token tknVerifyKey _) tknDhSecret = do
+mkNtfTknData :: NewNtfEntity 'Token -> C.DhSecretX25519 -> NtfRegCode -> STM NtfTknData
+mkNtfTknData (NewNtfTkn token tknVerifyKey _) tknDhSecret tknRegCode = do
   tknStatus <- newTVar NTNew
-  pure NtfTknData {token, tknStatus, tknVerifyKey, tknDhSecret}
+  pure NtfTknData {token, tknStatus, tknVerifyKey, tknDhSecret, tknRegCode}
 
 -- data NtfSubscriptionsStore = NtfSubscriptionsStore
 

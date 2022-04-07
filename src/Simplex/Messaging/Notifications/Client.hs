@@ -16,9 +16,8 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String (StrEncoding (strEncode), TextEncoding (..))
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Parsers (blobFieldDecoder)
 import Simplex.Messaging.Protocol (ProtocolServer)
 
 type NtfServer = ProtocolServer
@@ -31,7 +30,7 @@ ntfRegisterToken c pKey newTkn =
     NRId tknId dhKey -> pure (tknId, dhKey)
     _ -> throwE PCEUnexpectedResponse
 
-ntfVerifyToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> NtfRegistrationCode -> ExceptT ProtocolClientError IO ()
+ntfVerifyToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> NtfRegCode -> ExceptT ProtocolClientError IO ()
 ntfVerifyToken c pKey tknId code = okNtfCommand (TVFY code) c pKey tknId
 
 ntfDeleteToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> ExceptT ProtocolClientError IO ()
@@ -67,10 +66,11 @@ okNtfCommand cmd c pKey entId =
 
 data NtfTknAction
   = NTARegister C.APublicVerifyKey -- public key to send to the server
-  | NTAVerify NtfRegistrationCode -- code to verify token
+  | NTAVerify NtfRegCode -- code to verify token
   | NTACheck
   | NTACron Word16
   | NTADelete
+  deriving (Show)
 
 instance Encoding NtfTknAction where
   smpEncode = \case
@@ -105,6 +105,7 @@ data NtfToken = NtfToken
     -- | pending token action and the earliest time
     ntfTknAction :: Maybe NtfTknAction
   }
+  deriving (Show)
 
 newNtfToken :: DeviceToken -> NtfServer -> C.APrivateSignKey -> C.APublicVerifyKey -> NtfToken
 newNtfToken deviceToken ntfServer ntfPrivKey ntfPubKey =

@@ -87,7 +87,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegistrationCode, NtfTknStatus (..))
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode, NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -165,7 +165,7 @@ registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 registerNtfToken c = withAgentEnv c . registerNtfToken' c
 
 -- | Verify device notifications token
-verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NtfRegistrationCode -> m ()
+verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NtfRegCode -> m ()
 verifyNtfToken c = withAgentEnv c .: verifyNtfToken' c
 
 -- | Enable/disable periodic notifications
@@ -553,7 +553,7 @@ registerNtfToken' c deviceToken =
       let dhSecret = C.dh' srvPubDhKey privDhKey
       withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
 
-verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> NtfRegistrationCode -> m ()
+verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> NtfRegCode -> m ()
 verifyNtfToken' c deviceToken code =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     Just tkn@NtfToken {ntfTokenId = Just tknId} ->
