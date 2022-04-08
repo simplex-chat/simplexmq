@@ -28,9 +28,9 @@ extra-source-files:
     CHANGELOG.md
 
 flag swift
-  Description: Enable swift JSON format
-  Default:     False
-  Manual:      True
+  description: Enable swift JSON format
+  manual: True
+  default: False
 
 library
   exposed-modules:
@@ -73,10 +73,6 @@ library
   hs-source-dirs:
       src
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
-
-  if flag(swift)
-      ghc-options: "-DswiftJSON"
-
   build-depends:
       QuickCheck ==2.14.*
     , aeson ==2.0.*
@@ -119,6 +115,8 @@ library
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  if flag(swift)
+    ghc-options: -DswiftJSON
   default-language: Haskell2010
 
 executable smp-agent
@@ -171,6 +169,8 @@ executable smp-agent
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  if flag(swift)
+    ghc-options: -DswiftJSON
   default-language: Haskell2010
 
 executable smp-server
@@ -226,6 +226,8 @@ executable smp-server
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  if flag(swift)
+    ghc-options: -DswiftJSON
   default-language: Haskell2010
 
 test-suite smp-server-test
@@ -294,4 +296,6 @@ test-suite smp-server-test
     , x509 ==1.7.*
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
+  if flag(swift)
+    ghc-options: -DswiftJSON
   default-language: Haskell2010
