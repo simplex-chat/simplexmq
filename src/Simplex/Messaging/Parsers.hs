@@ -108,7 +108,7 @@ enumJSON tagModifier =
     }
 
 sumTypeJSON :: (String -> String) -> J.Options
-#if defined(darwin_HOST_OS)
+#if defined(darwin_HOST_OS) && defined(swiftJSON)
 sumTypeJSON = singleFieldJSON
 #else
 sumTypeJSON = taggedObjectJSON

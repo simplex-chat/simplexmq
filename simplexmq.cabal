@@ -27,6 +27,11 @@ extra-source-files:
     README.md
     CHANGELOG.md
 
+flag swift
+  Description: Enable swift JSON format
+  Default:     False
+  Manual:      True
+
 library
   exposed-modules:
       Simplex.Messaging.Agent
@@ -77,6 +82,10 @@ library
   hs-source-dirs:
       src
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
+
+  if flag(swift)
+      ghc-options: "-DswiftJSON"
+
   build-depends:
       QuickCheck ==2.14.*
     , aeson ==2.0.*
