@@ -27,7 +27,7 @@ extra-source-files:
     README.md
     CHANGELOG.md
 
-flag swiftJSON
+flag swift
   Description: Enable swift JSON format
   Default:     False
   Manual:      True
@@ -74,7 +74,7 @@ library
       src
   ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns
 
-  if flag(swiftJSON)
+  if flag(swift)
       ghc-options: "-DswiftJSON"
 
   build-depends:
