@@ -154,11 +154,17 @@ smpAgentTest1_1_1 test' =
     _test [h] = test' h
     _test _ = error "expected 1 handle"
 
+initAgentServers :: InitialAgentServers
+initAgentServers =
+  InitialAgentServers
+    { smp = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
+      ntf = ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"]
+    }
+
 cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      initialSMPServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
@@ -167,7 +173,7 @@ cfg =
             defaultTransport = (testPort, transport @TLS),
             tcpTimeout = 500_000
           },
-      reconnectInterval = (reconnectInterval defaultAgentConfig) {initialInterval = 50_000},
+      reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
@@ -175,9 +181,10 @@ cfg =
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', initialSMPServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
+  let cfg' = cfg {tcpPort = port', dbFile = db'}
+      initServers' = initAgentServers {smp = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
-        (\started -> runSMPAgentBlocking t started cfg')
+        (\started -> runSMPAgentBlocking t started cfg' initServers')
         afterProcess
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a

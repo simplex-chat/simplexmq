@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -115,7 +116,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
+import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), smpClientHandshake, tGetBlock, tPutBlock)
 import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -184,6 +185,7 @@ data RawTransmission = RawTransmission
     entityId :: ByteString,
     command :: ByteString
   }
+  deriving (Show)
 
 -- | unparsed sent SMP transmission with signature, without session ID.
 type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString)
@@ -554,11 +556,13 @@ transmissionP = do
 
 class (ProtocolEncoding msg, ProtocolEncoding (ProtocolCommand msg)) => Protocol msg where
   type ProtocolCommand msg = cmd | cmd -> msg
+  protocolClientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
   protocolPing :: ProtocolCommand msg
   protocolError :: msg -> Maybe ErrorType
 
 instance Protocol BrokerMsg where
   type ProtocolCommand BrokerMsg = Cmd
+  protocolClientHandshake = smpClientHandshake
   protocolPing = Cmd SSender PING
   protocolError = \case
     ERR e -> Just e

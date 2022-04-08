@@ -14,8 +14,8 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
+import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
-import Data.Functor (($>))
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
@@ -106,7 +106,12 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
 ntfPush :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
 ntfPush NtfPushServer {pushQ} = forever $ do
   atomically (readTBQueue pushQ) >>= \case
-    (NtfTknData {}, Notification {}) -> pure ()
+    (NtfTknData {tknStatus}, notification) -> do
+      liftIO $ print $ J.encode notification
+      -- TODO status update should happen after the token status successfully sent
+      case notification of
+        PNVerification _ -> atomically $ writeTVar tknStatus NTConfirmed
+        _ -> pure ()
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do
@@ -122,7 +127,7 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
 receive th NtfServerClient {rcvQ, sndQ} = forever $ do
-  t@(sig, signed, (corrId, subId, cmdOrError)) <- tGet th
+  t@(_, _, (corrId, subId, cmdOrError)) <- tGet th
   case cmdOrError of
     Left e -> write sndQ (corrId, subId, NRErr e)
     Right cmd ->
@@ -144,7 +149,7 @@ verifyNtfTransmission ::
 verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
   case cmd of
     NtfCmd SToken (TNEW n@(NewNtfTkn _ k _)) ->
-      -- TODO check that token is not already in store
+      -- TODO check that token is not already in store, if it is - verify that the saved key is the same
       pure $
         if verifyCmdSignature sig_ signed k
           then VRVerified (NtfReqNew corrId (ANE SToken n))
@@ -189,16 +194,21 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
         (srvDhPubKey, srvDrivDhKey) <- liftIO C.generateKeyPair'
         let dhSecret = C.dh' dhPubKey srvDrivDhKey
         tknId <- getId
+        regCode <- getRegCode
         atomically $ do
-          tkn <- mkNtfTknData newTkn dhSecret
+          tkn <- mkNtfTknData newTkn dhSecret regCode
           addNtfToken st tknId tkn
-          writeTBQueue pushQ (tkn, Notification)
-        --     pure (corrId, sId, NRSubId pubDhKey)
+          writeTBQueue pushQ (tkn, PNVerification regCode)
         pure (corrId, "", NRId tknId srvDhPubKey)
-      NtfReqCmd SToken tkn (corrId, tknId, cmd) ->
+      NtfReqCmd SToken (NtfTkn NtfTknData {tknStatus, tknRegCode}) (corrId, tknId, cmd) -> do
+        status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW newTkn -> pure NROk -- TODO when duplicate token sent
-          TVFY code -> pure NROk
+          TVFY code -- this allows repeated verification for cases when client connection dropped before server response
+            | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
+              atomically $ writeTVar tknStatus NTActive
+              pure NROk
+            | otherwise -> pure $ NRErr AUTH
           TDEL -> pure NROk
           TCRN int -> pure NROk
       NtfReqNew corrId (ANE SSubscription newSub) -> pure (corrId, "", NROk)
@@ -209,8 +219,11 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
           SDEL -> pure NROk
           PING -> pure NRPong
     getId :: m NtfEntityId
-    getId = do
-      n <- asks $ subIdBytes . config
+    getId = getRandomBytes =<< asks (subIdBytes . config)
+    getRegCode :: m NtfRegCode
+    getRegCode = NtfRegCode <$> (getRandomBytes =<< asks (regCodeBytes . config))
+    getRandomBytes :: Int -> m ByteString
+    getRandomBytes n = do
       gVar <- asks idsDrg
       atomically (randomBytes n gVar)
 

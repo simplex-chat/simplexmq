@@ -2,7 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Encoding.String
-  ( StrEncoding (..),
+  ( TextEncoding (..),
+    StrEncoding (..),
     Str (..),
     strP_,
     strToJSON,
@@ -26,10 +27,15 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import qualified Data.List.NonEmpty as L
+import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Word (Word16)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
+
+class TextEncoding a where
+  textEncode :: a -> Text
+  textDecode :: Text -> Maybe a
 
 -- | Serializing human-readable and (where possible) URI-friendly strings for SMP and SMP agent protocols
 class StrEncoding a where

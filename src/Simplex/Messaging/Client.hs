@@ -66,7 +66,7 @@ import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError)
-import Simplex.Messaging.Transport.Client (runTransportClient, smpClientHandshake)
+import Simplex.Messaging.Transport.Client (runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
@@ -132,11 +132,11 @@ type Response msg = Either ProtocolClientError msg
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall msg. Protocol msg => ProtocolServer -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
 getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing} msgQ disconnected =
-  (atomically mkSMPClient >>= runClient useTransport)
+  (atomically mkProtocolClient >>= runClient useTransport)
     `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
   where
-    mkSMPClient :: STM (ProtocolClient msg)
-    mkSMPClient = do
+    mkProtocolClient :: STM (ProtocolClient msg)
+    mkProtocolClient = do
       connected <- newTVar False
       clientCorrId <- newTVar 0
       sentCommands <- TM.empty
@@ -177,7 +177,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
 
     client :: forall c. Transport c => TProxy c -> ProtocolClient msg -> TMVar (Either ProtocolClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =
-      runExceptT (smpClientHandshake h $ keyHash protocolServer) >>= \case
+      runExceptT (protocolClientHandshake @msg h $ keyHash protocolServer) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ PCETransportError e
         Right th@THandle {sessionId} -> do
           atomically $ do

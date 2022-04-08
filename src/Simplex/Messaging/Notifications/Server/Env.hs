@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -8,8 +9,11 @@ module Simplex.Messaging.Notifications.Server.Env where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
+import Data.Aeson (FromJSON, ToJSON)
+import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import Data.X509.Validation (Fingerprint (..))
+import GHC.Generics
 import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural
@@ -17,6 +21,7 @@ import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Subscriptions
+import Simplex.Messaging.Parsers (dropPrefix, taggedObjectJSON)
 import Simplex.Messaging.Protocol (CorrId, Transmission)
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
@@ -25,6 +30,7 @@ import UnliftIO.STM
 data NtfServerConfig = NtfServerConfig
   { transports :: [(ServiceName, ATransport)],
     subIdBytes :: Int,
+    regCodeBytes :: Int,
     clientQSize :: Natural,
     subQSize :: Natural,
     pushQSize :: Natural,
@@ -35,7 +41,15 @@ data NtfServerConfig = NtfServerConfig
     certificateFile :: FilePath
   }
 
-data Notification = Notification
+data PushNotification = PNVerification {code :: NtfRegCode} | PNPeriodic
+  deriving (Show, Generic)
+
+instance FromJSON PushNotification where
+  parseJSON = J.genericParseJSON . taggedObjectJSON $ dropPrefix "PN"
+
+instance ToJSON PushNotification where
+  toJSON = J.genericToJSON . taggedObjectJSON $ dropPrefix "PN"
+  toEncoding = J.genericToEncoding . taggedObjectJSON $ dropPrefix "PN"
 
 data NtfEnv = NtfEnv
   { config :: NtfServerConfig,
@@ -70,7 +84,7 @@ newNtfSubscriber qSize smpAgentCfg = do
   pure NtfSubscriber {smpAgent, subQ}
 
 newtype NtfPushServer = NtfPushServer
-  { pushQ :: TBQueue (NtfTknData, Notification)
+  { pushQ :: TBQueue (NtfTknData, PushNotification)
   }
 
 newNtfPushServer :: Natural -> STM NtfPushServer

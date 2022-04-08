@@ -48,6 +48,11 @@ module Simplex.Messaging.Agent
     suspendConnection,
     deleteConnection,
     setSMPServers,
+    setNtfServers,
+    registerNtfToken,
+    verifyNtfToken,
+    enableNtfCron,
+    deleteNtfToken,
     logConnection,
   )
 where
@@ -69,6 +74,7 @@ import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
+import Data.Word (Word16)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -80,7 +86,8 @@ import Simplex.Messaging.Client (ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Notifications.Protocol (DeviceToken)
+import Simplex.Messaging.Notifications.Client
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode, NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -93,11 +100,11 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
-getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m AgentClient
+getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient
+      c <- getAgentClient initServers
       action <- async $ subscriber c `E.finally` disconnectAgentClient c
       pure c {smpSubscriber = action}
 
@@ -150,9 +157,23 @@ deleteConnection c = withAgentEnv c . deleteConnection' c
 setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers c = withAgentEnv c . setSMPServers' c
 
+setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
+setNtfServers c = withAgentEnv c . setNtfServers' c
+
 -- | Register device notifications token
 registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 registerNtfToken c = withAgentEnv c . registerNtfToken' c
+
+-- | Verify device notifications token
+verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NtfRegCode -> m ()
+verifyNtfToken c = withAgentEnv c .: verifyNtfToken' c
+
+-- | Enable/disable periodic notifications
+enableNtfCron :: AgentErrorMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
+enableNtfCron c = withAgentEnv c .: enableNtfCron' c
+
+deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
+deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -161,8 +182,8 @@ withAgentEnv c = (`runReaderT` agentEnv c)
 -- withAgentClient c = withAgentLock c . withAgentEnv c
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
-getAgentClient = ask >>= atomically . newAgentClient
+getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => InitialAgentServers -> m AgentClient
+getAgentClient initServers = ask >>= atomically . newAgentClient initServers
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
 logConnection c connected =
@@ -499,8 +520,73 @@ setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
-registerNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
-registerNtfToken' c token = pure ()
+registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m ()
+registerNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    Just tkn@NtfToken {ntfTokenId, ntfTknAction} -> case (ntfTokenId, ntfTknAction) of
+      (Nothing, Just (NTARegister ntfPubKey)) -> registerToken tkn ntfPubKey
+      -- TODO request verification code again in case there is registration, but no verification code in DB - probably after some timeout?
+      (Just tknId, Just (NTAVerify code)) ->
+        t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
+      (Just tknId, Just (NTACron interval)) ->
+        t tkn (NTActive, Just NTACheck) $ agentNtfEnableCron c tknId tkn interval
+      (Just _tknId, Just NTACheck) -> pure ()
+      (Just tknId, Just NTADelete) ->
+        t tkn (NTExpired, Nothing) $ agentNtfDeleteToken c tknId tkn
+      _ -> pure ()
+    _ ->
+      getNtfServer c >>= \case
+        Just ntfServer ->
+          asks (cmdSignAlg . config) >>= \case
+            C.SignAlg a -> do
+              (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
+              let tkn = newNtfToken deviceToken ntfServer ntfPrivKey ntfPubKey
+              withStore $ \st -> createNtfToken st tkn
+              registerToken tkn ntfPubKey
+        _ -> throwError $ CMD PROHIBITED
+  where
+    t tkn = withToken tkn Nothing
+    registerToken :: NtfToken -> C.APublicVerifyKey -> m ()
+    registerToken tkn ntfPubKey = do
+      (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
+      (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
+      let dhSecret = C.dh' srvPubDhKey privDhKey
+      withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
+
+verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> NtfRegCode -> m ()
+verifyNtfToken' c deviceToken code =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    Just tkn@NtfToken {ntfTokenId = Just tknId} ->
+      withToken tkn (Just (NTConfirmed, NTAVerify code)) (NTActive, Just NTACheck) $
+        agentNtfVerifyToken c tknId tkn code
+    _ -> throwError $ CMD PROHIBITED
+
+enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
+enableNtfCron' c deviceToken interval =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive} ->
+      withToken tkn (Just (NTActive, NTACron interval)) (NTActive, Just NTACheck) $
+        agentNtfEnableCron c tknId tkn interval
+    _ -> throwError $ CMD PROHIBITED
+
+deleteNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
+deleteNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} ->
+      withToken tkn (Just (ntfTknStatus, NTADelete)) (NTExpired, Nothing) $
+        agentNtfDeleteToken c tknId tkn
+    _ -> throwError $ CMD PROHIBITED
+
+withToken :: AgentMonad m => NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
+withToken tkn from_ (toStatus, toAction_) f = do
+  forM_ from_ $ \(status, action) -> withStore $ \st -> updateNtfToken st tkn status (Just action)
+  res <- f
+  withStore $ \st -> updateNtfToken st tkn toStatus toAction_
+  pure res
+
+setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
+setNtfServers' c servers = do
+  atomically $ writeTVar (ntfServers c) servers
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do
@@ -509,8 +595,19 @@ getSMPServer c = do
     srv :| [] -> pure srv
     servers -> do
       gen <- asks randomServer
-      i <- atomically . stateTVar gen $ randomR (0, L.length servers - 1)
-      pure $ servers L.!! i
+      atomically . stateTVar gen $
+        first (servers L.!!) . randomR (0, L.length servers - 1)
+
+getNtfServer :: AgentMonad m => AgentClient -> m (Maybe NtfServer)
+getNtfServer c = do
+  ntfServers <- readTVarIO $ ntfServers c
+  case ntfServers of
+    [] -> pure Nothing
+    [srv] -> pure $ Just srv
+    servers -> do
+      gen <- asks randomServer
+      atomically . stateTVar gen $
+        first (Just . (servers !!)) . randomR (0, length servers - 1)
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do

@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -17,8 +18,13 @@ import Data.Kind
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word16)
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
+import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util ((<$?>))
 
@@ -87,11 +93,30 @@ instance ProtocolMsgTag NtfCmdTag where
 instance NtfEntityI e => ProtocolMsgTag (NtfCommandTag e) where
   decodeTag s = decodeTag s >>= (\(NCT _ t) -> checkEntity' t)
 
-type NtfRegistrationCode = ByteString
+newtype NtfRegCode = NtfRegCode ByteString
+  deriving (Eq, Show)
+
+instance Encoding NtfRegCode where
+  smpEncode (NtfRegCode code) = smpEncode code
+  smpP = NtfRegCode <$> smpP
+
+instance StrEncoding NtfRegCode where
+  strEncode (NtfRegCode m) = strEncode m
+  strDecode s = NtfRegCode <$> strDecode s
+  strP = NtfRegCode <$> strP
+
+instance FromJSON NtfRegCode where
+  parseJSON = strParseJSON "NtfRegCode"
+
+instance ToJSON NtfRegCode where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 data NewNtfEntity (e :: NtfEntity) where
   NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
   NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NewNtfEntity 'Subscription
+
+deriving instance Show (NewNtfEntity e)
 
 data ANewNtfEntity = forall e. NtfEntityI e => ANE (SNtfEntity e) (NewNtfEntity e)
 
@@ -111,6 +136,7 @@ instance Encoding ANewNtfEntity where
 
 instance Protocol NtfResponse where
   type ProtocolCommand NtfResponse = NtfCmd
+  protocolClientHandshake = ntfClientHandshake
   protocolPing = NtfCmd SSubscription PING
   protocolError = \case
     NRErr e -> Just e
@@ -120,7 +146,7 @@ data NtfCommand (e :: NtfEntity) where
   -- | register new device token for notifications
   TNEW :: NewNtfEntity 'Token -> NtfCommand 'Token
   -- | verify token - uses e2e encrypted random string sent to the device via PN to confirm that the device has the token
-  TVFY :: NtfRegistrationCode -> NtfCommand 'Token
+  TVFY :: NtfRegCode -> NtfCommand 'Token
   -- | delete token - all subscriptions will be removed and no more notifications will be sent
   TDEL :: NtfCommand 'Token
   -- | enable periodic background notification to fetch the new messages - interval is in minutes, minimum is 20, 0 to disable
@@ -134,7 +160,11 @@ data NtfCommand (e :: NtfEntity) where
   -- | keep-alive command
   PING :: NtfCommand 'Subscription
 
+deriving instance Show (NtfCommand e)
+
 data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
+
+deriving instance Show NtfCmd
 
 instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
@@ -263,6 +293,7 @@ data SMPQueueNtf = SMPQueueNtf
     notifierId :: NotifierId,
     notifierKey :: NtfPrivateSignKey
   }
+  deriving (Show)
 
 instance Encoding SMPQueueNtf where
   smpEncode SMPQueueNtf {smpServer, notifierId, notifierKey} = smpEncode (smpServer, notifierId, notifierKey)
@@ -270,17 +301,30 @@ instance Encoding SMPQueueNtf where
     (smpServer, notifierId, notifierKey) <- smpP
     pure $ SMPQueueNtf smpServer notifierId notifierKey
 
-data PushPlatform = PPApple
+data PushProvider = PPApple
+  deriving (Eq, Ord, Show)
 
-instance Encoding PushPlatform where
+instance Encoding PushProvider where
   smpEncode = \case
     PPApple -> "A"
   smpP =
     A.anyChar >>= \case
       'A' -> pure PPApple
-      _ -> fail "bad PushPlatform"
+      _ -> fail "bad PushProvider"
 
-data DeviceToken = DeviceToken PushPlatform ByteString
+instance TextEncoding PushProvider where
+  textEncode = \case
+    PPApple -> "apple"
+  textDecode = \case
+    "apple" -> Just PPApple
+    _ -> Nothing
+
+instance FromField PushProvider where fromField = fromTextField_ textDecode
+
+instance ToField PushProvider where toField = toField . textEncode
+
+data DeviceToken = DeviceToken PushProvider ByteString
+  deriving (Eq, Ord, Show)
 
 instance Encoding DeviceToken where
   smpEncode (DeviceToken p t) = smpEncode (p, t)
@@ -322,17 +366,40 @@ instance Encoding NtfSubStatus where
       _ -> fail "bad NtfError"
 
 data NtfTknStatus
-  = -- | state after registration (TNEW)
+  = -- | Token created in DB
     NTNew
-  | -- | if initial notification or verification failed (push provider error)
+  | -- | state after registration (TNEW)
+    NTRegistered
+  | -- | if initial notification failed (push provider error) or verification failed
     NTInvalid
-  | -- | if initial notification succeeded
+  | -- | Token confirmed via notification (accepted by push provider or verification code received by client)
     NTConfirmed
   | -- | after successful verification (TVFY)
     NTActive
   | -- | after it is no longer valid (push provider error)
     NTExpired
-  deriving (Eq)
+  deriving (Eq, Show)
+
+instance TextEncoding NtfTknStatus where
+  textEncode = \case
+    NTNew -> "new"
+    NTRegistered -> "registered"
+    NTInvalid -> "invalid"
+    NTConfirmed -> "confirmed"
+    NTActive -> "active"
+    NTExpired -> "expired"
+  textDecode = \case
+    "new" -> Just NTNew
+    "registered" -> Just NTRegistered
+    "invalid" -> Just NTInvalid
+    "confirmed" -> Just NTConfirmed
+    "active" -> Just NTActive
+    "expired" -> Just NTExpired
+    _ -> Nothing
+
+instance FromField NtfTknStatus where fromField = fromTextField_ textDecode
+
+instance ToField NtfTknStatus where toField = toField . textEncode
 
 checkEntity :: forall t e e'. (NtfEntityI e, NtfEntityI e') => t e' -> Either String (t e)
 checkEntity c = case testEquality (sNtfEntity @e) (sNtfEntity @e') of
