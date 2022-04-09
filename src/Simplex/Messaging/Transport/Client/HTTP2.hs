@@ -12,14 +12,19 @@ import qualified Control.Exception as E
 import Control.Monad.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Default (def)
+import Data.Maybe (isNothing)
+import qualified Data.X509.CertificateStore as XS
 import Foreign (mallocBytes)
 import Network.HPACK (BufferSize, HeaderTable)
 import Network.HTTP2.Client (ClientConfig (..), Config (..), Request, Response)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
+import qualified Network.TLS as T
+import qualified Network.TLS.Extra as TE
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Transport (TLS, Transport (cGet, cPut))
-import Simplex.Messaging.Transport.Client (runTransportClient)
+import Simplex.Messaging.Transport.Client (runTLSTransportClient)
 import Simplex.Messaging.Transport.KeepAlive (KeepAliveOpts)
 import qualified System.TimeManager as TI
 import UnliftIO.STM
@@ -44,13 +49,33 @@ data HTTP2SClientConfig = HTTP2SClientConfig
   { qSize :: Natural,
     maxBody :: Int,
     connTimeout :: Int,
-    tcpKeepAlive :: Maybe KeepAliveOpts
+    tcpKeepAlive :: Maybe KeepAliveOpts,
+    caStoreFile :: FilePath,
+    suportedTLSParams :: T.Supported
   }
+  deriving (Show)
+
+defaultHTTP2SClientConfig :: HTTP2SClientConfig
+defaultHTTP2SClientConfig =
+  HTTP2SClientConfig
+    { qSize = 64,
+      maxBody = 500000,
+      connTimeout = 5000000,
+      tcpKeepAlive = Nothing,
+      caStoreFile = "/etc/ssl/cert.pem",
+      suportedTLSParams =
+        def
+          { T.supportedVersions = [T.TLS13, T.TLS12],
+            T.supportedCiphers = TE.ciphersuite_strong_det,
+            T.supportedSecureRenegotiation = False
+          }
+    }
 
 data HTTPS2ClientError = HCResponseTimeout | HCNetworkError | HCIOError IOException
+  deriving (Show)
 
 getHTTPS2Client :: HostName -> ServiceName -> HTTP2SClientConfig -> IO () -> IO (Either HTTPS2ClientError HTTPS2Client)
-getHTTPS2Client host port config@HTTP2SClientConfig {tcpKeepAlive, connTimeout} disconnected =
+getHTTPS2Client host port config@HTTP2SClientConfig {tcpKeepAlive, connTimeout, caStoreFile, suportedTLSParams} disconnected =
   (atomically mkHTTPS2Client >>= runClient)
     `catch` \(e :: IOException) -> pure . Left $ HCIOError e
   where
@@ -63,9 +88,11 @@ getHTTPS2Client host port config@HTTP2SClientConfig {tcpKeepAlive, connTimeout} 
     runClient :: HTTPS2Client -> IO (Either HTTPS2ClientError HTTPS2Client)
     runClient c = do
       cVar <- newEmptyTMVarIO
+      caStore <- XS.readCertificateStore caStoreFile
+      when (isNothing caStore) . putStrLn $ "Error loading CertificateStore from " <> caStoreFile
       action <-
         async $
-          runHTTPS2Client host port tcpKeepAlive (client c cVar)
+          runHTTPS2Client suportedTLSParams caStore host port tcpKeepAlive (client c cVar)
             `finally` atomically (putTMVar cVar $ Left HCNetworkError)
       conn_ <- connTimeout `timeout` atomically (takeTMVar cVar)
       pure $ case conn_ of
@@ -114,8 +141,9 @@ sendRequest HTTPS2Client {reqQ, config} req = do
   atomically $ writeTBQueue reqQ (req, resp)
   maybe (Left HCResponseTimeout) Right <$> (connTimeout config `timeout` atomically (takeTMVar resp))
 
-runHTTPS2Client :: HostName -> ServiceName -> Maybe KeepAliveOpts -> ((Request -> (Response -> IO ()) -> IO ()) -> IO ()) -> IO ()
-runHTTPS2Client host port keepAliveOpts client = runTransportClient host port Nothing keepAliveOpts https2Client
+runHTTPS2Client :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe KeepAliveOpts -> ((Request -> (Response -> IO ()) -> IO ()) -> IO ()) -> IO ()
+runHTTPS2Client tlsParams caStore host port keepAliveOpts client =
+  runTLSTransportClient tlsParams caStore host port Nothing keepAliveOpts https2Client
   where
     cfg = ClientConfig "https" (B.pack host) 20
     https2Client :: TLS -> IO ()
@@ -124,12 +152,6 @@ runHTTPS2Client host port keepAliveOpts client = runTransportClient host port No
         (allocTlsConfig c 16384)
         H.freeSimpleConfig
         (\conf -> H.run cfg conf client)
-    -- client_ :: UnliftIO m -> ((Request -> (Response -> IO ()) -> IO ()) -> IO ())
-    -- client_ u sendReq_ = do
-    --   unliftIO u $ client sendReq
-    --   where
-    --     sendReq :: Request -> (Response -> m ()) -> m ()
-    --     sendReq req handle = liftIO . sendReq_ req $ unliftIO u . handle
 
     allocTlsConfig :: TLS -> BufferSize -> IO Config
     allocTlsConfig c sz = do
@@ -144,25 +166,3 @@ runHTTPS2Client host port keepAliveOpts client = runTransportClient host port No
             confPositionReadMaker = H.defaultPositionReadMaker,
             confTimeoutManager = tm
           }
-
--- main :: IO ()
--- main = runTCPClient serverName "80" runHTTP2Client
---   where
---     cliconf = ClientConfig "http" (B.pack serverName) 20
---     runHTTP2Client :: Socket -> IO ()
---     runHTTP2Client s =
---       E.bracket
---         (allocSimpleConfig s 4096)
---         freeSimpleConfig
---         (\conf -> run cliconf conf client)
---     client :: ((Request -> (Response -> IO ()) -> IO ()) -> IO ())
---     client sendRequest = do
---       let req = requestNoBody methodGet "/" []
---       _ <- forkIO $
---         sendRequest req $ \rsp -> do
---           print rsp
---           getResponseBodyChunk rsp >>= B.putStrLn
---       sendRequest req $ \rsp -> do
---         threadDelay 100000
---         print rsp
---         getResponseBodyChunk rsp >>= B.putStrLn

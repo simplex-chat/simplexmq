@@ -46,7 +46,6 @@ library
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
-      Simplex.Messaging.Crypto.JWT
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
@@ -55,7 +54,7 @@ library
       Simplex.Messaging.Notifications.Server
       Simplex.Messaging.Notifications.Server.Env
       Simplex.Messaging.Notifications.Server.Push
-      Simplex.Messaging.Notifications.Server.Push.APN
+      Simplex.Messaging.Notifications.Server.Push.APNS
       Simplex.Messaging.Notifications.Server.Subscriptions
       Simplex.Messaging.Notifications.Transport
       Simplex.Messaging.Parsers
@@ -93,6 +92,7 @@ library
     , base >=4.7 && <5
     , base64-bytestring >=1.0 && <1.3
     , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
@@ -149,6 +149,7 @@ executable ntf-server
     , base >=4.7 && <5
     , base64-bytestring >=1.0 && <1.3
     , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
@@ -206,6 +207,7 @@ executable smp-agent
     , base >=4.7 && <5
     , base64-bytestring >=1.0 && <1.3
     , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
@@ -263,6 +265,7 @@ executable smp-server
     , base >=4.7 && <5
     , base64-bytestring >=1.0 && <1.3
     , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
@@ -335,6 +338,7 @@ test-suite smp-server-test
     , base >=4.7 && <5
     , base64-bytestring >=1.0 && <1.3
     , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
