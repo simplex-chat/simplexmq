@@ -26,7 +26,7 @@ import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTransportClient :: (Transport c, MonadUnliftIO m) => HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
 runTransportClient host port keyHash keepAliveOpts client = do
   let clientParams = mkTLSClientParams host port keyHash
   c <- liftIO $ startTCPClient host port clientParams keepAliveOpts
@@ -56,12 +56,12 @@ startTCPClient host port clientParams keepAliveOpts = withSocketsDo $ resolve >>
       ctx <- connectTLS clientParams sock
       getClientConnection ctx
 
-mkTLSClientParams :: HostName -> ServiceName -> C.KeyHash -> T.ClientParams
-mkTLSClientParams host port keyHash = do
+mkTLSClientParams :: HostName -> ServiceName -> Maybe C.KeyHash -> T.ClientParams
+mkTLSClientParams host port keyHash_ = do
   let p = B.pack port
   (T.defaultParamsClient host p)
     { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p},
+      T.clientHooks = maybe def (\keyHash -> def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p}) keyHash_,
       T.clientSupported = supportedParameters
     }
 

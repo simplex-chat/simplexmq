@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Server where
 
+import Control.Concurrent (forkFinally)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
@@ -21,11 +22,13 @@ import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
+import Simplex.Messaging.Notifications.Server.Env (NtfPushServer (pushClients))
 import Simplex.Messaging.Notifications.Server.Subscriptions
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (ErrorType (..), SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport)
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
@@ -104,14 +107,37 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
             pure ()
 
 ntfPush :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
-ntfPush NtfPushServer {pushQ} = forever $ do
-  atomically (readTBQueue pushQ) >>= \case
-    (NtfTknData {tknStatus}, notification) -> do
-      liftIO $ print $ J.encode notification
+ntfPush NtfPushServer {pushQ, pushClients} = forever $ do
+  (NtfTknData {token, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  status <- readTVarIO tknStatus
+  case (status, ntf) of
+    (_, PNVerification _code) -> do
+      -- TODO check token status
+      deliverNotification token ntf
+      -- liftIO $ print $ J.encode ntf
       -- TODO status update should happen after the token status successfully sent
-      case notification of
-        PNVerification _ -> atomically $ writeTVar tknStatus NTConfirmed
-        _ -> pure ()
+      atomically $ writeTVar tknStatus NTConfirmed
+    (NTActive, PNPeriodic) -> do
+      deliverNotification token ntf
+    -- liftIO $ print $ J.encode ntf
+    _ -> do
+      liftIO $ putStrLn "bad notification token status"
+  where
+    deliverNotification (DeviceToken provider token) notification = pure ()
+
+--   do
+--     withPushProviderClient provider $ \client -> client token notification
+-- withPushProviderClient :: PushProvider -> ((NtfTknData -> PushNotification -> IO ()) -> IO ()) -> m ()
+-- withPushProviderClient provider = do
+--   maybe connectPushClient pure =<< atomically (mapM readTVar =<< TM.lookup provider pushClients)
+--   where
+--     connectPushClient ::
+--     connectPushClient = do
+--       forkIO
+--         ( do
+--             runHTTPS2Client host port client
+--         )
+--         `finally` atomically (TM.delete provider pushClients)
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do

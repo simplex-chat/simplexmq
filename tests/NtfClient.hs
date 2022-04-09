@@ -40,7 +40,7 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 
 testNtfClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testNtfClient client =
-  runTransportClient testHost testPort testKeyHash (Just defaultKeepAliveOpts) $ \h ->
+  runTransportClient testHost testPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
     liftIO (runExceptT $ ntfClientHandshake h testKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e

@@ -161,7 +161,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
       thVar <- newEmptyTMVarIO
       action <-
         async $
-          runTransportClient (host protocolServer) port' (keyHash protocolServer) tcpKeepAlive (client t c thVar)
+          runTransportClient (host protocolServer) port' (Just $ keyHash protocolServer) tcpKeepAlive (client t c thVar)
             `finally` atomically (putTMVar thVar $ Left PCENetworkError)
       th_ <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case th_ of

@@ -23,6 +23,8 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Subscriptions
 import Simplex.Messaging.Parsers (dropPrefix, taggedObjectJSON)
 import Simplex.Messaging.Protocol (CorrId, Transmission)
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import UnliftIO.STM
@@ -83,14 +85,16 @@ newNtfSubscriber qSize smpAgentCfg = do
   subQ <- newTBQueue qSize
   pure NtfSubscriber {smpAgent, subQ}
 
-newtype NtfPushServer = NtfPushServer
-  { pushQ :: TBQueue (NtfTknData, PushNotification)
+data NtfPushServer = NtfPushServer
+  { pushQ :: TBQueue (NtfTknData, PushNotification),
+    pushClients :: TMap PushProvider (TVar (NtfTknData -> PushNotification -> IO ()))
   }
 
 newNtfPushServer :: Natural -> STM NtfPushServer
 newNtfPushServer qSize = do
   pushQ <- newTBQueue qSize
-  pure NtfPushServer {pushQ}
+  pushClients <- TM.empty
+  pure NtfPushServer {pushQ, pushClients}
 
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity
