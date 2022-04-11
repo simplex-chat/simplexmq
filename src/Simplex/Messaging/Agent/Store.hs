@@ -79,7 +79,9 @@ class Monad m => MonadAgentStore s m where
 
   -- Notification device token persistence
   createNtfToken :: s -> NtfToken -> m ()
-  getDeviceNtfToken :: s -> DeviceToken -> m (Maybe NtfToken) -- return current token if it exists and mark any old tokens for deletion
+
+  -- TODO this should also return old tokens so that they are deleted from the server
+  getDeviceNtfToken :: s -> DeviceToken -> m (Maybe NtfToken) -- return current token if it exists
   updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
   updateNtfToken :: s -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
 
