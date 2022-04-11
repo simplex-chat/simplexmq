@@ -70,6 +70,17 @@ dependencies:
   - x509-store == 1.6.*
   - x509-validation == 1.6.*
 
+flags:
+  swift:
+    description: Enable swift JSON format
+    manual: True
+    default: False
+
+when:
+  - condition: flag(swift)
+    ghc-options:
+      - -DswiftJSON
+
 library:
   source-dirs: src
 

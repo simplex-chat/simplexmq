@@ -81,6 +81,7 @@ data ProtocolClient msg = ProtocolClient
     sessionId :: ByteString,
     protocolServer :: ProtocolServer,
     tcpTimeout :: Int,
+    smpPingFailures :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request msg),
     sndQ :: TBQueue SentRawTransmission,
@@ -104,7 +105,11 @@ data ProtocolClientConfig = ProtocolClientConfig
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds)
-    smpPing :: Int
+    smpPing :: Int,
+    -- | timeout for SMP pings (microseconds)
+    smpPingTimeout :: Int,
+    -- | failed pings count
+    smpPingFailLimit :: Int
   }
 
 -- | Default protocol client configuration.
@@ -115,7 +120,9 @@ defaultClientConfig =
       defaultTransport = ("443", transport @TLS),
       tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
-      smpPing = 300_000_000 -- 5 min
+      smpPing = 300_000_000, -- 5 min,
+      smpPingTimeout = 10_000_000,
+      smpPingFailLimit = 3
     }
 
 data Request msg = Request
@@ -131,13 +138,14 @@ type Response msg = Either ProtocolClientError msg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall msg. Protocol msg => ProtocolServer -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
-getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing} msgQ disconnected =
+getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, smpPingTimeout, tcpKeepAlive, smpPing, smpPingFailLimit} msgQ disconnected =
   (atomically mkProtocolClient >>= runClient useTransport)
     `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
   where
     mkProtocolClient :: STM (ProtocolClient msg)
     mkProtocolClient = do
       connected <- newTVar False
+      smpPingFailures <- newTVar smpPingFailLimit
       clientCorrId <- newTVar 0
       sentCommands <- TM.empty
       sndQ <- newTBQueue qSize
@@ -149,6 +157,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
             connected,
             protocolServer,
             tcpTimeout,
+            smpPingFailures,
             clientCorrId,
             sentCommands,
             sndQ,
@@ -195,9 +204,13 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
     receive ProtocolClient {rcvQ} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
 
     ping :: ProtocolClient msg -> IO ()
-    ping c = forever $ do
+    ping c@ProtocolClient {smpPingFailures} = forever $ do
       threadDelay smpPing
-      void . either throwIO pure =<< runExceptT (sendProtocolCommand c Nothing "" protocolPing)
+      runExceptT (sendProtocolCommand c Nothing "" protocolPing $ Just smpPingTimeout) >>= \case
+        Right _ -> atomically $ writeTVar smpPingFailures smpPingFailLimit
+        Left e -> do
+          n <- atomically $ stateTVar smpPingFailures $ \n -> (n - 1, n - 1)
+          when (n == 0) $ throwIO e
 
     process :: ProtocolClient msg -> IO ()
     process ProtocolClient {rcvQ, sentCommands} = forever $ do
@@ -343,11 +356,11 @@ okSMPCommand cmd c pKey qId =
 
 -- | Send SMP command
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT ProtocolClientError IO BrokerMsg
-sendSMPCommand c pKey qId = sendProtocolCommand c pKey qId . Cmd sParty
+sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd) Nothing
 
 -- | Send Protocol command
-sendProtocolCommand :: forall msg. ProtocolEncoding (ProtocolCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtocolCommand msg -> ExceptT ProtocolClientError IO msg
-sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd = do
+sendProtocolCommand :: forall msg. ProtocolEncoding (ProtocolCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtocolCommand msg -> Maybe Int -> ExceptT ProtocolClientError IO msg
+sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd cmdTimeout_ = do
   corrId <- lift_ getNextCorrId
   t <- signTransmission $ encodeTransmission sessionId (corrId, qId, cmd)
   ExceptT $ sendRecv corrId t
@@ -371,7 +384,7 @@ sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId,
     sendRecv :: CorrId -> SentRawTransmission -> IO (Response msg)
     sendRecv corrId t = atomically (send corrId t) >>= withTimeout . atomically . takeTMVar
       where
-        withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout tcpTimeout a
+        withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout (fromMaybe tcpTimeout cmdTimeout_) a
 
     send :: CorrId -> SentRawTransmission -> STM (TMVar (Response msg))
     send corrId t = do
