@@ -163,12 +163,12 @@ defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
   APNSPushClientConfig
     { tokenTTL = 900, -- 15 minutes
-      authKeyFile = "",
+      authKeyFile = "", -- make it env
       authKeyAlg = "ES256",
-      authKeyId = "",
+      authKeyId = "", -- make it env
       paddedNtfLength = 2000,
-      appName = "chat.simplex.app",
-      appTeamId = "5NN7GUYB6T",
+      appName = "chat.simplex.app", -- make it env
+      appTeamId = "5NN7GUYB6T", -- make it env
       apnHost = "api.sandbox.push.apple.com",
       apnPort = "443",
       https2cfg = defaultHTTP2SClientConfig
@@ -233,6 +233,8 @@ apnsRequest APNSPushClient {jwtToken, config = APNSPushClientConfig {appName}} t
     pushType = \case
       APNSBackground {} -> "background"
       _ -> "alert"
+
+-- TODO send request
 
 hApnsTopic :: HeaderName
 hApnsTopic = CI.mk "apns-topic"

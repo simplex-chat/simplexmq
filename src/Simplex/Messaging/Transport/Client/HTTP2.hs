@@ -133,6 +133,7 @@ getHTTPS2Client host port config@HTTP2SClientConfig {tcpKeepAlive, connTimeout, 
 
 -- | Disconnects client from the server and terminates client threads.
 closeHTTPS2Client :: HTTPS2Client -> IO ()
+-- TODO disconnect
 closeHTTPS2Client = uninterruptibleCancel . action
 
 sendRequest :: HTTPS2Client -> Request -> IO (Either HTTPS2ClientError HTTP2Response)
