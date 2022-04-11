@@ -105,7 +105,7 @@ data SMPClientConfig = SMPClientConfig
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds)
     smpPing :: Int,
-    -- | timpeout for SMP pings (microseconds)
+    -- | timeout for SMP pings (microseconds)
     smpPingTimeout :: Int,
     -- | failed pings count
     smpPingFailLimit :: Int
