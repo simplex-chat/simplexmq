@@ -23,7 +23,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
-    SMPClient,
+    SMPClient (sessionId),
     getSMPClient,
     closeSMPClient,
 

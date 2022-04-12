@@ -76,7 +76,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
-import Simplex.Messaging.Client (SMPServerTransmission)
+import Simplex.Messaging.Client (SMPClient (..), SMPServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
@@ -486,7 +486,7 @@ deleteConnection' c connId =
     delete :: RcvQueue -> m ()
     delete rq = do
       deleteQueue c rq
-      removeSubscription c connId
+      atomically $ removeSubscription c connId
       withStore (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
@@ -554,15 +554,20 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                 _ -> prohibited >> ack
             _ -> prohibited >> ack
         SMP.END ->
-          atomically (TM.lookup srv smpClients)
-            >>= mapM_
-            $ \SMPClient {sessionId} ->
-              if sessId == sessionId
-                then do
+          atomically (TM.lookup srv smpClients >>= fmap join . mapM tryReadTMVar >>= processEND)
+            >>= \case
+              True -> do
+                logServer "<--" c srv rId "END"
+                notify END
+              _ -> logServer "<--" c srv rId "END from disconnected client - ignored"
+          where
+            processEND = \case
+              Just (Right clnt)
+                | sessId == sessionId clnt -> do
                   removeSubscription c connId
-                  logServer "<--" c srv rId "END"
-                  notify END
-                else logServer "<--" c srv rId "END from disconnected client - ignored"
+                  pure True
+                | otherwise -> pure False
+              _ -> pure False
         _ -> do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
           notify . ERR $ BROKER UNEXPECTED

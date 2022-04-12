@@ -365,8 +365,8 @@ addSubs_ ss rq@RcvQueue {server} connId =
     Just m -> TM.insert connId rq m
     _ -> TM.singleton connId rq >>= \m -> TM.insert server m ss
 
-removeSubscription :: MonadUnliftIO m => AgentClient -> ConnId -> m ()
-removeSubscription c@AgentClient {subscrConns} connId = atomically $ do
+removeSubscription :: AgentClient -> ConnId -> STM ()
+removeSubscription c@AgentClient {subscrConns} connId = do
   server_ <- TM.lookupDelete connId subscrConns
   mapM_ (\server -> removeSubs_ (subscrSrvrs c) server connId) server_
 
