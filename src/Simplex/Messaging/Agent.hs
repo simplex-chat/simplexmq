@@ -512,7 +512,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTransmission -> m ()
-processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
+processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) = do
   withStore (\st -> getRcvConn st srv rId) >>= \case
     SomeConn SCDuplex (DuplexConnection cData rq _) -> processSMP SCDuplex cData rq
     SomeConn SCRcv (RcvConnection cData rq) -> processSMP SCRcv cData rq
@@ -553,10 +553,13 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                     _ -> prohibited >> ack
                 _ -> prohibited >> ack
             _ -> prohibited >> ack
-        SMP.END -> do
-          removeSubscription c connId
-          logServer "<--" c srv rId "END"
-          notify END
+        SMP.END ->
+          atomically (TM.lookup srv smpClients)
+            >>= mapM_
+            $ \SMPClient {sessionId} -> when (sessId == sessionId) $ do
+              removeSubscription c connId
+              logServer "<--" c srv rId "END"
+              notify END
         _ -> do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
           notify . ERR $ BROKER UNEXPECTED
