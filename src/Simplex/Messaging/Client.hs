@@ -112,9 +112,9 @@ smpDefaultConfig =
   SMPClientConfig
     { qSize = 64,
       defaultTransport = ("5223", transport @TLS),
-      tcpTimeout = 5_000_000,
+      tcpTimeout = 750_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
-      smpPing = 600_000_000 -- 10min
+      smpPing = 5_000_000 -- 10min
     }
 
 data Request = Request
@@ -194,7 +194,7 @@ getSMPClient smpServer cfg@SMPClientConfig {qSize, tcpTimeout, tcpKeepAlive, smp
     ping :: SMPClient -> IO ()
     ping c = forever $ do
       threadDelay smpPing
-      runExceptT $ sendSMPCommand c Nothing "" PING
+      void . either throwIO pure =<< runExceptT (sendSMPCommand c Nothing "" PING)
 
     process :: SMPClient -> IO ()
     process SMPClient {sessionId, rcvQ, sentCommands} = forever $ do

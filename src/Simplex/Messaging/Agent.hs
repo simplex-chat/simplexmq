@@ -555,19 +555,17 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
             _ -> prohibited >> ack
         SMP.END ->
           atomically (TM.lookup srv smpClients >>= fmap join . mapM tryReadTMVar >>= processEND)
-            >>= \case
-              True -> do
-                logServer "<--" c srv rId "END"
-                notify END
-              _ -> logServer "<--" c srv rId "END from disconnected client - ignored"
+            >>= logServer "<--" c srv rId
           where
             processEND = \case
               Just (Right clnt)
                 | sessId == sessionId clnt -> do
                   removeSubscription c connId
-                  pure True
-                | otherwise -> pure False
-              _ -> pure False
+                  writeTBQueue subQ ("", connId, END)
+                  pure "END"
+                | otherwise -> ignored
+              _ -> ignored
+            ignored = pure "END from disconnected client - ignored"
         _ -> do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
           notify . ERR $ BROKER UNEXPECTED
