@@ -556,10 +556,13 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
         SMP.END ->
           atomically (TM.lookup srv smpClients)
             >>= mapM_
-            $ \SMPClient {sessionId} -> when (sessId == sessionId) $ do
-              removeSubscription c connId
-              logServer "<--" c srv rId "END"
-              notify END
+            $ \SMPClient {sessionId} ->
+              if sessId == sessionId
+                then do
+                  removeSubscription c connId
+                  logServer "<--" c srv rId "END"
+                  notify END
+                else logServer "<--" c srv rId "END from disconnected client - ignored"
         _ -> do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
           notify . ERR $ BROKER UNEXPECTED
