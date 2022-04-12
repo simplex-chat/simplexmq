@@ -52,7 +52,7 @@ foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" _TCP_KEEPINTVL :: CInt
 
 foreign import capi "netinet/tcp.h value TCP_KEEPCNT" _TCP_KEEPCNT :: CInt
 
-#endif
+#endif 
 
 setSocketKeepAlive :: Socket -> KeepAliveOpts -> IO ()
 setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
