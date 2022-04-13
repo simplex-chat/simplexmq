@@ -82,7 +82,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
-import Simplex.Messaging.Client (ServerTransmission)
+import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
@@ -512,7 +512,7 @@ deleteConnection' c connId =
     delete :: RcvQueue -> m ()
     delete rq = do
       deleteQueue c rq
-      removeSubscription c connId
+      atomically $ removeSubscription c connId
       withStore (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
@@ -617,7 +617,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
-processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
+processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) = do
   withStore (\st -> getRcvConn st srv rId) >>= \case
     SomeConn SCDuplex (DuplexConnection cData rq _) -> processSMP SCDuplex cData rq
     SomeConn SCRcv (RcvConnection cData rq) -> processSMP SCRcv cData rq
@@ -658,10 +658,19 @@ processSMPTransmission c@AgentClient {subQ} (srv, rId, cmd) = do
                     _ -> prohibited >> ack
                 _ -> prohibited >> ack
             _ -> prohibited >> ack
-        SMP.END -> do
-          removeSubscription c connId
-          logServer "<--" c srv rId "END"
-          notify END
+        SMP.END ->
+          atomically (TM.lookup srv smpClients >>= fmap join . mapM tryReadTMVar >>= processEND)
+            >>= logServer "<--" c srv rId
+          where
+            processEND = \case
+              Just (Right clnt)
+                | sessId == sessionId clnt -> do
+                  removeSubscription c connId
+                  writeTBQueue subQ ("", connId, END)
+                  pure "END"
+                | otherwise -> ignored
+              _ -> ignored
+            ignored = pure "END from disconnected client - ignored"
         _ -> do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
           notify . ERR $ BROKER UNEXPECTED

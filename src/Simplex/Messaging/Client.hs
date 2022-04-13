@@ -24,7 +24,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
-    ProtocolClient,
+    ProtocolClient (sessionId),
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
@@ -65,7 +65,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), TLS, TProxy, Transport (..), TransportError)
+import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -78,10 +78,9 @@ import System.Timeout (timeout)
 data ProtocolClient msg = ProtocolClient
   { action :: Async (),
     connected :: TVar Bool,
-    sessionId :: ByteString,
+    sessionId :: SessionId,
     protocolServer :: ProtocolServer,
     tcpTimeout :: Int,
-    smpPingFailures :: TVar Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request msg),
     sndQ :: TBQueue SentRawTransmission,
@@ -92,7 +91,7 @@ data ProtocolClient msg = ProtocolClient
 type SMPClient = ProtocolClient SMP.BrokerMsg
 
 -- | Type synonym for transmission from some SPM server queue.
-type ServerTransmission msg = (ProtocolServer, QueueId, msg)
+type ServerTransmission msg = (ProtocolServer, SessionId, QueueId, msg)
 
 -- | protocol client configuration.
 data ProtocolClientConfig = ProtocolClientConfig
@@ -105,11 +104,7 @@ data ProtocolClientConfig = ProtocolClientConfig
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds)
-    smpPing :: Int,
-    -- | timeout for SMP pings (microseconds)
-    smpPingTimeout :: Int,
-    -- | failed pings count
-    smpPingFailLimit :: Int
+    smpPing :: Int
   }
 
 -- | Default protocol client configuration.
@@ -120,9 +115,7 @@ defaultClientConfig =
       defaultTransport = ("443", transport @TLS),
       tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
-      smpPing = 300_000_000, -- 5 min,
-      smpPingTimeout = 10_000_000,
-      smpPingFailLimit = 3
+      smpPing = 600_000_000 -- 10min
     }
 
 data Request msg = Request
@@ -138,14 +131,13 @@ type Response msg = Either ProtocolClientError msg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall msg. Protocol msg => ProtocolServer -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
-getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, smpPingTimeout, tcpKeepAlive, smpPing, smpPingFailLimit} msgQ disconnected =
+getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing} msgQ disconnected =
   (atomically mkProtocolClient >>= runClient useTransport)
     `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
   where
     mkProtocolClient :: STM (ProtocolClient msg)
     mkProtocolClient = do
       connected <- newTVar False
-      smpPingFailures <- newTVar smpPingFailLimit
       clientCorrId <- newTVar 0
       sentCommands <- TM.empty
       sndQ <- newTBQueue qSize
@@ -157,7 +149,6 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, sm
             connected,
             protocolServer,
             tcpTimeout,
-            smpPingFailures,
             clientCorrId,
             sentCommands,
             sndQ,
@@ -204,16 +195,12 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, sm
     receive ProtocolClient {rcvQ} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
 
     ping :: ProtocolClient msg -> IO ()
-    ping c@ProtocolClient {smpPingFailures} = forever $ do
+    ping c = forever $ do
       threadDelay smpPing
-      runExceptT (sendProtocolCommand c Nothing "" protocolPing $ Just smpPingTimeout) >>= \case
-        Right _ -> atomically $ writeTVar smpPingFailures smpPingFailLimit
-        Left e -> do
-          n <- atomically $ stateTVar smpPingFailures $ \n -> (n - 1, n - 1)
-          when (n == 0) $ throwIO e
+      runExceptT $ sendProtocolCommand c Nothing "" protocolPing
 
     process :: ProtocolClient msg -> IO ()
-    process ProtocolClient {rcvQ, sentCommands} = forever $ do
+    process ProtocolClient {sessionId, rcvQ, sentCommands} = forever $ do
       (_, _, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
       if B.null $ bs corrId
         then sendMsg qId respOrErr
@@ -230,12 +217,12 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, sm
                       Just e -> Left $ PCEProtocolError e
                       _ -> Right r
                   else Left PCEUnexpectedResponse
-
-    sendMsg :: QueueId -> Either ErrorType msg -> IO ()
-    sendMsg qId = \case
-      Right cmd -> atomically $ mapM_ (`writeTBQueue` (protocolServer, qId, cmd)) msgQ
-      -- TODO send everything else to errQ and log in agent
-      _ -> return ()
+      where
+        sendMsg :: QueueId -> Either ErrorType msg -> IO ()
+        sendMsg qId = \case
+          Right cmd -> atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, qId, cmd)) msgQ
+          -- TODO send everything else to errQ and log in agent
+          _ -> return ()
 
 -- | Disconnects client from the server and terminates client threads.
 closeProtocolClient :: ProtocolClient msg -> IO ()
@@ -287,11 +274,11 @@ createSMPQueue c rpKey rKey dhKey =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO ()
-subscribeSMPQueue c@ProtocolClient {protocolServer, msgQ} rpKey rId =
+subscribeSMPQueue c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> return ()
     cmd@MSG {} ->
-      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, rId, cmd)) msgQ
+      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
     _ -> throwE PCEUnexpectedResponse
 
 -- | Subscribe to the SMP queue notifications.
@@ -328,11 +315,11 @@ sendSMPMessage c spKey sId msg =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
 ackSMPMessage :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT ProtocolClientError IO ()
-ackSMPMessage c@ProtocolClient {protocolServer, msgQ} rpKey rId =
+ackSMPMessage c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId ACK >>= \case
     OK -> return ()
     cmd@MSG {} ->
-      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, rId, cmd)) msgQ
+      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
     _ -> throwE PCEUnexpectedResponse
 
 -- | Irreversibly suspend SMP queue.
@@ -356,11 +343,11 @@ okSMPCommand cmd c pKey qId =
 
 -- | Send SMP command
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT ProtocolClientError IO BrokerMsg
-sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd) Nothing
+sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
 -- | Send Protocol command
-sendProtocolCommand :: forall msg. ProtocolEncoding (ProtocolCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtocolCommand msg -> Maybe Int -> ExceptT ProtocolClientError IO msg
-sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd cmdTimeout_ = do
+sendProtocolCommand :: forall msg. ProtocolEncoding (ProtocolCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtocolCommand msg -> ExceptT ProtocolClientError IO msg
+sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
   t <- signTransmission $ encodeTransmission sessionId (corrId, qId, cmd)
   ExceptT $ sendRecv corrId t
@@ -384,7 +371,7 @@ sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId,
     sendRecv :: CorrId -> SentRawTransmission -> IO (Response msg)
     sendRecv corrId t = atomically (send corrId t) >>= withTimeout . atomically . takeTMVar
       where
-        withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout (fromMaybe tcpTimeout cmdTimeout_) a
+        withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout tcpTimeout a
 
     send :: CorrId -> SentRawTransmission -> STM (TMVar (Response msg))
     send corrId t = do

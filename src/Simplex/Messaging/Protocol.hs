@@ -116,7 +116,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), smpClientHandshake, tGetBlock, tPutBlock)
+import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -180,7 +180,7 @@ type Signed = ByteString
 data RawTransmission = RawTransmission
   { signature :: ByteString,
     signed :: ByteString,
-    sessId :: ByteString,
+    sessId :: SessionId,
     corrId :: ByteString,
     entityId :: ByteString,
     command :: ByteString
@@ -188,7 +188,7 @@ data RawTransmission = RawTransmission
   deriving (Show)
 
 -- | unparsed sent SMP transmission with signature, without session ID.
-type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString)
+type SignedRawTransmission = (Maybe C.ASignature, SessionId, ByteString, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
 type SentRawTransmission = (Maybe C.ASignature, ByteString)
