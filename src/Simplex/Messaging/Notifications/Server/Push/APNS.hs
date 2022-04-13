@@ -168,7 +168,7 @@ data APNSPushClientConfig = APNSPushClientConfig
 defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
   APNSPushClientConfig
-    { tokenTTL = 900, -- 15 minutes
+    { tokenTTL = 1200, -- 20 minutes
       authKeyFile = "", -- make it env
       authKeyAlg = "ES256",
       authKeyId = "", -- make it env
@@ -273,7 +273,7 @@ apnsRequest c tkn ntf@APNSNotification {aps} = do
       APNSBackground {} -> "background"
       _ -> "alert"
 
-data APNSPushClientError = ACEConnection HTTPS2ClientError | ACEResponseError (Maybe Status) Text | ACETokenInvalid | ACERetryLater | ACEStopServer
+data APNSPushClientError = ACEConnection HTTPS2ClientError | ACEResponseError (Maybe Status) Text | ACETokenInvalid | ACERetryLater | ACEPermanentError
   deriving (Show)
 
 newtype APNSErrorReponse = APNSErrorReponse {reason :: Text}
@@ -295,11 +295,11 @@ apnsSendNotification c tkn pn = do
         case reason of
           "BadDeviceToken" -> throwError ACETokenInvalid
           "DeviceTokenNotForTopic" -> throwError ACETokenInvalid
-          "TopicDisallowed" -> throwError ACEStopServer
+          "TopicDisallowed" -> throwError ACEPermanentError
           _ -> err status reason
       | status == Just N.forbidden403 = case reason of
-        "ExpiredProviderToken" -> throwError ACEStopServer
-        "InvalidProviderToken" -> throwError ACEStopServer
+        "ExpiredProviderToken" -> throwError ACEPermanentError -- there should be no point retrying it as the token was refreshed
+        "InvalidProviderToken" -> throwError ACEPermanentError
         _ -> err status reason
       | status == Just N.gone410 = throwError ACETokenInvalid
       | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError ACERetryLater
