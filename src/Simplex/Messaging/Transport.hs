@@ -37,6 +37,7 @@ module Simplex.Messaging.Transport
 
     -- * TLS Transport
     TLS (..),
+    SessionId,
     connectTLS,
     closeTLS,
     supportedParameters,
@@ -114,7 +115,7 @@ class Transport c where
   getClientConnection :: T.Context -> IO c
 
   -- | tls-unique channel binding per RFC5929
-  tlsUnique :: c -> ByteString
+  tlsUnique :: c -> SessionId
 
   -- | Close connection
   closeConnection :: c -> IO ()
@@ -249,15 +250,18 @@ trimCR s = if B.last s == '\r' then B.init s else s
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
-    sessionId :: ByteString,
+    sessionId :: SessionId,
     blockSize :: Int,
     -- | agreed server protocol version
     thVersion :: Version
   }
 
+-- | TLS-unique channel binding
+type SessionId = ByteString
+
 data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRange,
-    sessionId :: ByteString
+    sessionId :: SessionId
   }
 
 data ClientHandshake = ClientHandshake

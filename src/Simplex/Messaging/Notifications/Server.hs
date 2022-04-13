@@ -75,7 +75,7 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
 
     receiveSMP :: m ()
     receiveSMP = forever $ do
-      (srv, ntfId, msg) <- atomically $ readTBQueue msgQ
+      (srv, sessId, ntfId, msg) <- atomically $ readTBQueue msgQ
       case msg of
         SMP.NMSG -> do
           -- check when the last NMSG was received from this queue
