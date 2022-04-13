@@ -5,6 +5,7 @@ module Main where
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
+import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI)
 import System.FilePath (combine)
 
@@ -44,6 +45,7 @@ ntfServerCLIConfig =
                 subQSize = 64,
                 pushQSize = 128,
                 smpAgentCfg = defaultSMPClientAgentConfig,
+                apnsConfig = defaultAPNSPushClientConfig,
                 caCertificateFile = caCrtFile,
                 privateKeyFile = serverKeyFile,
                 certificateFile = serverCrtFile

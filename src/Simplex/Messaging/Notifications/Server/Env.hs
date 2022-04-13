@@ -1,27 +1,25 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Notifications.Server.Env where
 
+import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.Aeson (FromJSON, ToJSON)
-import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import Data.X509.Validation (Fingerprint (..))
-import GHC.Generics
 import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Subscriptions
-import Simplex.Messaging.Parsers (dropPrefix, taggedObjectJSON)
 import Simplex.Messaging.Protocol (CorrId, Transmission)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -37,21 +35,12 @@ data NtfServerConfig = NtfServerConfig
     subQSize :: Natural,
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
+    apnsConfig :: APNSPushClientConfig,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath
   }
-
-data PushNotification = PNVerification {code :: NtfRegCode} | PNPeriodic
-  deriving (Show, Generic)
-
-instance FromJSON PushNotification where
-  parseJSON = J.genericParseJSON . taggedObjectJSON $ dropPrefix "PN"
-
-instance ToJSON PushNotification where
-  toJSON = J.genericToJSON . taggedObjectJSON $ dropPrefix "PN"
-  toEncoding = J.genericToEncoding . taggedObjectJSON $ dropPrefix "PN"
 
 data NtfEnv = NtfEnv
   { config :: NtfServerConfig,
@@ -65,11 +54,12 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
-newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, caCertificateFile, certificateFile, privateKeyFile} = do
+newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, caCertificateFile, certificateFile, privateKeyFile} = do
   idsDrg <- newTVarIO =<< drgNew
   store <- atomically newNtfStore
   subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
-  pushServer <- atomically $ newNtfPushServer pushQSize
+  pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
+  void . liftIO $ newPushClient pushServer PPApple
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
@@ -87,14 +77,26 @@ newNtfSubscriber qSize smpAgentCfg = do
 
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfTknData, PushNotification),
-    pushClients :: TMap PushProvider (TVar (NtfTknData -> PushNotification -> IO ()))
+    pushClients :: TMap PushProvider PushProviderClient,
+    apnsConfig :: APNSPushClientConfig
   }
 
-newNtfPushServer :: Natural -> STM NtfPushServer
-newNtfPushServer qSize = do
+newNtfPushServer :: Natural -> APNSPushClientConfig -> STM NtfPushServer
+newNtfPushServer qSize apnsConfig = do
   pushQ <- newTBQueue qSize
   pushClients <- TM.empty
-  pure NtfPushServer {pushQ, pushClients}
+  pure NtfPushServer {pushQ, pushClients, apnsConfig}
+
+newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
+newPushClient NtfPushServer {apnsConfig, pushClients} = \case
+  PPApple -> do
+    c <- apnsPushProviderClient <$> createAPNSPushClient apnsConfig
+    atomically $ TM.insert PPApple c pushClients
+    pure c
+
+getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
+getPushClient s@NtfPushServer {pushClients} pp =
+  atomically (TM.lookup pp pushClients) >>= maybe (newPushClient s pp) pure
 
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity

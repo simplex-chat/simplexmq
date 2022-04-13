@@ -19,6 +19,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
+import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
@@ -55,6 +56,7 @@ cfg =
       subQSize = 1,
       pushQSize = 1,
       smpAgentCfg = defaultSMPClientAgentConfig,
+      apnsConfig = defaultAPNSPushClientConfig,
       -- CA certificate private key is not needed for initialization
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",

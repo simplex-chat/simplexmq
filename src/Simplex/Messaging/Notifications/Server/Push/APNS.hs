@@ -2,7 +2,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -91,7 +90,11 @@ readECPrivateKey f = do
   [PK.Unprotected (X.PrivKeyEC X.PrivKeyEC_Named {privkeyEC_name, privkeyEC_priv})] <- PK.readKeyFile f
   pure EC.PrivateKey {private_curve = ECT.getCurveByName privkeyEC_name, private_d = privkeyEC_priv}
 
-data PushNotification = PNVerification NtfRegCode | PNMessage SMPServer NotifierId | PNAlert Text | PNPing
+data PushNotification
+  = PNVerification NtfRegCode
+  | PNMessage SMPServer NotifierId
+  | PNAlert Text
+  | PNCheckMessages
 
 data APNSNotification = APNSNotification {aps :: APNSNotificationBody, notificationData :: Maybe J.Value}
   deriving (Show, Generic)
@@ -107,7 +110,7 @@ data APNSNotificationBody
   deriving (Show, Generic)
 
 apnsJSONOptions :: J.Options
-apnsJSONOptions = J.defaultOptions {J.omitNothingFields = True, J.sumEncoding = J.UntaggedValue, J.constructorTagModifier = J.camelTo2 '-'}
+apnsJSONOptions = J.defaultOptions {J.omitNothingFields = True, J.sumEncoding = J.UntaggedValue, J.fieldLabelModifier = J.camelTo2 '-'}
 
 instance ToJSON APNSNotificationBody where
   toJSON = J.genericToJSON apnsJSONOptions
@@ -183,7 +186,7 @@ defaultAPNSPushClientConfig =
       authKeyFileEnv = "APNS_KEY_FILE", -- the environment variables APNS_KEY_FILE and APNS_KEY_ID must be set, or the server would fail to start
       authKeyAlg = "ES256",
       authKeyIdEnv = "APNS_KEY_ID",
-      paddedNtfLength = 512,
+      paddedNtfLength = 256,
       appName = "chat.simplex.app",
       appTeamId = "5NN7GUYB6T",
       apnHost = "api.sandbox.push.apple.com",
@@ -197,22 +200,23 @@ data APNSPushClient = APNSPushClient
     jwtHeader :: JWTHeader,
     jwtToken :: TVar (JWTToken, SignedJWTToken),
     nonceDrg :: TVar ChaChaDRG,
-    config :: APNSPushClientConfig
+    apnsCfg :: APNSPushClientConfig
   }
 
 createAPNSPushClient :: APNSPushClientConfig -> IO APNSPushClient
-createAPNSPushClient config@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
+createAPNSPushClient apnsCfg@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
   https2Client <- newTVarIO Nothing
-  void $ connectHTTPS2 config https2Client
+  void $ connectHTTPS2 apnsCfg https2Client
   privateKey <- readECPrivateKey =<< getEnv authKeyFileEnv
   authKeyId <- T.pack <$> getEnv authKeyIdEnv
+  putStrLn $ authKeyIdEnv <> "=" <> T.unpack authKeyId
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
   jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
   nonceDrg <- drgNew >>= newTVarIO
-  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, config}
+  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, apnsCfg}
 
 getApnsJWTToken :: APNSPushClient -> IO SignedJWTToken
-getApnsJWTToken APNSPushClient {config = APNSPushClientConfig {appTeamId, tokenTTL}, privateKey, jwtHeader, jwtToken} = do
+getApnsJWTToken APNSPushClient {apnsCfg = APNSPushClientConfig {appTeamId, tokenTTL}, privateKey, jwtHeader, jwtToken} = do
   (jwt, signedJWT) <- readTVarIO jwtToken
   age <- jwtTokenAge jwt
   if age < tokenTTL
@@ -241,8 +245,8 @@ connectHTTPS2 APNSPushClientConfig {apnHost, apnPort, https2cfg} https2Client = 
     disconnected = atomically $ writeTVar https2Client Nothing
 
 getApnsHTTP2Client :: APNSPushClient -> IO (Either HTTPS2ClientError HTTPS2Client)
-getApnsHTTP2Client APNSPushClient {https2Client, config} =
-  readTVarIO https2Client >>= maybe (connectHTTPS2 config https2Client) (pure . Right)
+getApnsHTTP2Client APNSPushClient {https2Client, apnsCfg} =
+  readTVarIO https2Client >>= maybe (connectHTTPS2 apnsCfg https2Client) (pure . Right)
 
 disconnectApnsHTTP2Client :: APNSPushClient -> IO ()
 disconnectApnsHTTP2Client APNSPushClient {https2Client} =
@@ -257,7 +261,7 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
     encrypt (strEncode srv <> "/" <> strEncode nId) $ \ntfQueue ->
       apn apnMutableContent . Just $ J.object ["checkMessage" .= ntfQueue]
   PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
-  PNPing -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
+  PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where
     encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
     encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
@@ -273,7 +277,7 @@ apnsRequest c tkn ntf@APNSNotification {aps} = do
   where
     path = "/3/device/" <> tkn
     headers signedJWT =
-      [ (hApnsTopic, appName $ config (c :: APNSPushClient)),
+      [ (hApnsTopic, appName $ apnsCfg (c :: APNSPushClient)),
         (hApnsPushType, pushType aps),
         (hAuthorization, "bearer " <> signedJWT)
       ]
@@ -285,49 +289,54 @@ apnsRequest c tkn ntf@APNSNotification {aps} = do
       APNSBackground {} -> "background"
       _ -> "alert"
 
-data APNSPushClientError
-  = ACEConnection HTTPS2ClientError
-  | ACECryptError C.CryptoError
-  | ACEResponseError (Maybe Status) Text
-  | ACETokenInvalid
-  | ACERetryLater
-  | ACEPermanentError
+data PushProviderError
+  = PPConnection HTTPS2ClientError
+  | PPCryptoError C.CryptoError
+  | PPResponseError (Maybe Status) Text
+  | PPTokenInvalid
+  | PPRetryLater
+  | PPPermanentError
   deriving (Show)
+
+type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProviderError IO ()
 
 newtype APNSErrorReponse = APNSErrorReponse {reason :: Text}
   deriving (Generic, FromJSON)
 
-apnsSendNotification :: APNSPushClient -> NtfTknData -> PushNotification -> ExceptT APNSPushClientError IO ()
-apnsSendNotification c@APNSPushClient {nonceDrg, config} tkn@NtfTknData {token = DeviceToken PPApple tknStr} pn = do
+apnsPushProviderClient :: APNSPushClient -> PushProviderClient
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken PPApple tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
-  apnsNtf <- liftEither $ first ACECryptError $ apnsNotification tkn nonce (paddedNtfLength config) pn
+  apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
+  liftIO $ putStrLn $ "APNS notification: " <> show apnsNtf
   req <- liftIO $ apnsRequest c tknStr apnsNtf
+  liftIO $ putStrLn $ "APNS request: " <> show req
   HTTP2Response {response, respBody} <- liftHTTPS2 $ sendRequest http2 req
   let status = H.responseStatus response
       reason = fromMaybe "" $ J.decodeStrict' =<< respBody
+  liftIO $ putStrLn $ "APNS response: " <> show status <> " " <> T.unpack reason
   result status reason
   where
-    result :: Maybe Status -> Text -> ExceptT APNSPushClientError IO ()
+    result :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     result status reason
       | status == Just N.ok200 = pure ()
       | status == Just N.badRequest400 =
         case reason of
-          "BadDeviceToken" -> throwError ACETokenInvalid
-          "DeviceTokenNotForTopic" -> throwError ACETokenInvalid
-          "TopicDisallowed" -> throwError ACEPermanentError
+          "BadDeviceToken" -> throwError PPTokenInvalid
+          "DeviceTokenNotForTopic" -> throwError PPTokenInvalid
+          "TopicDisallowed" -> throwError PPPermanentError
           _ -> err status reason
       | status == Just N.forbidden403 = case reason of
-        "ExpiredProviderToken" -> throwError ACEPermanentError -- there should be no point retrying it as the token was refreshed
-        "InvalidProviderToken" -> throwError ACEPermanentError
+        "ExpiredProviderToken" -> throwError PPPermanentError -- there should be no point retrying it as the token was refreshed
+        "InvalidProviderToken" -> throwError PPPermanentError
         _ -> err status reason
-      | status == Just N.gone410 = throwError ACETokenInvalid
-      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError ACERetryLater
+      | status == Just N.gone410 = throwError PPTokenInvalid
+      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError PPRetryLater
       -- Just tooManyRequests429 -> TODO TooManyRequests - too many requests for the same token
       | otherwise = err status reason
-    err :: Maybe Status -> Text -> ExceptT APNSPushClientError IO ()
-    err s r = throwError $ ACEResponseError s r
-    liftHTTPS2 a = ExceptT $ first ACEConnection <$> a
+    err :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
+    err s r = throwError $ PPResponseError s r
+    liftHTTPS2 a = ExceptT $ first PPConnection <$> a
 
 hApnsTopic :: HeaderName
 hApnsTopic = CI.mk "apns-topic"

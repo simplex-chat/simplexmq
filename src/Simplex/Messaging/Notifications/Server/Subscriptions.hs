@@ -2,21 +2,13 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Notifications.Server.Subscriptions where
 
 import Control.Concurrent.STM
-import Control.Monad
-import Crypto.PubKey.Curve25519 (dhSecret)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
-import Data.Set (Set)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (ErrorType (..), NotifierId, NtfPrivateSignKey, ProtocolServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util ((<$$>))

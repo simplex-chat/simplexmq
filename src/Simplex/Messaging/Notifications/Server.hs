@@ -10,25 +10,22 @@
 
 module Simplex.Messaging.Notifications.Server where
 
-import Control.Concurrent (forkFinally)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
-import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
-import Simplex.Messaging.Notifications.Server.Env (NtfPushServer (pushClients))
+import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Subscriptions
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (ErrorType (..), SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport)
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
@@ -63,7 +60,7 @@ runNtfServerBlocking started cfg@NtfServerConfig {transports} = do
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
 
-ntfSubscriber :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> m ()
+ntfSubscriber :: forall m. MonadUnliftIO m => NtfSubscriber -> m ()
 ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
   raceAny_ [subscribe, receiveSMP, receiveAgent]
   where
@@ -74,11 +71,11 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
           let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
           liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
             Right _ -> pure () -- update subscription status
-            Left e -> pure ()
+            Left _e -> pure ()
 
     receiveSMP :: m ()
     receiveSMP = forever $ do
-      (srv, sessId, ntfId, msg) <- atomically $ readTBQueue msgQ
+      (_srv, _sessId, _ntfId, msg) <- atomically $ readTBQueue msgQ
       case msg of
         SMP.NMSG -> do
           -- check when the last NMSG was received from this queue
@@ -95,49 +92,37 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
       forever $
         atomically (readTBQueue agentQ) >>= \case
           CAConnected _ -> pure ()
-          CADisconnected srv subs -> do
+          CADisconnected _srv _subs -> do
             -- update subscription statuses
             pure ()
           CAReconnected _ -> pure ()
-          CAResubscribed srv sub -> do
+          CAResubscribed _srv _sub -> do
             -- update subscription status
             pure ()
-          CASubError srv sub err -> do
+          CASubError _srv _sub _err -> do
             -- update subscription status
             pure ()
 
-ntfPush :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
-ntfPush NtfPushServer {pushQ, pushClients} = forever $ do
-  (NtfTknData {token, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+ntfPush :: MonadUnliftIO m => NtfPushServer -> m ()
+ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
+  (tkn@NtfTknData {token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  liftIO $ putStrLn $ "sending push notification to " <> show pp
   status <- readTVarIO tknStatus
   case (status, ntf) of
-    (_, PNVerification _code) -> do
+    (_, PNVerification _) -> do
       -- TODO check token status
-      deliverNotification token ntf
-      -- liftIO $ print $ J.encode ntf
-      -- TODO status update should happen after the token status successfully sent
+      deliverNotification pp tkn ntf
       atomically $ writeTVar tknStatus NTConfirmed
-    (NTActive, PNPeriodic) -> do
-      deliverNotification token ntf
-    -- liftIO $ print $ J.encode ntf
+    (NTActive, PNCheckMessages) -> do
+      deliverNotification pp tkn ntf
     _ -> do
       liftIO $ putStrLn "bad notification token status"
   where
-    deliverNotification (DeviceToken provider token) notification = pure ()
-
---   do
---     withPushProviderClient provider $ \client -> client token notification
--- withPushProviderClient :: PushProvider -> ((NtfTknData -> PushNotification -> IO ()) -> IO ()) -> m ()
--- withPushProviderClient provider = do
---   maybe connectPushClient pure =<< atomically (mapM readTVar =<< TM.lookup provider pushClients)
---   where
---     connectPushClient ::
---     connectPushClient = do
---       forkIO
---         ( do
---             runHTTPS2Client host port client
---         )
---         `finally` atomically (TM.delete provider pushClients)
+    deliverNotification :: PushProvider -> PushProviderClient
+    deliverNotification pp tkn ntf = do
+      deliver <- liftIO $ getPushClient s pp
+      -- TODO retry later based on the error
+      deliver tkn ntf `catchError` \e -> liftIO (putStrLn $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do
@@ -154,6 +139,7 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
 receive th NtfServerClient {rcvQ, sndQ} = forever $ do
   t@(_, _, (corrId, subId, cmdOrError)) <- tGet th
+  liftIO $ putStrLn "receive"
   case cmdOrError of
     Left e -> write sndQ (corrId, subId, NRErr e)
     Right cmd ->
@@ -207,7 +193,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
 --       _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFail
 
 client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
-client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
+client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {pushQ} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
@@ -216,6 +202,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
     processCommand :: NtfRequest -> m (Transmission NtfResponse)
     processCommand = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn _ _ dhPubKey)) -> do
+        liftIO $ putStrLn "TNEW"
         st <- asks store
         (srvDhPubKey, srvDrivDhKey) <- liftIO C.generateKeyPair'
         let dhSecret = C.dh' dhPubKey srvDrivDhKey
@@ -229,18 +216,20 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
       NtfReqCmd SToken (NtfTkn NtfTknData {tknStatus, tknRegCode}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
-          TNEW newTkn -> pure NROk -- TODO when duplicate token sent
+          TNEW _newTkn -> do
+            liftIO $ putStrLn "TNEW'"
+            pure NROk -- TODO when duplicate token sent
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
               atomically $ writeTVar tknStatus NTActive
               pure NROk
             | otherwise -> pure $ NRErr AUTH
           TDEL -> pure NROk
-          TCRN int -> pure NROk
-      NtfReqNew corrId (ANE SSubscription newSub) -> pure (corrId, "", NROk)
-      NtfReqCmd SSubscription sub (corrId, subId, cmd) ->
+          TCRN _int -> pure NROk
+      NtfReqNew corrId (ANE SSubscription _newSub) -> pure (corrId, "", NROk)
+      NtfReqCmd SSubscription _sub (corrId, subId, cmd) ->
         (corrId,subId,) <$> case cmd of
-          SNEW newSub -> pure NROk
+          SNEW _newSub -> pure NROk
           SCHK -> pure NROk
           SDEL -> pure NROk
           PING -> pure NRPong

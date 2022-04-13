@@ -58,7 +58,6 @@ library
       Simplex.Messaging.Notifications.Protocol
       Simplex.Messaging.Notifications.Server
       Simplex.Messaging.Notifications.Server.Env
-      Simplex.Messaging.Notifications.Server.Push
       Simplex.Messaging.Notifications.Server.Push.APNS
       Simplex.Messaging.Notifications.Server.Subscriptions
       Simplex.Messaging.Notifications.Transport
