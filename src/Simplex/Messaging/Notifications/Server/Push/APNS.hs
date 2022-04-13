@@ -8,11 +8,11 @@
 
 module Simplex.Messaging.Notifications.Server.Push.APNS where
 
-import Control.Concurrent.STM
 import Control.Monad.Except
 import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.ECDSA as EC
 import qualified Crypto.PubKey.ECC.Types as ECT
+import Crypto.Random (ChaChaDRG, drgNew)
 import qualified Crypto.Store.PKCS8 as PK
 import Data.ASN1.BinaryEncoding (DER (..))
 import Data.ASN1.Encoding
@@ -39,10 +39,13 @@ import qualified Network.HTTP.Types as N
 import Network.HTTP2.Client (Request)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Subscriptions (NtfTknData (..))
 import Simplex.Messaging.Protocol (NotifierId, SMPServer)
 import Simplex.Messaging.Transport.Client.HTTP2
+import UnliftIO.STM
 
 data JWTHeader = JWTHeader
   { alg :: Text, -- key algorithm, ES256 for APNS
@@ -121,6 +124,9 @@ instance ToJSON APNSAlertBody where
     APNSAlertObject {title, subtitle, body} -> J.object ["title" .= title, "subtitle" .= subtitle, "body" .= body]
     APNSAlertText t -> J.String t
 
+-- APNS notification types
+--
+-- Visible alerts:
 -- {
 --    "aps" : {
 --       "alert" : {
@@ -134,11 +140,14 @@ instance ToJSON APNSAlertBody where
 --    },
 --    "gameID" : "12345678"
 -- }
-
+--
+-- Simple text alert:
 -- {"aps":{"alert":"you have a new message"}}
-
+--
+-- Background notification to fetch content
 -- {"aps":{"content-available":1}}
-
+--
+-- Mutable content notification that must be shown but can be processed before before being shown (up to 30 sec)
 -- {
 --    "aps" : {
 --       "category" : "SECRET",
@@ -172,7 +181,7 @@ defaultAPNSPushClientConfig =
       authKeyFile = "", -- make it env
       authKeyAlg = "ES256",
       authKeyId = "", -- make it env
-      paddedNtfLength = 2000,
+      paddedNtfLength = 512,
       appName = "chat.simplex.app", -- make it env
       appTeamId = "5NN7GUYB6T", -- make it env
       apnHost = "api.sandbox.push.apple.com",
@@ -185,6 +194,7 @@ data APNSPushClient = APNSPushClient
     privateKey :: EC.PrivateKey,
     jwtHeader :: JWTHeader,
     jwtToken :: TVar (JWTToken, SignedJWTToken),
+    nonceDrg :: TVar ChaChaDRG,
     config :: APNSPushClientConfig
   }
 
@@ -194,11 +204,9 @@ createAPNSPushClient config@APNSPushClientConfig {authKeyFile, authKeyAlg, authK
   void $ connectHTTPS2 config https2Client
   privateKey <- readECPrivateKey authKeyFile
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
-  -- jwt <- mkJWTToken jwtHeader appTeamId
-  -- signedJWT <- signedJWTToken privateKey jwt
-  -- jwtToken <- newTVarIO (jwt, signedJWT)
   jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
-  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, config}
+  nonceDrg <- drgNew >>= newTVarIO
+  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, config}
 
 getApnsJWTToken :: APNSPushClient -> IO SignedJWTToken
 getApnsJWTToken APNSPushClient {config = APNSPushClientConfig {appTeamId, tokenTTL}, privateKey, jwtHeader, jwtToken} = do
@@ -237,19 +245,20 @@ disconnectApnsHTTP2Client :: APNSPushClient -> IO ()
 disconnectApnsHTTP2Client APNSPushClient {https2Client} =
   readTVarIO https2Client >>= mapM_ closeHTTPS2Client >> atomically (writeTVar https2Client Nothing)
 
--- apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> APNSNotification
-apnsNotification :: PushNotification -> APNSNotification
-apnsNotification = \case
-  PNVerification code -> apn APNSBackground {contentAvailable = 1} . Just $ J.object ["verification" .= code]
-  PNMessage smpServer notifierId -> apn apnMutableContent . Just $ J.object ["smpServer" .= smpServer, "notifierId" .= safeDecodeUtf8 notifierId]
-  PNAlert text -> apn (apnAlert $ APNSAlertText text) Nothing
-  PNPing -> apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
+apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> Either C.CryptoError APNSNotification
+apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
+  PNVerification (NtfRegCode code) ->
+    encrypt code $ \code' ->
+      apn APNSBackground {contentAvailable = 1} . Just $ J.object ["verification" .= code']
+  PNMessage srv nId ->
+    encrypt (strEncode srv <> "/" <> strEncode nId) $ \ntfQueue ->
+      apn apnMutableContent . Just $ J.object ["checkMessage" .= ntfQueue]
+  PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
+  PNPing -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where
-    -- TODO ecrypt notification data
+    encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
+    encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
-    -- encrypt :: J.Value -> Text
-    -- encrypt ntfData = safeUtf8Decode . LB.toStrict $ J.encode ntfData
-    -- encrypt ntfData = C.cbEncrypt tknDhSecret nonce (LB.toStrict $ J.encode ntfData) paddedLen
     apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or some other app event", category = Nothing}
     apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
     safeDecodeUtf8 = decodeUtf8With onError where onError _ _ = Just '?'
@@ -273,16 +282,24 @@ apnsRequest c tkn ntf@APNSNotification {aps} = do
       APNSBackground {} -> "background"
       _ -> "alert"
 
-data APNSPushClientError = ACEConnection HTTPS2ClientError | ACEResponseError (Maybe Status) Text | ACETokenInvalid | ACERetryLater | ACEPermanentError
+data APNSPushClientError
+  = ACEConnection HTTPS2ClientError
+  | ACECryptError C.CryptoError
+  | ACEResponseError (Maybe Status) Text
+  | ACETokenInvalid
+  | ACERetryLater
+  | ACEPermanentError
   deriving (Show)
 
 newtype APNSErrorReponse = APNSErrorReponse {reason :: Text}
   deriving (Generic, FromJSON)
 
-apnsSendNotification :: APNSPushClient -> ByteString -> PushNotification -> ExceptT APNSPushClientError IO ()
-apnsSendNotification c tkn pn = do
+apnsSendNotification :: APNSPushClient -> NtfTknData -> PushNotification -> ExceptT APNSPushClientError IO ()
+apnsSendNotification c@APNSPushClient {nonceDrg, config} tkn@NtfTknData {token = DeviceToken PPApple tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
-  req <- liftIO . apnsRequest c tkn $ apnsNotification pn
+  nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
+  apnsNtf <- liftEither $ first ACECryptError $ apnsNotification tkn nonce (paddedNtfLength config) pn
+  req <- liftIO $ apnsRequest c tknStr apnsNtf
   HTTP2Response {response, respBody} <- liftHTTPS2 $ sendRequest http2 req
   let status = H.responseStatus response
       reason = fromMaybe "" $ J.decodeStrict' =<< respBody

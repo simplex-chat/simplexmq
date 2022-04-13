@@ -103,6 +103,10 @@ module Simplex.Messaging.Crypto
     cbDecrypt,
     cbNonce,
     randomCbNonce,
+    pseudoRandomCbNonce,
+
+    -- * pseudo-random bytes
+    pseudoRandomBytes,
 
     -- * SHA256 hash
     sha256Hash,
@@ -116,6 +120,7 @@ module Simplex.Messaging.Crypto
   )
 where
 
+import Control.Concurrent.STM
 import Control.Exception (Exception)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
@@ -129,7 +134,7 @@ import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
-import Crypto.Random (getRandomBytes)
+import Crypto.Random (ChaChaDRG, getRandomBytes, randomBytesGenerate)
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
@@ -875,6 +880,16 @@ cbNonce s
 
 randomCbNonce :: IO CbNonce
 randomCbNonce = CbNonce <$> getRandomBytes 24
+
+pseudoRandomCbNonce :: TVar ChaChaDRG -> STM CbNonce
+pseudoRandomCbNonce gVar = CbNonce <$> pseudoRandomBytes 24 gVar
+
+pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
+pseudoRandomBytes n gVar = do
+  g <- readTVar gVar
+  let (bytes, g') = randomBytesGenerate n g
+  writeTVar gVar g'
+  return bytes
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce

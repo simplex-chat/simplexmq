@@ -251,7 +251,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ} NtfPushServer {pushQ} =
     getRandomBytes :: Int -> m ByteString
     getRandomBytes n = do
       gVar <- asks idsDrg
-      atomically (randomBytes n gVar)
+      atomically (C.pseudoRandomBytes n gVar)
 
 -- NReqCreate corrId tokenId smpQueue -> pure (corrId, "", NROk)
 -- do
