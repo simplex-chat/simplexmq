@@ -1,12 +1,15 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Notifications.Server.Push.APNS where
 
 import Control.Concurrent.STM
+import Control.Monad.Except
 import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.ECDSA as EC
 import qualified Crypto.PubKey.ECC.Types as ECT
@@ -14,9 +17,10 @@ import qualified Crypto.Store.PKCS8 as PK
 import Data.ASN1.BinaryEncoding (DER (..))
 import Data.ASN1.Encoding
 import Data.ASN1.Types
-import Data.Aeson (ToJSON, (.=))
+import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
@@ -24,12 +28,14 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time.Clock.System
 import qualified Data.X509 as X
 import GHC.Generics
-import Network.HTTP.Types (HeaderName, hAuthorization, methodPost)
+import Network.HTTP.Types (HeaderName, Status, hAuthorization, methodPost)
+import qualified Network.HTTP.Types as N
 import Network.HTTP2.Client (Request)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
@@ -146,7 +152,7 @@ instance ToJSON APNSAlertBody where
 -- }
 
 data APNSPushClientConfig = APNSPushClientConfig
-  { tokenTTL :: Int,
+  { tokenTTL :: Int64,
     authKeyFile :: FilePath,
     authKeyAlg :: Text,
     authKeyId :: Text,
@@ -183,19 +189,53 @@ data APNSPushClient = APNSPushClient
   }
 
 createAPNSPushClient :: APNSPushClientConfig -> IO APNSPushClient
-createAPNSPushClient config@APNSPushClientConfig {authKeyFile, authKeyAlg, authKeyId, appTeamId, apnHost, apnPort, https2cfg} = do
+createAPNSPushClient config@APNSPushClientConfig {authKeyFile, authKeyAlg, authKeyId, appTeamId} = do
   https2Client <- newTVarIO Nothing
-  getHTTPS2Client apnHost apnPort https2cfg (disconnected https2Client) >>= \case
-    Right client -> atomically $ writeTVar https2Client $ Just client
-    Left e -> putStrLn $ "Error connecting to APNS: " <> show e
+  void $ connectHTTPS2 config https2Client
   privateKey <- readECPrivateKey authKeyFile
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
+  -- jwt <- mkJWTToken jwtHeader appTeamId
+  -- signedJWT <- signedJWTToken privateKey jwt
+  -- jwtToken <- newTVarIO (jwt, signedJWT)
+  jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
+  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, config}
+
+getApnsJWTToken :: APNSPushClient -> IO SignedJWTToken
+getApnsJWTToken APNSPushClient {config = APNSPushClientConfig {appTeamId, tokenTTL}, privateKey, jwtHeader, jwtToken} = do
+  (jwt, signedJWT) <- readTVarIO jwtToken
+  age <- jwtTokenAge jwt
+  if age < tokenTTL
+    then pure signedJWT
+    else do
+      t@(_, signedJWT') <- mkApnsJWTToken appTeamId jwtHeader privateKey
+      atomically $ writeTVar jwtToken t
+      pure signedJWT'
+  where
+    jwtTokenAge (JWTToken _ JWTClaims {iat}) = (iat -) . systemSeconds <$> getSystemTime
+
+mkApnsJWTToken :: Text -> JWTHeader -> EC.PrivateKey -> IO (JWTToken, SignedJWTToken)
+mkApnsJWTToken appTeamId jwtHeader privateKey = do
   jwt <- mkJWTToken jwtHeader appTeamId
   signedJWT <- signedJWTToken privateKey jwt
-  jwtToken <- newTVarIO (jwt, signedJWT)
-  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, config}
+  pure (jwt, signedJWT)
+
+connectHTTPS2 :: APNSPushClientConfig -> TVar (Maybe HTTPS2Client) -> IO (Either HTTPS2ClientError HTTPS2Client)
+connectHTTPS2 APNSPushClientConfig {apnHost, apnPort, https2cfg} https2Client = do
+  r <- getHTTPS2Client apnHost apnPort https2cfg disconnected
+  case r of
+    Right client -> atomically . writeTVar https2Client $ Just client
+    Left e -> putStrLn $ "Error connecting to APNS: " <> show e
+  pure r
   where
-    disconnected https2Client = atomically $ writeTVar https2Client Nothing
+    disconnected = atomically $ writeTVar https2Client Nothing
+
+getApnsHTTP2Client :: APNSPushClient -> IO (Either HTTPS2ClientError HTTPS2Client)
+getApnsHTTP2Client APNSPushClient {https2Client, config} =
+  readTVarIO https2Client >>= maybe (connectHTTPS2 config https2Client) (pure . Right)
+
+disconnectApnsHTTP2Client :: APNSPushClient -> IO ()
+disconnectApnsHTTP2Client APNSPushClient {https2Client} =
+  readTVarIO https2Client >>= mapM_ closeHTTPS2Client >> atomically (writeTVar https2Client Nothing)
 
 -- apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> APNSNotification
 apnsNotification :: PushNotification -> APNSNotification
@@ -215,14 +255,13 @@ apnsNotification = \case
     safeDecodeUtf8 = decodeUtf8With onError where onError _ _ = Just '?'
 
 apnsRequest :: APNSPushClient -> ByteString -> APNSNotification -> IO Request
-apnsRequest APNSPushClient {jwtToken, config = APNSPushClientConfig {appName}} tkn ntf@APNSNotification {aps} = do
-  (_jwt, signedJWT) <- readTVarIO jwtToken
-  -- TODO update token if expired
+apnsRequest c tkn ntf@APNSNotification {aps} = do
+  signedJWT <- getApnsJWTToken c
   pure $ H.requestBuilder methodPost path (headers signedJWT) (lazyByteString $ J.encode ntf)
   where
     path = "/3/device/" <> tkn
     headers signedJWT =
-      [ (hApnsTopic, appName),
+      [ (hApnsTopic, appName $ config (c :: APNSPushClient)),
         (hApnsPushType, pushType aps),
         (hAuthorization, "bearer " <> signedJWT)
       ]
@@ -234,7 +273,41 @@ apnsRequest APNSPushClient {jwtToken, config = APNSPushClientConfig {appName}} t
       APNSBackground {} -> "background"
       _ -> "alert"
 
--- TODO send request
+data APNSPushClientError = ACEConnection HTTPS2ClientError | ACEResponseError (Maybe Status) Text | ACETokenInvalid | ACERetryLater | ACEStopServer
+  deriving (Show)
+
+newtype APNSErrorReponse = APNSErrorReponse {reason :: Text}
+  deriving (Generic, FromJSON)
+
+apnsSendNotification :: APNSPushClient -> ByteString -> PushNotification -> ExceptT APNSPushClientError IO ()
+apnsSendNotification c tkn pn = do
+  http2 <- liftHTTPS2 $ getApnsHTTP2Client c
+  req <- liftIO . apnsRequest c tkn $ apnsNotification pn
+  HTTP2Response {response, respBody} <- liftHTTPS2 $ sendRequest http2 req
+  let status = H.responseStatus response
+      reason = fromMaybe "" $ J.decodeStrict' =<< respBody
+  result status reason
+  where
+    result :: Maybe Status -> Text -> ExceptT APNSPushClientError IO ()
+    result status reason
+      | status == Just N.ok200 = pure ()
+      | status == Just N.badRequest400 =
+        case reason of
+          "BadDeviceToken" -> throwError ACETokenInvalid
+          "DeviceTokenNotForTopic" -> throwError ACETokenInvalid
+          "TopicDisallowed" -> throwError ACEStopServer
+          _ -> err status reason
+      | status == Just N.forbidden403 = case reason of
+        "ExpiredProviderToken" -> throwError ACEStopServer
+        "InvalidProviderToken" -> throwError ACEStopServer
+        _ -> err status reason
+      | status == Just N.gone410 = throwError ACETokenInvalid
+      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError ACERetryLater
+      -- Just tooManyRequests429 -> TODO TooManyRequests - too many requests for the same token
+      | otherwise = err status reason
+    err :: Maybe Status -> Text -> ExceptT APNSPushClientError IO ()
+    err s r = throwError $ ACEResponseError s r
+    liftHTTPS2 a = ExceptT $ first ACEConnection <$> a
 
 hApnsTopic :: HeaderName
 hApnsTopic = CI.mk "apns-topic"
