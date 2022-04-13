@@ -30,6 +30,7 @@ import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Time.Clock.System
 import qualified Data.X509 as X
@@ -45,6 +46,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Subscriptions (NtfTknData (..))
 import Simplex.Messaging.Protocol (NotifierId, SMPServer)
 import Simplex.Messaging.Transport.Client.HTTP2
+import System.Environment (getEnv)
 import UnliftIO.STM
 
 data JWTHeader = JWTHeader
@@ -162,9 +164,9 @@ instance ToJSON APNSAlertBody where
 
 data APNSPushClientConfig = APNSPushClientConfig
   { tokenTTL :: Int64,
-    authKeyFile :: FilePath,
+    authKeyFileEnv :: String,
     authKeyAlg :: Text,
-    authKeyId :: Text,
+    authKeyIdEnv :: String,
     paddedNtfLength :: Int,
     appName :: ByteString,
     appTeamId :: Text,
@@ -178,12 +180,12 @@ defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
   APNSPushClientConfig
     { tokenTTL = 1200, -- 20 minutes
-      authKeyFile = "", -- make it env
+      authKeyFileEnv = "APNS_KEY_FILE", -- the environment variables APNS_KEY_FILE and APNS_KEY_ID must be set, or the server would fail to start
       authKeyAlg = "ES256",
-      authKeyId = "", -- make it env
+      authKeyIdEnv = "APNS_KEY_ID",
       paddedNtfLength = 512,
-      appName = "chat.simplex.app", -- make it env
-      appTeamId = "5NN7GUYB6T", -- make it env
+      appName = "chat.simplex.app",
+      appTeamId = "5NN7GUYB6T",
       apnHost = "api.sandbox.push.apple.com",
       apnPort = "443",
       https2cfg = defaultHTTP2SClientConfig
@@ -199,10 +201,11 @@ data APNSPushClient = APNSPushClient
   }
 
 createAPNSPushClient :: APNSPushClientConfig -> IO APNSPushClient
-createAPNSPushClient config@APNSPushClientConfig {authKeyFile, authKeyAlg, authKeyId, appTeamId} = do
+createAPNSPushClient config@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
   https2Client <- newTVarIO Nothing
   void $ connectHTTPS2 config https2Client
-  privateKey <- readECPrivateKey authKeyFile
+  privateKey <- readECPrivateKey =<< getEnv authKeyFileEnv
+  authKeyId <- T.pack <$> getEnv authKeyIdEnv
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
   jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
   nonceDrg <- drgNew >>= newTVarIO
