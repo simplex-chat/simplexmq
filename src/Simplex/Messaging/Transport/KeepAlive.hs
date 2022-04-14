@@ -12,6 +12,7 @@ data KeepAliveOpts = KeepAliveOpts
     keepIntvl :: Int,
     keepCnt :: Int
   }
+  deriving (Show)
 
 defaultKeepAliveOpts :: KeepAliveOpts
 defaultKeepAliveOpts =

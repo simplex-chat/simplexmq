@@ -198,7 +198,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient agentTestHost port' testKeyHash (Just defaultKeepAliveOpts) $ \h -> do
+  runTransportClient agentTestHost port' (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h

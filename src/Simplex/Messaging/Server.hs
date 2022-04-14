@@ -23,7 +23,7 @@
 -- and optional append only log of SMP queue records.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
-module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking, verifyCmdSignature, dummyVerifyCmd, randomBytes) where
+module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking, verifyCmdSignature, dummyVerifyCmd) where
 
 import Control.Monad
 import Control.Monad.Except
@@ -439,11 +439,4 @@ withLog action = do
 randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ByteString
 randomId n = do
   gVar <- asks idsDrg
-  atomically (randomBytes n gVar)
-
-randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
-randomBytes n gVar = do
-  g <- readTVar gVar
-  let (bytes, g') = randomBytesGenerate n g
-  writeTVar gVar g'
-  return bytes
+  atomically (C.pseudoRandomBytes n gVar)
