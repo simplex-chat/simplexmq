@@ -7,7 +7,6 @@
 
 module Simplex.Messaging.Notifications.Server.Env where
 
-import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
