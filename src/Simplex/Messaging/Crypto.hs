@@ -52,6 +52,7 @@ module Simplex.Messaging.Crypto
     CryptoPublicKey (..),
     CryptoPrivateKey (..),
     KeyPair,
+    ASignatureKeyPair,
     DhSecret (..),
     DhSecretX25519,
     ADhSecret (..),

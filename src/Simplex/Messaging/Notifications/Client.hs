@@ -65,7 +65,7 @@ okNtfCommand cmd c pKey entId =
     _ -> throwE PCEUnexpectedResponse
 
 data NtfTknAction
-  = NTARegister C.APublicVerifyKey -- public key to send to the server
+  = NTARegister
   | NTAVerify NtfRegCode -- code to verify token
   | NTACheck
   | NTACron Word16
@@ -74,14 +74,14 @@ data NtfTknAction
 
 instance Encoding NtfTknAction where
   smpEncode = \case
-    NTARegister key -> smpEncode ('R', key)
+    NTARegister -> "R"
     NTAVerify code -> smpEncode ('V', code)
     NTACheck -> "C"
     NTACron interval -> smpEncode ('I', interval)
     NTADelete -> "D"
   smpP =
     A.anyChar >>= \case
-      'R' -> NTARegister <$> smpP
+      'R' -> pure NTARegister
       'V' -> NTAVerify <$> smpP
       'C' -> pure NTACheck
       'I' -> NTACron <$> smpP
@@ -96,8 +96,12 @@ data NtfToken = NtfToken
   { deviceToken :: DeviceToken,
     ntfServer :: NtfServer,
     ntfTokenId :: Maybe NtfTokenId,
+    -- | key used by the ntf server to verify transmissions
+    ntfPubKey :: C.APublicVerifyKey,
     -- | key used by the ntf client to sign transmissions
     ntfPrivKey :: C.APrivateSignKey,
+    -- | client's DH keys (to repeat registration if necessary)
+    ntfDhKeys :: C.KeyPair 'C.X25519,
     -- | shared DH secret used to encrypt/decrypt notifications e2e
     ntfDhSecret :: Maybe C.DhSecretX25519,
     -- | token status
@@ -107,14 +111,16 @@ data NtfToken = NtfToken
   }
   deriving (Show)
 
-newNtfToken :: DeviceToken -> NtfServer -> C.APrivateSignKey -> C.APublicVerifyKey -> NtfToken
-newNtfToken deviceToken ntfServer ntfPrivKey ntfPubKey =
+newNtfToken :: DeviceToken -> NtfServer -> C.ASignatureKeyPair -> C.KeyPair 'C.X25519 -> NtfToken
+newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
   NtfToken
     { deviceToken,
       ntfServer,
       ntfTokenId = Nothing,
+      ntfPubKey,
       ntfPrivKey,
+      ntfDhKeys,
       ntfDhSecret = Nothing,
       ntfTknStatus = NTNew,
-      ntfTknAction = Just $ NTARegister ntfPubKey
+      ntfTknAction = Just NTARegister
     }
