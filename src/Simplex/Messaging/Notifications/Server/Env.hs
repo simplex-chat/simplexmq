@@ -7,9 +7,11 @@
 
 module Simplex.Messaging.Notifications.Server.Env where
 
+import Control.Concurrent.Async (Async)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Word (Word16)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
@@ -78,14 +80,22 @@ newNtfSubscriber qSize smpAgentCfg = do
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfTknData, PushNotification),
     pushClients :: TMap PushProvider PushProviderClient,
+    intervalNotifiers :: TMap NtfTokenId IntervalNotifier,
     apnsConfig :: APNSPushClientConfig
+  }
+
+data IntervalNotifier = IntervalNotifier
+  { action :: Async (),
+    token :: NtfTknData,
+    interval :: Word16
   }
 
 newNtfPushServer :: Natural -> APNSPushClientConfig -> STM NtfPushServer
 newNtfPushServer qSize apnsConfig = do
   pushQ <- newTBQueue qSize
   pushClients <- TM.empty
-  pure NtfPushServer {pushQ, pushClients, apnsConfig}
+  intervalNotifiers <- TM.empty
+  pure NtfPushServer {pushQ, pushClients, intervalNotifiers, apnsConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient NtfPushServer {apnsConfig, pushClients} = \case

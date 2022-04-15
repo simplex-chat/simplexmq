@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Server where
 
+import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
@@ -26,9 +27,12 @@ import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (ErrorType (..), SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport)
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
+import UnliftIO (async, uninterruptibleCancel)
+import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception
 import UnliftIO.STM
 
@@ -138,14 +142,14 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
 receive th NtfServerClient {rcvQ, sndQ} = forever $ do
-  t@(_, _, (corrId, subId, cmdOrError)) <- tGet th
-  liftIO $ putStrLn "receive"
+  t@(_, _, (corrId, entId, cmdOrError)) <- tGet th
+  liftIO $ logDebug "received transmission"
   case cmdOrError of
-    Left e -> write sndQ (corrId, subId, NRErr e)
+    Left e -> write sndQ (corrId, entId, NRErr e)
     Right cmd ->
       verifyNtfTransmission t cmd >>= \case
         VRVerified req -> write rcvQ req
-        VRFailed -> write sndQ (corrId, subId, NRErr AUTH)
+        VRFailed -> write sndQ (corrId, entId, NRErr AUTH)
   where
     write q t = atomically $ writeTBQueue q t
 
@@ -159,41 +163,31 @@ data VerificationResult = VRVerified NtfRequest | VRFailed
 verifyNtfTransmission ::
   forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => SignedTransmission NtfCmd -> NtfCmd -> m VerificationResult
 verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
+  st <- asks store
   case cmd of
-    NtfCmd SToken (TNEW n@(NewNtfTkn _ k _)) ->
-      -- TODO check that token is not already in store, if it is - verify that the saved key is the same
+    NtfCmd SToken c@(TNEW n@(NewNtfTkn _ k _)) -> do
+      r_ <- atomically $ getNtfToken st entId
       pure $
         if verifyCmdSignature sig_ signed k
-          then VRVerified (NtfReqNew corrId (ANE SToken n))
+          then case r_ of
+            Just r@(NtfTkn NtfTknData {tknVerifyKey})
+              | k == tknVerifyKey -> tknCmd r c
+              | otherwise -> VRFailed
+            _ -> VRVerified (NtfReqNew corrId (ANE SToken n))
           else VRFailed
     NtfCmd SToken c -> do
-      st <- asks store
-      atomically (getNtfToken st entId) >>= \case
-        Just r@(NtfTkn NtfTknData {tknVerifyKey}) ->
-          pure $
-            if verifyCmdSignature sig_ signed tknVerifyKey
-              then VRVerified (NtfReqCmd SToken r (corrId, entId, c))
-              else VRFailed
-        _ -> pure VRFailed -- TODO dummy verification
+      r_ <- atomically $ getNtfToken st entId
+      pure $ case r_ of
+        Just r@(NtfTkn NtfTknData {tknVerifyKey})
+          | verifyCmdSignature sig_ signed tknVerifyKey -> tknCmd r c
+          | otherwise -> VRFailed
+        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     _ -> pure VRFailed
-
--- do
---   st <- asks store
---   case cmd of
---     NCSubCreate tokenId smpQueue -> verifyCreateCmd verifyKey newSub <$> atomically (getNtfSubViaSMPQueue st smpQueue)
---     _ -> verifySubCmd <$> atomically (getNtfSub st subId)
---   where
---     verifyCreateCmd k newSub sub_
---       | verifyCmdSignature sig_ signed k = case sub_ of
---         Just sub -> if k == subVerifyKey sub then VRCommand sub else VRFail
---         _ -> VRCreate newSub
---       | otherwise = VRFail
---     verifySubCmd = \case
---       Just sub -> if verifyCmdSignature sig_ signed $ subVerifyKey sub then VRCommand sub else VRFail
---       _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFail
+  where
+    tknCmd r c = VRVerified (NtfReqCmd SToken r (corrId, entId, c))
 
 client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
-client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {pushQ} =
+client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {pushQ, intervalNotifiers} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
@@ -202,30 +196,67 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
     processCommand :: NtfRequest -> m (Transmission NtfResponse)
     processCommand = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn _ _ dhPubKey)) -> do
-        liftIO $ putStrLn "TNEW"
+        liftIO $ logDebug "TNEW - new token"
         st <- asks store
-        (srvDhPubKey, srvDrivDhKey) <- liftIO C.generateKeyPair'
-        let dhSecret = C.dh' dhPubKey srvDrivDhKey
+        ks@(srvDhPubKey, srvDhPrivKey) <- liftIO C.generateKeyPair'
+        let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
         atomically $ do
-          tkn <- mkNtfTknData newTkn dhSecret regCode
+          tkn <- mkNtfTknData newTkn ks dhSecret regCode
           addNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, PNVerification regCode)
         pure (corrId, "", NRId tknId srvDhPubKey)
-      NtfReqCmd SToken (NtfTkn NtfTknData {tknStatus, tknRegCode}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
-          TNEW _newTkn -> do
-            liftIO $ putStrLn "TNEW'"
-            pure NROk -- TODO when duplicate token sent
+          TNEW (NewNtfTkn _ _ dhPubKey) -> do
+            liftIO $ logDebug "TNEW - registered token"
+            let dhSecret = C.dh' dhPubKey srvDhPrivKey
+            -- it is required that DH secret is the same, to avoid failed verifications if notification is delaying
+            if tknDhSecret == dhSecret
+              then do
+                atomically $ writeTBQueue pushQ (tkn, PNVerification tknRegCode)
+                pure $ NRId tknId srvDhPubKey
+              else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
+              liftIO $ logDebug "TVFY - token verified"
               atomically $ writeTVar tknStatus NTActive
               pure NROk
-            | otherwise -> pure $ NRErr AUTH
-          TDEL -> pure NROk
-          TCRN _int -> pure NROk
+            | otherwise -> do
+              liftIO $ logDebug "TVFY - incorrect code or token status"
+              pure $ NRErr AUTH
+          TDEL -> do
+            liftIO $ logDebug "TDEL"
+            st <- asks store
+            atomically $ deleteNtfToken st tknId
+            pure NROk
+          TCRN 0 ->
+            liftIO (logDebug "TCRN 0")
+              >> atomically (TM.lookupDelete tknId intervalNotifiers)
+              >>= mapM_ (uninterruptibleCancel . action)
+              >> pure NROk
+          TCRN int
+            | int < 20 -> pure $ NRErr QUOTA
+            | otherwise -> do
+              liftIO $ logDebug "TCRN"
+              atomically (TM.lookup tknId intervalNotifiers) >>= \case
+                Nothing -> runIntervalNotifier int
+                Just IntervalNotifier {interval, action} ->
+                  unless (interval == int) $ do
+                    uninterruptibleCancel action
+                    runIntervalNotifier int
+              pure NROk
+            where
+              runIntervalNotifier interval = do
+                action <- async . intervalNotifier $ fromIntegral interval * 1000000 * 60
+                let notifier = IntervalNotifier {action, token = tkn, interval}
+                atomically $ TM.insert tknId notifier intervalNotifiers
+                where
+                  intervalNotifier delay = forever $ do
+                    threadDelay delay
+                    atomically $ writeTBQueue pushQ (tkn, PNCheckMessages)
       NtfReqNew corrId (ANE SSubscription _newSub) -> pure (corrId, "", NROk)
       NtfReqCmd SSubscription _sub (corrId, subId, cmd) ->
         (corrId,subId,) <$> case cmd of

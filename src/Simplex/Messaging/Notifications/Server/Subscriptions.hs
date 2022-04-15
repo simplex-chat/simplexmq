@@ -28,14 +28,15 @@ data NtfTknData = NtfTknData
   { token :: DeviceToken,
     tknStatus :: TVar NtfTknStatus,
     tknVerifyKey :: C.APublicVerifyKey,
+    tknDhKeys :: C.KeyPair 'C.X25519,
     tknDhSecret :: C.DhSecretX25519,
     tknRegCode :: NtfRegCode
   }
 
-mkNtfTknData :: NewNtfEntity 'Token -> C.DhSecretX25519 -> NtfRegCode -> STM NtfTknData
-mkNtfTknData (NewNtfTkn token tknVerifyKey _) tknDhSecret tknRegCode = do
+mkNtfTknData :: NewNtfEntity 'Token -> C.KeyPair 'C.X25519 -> C.DhSecretX25519 -> NtfRegCode -> STM NtfTknData
+mkNtfTknData (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tknRegCode = do
   tknStatus <- newTVar NTRegistered
-  pure NtfTknData {token, tknStatus, tknVerifyKey, tknDhSecret, tknRegCode}
+  pure NtfTknData {token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode}
 
 -- data NtfSubscriptionsStore = NtfSubscriptionsStore
 
@@ -64,8 +65,12 @@ getNtfToken st tknId = NtfTkn <$$> TM.lookup tknId (tokens st)
 
 addNtfToken :: NtfStore -> NtfTokenId -> NtfTknData -> STM ()
 addNtfToken st tknId tkn@NtfTknData {token} = do
-  TM.insert tknId tkn (tokens st)
-  TM.insert token tknId (tokenIds st)
+  TM.insert tknId tkn $ tokens st
+  TM.insert token tknId $ tokenIds st
+
+deleteNtfToken :: NtfStore -> NtfTokenId -> STM ()
+deleteNtfToken st tknId = do
+  TM.lookupDelete tknId (tokens st) >>= mapM_ (\NtfTknData {token} -> TM.delete token $ tokenIds st)
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of
