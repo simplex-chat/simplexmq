@@ -63,7 +63,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
-import Data.Bifunctor (first, second)
+import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
@@ -87,7 +87,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode, NtfTknStatus (..))
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -165,8 +165,8 @@ registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 registerNtfToken c = withAgentEnv c . registerNtfToken' c
 
 -- | Verify device notifications token
-verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NtfRegCode -> m ()
-verifyNtfToken c = withAgentEnv c .: verifyNtfToken' c
+verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
+verifyNtfToken c = withAgentEnv c .:. verifyNtfToken' c
 
 -- | Enable/disable periodic notifications
 enableNtfCron :: AgentErrorMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
@@ -557,12 +557,13 @@ registerNtfToken' c deviceToken =
       withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
 
 -- TODO decrypt verification code
-verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> NtfRegCode -> m ()
-verifyNtfToken' c deviceToken code =
+verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
+verifyNtfToken' c deviceToken code nonce =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
-    (Just tkn@NtfToken {ntfTokenId = Just tknId}, _) ->
-      withToken tkn (Just (NTConfirmed, NTAVerify code)) (NTActive, Just NTACheck) $
-        agentNtfVerifyToken c tknId tkn code
+    (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
+      code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
+      withToken tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+        agentNtfVerifyToken c tknId tkn code'
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()

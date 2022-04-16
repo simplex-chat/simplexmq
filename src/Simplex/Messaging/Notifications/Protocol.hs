@@ -301,22 +301,22 @@ instance Encoding SMPQueueNtf where
     (smpServer, notifierId, notifierKey) <- smpP
     pure $ SMPQueueNtf smpServer notifierId notifierKey
 
-data PushProvider = PPApple
+data PushProvider = PPApns
   deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
   smpEncode = \case
-    PPApple -> "A"
+    PPApns -> "A"
   smpP =
     A.anyChar >>= \case
-      'A' -> pure PPApple
+      'A' -> pure PPApns
       _ -> fail "bad PushProvider"
 
 instance TextEncoding PushProvider where
   textEncode = \case
-    PPApple -> "apple"
+    PPApns -> "apple"
   textDecode = \case
-    "apple" -> Just PPApple
+    "apple" -> Just PPApns
     _ -> Nothing
 
 instance FromField PushProvider where fromField = fromTextField_ textDecode

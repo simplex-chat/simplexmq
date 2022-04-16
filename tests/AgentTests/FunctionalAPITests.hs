@@ -15,7 +15,7 @@ import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (DeviceToken), PushProvider (PPApple))
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), PushProvider (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..))
 import System.Timeout
@@ -194,7 +194,7 @@ testNotificationToken :: IO ()
 testNotificationToken = do
   alice <- getSMPAgentClient cfg initAgentServers
   Right () <- runExceptT $ do
-    registerNtfToken alice $ DeviceToken PPApple "abcd"
+    registerNtfToken alice $ DeviceToken PPApns "abcd"
   pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()

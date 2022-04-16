@@ -61,7 +61,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
   -- TODO not creating APNS client on start to pass CI test, has to be replaced with mock APNS server
-  -- void . liftIO $ newPushClient pushServer PPApple
+  -- void . liftIO $ newPushClient pushServer PPApns
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
@@ -99,9 +99,9 @@ newNtfPushServer qSize apnsConfig = do
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient NtfPushServer {apnsConfig, pushClients} = \case
-  PPApple -> do
+  PPApns -> do
     c <- apnsPushProviderClient <$> createAPNSPushClient apnsConfig
-    atomically $ TM.insert PPApple c pushClients
+    atomically $ TM.insert PPApns c pushClients
     pure c
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
