@@ -24,7 +24,6 @@ import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
@@ -267,7 +266,7 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where
     encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
-    encrypt ntfData f = f . safeDecodeUtf8 . B64.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
+    encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
     apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or some other app event", category = Nothing}
     apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}

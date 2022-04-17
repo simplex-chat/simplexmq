@@ -7,7 +7,6 @@ import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (bimap)
-import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
@@ -36,8 +35,8 @@ testNotificationToken APNSMockServer {apnsQ} = do
     registerNtfToken a tkn
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
-    verification <- B64.decodeLenient <$> ntfData .-> "verification"
-    nonce <- C.cbNonce . U.decodeLenient <$> ntfData .-> "nonce"
+    verification <- ntfData .-> "verification"
+    nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
     verifyNtfToken a tkn verification nonce
     enableNtfCron a tkn 30
@@ -47,4 +46,4 @@ testNotificationToken APNSMockServer {apnsQ} = do
     (.->) :: J.Value -> J.Key -> ExceptT AgentErrorType IO ByteString
     v .-> key = do
       J.Object o <- pure v
-      liftEither . bimap INTERNAL encodeUtf8 $ JT.parseEither (J..: key) o
+      liftEither . bimap INTERNAL (U.decodeLenient . encodeUtf8) $ JT.parseEither (J..: key) o
