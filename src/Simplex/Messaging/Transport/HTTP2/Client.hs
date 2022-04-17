@@ -6,7 +6,8 @@
 module Simplex.Messaging.Transport.HTTP2.Client where
 
 import Control.Concurrent.Async
-import Control.Exception (IOException, catch, finally)
+import Control.Exception (IOException)
+import qualified Control.Exception as E
 import Control.Monad.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -58,13 +59,13 @@ defaultHTTP2ClientConfig =
       suportedTLSParams = http2TLSParams
     }
 
-data HTTP2ClientError = HCResponseTimeout | HCNetworkError | HCIOError IOException
+data HTTP2ClientError = HCResponseTimeout | HCNetworkError | HCNetworkError1 | HCIOError IOException
   deriving (Show)
 
 getHTTP2Client :: HostName -> ServiceName -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
 getHTTP2Client host port config@HTTP2ClientConfig {tcpKeepAlive, connTimeout, caStoreFile, suportedTLSParams} disconnected =
   (atomically mkHTTPS2Client >>= runClient)
-    `catch` \(e :: IOException) -> pure . Left $ HCIOError e
+    `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
   where
     mkHTTPS2Client :: STM HTTP2Client
     mkHTTPS2Client = do
@@ -80,19 +81,19 @@ getHTTP2Client host port config@HTTP2ClientConfig {tcpKeepAlive, connTimeout, ca
       action <-
         async $
           runHTTP2Client suportedTLSParams caStore host port tcpKeepAlive (client c cVar)
-            `finally` atomically (putTMVar cVar $ Left HCNetworkError)
+            `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
       conn_ <- connTimeout `timeout` atomically (takeTMVar cVar)
       pure $ case conn_ of
         Just (Right ()) -> Right c {action}
         Just (Left e) -> Left e
-        Nothing -> Left HCNetworkError
+        Nothing -> Left HCNetworkError1
 
     client :: HTTP2Client -> TMVar (Either HTTP2ClientError ()) -> (Request -> (Response -> IO ()) -> IO ()) -> IO ()
     client c cVar sendReq = do
       atomically $ do
         writeTVar (connected c) True
         putTMVar cVar $ Right ()
-      process c sendReq `finally` disconnected
+      process c sendReq `E.finally` disconnected
 
     process :: HTTP2Client -> (Request -> (Response -> IO ()) -> IO ()) -> IO ()
     process HTTP2Client {reqQ} sendReq = forever $ do

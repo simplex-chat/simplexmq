@@ -9,13 +9,11 @@ module AgentTests.FunctionalAPITests (functionalAPITests) where
 
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
-import NtfClient (withNtfServer)
 import SMPAgentClient
 import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), PushProvider (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..))
 import System.Timeout
@@ -50,9 +48,6 @@ functionalAPITests t = do
       testAsyncServerOffline t
     it "should notify after HELLO timeout" $
       withSmpServer t testAsyncHelloTimeout
-  describe "Notification server" $ do
-    it "should register device token" $
-      withNtfServer t testNotificationToken
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -188,13 +183,6 @@ testAsyncHelloTimeout = do
     disconnectAgentClient alice
     aliceId <- joinConnection bob cReq "bob's connInfo"
     get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
-  pure ()
-
-testNotificationToken :: IO ()
-testNotificationToken = do
-  alice <- getSMPAgentClient agentCfg initAgentServers
-  Right () <- runExceptT $ do
-    registerNtfToken alice $ DeviceToken PPApns "abcd"
   pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()

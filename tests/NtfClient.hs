@@ -55,7 +55,7 @@ ntfTestPort :: ServiceName
 ntfTestPort = "6001"
 
 apnsTestPort :: ServiceName
-apnsTestPort = "7001"
+apnsTestPort = "6010"
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
@@ -164,7 +164,7 @@ deriving instance Generic APNSAlertBody
 
 deriving instance FromJSON APNSAlertBody
 
-deriving instance FromJSON APNSNotificationBody
+instance FromJSON APNSNotificationBody where parseJSON = J.genericParseJSON apnsJSONOptions
 
 deriving instance FromJSON APNSNotification
 
