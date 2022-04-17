@@ -2,6 +2,7 @@
 
 module Main where
 
+import Control.Logger.Simple
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
@@ -15,8 +16,13 @@ cfgPath = "/etc/opt/simplex-notifications"
 logPath :: FilePath
 logPath = "/var/opt/simplex-notifications"
 
+logCfg :: LogConfig
+logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
+
 main :: IO ()
-main = protocolServerCLI ntfServerCLIConfig runNtfServer
+main = do
+  setLogLevel LogDebug -- TODO change to LogError in production
+  withGlobalLogging logCfg $ protocolServerCLI ntfServerCLIConfig runNtfServer
 
 ntfServerCLIConfig :: ServerCLIConfig NtfServerConfig
 ntfServerCLIConfig =

@@ -52,6 +52,7 @@ module Simplex.Messaging.Crypto
     CryptoPublicKey (..),
     CryptoPrivateKey (..),
     KeyPair,
+    ASignatureKeyPair,
     DhSecret (..),
     DhSecretX25519,
     ADhSecret (..),
@@ -869,6 +870,14 @@ cbDecrypt secret (CbNonce nonce) packet
 
 newtype CbNonce = CbNonce {unCbNonce :: ByteString}
   deriving (Show)
+
+instance StrEncoding CbNonce where
+  strEncode (CbNonce s) = strEncode s
+  strP = cbNonce <$> strP
+
+instance ToJSON CbNonce where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 cbNonce :: ByteString -> CbNonce
 cbNonce s

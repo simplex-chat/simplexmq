@@ -33,12 +33,12 @@ import Control.Exception (bracket)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
-import Data.Bifunctor (second)
+import Data.Bifunctor (first, second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
-import Data.List (find, foldl')
+import Data.List (find, foldl', partition)
 import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
@@ -567,35 +567,36 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
               DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
   createNtfToken :: SQLiteStore -> NtfToken -> m ()
-  createNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction} =
+  createNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey), ntfDhSecret, ntfTknStatus, ntfTknAction} =
     liftIO . withTransaction st $ \db -> do
       upsertNtfServer_ db srv
       DB.execute
         db
         [sql|
           INSERT INTO ntf_tokens
-            (provider, device_token, ntf_host, ntf_port, tkn_id, tkn_priv_key, tkn_dh_secret, tkn_status, tkn_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (provider, device_token, ntf_host, ntf_port, tkn_id, tkn_pub_key, tkn_priv_key, tkn_pub_dh_key, tkn_priv_dh_key, tkn_dh_secret, tkn_status, tkn_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         |]
-        (provider, token, host, port, ntfTokenId, ntfPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)
+        (provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)
 
-  getDeviceNtfToken :: SQLiteStore -> DeviceToken -> m (Maybe NtfToken)
-  getDeviceNtfToken st t@(DeviceToken provider token) =
-    liftIO . withTransaction st $ \db ->
-      fmap ntfToken . listToMaybe
-        <$> DB.query
-          db
-          [sql|
-            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
-              t.tkn_id, t.tkn_priv_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
-            FROM ntf_tokens t
-            JOIN ntf_servers s USING (ntf_host, ntf_port)
-            WHERE t.provider = ? AND t.device_token = ?
-          |]
-          (provider, token)
+  getDeviceNtfToken :: SQLiteStore -> DeviceToken -> m (Maybe NtfToken, [NtfToken])
+  getDeviceNtfToken st t =
+    liftIO . withTransaction st $ \db -> do
+      tokens <-
+        map ntfToken
+          <$> DB.query_
+            db
+            [sql|
+              SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+                t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
+              FROM ntf_tokens t
+              JOIN ntf_servers s USING (ntf_host, ntf_port)
+            |]
+      pure . first listToMaybe $ partition ((t ==) . deviceToken) tokens
     where
-      ntfToken (host, port, keyHash, ntfTokenId, ntfPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction) =
+      ntfToken (host, port, keyHash, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction) =
         let ntfServer = ProtocolServer {host, port, keyHash}
-         in NtfToken {deviceToken = t, ntfServer, ntfTokenId, ntfPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction}
+            ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
+         in NtfToken {deviceToken = t, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
 
   updateNtfTokenRegistration :: SQLiteStore -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
   updateNtfTokenRegistration st NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknId ntfDhSecret =
@@ -622,6 +623,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
         |]
         (tknStatus, tknAction, updatedAt, provider, token, host, port)
+
+  removeNtfToken :: SQLiteStore -> NtfToken -> m ()
+  removeNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} =
+    liftIO . withTransaction st $ \db ->
+      DB.execute
+        db
+        [sql|
+          DELETE FROM ntf_tokens
+          WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+        |]
+        (provider, token, host, port)
 
 -- * Auxiliary helpers
 

@@ -7,9 +7,11 @@
 
 module Simplex.Messaging.Notifications.Server.Env where
 
+import Control.Concurrent.Async (Async)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Word (Word16)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
@@ -59,7 +61,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
   -- TODO not creating APNS client on start to pass CI test, has to be replaced with mock APNS server
-  -- void . liftIO $ newPushClient pushServer PPApple
+  -- void . liftIO $ newPushClient pushServer PPApns
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
@@ -78,20 +80,28 @@ newNtfSubscriber qSize smpAgentCfg = do
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfTknData, PushNotification),
     pushClients :: TMap PushProvider PushProviderClient,
+    intervalNotifiers :: TMap NtfTokenId IntervalNotifier,
     apnsConfig :: APNSPushClientConfig
+  }
+
+data IntervalNotifier = IntervalNotifier
+  { action :: Async (),
+    token :: NtfTknData,
+    interval :: Word16
   }
 
 newNtfPushServer :: Natural -> APNSPushClientConfig -> STM NtfPushServer
 newNtfPushServer qSize apnsConfig = do
   pushQ <- newTBQueue qSize
   pushClients <- TM.empty
-  pure NtfPushServer {pushQ, pushClients, apnsConfig}
+  intervalNotifiers <- TM.empty
+  pure NtfPushServer {pushQ, pushClients, intervalNotifiers, apnsConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient NtfPushServer {apnsConfig, pushClients} = \case
-  PPApple -> do
+  PPApns -> do
     c <- apnsPushProviderClient <$> createAPNSPushClient apnsConfig
-    atomically $ TM.insert PPApple c pushClients
+    atomically $ TM.insert PPApns c pushClients
     pure c
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient

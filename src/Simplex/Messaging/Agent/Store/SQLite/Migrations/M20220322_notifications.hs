@@ -23,7 +23,10 @@ CREATE TABLE ntf_tokens (
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
   tkn_id BLOB, -- token ID assigned by notifications server
-  tkn_priv_key BLOB NOT NULL, -- private key to sign token commands
+  tkn_pub_key BLOB NOT NULL, -- client's public key to verify token commands (used by server, for repeat registraions)
+  tkn_priv_key BLOB NOT NULL, -- client's private key to sign token commands
+  tkn_pub_dh_key BLOB NOT NULL, -- client's public DH key (for repeat registraions)
+  tkn_priv_dh_key BLOB NOT NULL, -- client's private DH key (for repeat registraions)
   tkn_dh_secret BLOB, -- DH secret for e2e encryption of notifications
   tkn_status TEXT NOT NULL,
   tkn_action BLOB,

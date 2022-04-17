@@ -1,12 +1,16 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Use newtype instead of data" #-}
 
 module Simplex.Messaging.Notifications.Server.Push.APNS where
 
+import Control.Logger.Simple
 import Control.Monad.Except
 import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.ECDSA as EC
@@ -20,6 +24,7 @@ import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import Data.Bifunctor (first)
+import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
@@ -27,7 +32,6 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
@@ -226,7 +230,7 @@ getApnsJWTToken APNSPushClient {apnsCfg = APNSPushClientConfig {appTeamId, token
       atomically $ writeTVar jwtToken t
       pure signedJWT'
   where
-    jwtTokenAge (JWTToken _ JWTClaims {iat}) = (iat -) . systemSeconds <$> getSystemTime
+    jwtTokenAge (JWTToken _ JWTClaims {iat}) = subtract iat . systemSeconds <$> getSystemTime
 
 mkApnsJWTToken :: Text -> JWTHeader -> EC.PrivateKey -> IO (JWTToken, SignedJWTToken)
 mkApnsJWTToken appTeamId jwtHeader privateKey = do
@@ -256,15 +260,15 @@ apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> Either
 apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
   PNVerification (NtfRegCode code) ->
     encrypt code $ \code' ->
-      apn APNSBackground {contentAvailable = 1} . Just $ J.object ["verification" .= code']
+      apn APNSBackground {contentAvailable = 1} . Just $ J.object ["verification" .= code', "nonce" .= nonce]
   PNMessage srv nId ->
     encrypt (strEncode srv <> "/" <> strEncode nId) $ \ntfQueue ->
-      apn apnMutableContent . Just $ J.object ["checkMessage" .= ntfQueue]
+      apn apnMutableContent . Just $ J.object ["checkMessage" .= ntfQueue, "nonce" .= nonce]
   PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where
     encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
-    encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
+    encrypt ntfData f = f . safeDecodeUtf8 . B64.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
     apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or some other app event", category = Nothing}
     apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
@@ -300,40 +304,39 @@ data PushProviderError
 
 type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProviderError IO ()
 
-newtype APNSErrorReponse = APNSErrorReponse {reason :: Text}
+-- this is not a newtype on purpose to have a correct JSON encoding as a record
+data APNSErrorReponse = APNSErrorReponse {reason :: Text}
   deriving (Generic, FromJSON)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken PPApple tknStr} pn = do
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken PPApns tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
-  liftIO $ putStrLn $ "APNS notification: " <> show apnsNtf
   req <- liftIO $ apnsRequest c tknStr apnsNtf
-  liftIO $ putStrLn $ "APNS request: " <> show req
   HTTP2Response {response, respBody} <- liftHTTPS2 $ sendRequest http2 req
   let status = H.responseStatus response
-      reason = fromMaybe "" $ J.decodeStrict' =<< respBody
-  liftIO $ putStrLn $ "APNS response: " <> show status <> " " <> T.unpack reason
-  result status reason
+      reason' = maybe "?" reason $ J.decodeStrict' respBody
+  logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
+  result status reason'
   where
     result :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
-    result status reason
+    result status reason'
       | status == Just N.ok200 = pure ()
       | status == Just N.badRequest400 =
-        case reason of
+        case reason' of
           "BadDeviceToken" -> throwError PPTokenInvalid
           "DeviceTokenNotForTopic" -> throwError PPTokenInvalid
           "TopicDisallowed" -> throwError PPPermanentError
-          _ -> err status reason
-      | status == Just N.forbidden403 = case reason of
+          _ -> err status reason'
+      | status == Just N.forbidden403 = case reason' of
         "ExpiredProviderToken" -> throwError PPPermanentError -- there should be no point retrying it as the token was refreshed
         "InvalidProviderToken" -> throwError PPPermanentError
-        _ -> err status reason
+        _ -> err status reason'
       | status == Just N.gone410 = throwError PPTokenInvalid
       | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError PPRetryLater
       -- Just tooManyRequests429 -> TODO TooManyRequests - too many requests for the same token
-      | otherwise = err status reason
+      | otherwise = err status reason'
     err :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     err s r = throwError $ PPResponseError s r
     liftHTTPS2 a = ExceptT $ first PPConnection <$> a

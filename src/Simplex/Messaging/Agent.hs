@@ -63,7 +63,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
-import Data.Bifunctor (first, second)
+import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
@@ -87,7 +87,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode, NtfTknStatus (..))
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -165,8 +165,8 @@ registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 registerNtfToken c = withAgentEnv c . registerNtfToken' c
 
 -- | Verify device notifications token
-verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NtfRegCode -> m ()
-verifyNtfToken c = withAgentEnv c .: verifyNtfToken' c
+verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
+verifyNtfToken c = withAgentEnv c .:. verifyNtfToken' c
 
 -- | Enable/disable periodic notifications
 enableNtfCron :: AgentErrorMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
@@ -523,59 +523,77 @@ setSMPServers' c servers = do
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m ()
 registerNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
-    Just tkn@NtfToken {ntfTokenId, ntfTknAction} -> case (ntfTokenId, ntfTknAction) of
-      (Nothing, Just (NTARegister ntfPubKey)) -> registerToken tkn ntfPubKey
-      -- TODO request verification code again in case there is registration, but no verification code in DB - probably after some timeout?
-      (Just tknId, Just (NTAVerify code)) ->
-        t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
-      (Just tknId, Just (NTACron interval)) ->
-        t tkn (NTActive, Just NTACheck) $ agentNtfEnableCron c tknId tkn interval
-      (Just _tknId, Just NTACheck) -> pure ()
-      (Just tknId, Just NTADelete) ->
-        t tkn (NTExpired, Nothing) $ agentNtfDeleteToken c tknId tkn
-      _ -> pure ()
+    (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction}, prevTokens) -> do
+      mapM_ (deleteToken_ c) prevTokens
+      case (ntfTokenId, ntfTknAction) of
+        (Nothing, Just NTARegister) -> registerToken tkn
+        -- TODO minimal time before repeat registration
+        (Just _, Nothing) -> when (ntfTknStatus == NTRegistered) $ registerToken tkn
+        (Just tknId, Just (NTAVerify code)) ->
+          t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
+        (Just tknId, Just (NTACron interval)) ->
+          t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
+        (Just _tknId, Just NTACheck) -> pure () -- TODO
+        -- agentNtfCheckToken c tknId tkn >>= \case
+        (Just tknId, Just NTADelete) -> do
+          agentNtfDeleteToken c tknId tkn
+          withStore $ \st -> removeNtfToken st tkn
+        _ -> pure ()
     _ ->
       getNtfServer c >>= \case
         Just ntfServer ->
           asks (cmdSignAlg . config) >>= \case
             C.SignAlg a -> do
-              (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
-              let tkn = newNtfToken deviceToken ntfServer ntfPrivKey ntfPubKey
+              tknKeys <- liftIO $ C.generateSignatureKeyPair a
+              dhKeys <- liftIO C.generateKeyPair'
+              let tkn = newNtfToken deviceToken ntfServer tknKeys dhKeys
               withStore $ \st -> createNtfToken st tkn
-              registerToken tkn ntfPubKey
+              registerToken tkn
         _ -> throwError $ CMD PROHIBITED
   where
     t tkn = withToken tkn Nothing
-    registerToken :: NtfToken -> C.APublicVerifyKey -> m ()
-    registerToken tkn ntfPubKey = do
-      (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
+    registerToken :: NtfToken -> m ()
+    registerToken tkn@NtfToken {ntfPubKey, ntfDhKeys = (pubDhKey, privDhKey)} = do
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
       let dhSecret = C.dh' srvPubDhKey privDhKey
       withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
 
-verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> NtfRegCode -> m ()
-verifyNtfToken' c deviceToken code =
+-- TODO decrypt verification code
+verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
+verifyNtfToken' c deviceToken code nonce =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
-    Just tkn@NtfToken {ntfTokenId = Just tknId} ->
-      withToken tkn (Just (NTConfirmed, NTAVerify code)) (NTActive, Just NTACheck) $
-        agentNtfVerifyToken c tknId tkn code
+    (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
+      code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
+      withToken tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+        agentNtfVerifyToken c tknId tkn code'
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
-enableNtfCron' c deviceToken interval =
+enableNtfCron' c deviceToken interval = do
+  when (interval < 20) . throwError $ CMD PROHIBITED
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
-    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive} ->
-      withToken tkn (Just (NTActive, NTACron interval)) (NTActive, Just NTACheck) $
+    (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive}, _) ->
+      withToken tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
         agentNtfEnableCron c tknId tkn interval
     _ -> throwError $ CMD PROHIBITED
+
+cronSuccess :: Word16 -> (NtfTknStatus, Maybe NtfTknAction)
+cronSuccess interval
+  | interval == 0 = (NTActive, Just NTACheck)
+  | otherwise = (NTActive, Just $ NTACron interval)
 
 deleteNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
-    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} ->
-      withToken tkn (Just (ntfTknStatus, NTADelete)) (NTExpired, Nothing) $
-        agentNtfDeleteToken c tknId tkn
+    (Just tkn, _) -> deleteToken_ c tkn
     _ -> throwError $ CMD PROHIBITED
+
+deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
+deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+  forM_ ntfTokenId $ \tknId -> do
+    withStore $ \st -> updateNtfToken st tkn ntfTknStatus (Just NTADelete)
+    agentNtfDeleteToken c tknId tkn
+  withStore $ \st -> removeNtfToken st tkn
 
 withToken :: AgentMonad m => NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
 withToken tkn from_ (toStatus, toAction_) f = do
