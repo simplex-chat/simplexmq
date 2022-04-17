@@ -16,6 +16,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.Text as T
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
@@ -110,7 +111,7 @@ ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} 
 ntfPush :: MonadUnliftIO m => NtfPushServer -> m ()
 ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
   (tkn@NtfTknData {token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
-  liftIO $ putStrLn $ "sending push notification to " <> show pp
+  logDebug $ "sending push notification to " <> T.pack (show pp)
   status <- readTVarIO tknStatus
   case (status, ntf) of
     (_, PNVerification _) -> do
@@ -120,13 +121,13 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
     (NTActive, PNCheckMessages) -> do
       deliverNotification pp tkn ntf
     _ -> do
-      liftIO $ putStrLn "bad notification token status"
+      logError "bad notification token status"
   where
     deliverNotification :: PushProvider -> PushProviderClient
     deliverNotification pp tkn ntf = do
       deliver <- liftIO $ getPushClient s pp
       -- TODO retry later based on the error
-      deliver tkn ntf `catchError` \e -> liftIO (putStrLn $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
+      deliver tkn ntf `catchError` \e -> logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do
@@ -143,7 +144,7 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
 receive th NtfServerClient {rcvQ, sndQ} = forever $ do
   t@(_, _, (corrId, entId, cmdOrError)) <- tGet th
-  liftIO $ logDebug "received transmission"
+  logDebug "received transmission"
   case cmdOrError of
     Left e -> write sndQ (corrId, entId, NRErr e)
     Right cmd ->
@@ -196,7 +197,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
     processCommand :: NtfRequest -> m (Transmission NtfResponse)
     processCommand = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn _ _ dhPubKey)) -> do
-        liftIO $ logDebug "TNEW - new token"
+        logDebug "TNEW - new token"
         st <- asks store
         ks@(srvDhPubKey, srvDhPrivKey) <- liftIO C.generateKeyPair'
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
@@ -211,7 +212,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
-            liftIO $ logDebug "TNEW - registered token"
+            logDebug "TNEW - registered token"
             let dhSecret = C.dh' dhPubKey srvDhPrivKey
             -- it is required that DH secret is the same, to avoid failed verifications if notification is delaying
             if tknDhSecret == dhSecret
@@ -221,26 +222,27 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
               else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
-              liftIO $ logDebug "TVFY - token verified"
+              logDebug "TVFY - token verified"
               atomically $ writeTVar tknStatus NTActive
               pure NROk
             | otherwise -> do
-              liftIO $ logDebug "TVFY - incorrect code or token status"
+              logDebug "TVFY - incorrect code or token status"
               pure $ NRErr AUTH
+          TCHK -> pure $ NRTkn status
           TDEL -> do
-            liftIO $ logDebug "TDEL"
+            logDebug "TDEL"
             st <- asks store
             atomically $ deleteNtfToken st tknId
             pure NROk
           TCRN 0 ->
-            liftIO (logDebug "TCRN 0")
+            logDebug "TCRN 0"
               >> atomically (TM.lookupDelete tknId intervalNotifiers)
               >>= mapM_ (uninterruptibleCancel . action)
               >> pure NROk
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
             | otherwise -> do
-              liftIO $ logDebug "TCRN"
+              logDebug "TCRN"
               atomically (TM.lookup tknId intervalNotifiers) >>= \case
                 Nothing -> runIntervalNotifier int
                 Just IntervalNotifier {interval, action} ->

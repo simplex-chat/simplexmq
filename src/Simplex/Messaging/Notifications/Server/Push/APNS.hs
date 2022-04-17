@@ -29,7 +29,6 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With)
@@ -228,7 +227,7 @@ getApnsJWTToken APNSPushClient {apnsCfg = APNSPushClientConfig {appTeamId, token
       atomically $ writeTVar jwtToken t
       pure signedJWT'
   where
-    jwtTokenAge (JWTToken _ JWTClaims {iat}) = (iat -) . systemSeconds <$> getSystemTime
+    jwtTokenAge (JWTToken _ JWTClaims {iat}) = subtract iat . systemSeconds <$> getSystemTime
 
 mkApnsJWTToken :: Text -> JWTHeader -> EC.PrivateKey -> IO (JWTToken, SignedJWTToken)
 mkApnsJWTToken appTeamId jwtHeader privateKey = do
@@ -313,27 +312,27 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
   req <- liftIO $ apnsRequest c tknStr apnsNtf
   HTTP2Response {response, respBody} <- liftHTTPS2 $ sendRequest http2 req
   let status = H.responseStatus response
-      reason = fromMaybe "" $ J.decodeStrict' =<< respBody
-  liftIO $ logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason
-  result status reason
+      reason' = maybe "?" reason $ J.decodeStrict' =<< respBody
+  logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
+  result status reason'
   where
     result :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
-    result status reason
+    result status reason'
       | status == Just N.ok200 = pure ()
       | status == Just N.badRequest400 =
-        case reason of
+        case reason' of
           "BadDeviceToken" -> throwError PPTokenInvalid
           "DeviceTokenNotForTopic" -> throwError PPTokenInvalid
           "TopicDisallowed" -> throwError PPPermanentError
-          _ -> err status reason
-      | status == Just N.forbidden403 = case reason of
+          _ -> err status reason'
+      | status == Just N.forbidden403 = case reason' of
         "ExpiredProviderToken" -> throwError PPPermanentError -- there should be no point retrying it as the token was refreshed
         "InvalidProviderToken" -> throwError PPPermanentError
-        _ -> err status reason
+        _ -> err status reason'
       | status == Just N.gone410 = throwError PPTokenInvalid
       | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError PPRetryLater
       -- Just tooManyRequests429 -> TODO TooManyRequests - too many requests for the same token
-      | otherwise = err status reason
+      | otherwise = err status reason'
     err :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     err s r = throwError $ PPResponseError s r
     liftHTTPS2 a = ExceptT $ first PPConnection <$> a

@@ -532,10 +532,12 @@ registerNtfToken' c deviceToken =
         (Just tknId, Just (NTAVerify code)) ->
           t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
         (Just tknId, Just (NTACron interval)) ->
-          t tkn (NTActive, Just NTACheck) $ agentNtfEnableCron c tknId tkn interval
-        (Just _tknId, Just NTACheck) -> pure ()
-        (Just tknId, Just NTADelete) ->
-          t tkn (NTExpired, Nothing) $ agentNtfDeleteToken c tknId tkn
+          t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
+        (Just _tknId, Just NTACheck) -> pure () -- TODO
+        -- agentNtfCheckToken c tknId tkn >>= \case
+        (Just tknId, Just NTADelete) -> do
+          agentNtfDeleteToken c tknId tkn
+          withStore $ \st -> removeNtfToken st tkn
         _ -> pure ()
     _ ->
       getNtfServer c >>= \case
@@ -567,12 +569,18 @@ verifyNtfToken' c deviceToken code nonce =
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
-enableNtfCron' c deviceToken interval =
+enableNtfCron' c deviceToken interval = do
+  when (interval < 20) . throwError $ CMD PROHIBITED
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive}, _) ->
-      withToken tkn (Just (NTActive, NTACron interval)) (NTActive, Just NTACheck) $
+      withToken tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
         agentNtfEnableCron c tknId tkn interval
     _ -> throwError $ CMD PROHIBITED
+
+cronSuccess :: Word16 -> (NtfTknStatus, Maybe NtfTknAction)
+cronSuccess interval
+  | interval == 0 = (NTActive, Just NTACheck)
+  | otherwise = (NTActive, Just $ NTACron interval)
 
 deleteNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken' c deviceToken =

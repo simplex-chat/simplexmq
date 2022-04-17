@@ -33,6 +33,12 @@ ntfRegisterToken c pKey newTkn =
 ntfVerifyToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> NtfRegCode -> ExceptT ProtocolClientError IO ()
 ntfVerifyToken c pKey tknId code = okNtfCommand (TVFY code) c pKey tknId
 
+ntfCheckToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> ExceptT ProtocolClientError IO NtfTknStatus
+ntfCheckToken c pKey tknId =
+  sendNtfCommand c (Just pKey) tknId TCHK >>= \case
+    NRTkn stat -> pure stat
+    _ -> throwE PCEUnexpectedResponse
+
 ntfDeleteToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> ExceptT ProtocolClientError IO ()
 ntfDeleteToken = okNtfCommand TDEL
 
@@ -48,7 +54,7 @@ ntfCreateSubsciption c pKey newSub =
 ntfCheckSubscription :: NtfClient -> C.APrivateSignKey -> NtfSubscriptionId -> ExceptT ProtocolClientError IO NtfSubStatus
 ntfCheckSubscription c pKey subId =
   sendNtfCommand c (Just pKey) subId SCHK >>= \case
-    NRStat stat -> pure stat
+    NRSub stat -> pure stat
     _ -> throwE PCEUnexpectedResponse
 
 ntfDeleteSubscription :: NtfClient -> C.APrivateSignKey -> NtfSubscriptionId -> ExceptT ProtocolClientError IO ()

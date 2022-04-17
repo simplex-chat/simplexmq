@@ -16,6 +16,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.Maybe (isNothing)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Type.Equality
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -51,6 +52,7 @@ instance NtfEntityI 'Subscription where sNtfEntity = SSubscription
 data NtfCommandTag (e :: NtfEntity) where
   TNEW_ :: NtfCommandTag 'Token
   TVFY_ :: NtfCommandTag 'Token
+  TCHK_ :: NtfCommandTag 'Token
   TDEL_ :: NtfCommandTag 'Token
   TCRN_ :: NtfCommandTag 'Token
   SNEW_ :: NtfCommandTag 'Subscription
@@ -66,6 +68,7 @@ instance NtfEntityI e => Encoding (NtfCommandTag e) where
   smpEncode = \case
     TNEW_ -> "TNEW"
     TVFY_ -> "TVFY"
+    TCHK_ -> "TCHK"
     TDEL_ -> "TDEL"
     TCRN_ -> "TCRN"
     SNEW_ -> "SNEW"
@@ -82,6 +85,7 @@ instance ProtocolMsgTag NtfCmdTag where
   decodeTag = \case
     "TNEW" -> Just $ NCT SToken TNEW_
     "TVFY" -> Just $ NCT SToken TVFY_
+    "TCHK" -> Just $ NCT SToken TCHK_
     "TDEL" -> Just $ NCT SToken TDEL_
     "TCRN" -> Just $ NCT SToken TCRN_
     "SNEW" -> Just $ NCT SSubscription SNEW_
@@ -147,6 +151,8 @@ data NtfCommand (e :: NtfEntity) where
   TNEW :: NewNtfEntity 'Token -> NtfCommand 'Token
   -- | verify token - uses e2e encrypted random string sent to the device via PN to confirm that the device has the token
   TVFY :: NtfRegCode -> NtfCommand 'Token
+  -- | check token status
+  TCHK :: NtfCommand 'Token
   -- | delete token - all subscriptions will be removed and no more notifications will be sent
   TDEL :: NtfCommand 'Token
   -- | enable periodic background notification to fetch the new messages - interval is in minutes, minimum is 20, 0 to disable
@@ -171,6 +177,7 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
   encodeProtocol = \case
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
     TVFY code -> e (TVFY_, ' ', code)
+    TCHK -> e TCHK_
     TDEL -> e TDEL_
     TCRN int -> e (TCRN_, ' ', int)
     SNEW newSub -> e (SNEW_, ' ', newSub)
@@ -209,6 +216,7 @@ instance ProtocolEncoding NtfCmd where
       NtfCmd SToken <$> case tag of
         TNEW_ -> TNEW <$> _smpP
         TVFY_ -> TVFY <$> _smpP
+        TCHK_ -> pure TCHK
         TDEL_ -> pure TDEL
         TCRN_ -> TCRN <$> _smpP
     NCT SSubscription tag ->
@@ -224,7 +232,8 @@ data NtfResponseTag
   = NRId_
   | NROk_
   | NRErr_
-  | NRStat_
+  | NRTkn_
+  | NRSub_
   | NRPong_
   deriving (Show)
 
@@ -233,7 +242,8 @@ instance Encoding NtfResponseTag where
     NRId_ -> "ID"
     NROk_ -> "OK"
     NRErr_ -> "ERR"
-    NRStat_ -> "STAT"
+    NRTkn_ -> "TKN"
+    NRSub_ -> "SUB"
     NRPong_ -> "PONG"
   smpP = messageTagP
 
@@ -242,7 +252,8 @@ instance ProtocolMsgTag NtfResponseTag where
     "ID" -> Just NRId_
     "OK" -> Just NROk_
     "ERR" -> Just NRErr_
-    "STAT" -> Just NRStat_
+    "TKN" -> Just NRTkn_
+    "SUB" -> Just NRSub_
     "PONG" -> Just NRPong_
     _ -> Nothing
 
@@ -250,7 +261,8 @@ data NtfResponse
   = NRId NtfEntityId C.PublicKeyX25519
   | NROk
   | NRErr ErrorType
-  | NRStat NtfSubStatus
+  | NRTkn NtfTknStatus
+  | NRSub NtfSubStatus
   | NRPong
 
 instance ProtocolEncoding NtfResponse where
@@ -259,7 +271,8 @@ instance ProtocolEncoding NtfResponse where
     NRId entId dhKey -> e (NRId_, ' ', entId, dhKey)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
-    NRStat stat -> e (NRStat_, ' ', stat)
+    NRTkn stat -> e (NRTkn_, ' ', stat)
+    NRSub stat -> e (NRSub_, ' ', stat)
     NRPong -> e NRPong_
     where
       e :: Encoding a => a -> ByteString
@@ -269,7 +282,8 @@ instance ProtocolEncoding NtfResponse where
     NRId_ -> NRId <$> _smpP <*> smpP
     NROk_ -> pure NROk
     NRErr_ -> NRErr <$> _smpP
-    NRStat_ -> NRStat <$> _smpP
+    NRTkn_ -> NRTkn <$> _smpP
+    NRSub_ -> NRSub <$> _smpP
     NRPong_ -> pure NRPong
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
@@ -363,7 +377,7 @@ instance Encoding NtfSubStatus where
       "ACTIVE" -> pure NSActive
       "END" -> pure NSEnd
       "SMP_AUTH" -> pure NSSMPAuth
-      _ -> fail "bad NtfError"
+      _ -> fail "bad NtfSubStatus"
 
 data NtfTknStatus
   = -- | Token created in DB
@@ -380,26 +394,27 @@ data NtfTknStatus
     NTExpired
   deriving (Eq, Show)
 
-instance TextEncoding NtfTknStatus where
-  textEncode = \case
-    NTNew -> "new"
-    NTRegistered -> "registered"
-    NTInvalid -> "invalid"
-    NTConfirmed -> "confirmed"
-    NTActive -> "active"
-    NTExpired -> "expired"
-  textDecode = \case
-    "new" -> Just NTNew
-    "registered" -> Just NTRegistered
-    "invalid" -> Just NTInvalid
-    "confirmed" -> Just NTConfirmed
-    "active" -> Just NTActive
-    "expired" -> Just NTExpired
-    _ -> Nothing
+instance Encoding NtfTknStatus where
+  smpEncode = \case
+    NTNew -> "NEW"
+    NTRegistered -> "REGISTERED"
+    NTInvalid -> "INVALID"
+    NTConfirmed -> "CONFIRMED"
+    NTActive -> "ACTIVE"
+    NTExpired -> "EXPIRED"
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "NEW" -> pure NTNew
+      "REGISTERED" -> pure NTRegistered
+      "INVALID" -> pure NTInvalid
+      "CONFIRMED" -> pure NTConfirmed
+      "ACTIVE" -> pure NTActive
+      "EXPIRED" -> pure NTExpired
+      _ -> fail "bad NtfTknStatus"
 
-instance FromField NtfTknStatus where fromField = fromTextField_ textDecode
+instance FromField NtfTknStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
 
-instance ToField NtfTknStatus where toField = toField . textEncode
+instance ToField NtfTknStatus where toField = toField . decodeLatin1 . smpEncode
 
 checkEntity :: forall t e e'. (NtfEntityI e, NtfEntityI e') => t e' -> Either String (t e)
 checkEntity c = case testEquality (sNtfEntity @e) (sNtfEntity @e') of
