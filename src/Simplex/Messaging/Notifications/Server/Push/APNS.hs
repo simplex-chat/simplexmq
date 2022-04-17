@@ -1,9 +1,12 @@
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Use newtype instead of data" #-}
 
 module Simplex.Messaging.Notifications.Server.Push.APNS where
 
@@ -301,7 +304,8 @@ data PushProviderError
 
 type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProviderError IO ()
 
-newtype APNSErrorReponse = APNSErrorReponse {reason :: Text}
+-- this is not a newtype on purpose to have a correct JSON encoding as a record
+data APNSErrorReponse = APNSErrorReponse {reason :: Text}
   deriving (Generic, FromJSON)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
@@ -312,7 +316,7 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
   req <- liftIO $ apnsRequest c tknStr apnsNtf
   HTTP2Response {response, respBody} <- liftHTTPS2 $ sendRequest http2 req
   let status = H.responseStatus response
-      reason' = maybe "?" reason $ J.decodeStrict' =<< respBody
+      reason' = maybe "?" reason $ J.decodeStrict' respBody
   logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
   result status reason'
   where

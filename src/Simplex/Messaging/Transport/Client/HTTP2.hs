@@ -9,11 +9,13 @@ module Simplex.Messaging.Transport.Client.HTTP2 where
 import Control.Concurrent.Async
 import Control.Exception (IOException, catch, finally)
 import qualified Control.Exception as E
+import Control.Logger.Simple (logDebug)
 import Control.Monad.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Default (def)
 import Data.Maybe (isNothing)
+import qualified Data.Text as T
 import qualified Data.X509.CertificateStore as XS
 import Foreign (mallocBytes)
 import Network.HPACK (BufferSize, HeaderTable)
@@ -41,13 +43,12 @@ data HTTPS2Client = HTTPS2Client
 
 data HTTP2Response = HTTP2Response
   { response :: Response,
-    respBody :: Maybe ByteString,
+    respBody :: ByteString,
     respTrailers :: Maybe HeaderTable
   }
 
 data HTTP2SClientConfig = HTTP2SClientConfig
   { qSize :: Natural,
-    maxBody :: Int,
     connTimeout :: Int,
     tcpKeepAlive :: Maybe KeepAliveOpts,
     caStoreFile :: FilePath,
@@ -59,8 +60,7 @@ defaultHTTP2SClientConfig :: HTTP2SClientConfig
 defaultHTTP2SClientConfig =
   HTTP2SClientConfig
     { qSize = 64,
-      maxBody = 500000,
-      connTimeout = 5000000,
+      connTimeout = 10000000,
       tcpKeepAlive = Nothing,
       caStoreFile = "/etc/ssl/cert.pem",
       suportedTLSParams =
@@ -112,24 +112,14 @@ getHTTPS2Client host port config@HTTP2SClientConfig {tcpKeepAlive, connTimeout, 
       (req, respVar) <- atomically $ readTBQueue reqQ
       sendReq req $ \r -> do
         let writeResp respBody respTrailers = atomically $ putTMVar respVar HTTP2Response {response = r, respBody, respTrailers}
-        case H.responseBodySize r of
-          Just sz ->
-            if sz <= maxBody config
-              then do
-                respBody <- getResponseBody r "" sz
-                respTrailers <- join <$> mapM (const $ H.getResponseTrailers r) respBody
-                writeResp respBody respTrailers
-              else writeResp Nothing Nothing
-          _ -> writeResp Nothing Nothing
+        respBody <- getResponseBody r ""
+        respTrailers <- H.getResponseTrailers r
+        writeResp respBody respTrailers
 
-    getResponseBody :: Response -> ByteString -> Int -> IO (Maybe ByteString)
-    getResponseBody r s sz =
-      H.getResponseBodyChunk r >>= \chunk -> do
-        if chunk == ""
-          then pure (if B.length s == sz then Just s else Nothing)
-          else do
-            let s' = s <> chunk
-            if B.length s' > sz then pure Nothing else getResponseBody r s' sz
+    getResponseBody :: Response -> ByteString -> IO ByteString
+    getResponseBody r s =
+      H.getResponseBodyChunk r >>= \chunk ->
+        if B.null chunk then pure s else getResponseBody r $ s <> chunk
 
 -- | Disconnects client from the server and terminates client threads.
 closeHTTPS2Client :: HTTPS2Client -> IO ()
