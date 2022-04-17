@@ -10,11 +10,14 @@ import ServerTests
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
+import System.Environment (setEnv)
 import Test.Hspec
 
 main :: IO ()
 main = do
   createDirectoryIfMissing False "tests/tmp"
+  setEnv "APNS_KEY_ID" "H82WD9K9AQ"
+  setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
   hspec $ do
     describe "Core tests" $ do
       describe "Encoding tests" encodingTests
