@@ -33,4 +33,4 @@ ntfSyntaxTests (ATransport t) = do
       (Maybe C.ASignature, ByteString, ByteString, smp) ->
       (Maybe C.ASignature, ByteString, ByteString, BrokerMsg) ->
       Expectation
-    command >#> response = ntfServerTest t command `shouldReturn` response
+    command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response

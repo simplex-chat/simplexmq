@@ -74,7 +74,9 @@ library
       Simplex.Messaging.TMap
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.Client
-      Simplex.Messaging.Transport.Client.HTTP2
+      Simplex.Messaging.Transport.HTTP2
+      Simplex.Messaging.Transport.HTTP2.Client
+      Simplex.Messaging.Transport.HTTP2.Server
       Simplex.Messaging.Transport.KeepAlive
       Simplex.Messaging.Transport.Server
       Simplex.Messaging.Transport.WebSockets
@@ -325,6 +327,7 @@ test-suite smp-server-test
       AgentTests.ConnectionRequestTests
       AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
+      AgentTests.NotificationTests
       AgentTests.SQLiteTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests

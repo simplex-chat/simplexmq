@@ -11,6 +11,7 @@ import Crypto.Random
 import qualified Data.ByteString.Char8 as B
 import qualified Data.List.NonEmpty as L
 import Network.Socket (HostName, ServiceName)
+import NtfClient (ntfTestPort)
 import SMPClient
   ( serverBracket,
     testKeyHash,
@@ -161,8 +162,8 @@ initAgentServers =
       ntf = ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"]
     }
 
-cfg :: AgentConfig
-cfg =
+agentCfg :: AgentConfig
+agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
       tbqSize = 1,
@@ -173,6 +174,11 @@ cfg =
             defaultTransport = (testPort, transport @TLS),
             tcpTimeout = 500_000
           },
+      ntfCfg =
+        defaultClientConfig
+          { qSize = 1,
+            defaultTransport = (ntfTestPort, transport @TLS)
+          },
       reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
@@ -181,7 +187,7 @@ cfg =
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db'}
+  let cfg' = agentCfg {tcpPort = port', dbFile = db'}
       initServers' = initAgentServers {smp = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg' initServers')
