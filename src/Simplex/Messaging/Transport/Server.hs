@@ -4,6 +4,7 @@
 
 module Simplex.Messaging.Transport.Server
   ( runTransportServer,
+    runTCPServer,
     loadSupportedTLSServerParams,
     loadTLSServerParams,
     loadFingerprint,
@@ -38,7 +39,7 @@ runTransportServer started port serverParams server = do
     clients <- newTVarIO S.empty
     E.bracket
       (startTCPServer started port)
-      (closeServer clients)
+      (closeServer started clients)
       $ \sock -> forever $ do
         (connSock, _) <- accept sock
         tid <- forkIO $ connectClient u connSock `E.catch` \(_ :: E.SomeException) -> pure ()
@@ -50,11 +51,23 @@ runTransportServer started port serverParams server = do
         (connectTLS serverParams connSock >>= getServerConnection)
         closeConnection
         (unliftIO u . server)
-    closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
-    closeServer clients sock = do
-      readTVarIO clients >>= mapM_ killThread
-      close sock
-      void . atomically $ tryPutTMVar started False
+
+runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
+runTCPServer started port server = do
+  clients <- newTVarIO S.empty
+  E.bracket
+    (startTCPServer started port)
+    (closeServer started clients)
+    $ \sock -> forever $ do
+      (connSock, _) <- accept sock
+      tid <- forkIO $ server connSock `E.catch` \(_ :: E.SomeException) -> pure ()
+      atomically . modifyTVar' clients $ S.insert tid
+
+closeServer :: TMVar Bool -> TVar (Set ThreadId) -> Socket -> IO ()
+closeServer started clients sock = do
+  readTVarIO clients >>= mapM_ killThread
+  close sock
+  void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
 startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
