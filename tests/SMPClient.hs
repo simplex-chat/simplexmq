@@ -61,6 +61,9 @@ cfg =
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLog = Nothing,
+      allowNewQueues = True,
+      messageTTL = Just $ 7 * 86400, -- seconds, 7 days
+      expireMessagesInterval = Just 21600_000000, -- microseconds, 6 hours
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
@@ -69,16 +72,16 @@ cfg =
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerStoreLogOn t port' client = do
   s <- liftIO $ openReadStoreLog testStoreLogFile
+  withSmpServerConfigOn t cfg {storeLog = Just s} port' client
+
+withSmpServerConfigOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServerConfig -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerConfigOn t cfg' port' =
   serverBracket
-    (\started -> runSMPServerBlocking started cfg {transports = [(port', t)], storeLog = Just s})
+    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
     (pure ())
-    client
 
 withSmpServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerThreadOn t port' =
-  serverBracket
-    (\started -> runSMPServerBlocking started cfg {transports = [(port', t)]})
-    (pure ())
+withSmpServerThreadOn t = withSmpServerConfigOn t cfg
 
 serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
 serverBracket process afterProcess f = do

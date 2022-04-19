@@ -283,7 +283,10 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
           caCertificateFile = caCrtFile,
           privateKeyFile = serverKeyFile,
           certificateFile = serverCrtFile,
-          storeLog
+          storeLog,
+          allowNewQueues = True,
+          messageTTL = Just $ 7 * 86400, -- 7 days
+          expireMessagesInterval = Just 86400 -- clean up daily
         }
 
     openStoreLog :: IO (Maybe (StoreLog 'ReadMode))

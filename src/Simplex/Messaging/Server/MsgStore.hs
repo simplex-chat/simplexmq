@@ -2,6 +2,7 @@
 
 module Simplex.Messaging.Server.MsgStore where
 
+import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime)
 import Numeric.Natural
 import Simplex.Messaging.Protocol (MsgBody, MsgId, RecipientId)
@@ -22,3 +23,4 @@ class MonadMsgQueue q m where
   tryPeekMsg :: q -> m (Maybe Message) -- non blocking
   peekMsg :: q -> m Message -- blocking
   tryDelPeekMsg :: q -> m (Maybe Message) -- atomic delete (== read) last and peek next message, if available
+  deleteExpiredMsgs :: q -> Int64 -> m ()

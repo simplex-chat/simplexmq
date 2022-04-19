@@ -3,9 +3,13 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Server.MsgStore.STM where
 
+import Control.Monad (when)
+import Data.Int (Int64)
+import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Numeric.Natural
 import Simplex.Messaging.Protocol (RecipientId)
 import Simplex.Messaging.Server.MsgStore
@@ -48,3 +52,11 @@ instance MonadMsgQueue MsgQueue STM where
   -- atomic delete (== read) last and peek next message if available
   tryDelPeekMsg :: MsgQueue -> STM (Maybe Message)
   tryDelPeekMsg (MsgQueue q) = tryReadTBQueue q >> tryPeekTBQueue q
+
+  deleteExpiredMsgs :: MsgQueue -> Int64 -> STM ()
+  deleteExpiredMsgs (MsgQueue q) old = loop
+    where
+      loop = tryPeekTBQueue q >>= mapM_ delOldMsg
+      delOldMsg Message {ts} =
+        when (systemSeconds ts < old) $
+          tryReadTBQueue q >> loop
