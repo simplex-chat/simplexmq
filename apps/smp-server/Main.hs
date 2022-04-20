@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -283,7 +284,10 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
           caCertificateFile = caCrtFile,
           privateKeyFile = serverKeyFile,
           certificateFile = serverCrtFile,
-          storeLog
+          storeLog,
+          allowNewQueues = True,
+          messageTTL = Just $ 7 * 86400, -- 7 days
+          expireMessagesInterval = Just 21600_000000 -- microseconds, 6 hours
         }
 
     openStoreLog :: IO (Maybe (StoreLog 'ReadMode))

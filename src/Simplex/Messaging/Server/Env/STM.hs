@@ -9,6 +9,7 @@ import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.X509.Validation (Fingerprint (..))
@@ -36,6 +37,12 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
+    -- | set to False to prohibit creating new queues
+    allowNewQueues :: Bool,
+    -- | time after which the messages can be removed from the queues, seconds
+    messageTTL :: Maybe Int64,
+    -- | interval to periodically remove expired messages (when no messages are sent to the queue), microseconds
+    expireMessagesInterval :: Maybe Int,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
