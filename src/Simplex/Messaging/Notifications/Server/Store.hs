@@ -4,7 +4,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Simplex.Messaging.Notifications.Server.Subscriptions where
+module Simplex.Messaging.Notifications.Server.Store where
 
 import Control.Concurrent.STM
 import qualified Simplex.Messaging.Crypto as C

@@ -45,7 +45,7 @@ import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Subscriptions (NtfTknData (..))
+import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
 import Simplex.Messaging.Protocol (NotifierId, SMPServer)
 import Simplex.Messaging.Transport.HTTP2.Client
 import System.Environment (getEnv)

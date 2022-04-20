@@ -23,7 +23,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Server.Subscriptions
+import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (ErrorType (..), SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
