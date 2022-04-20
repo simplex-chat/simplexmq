@@ -205,7 +205,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
         regCode <- getRegCode
         atomically $ do
           tkn <- mkNtfTknData newTkn ks dhSecret regCode
-          addNtfToken st tknId tkn
+          addPrimaryNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, PNVerification regCode)
         pure (corrId, "", NRId tknId srvDhPubKey)
       NtfReqCmd SToken (NtfTkn tkn@NtfTknData {tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do

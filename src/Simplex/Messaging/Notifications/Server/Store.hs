@@ -15,14 +15,14 @@ import Simplex.Messaging.Util ((<$$>))
 
 data NtfStore = NtfStore
   { tokens :: TMap NtfTokenId NtfTknData,
-    tokenIds :: TMap DeviceToken NtfTokenId
+    primaryTokenIds :: TMap DeviceToken NtfTokenId
   }
 
 newNtfStore :: STM NtfStore
 newNtfStore = do
   tokens <- TM.empty
-  tokenIds <- TM.empty
-  pure NtfStore {tokens, tokenIds}
+  primaryTokenIds <- TM.empty
+  pure NtfStore {tokens, primaryTokenIds}
 
 data NtfTknData = NtfTknData
   { token :: DeviceToken,
@@ -63,14 +63,14 @@ data ANtfEntityRec = forall e. NtfEntityI e => NER (SNtfEntity e) (NtfEntityRec 
 getNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe (NtfEntityRec 'Token))
 getNtfToken st tknId = NtfTkn <$$> TM.lookup tknId (tokens st)
 
-addNtfToken :: NtfStore -> NtfTokenId -> NtfTknData -> STM ()
-addNtfToken st tknId tkn@NtfTknData {token} = do
+addPrimaryNtfToken :: NtfStore -> NtfTokenId -> NtfTknData -> STM ()
+addPrimaryNtfToken st tknId tkn@NtfTknData {token} = do
   TM.insert tknId tkn $ tokens st
-  TM.insert token tknId $ tokenIds st
+  TM.insert token tknId $ primaryTokenIds st
 
 deleteNtfToken :: NtfStore -> NtfTokenId -> STM ()
 deleteNtfToken st tknId = do
-  TM.lookupDelete tknId (tokens st) >>= mapM_ (\NtfTknData {token} -> TM.delete token $ tokenIds st)
+  TM.lookupDelete tknId (tokens st) >>= mapM_ (\NtfTknData {token} -> TM.delete token $ primaryTokenIds st)
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of
