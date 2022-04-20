@@ -9,7 +9,7 @@
 
 module ServerTests where
 
-import Control.Concurrent (ThreadId, killThread)
+import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad.Except (forM, forM_, runExceptT)
@@ -21,6 +21,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
 import System.Directory (removeFile)
 import System.TimeIt (timeItT)
@@ -29,18 +30,23 @@ import Test.HUnit
 import Test.Hspec
 
 serverTests :: ATransport -> Spec
-serverTests t = do
+serverTests t@(ATransport t') = do
   describe "SMP syntax" $ syntaxTests t
   describe "SMP queues" $ do
     describe "NEW and KEY commands, SEND messages" $ testCreateSecure t
     describe "NEW, OFF and DEL commands, SEND messages" $ testCreateDelete t
     describe "Stress test" $ stressTest t
+    describe "allowNewQueues setting" $ testAllowNewQueues t'
   describe "SMP messages" $ do
     describe "duplex communication over 2 SMP connections" $ testDuplex t
     describe "switch subscription to another TCP connection" $ testSwitchSub t
   describe "Store log" $ testWithStoreLog t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
+  describe "Message expiration" $ do
+    testMsgExpireOnSend t'
+    testMsgExpireOnInterval t'
+    testMsgNOTExpireOnInterval t'
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission BrokerMsg
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
@@ -203,6 +209,16 @@ stressTest (ATransport t) =
       subscribeQueues h2
       closeConnection $ connection h2
       subscribeQueues h3
+
+testAllowNewQueues :: forall c. Transport c => TProxy c -> Spec
+testAllowNewQueues t =
+  it "should prohibit creating new queues with allowNewQueues = False" $ do
+    withSmpServerConfigOn (ATransport t) cfg {allowNewQueues = False} testPort $ \_ ->
+      testSMPClient @c $ \h -> do
+        (rPub, rKey) <- C.generateSignatureKeyPair C.SEd448
+        (dhPub, _ :: C.PrivateKeyX25519) <- C.generateKeyPair'
+        Resp "abcd" "" (ERR AUTH) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub)
+        pure ()
 
 testDuplex :: ATransport -> Spec
 testDuplex (ATransport t) =
@@ -465,6 +481,56 @@ testMessageNotifications (ATransport t) =
       1000 `timeout` tGet @BrokerMsg nh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
+
+testMsgExpireOnSend :: forall c. Transport c => TProxy c -> Spec
+testMsgExpireOnSend t =
+  it "should expire messages that are not received before messageTTL on SEND" $ do
+    (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
+    withSmpServerConfigOn (ATransport t) cfg {messageTTL = Just 1} testPort $ \_ ->
+      testSMPClient @c $ \sh -> do
+        (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
+        let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
+        Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, SEND "hello (should expire)")
+        threadDelay 2000000
+        Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, SEND "hello (should NOT expire)")
+        testSMPClient @c $ \rh -> do
+          Resp "3" _ (MSG mId _ msg) <- signSendRecv rh rKey ("3", rId, SUB)
+          (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
+          1000 `timeout` tGet @BrokerMsg rh >>= \case
+            Nothing -> return ()
+            Just _ -> error "nothing else should be delivered"
+
+testMsgExpireOnInterval :: forall c. Transport c => TProxy c -> Spec
+testMsgExpireOnInterval t =
+  it "should expire messages that are not received before messageTTL after expiry interval" $ do
+    (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
+    withSmpServerConfigOn (ATransport t) cfg {messageTTL = Just 1, expireMessagesInterval = Just 1000000} testPort $ \_ ->
+      testSMPClient @c $ \sh -> do
+        (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
+        Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, SEND "hello (should expire)")
+        threadDelay 2000000
+        testSMPClient @c $ \rh -> do
+          Resp "2" _ OK <- signSendRecv rh rKey ("2", rId, SUB)
+          1000 `timeout` tGet @BrokerMsg rh >>= \case
+            Nothing -> return ()
+            Just _ -> error "nothing should be delivered"
+
+testMsgNOTExpireOnInterval :: forall c. Transport c => TProxy c -> Spec
+testMsgNOTExpireOnInterval t =
+  it "should NOT expire messages that are not received before messageTTL if expiry interval is not set" $ do
+    (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
+    withSmpServerConfigOn (ATransport t) cfg {messageTTL = Just 1, expireMessagesInterval = Nothing} testPort $ \_ ->
+      testSMPClient @c $ \sh -> do
+        (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
+        let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
+        Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, SEND "hello (should NOT expire)")
+        threadDelay 2000000
+        testSMPClient @c $ \rh -> do
+          Resp "2" _ (MSG mId _ msg) <- signSendRecv rh rKey ("2", rId, SUB)
+          (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
+          1000 `timeout` tGet @BrokerMsg rh >>= \case
+            Nothing -> return ()
+            Just _ -> error "nothing else should be delivered"
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="

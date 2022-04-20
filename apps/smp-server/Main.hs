@@ -1,5 +1,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Main where
@@ -48,6 +49,9 @@ smpServerCLIConfig =
                 caCertificateFile = caCrtFile,
                 privateKeyFile = serverKeyFile,
                 certificateFile = serverCrtFile,
-                storeLogFile
+                storeLogFile,
+                allowNewQueues = True,
+                messageTTL = Just $ 7 * 86400, -- 7 days
+                expireMessagesInterval = Just 21600_000000 -- microseconds, 6 hours
               }
         }
