@@ -39,9 +39,9 @@ data ServerConfig = ServerConfig
     storeLog :: Maybe (StoreLog 'ReadMode),
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
-    -- | time after which the messages can be removed from the queues
+    -- | time after which the messages can be removed from the queues, seconds
     messageTTL :: Maybe Int64,
-    -- | interval to periodically remove expired messages (when no messages are sent to the queue)
+    -- | interval to periodically remove expired messages (when no messages are sent to the queue), microseconds
     expireMessagesInterval :: Maybe Int,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,

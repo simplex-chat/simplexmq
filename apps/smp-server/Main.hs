@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -286,7 +287,7 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
           storeLog,
           allowNewQueues = True,
           messageTTL = Just $ 7 * 86400, -- 7 days
-          expireMessagesInterval = Just 86400 -- clean up daily
+          expireMessagesInterval = Just 21600_000000 -- microseconds, 6 hours
         }
 
     openStoreLog :: IO (Maybe (StoreLog 'ReadMode))
