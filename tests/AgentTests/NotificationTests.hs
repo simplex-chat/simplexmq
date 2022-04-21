@@ -5,6 +5,7 @@ module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 
+import Control.Concurrent (threadDelay)
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -146,6 +147,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     liftIO $ sendApnsResponse APNSRespOk
     pure ntfData
   -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
+  threadDelay 1000000
   disconnectAgentClient a
   a' <- getSMPAgentClient agentCfg initAgentServers
   -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
@@ -153,9 +155,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   Right () <- withNtfServer t . runExceptT $ do
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
-    r <- tryE $ verifyNtfToken a' tkn verification nonce
-    liftIO $ print r
-    Left (NTF AUTH) <- pure r
+    Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn verification nonce
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
