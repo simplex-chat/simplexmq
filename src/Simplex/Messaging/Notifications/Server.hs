@@ -226,9 +226,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
               st <- asks store
               atomically $ writeTVar tknStatus NTActive
               tIds <- atomically $ removeInactiveTokenRegistrations st tkn
-              forM_ tIds $ \tId ->
-                atomically (TM.lookupDelete tId intervalNotifiers)
-                  >>= mapM_ (uninterruptibleCancel . action)
+              forM_ tIds cancelInvervalNotifications
               pure NROk
             | otherwise -> do
               logDebug "TVFY - incorrect code or token status"
@@ -238,12 +236,12 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
             logDebug "TDEL"
             st <- asks store
             atomically $ deleteNtfToken st tknId
+            cancelInvervalNotifications tknId
             pure NROk
-          TCRN 0 ->
+          TCRN 0 -> do
             logDebug "TCRN 0"
-              >> atomically (TM.lookupDelete tknId intervalNotifiers)
-              >>= mapM_ (uninterruptibleCancel . action)
-              >> pure NROk
+            cancelInvervalNotifications tknId
+            pure NROk
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
             | otherwise -> do
@@ -279,6 +277,10 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
     getRandomBytes n = do
       gVar <- asks idsDrg
       atomically (C.pseudoRandomBytes n gVar)
+    cancelInvervalNotifications :: NtfTokenId -> m ()
+    cancelInvervalNotifications tknId =
+      atomically (TM.lookupDelete tknId intervalNotifiers)
+        >>= mapM_ (uninterruptibleCancel . action)
 
 -- NReqCreate corrId tokenId smpQueue -> pure (corrId, "", NROk)
 -- do
