@@ -145,20 +145,21 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
       atomically $ readTBQueue apnsQ
     liftIO $ sendApnsResponse APNSRespOk
     pure ntfData
+  -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
+  disconnectAgentClient a
+  a' <- getSMPAgentClient agentCfg initAgentServers
   -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
   -- so that repeat verification happens without restarting the clients, when notification arrives
   Right () <- withNtfServer t . runExceptT $ do
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
-    r <- tryE $ verifyNtfToken a tkn verification nonce
-    liftIO $ print r
-    Left (NTF AUTH) <- pure r
+    Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn verification nonce
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
     nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
     liftIO $ sendApnsResponse' APNSRespOk
-    verifyNtfToken a tkn verification' nonce'
-    NTActive <- checkNtfToken a tkn
-    enableNtfCron a tkn 30
+    verifyNtfToken a' tkn verification' nonce'
+    NTActive <- checkNtfToken a' tkn
+    enableNtfCron a' tkn 30
   pure ()
