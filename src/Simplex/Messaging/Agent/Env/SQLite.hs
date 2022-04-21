@@ -4,11 +4,18 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.Messaging.Agent.Env.SQLite where
+module Simplex.Messaging.Agent.Env.SQLite
+  ( AgentConfig (..),
+    defaultAgentConfig,
+    Env (..),
+    newSMPAgentEnv,
+  )
+where
 
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
+import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer)
@@ -22,45 +29,48 @@ import UnliftIO.STM
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,
-    smpServers :: NonEmpty SMPServer,
+    initialSMPServers :: NonEmpty SMPServer,
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
     dbFile :: FilePath,
     dbPoolSize :: Int,
+    yesToMigrations :: Bool,
     smpCfg :: SMPClientConfig,
     reconnectInterval :: RetryInterval,
+    helloTimeout :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath
   }
 
-minute :: Int
-minute = 60_000_000
-
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
     { tcpPort = "5224",
-      smpServers = undefined, -- TODO move it elsewhere?
+      initialSMPServers = undefined, -- TODO move it elsewhere?
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
-      tbqSize = 16,
+      tbqSize = 64,
       dbFile = "smp-agent.db",
       dbPoolSize = 4,
+      yesToMigrations = False,
       smpCfg = smpDefaultConfig,
       reconnectInterval =
         RetryInterval
-          { initialInterval = 1_000_000,
-            increaseAfter = 10_000_000,
-            maxInterval = 10_000_000
+          { initialInterval = second,
+            increaseAfter = 10 * second,
+            maxInterval = 10 * second
           },
+      helloTimeout = 2 * nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt"
     }
+  where
+    second = 1_000_000
 
 data Env = Env
   { config :: AgentConfig,
@@ -71,9 +81,9 @@ data Env = Env
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv cfg = do
+newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createSQLiteStore (dbFile cfg) (dbPoolSize cfg) Migrations.app
+  store <- liftIO $ createSQLiteStore dbFile dbPoolSize Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  return Env {config = cfg, store, idsDrg, clientCounter, randomServer}
+  return Env {config, store, idsDrg, clientCounter, randomServer}

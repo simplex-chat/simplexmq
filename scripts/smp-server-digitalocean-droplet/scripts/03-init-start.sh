@@ -1,51 +1,23 @@
 #!/bin/bash
 
-# Download latest release
-bin_dir="/opt/simplex/bin"
-binary="$bin_dir/smp-server"
-mkdir -p $bin_dir
-curl -L -o $binary https://github.com/simplex-chat/simplexmq/releases/latest/download/smp-server-ubuntu-20_04-x86-64
-chmod +x $binary
+chmod +x /opt/simplex/server_bootstrap.sh
 
-# / Add to PATH
-cat <<EOT >> /etc/profile.d/simplex.sh
-#!/bin/bash
-
-export PATH="$PATH:$bin_dir"
-
-EOT
-# Add to PATH /
-
-# Source and test PATH
-source /etc/profile.d/simplex.sh
-smp-server --version
-
-# Initialize server
-ip_address=$(curl ifconfig.me)
-smp-server init -l --ip @ip_address
-
-# Server fingerprint
-fingerprint=$(cat /etc/opt/simplex/fingerprint)
-
-# Set up welcome script
-echo "bash /opt/simplex/on_login.sh $fingerprint $ip_address" >> /root/.bashrc
-
-# / Create systemd service
-cat <<EOT >> /etc/systemd/system/smp-server.service
+# / Create systemd service for server bootstrap script
+cat > /etc/systemd/system/server-bootstrap.service << EOF
 [Unit]
-Description=SMP server systemd service
+Description=Server bootstrap script that downloads and initializes SMP server from the latest release
 
 [Service]
-Type=simple
-ExecStart=/bin/sh -c "$binary start"
+Type=oneshot
+ExecStart=/opt/simplex/server_bootstrap.sh
 
 [Install]
 WantedBy=multi-user.target
 
-EOT
-# Create systemd service /
+EOF
+# Create systemd service for server bootstrap script /
 
-# Start systemd service
-chmod 644 /etc/systemd/system/smp-server.service
-sudo systemctl enable smp-server
-sudo systemctl start smp-server
+# Start systemd service for server bootstrap script
+chmod 644 /etc/systemd/system/server-bootstrap.service
+sudo systemctl enable server-bootstrap
+sudo systemctl start server-bootstrap

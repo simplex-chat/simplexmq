@@ -20,12 +20,14 @@ import SMPClient
     withSmpServerOn,
     withSmpServerThreadOn,
   )
-import Simplex.Messaging.Agent (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.KeepAlive
 import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
@@ -156,7 +158,7 @@ cfg :: AgentConfig
 cfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      smpServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
+      initialSMPServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
@@ -173,7 +175,7 @@ cfg =
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', smpServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
+  let cfg' = cfg {tcpPort = port', dbFile = db', initialSMPServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
         (\started -> runSMPAgentBlocking t started cfg')
         afterProcess
@@ -189,7 +191,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient agentTestHost port' testKeyHash $ \h -> do
+  runTransportClient agentTestHost port' testKeyHash (Just defaultKeepAliveOpts) $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h

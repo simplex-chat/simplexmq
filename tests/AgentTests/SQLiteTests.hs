@@ -51,7 +51,7 @@ createStore = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  createSQLiteStore (testDB <> show r) 4 Migrations.app
+  createSQLiteStore (testDB <> show r) 4 Migrations.app True
 
 removeStore :: SQLiteStore -> IO ()
 removeStore store = do
@@ -173,7 +173,9 @@ sndQueue1 =
   SndQueue
     { server = SMPServer "smp.simplex.im" "5223" testKeyHash,
       sndId = "3456",
+      sndPublicKey = Nothing,
       sndPrivateKey = testPrivateSignKey,
+      e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
       status = New
     }
@@ -303,7 +305,9 @@ testUpgradeRcvConnToDuplex =
           SndQueue
             { server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = "2345",
+              sndPublicKey = Nothing,
               sndPrivateKey = testPrivateSignKey,
+              e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
               status = New
             }
@@ -393,7 +397,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
             sndMsgId = externalSndId,
             broker = (brokerId, ts)
           },
-      msgType = A_MSG_,
+      msgType = AM_A_MSG_,
       msgBody = hw,
       internalHash,
       externalPrevSndHash = "hash_from_sender"
@@ -422,7 +426,7 @@ mkSndMsgData internalId internalSndId internalHash =
     { internalId,
       internalSndId,
       internalTs = ts,
-      msgType = A_MSG_,
+      msgType = AM_A_MSG_,
       msgBody = hw,
       internalHash,
       prevMsgHash = internalHash

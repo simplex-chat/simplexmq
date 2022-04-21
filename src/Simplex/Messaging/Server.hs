@@ -25,7 +25,6 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking) where
 
-import Control.Concurrent.STM (stateTVar)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -34,9 +33,10 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
-import Data.Time.Clock.System (getSystemTime)
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -47,7 +47,10 @@ import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import UnliftIO.Concurrent
 import UnliftIO.Exception
@@ -67,34 +70,32 @@ runSMPServer cfg = do
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> ServerConfig -> m ()
-runSMPServerBlocking started cfg@ServerConfig {transports} = do
-  env <- newEnv cfg
-  runReaderT smpServer env
-  where
-    smpServer :: (MonadUnliftIO m', MonadReader Env m') => m' ()
-    smpServer = do
-      s <- asks server
-      raceAny_
-        ( serverThread s subscribedQ subscribers subscriptions cancelSub :
-          serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
-          map runServer transports
-        )
-        `finally` withLog closeStoreLog
+runSMPServerBlocking started cfg = newEnv cfg >>= runReaderT (smpServer started)
 
-    runServer :: (MonadUnliftIO m', MonadReader Env m') => (ServiceName, ATransport) -> m' ()
+smpServer :: forall m. (MonadUnliftIO m, MonadReader Env m) => TMVar Bool -> m ()
+smpServer started = do
+  s <- asks server
+  cfg@ServerConfig {transports} <- asks config
+  raceAny_
+    ( serverThread s subscribedQ subscribers subscriptions cancelSub :
+      serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
+      map runServer transports <> expireMessagesThread_ cfg
+    )
+    `finally` withLog closeStoreLog
+  where
+    runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       runTransportServer started tcpPort serverParams (runClient t)
 
     serverThread ::
-      forall m' s.
-      MonadUnliftIO m' =>
+      forall s.
       Server ->
       (Server -> TBQueue (QueueId, Client)) ->
-      (Server -> TVar (M.Map QueueId Client)) ->
-      (Client -> TVar (M.Map QueueId s)) ->
-      (s -> m' ()) ->
-      m' ()
+      (Server -> TMap QueueId Client) ->
+      (Client -> TMap QueueId s) ->
+      (s -> m ()) ->
+      m ()
     serverThread s subQ subs clientSubs unsub = forever $ do
       atomically updateSubscribers
         >>= fmap join . mapM endPreviousSubscriptions
@@ -109,15 +110,33 @@ runSMPServerBlocking started cfg@ServerConfig {transports} = do
                   else do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
-          stateTVar (subs s) (\cs -> (M.lookup qId cs, M.insert qId clnt cs))
+          TM.lookupInsert qId clnt (subs s)
             >>= fmap join . mapM clientToBeNotified
-        endPreviousSubscriptions :: (QueueId, Client) -> m' (Maybe s)
+        endPreviousSubscriptions :: (QueueId, Client) -> m (Maybe s)
         endPreviousSubscriptions (qId, c) = do
           void . forkIO . atomically $
             writeTBQueue (sndQ c) (CorrId "", qId, END)
-          atomically . stateTVar (clientSubs c) $ \ss -> (M.lookup qId ss, M.delete qId ss)
+          atomically $ TM.lookupDelete qId (clientSubs c)
 
-    runClient :: (Transport c, MonadUnliftIO m, MonadReader Env m) => TProxy c -> c -> m ()
+    expireMessagesThread_ :: ServerConfig -> [m ()]
+    expireMessagesThread_ ServerConfig {messageTTL, expireMessagesInterval} =
+      case (messageTTL, expireMessagesInterval) of
+        (Just ttl, Just int) -> [expireMessages ttl int]
+        _ -> []
+
+    expireMessages :: Int64 -> Int -> m ()
+    expireMessages ttl interval = do
+      ms <- asks msgStore
+      quota <- asks $ msgQueueQuota . config
+      forever $ do
+        threadDelay interval
+        old <- subtract ttl . systemSeconds <$> liftIO getSystemTime
+        rIds <- M.keysSet <$> readTVarIO ms
+        forM_ rIds $ \rId ->
+          atomically (getMsgQueue ms rId quota)
+            >>= atomically . (`deleteExpiredMsgs` old)
+
+    runClient :: Transport c => TProxy c -> c -> m ()
     runClient _ h = do
       kh <- asks serverIdentity
       liftIO (runExceptT $ serverHandshake h kh) >>= \case
@@ -138,7 +157,7 @@ clientDisconnected c@Client {subscriptions, connected} = do
   subs <- readTVarIO subscriptions
   mapM_ cancelSub subs
   cs <- asks $ subscribers . server
-  atomically . mapM_ (modifyTVar cs . M.update deleteCurrentClient) $ M.keys subs
+  atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
   where
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
@@ -229,7 +248,11 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
-            NEW rKey dhKey -> createQueue st rKey dhKey
+            NEW rKey dhKey ->
+              ifM
+                (asks $ allowNewQueues . config)
+                (createQueue st rKey dhKey)
+                (pure (corrId, queueId, ERR AUTH))
             SUB -> subscribeQueue queueId
             ACK -> acknowledgeMsg
             KEY sKey -> secureQueue_ st sKey
@@ -308,21 +331,19 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
         getSubscription :: RecipientId -> STM Sub
         getSubscription rId = do
-          subs <- readTVar subscriptions
-          case M.lookup rId subs of
+          TM.lookup rId subscriptions >>= \case
             Just s -> tryTakeTMVar (delivered s) $> s
             Nothing -> do
               writeTBQueue subscribedQ (rId, clnt)
               s <- newSubscription
-              writeTVar subscriptions $ M.insert rId s subs
+              TM.insert rId s subscriptions
               return s
 
         subscribeNotifications :: m (Transmission BrokerMsg)
         subscribeNotifications = atomically $ do
-          subs <- readTVar ntfSubscriptions
-          when (isNothing $ M.lookup queueId subs) $ do
+          whenM (isNothing <$> TM.lookup queueId ntfSubscriptions) $ do
             writeTBQueue ntfSubscribedQ (queueId, clnt)
-            writeTVar ntfSubscriptions $ M.insert queueId () subs
+            TM.insert queueId () ntfSubscriptions
           pure ok
 
         acknowledgeMsg :: m (Transmission BrokerMsg)
@@ -333,7 +354,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               _ -> return $ err NO_MSG
 
         withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
-        withSub rId f = readTVar subscriptions >>= mapM f . M.lookup rId
+        withSub rId f = mapM f =<< TM.lookup rId subscriptions
 
         sendMessage :: QueueStore -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage st msgBody
@@ -350,9 +371,11 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   Left _ -> pure $ err LARGE_MSG
                   Right msg -> do
                     ms <- asks msgStore
-                    quota <- asks $ msgQueueQuota . config
+                    ServerConfig {messageTTL, msgQueueQuota} <- asks config
+                    old <- forM messageTTL $ \ttl -> subtract ttl . systemSeconds <$> liftIO getSystemTime
                     atomically $ do
-                      q <- getMsgQueue ms (recipientId qr) quota
+                      q <- getMsgQueue ms (recipientId qr) msgQueueQuota
+                      mapM_ (deleteExpiredMsgs q) old
                       ifM (isFull q) (pure $ err QUOTA) $ do
                         trySendNotification
                         writeMsg q msg
@@ -368,7 +391,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 trySendNotification :: STM ()
                 trySendNotification =
                   forM_ (notifier qr) $ \(nId, _) ->
-                    mapM_ (writeNtf nId) . M.lookup nId =<< readTVar notifiers
+                    mapM_ (writeNtf nId) =<< TM.lookup nId notifiers
 
                 writeNtf :: NotifierId -> Client -> STM ()
                 writeNtf nId Client {sndQ = q} =
@@ -402,7 +425,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               void setDelivered
 
             setSub :: (Sub -> Sub) -> STM ()
-            setSub f = modifyTVar subscriptions $ M.adjust f rId
+            setSub f = TM.adjust f rId subscriptions
 
             setDelivered :: STM (Maybe Bool)
             setDelivered = withSub rId $ \s -> tryPutTMVar (delivered s) ()

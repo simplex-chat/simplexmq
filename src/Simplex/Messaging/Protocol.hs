@@ -90,6 +90,8 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad.Except
+import Data.Aeson (ToJSON (..))
+import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -106,8 +108,8 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Transport (SessionId, THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
+import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
@@ -170,14 +172,14 @@ type Signed = ByteString
 data RawTransmission = RawTransmission
   { signature :: ByteString,
     signed :: ByteString,
-    sessId :: ByteString,
+    sessId :: SessionId,
     corrId :: ByteString,
     queueId :: ByteString,
     command :: ByteString
   }
 
 -- | unparsed sent SMP transmission with signature, without session ID.
-type SignedRawTransmission = (Maybe C.ASignature, ByteString, ByteString, ByteString)
+type SignedRawTransmission = (Maybe C.ASignature, SessionId, ByteString, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
 type SentRawTransmission = (Maybe C.ASignature, ByteString)
@@ -397,6 +399,10 @@ instance StrEncoding SMPServer where
     SrvLoc host port <- strP
     pure SMPServer {host, port, keyHash}
 
+instance ToJSON SMPServer where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
 data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
 
@@ -412,6 +418,15 @@ newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
 
 instance IsString CorrId where
   fromString = CorrId . fromString
+
+instance StrEncoding CorrId where
+  strEncode (CorrId cId) = strEncode cId
+  strDecode s = CorrId <$> strDecode s
+  strP = CorrId <$> strP
+
+instance ToJSON CorrId where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 -- | Queue IDs and keys
 data QueueIdsKeys = QIK
@@ -462,7 +477,7 @@ data ErrorType
   | -- | incorrect SMP session ID (TLS Finished message / tls-unique binding RFC5929)
     SESSION
   | -- | SMP command is unknown or has invalid syntax
-    CMD CommandError
+    CMD {cmdErr :: CommandError}
   | -- | command authorization error - bad signature or non-existing SMP queue
     AUTH
   | -- | SMP queue capacity is exceeded on the server
@@ -477,6 +492,16 @@ data ErrorType
     DUPLICATE_ -- TODO remove, not part of SMP protocol
   deriving (Eq, Generic, Read, Show)
 
+instance ToJSON ErrorType where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
+
+instance StrEncoding ErrorType where
+  strEncode = \case
+    CMD e -> "CMD " <> bshow e
+    e -> bshow e
+  strP = "CMD " *> (CMD <$> parseRead1) <|> parseRead1
+
 -- | SMP command error type.
 data CommandError
   = -- | unknown command
@@ -490,6 +515,10 @@ data CommandError
   | -- | transmission has no required queue ID
     NO_QUEUE
   deriving (Eq, Generic, Read, Show)
+
+instance ToJSON CommandError where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 

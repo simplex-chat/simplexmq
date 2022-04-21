@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -22,12 +23,13 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.StoreLog (StoreLog, openReadStoreLog, storeLogFilePath)
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), loadFingerprint, simplexMQVersion)
+import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..), simplexMQVersion)
+import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (IOMode (..), hGetLine, withFile)
+import System.IO (BufferMode (..), IOMode (..), hGetLine, hSetBuffering, stderr, stdout, withFile)
 import System.Process (readCreateProcess, shell)
 import Text.Read (readMaybe)
 
@@ -130,8 +132,7 @@ cliCommandP =
                 <*> strOption
                   ( long "ip"
                       <> help
-                        "Server IP address used as Subject Alternative Name for TLS online certificate, \
-                        \also used as Common Name if FQDN is not supplied"
+                        "Server IP address, used as Common Name for TLS online certificate if FQDN is not supplied"
                       <> value "127.0.0.1"
                       <> showDefault
                       <> metavar "IP"
@@ -139,7 +140,7 @@ cliCommandP =
                 <*> (optional . strOption)
                   ( long "fqdn"
                       <> short 'n'
-                      <> help "Server FQDN used as Common Name and Subject Alternative Name for TLS online certificate"
+                      <> help "Server FQDN used as Common Name for TLS online certificate"
                       <> showDefault
                       <> metavar "FQDN"
                   )
@@ -256,6 +257,8 @@ mkIniOptions ini =
 
 runServer :: IniOptions -> IO ()
 runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
+  hSetBuffering stdout LineBuffering
+  hSetBuffering stderr LineBuffering
   fp <- checkSavedFingerprint
   printServiceInfo fp
   storeLog <- openStoreLog
@@ -274,14 +277,17 @@ runServer IniOptions {enableStoreLog, port, enableWebsockets} = do
       ServerConfig
         { transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets],
           tbqSize = 16,
-          serverTbqSize = 128,
-          msgQueueQuota = 256,
+          serverTbqSize = 64,
+          msgQueueQuota = 128,
           queueIdBytes = 24,
           msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
           caCertificateFile = caCrtFile,
           privateKeyFile = serverKeyFile,
           certificateFile = serverCrtFile,
-          storeLog
+          storeLog,
+          allowNewQueues = True,
+          messageTTL = Just $ 7 * 86400, -- 7 days
+          expireMessagesInterval = Just 21600_000000 -- microseconds, 6 hours
         }
 
     openStoreLog :: IO (Maybe (StoreLog 'ReadMode))

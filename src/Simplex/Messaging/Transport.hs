@@ -36,15 +36,12 @@ module Simplex.Messaging.Transport
     ATransport (..),
     TransportPeer (..),
 
-    -- * Transport over TLS 1.2
-    runTransportServer,
-    runTransportClient,
-    loadTLSServerParams,
-    loadFingerprint,
-
-    -- * TLS 1.2 Transport
+    -- * TLS Transport
     TLS (..),
+    SessionId,
+    connectTLS,
     closeTLS,
+    supportedParameters,
     withTlsUnique,
 
     -- * SMP transport
@@ -64,9 +61,9 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Monad.Except
-import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except (throwE)
-import qualified Crypto.Store.X509 as SX
+import Data.Aeson (ToJSON)
+import qualified Data.Aeson as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
@@ -75,14 +72,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Default (def)
 import Data.Functor (($>))
-import Data.Set (Set)
-import qualified Data.Set as S
-import qualified Data.X509 as X
-import qualified Data.X509.CertificateStore as XS
-import Data.X509.Validation (Fingerprint (..))
-import qualified Data.X509.Validation as XV
 import GHC.Generics (Generic)
-import GHC.IO.Exception (IOErrorType (..))
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Generic.Random (genericArbitraryU)
 import Network.Socket
@@ -90,14 +80,11 @@ import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (parse, parseRead1)
+import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
-import System.Exit (exitFailure)
-import System.IO.Error
 import Test.QuickCheck (Arbitrary (..))
-import UnliftIO.Concurrent
-import UnliftIO.Exception (Exception, IOException)
+import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -110,7 +97,7 @@ supportedSMPVersions :: VersionRange
 supportedSMPVersions = mkVersionRange 1 1
 
 simplexMQVersion :: String
-simplexMQVersion = "1.0.0"
+simplexMQVersion = "1.1.0"
 
 -- * Transport connection class
 
@@ -129,7 +116,7 @@ class Transport c where
   getClientConnection :: T.Context -> IO c
 
   -- | tls-unique channel binding per RFC5929
-  tlsUnique :: c -> ByteString
+  tlsUnique :: c -> SessionId
 
   -- | Close connection
   closeConnection :: c -> IO ()
@@ -154,104 +141,7 @@ data TProxy c = TProxy
 
 data ATransport = forall c. Transport c => ATransport (TProxy c)
 
--- * Transport over TLS 1.2
-
--- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
---
--- All accepted connections are passed to the passed function.
-runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
-runTransportServer started port serverParams server = do
-  clients <- newTVarIO S.empty
-  E.bracket
-    (liftIO $ startTCPServer started port)
-    (liftIO . closeServer clients)
-    $ \sock -> forever $ connectClients sock clients `E.catch` \(_ :: E.SomeException) -> pure ()
-  where
-    connectClients :: Socket -> TVar (Set ThreadId) -> m ()
-    connectClients sock clients = do
-      c <- liftIO $ acceptConnection sock
-      tid <- server c `forkFinally` const (liftIO $ closeConnection c)
-      atomically . modifyTVar clients $ S.insert tid
-    closeServer :: TVar (Set ThreadId) -> Socket -> IO ()
-    closeServer clients sock = do
-      readTVarIO clients >>= mapM_ killThread
-      close sock
-      void . atomically $ tryPutTMVar started False
-    acceptConnection :: Socket -> IO c
-    acceptConnection sock = do
-      (newSock, _) <- accept sock
-      ctx <- connectTLS serverParams newSock
-      getServerConnection ctx
-
-startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
-startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
-  where
-    resolve =
-      let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-       in head <$> getAddrInfo (Just hints) Nothing (Just port)
-    open addr = do
-      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-      setSocketOption sock ReuseAddr 1
-      withFdSocket sock setCloseOnExecIfNeeded
-      bind sock $ addrAddress addr
-      listen sock 1024
-      return sock
-    setStarted sock = atomically (tryPutTMVar started True) >> pure sock
-
--- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> (c -> m a) -> m a
-runTransportClient host port keyHash client = do
-  let clientParams = mkTLSClientParams host port keyHash
-  c <- liftIO $ startTCPClient host port clientParams
-  client c `E.finally` liftIO (closeConnection c)
-
-startTCPClient :: forall c. Transport c => HostName -> ServiceName -> T.ClientParams -> IO c
-startTCPClient host port clientParams = withSocketsDo $ resolve >>= tryOpen err
-  where
-    err :: IOException
-    err = mkIOError NoSuchThing "no address" Nothing Nothing
-
-    resolve :: IO [AddrInfo]
-    resolve =
-      let hints = defaultHints {addrSocketType = Stream}
-       in getAddrInfo (Just hints) (Just host) (Just port)
-
-    tryOpen :: IOException -> [AddrInfo] -> IO c
-    tryOpen e [] = E.throwIO e
-    tryOpen _ (addr : as) =
-      E.try (open addr) >>= either (`tryOpen` as) pure
-
-    open :: AddrInfo -> IO c
-    open addr = do
-      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-      connect sock $ addrAddress addr
-      ctx <- connectTLS clientParams sock
-      getClientConnection ctx
-
-loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
-loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
-  fromCredential <$> loadServerCredential
-  where
-    loadServerCredential :: IO T.Credential
-    loadServerCredential =
-      T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
-        Right credential -> pure credential
-        Left _ -> putStrLn "invalid credential" >> exitFailure
-    fromCredential :: T.Credential -> T.ServerParams
-    fromCredential credential =
-      def
-        { T.serverWantClientCert = False,
-          T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
-          T.serverHooks = def,
-          T.serverSupported = supportedParameters
-        }
-
-loadFingerprint :: FilePath -> IO Fingerprint
-loadFingerprint certificateFile = do
-  (cert : _) <- SX.readSignedObject certificateFile
-  pure $ XV.getFingerprint (cert :: X.SignedExact X.Certificate) X.HashSHA256
-
--- * TLS 1.2 Transport
+-- * TLS Transport
 
 data TLS = TLS
   { tlsContext :: T.Context,
@@ -289,45 +179,21 @@ closeTLS ctx =
   (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
     `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
 
-mkTLSClientParams :: HostName -> ServiceName -> C.KeyHash -> T.ClientParams
-mkTLSClientParams host port keyHash = do
-  let p = B.pack port
-  (T.defaultParamsClient host p)
-    { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p},
-      T.clientSupported = supportedParameters
-    }
-
-validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
-validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, caCert]) =
-  if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
-    then x509validate
-    else pure [XV.UnknownCA]
-  where
-    x509validate :: IO [XV.FailedReason]
-    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
-      where
-        hooks = XV.defaultHooks
-        checks = XV.defaultChecks
-        certStore = XS.makeCertificateStore sc
-        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
-        serviceID = (host, port)
-validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
-
 supportedParameters :: T.Supported
 supportedParameters =
   def
-    { T.supportedVersions = [T.TLS12],
-      T.supportedCiphers = [TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256],
+    { T.supportedVersions = [T.TLS13, T.TLS12],
+      T.supportedCiphers =
+        [ TE.cipher_TLS13_CHACHA20POLY1305_SHA256, -- for TLS13
+          TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256 -- for TLS12
+        ],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
       T.supportedSecureRenegotiation = False,
       T.supportedGroups = [T.X448, T.X25519]
     }
 
 instance Transport TLS where
-  transportName _ = "TLS 1.2"
+  transportName _ = "TLS"
   transportPeer = tlsPeer
   getServerConnection = getTLS TServer
   getClientConnection = getTLS TClient
@@ -385,14 +251,17 @@ trimCR s = if B.last s == '\r' then B.init s else s
 -- | The handle for SMP encrypted transport connection over Transport .
 data THandle c = THandle
   { connection :: c,
-    sessionId :: ByteString,
+    sessionId :: SessionId,
     -- | agreed SMP server protocol version
     smpVersion :: Version
   }
 
+-- | TLS-unique channel binding
+type SessionId = ByteString
+
 data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRange,
-    sessionId :: ByteString
+    sessionId :: SessionId
   }
 
 data ClientHandshake = ClientHandshake
@@ -424,8 +293,12 @@ data TransportError
   | -- | incorrect session ID
     TEBadSession
   | -- | transport handshake error
-    TEHandshake HandshakeError
+    TEHandshake {handshakeErr :: HandshakeError}
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance ToJSON TransportError where
+  toJSON = J.genericToJSON . sumTypeJSON $ dropPrefix "TE"
+  toEncoding = J.genericToEncoding . sumTypeJSON $ dropPrefix "TE"
 
 -- | Transport handshake error.
 data HandshakeError
@@ -436,6 +309,10 @@ data HandshakeError
   | -- | incorrect server identity
     IDENTITY
   deriving (Eq, Generic, Read, Show, Exception)
+
+instance ToJSON HandshakeError where
+  toJSON = J.genericToJSON $ sumTypeJSON id
+  toEncoding = J.genericToEncoding $ sumTypeJSON id
 
 instance Arbitrary TransportError where arbitrary = genericArbitraryU
 

@@ -6,12 +6,12 @@ module Main where
 
 import Control.Logger.Simple
 import qualified Data.List.NonEmpty as L
-import Simplex.Messaging.Agent (runSMPAgent)
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Server (runSMPAgent)
 import Simplex.Messaging.Transport (TLS, Transport (..))
 
 cfg :: AgentConfig
-cfg = defaultAgentConfig {smpServers = L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"]}
+cfg = defaultAgentConfig {initialSMPServers = L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"]}
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}

@@ -15,6 +15,7 @@ data QueueRec = QueueRec
     notifier :: Maybe (NotifierId, NtfPublicVerifyKey),
     status :: QueueStatus
   }
+  deriving (Eq, Show)
 
 data QueueStatus = QueueActive | QueueOff deriving (Eq, Show)
 

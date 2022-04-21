@@ -9,6 +9,7 @@ import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.X509.Validation (Fingerprint (..))
@@ -21,7 +22,10 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Transport (ATransport, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
@@ -33,6 +37,12 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLog :: Maybe (StoreLog 'ReadMode),
+    -- | set to False to prohibit creating new queues
+    allowNewQueues :: Bool,
+    -- | time after which the messages can be removed from the queues, seconds
+    messageTTL :: Maybe Int64,
+    -- | interval to periodically remove expired messages (when no messages are sent to the queue), microseconds
+    expireMessagesInterval :: Maybe Int,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -52,14 +62,14 @@ data Env = Env
 
 data Server = Server
   { subscribedQ :: TBQueue (RecipientId, Client),
-    subscribers :: TVar (Map RecipientId Client),
+    subscribers :: TMap RecipientId Client,
     ntfSubscribedQ :: TBQueue (NotifierId, Client),
-    notifiers :: TVar (Map NotifierId Client)
+    notifiers :: TMap NotifierId Client
   }
 
 data Client = Client
-  { subscriptions :: TVar (Map RecipientId Sub),
-    ntfSubscriptions :: TVar (Map NotifierId ()),
+  { subscriptions :: TMap RecipientId Sub,
+    ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (Transmission Cmd),
     sndQ :: TBQueue (Transmission BrokerMsg),
     sessionId :: ByteString,
@@ -76,15 +86,15 @@ data Sub = Sub
 newServer :: Natural -> STM Server
 newServer qSize = do
   subscribedQ <- newTBQueue qSize
-  subscribers <- newTVar M.empty
+  subscribers <- TM.empty
   ntfSubscribedQ <- newTBQueue qSize
-  notifiers <- newTVar M.empty
+  notifiers <- TM.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
 newClient :: Natural -> ByteString -> STM Client
 newClient qSize sessionId = do
-  subscriptions <- newTVar M.empty
-  ntfSubscriptions <- newTVar M.empty
+  subscriptions <- TM.empty
+  ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
@@ -108,15 +118,12 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} 
   return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
-    restoreQueues queueStore s = do
-      (queues, s') <- liftIO $ readWriteStoreLog s
-      atomically $
-        modifyTVar queueStore $ \d ->
-          d
-            { queues,
-              senders = M.foldr' addSender M.empty queues,
-              notifiers = M.foldr' addNotifier M.empty queues
-            }
+    restoreQueues QueueStore {queues, senders, notifiers} s = do
+      (qs, s') <- liftIO $ readWriteStoreLog s
+      atomically $ do
+        writeTVar queues =<< mapM newTVar qs
+        writeTVar senders $ M.foldr' addSender M.empty qs
+        writeTVar notifiers $ M.foldr' addNotifier M.empty qs
       pure s'
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)
