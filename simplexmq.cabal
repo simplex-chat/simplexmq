@@ -116,7 +116,7 @@ library
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
   if flag(swift)
-    ghc-options: -DswiftJSON
+    cpp-options: -DswiftJSON
   default-language: Haskell2010
 
 executable smp-agent
@@ -170,7 +170,7 @@ executable smp-agent
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
   if flag(swift)
-    ghc-options: -DswiftJSON
+    cpp-options: -DswiftJSON
   default-language: Haskell2010
 
 executable smp-server
@@ -227,7 +227,7 @@ executable smp-server
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
   if flag(swift)
-    ghc-options: -DswiftJSON
+    cpp-options: -DswiftJSON
   default-language: Haskell2010
 
 test-suite smp-server-test
@@ -297,5 +297,5 @@ test-suite smp-server-test
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
   if flag(swift)
-    ghc-options: -DswiftJSON
+    cpp-options: -DswiftJSON
   default-language: Haskell2010

@@ -72,7 +72,7 @@ flags:
 
 when:
   - condition: flag(swift)
-    ghc-options:
+    cpp-options:
       - -DswiftJSON
 
 library:
