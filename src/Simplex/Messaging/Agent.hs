@@ -90,7 +90,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
@@ -555,7 +555,7 @@ registerNtfToken' c deviceToken =
               registerToken tkn
         _ -> throwError $ CMD PROHIBITED
   where
-    t tkn = withToken tkn Nothing
+    t tkn = withToken c tkn Nothing
     registerToken :: NtfToken -> m ()
     registerToken tkn@NtfToken {ntfPubKey, ntfDhKeys = (pubDhKey, privDhKey)} = do
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
@@ -568,7 +568,7 @@ verifyNtfToken' c deviceToken code nonce =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
-      withToken tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+      withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
         agentNtfVerifyToken c tknId tkn code'
     _ -> throwError $ CMD PROHIBITED
 
@@ -577,7 +577,7 @@ enableNtfCron' c deviceToken interval = do
   when (interval < 20) . throwError $ CMD PROHIBITED
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive}, _) ->
-      withToken tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
+      withToken c tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
         agentNtfEnableCron c tknId tkn interval
     _ -> throwError $ CMD PROHIBITED
 
@@ -602,15 +602,23 @@ deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
   forM_ ntfTokenId $ \tknId -> do
     withStore $ \st -> updateNtfToken st tkn ntfTknStatus (Just NTADelete)
-    agentNtfDeleteToken c tknId tkn
+    agentNtfDeleteToken c tknId tkn `catchError` \case
+      NTF AUTH -> pure ()
+      e -> throwError e
   withStore $ \st -> removeNtfToken st tkn
 
-withToken :: AgentMonad m => NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
-withToken tkn from_ (toStatus, toAction_) f = do
+withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
+withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
   forM_ from_ $ \(status, action) -> withStore $ \st -> updateNtfToken st tkn status (Just action)
-  res <- f
-  withStore $ \st -> updateNtfToken st tkn toStatus toAction_
-  pure res
+  tryError f >>= \case
+    Right res -> do
+      withStore $ \st -> updateNtfToken st tkn toStatus toAction_
+      pure res
+    Left e@(NTF AUTH) -> do
+      withStore $ \st -> removeNtfToken st tkn
+      registerNtfToken' c deviceToken
+      throwError e
+    Left e -> throwError e
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c servers = do

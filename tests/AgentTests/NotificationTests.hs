@@ -40,6 +40,9 @@ notificationTests t =
       it "should allow the second registration with different credentials and delete the first after verification" $ \_ ->
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testNtfTokenSecondRegistration apns
+      it "should re-register token when notification server is restarted" $ \_ ->
+        withAPNSMockServer $ \apns ->
+          testNtfTokenServerRestart t apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -130,4 +133,30 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     NTActive <- checkNtfToken a' tkn
     enableNtfCron a' tkn 30
     pure ()
+  pure ()
+
+testNtfTokenServerRestart :: ATransport -> APNSMockServer -> IO ()
+testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
+  a <- getSMPAgentClient agentCfg initAgentServers
+  let tkn = DeviceToken PPApns "abcd"
+  Right ntfData <- withNtfServer t . runExceptT $ do
+    registerNtfToken a tkn
+    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
+      atomically $ readTBQueue apnsQ
+    liftIO $ sendApnsResponse APNSRespOk
+    pure ntfData
+  -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
+  -- so that repeat verification happens without restarting the clients, when notification arrives
+  Right () <- withNtfServer t . runExceptT $ do
+    verification <- ntfData .-> "verification"
+    nonce <- C.cbNonce <$> ntfData .-> "nonce"
+    Left (NTF AUTH) <- tryE $ verifyNtfToken a tkn verification nonce
+    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
+      atomically $ readTBQueue apnsQ
+    verification' <- ntfData' .-> "verification"
+    nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
+    liftIO $ sendApnsResponse' APNSRespOk
+    verifyNtfToken a tkn verification' nonce'
+    NTActive <- checkNtfToken a tkn
+    enableNtfCron a tkn 30
   pure ()
