@@ -1,3 +1,15 @@
+# 2.0.0
+
+Push notifications server:
+
+- supports APNS
+- manage device tokens verification via notification delivery
+- sending periodic background notification to check messages (not more frequent than every 20 min)
+
+SMP agent:
+
+- manage device tokens and notification server connection
+
 # 1.1.0
 
 SMP server:
