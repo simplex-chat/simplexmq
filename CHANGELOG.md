@@ -1,9 +1,26 @@
+# 1.1.0
+
+SMP server:
+
+- message TTL and periodic deletion of old messages
+- configuration to prevent creation of the new queues
+
+SMP agent:
+
+- asynchronous connection handshake
+- configurable SMP servers at run-time
+- use TCP keep-alive for connection stability
+- improve stability of connection subscriptions
+- auto-vacuum DB to remove deleted records
+
 # 1.0.3
 
 SMP server:
+
 - Reduce server message queue quota to 128 messages.
 
 SMP agent:
+
 - Add "yes to migrations" option.
 - Make new SMP client attempt to reconnect on network error.
 - Reduce connection handshake expiration to 2 days.
@@ -13,24 +30,29 @@ JSON encoding of types used in simplex-chat, some other minor adjustments.
 # 1.0.2
 
 General:
+
 - Enable TLS 1.3 parameters for TLS handshake (server and client).
 - Switch from hs-tls fork to original repo now that it supports getFinished and getPeerFinished APIs for both TLS 1.2 and TLS 1.3.
 
 SMP server:
+
 - Perform TLS handshake in a separate thread per-connection.
 
 SMP agent:
+
 - Cease attempts to send HELLO after one week timeout.
 - Coalesce requests to connect to SMP servers, to have 1 connection per server.
 
 # 1.0.1
 
 SMP server:
+
 - Explicitly set line buffering in stdout/stderr to log each line when output is redirected to files.
 
 # 1.0.0
 
 Security and privacy improvements:
+
 - Faster and more secure 2-layer E2E encryption with additional encryption layer between servers and recipients:
   - application messages in each duplex connection (managed by SMP agents - see [overview](https://github.com/simplex-chat/simplexmq/blob/master/protocol/overview-tjr.md)) are encrypted using [double-ratchet algorithm](https://www.signal.org/docs/specifications/doubleratchet/), providing forward secrecy and break-in recovery. This layer uses two Curve448 keys per client for [X3DH key agreement](https://www.signal.org/docs/specifications/x3dh/), SHA512 based HKDFs and AES-GCM AEAD encryption.
   - SMP client messages are additionally E2E encrypted in each SMP queue to avoid cipher-text correlation of messages sent via multiple redundant queues (that will be supported soon). This and the next layer use [NaCl crypto_box algorithm](https://nacl.cr.yp.to/index.html) with XSalsa20Poly1305 cipher and Curve25519 keys for DH key agreement.
@@ -43,13 +65,16 @@ Security and privacy improvements:
 - Server identity verification via server offline certificate fingerprints included in SMP server addresses.
 
 New functionality:
+
 - Support for notification servers with new SMP commands: `NKEY`/`NID`, `NSUB`/`NMSG`.
 
 Efficiency improvements:
+
 - Binary protocol encodings to reduce overhead from circa 15% to approximately 3.7% of transmitted application message size, with only 2.2% overhead for SMP protocol messages.
 - More performant cryptographic algorithms.
 
 For more information about SimpleX:
+
 - [SimpleX overview](https://github.com/simplex-chat/simplexmq/blob/master/protocol/overview-tjr.md).
 - [SimpleX chat v1 announcement](https://github.com/simplex-chat/simplex-chat/blob/master/blog/20220112-simplex-chat-v1-released.md).
 

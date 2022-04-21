@@ -491,7 +491,7 @@ testMsgExpireOnSend t =
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, SEND "hello (should expire)")
-        threadDelay 2000000
+        threadDelay 2500000
         Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, SEND "hello (should NOT expire)")
         testSMPClient @c $ \rh -> do
           Resp "3" _ (MSG mId _ msg) <- signSendRecv rh rKey ("3", rId, SUB)
@@ -508,7 +508,7 @@ testMsgExpireOnInterval t =
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, SEND "hello (should expire)")
-        threadDelay 2000000
+        threadDelay 2500000
         testSMPClient @c $ \rh -> do
           Resp "2" _ OK <- signSendRecv rh rKey ("2", rId, SUB)
           1000 `timeout` tGet @BrokerMsg rh >>= \case
@@ -524,7 +524,7 @@ testMsgNOTExpireOnInterval t =
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, SEND "hello (should NOT expire)")
-        threadDelay 2000000
+        threadDelay 2500000
         testSMPClient @c $ \rh -> do
           Resp "2" _ (MSG mId _ msg) <- signSendRecv rh rKey ("2", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
