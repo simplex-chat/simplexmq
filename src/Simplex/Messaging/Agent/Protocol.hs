@@ -686,6 +686,8 @@ data AgentErrorType
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
     SMP {smpErr :: ErrorType}
+  | -- | NTF protocol errors forwarded to agent clients
+    NTF {ntfErr :: ErrorType}
   | -- | SMP server errors
     BROKER {brokerErr :: BrokerErrorType}
   | -- | errors of other agents
@@ -774,6 +776,7 @@ instance StrEncoding AgentErrorType where
     "CMD " *> (CMD <$> parseRead1)
       <|> "CONN " *> (CONN <$> parseRead1)
       <|> "SMP " *> (SMP <$> strP)
+      <|> "NTF " *> (NTF <$> strP)
       <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> strP)
       <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
       <|> "BROKER " *> (BROKER <$> parseRead1)
@@ -783,6 +786,7 @@ instance StrEncoding AgentErrorType where
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
     SMP e -> "SMP " <> strEncode e
+    NTF e -> "NTF " <> strEncode e
     BROKER (RESPONSE e) -> "BROKER RESPONSE " <> strEncode e
     BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
     BROKER e -> "BROKER " <> bshow e

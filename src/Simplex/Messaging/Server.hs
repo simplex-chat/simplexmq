@@ -98,7 +98,7 @@ smpServer started = do
       m ()
     serverThread s subQ subs clientSubs unsub = forever $ do
       atomically updateSubscribers
-        >>= fmap join . mapM endPreviousSubscriptions
+        $>>= endPreviousSubscriptions
         >>= mapM_ unsub
       where
         updateSubscribers :: STM (Maybe (QueueId, Client))
@@ -110,8 +110,7 @@ smpServer started = do
                   else do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
-          TM.lookupInsert qId clnt (subs s)
-            >>= fmap join . mapM clientToBeNotified
+          TM.lookupInsert qId clnt (subs s) $>>= clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> m (Maybe s)
         endPreviousSubscriptions (qId, c) = do
           void . forkIO . atomically $

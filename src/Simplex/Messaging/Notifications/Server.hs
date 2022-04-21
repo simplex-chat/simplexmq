@@ -117,7 +117,7 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
     (_, PNVerification _) -> do
       -- TODO check token status
       deliverNotification pp tkn ntf
-      atomically $ writeTVar tknStatus NTConfirmed
+      atomically $ modifyTVar tknStatus $ \status' -> if status' == NTActive then NTActive else NTConfirmed
     (NTActive, PNCheckMessages) -> do
       deliverNotification pp tkn ntf
     _ -> do
@@ -166,26 +166,26 @@ verifyNtfTransmission ::
 verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of
-    NtfCmd SToken c@(TNEW n@(NewNtfTkn _ k _)) -> do
-      r_ <- atomically $ getNtfToken st entId
+    NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
+      r_ <- atomically $ getNtfTokenRegistration st tkn
       pure $
         if verifyCmdSignature sig_ signed k
           then case r_ of
-            Just r@(NtfTkn NtfTknData {tknVerifyKey})
-              | k == tknVerifyKey -> tknCmd r c
+            Just t@NtfTknData {tknVerifyKey}
+              | k == tknVerifyKey -> verifiedTknCmd t c
               | otherwise -> VRFailed
-            _ -> VRVerified (NtfReqNew corrId (ANE SToken n))
+            _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
           else VRFailed
     NtfCmd SToken c -> do
-      r_ <- atomically $ getNtfToken st entId
-      pure $ case r_ of
-        Just r@(NtfTkn NtfTknData {tknVerifyKey})
-          | verifyCmdSignature sig_ signed tknVerifyKey -> tknCmd r c
+      t_ <- atomically $ getNtfToken st entId
+      pure $ case t_ of
+        Just t@NtfTknData {tknVerifyKey}
+          | verifyCmdSignature sig_ signed tknVerifyKey -> verifiedTknCmd t c
           | otherwise -> VRFailed
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     _ -> pure VRFailed
   where
-    tknCmd r c = VRVerified (NtfReqCmd SToken r (corrId, entId, c))
+    verifiedTknCmd t c = VRVerified (NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
 
 client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {pushQ, intervalNotifiers} =
@@ -204,11 +204,11 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
         tknId <- getId
         regCode <- getRegCode
         atomically $ do
-          tkn <- mkNtfTknData newTkn ks dhSecret regCode
+          tkn <- mkNtfTknData tknId newTkn ks dhSecret regCode
           addNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, PNVerification regCode)
         pure (corrId, "", NRId tknId srvDhPubKey)
-      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
@@ -218,12 +218,15 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
             if tknDhSecret == dhSecret
               then do
                 atomically $ writeTBQueue pushQ (tkn, PNVerification tknRegCode)
-                pure $ NRId tknId srvDhPubKey
+                pure $ NRId ntfTknId srvDhPubKey
               else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
               logDebug "TVFY - token verified"
+              st <- asks store
               atomically $ writeTVar tknStatus NTActive
+              tIds <- atomically $ removeInactiveTokenRegistrations st tkn
+              forM_ tIds cancelInvervalNotifications
               pure NROk
             | otherwise -> do
               logDebug "TVFY - incorrect code or token status"
@@ -233,12 +236,12 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
             logDebug "TDEL"
             st <- asks store
             atomically $ deleteNtfToken st tknId
+            cancelInvervalNotifications tknId
             pure NROk
-          TCRN 0 ->
+          TCRN 0 -> do
             logDebug "TCRN 0"
-              >> atomically (TM.lookupDelete tknId intervalNotifiers)
-              >>= mapM_ (uninterruptibleCancel . action)
-              >> pure NROk
+            cancelInvervalNotifications tknId
+            pure NROk
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
             | otherwise -> do
@@ -274,6 +277,10 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
     getRandomBytes n = do
       gVar <- asks idsDrg
       atomically (C.pseudoRandomBytes n gVar)
+    cancelInvervalNotifications :: NtfTokenId -> m ()
+    cancelInvervalNotifications tknId =
+      atomically (TM.lookupDelete tknId intervalNotifiers)
+        >>= mapM_ (uninterruptibleCancel . action)
 
 -- NReqCreate corrId tokenId smpQueue -> pure (corrId, "", NROk)
 -- do

@@ -52,6 +52,7 @@ module Simplex.Messaging.Agent
     registerNtfToken,
     verifyNtfToken,
     enableNtfCron,
+    checkNtfToken,
     deleteNtfToken,
     logConnection,
   )
@@ -89,10 +90,10 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
+import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
@@ -171,6 +172,9 @@ verifyNtfToken c = withAgentEnv c .:. verifyNtfToken' c
 -- | Enable/disable periodic notifications
 enableNtfCron :: AgentErrorMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
 enableNtfCron c = withAgentEnv c .: enableNtfCron' c
+
+checkNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
+checkNtfToken c = withAgentEnv c . checkNtfToken' c
 
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
@@ -552,7 +556,7 @@ registerNtfToken' c deviceToken =
               registerToken tkn
         _ -> throwError $ CMD PROHIBITED
   where
-    t tkn = withToken tkn Nothing
+    t tkn = withToken c tkn Nothing
     registerToken :: NtfToken -> m ()
     registerToken tkn@NtfToken {ntfPubKey, ntfDhKeys = (pubDhKey, privDhKey)} = do
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
@@ -565,7 +569,7 @@ verifyNtfToken' c deviceToken code nonce =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
-      withToken tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+      withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
         agentNtfVerifyToken c tknId tkn code'
     _ -> throwError $ CMD PROHIBITED
 
@@ -574,7 +578,7 @@ enableNtfCron' c deviceToken interval = do
   when (interval < 20) . throwError $ CMD PROHIBITED
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive}, _) ->
-      withToken tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
+      withToken c tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
         agentNtfEnableCron c tknId tkn interval
     _ -> throwError $ CMD PROHIBITED
 
@@ -582,6 +586,12 @@ cronSuccess :: Word16 -> (NtfTknStatus, Maybe NtfTknAction)
 cronSuccess interval
   | interval == 0 = (NTActive, Just NTACheck)
   | otherwise = (NTActive, Just $ NTACron interval)
+
+checkNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
+checkNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    (Just tkn@NtfToken {ntfTokenId = Just tknId}, _) -> agentNtfCheckToken c tknId tkn
+    _ -> throwError $ CMD PROHIBITED
 
 deleteNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken' c deviceToken =
@@ -593,15 +603,23 @@ deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
   forM_ ntfTokenId $ \tknId -> do
     withStore $ \st -> updateNtfToken st tkn ntfTknStatus (Just NTADelete)
-    agentNtfDeleteToken c tknId tkn
+    agentNtfDeleteToken c tknId tkn `catchError` \case
+      NTF AUTH -> pure ()
+      e -> throwError e
   withStore $ \st -> removeNtfToken st tkn
 
-withToken :: AgentMonad m => NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
-withToken tkn from_ (toStatus, toAction_) f = do
+withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
+withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
   forM_ from_ $ \(status, action) -> withStore $ \st -> updateNtfToken st tkn status (Just action)
-  res <- f
-  withStore $ \st -> updateNtfToken st tkn toStatus toAction_
-  pure res
+  tryError f >>= \case
+    Right res -> do
+      withStore $ \st -> updateNtfToken st tkn toStatus toAction_
+      pure res
+    Left e@(NTF AUTH) -> do
+      withStore $ \st -> removeNtfToken st tkn
+      registerNtfToken' c deviceToken
+      throwError e
+    Left e -> throwError e
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c servers = do
@@ -678,7 +696,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                 _ -> prohibited >> ack
             _ -> prohibited >> ack
         SMP.END ->
-          atomically (TM.lookup srv smpClients >>= fmap join . mapM tryReadTMVar >>= processEND)
+          atomically (TM.lookup srv smpClients $>>= tryReadTMVar >>= processEND)
             >>= logServer "<--" c srv rId
           where
             processEND = \case

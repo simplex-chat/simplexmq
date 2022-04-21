@@ -264,6 +264,7 @@ data NtfResponse
   | NRTkn NtfTknStatus
   | NRSub NtfSubStatus
   | NRPong
+  deriving (Show)
 
 instance ProtocolEncoding NtfResponse where
   type Tag NtfResponse = NtfResponseTag
@@ -361,7 +362,7 @@ data NtfSubStatus
     NSEnd
   | -- | SMP AUTH error
     NSSMPAuth
-  deriving (Eq)
+  deriving (Eq, Show)
 
 instance Encoding NtfSubStatus where
   smpEncode = \case

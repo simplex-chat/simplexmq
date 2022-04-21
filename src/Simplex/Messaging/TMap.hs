@@ -2,6 +2,7 @@ module Simplex.Messaging.TMap
   ( TMap,
     empty,
     singleton,
+    Simplex.Messaging.TMap.null,
     Simplex.Messaging.TMap.lookup,
     member,
     insert,
@@ -29,6 +30,10 @@ empty = newTVar M.empty
 singleton :: k -> a -> STM (TMap k a)
 singleton k v = newTVar $ M.singleton k v
 {-# INLINE singleton #-}
+
+null :: TMap k a -> STM Bool
+null m = M.null <$> readTVar m
+{-# INLINE null #-}
 
 lookup :: Ord k => k -> TMap k a -> STM (Maybe a)
 lookup k m = M.lookup k <$> readTVar m

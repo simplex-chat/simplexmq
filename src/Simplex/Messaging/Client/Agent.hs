@@ -28,7 +28,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (tryE, whenM)
+import Simplex.Messaging.Util (tryE, whenM, ($>>=))
 import System.Timeout (timeout)
 import UnliftIO (async, forConcurrently_)
 import UnliftIO.Exception (Exception)
@@ -295,7 +295,7 @@ removeSub_ :: TMap SMPServer (TMap SMPSub C.APrivateSignKey) -> SMPServer -> SMP
 removeSub_ subs srv s = TM.lookup srv subs >>= mapM_ (TM.delete s)
 
 getSubKey :: TMap SMPServer (TMap SMPSub C.APrivateSignKey) -> SMPServer -> SMPSub -> STM (Maybe C.APrivateSignKey)
-getSubKey subs srv s = fmap join . mapM (TM.lookup s) =<< TM.lookup srv subs
+getSubKey subs srv s = TM.lookup srv subs $>>= TM.lookup s
 
 hasSub :: TMap SMPServer (TMap SMPSub C.APrivateSignKey) -> SMPServer -> SMPSub -> STM Bool
 hasSub subs srv s = maybe (pure False) (TM.member s) =<< TM.lookup srv subs
