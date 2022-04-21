@@ -136,7 +136,7 @@ library
     , x509-store ==1.6.*
     , x509-validation ==1.6.*
   if flag(swift)
-    ghc-options: -DswiftJSON
+    cpp-options: -DswiftJSON
   default-language: Haskell2010
 
 executable ntf-server
