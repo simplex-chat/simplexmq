@@ -4,6 +4,7 @@
 module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
+
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -12,25 +13,27 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
-import SMPAgentClient (agentCfg, initAgentServers)
+import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Transport (ATransport)
+import System.Directory (removeFile)
 import Test.Hspec
 import UnliftIO.STM
 
 notificationTests :: ATransport -> Spec
-notificationTests t = do
-  describe "Managing notification tokens" $ do
-    it "should register and verify notification token" $
-      withAPNSMockServer $ \apns ->
-        withNtfServer t $ testNotificationToken apns
-    xit "should allow repeated registration with the same credentials" $
-      withAPNSMockServer $ \apns ->
-        withNtfServer t $ testNtfTokenRepeatRegistration apns
+notificationTests t =
+  after_ (removeFile testDB) $
+    describe "Managing notification tokens" $ do
+      it "should register and verify notification token" $
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testNotificationToken apns
+      it "should allow repeatясed registration with the same credentials" $ \_ ->
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testNtfTokenRepeatRegistration apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
