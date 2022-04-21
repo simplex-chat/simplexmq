@@ -52,6 +52,7 @@ module Simplex.Messaging.Agent
     registerNtfToken,
     verifyNtfToken,
     enableNtfCron,
+    checkNtfToken,
     deleteNtfToken,
     logConnection,
   )
@@ -92,7 +93,7 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
+import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
@@ -171,6 +172,9 @@ verifyNtfToken c = withAgentEnv c .:. verifyNtfToken' c
 -- | Enable/disable periodic notifications
 enableNtfCron :: AgentErrorMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
 enableNtfCron c = withAgentEnv c .: enableNtfCron' c
+
+checkNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
+checkNtfToken c = withAgentEnv c . checkNtfToken' c
 
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
@@ -582,6 +586,12 @@ cronSuccess interval
   | interval == 0 = (NTActive, Just NTACheck)
   | otherwise = (NTActive, Just $ NTACron interval)
 
+checkNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
+checkNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    (Just tkn@NtfToken {ntfTokenId = Just tknId}, _) -> agentNtfCheckToken c tknId tkn
+    _ -> throwError $ CMD PROHIBITED
+
 deleteNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
@@ -677,7 +687,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                 _ -> prohibited >> ack
             _ -> prohibited >> ack
         SMP.END ->
-          atomically (TM.lookup srv smpClients >>= fmap join . mapM tryReadTMVar >>= processEND)
+          atomically (TM.lookup srv smpClients $>>= tryReadTMVar >>= processEND)
             >>= logServer "<--" c srv rId
           where
             processEND = \case

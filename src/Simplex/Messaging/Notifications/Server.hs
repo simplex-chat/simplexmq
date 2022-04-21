@@ -117,7 +117,7 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
     (_, PNVerification _) -> do
       -- TODO check token status
       deliverNotification pp tkn ntf
-      atomically $ writeTVar tknStatus NTConfirmed
+      atomically $ modifyTVar tknStatus $ \status' -> if status' == NTActive then NTActive else NTConfirmed
     (NTActive, PNCheckMessages) -> do
       deliverNotification pp tkn ntf
     _ -> do
@@ -208,7 +208,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
           addNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, PNVerification regCode)
         pure (corrId, "", NRId tknId srvDhPubKey)
-      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {tokenId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
@@ -218,12 +218,17 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {subQ = _} NtfPushServer {push
             if tknDhSecret == dhSecret
               then do
                 atomically $ writeTBQueue pushQ (tkn, PNVerification tknRegCode)
-                pure $ NRId tokenId srvDhPubKey
+                pure $ NRId ntfTknId srvDhPubKey
               else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
               logDebug "TVFY - token verified"
+              st <- asks store
               atomically $ writeTVar tknStatus NTActive
+              tIds <- atomically $ removeInactiveTokenRegistrations st tkn
+              forM_ tIds $ \tId ->
+                atomically (TM.lookupDelete tId intervalNotifiers)
+                  >>= mapM_ (uninterruptibleCancel . action)
               pure NROk
             | otherwise -> do
               logDebug "TVFY - incorrect code or token status"
