@@ -26,7 +26,6 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
-    smpBlockSize,
     supportedSMPVersions,
     simplexMQVersion,
 
@@ -47,8 +46,8 @@ module Simplex.Messaging.Transport
     -- * SMP transport
     THandle (..),
     TransportError (..),
-    serverHandshake,
-    clientHandshake,
+    smpServerHandshake,
+    smpClientHandshake,
     tPutBlock,
     tGetBlock,
     serializeTransportError,
@@ -252,8 +251,9 @@ trimCR s = if B.last s == '\r' then B.init s else s
 data THandle c = THandle
   { connection :: c,
     sessionId :: SessionId,
-    -- | agreed SMP server protocol version
-    smpVersion :: Version
+    blockSize :: Int,
+    -- | agreed server protocol version
+    thVersion :: Version
   }
 
 -- | TLS-unique channel binding
@@ -336,45 +336,45 @@ serializeTransportError = \case
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
-tPutBlock THandle {connection = c} block =
+tPutBlock THandle {connection = c, blockSize} block =
   bimapM (const $ pure TELargeMsg) (cPut c) $
-    C.pad block smpBlockSize
+    C.pad block blockSize
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
-tGetBlock THandle {connection = c} =
-  cGet c smpBlockSize >>= \case
+tGetBlock THandle {connection = c, blockSize} =
+  cGet c blockSize >>= \case
     "" -> ioe_EOF
     msg -> pure . first (const TELargeMsg) $ C.unPad msg
 
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-serverHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
-serverHandshake c kh = do
-  let th@THandle {sessionId} = tHandle c
+smpServerHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
+smpServerHandshake c kh = do
+  let th@THandle {sessionId} = smpTHandle c
   sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
   getHandshake th >>= \case
     ClientHandshake {smpVersion, keyHash}
       | keyHash /= kh ->
         throwE $ TEHandshake IDENTITY
       | smpVersion `isCompatible` supportedSMPVersions -> do
-        pure (th :: THandle c) {smpVersion}
+        pure (th :: THandle c) {thVersion = smpVersion}
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-clientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
-clientHandshake c keyHash = do
-  let th@THandle {sessionId} = tHandle c
+smpClientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
+smpClientHandshake c keyHash = do
+  let th@THandle {sessionId} = smpTHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
   if sessionId /= sessId
     then throwE TEBadSession
     else case smpVersionRange `compatibleVersion` supportedSMPVersions of
       Just (Compatible smpVersion) -> do
         sendHandshake th $ ClientHandshake {smpVersion, keyHash}
-        pure (th :: THandle c) {smpVersion}
+        pure (th :: THandle c) {thVersion = smpVersion}
       Nothing -> throwE $ TEHandshake VERSION
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
@@ -383,6 +383,5 @@ sendHandshake th = ExceptT . tPutBlock th . smpEncode
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
 getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
 
-tHandle :: Transport c => c -> THandle c
-tHandle c =
-  THandle {connection = c, sessionId = tlsUnique c, smpVersion = 0}
+smpTHandle :: Transport c => c -> THandle c
+smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0}

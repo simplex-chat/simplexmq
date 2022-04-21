@@ -19,7 +19,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
-import Simplex.Messaging.Server.StoreLog (openReadStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
@@ -46,8 +45,8 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTransportClient testHost testPort testKeyHash (Just defaultKeepAliveOpts) $ \h ->
-    liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
+  runTransportClient testHost testPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
+    liftIO (runExceptT $ smpClientHandshake h testKeyHash) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -60,7 +59,7 @@ cfg =
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      storeLog = Nothing,
+      storeLogFile = Nothing,
       allowNewQueues = True,
       messageTTL = Just $ 7 * 86400, -- seconds, 7 days
       expireMessagesInterval = Just 21600_000000, -- microseconds, 6 hours
@@ -70,9 +69,7 @@ cfg =
     }
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerStoreLogOn t port' client = do
-  s <- liftIO $ openReadStoreLog testStoreLogFile
-  withSmpServerConfigOn t cfg {storeLog = Just s} port' client
+withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile}
 
 withSmpServerConfigOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServerConfig -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerConfigOn t cfg' port' =

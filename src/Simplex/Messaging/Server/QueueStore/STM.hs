@@ -18,7 +18,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, ($>>=))
 import UnliftIO.STM
 
 data QueueStore = QueueStore
@@ -51,9 +51,8 @@ instance MonadQueueStore QueueStore STM where
     where
       getVar = case party of
         SRecipient -> TM.lookup qId queues
-        SSender -> TM.lookup qId senders >>= get
-        SNotifier -> TM.lookup qId notifiers >>= get
-      get = fmap join . mapM (`TM.lookup` queues)
+        SSender -> TM.lookup qId senders $>>= (`TM.lookup` queues)
+        SNotifier -> TM.lookup qId notifiers $>>= (`TM.lookup` queues)
 
   secureQueue :: QueueStore -> RecipientId -> SndPublicVerifyKey -> STM (Either ErrorType QueueRec)
   secureQueue QueueStore {queues} rId sKey =
@@ -91,4 +90,4 @@ toResult :: Maybe a -> Either ErrorType a
 toResult = maybe (Left AUTH) Right
 
 withQueue :: RecipientId -> TMap RecipientId (TVar QueueRec) -> (TVar QueueRec -> STM (Maybe a)) -> STM (Either ErrorType a)
-withQueue rId queues f = toResult <$> (TM.lookup rId queues >>= fmap join . mapM f)
+withQueue rId queues f = toResult <$> TM.lookup rId queues $>>= f

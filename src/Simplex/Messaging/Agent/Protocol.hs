@@ -7,6 +7,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -49,7 +50,8 @@ module Simplex.Messaging.Agent.Protocol
     AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
-    SMPServer (..),
+    SMPServer,
+    pattern SMPServer,
     SrvLoc (..),
     SMPQueueUri (..),
     SMPQueueInfo (..),
@@ -131,9 +133,10 @@ import Simplex.Messaging.Protocol
   ( ErrorType,
     MsgBody,
     MsgId,
-    SMPServer (..),
+    SMPServer,
     SndPublicVerifyKey,
     SrvLoc (..),
+    pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
@@ -539,7 +542,6 @@ data SMPQueueUri = SMPQueueUri
   }
   deriving (Eq, Show)
 
--- TODO change SMP queue URI format to include version range and allow unknown parameters
 instance StrEncoding SMPQueueUri where
   -- v1 uses short SMP queue URI format
   strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVRange = _vr, dhPublicKey = k} =
@@ -684,6 +686,8 @@ data AgentErrorType
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
     SMP {smpErr :: ErrorType}
+  | -- | NTF protocol errors forwarded to agent clients
+    NTF {ntfErr :: ErrorType}
   | -- | SMP server errors
     BROKER {brokerErr :: BrokerErrorType}
   | -- | errors of other agents
@@ -772,6 +776,7 @@ instance StrEncoding AgentErrorType where
     "CMD " *> (CMD <$> parseRead1)
       <|> "CONN " *> (CONN <$> parseRead1)
       <|> "SMP " *> (SMP <$> strP)
+      <|> "NTF " *> (NTF <$> strP)
       <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> strP)
       <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
       <|> "BROKER " *> (BROKER <$> parseRead1)
@@ -781,6 +786,7 @@ instance StrEncoding AgentErrorType where
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
     SMP e -> "SMP " <> strEncode e
+    NTF e -> "NTF " <> strEncode e
     BROKER (RESPONSE e) -> "BROKER RESPONSE " <> strEncode e
     BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
     BROKER e -> "BROKER " <> bshow e

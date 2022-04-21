@@ -562,7 +562,7 @@ syntaxTests (ATransport t) = do
   describe "SEND" $ do
     it "valid syntax" $ (sampleSig, "cdab", "12345678", (SEND_, ' ', "hello" :: ByteString)) >#> ("", "cdab", "12345678", ERR AUTH)
     it "no parameters" $ (sampleSig, "abcd", "12345678", SEND_) >#> ("", "abcd", "12345678", ERR $ CMD SYNTAX)
-    it "no queue ID" $ (sampleSig, "bcda", "", (SEND_, ' ', "hello" :: ByteString)) >#> ("", "bcda", "", ERR $ CMD NO_QUEUE)
+    it "no queue ID" $ (sampleSig, "bcda", "", (SEND_, ' ', "hello" :: ByteString)) >#> ("", "bcda", "", ERR $ CMD NO_ENTITY)
   describe "PING" $ do
     it "valid syntax" $ ("", "abcd", "", PING_) >#> ("", "abcd", "", PONG)
   describe "broker response not allowed" $ do

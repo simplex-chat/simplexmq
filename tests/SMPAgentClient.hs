@@ -11,6 +11,7 @@ import Crypto.Random
 import qualified Data.ByteString.Char8 as B
 import qualified Data.List.NonEmpty as L
 import Network.Socket (HostName, ServiceName)
+import NtfClient (ntfTestPort)
 import SMPClient
   ( serverBracket,
     testKeyHash,
@@ -24,7 +25,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Client (SMPClientConfig (..), smpDefaultConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
@@ -154,20 +155,31 @@ smpAgentTest1_1_1 test' =
     _test [h] = test' h
     _test _ = error "expected 1 handle"
 
-cfg :: AgentConfig
-cfg =
+initAgentServers :: InitialAgentServers
+initAgentServers =
+  InitialAgentServers
+    { smp = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
+      ntf = ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"]
+    }
+
+agentCfg :: AgentConfig
+agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      initialSMPServers = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
       tbqSize = 1,
       dbFile = testDB,
       smpCfg =
-        smpDefaultConfig
+        defaultClientConfig
           { qSize = 1,
             defaultTransport = (testPort, transport @TLS),
             tcpTimeout = 500_000
           },
-      reconnectInterval = (reconnectInterval defaultAgentConfig) {initialInterval = 50_000},
+      ntfCfg =
+        defaultClientConfig
+          { qSize = 1,
+            defaultTransport = (ntfTestPort, transport @TLS)
+          },
+      reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
@@ -175,9 +187,10 @@ cfg =
 
 withSmpAgentThreadOn_ :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> m () -> (ThreadId -> m a) -> m a
 withSmpAgentThreadOn_ t (port', smpPort', db') afterProcess =
-  let cfg' = cfg {tcpPort = port', dbFile = db', initialSMPServers = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
+  let cfg' = agentCfg {tcpPort = port', dbFile = db'}
+      initServers' = initAgentServers {smp = L.fromList [SMPServer "localhost" smpPort' testKeyHash]}
    in serverBracket
-        (\started -> runSMPAgentBlocking t started cfg')
+        (\started -> runSMPAgentBlocking t started cfg' initServers')
         afterProcess
 
 withSmpAgentThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ServiceName, ServiceName, String) -> (ThreadId -> m a) -> m a
@@ -191,7 +204,7 @@ withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
 testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient agentTestHost port' testKeyHash (Just defaultKeepAliveOpts) $ \h -> do
+  runTransportClient agentTestHost port' (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h

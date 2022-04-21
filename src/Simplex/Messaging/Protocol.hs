@@ -1,23 +1,26 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 -- |
--- Module      : Simplex.Messaging.Protocol
+-- Module      : Simplex.Messaging.ProtocolEncoding
 -- Copyright   : (c) simplex.chat
 -- License     : AGPL-3
 --
@@ -37,7 +40,7 @@ module Simplex.Messaging.Protocol
     e2eEncMessageLength,
 
     -- * SMP protocol types
-    Protocol,
+    ProtocolEncoding (..),
     Command (..),
     Party (..),
     Cmd (..),
@@ -55,7 +58,10 @@ module Simplex.Messaging.Protocol
     PubHeader (..),
     ClientMessage (..),
     PrivHeader (..),
-    SMPServer (..),
+    Protocol (..),
+    ProtocolServer (..),
+    SMPServer,
+    pattern SMPServer,
     SrvLoc (..),
     CorrId (..),
     QueueId,
@@ -74,9 +80,11 @@ module Simplex.Messaging.Protocol
     MsgBody,
 
     -- * Parse and serialize
+    ProtocolMsgTag (..),
+    messageTagP,
     encodeTransmission,
     transmissionP,
-    encodeProtocol,
+    _smpP,
 
     -- * TCP transport functions
     tPut,
@@ -108,7 +116,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Transport (SessionId, THandle (..), Transport, TransportError (..), tGetBlock, tPutBlock)
+import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -161,7 +169,7 @@ data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
 deriving instance Show Cmd
 
 -- | Parsed SMP transmission without signature, size and session ID.
-type Transmission c = (CorrId, QueueId, c)
+type Transmission c = (CorrId, EntityId, c)
 
 -- | signed parsed transmission, with original raw bytes and parsing error.
 type SignedTransmission c = (Maybe C.ASignature, Signed, Transmission (Either ErrorType c))
@@ -174,9 +182,10 @@ data RawTransmission = RawTransmission
     signed :: ByteString,
     sessId :: SessionId,
     corrId :: ByteString,
-    queueId :: ByteString,
+    entityId :: ByteString,
     command :: ByteString
   }
+  deriving (Show)
 
 -- | unparsed sent SMP transmission with signature, without session ID.
 type SignedRawTransmission = (Maybe C.ASignature, SessionId, ByteString, ByteString)
@@ -194,7 +203,9 @@ type SenderId = QueueId
 type NotifierId = QueueId
 
 -- | SMP queue ID on the server.
-type QueueId = ByteString
+type QueueId = EntityId
+
+type EntityId = ByteString
 
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
@@ -264,7 +275,7 @@ class ProtocolMsgTag t where
 
 messageTagP :: ProtocolMsgTag t => Parser t
 messageTagP =
-  maybe (fail "bad command") pure . decodeTag
+  maybe (fail "bad message") pure . decodeTag
     =<< (A.takeTill (== ' ') <* optional A.space)
 
 instance PartyI p => Encoding (CommandTag p) where
@@ -372,34 +383,39 @@ instance Encoding ClientMessage where
   smpEncode (ClientMessage h msg) = smpEncode h <> msg
   smpP = ClientMessage <$> smpP <*> A.takeByteString
 
+type SMPServer = ProtocolServer
+
+pattern SMPServer :: HostName -> ServiceName -> C.KeyHash -> ProtocolServer
+pattern SMPServer host port keyHash = ProtocolServer host port keyHash
+
 -- | SMP server location and transport key digest (hash).
-data SMPServer = SMPServer
+data ProtocolServer = ProtocolServer
   { host :: HostName,
     port :: ServiceName,
     keyHash :: C.KeyHash
   }
   deriving (Eq, Ord, Show)
 
-instance IsString SMPServer where
+instance IsString ProtocolServer where
   fromString = parseString strDecode
 
-instance Encoding SMPServer where
-  smpEncode SMPServer {host, port, keyHash} =
+instance Encoding ProtocolServer where
+  smpEncode ProtocolServer {host, port, keyHash} =
     smpEncode (host, port, keyHash)
   smpP = do
     (host, port, keyHash) <- smpP
-    pure SMPServer {host, port, keyHash}
+    pure ProtocolServer {host, port, keyHash}
 
-instance StrEncoding SMPServer where
-  strEncode SMPServer {host, port, keyHash} =
+instance StrEncoding ProtocolServer where
+  strEncode ProtocolServer {host, port, keyHash} =
     "smp://" <> strEncode keyHash <> "@" <> strEncode (SrvLoc host port)
   strP = do
     _ <- "smp://"
     keyHash <- strP <* A.char '@'
     SrvLoc host port <- strP
-    pure SMPServer {host, port, keyHash}
+    pure ProtocolServer {host, port, keyHash}
 
-instance ToJSON SMPServer where
+instance ToJSON ProtocolServer where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
@@ -512,8 +528,8 @@ data CommandError
     NO_AUTH
   | -- | transmission has credentials that are not allowed for this command
     HAS_AUTH
-  | -- | transmission has no required queue ID
-    NO_QUEUE
+  | -- | transmission has no required entity ID (e.g. SMP queue)
+    NO_ENTITY
   deriving (Eq, Generic, Read, Show)
 
 instance ToJSON CommandError where
@@ -534,17 +550,31 @@ transmissionP = do
     trn signature signed = do
       sessId <- smpP
       corrId <- smpP
-      queueId <- smpP
+      entityId <- smpP
       command <- A.takeByteString
-      pure RawTransmission {signature, signed, sessId, corrId, queueId, command}
+      pure RawTransmission {signature, signed, sessId, corrId, entityId, command}
 
-class Protocol msg where
+class (ProtocolEncoding msg, ProtocolEncoding (ProtocolCommand msg)) => Protocol msg where
+  type ProtocolCommand msg = cmd | cmd -> msg
+  protocolClientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
+  protocolPing :: ProtocolCommand msg
+  protocolError :: msg -> Maybe ErrorType
+
+instance Protocol BrokerMsg where
+  type ProtocolCommand BrokerMsg = Cmd
+  protocolClientHandshake = smpClientHandshake
+  protocolPing = Cmd SSender PING
+  protocolError = \case
+    ERR e -> Just e
+    _ -> Nothing
+
+class ProtocolMsgTag (Tag msg) => ProtocolEncoding msg where
   type Tag msg
   encodeProtocol :: msg -> ByteString
   protocolP :: Tag msg -> Parser msg
   checkCredentials :: SignedRawTransmission -> msg -> Either ErrorType msg
 
-instance PartyI p => Protocol (Command p) where
+instance PartyI p => ProtocolEncoding (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol = \case
     NEW rKey dhKey -> e (NEW_, ' ', rKey, dhKey)
@@ -571,7 +601,7 @@ instance PartyI p => Protocol (Command p) where
       | otherwise -> Right cmd
     -- SEND must have queue ID, signature is not always required
     SEND _
-      | B.null queueId -> Left $ CMD NO_QUEUE
+      | B.null queueId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     -- PING must not have queue ID or signature
     PING
@@ -582,7 +612,7 @@ instance PartyI p => Protocol (Command p) where
       | isNothing sig || B.null queueId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
 
-instance Protocol Cmd where
+instance ProtocolEncoding Cmd where
   type Tag Cmd = CmdTag
   encodeProtocol (Cmd _ c) = encodeProtocol c
 
@@ -604,7 +634,7 @@ instance Protocol Cmd where
 
   checkCredentials t (Cmd p c) = Cmd p <$> checkCredentials t c
 
-instance Protocol BrokerMsg where
+instance ProtocolEncoding BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
@@ -630,7 +660,7 @@ instance Protocol BrokerMsg where
     PONG_ -> pure PONG
 
   checkCredentials (_, _, queueId, _) cmd = case cmd of
-    -- IDS response must not have queue ID
+    -- IDS response should not have queue ID
     IDS _ -> Right cmd
     -- ERR response does not always have queue ID
     ERR _ -> Right cmd
@@ -640,14 +670,14 @@ instance Protocol BrokerMsg where
       | otherwise -> Left $ CMD HAS_AUTH
     -- other broker responses must have queue ID
     _
-      | B.null queueId -> Left $ CMD NO_QUEUE
+      | B.null queueId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
 
 _smpP :: Encoding a => Parser a
 _smpP = A.space *> smpP
 
 -- | Parse SMP protocol commands and broker messages
-parseProtocol :: (Protocol msg, ProtocolMsgTag (Tag msg)) => ByteString -> Either ErrorType msg
+parseProtocol :: ProtocolEncoding msg => ByteString -> Either ErrorType msg
 parseProtocol s =
   let (tag, params) = B.break (== ' ') s
    in case decodeTag tag of
@@ -695,21 +725,22 @@ instance Encoding CommandError where
     SYNTAX -> "SYNTAX"
     NO_AUTH -> "NO_AUTH"
     HAS_AUTH -> "HAS_AUTH"
-    NO_QUEUE -> "NO_QUEUE"
+    NO_ENTITY -> "NO_ENTITY"
   smpP =
     A.takeTill (== ' ') >>= \case
       "UNKNOWN" -> pure UNKNOWN
       "SYNTAX" -> pure SYNTAX
       "NO_AUTH" -> pure NO_AUTH
       "HAS_AUTH" -> pure HAS_AUTH
-      "NO_QUEUE" -> pure NO_QUEUE
+      "NO_ENTITY" -> pure NO_ENTITY
+      "NO_QUEUE" -> pure NO_ENTITY
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut th (sig, t) = tPutBlock th $ smpEncode (C.signatureBytes sig) <> t
 
-encodeTransmission :: Protocol c => ByteString -> Transmission c -> ByteString
+encodeTransmission :: ProtocolEncoding c => ByteString -> Transmission c -> ByteString
 encodeTransmission sessionId (CorrId corrId, queueId, command) =
   smpEncode (sessionId, corrId, queueId) <> encodeProtocol command
 
@@ -718,18 +749,14 @@ tGetParse :: Transport c => THandle c -> IO (Either TransportError RawTransmissi
 tGetParse th = (parse transmissionP TEBadBlock =<<) <$> tGetBlock th
 
 -- | Receive client and server transmissions (determined by `cmd` type).
-tGet ::
-  forall cmd c m.
-  (Protocol cmd, ProtocolMsgTag (Tag cmd), Transport c, MonadIO m) =>
-  THandle c ->
-  m (SignedTransmission cmd)
+tGet :: forall cmd c m. (ProtocolEncoding cmd, Transport c, MonadIO m) => THandle c -> m (SignedTransmission cmd)
 tGet th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m (SignedTransmission cmd)
     decodeParseValidate = \case
-      Right RawTransmission {signature, signed, sessId, corrId, queueId, command}
+      Right RawTransmission {signature, signed, sessId, corrId, entityId, command}
         | sessId == sessionId ->
-          let decodedTransmission = (,corrId,queueId,command) <$> C.decodeSignature signature
+          let decodedTransmission = (,corrId,entityId,command) <$> C.decodeSignature signature
            in either (const $ tError corrId) (tParseValidate signed) decodedTransmission
         | otherwise -> pure (Nothing, "", (CorrId corrId, "", Left SESSION))
       Left _ -> tError ""
@@ -738,6 +765,6 @@ tGet th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
     tError corrId = pure (Nothing, "", (CorrId corrId, "", Left BLOCK))
 
     tParseValidate :: ByteString -> SignedRawTransmission -> m (SignedTransmission cmd)
-    tParseValidate signed t@(sig, corrId, queueId, command) = do
+    tParseValidate signed t@(sig, corrId, entityId, command) = do
       let cmd = parseProtocol command >>= checkCredentials t
-      pure (sig, signed, (CorrId corrId, queueId, cmd))
+      pure (sig, signed, (CorrId corrId, entityId, cmd))

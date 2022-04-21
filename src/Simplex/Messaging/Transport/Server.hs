@@ -5,9 +5,10 @@
 module Simplex.Messaging.Transport.Server
   ( runTransportServer,
     runTCPServer,
+    loadSupportedTLSServerParams,
     loadTLSServerParams,
     loadFingerprint,
-    serverHandshake,
+    smpServerHandshake,
   )
 where
 
@@ -84,7 +85,10 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
-loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
+loadTLSServerParams = loadSupportedTLSServerParams supportedParameters
+
+loadSupportedTLSServerParams :: T.Supported -> FilePath -> FilePath -> FilePath -> IO T.ServerParams
+loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile =
   fromCredential <$> loadServerCredential
   where
     loadServerCredential :: IO T.Credential
@@ -98,7 +102,7 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
         { T.serverWantClientCert = False,
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
-          T.serverSupported = supportedParameters
+          T.serverSupported = serverSupported
         }
 
 loadFingerprint :: FilePath -> IO Fingerprint

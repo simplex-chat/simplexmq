@@ -9,6 +9,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -22,7 +23,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
     withConnection,
     withTransaction,
-    fromTextField_,
     firstRow,
   )
 where
@@ -33,21 +33,21 @@ import Control.Exception (bracket)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
-import Data.Bifunctor (second)
+import Data.Bifunctor (first, second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
-import Data.List (find, foldl')
+import Data.List (find, foldl', partition)
 import qualified Data.Map.Strict as M
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
-import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLData (..), SQLError, ToRow, field)
+import Data.Time.Clock (getCurrentTime)
+import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLError, ToRow, field)
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.Internal (Field (..))
-import Database.SQLite.Simple.Ok (Ok (Ok))
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol
@@ -58,8 +58,10 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (blobFieldParser)
-import Simplex.Messaging.Protocol (MsgBody)
+import Simplex.Messaging.Notifications.Client (NtfServer, NtfTknAction, NtfToken (..))
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
+import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
+import Simplex.Messaging.Protocol (MsgBody, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, liftIOEither)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -206,7 +208,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       getConn_ db connId
 
   getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
-  getRcvConn st SMPServer {host, port} rcvId =
+  getRcvConn st ProtocolServer {host, port} rcvId =
     liftIOEither . withTransaction st $ \db ->
       DB.queryNamed
         db
@@ -251,7 +253,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         _ -> pure $ Left SEConnNotFound
 
   setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueStatus st RcvQueue {rcvId, server = SMPServer {host, port}} status =
+  setRcvQueueStatus st RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -264,7 +266,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
   setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.DhSecretX25519 -> m ()
-  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = SMPServer {host, port}} e2eDhSecret =
+  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret =
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
         db
@@ -282,7 +284,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         ]
 
   setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
-  setSndQueueStatus st SndQueue {sndId, server = SMPServer {host, port}} status =
+  setSndQueueStatus st SndQueue {sndId, server = ProtocolServer {host, port}} status =
     -- ? throw error if queue does not exist?
     liftIO . withTransaction st $ \db ->
       DB.executeNamed
@@ -564,6 +566,75 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             forM_ (M.assocs mks) $ \(msgN, mk) ->
               DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
+  createNtfToken :: SQLiteStore -> NtfToken -> m ()
+  createNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey), ntfDhSecret, ntfTknStatus, ntfTknAction} =
+    liftIO . withTransaction st $ \db -> do
+      upsertNtfServer_ db srv
+      DB.execute
+        db
+        [sql|
+          INSERT INTO ntf_tokens
+            (provider, device_token, ntf_host, ntf_port, tkn_id, tkn_pub_key, tkn_priv_key, tkn_pub_dh_key, tkn_priv_dh_key, tkn_dh_secret, tkn_status, tkn_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        |]
+        (provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)
+
+  getDeviceNtfToken :: SQLiteStore -> DeviceToken -> m (Maybe NtfToken, [NtfToken])
+  getDeviceNtfToken st t =
+    liftIO . withTransaction st $ \db -> do
+      tokens <-
+        map ntfToken
+          <$> DB.query_
+            db
+            [sql|
+              SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+                t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
+              FROM ntf_tokens t
+              JOIN ntf_servers s USING (ntf_host, ntf_port)
+            |]
+      pure . first listToMaybe $ partition ((t ==) . deviceToken) tokens
+    where
+      ntfToken (host, port, keyHash, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction) =
+        let ntfServer = ProtocolServer {host, port, keyHash}
+            ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
+         in NtfToken {deviceToken = t, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
+
+  updateNtfTokenRegistration :: SQLiteStore -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
+  updateNtfTokenRegistration st NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknId ntfDhSecret =
+    liftIO . withTransaction st $ \db -> do
+      updatedAt <- getCurrentTime
+      DB.execute
+        db
+        [sql|
+          UPDATE ntf_tokens
+          SET tkn_id = ?, tkn_dh_secret = ?, tkn_status = ?, tkn_action = ?, updated_at = ?
+          WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+        |]
+        (tknId, ntfDhSecret, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
+
+  updateNtfToken :: SQLiteStore -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
+  updateNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknStatus tknAction =
+    liftIO . withTransaction st $ \db -> do
+      updatedAt <- getCurrentTime
+      DB.execute
+        db
+        [sql|
+          UPDATE ntf_tokens
+          SET tkn_status = ?, tkn_action = ?, updated_at = ?
+          WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+        |]
+        (tknStatus, tknAction, updatedAt, provider, token, host, port)
+
+  removeNtfToken :: SQLiteStore -> NtfToken -> m ()
+  removeNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} =
+    liftIO . withTransaction st $ \db ->
+      DB.execute
+        db
+        [sql|
+          DELETE FROM ntf_tokens
+          WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+        |]
+        (provider, token, host, port)
+
 -- * Auxiliary helpers
 
 instance ToField QueueStatus where toField = toField . serializeQueueStatus
@@ -610,14 +681,6 @@ instance ToField (SConnectionMode c) where toField = toField . connMode
 
 instance FromField AConnectionMode where fromField = fromTextField_ $ fmap connMode' . connModeT
 
-fromTextField_ :: (E.Typeable a) => (Text -> Maybe a) -> Field -> Ok a
-fromTextField_ fromText = \case
-  f@(Field (SQLText t) _) ->
-    case fromText t of
-      Just x -> Ok x
-      _ -> returnError ConversionFailed f ("invalid text: " <> T.unpack t)
-  f -> returnError ConversionFailed f "expecting SQLText column type"
-
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
@@ -656,7 +719,7 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
 -- * Server upsert helper
 
 upsertServer_ :: DB.Connection -> SMPServer -> IO ()
-upsertServer_ dbConn SMPServer {host, port, keyHash} = do
+upsertServer_ dbConn ProtocolServer {host, port, keyHash} = do
   DB.executeNamed
     dbConn
     [sql|
@@ -665,6 +728,19 @@ upsertServer_ dbConn SMPServer {host, port, keyHash} = do
         host=excluded.host,
         port=excluded.port,
         key_hash=excluded.key_hash;
+    |]
+    [":host" := host, ":port" := port, ":key_hash" := keyHash]
+
+upsertNtfServer_ :: DB.Connection -> NtfServer -> IO ()
+upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
+  DB.executeNamed
+    db
+    [sql|
+      INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (:host,:port,:key_hash)
+      ON CONFLICT (ntf_host, ntf_port) DO UPDATE SET
+        ntf_host=excluded.ntf_host,
+        ntf_port=excluded.ntf_port,
+        ntf_key_hash=excluded.ntf_key_hash;
     |]
     [":host" := host, ":port" := port, ":key_hash" := keyHash]
 

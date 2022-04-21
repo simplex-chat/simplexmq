@@ -52,6 +52,7 @@ module Simplex.Messaging.Crypto
     CryptoPublicKey (..),
     CryptoPrivateKey (..),
     KeyPair,
+    ASignatureKeyPair,
     DhSecret (..),
     DhSecretX25519,
     ADhSecret (..),
@@ -103,6 +104,10 @@ module Simplex.Messaging.Crypto
     cbDecrypt,
     cbNonce,
     randomCbNonce,
+    pseudoRandomCbNonce,
+
+    -- * pseudo-random bytes
+    pseudoRandomBytes,
 
     -- * SHA256 hash
     sha256Hash,
@@ -116,6 +121,7 @@ module Simplex.Messaging.Crypto
   )
 where
 
+import Control.Concurrent.STM
 import Control.Exception (Exception)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
@@ -129,7 +135,7 @@ import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
-import Crypto.Random (getRandomBytes)
+import Crypto.Random (ChaChaDRG, getRandomBytes, randomBytesGenerate)
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
@@ -283,6 +289,12 @@ instance Eq APrivateSignKey where
     Nothing -> False
 
 deriving instance Show APrivateSignKey
+
+instance Encoding APrivateSignKey where
+  smpEncode = smpEncode . encodePrivKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePrivKey
+  {-# INLINE smpDecode #-}
 
 data APublicVerifyKey
   = forall a.
@@ -859,6 +871,14 @@ cbDecrypt secret (CbNonce nonce) packet
 newtype CbNonce = CbNonce {unCbNonce :: ByteString}
   deriving (Show)
 
+instance StrEncoding CbNonce where
+  strEncode (CbNonce s) = strEncode s
+  strP = cbNonce <$> strP
+
+instance ToJSON CbNonce where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
 cbNonce :: ByteString -> CbNonce
 cbNonce s
   | len == 24 = CbNonce s
@@ -869,6 +889,16 @@ cbNonce s
 
 randomCbNonce :: IO CbNonce
 randomCbNonce = CbNonce <$> getRandomBytes 24
+
+pseudoRandomCbNonce :: TVar ChaChaDRG -> STM CbNonce
+pseudoRandomCbNonce gVar = CbNonce <$> pseudoRandomBytes 24 gVar
+
+pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
+pseudoRandomBytes n gVar = do
+  g <- readTVar gVar
+  let (bytes, g') = randomBytesGenerate n g
+  writeTVar gVar g'
+  return bytes
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce

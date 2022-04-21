@@ -36,7 +36,7 @@ data ServerConfig = ServerConfig
     msgQueueQuota :: Natural,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
-    storeLog :: Maybe (StoreLog 'ReadMode),
+    storeLogFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
     -- | time after which the messages can be removed from the queues, seconds
@@ -106,12 +106,13 @@ newSubscription = do
   return Sub {subThread = NoSub, delivered}
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
   server <- atomically $ newServer (serverTbqSize config)
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
-  s' <- restoreQueues queueStore `mapM` storeLog (config :: ServerConfig)
+  storeLog <- liftIO $ openReadStoreLog `mapM` storeLogFile
+  s' <- restoreQueues queueStore `mapM` storeLog
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp

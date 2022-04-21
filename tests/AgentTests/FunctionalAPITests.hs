@@ -51,8 +51,8 @@ functionalAPITests t = do
 
 testAgentClient :: IO ()
 testAgentClient = do
-  alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
@@ -95,13 +95,13 @@ testAgentClient = do
 
 testAsyncInitiatingOffline :: IO ()
 testAsyncInitiatingOffline = do
-  alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     (bobId, cReq) <- createConnection alice SCMInvitation
     disconnectAgentClient alice
     aliceId <- joinConnection bob cReq "bob's connInfo"
-    alice' <- liftIO $ getSMPAgentClient cfg
+    alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
     subscribeConnection alice' bobId
     ("", _, CONF confId "bob's connInfo") <- get alice'
     allowConnection alice' bobId confId "alice's connInfo"
@@ -113,15 +113,15 @@ testAsyncInitiatingOffline = do
 
 testAsyncJoiningOfflineBeforeActivation :: IO ()
 testAsyncJoiningOfflineBeforeActivation = do
-  alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     disconnectAgentClient bob
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
-    bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
+    bob' <- liftIO $ getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
     subscribeConnection bob' aliceId
     get alice ##> ("", bobId, CON)
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
@@ -131,18 +131,18 @@ testAsyncJoiningOfflineBeforeActivation = do
 
 testAsyncBothOffline :: IO ()
 testAsyncBothOffline = do
-  alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     (bobId, cReq) <- createConnection alice SCMInvitation
     disconnectAgentClient alice
     aliceId <- joinConnection bob cReq "bob's connInfo"
     disconnectAgentClient bob
-    alice' <- liftIO $ getSMPAgentClient cfg
+    alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
     subscribeConnection alice' bobId
     ("", _, CONF confId "bob's connInfo") <- get alice'
     allowConnection alice' bobId confId "alice's connInfo"
-    bob' <- liftIO $ getSMPAgentClient cfg {dbFile = testDB2}
+    bob' <- liftIO $ getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
     subscribeConnection bob' aliceId
     get alice' ##> ("", bobId, CON)
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
@@ -152,8 +152,8 @@ testAsyncBothOffline = do
 
 testAsyncServerOffline :: ATransport -> IO ()
 testAsyncServerOffline t = do
-  alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2}
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   -- create connection and shutdown the server
   Right (bobId, cReq) <- withSmpServerStoreLogOn t testPort $ \_ ->
     runExceptT $ createConnection alice SCMInvitation
@@ -176,8 +176,8 @@ testAsyncServerOffline t = do
 
 testAsyncHelloTimeout :: IO ()
 testAsyncHelloTimeout = do
-  alice <- getSMPAgentClient cfg
-  bob <- getSMPAgentClient cfg {dbFile = testDB2, helloTimeout = 1}
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2, helloTimeout = 1} initAgentServers
   Right () <- runExceptT $ do
     (_, cReq) <- createConnection alice SCMInvitation
     disconnectAgentClient alice

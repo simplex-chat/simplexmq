@@ -65,3 +65,6 @@ whenM b a = ifM b a $ pure ()
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM b = ifM b $ pure ()
 {-# INLINE unlessM #-}
+
+($>>=) :: (Monad m, Monad f, Traversable f) => m (f a) -> (a -> m (f b)) -> m (f b)
+f $>>= g = f >>= fmap join . mapM g

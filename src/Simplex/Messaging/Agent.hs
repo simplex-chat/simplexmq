@@ -48,6 +48,12 @@ module Simplex.Messaging.Agent
     suspendConnection,
     deleteConnection,
     setSMPServers,
+    setNtfServers,
+    registerNtfToken,
+    verifyNtfToken,
+    enableNtfCron,
+    checkNtfToken,
+    deleteNtfToken,
     logConnection,
   )
 where
@@ -58,7 +64,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
-import Data.Bifunctor (first, second)
+import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
@@ -69,6 +75,7 @@ import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
+import Data.Word (Word16)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -76,15 +83,17 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore)
-import Simplex.Messaging.Client (SMPClient (..), SMPServerTransmission)
+import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Notifications.Client
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (MsgBody)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM)
+import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
@@ -92,11 +101,11 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> m AgentClient
-getSMPAgentClient cfg = newSMPAgentEnv cfg >>= runReaderT runAgent
+getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m AgentClient
+getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient
+      c <- getAgentClient initServers
       action <- async $ subscriber c `E.finally` disconnectAgentClient c
       pure c {smpSubscriber = action}
 
@@ -149,6 +158,27 @@ deleteConnection c = withAgentEnv c . deleteConnection' c
 setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers c = withAgentEnv c . setSMPServers' c
 
+setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
+setNtfServers c = withAgentEnv c . setNtfServers' c
+
+-- | Register device notifications token
+registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
+registerNtfToken c = withAgentEnv c . registerNtfToken' c
+
+-- | Verify device notifications token
+verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
+verifyNtfToken c = withAgentEnv c .:. verifyNtfToken' c
+
+-- | Enable/disable periodic notifications
+enableNtfCron :: AgentErrorMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
+enableNtfCron c = withAgentEnv c .: enableNtfCron' c
+
+checkNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
+checkNtfToken c = withAgentEnv c . checkNtfToken' c
+
+deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
+deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
+
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
 
@@ -156,8 +186,8 @@ withAgentEnv c = (`runReaderT` agentEnv c)
 -- withAgentClient c = withAgentLock c . withAgentEnv c
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => m AgentClient
-getAgentClient = ask >>= atomically . newAgentClient
+getAgentClient :: (MonadUnliftIO m, MonadReader Env m) => InitialAgentServers -> m AgentClient
+getAgentClient initServers = ask >>= atomically . newAgentClient initServers
 
 logConnection :: MonadUnliftIO m => AgentClient -> Bool -> m ()
 logConnection c connected =
@@ -491,9 +521,109 @@ deleteConnection' c connId =
       withStore (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
-setSMPServers' :: forall m. AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
+setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
+
+registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m ()
+registerNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction}, prevTokens) -> do
+      mapM_ (deleteToken_ c) prevTokens
+      case (ntfTokenId, ntfTknAction) of
+        (Nothing, Just NTARegister) -> registerToken tkn
+        -- TODO minimal time before repeat registration
+        (Just _, Nothing) -> when (ntfTknStatus == NTRegistered) $ registerToken tkn
+        (Just tknId, Just (NTAVerify code)) ->
+          t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
+        (Just tknId, Just (NTACron interval)) ->
+          t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
+        (Just _tknId, Just NTACheck) -> pure () -- TODO
+        -- agentNtfCheckToken c tknId tkn >>= \case
+        (Just tknId, Just NTADelete) -> do
+          agentNtfDeleteToken c tknId tkn
+          withStore $ \st -> removeNtfToken st tkn
+        _ -> pure ()
+    _ ->
+      getNtfServer c >>= \case
+        Just ntfServer ->
+          asks (cmdSignAlg . config) >>= \case
+            C.SignAlg a -> do
+              tknKeys <- liftIO $ C.generateSignatureKeyPair a
+              dhKeys <- liftIO C.generateKeyPair'
+              let tkn = newNtfToken deviceToken ntfServer tknKeys dhKeys
+              withStore $ \st -> createNtfToken st tkn
+              registerToken tkn
+        _ -> throwError $ CMD PROHIBITED
+  where
+    t tkn = withToken c tkn Nothing
+    registerToken :: NtfToken -> m ()
+    registerToken tkn@NtfToken {ntfPubKey, ntfDhKeys = (pubDhKey, privDhKey)} = do
+      (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
+      let dhSecret = C.dh' srvPubDhKey privDhKey
+      withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
+
+-- TODO decrypt verification code
+verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
+verifyNtfToken' c deviceToken code nonce =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
+      code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
+      withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+        agentNtfVerifyToken c tknId tkn code'
+    _ -> throwError $ CMD PROHIBITED
+
+enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
+enableNtfCron' c deviceToken interval = do
+  when (interval < 20) . throwError $ CMD PROHIBITED
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive}, _) ->
+      withToken c tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
+        agentNtfEnableCron c tknId tkn interval
+    _ -> throwError $ CMD PROHIBITED
+
+cronSuccess :: Word16 -> (NtfTknStatus, Maybe NtfTknAction)
+cronSuccess interval
+  | interval == 0 = (NTActive, Just NTACheck)
+  | otherwise = (NTActive, Just $ NTACron interval)
+
+checkNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
+checkNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    (Just tkn@NtfToken {ntfTokenId = Just tknId}, _) -> agentNtfCheckToken c tknId tkn
+    _ -> throwError $ CMD PROHIBITED
+
+deleteNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
+deleteNtfToken' c deviceToken =
+  withStore (`getDeviceNtfToken` deviceToken) >>= \case
+    (Just tkn, _) -> deleteToken_ c tkn
+    _ -> throwError $ CMD PROHIBITED
+
+deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
+deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+  forM_ ntfTokenId $ \tknId -> do
+    withStore $ \st -> updateNtfToken st tkn ntfTknStatus (Just NTADelete)
+    agentNtfDeleteToken c tknId tkn `catchError` \case
+      NTF AUTH -> pure ()
+      e -> throwError e
+  withStore $ \st -> removeNtfToken st tkn
+
+withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
+withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
+  forM_ from_ $ \(status, action) -> withStore $ \st -> updateNtfToken st tkn status (Just action)
+  tryError f >>= \case
+    Right res -> do
+      withStore $ \st -> updateNtfToken st tkn toStatus toAction_
+      pure res
+    Left e@(NTF AUTH) -> do
+      withStore $ \st -> removeNtfToken st tkn
+      registerNtfToken' c deviceToken
+      throwError e
+    Left e -> throwError e
+
+setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
+setNtfServers' c servers = do
+  atomically $ writeTVar (ntfServers c) servers
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do
@@ -502,8 +632,19 @@ getSMPServer c = do
     srv :| [] -> pure srv
     servers -> do
       gen <- asks randomServer
-      i <- atomically . stateTVar gen $ randomR (0, L.length servers - 1)
-      pure $ servers L.!! i
+      atomically . stateTVar gen $
+        first (servers L.!!) . randomR (0, L.length servers - 1)
+
+getNtfServer :: AgentMonad m => AgentClient -> m (Maybe NtfServer)
+getNtfServer c = do
+  ntfServers <- readTVarIO $ ntfServers c
+  case ntfServers of
+    [] -> pure Nothing
+    [srv] -> pure $ Just srv
+    servers -> do
+      gen <- asks randomServer
+      atomically . stateTVar gen $
+        first (Just . (servers !!)) . randomR (0, length servers - 1)
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
@@ -512,7 +653,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-processSMPTransmission :: forall m. AgentMonad m => AgentClient -> SMPServerTransmission -> m ()
+processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) = do
   withStore (\st -> getRcvConn st srv rId) >>= \case
     SomeConn SCDuplex (DuplexConnection cData rq _) -> processSMP SCDuplex cData rq
@@ -555,7 +696,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                 _ -> prohibited >> ack
             _ -> prohibited >> ack
         SMP.END ->
-          atomically (TM.lookup srv smpClients >>= fmap join . mapM tryReadTMVar >>= processEND)
+          atomically (TM.lookup srv smpClients $>>= tryReadTMVar >>= processEND)
             >>= logServer "<--" c srv rId
           where
             processEND = \case
