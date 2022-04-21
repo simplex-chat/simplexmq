@@ -282,6 +282,7 @@ joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2
           void $ enqueueMessage c connId' sq HELLO
           pure connId'
         Left e -> do
+          -- TODO recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
           withStore (`deleteConn` connId')
           throwError e
     _ -> throwError $ AGENT A_VERSION
