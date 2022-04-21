@@ -150,7 +150,9 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   Right () <- withNtfServer t . runExceptT $ do
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
-    Left (NTF AUTH) <- tryE $ verifyNtfToken a tkn verification nonce
+    r <- tryE $ verifyNtfToken a tkn verification nonce
+    liftIO $ print r
+    Left (NTF AUTH) <- pure r
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
