@@ -11,6 +11,8 @@
 module Simplex.Messaging.Notifications.Protocol where
 
 import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson as J
+import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -416,6 +418,10 @@ instance Encoding NtfTknStatus where
 instance FromField NtfTknStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
 
 instance ToField NtfTknStatus where toField = toField . decodeLatin1 . smpEncode
+
+instance ToJSON NtfTknStatus where
+  toEncoding = JE.text . decodeLatin1 . smpEncode
+  toJSON = J.String . decodeLatin1 . smpEncode
 
 checkEntity :: forall t e e'. (NtfEntityI e, NtfEntityI e') => t e' -> Either String (t e)
 checkEntity c = case testEquality (sNtfEntity @e) (sNtfEntity @e') of
