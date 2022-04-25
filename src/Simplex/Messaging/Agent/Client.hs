@@ -229,7 +229,8 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
 
 getNtfServerClient :: forall m. AgentMonad m => AgentClient -> NtfServer -> m NtfClient
-getNtfServerClient c@AgentClient {ntfClients} srv =
+getNtfServerClient c@AgentClient {active, ntfClients} srv = do
+  unlessM (readTVarIO active) . throwError $ INTERNAL "agent is stopped"
   atomically (getClientVar srv ntfClients)
     >>= either
       (newProtocolClient c srv ntfClients connectClient $ pure ())
