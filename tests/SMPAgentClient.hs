@@ -155,10 +155,13 @@ smpAgentTest1_1_1 test' =
     _test [h] = test' h
     _test _ = error "expected 1 handle"
 
+testSMPServer :: SMPServer
+testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"
+
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
-    { smp = L.fromList ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"],
+    { smp = L.fromList [testSMPServer],
       ntf = ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"]
     }
 

@@ -55,7 +55,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing)
+import Data.Maybe (catMaybes, isNothing)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -72,10 +72,10 @@ import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, ProtocolServer (..), Qu
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, liftEitherError, liftError, tryError, whenM)
+import Simplex.Messaging.Util (bshow, ifM, liftEitherError, liftError, tryError)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import UnliftIO (async, forConcurrently_)
+import UnliftIO (async, forConcurrently)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -181,7 +181,8 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
 
     serverDown :: UnliftIO m -> Map ConnId RcvQueue -> IO ()
     serverDown u cs = unless (M.null cs) $ do
-      mapM_ (notifySub DOWN) $ M.keysSet cs
+      let conns = M.keys cs
+      unless (null conns) . notifySub "" $ DOWN srv conns
       unliftIO u reconnectServer
 
     reconnectServer :: m ()
@@ -199,26 +200,30 @@ getSMPServerClient c@AgentClient {smpClients, msgQ} srv =
     reconnectClient =
       withAgentLock c . withClient c srv $ \smp -> do
         cs <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSubscrSrvrs c)
-        forConcurrently_ (maybe [] M.toList cs) $ \sub@(connId, _) ->
-          whenM (atomically $ isNothing <$> TM.lookup connId (subscrConns c)) $
-            subscribe_ smp sub `catchError` handleError connId
+        conns <- forConcurrently (maybe [] M.toList cs) $ \sub@(connId, _) ->
+          ifM
+            (atomically $ isNothing <$> TM.lookup connId (subscrConns c))
+            (subscribe_ smp sub `catchError` handleError connId)
+            (pure $ Just connId)
+        liftIO . unless (null conns) . notifySub "" . UP srv $ catMaybes conns
       where
-        subscribe_ :: SMPClient -> (ConnId, RcvQueue) -> ExceptT ProtocolClientError IO ()
+        subscribe_ :: SMPClient -> (ConnId, RcvQueue) -> ExceptT ProtocolClientError IO (Maybe ConnId)
         subscribe_ smp (connId, rq@RcvQueue {rcvPrivateKey, rcvId}) = do
           subscribeSMPQueue smp rcvPrivateKey rcvId
           addSubscription c rq connId
-          liftIO $ notifySub UP connId
+          pure $ Just connId
 
-        handleError :: ConnId -> ProtocolClientError -> ExceptT ProtocolClientError IO ()
+        handleError :: ConnId -> ProtocolClientError -> ExceptT ProtocolClientError IO (Maybe ConnId)
         handleError connId = \case
           e@PCEResponseTimeout -> throwError e
           e@PCENetworkError -> throwError e
           e -> do
-            liftIO $ notifySub (ERR $ protocolClientError SMP e) connId
+            liftIO . notifySub connId . ERR $ protocolClientError SMP e
             atomically $ removePendingSubscription c srv connId
+            pure Nothing
 
-    notifySub :: ACommand 'Agent -> ConnId -> IO ()
-    notifySub cmd connId = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
+    notifySub :: ConnId -> ACommand 'Agent -> IO ()
+    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, cmd)
 
 getNtfServerClient :: forall m. AgentMonad m => AgentClient -> NtfServer -> m NtfClient
 getNtfServerClient c@AgentClient {ntfClients} srv =

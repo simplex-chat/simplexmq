@@ -388,6 +388,8 @@ type SMPServer = ProtocolServer
 pattern SMPServer :: HostName -> ServiceName -> C.KeyHash -> ProtocolServer
 pattern SMPServer host port keyHash = ProtocolServer host port keyHash
 
+{-# COMPLETE SMPServer #-}
+
 -- | SMP server location and transport key digest (hash).
 data ProtocolServer = ProtocolServer
   { host :: HostName,
