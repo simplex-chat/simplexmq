@@ -1,7 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Util where
 
+import qualified Control.Exception as E
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
@@ -68,3 +70,11 @@ unlessM b = ifM b $ pure ()
 
 ($>>=) :: (Monad m, Monad f, Traversable f) => m (f a) -> (a -> m (f b)) -> m (f b)
 f $>>= g = f >>= fmap join . mapM g
+
+catchAll :: IO a -> (E.SomeException -> IO a) -> IO a
+catchAll = E.catch
+{-# INLINE catchAll #-}
+
+catchAll_ :: IO a -> IO a -> IO a
+catchAll_ a = catchAll a . const
+{-# INLINE catchAll_ #-}

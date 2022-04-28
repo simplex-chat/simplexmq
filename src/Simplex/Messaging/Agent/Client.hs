@@ -72,7 +72,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, ProtocolServer (..), Qu
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, ifM, liftEitherError, liftError, tryError, unlessM, whenM)
+import Simplex.Messaging.Util (bshow, catchAll_, ifM, liftEitherError, liftError, tryError, unlessM, whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 import UnliftIO (async, forConcurrently)
@@ -312,7 +312,7 @@ closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeCli
   where
     closeClient smpVar =
       atomically (readTMVar smpVar) >>= \case
-        Right smp -> closeProtocolClient smp `E.catch` \(_ :: E.SomeException) -> pure ()
+        Right smp -> closeProtocolClient smp `catchAll_` pure ()
         _ -> pure ()
 
 cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
