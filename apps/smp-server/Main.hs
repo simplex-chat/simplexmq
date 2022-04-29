@@ -5,6 +5,7 @@
 
 module Main where
 
+import Control.Logger.Simple
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI)
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
@@ -17,8 +18,13 @@ cfgPath = "/etc/opt/simplex"
 logPath :: FilePath
 logPath = "/var/opt/simplex"
 
+logCfg :: LogConfig
+logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
+
 main :: IO ()
-main = protocolServerCLI smpServerCLIConfig runSMPServer
+main = do
+  setLogLevel LogInfo
+  withGlobalLogging logCfg $ protocolServerCLI smpServerCLIConfig runSMPServer
 
 smpServerCLIConfig :: ServerCLIConfig ServerConfig
 smpServerCLIConfig =
@@ -52,6 +58,8 @@ smpServerCLIConfig =
                 storeLogFile,
                 allowNewQueues = True,
                 messageExpiration = Just defaultMessageExpiration,
-                inactiveClientExpiration = Just defaultInactiveClientExpiration
+                inactiveClientExpiration = Just defaultInactiveClientExpiration,
+                logStatsInterval = Just 86400, -- seconds
+                logStatsStartTime = 0 -- seconds from 00:00 UTC
               }
         }
