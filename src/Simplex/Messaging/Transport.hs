@@ -80,7 +80,7 @@ import qualified Network.TLS.Extra as TE
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
-import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Exception (Exception)
@@ -154,7 +154,7 @@ connectTLS :: T.TLSParams p => p -> Socket -> IO T.Context
 connectTLS params sock =
   E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
     T.handshake ctx
-      `E.catch` \(e :: E.SomeException) -> putStrLn ("exception: " <> show e) >> E.throwIO e
+      `catchAll` \e -> putStrLn ("exception: " <> show e) >> E.throwIO e
     pure ctx
 
 getTLS :: TransportPeer -> T.Context -> IO TLS
@@ -175,8 +175,9 @@ withTlsUnique peer cxt f =
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
-  (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
-    `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
+  T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
+    `catchAll_` T.contextClose ctx
+    `catchAll_` pure ()
 
 supportedParameters :: T.Supported
 supportedParameters =

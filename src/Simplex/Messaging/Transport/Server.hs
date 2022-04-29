@@ -24,6 +24,7 @@ import qualified Data.X509.Validation as XV
 import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util (catchAll_)
 import System.Exit (exitFailure)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -42,7 +43,7 @@ runTransportServer started port serverParams server = do
       (closeServer started clients)
       $ \sock -> forever $ do
         (connSock, _) <- accept sock
-        tid <- forkIO $ connectClient u connSock `E.catch` \(_ :: E.SomeException) -> pure ()
+        tid <- forkIO $ connectClient u connSock `catchAll_` close connSock `catchAll_` pure ()
         atomically . modifyTVar' clients $ S.insert tid
   where
     connectClient :: UnliftIO m -> Socket -> IO ()
@@ -60,7 +61,7 @@ runTCPServer started port server = do
     (closeServer started clients)
     $ \sock -> forever $ do
       (connSock, _) <- accept sock
-      tid <- forkIO $ server connSock `E.catch` \(_ :: E.SomeException) -> pure ()
+      tid <- forkIO $ server connSock `catchAll_` pure ()
       atomically . modifyTVar' clients $ S.insert tid
 
 closeServer :: TMVar Bool -> TVar (Set ThreadId) -> Socket -> IO ()
