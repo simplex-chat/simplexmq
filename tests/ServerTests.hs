@@ -520,7 +520,7 @@ testMsgExpireOnInterval t =
 
 testMsgNOTExpireOnInterval :: forall c. Transport c => TProxy c -> Spec
 testMsgNOTExpireOnInterval t =
-  it "should NOT expire messages that are not received before messageTTL if expiry interval is not set" $ do
+  it "should NOT expire messages that are not received before messageTTL if expiry interval is large" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
     let cfg' = cfg {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
