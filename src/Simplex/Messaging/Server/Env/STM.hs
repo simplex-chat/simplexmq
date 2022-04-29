@@ -12,12 +12,14 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -39,19 +41,36 @@ data ServerConfig = ServerConfig
     storeLogFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
-    -- | time after which the messages can be removed from the queues, seconds
-    messageTTL :: Maybe Int64,
-    -- | interval to periodically remove expired messages (when no messages are sent to the queue), microseconds
-    expireMessagesInterval :: Maybe Int,
+    -- | time after which the messages can be removed from the queues and check interval, seconds
+    messageExpiration :: Maybe ExpirationConfig,
+    -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
+    -- and check interval, seconds
+    inactiveClientExpiration :: Maybe ExpirationConfig,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath
   }
 
+defaultMessageExpiration :: ExpirationConfig
+defaultMessageExpiration =
+  ExpirationConfig
+    { ttl = 30 * 86400, -- seconds, 30 days
+      checkInterval = 43200 -- seconds, 12 hours
+    }
+
+defaultInactiveClientExpiration :: ExpirationConfig
+defaultInactiveClientExpiration =
+  ExpirationConfig
+    { ttl = 7200, -- 2 hours
+      checkInterval = 3600 -- seconds, 1 hour
+    }
+
 data Env = Env
   { config :: ServerConfig,
     server :: Server,
+    clientIdVar :: TVar Int64,
+    clients :: TMap Int64 Client,
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
@@ -72,8 +91,11 @@ data Client = Client
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (Transmission Cmd),
     sndQ :: TBQueue (Transmission BrokerMsg),
+    clientId :: Int64,
     sessionId :: ByteString,
-    connected :: TVar Bool
+    connected :: TVar Bool,
+    activeAt :: TVar SystemTime,
+    disconnect :: IO ()
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
@@ -91,14 +113,15 @@ newServer qSize = do
   notifiers <- TM.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Natural -> ByteString -> STM Client
-newClient qSize sessionId = do
+newClient :: Int64 -> IO () -> Natural -> ByteString -> SystemTime -> STM Client
+newClient clientId disconnect qSize sessionId ts = do
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, connected}
+  activeAt <- newTVar ts
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, clientId, disconnect, sessionId, connected, activeAt}
 
 newSubscription :: STM Sub
 newSubscription = do
@@ -108,6 +131,8 @@ newSubscription = do
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
   server <- atomically $ newServer (serverTbqSize config)
+  clientIdVar <- newTVarIO 0
+  clients <- atomically TM.empty
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
@@ -116,7 +141,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
-  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
+  return Env {config, server, clientIdVar, clients, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} s = do

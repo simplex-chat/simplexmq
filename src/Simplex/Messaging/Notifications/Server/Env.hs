@@ -12,6 +12,8 @@ import Control.Monad (void)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Int (Int64)
+import Data.Time.Clock.System (SystemTime)
 import Data.Word (Word16)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
@@ -23,6 +25,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Protocol (CorrId, Transmission)
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
@@ -38,11 +41,19 @@ data NtfServerConfig = NtfServerConfig
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
+    inactiveClientExpiration :: Maybe ExpirationConfig,
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath
   }
+
+defaultInactiveClientExpiration :: ExpirationConfig
+defaultInactiveClientExpiration =
+  ExpirationConfig
+    { ttl = 7200, -- 2 hours
+      checkInterval = 3600 -- seconds, 1 hour
+    }
 
 data NtfEnv = NtfEnv
   { config :: NtfServerConfig,
@@ -52,7 +63,9 @@ data NtfEnv = NtfEnv
     idsDrg :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
-    serverIdentity :: C.KeyHash
+    serverIdentity :: C.KeyHash,
+    clientIdVar :: TVar Int64,
+    clients :: TMap Int64 NtfServerClient
   }
 
 newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
@@ -65,7 +78,9 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   void . liftIO $ newPushClient pushServer PPApns
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
-  pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
+  clientIdVar <- newTVarIO 0
+  clients <- atomically TM.empty
+  pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp, clientIdVar, clients}
 
 data NtfSubscriber = NtfSubscriber
   { subQ :: TBQueue (NtfEntityRec 'Subscription),
@@ -116,13 +131,17 @@ data NtfRequest
 data NtfServerClient = NtfServerClient
   { rcvQ :: TBQueue NtfRequest,
     sndQ :: TBQueue (Transmission NtfResponse),
+    clientId :: Int64,
     sessionId :: ByteString,
-    connected :: TVar Bool
+    connected :: TVar Bool,
+    activeAt :: TVar SystemTime,
+    disconnect :: IO ()
   }
 
-newNtfServerClient :: Natural -> ByteString -> STM NtfServerClient
-newNtfServerClient qSize sessionId = do
+newNtfServerClient :: Int64 -> IO () -> Natural -> ByteString -> SystemTime -> STM NtfServerClient
+newNtfServerClient clientId disconnect qSize sessionId ts = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
-  return NtfServerClient {rcvQ, sndQ, sessionId, connected}
+  activeAt <- newTVar ts
+  return NtfServerClient {clientId, disconnect, rcvQ, sndQ, sessionId, connected, activeAt}

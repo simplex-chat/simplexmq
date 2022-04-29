@@ -7,7 +7,7 @@ module Main where
 
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI)
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Transport (simplexMQVersion)
 import System.FilePath (combine)
 
@@ -51,7 +51,7 @@ smpServerCLIConfig =
                 certificateFile = serverCrtFile,
                 storeLogFile,
                 allowNewQueues = True,
-                messageTTL = Just $ 7 * 86400, -- 7 days
-                expireMessagesInterval = Just 21600_000000 -- microseconds, 6 hours
+                messageExpiration = Just defaultMessageExpiration,
+                inactiveClientExpiration = Just defaultInactiveClientExpiration
               }
         }

@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Server where
 
+import Control.Concurrent.STM.TVar (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -17,6 +18,7 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Text as T
+import Data.Time.Clock.System (getSystemTime)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
@@ -29,7 +31,7 @@ import Simplex.Messaging.Protocol (ErrorType (..), SignedTransmission, Transmiss
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport)
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
 import UnliftIO (async, uninterruptibleCancel)
@@ -43,27 +45,28 @@ runNtfServer cfg = do
   runNtfServerBlocking started cfg
 
 runNtfServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> NtfServerConfig -> m ()
-runNtfServerBlocking started cfg@NtfServerConfig {transports} = do
-  env <- newNtfServerEnv cfg
-  runReaderT ntfServer env
-  where
-    ntfServer :: (MonadUnliftIO m', MonadReader NtfEnv m') => m' ()
-    ntfServer = do
-      s <- asks subscriber
-      ps <- asks pushServer
-      raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
+runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtfServerEnv cfg
 
-    runServer :: (MonadUnliftIO m', MonadReader NtfEnv m') => (ServiceName, ATransport) -> m' ()
+ntfServer :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerConfig -> TMVar Bool -> m ()
+ntfServer cfg@NtfServerConfig {transports} started = do
+  s <- asks subscriber
+  ps <- asks pushServer
+  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> expireClientsThread_ cfg)
+  where
+    runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       runTransportServer started tcpPort serverParams (runClient t)
 
-    runClient :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => TProxy c -> c -> m ()
+    runClient :: Transport c => TProxy c -> c -> m ()
     runClient _ h = do
       kh <- asks serverIdentity
       liftIO (runExceptT $ ntfServerHandshake h kh) >>= \case
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
+
+    expireClientsThread_ :: NtfServerConfig -> [m ()]
+    expireClientsThread_ = maybe [] ((: []) . expireClients clients disconnect activeAt) . inactiveClientExpiration
 
 ntfSubscriber :: forall m. MonadUnliftIO m => NtfSubscriber -> m ()
 ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
@@ -130,16 +133,21 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
       deliver tkn ntf `catchError` \e -> logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
-runNtfClientTransport th@THandle {sessionId} = do
+runNtfClientTransport th@THandle {sessionId, connection} = do
   qSize <- asks $ clientQSize . config
-  c <- atomically $ newNtfServerClient qSize sessionId
+  ts <- liftIO getSystemTime
+  cId <- asks clientIdVar >>= atomically . (`stateTVar` \i -> (i + 1, i + 1))
+  c <- atomically $ newNtfServerClient cId (closeConnection connection) qSize sessionId ts
   s <- asks subscriber
   ps <- asks pushServer
+  atomically . TM.insert cId c =<< asks clients
   raceAny_ [send th c, client c s ps, receive th c]
     `finally` clientDisconnected c
 
-clientDisconnected :: MonadUnliftIO m => NtfServerClient -> m ()
-clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
+clientDisconnected :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> m ()
+clientDisconnected NtfServerClient {connected, clientId} = do
+  atomically $ writeTVar connected False
+  atomically . TM.delete clientId =<< asks clients
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
 receive th NtfServerClient {rcvQ, sndQ} = forever $ do

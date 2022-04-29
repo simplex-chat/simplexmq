@@ -22,6 +22,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport
 import System.Directory (removeFile)
 import System.TimeIt (timeItT)
@@ -486,7 +487,8 @@ testMsgExpireOnSend :: forall c. Transport c => TProxy c -> Spec
 testMsgExpireOnSend t =
   it "should expire messages that are not received before messageTTL on SEND" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
-    withSmpServerConfigOn (ATransport t) cfg {messageTTL = Just 1} testPort $ \_ ->
+    let cfg' = cfg {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
+    withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
@@ -504,7 +506,8 @@ testMsgExpireOnInterval :: forall c. Transport c => TProxy c -> Spec
 testMsgExpireOnInterval t =
   it "should expire messages that are not received before messageTTL after expiry interval" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
-    withSmpServerConfigOn (ATransport t) cfg {messageTTL = Just 1, expireMessagesInterval = Just 1000000} testPort $ \_ ->
+    let cfg' = cfg {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+    withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, SEND "hello (should expire)")
@@ -519,7 +522,8 @@ testMsgNOTExpireOnInterval :: forall c. Transport c => TProxy c -> Spec
 testMsgNOTExpireOnInterval t =
   it "should NOT expire messages that are not received before messageTTL if expiry interval is not set" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
-    withSmpServerConfigOn (ATransport t) cfg {messageTTL = Just 1, expireMessagesInterval = Nothing} testPort $ \_ ->
+    let cfg' = cfg {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
+    withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
