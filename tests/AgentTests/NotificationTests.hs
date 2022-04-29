@@ -50,7 +50,7 @@ testNotificationToken APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient agentCfg initAgentServers
   Right () <- runExceptT $ do
     let tkn = DeviceToken PPApns "abcd"
-    registerNtfToken a tkn
+    NTRegistered <- registerNtfToken a tkn
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
@@ -80,13 +80,13 @@ testNtfTokenRepeatRegistration APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient agentCfg initAgentServers
   Right () <- runExceptT $ do
     let tkn = DeviceToken PPApns "abcd"
-    registerNtfToken a tkn
+    NTRegistered <- registerNtfToken a tkn
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
-    registerNtfToken a tkn
+    NTRegistered <- registerNtfToken a tkn
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     _ <- ntfData' .-> "verification"
@@ -107,7 +107,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
   a' <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     let tkn = DeviceToken PPApns "abcd"
-    registerNtfToken a tkn
+    NTRegistered <- registerNtfToken a tkn
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
@@ -115,7 +115,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     liftIO $ sendApnsResponse APNSRespOk
     verifyNtfToken a tkn verification nonce
 
-    registerNtfToken a' tkn
+    NTRegistered <- registerNtfToken a' tkn
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
@@ -141,7 +141,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient agentCfg initAgentServers
   let tkn = DeviceToken PPApns "abcd"
   Right ntfData <- withNtfServer t . runExceptT $ do
-    registerNtfToken a tkn
+    NTRegistered <- registerNtfToken a tkn
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     liftIO $ sendApnsResponse APNSRespOk

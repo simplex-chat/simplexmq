@@ -19,7 +19,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
-import SMPClient (testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
+import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Encoding.String
@@ -273,7 +273,7 @@ testSubscrNotification t (server, _) client = do
   client #: ("1", "conn1", "NEW INV") =#> \case ("1", "conn1", INV {}) -> True; _ -> False
   client #:# "nothing should be delivered to client before the server is killed"
   killThread server
-  client <# ("", "conn1", DOWN)
+  client <# ("", "", DOWN testSMPServer ["conn1"])
   withSmpServer (ATransport t) $
     client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
 
@@ -287,14 +287,15 @@ testMsgDeliveryServerRestart t alice bob = do
     alice #: ("11", "bob", "ACK 5") #> ("11", "bob", OK)
     alice #:# "nothing else delivered before the server is killed"
 
-  alice <# ("", "bob", DOWN)
+  let server = (SMPServer "localhost" testPort2 testKeyHash)
+  alice <# ("", "", DOWN server ["bob"])
   bob #: ("2", "alice", "SEND 11\nhello again") #> ("2", "alice", MID 6)
   bob #:# "nothing else delivered before the server is restarted"
   alice #:# "nothing else delivered before the server is restarted"
 
   withServer $ do
     bob <# ("", "alice", SENT 6)
-    alice <# ("", "bob", UP)
+    alice <# ("", "", UP server ["bob"])
     alice <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
     alice #: ("12", "bob", "ACK 6") #> ("12", "bob", OK)
 
@@ -309,8 +310,8 @@ testServerConnectionAfterError t _ = do
       withServer $ do
         connect (bob, "bob") (alice, "alice")
 
-      bob <# ("", "alice", DOWN)
-      alice <# ("", "bob", DOWN)
+      bob <# ("", "", DOWN server ["alice"])
+      alice <# ("", "", DOWN server ["bob"])
       alice #: ("1", "bob", "SEND 5\nhello") #> ("1", "bob", MID 5)
       alice #:# "nothing else delivered before the server is restarted"
       bob #:# "nothing else delivered before the server is restarted"
@@ -320,11 +321,11 @@ testServerConnectionAfterError t _ = do
       bob #: ("1", "alice", "SUB") #> ("1", "alice", ERR (BROKER NETWORK))
       alice #: ("1", "bob", "SUB") #> ("1", "bob", ERR (BROKER NETWORK))
       withServer $ do
-        alice <#= \case ("", "bob", cmd) -> cmd == UP || cmd == SENT 5; _ -> False
-        alice <#= \case ("", "bob", cmd) -> cmd == UP || cmd == SENT 5; _ -> False
-        bob <# ("", "alice", UP)
+        alice <# ("", "bob", SENT 5)
+        bob <# ("", "", UP server ["alice"])
         bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
         bob #: ("2", "alice", "ACK 5") #> ("2", "alice", OK)
+        alice <# ("", "", UP server ["bob"])
         alice #: ("1", "bob", "SEND 11\nhello again") #> ("1", "bob", MID 6)
         alice <# ("", "bob", SENT 6)
         bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
@@ -333,6 +334,7 @@ testServerConnectionAfterError t _ = do
   removeFile testDB
   removeFile testDB2
   where
+    server = SMPServer "localhost" testPort2 testKeyHash
     withServer test' = withSmpServerStoreLogOn (ATransport t) testPort2 (const test') `shouldReturn` ()
     withAgent1 = withAgent agentTestPort testDB
     withAgent2 = withAgent agentTestPort2 testDB2
@@ -341,6 +343,7 @@ testServerConnectionAfterError t _ = do
 
 testMsgDeliveryAgentRestart :: Transport c => TProxy c -> c -> IO ()
 testMsgDeliveryAgentRestart t bob = do
+  let server = SMPServer "localhost" testPort2 testKeyHash
   withAgent $ \alice -> do
     withServer $ do
       connect (bob, "bob") (alice, "alice")
@@ -350,7 +353,7 @@ testMsgDeliveryAgentRestart t bob = do
       bob #: ("11", "alice", "ACK 5") #> ("11", "alice", OK)
       bob #:# "nothing else delivered before the server is down"
 
-    bob <# ("", "alice", DOWN)
+    bob <# ("", "", DOWN server ["alice"])
     alice #: ("2", "bob", "SEND 11\nhello again") #> ("2", "bob", MID 6)
     alice #:# "nothing else delivered before the server is restarted"
     bob #:# "nothing else delivered before the server is restarted"
@@ -363,7 +366,7 @@ testMsgDeliveryAgentRestart t bob = do
           (corrId == "3" && cmd == OK)
             || (corrId == "" && cmd == SENT 6)
         _ -> False
-      bob <# ("", "alice", UP)
+      bob <# ("", "", UP server ["alice"])
       bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
       bob #: ("12", "alice", "ACK 6") #> ("12", "alice", OK)
 

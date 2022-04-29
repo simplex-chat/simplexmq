@@ -210,8 +210,8 @@ data ACommand (p :: AParty) where
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
   END :: ACommand Agent
-  DOWN :: ACommand Agent
-  UP :: ACommand Agent
+  DOWN :: SMPServer -> [ConnId] -> ACommand Agent
+  UP :: SMPServer -> [ConnId] -> ACommand Agent
   SEND :: MsgBody -> ACommand Client
   MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
@@ -817,8 +817,8 @@ commandP =
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
-    <|> "DOWN" $> ACmd SAgent DOWN
-    <|> "UP" $> ACmd SAgent UP
+    <|> "DOWN " *> downsResp
+    <|> "UP " *> upsResp
     <|> "SEND " *> sendCmd
     <|> "MID " *> msgIdResp
     <|> "SENT " *> sentResp
@@ -840,12 +840,15 @@ commandP =
     acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
+    downsResp = ACmd SAgent .: DOWN <$> strP <* A.space <*> connections
+    upsResp = ACmd SAgent .: UP <$> strP <* A.space <*> connections
     sendCmd = ACmd SClient . SEND <$> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
     msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
     message = ACmd SAgent .: MSG <$> msgMetaP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
+    connections = strP `A.sepBy'` (A.char ',')
     msgMetaP = do
       integrity <- strP
       recipient <- " R=" *> partyMeta A.decimal
@@ -872,8 +875,8 @@ serializeCommand = \case
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
-  DOWN -> "DOWN"
-  UP -> "UP"
+  DOWN srv conns -> B.unwords ["DOWN", strEncode srv, connections conns]
+  UP srv conns -> B.unwords ["UP", strEncode srv, connections conns]
   SEND msgBody -> "SEND " <> serializeBinary msgBody
   MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
@@ -888,6 +891,8 @@ serializeCommand = \case
   where
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
+    connections :: [ConnId] -> ByteString
+    connections = B.intercalate "," . map strEncode
     serializeMsgMeta :: MsgMeta -> ByteString
     serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
       B.unwords
@@ -939,6 +944,8 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       ACPT {} -> Right cmd
       -- ERROR response does not always have connId
       ERR _ -> Right cmd
+      DOWN {} -> Right cmd
+      UP {} -> Right cmd
       -- other responses must have connId
       _
         | B.null connId -> Left $ CMD NO_CONN

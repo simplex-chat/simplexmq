@@ -162,7 +162,7 @@ setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c
 
 -- | Register device notifications token
-registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
+registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
 registerNtfToken c = withAgentEnv c . registerNtfToken' c
 
 -- | Verify device notifications token
@@ -525,25 +525,25 @@ setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
-registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m ()
+registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
 registerNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction}, prevTokens) -> do
       mapM_ (deleteToken_ c) prevTokens
       case (ntfTokenId, ntfTknAction) of
-        (Nothing, Just NTARegister) -> registerToken tkn
+        (Nothing, Just NTARegister) -> registerToken tkn $> NTRegistered
         -- TODO minimal time before repeat registration
-        (Just _, Nothing) -> when (ntfTknStatus == NTRegistered) $ registerToken tkn
+        (Just _, Nothing) -> when (ntfTknStatus == NTRegistered) (registerToken tkn) $> NTRegistered
         (Just tknId, Just (NTAVerify code)) ->
           t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
         (Just tknId, Just (NTACron interval)) ->
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
-        (Just _tknId, Just NTACheck) -> pure () -- TODO
+        (Just _tknId, Just NTACheck) -> pure ntfTknStatus -- TODO
         -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
           agentNtfDeleteToken c tknId tkn
-          withStore $ \st -> removeNtfToken st tkn
-        _ -> pure ()
+          withStore $ \st -> removeNtfToken st tkn $> NTExpired
+        _ -> pure ntfTknStatus
     _ ->
       getNtfServer c >>= \case
         Just ntfServer ->
@@ -554,6 +554,7 @@ registerNtfToken' c deviceToken =
               let tkn = newNtfToken deviceToken ntfServer tknKeys dhKeys
               withStore $ \st -> createNtfToken st tkn
               registerToken tkn
+              pure NTRegistered
         _ -> throwError $ CMD PROHIBITED
   where
     t tkn = withToken c tkn Nothing
@@ -569,7 +570,7 @@ verifyNtfToken' c deviceToken code nonce =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
-      withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+      void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
         agentNtfVerifyToken c tknId tkn code'
     _ -> throwError $ CMD PROHIBITED
 
@@ -578,7 +579,7 @@ enableNtfCron' c deviceToken interval = do
   when (interval < 20) . throwError $ CMD PROHIBITED
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive}, _) ->
-      withToken c tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
+      void . withToken c tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
         agentNtfEnableCron c tknId tkn interval
     _ -> throwError $ CMD PROHIBITED
 
@@ -608,16 +609,16 @@ deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
       e -> throwError e
   withStore $ \st -> removeNtfToken st tkn
 
-withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m a
+withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m NtfTknStatus
 withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
   forM_ from_ $ \(status, action) -> withStore $ \st -> updateNtfToken st tkn status (Just action)
   tryError f >>= \case
-    Right res -> do
+    Right _ -> do
       withStore $ \st -> updateNtfToken st tkn toStatus toAction_
-      pure res
+      pure toStatus
     Left e@(NTF AUTH) -> do
       withStore $ \st -> removeNtfToken st tkn
-      registerNtfToken' c deviceToken
+      void $ registerNtfToken' c deviceToken
       throwError e
     Left e -> throwError e
 

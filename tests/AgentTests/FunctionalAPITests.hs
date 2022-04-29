@@ -159,12 +159,15 @@ testAsyncServerOffline t = do
     runExceptT $ createConnection alice SCMInvitation
   -- connection fails
   Left (BROKER NETWORK) <- runExceptT $ joinConnection bob cReq "bob's connInfo"
-  ("", bobId1, DOWN) <- get alice
-  bobId1 `shouldBe` bobId
+  ("", "", DOWN srv conns) <- get alice
+  srv `shouldBe` testSMPServer
+  conns `shouldBe` [bobId]
   -- connection succeeds after server start
   Right () <- withSmpServerStoreLogOn t testPort $ \_ -> runExceptT $ do
-    ("", bobId2, UP) <- get alice
-    liftIO $ bobId2 `shouldBe` bobId
+    ("", "", UP srv1 conns1) <- get alice
+    liftIO $ do
+      srv1 `shouldBe` testSMPServer
+      conns1 `shouldBe` [bobId]
     aliceId <- joinConnection bob cReq "bob's connInfo"
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
