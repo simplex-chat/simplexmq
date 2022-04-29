@@ -9,6 +9,7 @@ Push notifications server:
 SMP agent:
 
 - manage device tokens and notification server connection
+- DOWN/UP events to the agent user about server disconnections/reconnections are now sent once per server
 
 # 1.1.0
 
