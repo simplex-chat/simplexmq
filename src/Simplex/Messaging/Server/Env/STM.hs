@@ -2,6 +2,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
@@ -11,6 +12,9 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Set (Set)
+import qualified Data.Set as S
+import Data.Time.Clock (UTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
@@ -45,7 +49,12 @@ data ServerConfig = ServerConfig
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
     -- and check interval, seconds
     inactiveClientExpiration :: Maybe ExpirationConfig,
-    -- CA certificate private key is not needed for initialization
+    -- | log SMP server usage statistics, only aggregates are logged, seconds
+    logStatsInterval :: Maybe Int,
+    -- | time of the day when the stats are logged first, to log at consistent times,
+    -- irrespective of when the server is started (seconds from 00:00 UTC)
+    logStatsStartTime :: Int,
+    -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath
@@ -73,7 +82,8 @@ data Env = Env
     msgStore :: STMMsgStore,
     idsDrg :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
-    tlsServerParams :: T.ServerParams
+    tlsServerParams :: T.ServerParams,
+    serverStats :: ServerStats
   }
 
 data Server = Server
@@ -91,6 +101,16 @@ data Client = Client
     sessionId :: ByteString,
     connected :: TVar Bool,
     activeAt :: TVar SystemTime
+  }
+
+data ServerStats = ServerStats
+  { qCreated :: TVar Int,
+    qSecured :: TVar Int,
+    qDeleted :: TVar Int,
+    msgSent :: TVar Int,
+    msgRecv :: TVar Int,
+    msgQueues :: TVar (Set RecipientId),
+    fromTime :: TVar UTCTime
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
@@ -118,6 +138,17 @@ newClient qSize sessionId ts = do
   activeAt <- newTVar ts
   return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, connected, activeAt}
 
+newServerStats :: UTCTime -> STM ServerStats
+newServerStats ts = do
+  qCreated <- newTVar 0
+  qSecured <- newTVar 0
+  qDeleted <- newTVar 0
+  msgSent <- newTVar 0
+  msgRecv <- newTVar 0
+  msgQueues <- newTVar S.empty
+  fromTime <- newTVar ts
+  pure ServerStats {qCreated, qSecured, qDeleted, msgSent, msgRecv, msgQueues, fromTime}
+
 newSubscription :: STM Sub
 newSubscription = do
   delivered <- newEmptyTMVar
@@ -134,7 +165,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
-  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
+  serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams, serverStats}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} s = do

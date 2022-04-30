@@ -5,6 +5,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -32,6 +33,7 @@ module Simplex.Messaging.Server
   )
 where
 
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -40,8 +42,12 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.List (intercalate)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
+import qualified Data.Set as S
+import qualified Data.Text as T
+import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import Network.Socket (ServiceName)
@@ -86,7 +92,7 @@ smpServer started = do
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
-      map runServer transports <> expireMessagesThread_ cfg
+      map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg
     )
     `finally` withLog closeStoreLog
   where
@@ -139,6 +145,29 @@ smpServer started = do
         forM_ rIds $ \rId ->
           atomically (getMsgQueue ms rId quota)
             >>= atomically . (`deleteExpiredMsgs` old)
+
+    serverStatsThread_ :: ServerConfig -> [m ()]
+    serverStatsThread_ ServerConfig {logStatsInterval, logStatsStartTime} =
+      maybe [] ((: []) . logServerStats logStatsStartTime) logStatsInterval
+
+    logServerStats :: Int -> Int -> m ()
+    logServerStats startAt logInterval = do
+      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
+      logInfo $ "fromTime,qCreated,qSecured,qDeleted,msgSent,msgRecv,msgQueues"
+      threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgQueues} <- asks serverStats
+      let interval = 1000000 * logInterval
+      forever $ do
+        ts <- liftIO getCurrentTime
+        fromTime' <- atomically $ swapTVar fromTime ts
+        qCreated' <- atomically $ swapTVar qCreated 0
+        qSecured' <- atomically $ swapTVar qSecured 0
+        qDeleted' <- atomically $ swapTVar qDeleted 0
+        msgSent' <- atomically $ swapTVar msgSent 0
+        msgRecv' <- atomically $ swapTVar msgRecv 0
+        msgQueues' <- atomically $ S.size <$> swapTVar msgQueues S.empty
+        logInfo . T.pack $ intercalate "," [show fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', show msgQueues']
+        threadDelay interval
 
     runClient :: Transport c => TProxy c -> c -> m ()
     runClient _ h = do
@@ -311,6 +340,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 Left e -> pure $ ERR e
                 Right _ -> do
                   withLog (`logCreateById` rId)
+                  stats <- asks serverStats
+                  atomically $ modifyTVar (qCreated stats) (+ 1)
                   subscribeQueue rId $> IDS (qik ids)
 
             logCreateById :: StoreLog 'WriteMode -> RecipientId -> IO ()
@@ -327,6 +358,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         secureQueue_ :: QueueStore -> SndPublicVerifyKey -> m (Transmission BrokerMsg)
         secureQueue_ st sKey = do
           withLog $ \s -> logSecureQueue s queueId sKey
+          stats <- asks serverStats
+          atomically $ modifyTVar (qSecured stats) (+ 1)
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> m (Transmission BrokerMsg)
@@ -373,7 +406,11 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         acknowledgeMsg =
           atomically (withSub queueId $ \s -> const s <$$> tryTakeTMVar (delivered s))
             >>= \case
-              Just (Just s) -> deliverMessage tryDelPeekMsg queueId s
+              Just (Just s) -> do
+                stats <- asks serverStats
+                atomically $ modifyTVar (msgRecv stats) (+ 1)
+                atomically $ modifyTVar (msgQueues stats) (S.insert queueId)
+                deliverMessage tryDelPeekMsg queueId s
               _ -> return $ err NO_MSG
 
         withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
@@ -396,13 +433,18 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                     ms <- asks msgStore
                     ServerConfig {messageExpiration, msgQueueQuota} <- asks config
                     old <- liftIO $ mapM expireBeforeEpoch messageExpiration
-                    atomically $ do
+                    resp@(_, _, sent) <- atomically $ do
                       q <- getMsgQueue ms (recipientId qr) msgQueueQuota
                       mapM_ (deleteExpiredMsgs q) old
                       ifM (isFull q) (pure $ err QUOTA) $ do
                         trySendNotification
                         writeMsg q msg
                         pure ok
+                    when (sent == OK) $ do
+                      stats <- asks serverStats
+                      atomically $ modifyTVar (msgSent stats) (+ 1)
+                      atomically $ modifyTVar (msgQueues stats) (S.insert $ recipientId qr)
+                    pure resp
               where
                 mkMessage :: m (Either C.CryptoError Message)
                 mkMessage = do
@@ -460,6 +502,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         delQueueAndMsgs st = do
           withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
+          stats <- asks serverStats
+          atomically $ modifyTVar (qDeleted stats) (+ 1)
           atomically $
             deleteQueue st queueId >>= \case
               Left e -> pure $ err e
