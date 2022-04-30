@@ -176,7 +176,7 @@ withTlsUnique peer cxt f =
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
-    `catchAll_` T.contextClose ctx
+    `E.finally` T.contextClose ctx
     `catchAll_` pure ()
 
 supportedParameters :: T.Supported
