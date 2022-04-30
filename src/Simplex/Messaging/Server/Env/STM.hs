@@ -126,8 +126,6 @@ newSubscription = do
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
   server <- atomically $ newServer (serverTbqSize config)
-  -- clientIdVar <- newTVarIO 0
-  -- clients <- atomically TM.empty
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
