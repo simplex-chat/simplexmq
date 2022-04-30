@@ -43,6 +43,7 @@ module Simplex.Messaging.Agent
     acceptContact,
     rejectContact,
     subscribeConnection,
+    resubscribeConnection,
     sendMessage,
     ackMessage,
     suspendConnection,
@@ -138,6 +139,9 @@ rejectContact c = withAgentEnv c .: rejectContact' c
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection c = withAgentEnv c . subscribeConnection' c
+
+resubscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
 
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId
@@ -355,6 +359,12 @@ subscribeConnection' c connId =
     SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
     SomeConn _ (ContactConnection _ rq) -> subscribeQueue c rq connId
 
+resubscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+resubscribeConnection' c connId =
+  unlessM
+    (atomically $ hasActiveSubscription c connId)
+    (subscribeConnection' c connId)
+
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgBody -> m AgentMsgId
 sendMessage' c connId msg =
@@ -398,7 +408,7 @@ resumeMsgDelivery c connId sq@SndQueue {server, sndId} = do
     withStore (`getPendingMsgs` connId)
       >>= queuePendingMsgs c connId sq
   where
-    queueDelivering qKey = atomically $ isJust <$> TM.lookup qKey (smpQueueMsgDeliveries c)
+    queueDelivering qKey = atomically $ TM.member qKey (smpQueueMsgDeliveries c)
     connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connMsgsQueued c)
 
 queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> [InternalId] -> m ()

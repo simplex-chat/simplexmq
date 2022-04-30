@@ -49,6 +49,7 @@ data AgentConfig = AgentConfig
     ntfCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
+    resubscriptionConcurrency :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath
@@ -78,6 +79,7 @@ defaultAgentConfig =
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       reconnectInterval = defaultReconnectInterval,
       helloTimeout = 2 * nominalDay,
+      resubscriptionConcurrency = 16,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",

@@ -343,7 +343,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
         subscribeNotifications :: m (Transmission BrokerMsg)
         subscribeNotifications = atomically $ do
-          whenM (isNothing <$> TM.lookup queueId ntfSubscriptions) $ do
+          unlessM (TM.member queueId ntfSubscriptions) $ do
             writeTBQueue ntfSubscribedQ (queueId, clnt)
             TM.insert queueId () ntfSubscriptions
           pure ok
