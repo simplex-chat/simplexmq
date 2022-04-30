@@ -147,20 +147,6 @@ smpServer started = do
         Right th -> runClientTransport th
         Left _ -> pure ()
 
--- expireClients :: (MonadUnliftIO m, MonadReader env m) => (env -> TMap Int64 c) -> (c -> IO ()) -> (c -> TVar SystemTime) -> ExpirationConfig -> m ()
--- expireClients clients disconnect activeAt expCfg = do
---   let interval = checkInterval expCfg * 1000000
---   cs <- asks clients
---   forever . liftIO $ do
---     threadDelay interval
---     old <- expireBeforeEpoch expCfg
---     readTVarIO cs
---       >>= mapM_
---         ( \c -> do
---             ts <- readTVarIO $ activeAt c
---             when (systemSeconds ts < old) $ disconnect c `catchAll_` pure ()
---         )
-
 runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
 runClientTransport th@THandle {sessionId} = do
   q <- asks $ tbqSize . config
