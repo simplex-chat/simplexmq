@@ -9,7 +9,6 @@ import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
-import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime)
@@ -69,8 +68,6 @@ defaultInactiveClientExpiration =
 data Env = Env
   { config :: ServerConfig,
     server :: Server,
-    clientIdVar :: TVar Int64,
-    clients :: TMap Int64 Client,
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
@@ -91,11 +88,9 @@ data Client = Client
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (Transmission Cmd),
     sndQ :: TBQueue (Transmission BrokerMsg),
-    clientId :: Int64,
     sessionId :: ByteString,
     connected :: TVar Bool,
-    activeAt :: TVar SystemTime,
-    disconnect :: IO ()
+    activeAt :: TVar SystemTime
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
@@ -113,15 +108,15 @@ newServer qSize = do
   notifiers <- TM.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Int64 -> IO () -> Natural -> ByteString -> SystemTime -> STM Client
-newClient clientId disconnect qSize sessionId ts = do
+newClient :: Natural -> ByteString -> SystemTime -> STM Client
+newClient qSize sessionId ts = do
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
   activeAt <- newTVar ts
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, clientId, disconnect, sessionId, connected, activeAt}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, connected, activeAt}
 
 newSubscription :: STM Sub
 newSubscription = do
@@ -131,8 +126,8 @@ newSubscription = do
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
   server <- atomically $ newServer (serverTbqSize config)
-  clientIdVar <- newTVarIO 0
-  clients <- atomically TM.empty
+  -- clientIdVar <- newTVarIO 0
+  -- clients <- atomically TM.empty
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   idsDrg <- drgNew >>= newTVarIO
@@ -141,7 +136,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
-  return Env {config, server, clientIdVar, clients, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
+  return Env {config, server, serverIdentity, queueStore, msgStore, idsDrg, storeLog = s', tlsServerParams}
   where
     restoreQueues :: QueueStore -> StoreLog 'ReadMode -> m (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} s = do

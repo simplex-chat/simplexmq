@@ -26,13 +26,12 @@
 module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
-    expireClients,
+    disconnectTransport,
     verifyCmdSignature,
     dummyVerifyCmd,
   )
 where
 
-import Control.Concurrent.STM.TVar (stateTVar)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -41,7 +40,6 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
@@ -88,9 +86,7 @@ smpServer started = do
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
-      map runServer transports
-        <> expireMessagesThread_ cfg
-        <> expireClientsThread_ cfg
+      map runServer transports <> expireMessagesThread_ cfg
     )
     `finally` withLog closeStoreLog
   where
@@ -116,7 +112,7 @@ smpServer started = do
         updateSubscribers = do
           (qId, clnt) <- readTBQueue $ subQ s
           let clientToBeNotified = \c' ->
-                if sameClient clnt c'
+                if sameClientSession clnt c'
                   then pure Nothing
                   else do
                     yes <- readTVar $ connected c'
@@ -144,9 +140,6 @@ smpServer started = do
           atomically (getMsgQueue ms rId quota)
             >>= atomically . (`deleteExpiredMsgs` old)
 
-    expireClientsThread_ :: ServerConfig -> [m ()]
-    expireClientsThread_ = maybe [] ((: []) . expireClients clients disconnect activeAt) . inactiveClientExpiration
-
     runClient :: Transport c => TProxy c -> c -> m ()
     runClient _ h = do
       kh <- asks serverIdentity
@@ -154,47 +147,47 @@ smpServer started = do
         Right th -> runClientTransport th
         Left _ -> pure ()
 
-expireClients :: (MonadUnliftIO m, MonadReader env m) => (env -> TMap Int64 c) -> (c -> IO ()) -> (c -> TVar SystemTime) -> ExpirationConfig -> m ()
-expireClients clients disconnect activeAt expCfg = do
-  let interval = checkInterval expCfg * 1000000
-  cs <- asks clients
-  forever . liftIO $ do
-    threadDelay interval
-    old <- expireBeforeEpoch expCfg
-    readTVarIO cs
-      >>= mapM_
-        ( \c -> do
-            ts <- readTVarIO $ activeAt c
-            when (systemSeconds ts < old) $ disconnect c `catchAll_` pure ()
-        )
+-- expireClients :: (MonadUnliftIO m, MonadReader env m) => (env -> TMap Int64 c) -> (c -> IO ()) -> (c -> TVar SystemTime) -> ExpirationConfig -> m ()
+-- expireClients clients disconnect activeAt expCfg = do
+--   let interval = checkInterval expCfg * 1000000
+--   cs <- asks clients
+--   forever . liftIO $ do
+--     threadDelay interval
+--     old <- expireBeforeEpoch expCfg
+--     readTVarIO cs
+--       >>= mapM_
+--         ( \c -> do
+--             ts <- readTVarIO $ activeAt c
+--             when (systemSeconds ts < old) $ disconnect c `catchAll_` pure ()
+--         )
 
 runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
-runClientTransport th@THandle {sessionId, connection} = do
+runClientTransport th@THandle {sessionId} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
-  cId <- asks clientIdVar >>= atomically . (`stateTVar` \i -> (i + 1, i + 1))
-  c <- atomically $ newClient cId (closeConnection connection) q sessionId ts
+  c <- atomically $ newClient q sessionId ts
   s <- asks server
-  atomically . TM.insert cId c =<< asks clients
-  raceAny_ [send th c, client c s, receive th c]
+  expCfg <- asks $ inactiveClientExpiration . config
+  raceAny_ ([send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
+  where
+    disconnectThread_ c expCfg = maybe [] ((: []) . disconnectTransport th c activeAt) expCfg
 
 clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
-clientDisconnected c@Client {clientId, subscriptions, connected} = do
+clientDisconnected c@Client {subscriptions, connected} = do
   atomically $ writeTVar connected False
   subs <- readTVarIO subscriptions
   mapM_ cancelSub subs
   cs <- asks $ subscribers . server
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
-  atomically . TM.delete clientId =<< asks clients
   where
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
-      | sameClient c c' = Nothing
+      | sameClientSession c c' = Nothing
       | otherwise = Just c'
 
-sameClient :: Client -> Client -> Bool
-sameClient Client {clientId} Client {clientId = cId} = clientId == cId
+sameClientSession :: Client -> Client -> Bool
+sameClientSession Client {sessionId} Client {sessionId = s'} = sessionId == s'
 
 cancelSub :: MonadUnliftIO m => Sub -> m ()
 cancelSub = \case
@@ -221,6 +214,15 @@ send h Client {sndQ, sessionId, activeAt} = forever $ do
   -- TODO the line below can return Left, but we ignore it and do not disconnect the client
   void . liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
   atomically . writeTVar activeAt =<< liftIO getSystemTime
+
+disconnectTransport :: (Transport c, MonadUnliftIO m) => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> m ()
+disconnectTransport THandle {connection} c activeAt expCfg = do
+  let interval = checkInterval expCfg * 1000000
+  forever . liftIO $ do
+    threadDelay interval
+    old <- expireBeforeEpoch expCfg
+    ts <- readTVarIO $ activeAt c
+    when (systemSeconds ts < old) $ closeConnection connection
 
 verifyTransmission ::
   forall m. (MonadUnliftIO m, MonadReader Env m) => Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> m Bool

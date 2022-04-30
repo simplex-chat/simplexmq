@@ -10,7 +10,6 @@
 
 module Simplex.Messaging.Notifications.Server where
 
-import Control.Concurrent.STM.TVar (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -48,10 +47,10 @@ runNtfServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> NtfSer
 runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtfServerEnv cfg
 
 ntfServer :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerConfig -> TMVar Bool -> m ()
-ntfServer cfg@NtfServerConfig {transports} started = do
+ntfServer NtfServerConfig {transports} started = do
   s <- asks subscriber
   ps <- asks pushServer
-  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> expireClientsThread_ cfg)
+  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
   where
     runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
@@ -64,9 +63,6 @@ ntfServer cfg@NtfServerConfig {transports} started = do
       liftIO (runExceptT $ ntfServerHandshake h kh) >>= \case
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
-
-    expireClientsThread_ :: NtfServerConfig -> [m ()]
-    expireClientsThread_ = maybe [] ((: []) . expireClients clients disconnect activeAt) . inactiveClientExpiration
 
 ntfSubscriber :: forall m. MonadUnliftIO m => NtfSubscriber -> m ()
 ntfSubscriber NtfSubscriber {subQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
@@ -133,25 +129,25 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
       deliver tkn ntf `catchError` \e -> logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
-runNtfClientTransport th@THandle {sessionId, connection} = do
+runNtfClientTransport th@THandle {sessionId} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
-  cId <- asks clientIdVar >>= atomically . (`stateTVar` \i -> (i + 1, i + 1))
-  c <- atomically $ newNtfServerClient cId (closeConnection connection) qSize sessionId ts
+  c <- atomically $ newNtfServerClient qSize sessionId ts
   s <- asks subscriber
   ps <- asks pushServer
-  atomically . TM.insert cId c =<< asks clients
-  raceAny_ [send th c, client c s ps, receive th c]
+  expCfg <- asks $ inactiveClientExpiration . config
+  raceAny_ ([send th c, client c s ps, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
+  where
+    disconnectThread_ c expCfg = maybe [] ((: []) . disconnectTransport th c activeAt) expCfg
 
-clientDisconnected :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> m ()
-clientDisconnected NtfServerClient {connected, clientId} = do
-  atomically $ writeTVar connected False
-  atomically . TM.delete clientId =<< asks clients
+clientDisconnected :: MonadUnliftIO m => NtfServerClient -> m ()
+clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
-receive th NtfServerClient {rcvQ, sndQ} = forever $ do
+receive th NtfServerClient {rcvQ, sndQ, activeAt} = forever $ do
   t@(_, _, (corrId, entId, cmdOrError)) <- tGet th
+  atomically . writeTVar activeAt =<< liftIO getSystemTime
   logDebug "received transmission"
   case cmdOrError of
     Left e -> write sndQ (corrId, entId, NRErr e)
@@ -163,9 +159,10 @@ receive th NtfServerClient {rcvQ, sndQ} = forever $ do
     write q t = atomically $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> NtfServerClient -> m ()
-send h NtfServerClient {sndQ, sessionId} = forever $ do
+send h NtfServerClient {sndQ, sessionId, activeAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
+  void . liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
+  atomically . writeTVar activeAt =<< liftIO getSystemTime
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
