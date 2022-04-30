@@ -17,6 +17,7 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Text as T
+import Data.Time.Clock.System (getSystemTime)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
@@ -29,7 +30,7 @@ import Simplex.Messaging.Protocol (ErrorType (..), SignedTransmission, Transmiss
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport)
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
 import UnliftIO (async, uninterruptibleCancel)
@@ -43,22 +44,20 @@ runNtfServer cfg = do
   runNtfServerBlocking started cfg
 
 runNtfServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> NtfServerConfig -> m ()
-runNtfServerBlocking started cfg@NtfServerConfig {transports} = do
-  env <- newNtfServerEnv cfg
-  runReaderT ntfServer env
-  where
-    ntfServer :: (MonadUnliftIO m', MonadReader NtfEnv m') => m' ()
-    ntfServer = do
-      s <- asks subscriber
-      ps <- asks pushServer
-      raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
+runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtfServerEnv cfg
 
-    runServer :: (MonadUnliftIO m', MonadReader NtfEnv m') => (ServiceName, ATransport) -> m' ()
+ntfServer :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerConfig -> TMVar Bool -> m ()
+ntfServer NtfServerConfig {transports} started = do
+  s <- asks subscriber
+  ps <- asks pushServer
+  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
+  where
+    runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       runTransportServer started tcpPort serverParams (runClient t)
 
-    runClient :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => TProxy c -> c -> m ()
+    runClient :: Transport c => TProxy c -> c -> m ()
     runClient _ h = do
       kh <- asks serverIdentity
       liftIO (runExceptT $ ntfServerHandshake h kh) >>= \case
@@ -132,18 +131,23 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do
   qSize <- asks $ clientQSize . config
-  c <- atomically $ newNtfServerClient qSize sessionId
+  ts <- liftIO getSystemTime
+  c <- atomically $ newNtfServerClient qSize sessionId ts
   s <- asks subscriber
   ps <- asks pushServer
-  raceAny_ [send th c, client c s ps, receive th c]
+  expCfg <- asks $ inactiveClientExpiration . config
+  raceAny_ ([send th c, client c s ps, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
+  where
+    disconnectThread_ c expCfg = maybe [] ((: []) . disconnectTransport th c activeAt) expCfg
 
 clientDisconnected :: MonadUnliftIO m => NtfServerClient -> m ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
-receive th NtfServerClient {rcvQ, sndQ} = forever $ do
+receive th NtfServerClient {rcvQ, sndQ, activeAt} = forever $ do
   t@(_, _, (corrId, entId, cmdOrError)) <- tGet th
+  atomically . writeTVar activeAt =<< liftIO getSystemTime
   logDebug "received transmission"
   case cmdOrError of
     Left e -> write sndQ (corrId, entId, NRErr e)
@@ -155,9 +159,10 @@ receive th NtfServerClient {rcvQ, sndQ} = forever $ do
     write q t = atomically $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> NtfServerClient -> m ()
-send h NtfServerClient {sndQ, sessionId} = forever $ do
+send h NtfServerClient {sndQ, sessionId, activeAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
+  void . liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
+  atomically . writeTVar activeAt =<< liftIO getSystemTime
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 

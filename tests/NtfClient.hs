@@ -83,6 +83,7 @@ ntfServerCfg =
             apnsPort = apnsTestPort,
             http2cfg = defaultHTTP2ClientConfig {caStoreFile = "tests/fixtures/ca.crt"}
           },
+      inactiveClientExpiration = Just defaultInactiveClientExpiration,
       -- CA certificate private key is not needed for initialization
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",

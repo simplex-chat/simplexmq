@@ -23,7 +23,14 @@
 -- and optional append only log of SMP queue records.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
-module Simplex.Messaging.Server (runSMPServer, runSMPServerBlocking, verifyCmdSignature, dummyVerifyCmd) where
+module Simplex.Messaging.Server
+  ( runSMPServer,
+    runSMPServerBlocking,
+    disconnectTransport,
+    verifyCmdSignature,
+    dummyVerifyCmd,
+  )
+where
 
 import Control.Monad
 import Control.Monad.Except
@@ -33,7 +40,6 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
@@ -42,6 +48,7 @@ import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
@@ -118,18 +125,16 @@ smpServer started = do
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     expireMessagesThread_ :: ServerConfig -> [m ()]
-    expireMessagesThread_ ServerConfig {messageTTL, expireMessagesInterval} =
-      case (messageTTL, expireMessagesInterval) of
-        (Just ttl, Just int) -> [expireMessages ttl int]
-        _ -> []
+    expireMessagesThread_ = maybe [] ((: []) . expireMessages) . messageExpiration
 
-    expireMessages :: Int64 -> Int -> m ()
-    expireMessages ttl interval = do
+    expireMessages :: ExpirationConfig -> m ()
+    expireMessages expCfg = do
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
+      let interval = checkInterval expCfg * 1000000
       forever $ do
         threadDelay interval
-        old <- subtract ttl . systemSeconds <$> liftIO getSystemTime
+        old <- liftIO $ expireBeforeEpoch expCfg
         rIds <- M.keysSet <$> readTVarIO ms
         forM_ rIds $ \rId ->
           atomically (getMsgQueue ms rId quota)
@@ -145,10 +150,14 @@ smpServer started = do
 runClientTransport :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> m ()
 runClientTransport th@THandle {sessionId} = do
   q <- asks $ tbqSize . config
-  c <- atomically $ newClient q sessionId
+  ts <- liftIO getSystemTime
+  c <- atomically $ newClient q sessionId ts
   s <- asks server
-  raceAny_ [send th c, client c s, receive th c]
+  expCfg <- asks $ inactiveClientExpiration . config
+  raceAny_ ([send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
+  where
+    disconnectThread_ c expCfg = maybe [] ((: []) . disconnectTransport th c activeAt) expCfg
 
 clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 clientDisconnected c@Client {subscriptions, connected} = do
@@ -172,8 +181,9 @@ cancelSub = \case
   _ -> return ()
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Client -> m ()
-receive th Client {rcvQ, sndQ} = forever $ do
+receive th Client {rcvQ, sndQ, activeAt} = forever $ do
   (sig, signed, (corrId, queueId, cmdOrError)) <- tGet th
+  atomically . writeTVar activeAt =<< liftIO getSystemTime
   case cmdOrError of
     Left e -> write sndQ (corrId, queueId, ERR e)
     Right cmd -> do
@@ -185,9 +195,20 @@ receive th Client {rcvQ, sndQ} = forever $ do
     write q t = atomically $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
-send h Client {sndQ, sessionId} = forever $ do
+send h Client {sndQ, sessionId, activeAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
+  -- TODO the line below can return Left, but we ignore it and do not disconnect the client
+  void . liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
+  atomically . writeTVar activeAt =<< liftIO getSystemTime
+
+disconnectTransport :: (Transport c, MonadUnliftIO m) => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> m ()
+disconnectTransport THandle {connection} c activeAt expCfg = do
+  let interval = checkInterval expCfg * 1000000
+  forever . liftIO $ do
+    threadDelay interval
+    old <- expireBeforeEpoch expCfg
+    ts <- readTVarIO $ activeAt c
+    when (systemSeconds ts < old) $ closeConnection connection
 
 verifyTransmission ::
   forall m. (MonadUnliftIO m, MonadReader Env m) => Maybe C.ASignature -> ByteString -> QueueId -> Cmd -> m Bool
@@ -373,8 +394,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   Left _ -> pure $ err LARGE_MSG
                   Right msg -> do
                     ms <- asks msgStore
-                    ServerConfig {messageTTL, msgQueueQuota} <- asks config
-                    old <- forM messageTTL $ \ttl -> subtract ttl . systemSeconds <$> liftIO getSystemTime
+                    ServerConfig {messageExpiration, msgQueueQuota} <- asks config
+                    old <- liftIO $ mapM expireBeforeEpoch messageExpiration
                     atomically $ do
                       q <- getMsgQueue ms (recipientId qr) msgQueueQuota
                       mapM_ (deleteExpiredMsgs q) old
