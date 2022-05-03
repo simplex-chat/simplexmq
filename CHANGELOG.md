@@ -1,6 +1,6 @@
 # 2.0.0
 
-Push notifications server:
+Push notifications server (beta):
 
 - supports APNS
 - manage device tokens verification via notification delivery
