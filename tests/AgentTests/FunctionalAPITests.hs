@@ -1,24 +1,28 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests (functionalAPITests) where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
-import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn)
+import SMPClient (cfg, testPort, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..))
-import System.Timeout
 import Test.Hspec
-import UnliftIO.STM
+import UnliftIO
 
 (##>) :: MonadIO m => m (ATransmission 'Agent) -> ATransmission 'Agent -> m ()
 a ##> t = a >>= \t' -> liftIO (t' `shouldBe` t)
@@ -48,6 +52,11 @@ functionalAPITests t = do
       testAsyncServerOffline t
     it "should notify after HELLO timeout" $
       withSmpServer t testAsyncHelloTimeout
+  describe "Inactive client disconnection" $ do
+    it "should disconnect clients if it was inactive longer than TTL" $
+      testInactiveClientDisconnected t
+    it "should NOT disconnect active clients" $
+      testActiveClientNotDisconnected t
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -187,6 +196,44 @@ testAsyncHelloTimeout = do
     aliceId <- joinConnection bob cReq "bob's connInfo"
     get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
   pure ()
+
+testInactiveClientDisconnected :: ATransport -> IO ()
+testInactiveClientDisconnected t = do
+  let cfg' = cfg {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+  withSmpServerConfigOn t cfg' testPort $ \_ -> do
+    alice <- getSMPAgentClient agentCfg initAgentServers
+    Right () <- runExceptT $ do
+      (connId, _cReq) <- createConnection alice SCMInvitation
+      get alice ##> ("", "", DOWN testSMPServer [connId])
+    pure ()
+
+testActiveClientNotDisconnected :: ATransport -> IO ()
+testActiveClientNotDisconnected t = do
+  let cfg' = cfg {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+  withSmpServerConfigOn t cfg' testPort $ \_ -> do
+    alice <- getSMPAgentClient agentCfg initAgentServers
+    ts <- getSystemTime
+    Right () <- runExceptT $ do
+      (connId, _cReq) <- createConnection alice SCMInvitation
+      keepSubscribing alice connId ts
+    pure ()
+  where
+    keepSubscribing :: AgentClient -> ConnId -> SystemTime -> ExceptT AgentErrorType IO ()
+    keepSubscribing alice connId ts = do
+      ts' <- liftIO $ getSystemTime
+      if milliseconds ts' - milliseconds ts < 2200
+        then do
+          -- keep sending SUB for 2.2 seconds
+          liftIO $ threadDelay 200000
+          subscribeConnection alice connId
+          keepSubscribing alice connId ts
+        else do
+          -- check that nothing is sent from agent
+          Nothing <- 800000 `timeout` get alice
+          liftIO $ threadDelay 1200000
+          -- and after 2 sec of inactivity DOWN is sent
+          get alice ##> ("", "", DOWN testSMPServer [connId])
+    milliseconds ts = systemSeconds ts * 1000 + fromIntegral (systemNanoseconds ts `div` 1000000)
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings alice bobId bob aliceId = do

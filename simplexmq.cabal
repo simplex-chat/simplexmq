@@ -66,6 +66,7 @@ library
       Simplex.Messaging.Server
       Simplex.Messaging.Server.CLI
       Simplex.Messaging.Server.Env.STM
+      Simplex.Messaging.Server.Expiration
       Simplex.Messaging.Server.MsgStore
       Simplex.Messaging.Server.MsgStore.STM
       Simplex.Messaging.Server.QueueStore

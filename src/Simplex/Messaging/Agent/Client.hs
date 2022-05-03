@@ -38,6 +38,7 @@ module Simplex.Messaging.Agent.Client
     deleteQueue,
     logServer,
     removeSubscription,
+    hasActiveSubscription,
   )
 where
 
@@ -55,7 +56,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, isNothing)
+import Data.Maybe (catMaybes)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -75,7 +76,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, catchAll_, ifM, liftEitherError, liftError, tryError, unlessM, whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import UnliftIO (async, forConcurrently)
+import UnliftIO (async, pooledForConcurrentlyN)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -200,14 +201,15 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
         reconnectClient `catchError` const loop
 
     reconnectClient :: m ()
-    reconnectClient =
+    reconnectClient = do
+      n <- asks $ resubscriptionConcurrency . config
       withAgentLock c . withClient c srv $ \smp -> do
         cs <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSubscrSrvrs c)
-        conns <- forConcurrently (maybe [] M.toList cs) $ \sub@(connId, _) ->
+        conns <- pooledForConcurrentlyN n (maybe [] M.toList cs) $ \sub@(connId, _) ->
           ifM
-            (atomically $ isNothing <$> TM.lookup connId (subscrConns c))
-            (subscribe_ smp sub `catchError` handleError connId)
+            (atomically $ hasActiveSubscription c connId)
             (pure $ Just connId)
+            (subscribe_ smp sub `catchError` handleError connId)
         liftIO . unless (null conns) . notifySub "" . UP srv $ catMaybes conns
       where
         subscribe_ :: SMPClient -> (ConnId, RcvQueue) -> ExceptT ProtocolClientError IO (Maybe ConnId)
@@ -407,6 +409,9 @@ addSubscription c rq@RcvQueue {server} connId = atomically $ do
   TM.insert connId server $ subscrConns c
   addSubs_ (subscrSrvrs c) rq connId
   removePendingSubscription c server connId
+
+hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
+hasActiveSubscription c connId = TM.member connId (subscrConns c)
 
 addPendingSubscription :: AgentClient -> RcvQueue -> ConnId -> STM ()
 addPendingSubscription = addSubs_ . pendingSubscrSrvrs
