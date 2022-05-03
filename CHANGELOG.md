@@ -1,3 +1,22 @@
+# 2.0.0
+
+Push notifications server (beta):
+
+- supports APNS
+- manage device tokens verification via notification delivery
+- sending periodic background notification to check messages (not more frequent than every 20 min)
+
+SMP server:
+
+- disconnect inactive clients after some period
+- remove undelivered messages after 30 days
+- log aggregate usage daily stats: only the number of queues created/secured/deleted/used and messages sent/delivered is logged, as one line per day, so we can plan server capacity and diagnose any problems.
+
+SMP agent:
+
+- manage device tokens and notification server connection
+- DOWN/UP events to the agent user about server disconnections/reconnections are now sent once per server
+
 # 1.1.0
 
 SMP server:

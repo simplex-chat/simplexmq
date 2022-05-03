@@ -21,7 +21,7 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
-  setLogLevel LogError
+  setLogLevel LogDebug -- change to LogError in production
   withGlobalLogging logCfg $ protocolServerCLI ntfServerCLIConfig runNtfServer
 
 ntfServerCLIConfig :: ServerCLIConfig NtfServerConfig
