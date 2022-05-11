@@ -1,3 +1,9 @@
+# 2.1.0
+
+SMP server:
+
+- configuration to expire inactive clients in ini file, increased TTL and check interval for client expiration
+
 # 2.0.0
 
 Push notifications server (beta):
