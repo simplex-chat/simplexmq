@@ -42,7 +42,21 @@ ntfServerCLIConfig =
           defaultServerPort = "443",
           executableName = "ntf-server",
           serverVersion = "SMP notifications server v0.1.0",
-          mkServerConfig = \_storeLogFile transports ->
+          mkIniFile = \enableStoreLog defaultServerPort ->
+            "[STORE_LOG]\n\
+            \# The server uses STM memory for persistence,\n\
+            \# that will be lost on restart (e.g., as with redis).\n\
+            \# This option enables saving memory to append only log,\n\
+            \# and restoring it when the server is started.\n\
+            \# Log is compacted on start (deleted objects are removed).\n\
+            \# The messages are not logged.\n"
+              <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
+              <> "[TRANSPORT]\n\
+                 \port: "
+              <> defaultServerPort
+              <> "\n\
+                 \websockets: off\n",
+          mkServerConfig = \_storeLogFile transports _ ->
             NtfServerConfig
               { transports,
                 subIdBytes = 24,

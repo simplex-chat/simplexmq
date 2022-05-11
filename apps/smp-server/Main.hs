@@ -1,14 +1,16 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Main where
 
 import Control.Logger.Simple
 import Simplex.Messaging.Server (runSMPServer)
-import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI)
+import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI, readStrictIni, strictIni)
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
+import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import System.FilePath (combine)
 
@@ -24,7 +26,11 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 main :: IO ()
 main = do
   setLogLevel LogInfo
-  withGlobalLogging logCfg $ protocolServerCLI smpServerCLIConfig runSMPServer
+  withGlobalLogging logCfg . protocolServerCLI smpServerCLIConfig $ \cfg@ServerConfig {inactiveClientExpiration} -> do
+    putStrLn $ case inactiveClientExpiration of
+      Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
+      _ -> "not expiring inactive clients"
+    runSMPServer cfg
 
 smpServerCLIConfig :: ServerCLIConfig ServerConfig
 smpServerCLIConfig =
@@ -44,7 +50,24 @@ smpServerCLIConfig =
           defaultServerPort = "5223",
           executableName = "smp-server",
           serverVersion = "SMP server v" <> simplexMQVersion,
-          mkServerConfig = \storeLogFile transports ->
+          mkIniFile = \enableStoreLog defaultServerPort ->
+            "[STORE_LOG]\n\
+            \# The server uses STM memory for persistence,\n\
+            \# that will be lost on restart (e.g., as with redis).\n\
+            \# This option enables saving memory to append only log,\n\
+            \# and restoring it when the server is started.\n\
+            \# Log is compacted on start (deleted objects are removed).\n\
+            \# The messages are not logged.\n"
+              <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
+              <> "[TRANSPORT]\n"
+              <> ("port: " <> defaultServerPort <> "\n")
+              <> "websockets: off\n\n"
+              <> "[INACTIVE_CLIENTS]\n\
+                 \# TTL and interval to check inactive clients\n\
+                 \disconnect: on\n"
+              <> ("ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
+              <> ("check_intl: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n"),
+          mkServerConfig = \storeLogFile transports ini ->
             ServerConfig
               { transports,
                 tbqSize = 16,
@@ -58,7 +81,15 @@ smpServerCLIConfig =
                 storeLogFile,
                 allowNewQueues = True,
                 messageExpiration = Just defaultMessageExpiration,
-                inactiveClientExpiration = Just defaultInactiveClientExpiration,
+                inactiveClientExpiration =
+                  if strictIni "INACTIVE_CLIENTS" "disconnect" ini == "on"
+                    then
+                      Just
+                        ExpirationConfig
+                          { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
+                            checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_intl" ini
+                          }
+                    else Nothing,
                 logStatsInterval = Just 86400, -- seconds
                 logStatsStartTime = 0 -- seconds from 00:00 UTC
               }
