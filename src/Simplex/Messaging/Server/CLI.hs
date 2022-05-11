@@ -26,7 +26,7 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (BufferMode (..), IOMode (..), hGetLine, hSetBuffering, stderr, stdout, withFile)
+import System.IO (BufferMode (..), IOMode (..), hFlush, hGetLine, hSetBuffering, stderr, stdout, withFile)
 import System.Process (readCreateProcess, shell)
 import Text.Read (readMaybe)
 
@@ -58,10 +58,21 @@ protocolServerCLI cliCfg@ServerCLIConfig {iniFile, executableName} server =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError (runServer cliCfg server)
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    Delete -> cleanup cliCfg >> putStrLn "Deleted configuration and log files"
+    Delete -> do
+      confirmOrExit "WARNING: re-initializing the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+      cleanup cliCfg
+      putStrLn "Deleted configuration and log files"
 
 exitError :: String -> IO ()
 exitError msg = putStrLn msg >> exitFailure
+
+confirmOrExit :: String -> IO ()
+confirmOrExit s = do
+  putStrLn s
+  putStr "Continue (Y/n): "
+  hFlush stdout
+  ok <- getLine
+  when (ok /= "Y") exitFailure
 
 data CliCommand
   = Init InitOptions
