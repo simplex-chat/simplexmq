@@ -43,7 +43,8 @@ data ServerCLIConfig cfg = ServerCLIConfig
     defaultServerPort :: ServiceName,
     executableName :: String,
     serverVersion :: String,
-    mkServerConfig :: Maybe FilePath -> [(ServiceName, ATransport)] -> cfg
+    mkIniFile :: Bool -> ServiceName -> String,
+    mkServerConfig :: Maybe FilePath -> [(ServiceName, ATransport)] -> Ini -> cfg
   }
 
 protocolServerCLI :: ServerCLIConfig cfg -> (cfg -> IO ()) -> IO ()
@@ -55,7 +56,7 @@ protocolServerCLI cliCfg@ServerCLIConfig {iniFile, executableName} server =
         _ -> initializeServer cliCfg opts
     Start ->
       doesFileExist iniFile >>= \case
-        True -> readIniFile iniFile >>= either exitError (runServer cliCfg server . mkIniOptions)
+        True -> readIniFile iniFile >>= either exitError (runServer cliCfg server)
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> cleanup cliCfg >> putStrLn "Deleted configuration and log files"
 
@@ -140,12 +141,12 @@ initializeServer cliCfg InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = 
   createDirectoryIfMissing True logDir
   createX509
   fp <- saveFingerprint
-  createIni
+  writeFile iniFile $ mkIniFile enableStoreLog defaultServerPort
   putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
   printServiceInfo cliCfg fp
   warnCAPrivateKeyFile
   where
-    ServerCLIConfig {cfgDir, logDir, iniFile, executableName, caKeyFile, caCrtFile, serverKeyFile, serverCrtFile, fingerprintFile, defaultServerPort} = cliCfg
+    ServerCLIConfig {cfgDir, logDir, iniFile, executableName, caKeyFile, caCrtFile, serverKeyFile, serverCrtFile, fingerprintFile, defaultServerPort, mkIniFile} = cliCfg
     createX509 = do
       createOpensslCaConf
       createOpensslServerConf
@@ -199,22 +200,6 @@ initializeServer cliCfg InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = 
       withFile fingerprintFile WriteMode (`B.hPutStrLn` strEncode fp)
       pure fp
 
-    createIni = do
-      writeFile iniFile $
-        "[STORE_LOG]\n\
-        \# The server uses STM memory for persistence,\n\
-        \# that will be lost on restart (e.g., as with redis).\n\
-        \# This option enables saving memory to append only log,\n\
-        \# and restoring it when the server is started.\n\
-        \# Log is compacted on start (deleted objects are removed).\n\
-        \# The messages are not logged.\n"
-          <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
-          <> "[TRANSPORT]\n\
-             \port: "
-          <> defaultServerPort
-          <> "\n\
-             \websockets: off\n"
-
     warnCAPrivateKeyFile =
       putStrLn $
         "----------\n\
@@ -231,29 +216,32 @@ data IniOptions = IniOptions
     enableWebsockets :: Bool
   }
 
--- TODO ? properly parse ini as a whole
 mkIniOptions :: Ini -> IniOptions
 mkIniOptions ini =
   IniOptions
-    { enableStoreLog = (== "on") $ strict "STORE_LOG" "enable",
-      port = T.unpack $ strict "TRANSPORT" "port",
-      enableWebsockets = (== "on") $ strict "TRANSPORT" "websockets"
+    { enableStoreLog = (== "on") $ strictIni "STORE_LOG" "enable" ini,
+      port = T.unpack $ strictIni "TRANSPORT" "port" ini,
+      enableWebsockets = (== "on") $ strictIni "TRANSPORT" "websockets" ini
     }
-  where
-    strict :: String -> String -> T.Text
-    strict section key =
-      fromRight (error ("no key " <> key <> " in section " <> section)) $
-        lookupValue (T.pack section) (T.pack key) ini
 
-runServer :: ServerCLIConfig cfg -> (cfg -> IO ()) -> IniOptions -> IO ()
-runServer cliCfg server IniOptions {enableStoreLog, port, enableWebsockets} = do
+strictIni :: String -> String -> Ini -> T.Text
+strictIni section key ini =
+  fromRight (error ("no key " <> key <> " in section " <> section)) $
+    lookupValue (T.pack section) (T.pack key) ini
+
+readStrictIni :: Read a => String -> String -> Ini -> a
+readStrictIni section key = read . T.unpack . strictIni section key
+
+runServer :: ServerCLIConfig cfg -> (cfg -> IO ()) -> Ini -> IO ()
+runServer cliCfg server ini = do
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
   fp <- checkSavedFingerprint
   printServiceInfo cliCfg fp
-  let transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets]
+  let IniOptions {enableStoreLog, port, enableWebsockets} = mkIniOptions ini
+      transports = (port, transport @TLS) : [("80", transport @WS) | enableWebsockets]
       logFile = if enableStoreLog then Just storeLogFile else Nothing
-      cfg = mkServerConfig logFile transports
+      cfg = mkServerConfig logFile transports ini
   printServerConfig logFile transports
   server cfg
   where

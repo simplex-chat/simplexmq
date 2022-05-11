@@ -131,7 +131,8 @@ smpServer started = do
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     expireMessagesThread_ :: ServerConfig -> [m ()]
-    expireMessagesThread_ = maybe [] ((: []) . expireMessages) . messageExpiration
+    expireMessagesThread_ ServerConfig {messageExpiration = Just msgExp} = [expireMessages msgExp]
+    expireMessagesThread_ _ = []
 
     expireMessages :: ExpirationConfig -> m ()
     expireMessages expCfg = do
@@ -147,8 +148,9 @@ smpServer started = do
             >>= atomically . (`deleteExpiredMsgs` old)
 
     serverStatsThread_ :: ServerConfig -> [m ()]
-    serverStatsThread_ ServerConfig {logStatsInterval, logStatsStartTime} =
-      maybe [] ((: []) . logServerStats logStatsStartTime) logStatsInterval
+    serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime} =
+      [logServerStats logStatsStartTime interval]
+    serverStatsThread_ _ = []
 
     logServerStats :: Int -> Int -> m ()
     logServerStats startAt logInterval = do
@@ -186,7 +188,8 @@ runClientTransport th@THandle {sessionId} = do
   raceAny_ ([send th c, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
-    disconnectThread_ c expCfg = maybe [] ((: []) . disconnectTransport th c activeAt) expCfg
+    disconnectThread_ c (Just expCfg) = [disconnectTransport th c activeAt expCfg]
+    disconnectThread_ _ _ = []
 
 clientDisconnected :: (MonadUnliftIO m, MonadReader Env m) => Client -> m ()
 clientDisconnected c@Client {subscriptions, connected} = do

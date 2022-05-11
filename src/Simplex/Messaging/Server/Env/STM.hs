@@ -70,8 +70,8 @@ defaultMessageExpiration =
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
-    { ttl = 7200, -- 2 hours
-      checkInterval = 3600 -- seconds, 1 hour
+    { ttl = 86400, -- seconds, 24 hours
+      checkInterval = 43200 -- seconds, 12 hours
     }
 
 data Env = Env
