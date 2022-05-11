@@ -59,7 +59,7 @@ protocolServerCLI cliCfg@ServerCLIConfig {iniFile, executableName} server =
         True -> readIniFile iniFile >>= either exitError (runServer cliCfg server)
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> do
-      confirmOrExit "WARNING: re-initializing the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+      confirmOrExit "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
       cleanup cliCfg
       putStrLn "Deleted configuration and log files"
 
