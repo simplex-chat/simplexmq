@@ -66,7 +66,7 @@ smpServerCLIConfig =
                  \# TTL and interval to check inactive clients\n\
                  \disconnect: on\n"
               <> ("ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
-              <> ("check_intl: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n"),
+              <> ("check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n"),
           mkServerConfig = \storeLogFile transports ini ->
             ServerConfig
               { transports,
@@ -87,7 +87,7 @@ smpServerCLIConfig =
                       Just
                         ExpirationConfig
                           { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
-                            checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_intl" ini
+                            checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                           }
                     else Nothing,
                 logStatsInterval = Just 86400, -- seconds
