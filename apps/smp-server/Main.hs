@@ -7,8 +7,9 @@
 module Main where
 
 import Control.Logger.Simple
+import Data.Ini (lookupValue)
 import Simplex.Messaging.Server (runSMPServer)
-import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI, readStrictIni, strictIni)
+import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI, readStrictIni)
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
@@ -82,7 +83,7 @@ smpServerCLIConfig =
                 allowNewQueues = True,
                 messageExpiration = Just defaultMessageExpiration,
                 inactiveClientExpiration =
-                  if strictIni "INACTIVE_CLIENTS" "disconnect" ini == "on"
+                  if lookupValue "INACTIVE_CLIENTS" "disconnect" ini == Right "on"
                     then
                       Just
                         ExpirationConfig
