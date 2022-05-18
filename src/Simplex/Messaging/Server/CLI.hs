@@ -14,8 +14,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.Maybe (fromJust, fromMaybe)
-import Data.Text (Text)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
@@ -225,16 +224,13 @@ mkIniOptions ini =
       enableWebsockets = (== "on") $ strictIni "TRANSPORT" "websockets" ini
     }
 
-strictIni :: Text -> Text -> Ini -> T.Text
+strictIni :: String -> String -> Ini -> T.Text
 strictIni section key ini =
-  fromRight (error . T.unpack $ "no key " <> key <> " in section " <> section) $
-    lookupValue section key ini
+  fromRight (error ("no key " <> key <> " in section " <> section)) $
+    lookupValue (T.pack section) (T.pack key) ini
 
-readStrictIni :: Read a => Text -> Text -> Ini -> a
-readStrictIni section key = fromJust . readMaybeIni section key
-
-readMaybeIni :: Read a => Text -> Text -> Ini -> Maybe a
-readMaybeIni section key = either (const Nothing) (readMaybe . T.unpack) . lookupValue section key
+readStrictIni :: Read a => String -> String -> Ini -> a
+readStrictIni section key = read . T.unpack . strictIni section key
 
 runServer :: ServerCLIConfig cfg -> (cfg -> IO ()) -> Ini -> IO ()
 runServer cliCfg server ini = do
