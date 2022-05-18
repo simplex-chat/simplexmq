@@ -234,7 +234,7 @@ readStrictIni :: Read a => Text -> Text -> Ini -> a
 readStrictIni section key = fromJust . readMaybeIni section key
 
 readMaybeIni :: Read a => Text -> Text -> Ini -> Maybe a
-readMaybeIni section key = readMaybe . T.unpack . strictIni section key
+readMaybeIni section key = either (const Nothing) (readMaybe . T.unpack) . lookupValue section key
 
 runServer :: ServerCLIConfig cfg -> (cfg -> IO ()) -> Ini -> IO ()
 runServer cliCfg server ini = do
