@@ -16,7 +16,7 @@ schema = "src/Simplex/Messaging/Agent/Store/SQLite/Migrations/agent_schema.sql"
 
 schemaDumpTest :: Spec
 schemaDumpTest =
-  fit "verify and overwrite schema dump" testVerifySchemaDump
+  it "verify and overwrite schema dump" testVerifySchemaDump
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
@@ -24,6 +24,6 @@ testVerifySchemaDump = do
   void $ readCreateProcess (shell $ "touch " <> schema) ""
   savedSchema <- readFile schema
   savedSchema `seq` pure ()
-  void $ readCreateProcess (shell $ "sqlite3 " <> testDB <> " .schema > " <> schema) ""
+  void $ readCreateProcess (shell $ "sqlite3 " <> testDB <> " '.schema --indent' > " <> schema) ""
   currentSchema <- readFile schema
   savedSchema `shouldBe` currentSchema
