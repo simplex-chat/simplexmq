@@ -120,6 +120,8 @@ tests:
       - HUnit == 1.6.*
       - QuickCheck == 2.14.*
       - timeit == 2.0.*
+    ghc-options:
+      - -threaded
 
 ghc-options:
   # - -haddock

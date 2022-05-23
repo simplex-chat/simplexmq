@@ -41,27 +41,27 @@ runTransportServer started port serverParams server = do
     E.bracket
       (startTCPServer started port)
       (closeServer started clients)
-      $ \sock -> forever $ do
-        (connSock, _) <- accept sock
-        tid <- forkIO $ connectClient u connSock `catchAll_` close connSock `catchAll_` pure ()
+      $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
+        -- catchAll_ is needed here in case the connection was closed earlier
+        tid <- forkFinally (connectClient u conn) (const . liftIO $ gracefulClose conn 5000 `catchAll_` pure ())
         atomically . modifyTVar' clients $ S.insert tid
   where
     connectClient :: UnliftIO m -> Socket -> IO ()
-    connectClient u connSock =
+    connectClient u conn =
       E.bracket
-        (connectTLS serverParams connSock >>= getServerConnection)
+        (connectTLS serverParams conn >>= getServerConnection)
         closeConnection
         (unliftIO u . server)
 
+-- | Run TCP server without TLS - only used in SimpleX Chat
 runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
 runTCPServer started port server = do
   clients <- newTVarIO S.empty
   E.bracket
     (startTCPServer started port)
     (closeServer started clients)
-    $ \sock -> forever $ do
-      (connSock, _) <- accept sock
-      tid <- forkIO $ server connSock `catchAll_` pure ()
+    $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
+      tid <- forkFinally (server conn) (const $ gracefulClose conn 5000)
       atomically . modifyTVar' clients $ S.insert tid
 
 closeServer :: TMVar Bool -> TVar (Set ThreadId) -> Socket -> IO ()
