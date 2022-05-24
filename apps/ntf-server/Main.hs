@@ -5,7 +5,7 @@ module Main where
 import Control.Logger.Simple
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import Simplex.Messaging.Notifications.Server (runNtfServer)
-import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
+import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI)
 import System.FilePath (combine)
@@ -66,7 +66,7 @@ ntfServerCLIConfig =
                 pushQSize = 128,
                 smpAgentCfg = defaultSMPClientAgentConfig,
                 apnsConfig = defaultAPNSPushClientConfig,
-                inactiveClientExpiration = Just defaultInactiveClientExpiration,
+                inactiveClientExpiration = Nothing,
                 caCertificateFile = caCrtFile,
                 privateKeyFile = serverKeyFile,
                 certificateFile = serverCrtFile
