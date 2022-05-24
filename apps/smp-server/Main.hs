@@ -65,9 +65,9 @@ smpServerCLIConfig =
               <> "websockets: off\n\n"
               <> "[INACTIVE_CLIENTS]\n\
                  \# TTL and interval to check inactive clients\n\
-                 \disconnect: on\n"
-              <> ("ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
-              <> ("check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n"),
+                 \disconnect: off\n"
+              <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
+              <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n"),
           mkServerConfig = \storeLogFile transports ini ->
             ServerConfig
               { transports,
