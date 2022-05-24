@@ -329,6 +329,7 @@ test-suite smp-server-test
       AgentTests.DoubleRatchetTests
       AgentTests.FunctionalAPITests
       AgentTests.NotificationTests
+      AgentTests.SchemaDump
       AgentTests.SQLiteTests
       CoreTests.EncodingTests
       CoreTests.ProtocolErrorTests
