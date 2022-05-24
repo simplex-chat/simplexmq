@@ -13,6 +13,7 @@ import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.SQLiteTests (storeTests)
+import AgentTests.SchemaDump (schemaDumpTest)
 import Control.Concurrent
 import Control.Monad (forM_)
 import Data.ByteString.Char8 (ByteString)
@@ -36,6 +37,7 @@ agentTests (ATransport t) = do
   describe "Double ratchet tests" doubleRatchetTests
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "SQLite store" storeTests
+  describe "SQLite schema dump" schemaDumpTest
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
     it "should connect via one server and one agent" $
