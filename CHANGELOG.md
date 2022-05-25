@@ -1,3 +1,10 @@
+# 2.1.1
+
+SMP server:
+
+- gracefully close sockets on client disconnection
+- CLI warning when deleting server configuration
+
 # 2.1.0
 
 SMP server:
