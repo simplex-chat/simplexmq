@@ -142,7 +142,7 @@ CREATE TABLE ntf_servers(
 ) WITHOUT ROWID;
 CREATE TABLE ntf_tokens(
   provider TEXT NOT NULL, -- apn
-  device_token TEXT NOT NULL,
+  device_token TEXT NOT NULL, -- ! this field is mislabeled and is actually saved as binary
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
   tkn_id BLOB, -- token ID assigned by notifications server
