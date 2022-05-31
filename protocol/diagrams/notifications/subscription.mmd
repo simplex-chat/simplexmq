@@ -1,0 +1,40 @@
+sequenceDiagram
+  participant M as mobile app
+  participant C as chat core
+  participant A as agent
+  participant S as SMP server
+  participant N as NTF server
+  participant APN as APN
+
+  note over M, APN: register subscription
+
+  alt register existing
+    M -->> A: on /_ntf register, for subscribed queues
+  else create new connection
+    A -->> S: NEW / JOIN
+    note over A, S: ...<br>Connection handshake<br>...
+    S -->> A: CON
+  end
+  A ->> S: NKEY nKey
+  S ->> A: NID nId
+  A ->> N: SNEW tknId dhKey (smpServer, nId, nKey)
+  N ->> A: ID subId dhKey
+  N ->> S: NSUB nId
+  S ->> N: OK [/ NMSG]
+
+  note over M, APN: notify about message
+
+  S ->> N: NMSG
+  N ->> APN: APNSMutableContent<br>ntfQueue, nonce
+  APN ->> M: UNMutableNotificationContent
+  note over M, S: ...<br>Client awaken, message is received<br>...
+  S ->> M: message
+  note over M: mutate notification
+
+  note over M, APN: change APN token
+
+  APN ->> M: new device token
+  M -->> C: /_ntf_sub update tkn
+  C -->> A: updateNtfToken()
+  A -->> N: TUPD tknId newDeviceToken
+  note over M, N: ...<br>Verify token<br>...

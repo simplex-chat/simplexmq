@@ -48,7 +48,7 @@ ntfEnableCron c pKey tknId int = okNtfCommand (TCRN int) c pKey tknId
 ntfCreateSubsciption :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Subscription -> ExceptT ProtocolClientError IO (NtfSubscriptionId, C.PublicKeyX25519)
 ntfCreateSubsciption c pKey newSub =
   sendNtfCommand c (Just pKey) "" (SNEW newSub) >>= \case
-    NRId tknId dhKey -> pure (tknId, dhKey)
+    NRId subId dhKey -> pure (subId, dhKey)
     _ -> throwE PCEUnexpectedResponse
 
 ntfCheckSubscription :: NtfClient -> C.APrivateSignKey -> NtfSubscriptionId -> ExceptT ProtocolClientError IO NtfSubStatus
