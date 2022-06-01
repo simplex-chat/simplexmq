@@ -26,7 +26,7 @@ import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (ErrorType (..), SignedTransmission, Transmission, encodeTransmission, tGet, tPut, SMPServer)
+import Simplex.Messaging.Protocol (ErrorType (..), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import qualified Simplex.Messaging.TMap as TM
@@ -86,7 +86,6 @@ ntfSubscriber NtfSubscriber {newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ
       -- if not there, create env + start process (runNtfSubscriber)
       -- return env
       atomically $ newSMPSubscriber 0 -- todo get from config
-
     runSMPSubscriber :: NtfSubscriber -> m ()
     runSMPSubscriber = forever $ pure ()
 
@@ -202,18 +201,17 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
           | otherwise -> VRFailed
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId _)) -> do
-      (tkn_, sub_) <- atomically $ findNtfSubscription st sub
-      case tkn_ of
-        Just NtfTknData {tknVerifyKey} ->
-          pure $
-            if verifyCmdSignature sig_ signed tknVerifyKey
-              then case sub_ of
-                Just s@NtfSubData {tokenId}
-                  | tknId == tokenId -> verifiedSubCmd s c
-                  | otherwise -> VRFailed
-                _ -> VRVerified (NtfReqNew corrId (ANE SSubscription sub))
-              else VRFailed
-        _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+      r_ <- atomically $ findNtfSubscription st sub
+      pure $ case r_ of
+        Just (NtfTknData {tknVerifyKey}, sub_) ->
+          if verifyCmdSignature sig_ signed tknVerifyKey
+            then case sub_ of
+              Just s@NtfSubData {tokenId}
+                | tknId == tokenId -> verifiedSubCmd s c
+                | otherwise -> VRFailed
+              _ -> VRVerified (NtfReqNew corrId (ANE SSubscription sub))
+            else VRFailed
+        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c -> do
       r_ <- atomically $ getNtfSubscription st entId
       pure $ case r_ of

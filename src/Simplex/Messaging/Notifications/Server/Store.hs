@@ -20,7 +20,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NotifierId, ProtocolServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (whenM, ($>>=))
+import Simplex.Messaging.Util (whenM, ($>>=), (<$$>))
 
 data NtfStore = NtfStore
   { tokens :: TMap NtfTokenId NtfTknData,
@@ -128,63 +128,24 @@ deleteNtfToken st tknId = do
 
 getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe (NtfSubData, NtfTknData))
 getNtfSubscription st subId =
-  TM.lookup subId (subscriptions st) >>= \case
-    Just sub@NtfSubData {tokenId} ->
-      getNtfToken st tokenId >>= \case
-        Just tkn@NtfTknData {tknStatus} -> do
-          tStatus <- readTVar tknStatus
-          pure $
-            if tStatus == NTActive
-              then Just (sub, tkn)
-              else Nothing
-        Nothing -> pure Nothing
-    Nothing -> pure Nothing
+  TM.lookup subId (subscriptions st)
+    $>>= \sub@NtfSubData {tokenId} ->
+      (sub,) <$$> getActiveNtfToken st tokenId
 
-findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe NtfTknData, Maybe NtfSubData)
+findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe (NtfTknData, Maybe NtfSubData))
 findNtfSubscription st (NewNtfSub tknId SMPQueueNtf {smpServer, notifierId}) = do
-  subId_ <- TM.lookup (tknId, smpServer, notifierId) (subscriptionLookup st)
-  case subId_ of
-    Just subId -> do
-      sub <- TM.lookup subId (subscriptions st)
-      getNtfToken st tknId >>= \case
-        Just tkn@NtfTknData {tknStatus} -> do
-          tStatus <- readTVar tknStatus
-          pure $
-            if tStatus == NTActive
-              then (Just tkn, sub)
-              else (Nothing, sub)
-        Nothing -> pure (Nothing, sub)
-    Nothing ->
-      getNtfToken st tknId >>= \case
-        Just tkn@NtfTknData {tknStatus} -> do
-          tStatus <- readTVar tknStatus
-          pure $
-            if tStatus == NTActive
-              then (Just tkn, Nothing)
-              else (Nothing, Nothing)
-        Nothing -> pure (Nothing, Nothing)
-  -- where
-  --   tkn_ =
-  --     getNtfToken st tknId >>= \case
-  --       Just tkn@NtfTknData {tknStatus} -> do
-  --         tStatus <- readTVar tknStatus
-  --         pure $
-  --           if tStatus == NTActive
-  --             then Just tkn
-  --             else Nothing
-  --       Nothing -> pure Nothing
-  --   sub_ =
-  --     TM.lookup (tknId, smpServer, notifierId) (subscriptionLookup st)
-  --       $>>= (`TM.lookup` subscriptions st)
-  --   subData :: Maybe NtfSubscriptionId -> STM (Maybe NtfSubData)
-  --   subData subId_ = case subId_ of
-  --     Nothing -> pure Nothing
-  --     Just subId -> TM.lookup subId (subscriptions st)
+  getActiveNtfToken st tknId >>= mapM (\tkn -> (tkn,) <$> getSub)
+  where
+    getSub :: STM (Maybe NtfSubData)
+    getSub =
+      TM.lookup (tknId, smpServer, notifierId) (subscriptionLookup st)
+        $>>= (`TM.lookup` subscriptions st)
 
--- findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe NtfSubData)
--- findNtfSubscription st (NewNtfSub tknId smpQueue) =
---   TM.lookup (tknId, smpQueue) (subscriptionLookup st)
---     $>>= (`TM.lookup` subscriptions st)
+getActiveNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
+getActiveNtfToken st tknId =
+  getNtfToken st tknId $>>= \tkn@NtfTknData {tknStatus} -> do
+    tStatus <- readTVar tknStatus
+    pure $ if tStatus == NTActive then Just tkn else Nothing
 
 mkNtfSubData :: NewNtfEntity 'Subscription -> STM NtfSubData
 mkNtfSubData (NewNtfSub tokenId smpQueue) = do
