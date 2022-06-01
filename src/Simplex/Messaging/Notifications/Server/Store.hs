@@ -20,7 +20,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NotifierId, ProtocolServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (whenM, ($>>=))
+import Simplex.Messaging.Util (whenM, ($>>=), (<$$>))
 
 data NtfStore = NtfStore
   { tokens :: TMap NtfTokenId NtfTknData,
@@ -127,15 +127,25 @@ deleteNtfToken st tknId = do
     regKey = C.toPubKey C.pubKeyBytes
 
 getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe (NtfSubData, NtfTknData))
-getNtfSubscription st subId = pure Nothing -- TM.lookup subId (subscriptions st)
+getNtfSubscription st subId =
+  TM.lookup subId (subscriptions st)
+    $>>= \sub@NtfSubData {tokenId} ->
+      (sub,) <$$> getActiveNtfToken st tokenId
 
-findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe NtfTknData, Maybe NtfSubData)
-findNtfSubscription st (NewNtfSub tknId smpQueue) = pure (Nothing, Nothing)
+findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe (NtfTknData, Maybe NtfSubData))
+findNtfSubscription st (NewNtfSub tknId SMPQueueNtf {smpServer, notifierId}) = do
+  getActiveNtfToken st tknId >>= mapM (\tkn -> (tkn,) <$> getSub)
+  where
+    getSub :: STM (Maybe NtfSubData)
+    getSub =
+      TM.lookup (tknId, smpServer, notifierId) (subscriptionLookup st)
+        $>>= (`TM.lookup` subscriptions st)
 
--- findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe NtfSubData)
--- findNtfSubscription st (NewNtfSub tknId smpQueue) =
---   TM.lookup (tknId, smpQueue) (subscriptionLookup st)
---     $>>= (`TM.lookup` subscriptions st)
+getActiveNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
+getActiveNtfToken st tknId =
+  getNtfToken st tknId $>>= \tkn@NtfTknData {tknStatus} -> do
+    tStatus <- readTVar tknStatus
+    pure $ if tStatus == NTActive then Just tkn else Nothing
 
 mkNtfSubData :: NewNtfEntity 'Subscription -> STM NtfSubData
 mkNtfSubData (NewNtfSub tokenId smpQueue) = do
