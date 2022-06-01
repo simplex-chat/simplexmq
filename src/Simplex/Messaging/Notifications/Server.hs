@@ -202,7 +202,6 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
           | otherwise -> VRFailed
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId _)) -> do
-      -- require that token is active, e.g. return Nothing from store if not
       (tkn_, sub_) <- atomically $ findNtfSubscription st sub
       case tkn_ of
         Just NtfTknData {tknVerifyKey} ->
@@ -216,7 +215,6 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
               else VRFailed
         _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c -> do
-      -- require that token is active, e.g. return Nothing from store if not
       r_ <- atomically $ getNtfSubscription st entId
       pure $ case r_ of
         Just (s, NtfTknData {tknVerifyKey})

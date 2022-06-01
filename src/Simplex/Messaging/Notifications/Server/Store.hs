@@ -127,10 +127,59 @@ deleteNtfToken st tknId = do
     regKey = C.toPubKey C.pubKeyBytes
 
 getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe (NtfSubData, NtfTknData))
-getNtfSubscription st subId = pure Nothing -- TM.lookup subId (subscriptions st)
+getNtfSubscription st subId =
+  TM.lookup subId (subscriptions st) >>= \case
+    Just sub@NtfSubData {tokenId} ->
+      getNtfToken st tokenId >>= \case
+        Just tkn@NtfTknData {tknStatus} -> do
+          tStatus <- readTVar tknStatus
+          pure $
+            if tStatus == NTActive
+              then Just (sub, tkn)
+              else Nothing
+        Nothing -> pure Nothing
+    Nothing -> pure Nothing
 
 findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe NtfTknData, Maybe NtfSubData)
-findNtfSubscription st (NewNtfSub tknId smpQueue) = pure (Nothing, Nothing)
+findNtfSubscription st (NewNtfSub tknId SMPQueueNtf {smpServer, notifierId}) = do
+  subId_ <- TM.lookup (tknId, smpServer, notifierId) (subscriptionLookup st)
+  case subId_ of
+    Just subId -> do
+      sub <- TM.lookup subId (subscriptions st)
+      getNtfToken st tknId >>= \case
+        Just tkn@NtfTknData {tknStatus} -> do
+          tStatus <- readTVar tknStatus
+          pure $
+            if tStatus == NTActive
+              then (Just tkn, sub)
+              else (Nothing, sub)
+        Nothing -> pure (Nothing, sub)
+    Nothing ->
+      getNtfToken st tknId >>= \case
+        Just tkn@NtfTknData {tknStatus} -> do
+          tStatus <- readTVar tknStatus
+          pure $
+            if tStatus == NTActive
+              then (Just tkn, Nothing)
+              else (Nothing, Nothing)
+        Nothing -> pure (Nothing, Nothing)
+  -- where
+  --   tkn_ =
+  --     getNtfToken st tknId >>= \case
+  --       Just tkn@NtfTknData {tknStatus} -> do
+  --         tStatus <- readTVar tknStatus
+  --         pure $
+  --           if tStatus == NTActive
+  --             then Just tkn
+  --             else Nothing
+  --       Nothing -> pure Nothing
+  --   sub_ =
+  --     TM.lookup (tknId, smpServer, notifierId) (subscriptionLookup st)
+  --       $>>= (`TM.lookup` subscriptions st)
+  --   subData :: Maybe NtfSubscriptionId -> STM (Maybe NtfSubData)
+  --   subData subId_ = case subId_ of
+  --     Nothing -> pure Nothing
+  --     Just subId -> TM.lookup subId (subscriptions st)
 
 -- findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe NtfSubData)
 -- findNtfSubscription st (NewNtfSub tknId smpQueue) =
