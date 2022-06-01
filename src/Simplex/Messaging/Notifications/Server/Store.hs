@@ -14,22 +14,30 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Map.Strict as M
+import Data.Set (Set)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Protocol (NotifierId, ProtocolServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM, ($>>=))
 
 data NtfStore = NtfStore
   { tokens :: TMap NtfTokenId NtfTknData,
-    tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId)
+    tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
+    subscriptions :: TMap NtfSubscriptionId NtfSubData,
+    tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
+    subscriptionLookup :: TMap (NtfTokenId, ProtocolServer, NotifierId) NtfSubscriptionId
   }
 
 newNtfStore :: STM NtfStore
 newNtfStore = do
   tokens <- TM.empty
   tokenRegistrations <- TM.empty
-  pure NtfStore {tokens, tokenRegistrations}
+  subscriptions <- TM.empty
+  tokenSubscriptions <- TM.empty
+  subscriptionLookup <- TM.empty
+  pure NtfStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup}
 
 data NtfTknData = NtfTknData
   { ntfTknId :: NtfTokenId,
@@ -117,6 +125,33 @@ deleteNtfToken st tknId = do
   where
     regs = tokenRegistrations st
     regKey = C.toPubKey C.pubKeyBytes
+
+getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe (NtfSubData, NtfTknData))
+getNtfSubscription st subId = pure Nothing -- TM.lookup subId (subscriptions st)
+
+findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe NtfTknData, Maybe NtfSubData)
+findNtfSubscription st (NewNtfSub tknId smpQueue) = pure (Nothing, Nothing)
+
+-- findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe NtfSubData)
+-- findNtfSubscription st (NewNtfSub tknId smpQueue) =
+--   TM.lookup (tknId, smpQueue) (subscriptionLookup st)
+--     $>>= (`TM.lookup` subscriptions st)
+
+mkNtfSubData :: NewNtfEntity 'Subscription -> STM NtfSubData
+mkNtfSubData (NewNtfSub tokenId smpQueue) = do
+  subStatus <- newTVar NSNew
+  pure NtfSubData {smpQueue, tokenId, subStatus}
+
+addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM ()
+addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} = do
+  TM.insert subId sub $ subscriptions st
+  TM.lookup (tokenId, smpServer, notifierId) sRegs
+    >>= ( \case
+            Nothing -> pure ()
+            Just _ -> pure ()
+        )
+  where
+    sRegs = subscriptionLookup st
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of

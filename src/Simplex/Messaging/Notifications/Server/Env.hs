@@ -23,7 +23,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Store
-import Simplex.Messaging.Protocol (CorrId, Transmission)
+import Simplex.Messaging.Protocol (CorrId, Transmission, SMPServer)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -78,15 +78,26 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
 
 data NtfSubscriber = NtfSubscriber
-  { subQ :: TBQueue (NtfEntityRec 'Subscription),
+  { smpSubscribers :: TMap SMPServer SMPSubscriber,
+    newSubQ :: TBQueue (NtfEntityRec 'Subscription),
     smpAgent :: SMPClientAgent
   }
 
 newNtfSubscriber :: Natural -> SMPClientAgentConfig -> STM NtfSubscriber
 newNtfSubscriber qSize smpAgentCfg = do
+  smpSubscribers <- TM.empty
+  newSubQ <- newTBQueue qSize
   smpAgent <- newSMPClientAgent smpAgentCfg
-  subQ <- newTBQueue qSize
-  pure NtfSubscriber {smpAgent, subQ}
+  pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
+
+newtype SMPSubscriber = SMPSubscriber
+  { newSubQ :: TBQueue (NtfEntityRec 'Subscription)
+  }
+
+newSMPSubscriber :: Natural -> STM SMPSubscriber
+newSMPSubscriber qSize = do
+  newSubQ <- newTBQueue qSize
+  pure SMPSubscriber {newSubQ}
 
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfTknData, PushNotification),
