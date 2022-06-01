@@ -120,7 +120,7 @@ instance ToJSON NtfRegCode where
 
 data NewNtfEntity (e :: NtfEntity) where
   NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
-  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NewNtfEntity 'Subscription -- NtfTokenId -> C.APublicVerifyKey -> SMPQueueNtf
+  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NewNtfEntity 'Subscription
 
 deriving instance Show (NewNtfEntity e)
 
