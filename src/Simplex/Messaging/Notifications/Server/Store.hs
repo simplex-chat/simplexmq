@@ -27,7 +27,7 @@ data NtfStore = NtfStore
     tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
     tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
-    subscriptionLookup :: TMap (NtfTokenId, SMPQueueNtf) NtfSubscriptionId
+    subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId
   }
 
 newNtfStore :: STM NtfStore
@@ -77,6 +77,11 @@ data NtfEntityRec (e :: NtfEntity) where
 
 getNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
 getNtfToken st tknId = TM.lookup tknId (tokens st)
+
+-- findNtfToken :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
+-- findNtfToken st smpQueue = do
+--   TM.lookup smpQueue (subscriptionLookup st) $>>= \(tknId, _) ->
+--     getNtfToken st tknId
 
 addNtfToken :: NtfStore -> NtfTokenId -> NtfTknData -> STM ()
 addNtfToken st tknId tkn@NtfTknData {token, tknVerifyKey} = do
@@ -135,12 +140,21 @@ getNtfSubscription st subId =
 
 findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe (NtfTknData, Maybe NtfSubData))
 findNtfSubscription st (NewNtfSub tknId smpQueue _) = do
+  -- TODO check that tokenId in NtfSubData is equal to passed tknId?
+  -- TODO make such check on controller level and pass SMPQueueNtf instead of NewNtfEntity to reuse for finding token?
   getActiveNtfToken st tknId >>= mapM (\tkn -> (tkn,) <$> getSub)
   where
     getSub :: STM (Maybe NtfSubData)
     getSub =
-      TM.lookup (tknId, smpQueue) (subscriptionLookup st)
-        $>>= (`TM.lookup` subscriptions st)
+      TM.lookup smpQueue (subscriptionLookup st)
+        $>>= \subId -> TM.lookup subId (subscriptions st)
+
+findNtfSubscriptionToken :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
+findNtfSubscriptionToken st smpQueue = do
+  TM.lookup smpQueue (subscriptionLookup st)
+    $>>= \subId ->
+      TM.lookup subId (subscriptions st)
+        $>>= \NtfSubData {tokenId} -> getActiveNtfToken st tokenId
 
 getActiveNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
 getActiveNtfToken st tknId =
@@ -160,7 +174,7 @@ addNtfSubscription st subId sub@NtfSubData {smpQueue, tokenId} =
     insertSub ts = do
       modifyTVar' ts $ insert subId
       TM.insert subId sub $ subscriptions st
-      TM.insert (tokenId, smpQueue) subId (subscriptionLookup st)
+      TM.insert smpQueue subId (subscriptionLookup st)
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of

@@ -105,7 +105,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: m ()
     receiveSMP = forever $ do
-      (_srv, _sessId, _ntfId, msg) <- atomically $ readTBQueue msgQ
+      (srv, _sessId, ntfId, msg) <- atomically $ readTBQueue msgQ
       case msg of
         SMP.NMSG -> do
           -- check when the last NMSG was received from this queue
@@ -114,7 +114,11 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           -- decide whether it should be sent as hidden or visible
           -- construct and possibly encrypt notification
           -- send it
-          pure ()
+          NtfPushServer {pushQ} <- asks pushServer
+          st <- asks store
+          atomically $
+            findNtfSubscriptionToken st (SMPQueueNtf srv ntfId)
+              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage srv ntfId))
         _ -> pure ()
       pure ()
 
