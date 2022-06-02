@@ -315,7 +315,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ
                     threadDelay delay
                     atomically $ writeTBQueue pushQ (tkn, PNCheckMessages)
       NtfReqNew corrId (ANE SSubscription newSub) -> do
-        logDebug "TNEW - new subscription"
+        logDebug "SNEW - new subscription"
         st <- asks store
         subId <- getId
         atomically $ do
