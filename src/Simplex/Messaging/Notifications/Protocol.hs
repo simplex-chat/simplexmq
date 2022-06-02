@@ -231,7 +231,8 @@ instance ProtocolEncoding NtfCmd where
   checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
 
 data NtfResponseTag
-  = NRId_
+  = NRTknId_
+  | NRSubId_
   | NROk_
   | NRErr_
   | NRTkn_
@@ -241,7 +242,8 @@ data NtfResponseTag
 
 instance Encoding NtfResponseTag where
   smpEncode = \case
-    NRId_ -> "ID"
+    NRTknId_ -> "IDTKN"
+    NRSubId_ -> "IDSUB"
     NROk_ -> "OK"
     NRErr_ -> "ERR"
     NRTkn_ -> "TKN"
@@ -251,7 +253,8 @@ instance Encoding NtfResponseTag where
 
 instance ProtocolMsgTag NtfResponseTag where
   decodeTag = \case
-    "ID" -> Just NRId_
+    "IDTKN" -> Just NRTknId_
+    "IDSUB" -> Just NRSubId_
     "OK" -> Just NROk_
     "ERR" -> Just NRErr_
     "TKN" -> Just NRTkn_
@@ -260,7 +263,8 @@ instance ProtocolMsgTag NtfResponseTag where
     _ -> Nothing
 
 data NtfResponse
-  = NRId NtfEntityId C.PublicKeyX25519
+  = NRTknId NtfEntityId C.PublicKeyX25519
+  | NRSubId NtfEntityId
   | NROk
   | NRErr ErrorType
   | NRTkn NtfTknStatus
@@ -271,7 +275,8 @@ data NtfResponse
 instance ProtocolEncoding NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol = \case
-    NRId entId dhKey -> e (NRId_, ' ', entId, dhKey)
+    NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
+    NRSubId entId -> e (NRSubId_, ' ', entId)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
     NRTkn stat -> e (NRTkn_, ' ', stat)
@@ -282,7 +287,8 @@ instance ProtocolEncoding NtfResponse where
       e = smpEncode
 
   protocolP = \case
-    NRId_ -> NRId <$> _smpP <*> smpP
+    NRTknId_ -> NRTknId <$> _smpP <*> smpP
+    NRSubId_ -> NRSubId <$> _smpP
     NROk_ -> pure NROk
     NRErr_ -> NRErr <$> _smpP
     NRTkn_ -> NRTkn <$> _smpP
@@ -290,8 +296,10 @@ instance ProtocolEncoding NtfResponse where
     NRPong_ -> pure NRPong
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
-    -- ID response must not have queue ID
-    NRId {} -> noEntity
+    -- IDTKN response must not have queue ID
+    NRTknId {} -> noEntity
+    -- IDSUB response must not have queue ID
+    NRSubId {} -> noEntity
     -- ERR response does not always have entity ID
     NRErr _ -> Right cmd
     -- PONG response must not have queue ID
