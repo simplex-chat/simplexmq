@@ -16,6 +16,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
+import Data.Functor (($>))
 import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
 import Network.Socket (ServiceName)
@@ -34,7 +35,7 @@ import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Trans
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
 import UnliftIO (async, uninterruptibleCancel)
-import UnliftIO.Concurrent (threadDelay)
+import UnliftIO.Concurrent (forkFinally, threadDelay)
 import UnliftIO.Exception
 import UnliftIO.STM
 
@@ -48,12 +49,10 @@ runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtf
 
 ntfServer :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerConfig -> TMVar Bool -> m ()
 ntfServer NtfServerConfig {transports} started = do
-  -- s <- asks subscriber
+  s <- asks subscriber
   ps <- asks pushServer
-  raceAny_ (ntfPush ps : map runServer transports)
+  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
   where
-    -- raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
-
     runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
@@ -66,28 +65,43 @@ ntfServer NtfServerConfig {transports} started = do
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
 
-ntfSubscriber :: forall m. MonadUnliftIO m => NtfSubscriber -> m ()
-ntfSubscriber NtfSubscriber {newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
+ntfSubscriber :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> m ()
+ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
   raceAny_ [subscribe, receiveSMP, receiveAgent]
   where
     subscribe :: m ()
-    subscribe = forever $ do
-      atomically (readTBQueue newSubQ) >>= \case
-        -- TODO create workers, workers do subscription
-        NtfSub NtfSubData {smpQueue} -> do
-          let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
-          liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
-            Right _ -> pure () -- update subscription status
-            Left _e -> pure ()
+    subscribe =
+      forever $
+        atomically (readTBQueue newSubQ) >>= \case
+          sub@(NtfSub NtfSubData {smpQueue = SMPQueueNtf {smpServer}}) -> do
+            SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber smpServer
+            atomically $ writeTBQueue subscriberSubQ sub
 
-    getSMPSubscriber :: (MonadUnliftIO m, MonadReader NtfEnv m) => SMPServer -> m SMPSubscriber
-    getSMPSubscriber smpServer = do
-      -- TODO check the map
-      -- if not there, create env + start process (runNtfSubscriber)
-      -- return env
-      atomically $ newSMPSubscriber 0 -- todo get from config
-    runSMPSubscriber :: NtfSubscriber -> m ()
-    runSMPSubscriber = forever $ pure ()
+    getSMPSubscriber :: SMPServer -> m SMPSubscriber
+    getSMPSubscriber smpServer =
+      atomically (TM.lookup smpServer smpSubscribers) >>= maybe createSMPSubscriber pure
+      where
+        createSMPSubscriber = do
+          qSize <- asks $ subQSize . config
+          newSubscriber <- atomically $ newSMPSubscriber qSize
+          atomically $ TM.insert smpServer newSubscriber smpSubscribers
+          _ <- runSMPSubscriber newSubscriber `forkFinally` \_ -> atomically (TM.delete smpServer smpSubscribers >> failSubscriptions newSubscriber)
+          pure newSubscriber
+        -- TODO mark subscriptions as failed
+        failSubscriptions _ = pure ()
+
+    runSMPSubscriber :: SMPSubscriber -> m ()
+    runSMPSubscriber SMPSubscriber {newSubQ = subscriberSubQ} =
+      forever $
+        atomically (peekTBQueue subscriberSubQ) >>= \case
+          NtfSub NtfSubData {smpQueue} -> do
+            let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
+            liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
+              Right _ -> do
+                -- update subscription status
+                _ <- atomically $ readTBQueue subscriberSubQ
+                pure ()
+              Left _e -> pure ()
 
     receiveSMP :: m ()
     receiveSMP = forever $ do
@@ -194,6 +208,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
             _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
           else VRFailed
     NtfCmd SToken c -> do
+      -- TODO move active token check here to differentiate error
       t_ <- atomically $ getNtfToken st entId
       pure $ case t_ of
         Just t@NtfTknData {tknVerifyKey}
@@ -201,6 +216,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
           | otherwise -> VRFailed
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId _)) -> do
+      -- TODO move active token check here to differentiate error
       r_ <- atomically $ findNtfSubscription st sub
       pure $ case r_ of
         Just (NtfTknData {tknVerifyKey}, sub_) ->
@@ -224,7 +240,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
     verifiedSubCmd s c = VRVerified (NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
 
 client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
-client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ = _} NtfPushServer {pushQ, intervalNotifiers} =
+client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ, intervalNotifiers} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
@@ -303,11 +319,12 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ = _} NtfPushServer {p
         subId <- getId
         atomically $ do
           sub <- mkNtfSubData newSub
-          addNtfSubscription st subId sub
-        -- TODO launch NSUB
-        -- writeTBQueue subQ ("", connId, cmd)
-        -- TODO response ID
-        pure (corrId, "", NROk)
+          (corrId,"",)
+            <$> ( addNtfSubscription st subId sub >>= \case
+                    -- TODO response ID
+                    Just _ -> writeTBQueue newSubQ (NtfSub sub) $> NROk
+                    _ -> pure $ NRErr AUTH
+                )
       NtfReqCmd SSubscription _sub (corrId, subId, cmd) ->
         (corrId,subId,) <$> case cmd of
           SNEW _newSub -> do
