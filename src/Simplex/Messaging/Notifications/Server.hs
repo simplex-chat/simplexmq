@@ -48,11 +48,10 @@ runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtf
 
 ntfServer :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerConfig -> TMVar Bool -> m ()
 ntfServer NtfServerConfig {transports} started = do
-  -- s <- asks subscriber
+  s <- asks subscriber
   ps <- asks pushServer
-  raceAny_ (ntfPush ps : map runServer transports)
+  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
   where
-    -- raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
 
     runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
@@ -66,7 +65,7 @@ ntfServer NtfServerConfig {transports} started = do
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
 
-ntfSubscriber :: forall m. MonadUnliftIO m => NtfSubscriber -> m ()
+ntfSubscriber :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> m ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
   raceAny_ [subscribe, receiveSMP, receiveAgent]
   where
@@ -85,9 +84,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       case smpSubscriber_ of
         Just smpSubscriber -> pure smpSubscriber
         Nothing -> do
-          newSubscriber <- atomically $ newSMPSubscriber 0 -- todo get from config
-          atomically $ TM.insert smpServer newSubscriber smpSubscribers
+          cfg <- asks config
+          newSubscriber <- atomically $ newSMPSubscriber (subQSize cfg) -- separate configuration for queue size?
           runSMPSubscriber newSubscriber
+          atomically $ TM.insert smpServer newSubscriber smpSubscribers
           pure newSubscriber
 
     runSMPSubscriber :: SMPSubscriber -> m ()
