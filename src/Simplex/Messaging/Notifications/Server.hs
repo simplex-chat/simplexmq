@@ -67,7 +67,7 @@ ntfServer NtfServerConfig {transports} started = do
         Left _ -> pure ()
 
 ntfSubscriber :: forall m. MonadUnliftIO m => NtfSubscriber -> m ()
-ntfSubscriber NtfSubscriber {newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
+ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
   raceAny_ [subscribe, receiveSMP, receiveAgent]
   where
     subscribe :: m ()
@@ -82,11 +82,16 @@ ntfSubscriber NtfSubscriber {newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ
 
     getSMPSubscriber :: (MonadUnliftIO m, MonadReader NtfEnv m) => SMPServer -> m SMPSubscriber
     getSMPSubscriber smpServer = do
-      -- TODO check the map
-      -- if not there, create env + start process (runNtfSubscriber)
-      -- return env
-      atomically $ newSMPSubscriber 0 -- todo get from config
-    runSMPSubscriber :: NtfSubscriber -> m ()
+      smpSubscriber_ <- atomically $ TM.lookup smpServer smpSubscribers
+      case smpSubscriber_ of
+        Just smpSubscriber -> pure smpSubscriber
+        Nothing -> do
+          newSubscriber <- atomically $ newSMPSubscriber 0 -- todo get from config
+          atomically $ TM.insert smpServer newSubscriber smpSubscribers
+          runSMPSubscriber newSubscriber
+          pure newSubscriber
+
+    runSMPSubscriber :: SMPSubscriber -> m ()
     runSMPSubscriber = forever $ pure ()
 
     receiveSMP :: m ()
@@ -224,7 +229,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
     verifiedSubCmd s c = VRVerified (NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
 
 client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
-client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ = _} NtfPushServer {pushQ, intervalNotifiers} =
+client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ, intervalNotifiers} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
@@ -304,8 +309,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ = _} NtfPushServer {p
         atomically $ do
           sub <- mkNtfSubData newSub
           addNtfSubscription st subId sub
-        -- TODO launch NSUB
-        -- writeTBQueue subQ ("", connId, cmd)
+          writeTBQueue newSubQ (NtfSub sub)
         -- TODO response ID
         pure (corrId, "", NROk)
       NtfReqCmd SSubscription _sub (corrId, subId, cmd) ->
