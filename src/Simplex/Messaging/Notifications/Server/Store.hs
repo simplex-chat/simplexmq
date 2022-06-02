@@ -152,13 +152,14 @@ mkNtfSubData (NewNtfSub tokenId smpQueue) = do
   subStatus <- newTVar NSNew
   pure NtfSubData {smpQueue, tokenId, subStatus}
 
-addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM ()
-addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} = do
-  TM.insert subId sub $ subscriptions st
-  TM.lookup tokenId (tokenSubscriptions st) >>= \case
-    Just tsSet -> modifyTVar' tsSet $ insert subId
-    Nothing -> pure ()
-  TM.insert (tokenId, smpServer, notifierId) subId (subscriptionLookup st)
+addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM (Maybe ())
+addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} =
+  TM.lookup tokenId (tokenSubscriptions st) >>= mapM insertSub
+  where
+    insertSub ts = do
+      modifyTVar' ts $ insert subId
+      TM.insert subId sub $ subscriptions st
+      TM.insert (tokenId, smpServer, notifierId) subId (subscriptionLookup st)
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of
