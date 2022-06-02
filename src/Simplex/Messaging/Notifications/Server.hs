@@ -71,16 +71,15 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
   raceAny_ [subscribe, receiveSMP, receiveAgent]
   where
     subscribe :: m ()
-    subscribe = forever $ do
-      atomically (readTBQueue newSubQ) >>= \case
-        -- TODO create workers, workers do subscription
-        NtfSub NtfSubData {smpQueue} -> do
-          let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
-          liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
-            Right _ -> pure () -- update subscription status
-            Left _e -> pure ()
+    subscribe =
+      forever $
+        atomically (readTBQueue newSubQ) >>= \case
+          sub@(NtfSub NtfSubData {smpQueue = SMPQueueNtf {smpServer}}) -> do
+            SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber smpServer
+            atomically $ writeTBQueue subscriberSubQ sub
+            pure ()
 
-    getSMPSubscriber :: (MonadUnliftIO m, MonadReader NtfEnv m) => SMPServer -> m SMPSubscriber
+    getSMPSubscriber :: SMPServer -> m SMPSubscriber
     getSMPSubscriber smpServer = do
       smpSubscriber_ <- atomically $ TM.lookup smpServer smpSubscribers
       case smpSubscriber_ of
@@ -92,7 +91,14 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           pure newSubscriber
 
     runSMPSubscriber :: SMPSubscriber -> m ()
-    runSMPSubscriber = forever $ pure ()
+    runSMPSubscriber SMPSubscriber {newSubQ = subscriberSubQ} =
+      forever $
+        atomically (readTBQueue subscriberSubQ) >>= \case
+          NtfSub NtfSubData {smpQueue} -> do
+            let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
+            liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
+              Right _ -> pure () -- update subscription status
+              Left _e -> pure ()
 
     receiveSMP :: m ()
     receiveSMP = forever $ do
