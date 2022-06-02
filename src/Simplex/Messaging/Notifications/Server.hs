@@ -84,7 +84,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         Just smpSubscriber -> pure smpSubscriber
         Nothing -> do
           cfg <- asks config
-          newSubscriber <- atomically $ newSMPSubscriber (subQSize cfg) -- separate configuration for queue size?
+          newSubscriber <- atomically $ newSMPSubscriber (subQSize cfg)
           runSMPSubscriber newSubscriber
           atomically $ TM.insert smpServer newSubscriber smpSubscribers
           pure newSubscriber
