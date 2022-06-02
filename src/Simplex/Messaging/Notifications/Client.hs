@@ -27,7 +27,7 @@ type NtfClient = ProtocolClient NtfResponse
 ntfRegisterToken :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Token -> ExceptT ProtocolClientError IO (NtfTokenId, C.PublicKeyX25519)
 ntfRegisterToken c pKey newTkn =
   sendNtfCommand c (Just pKey) "" (TNEW newTkn) >>= \case
-    NRId tknId dhKey -> pure (tknId, dhKey)
+    NRTknId tknId dhKey -> pure (tknId, dhKey)
     _ -> throwE PCEUnexpectedResponse
 
 ntfVerifyToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> NtfRegCode -> ExceptT ProtocolClientError IO ()
@@ -45,10 +45,10 @@ ntfDeleteToken = okNtfCommand TDEL
 ntfEnableCron :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> Word16 -> ExceptT ProtocolClientError IO ()
 ntfEnableCron c pKey tknId int = okNtfCommand (TCRN int) c pKey tknId
 
-ntfCreateSubsciption :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Subscription -> ExceptT ProtocolClientError IO (NtfSubscriptionId, C.PublicKeyX25519)
-ntfCreateSubsciption c pKey newSub =
+ntfCreateSubscription :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Subscription -> ExceptT ProtocolClientError IO NtfSubscriptionId
+ntfCreateSubscription c pKey newSub =
   sendNtfCommand c (Just pKey) "" (SNEW newSub) >>= \case
-    NRId subId dhKey -> pure (subId, dhKey)
+    NRSubId subId -> pure subId
     _ -> throwE PCEUnexpectedResponse
 
 ntfCheckSubscription :: NtfClient -> C.APrivateSignKey -> NtfSubscriptionId -> ExceptT ProtocolClientError IO NtfSubStatus

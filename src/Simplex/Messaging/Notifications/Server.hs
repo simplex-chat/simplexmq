@@ -208,7 +208,6 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
             _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
           else VRFailed
     NtfCmd SToken c -> do
-      -- TODO move active token check here to differentiate error
       t_ <- atomically $ getNtfToken st entId
       pure $ case t_ of
         Just t@NtfTknData {tknVerifyKey}
@@ -229,6 +228,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
             else VRFailed
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c -> do
+      -- TODO move active token check here to differentiate error
       r_ <- atomically $ getNtfSubscription st entId
       pure $ case r_ of
         Just (s, NtfTknData {tknVerifyKey})
@@ -259,7 +259,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ
           tkn <- mkNtfTknData tknId newTkn ks dhSecret regCode
           addNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, PNVerification regCode)
-        pure (corrId, "", NRId tknId srvDhPubKey)
+        pure (corrId, "", NRTknId tknId srvDhPubKey)
       NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
@@ -270,7 +270,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ
             if tknDhSecret == dhSecret
               then do
                 atomically $ writeTBQueue pushQ (tkn, PNVerification tknRegCode)
-                pure $ NRId ntfTknId srvDhPubKey
+                pure $ NRTknId ntfTknId srvDhPubKey
               else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (status == NTRegistered || status == NTConfirmed || status == NTActive) && tknRegCode == code -> do
@@ -315,24 +315,25 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ
                     threadDelay delay
                     atomically $ writeTBQueue pushQ (tkn, PNCheckMessages)
       NtfReqNew corrId (ANE SSubscription newSub) -> do
+        logDebug "SNEW - new subscription"
         st <- asks store
         subId <- getId
         atomically $ do
           sub <- mkNtfSubData newSub
           (corrId,"",)
             <$> ( addNtfSubscription st subId sub >>= \case
-                    -- TODO response ID
-                    Just _ -> writeTBQueue newSubQ (NtfSub sub) $> NROk
+                    Just _ -> writeTBQueue newSubQ (NtfSub sub) $> NRSubId subId
                     _ -> pure $ NRErr AUTH
                 )
-      NtfReqCmd SSubscription _sub (corrId, subId, cmd) ->
+      NtfReqCmd SSubscription (NtfSub NtfSubData {notifierKey = registeredNKey}) (corrId, subId, cmd) ->
         (corrId,subId,) <$> case cmd of
-          SNEW _newSub -> do
-            logDebug "SNEW - registered subscription"
-            -- st <- asks store
-            -- TODO check NKEY?
-            -- TODO response ID
-            pure NROk
+          SNEW (NewNtfSub _ _ notifierKey) -> do
+            logDebug "SNEW - existing subscription"
+            -- TODO retry if subscription failed, if pending or AUTH do nothing
+            pure $
+              if notifierKey == registeredNKey
+                then NRSubId subId
+                else NRErr AUTH
           SCHK -> pure NROk
           SDEL -> pure NROk
           PING -> pure NRPong
