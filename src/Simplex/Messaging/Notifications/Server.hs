@@ -94,8 +94,8 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     runSMPSubscriber SMPSubscriber {newSubQ = subscriberSubQ} =
       forever $
         atomically (peekTBQueue subscriberSubQ) >>= \case
-          NtfSub NtfSubData {smpQueue} -> do
-            let SMPQueueNtf {smpServer, notifierId, notifierKey} = smpQueue
+          NtfSub NtfSubData {smpQueue, notifierKey} -> do
+            let SMPQueueNtf {smpServer, notifierId} = smpQueue
             liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
               Right _ -> do
                 -- update subscription status
@@ -215,7 +215,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
           | verifyCmdSignature sig_ signed tknVerifyKey -> verifiedTknCmd t c
           | otherwise -> VRFailed
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
-    NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId _)) -> do
+    NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId _ _)) -> do
       -- TODO move active token check here to differentiate error
       r_ <- atomically $ findNtfSubscription st sub
       pure $ case r_ of

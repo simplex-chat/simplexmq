@@ -120,7 +120,7 @@ instance ToJSON NtfRegCode where
 
 data NewNtfEntity (e :: NtfEntity) where
   NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
-  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NewNtfEntity 'Subscription
+  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NtfPrivateSignKey -> NewNtfEntity 'Subscription
 
 deriving instance Show (NewNtfEntity e)
 
@@ -129,7 +129,7 @@ data ANewNtfEntity = forall e. NtfEntityI e => ANE (SNtfEntity e) (NewNtfEntity 
 instance NtfEntityI e => Encoding (NewNtfEntity e) where
   smpEncode = \case
     NewNtfTkn tkn verifyKey dhPubKey -> smpEncode ('T', tkn, verifyKey, dhPubKey)
-    NewNtfSub tknId smpQueue -> smpEncode ('S', tknId, smpQueue)
+    NewNtfSub tknId smpQueue notifierKey -> smpEncode ('S', tknId, smpQueue, notifierKey)
   smpP = (\(ANE _ c) -> checkEntity c) <$?> smpP
 
 instance Encoding ANewNtfEntity where
@@ -137,7 +137,7 @@ instance Encoding ANewNtfEntity where
   smpP =
     A.anyChar >>= \case
       'T' -> ANE SToken <$> (NewNtfTkn <$> smpP <*> smpP <*> smpP)
-      'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP)
+      'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP <*> smpP)
       _ -> fail "bad ANewNtfEntity"
 
 instance Protocol NtfResponse where
@@ -307,16 +307,15 @@ instance ProtocolEncoding NtfResponse where
 
 data SMPQueueNtf = SMPQueueNtf
   { smpServer :: ProtocolServer,
-    notifierId :: NotifierId,
-    notifierKey :: NtfPrivateSignKey
+    notifierId :: NotifierId
   }
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 instance Encoding SMPQueueNtf where
-  smpEncode SMPQueueNtf {smpServer, notifierId, notifierKey} = smpEncode (smpServer, notifierId, notifierKey)
+  smpEncode SMPQueueNtf {smpServer, notifierId} = smpEncode (smpServer, notifierId)
   smpP = do
-    (smpServer, notifierId, notifierKey) <- smpP
-    pure $ SMPQueueNtf smpServer notifierId notifierKey
+    (smpServer, notifierId) <- smpP
+    pure $ SMPQueueNtf smpServer notifierId
 
 data PushProvider = PPApns
   deriving (Eq, Ord, Show)
