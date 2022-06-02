@@ -156,7 +156,7 @@ addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM ()
 addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} = do
   TM.insert subId sub $ subscriptions st
   TM.lookup tokenId (tokenSubscriptions st) >>= \case
-    Just tokenSubscriptions -> modifyTVar' tokenSubscriptions $ insert subId
+    Just tsSet -> modifyTVar' tsSet $ insert subId
     Nothing -> pure ()
   TM.insert (tokenId, smpServer, notifierId) subId (subscriptionLookup st)
 
