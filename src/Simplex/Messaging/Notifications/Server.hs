@@ -76,7 +76,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           sub@(NtfSub NtfSubData {smpQueue = SMPQueueNtf {smpServer}}) -> do
             SMPSubscriber {newSubQ = subscriberSubQ} <- getSMPSubscriber smpServer
             atomically $ writeTBQueue subscriberSubQ sub
-            pure ()
 
     getSMPSubscriber :: SMPServer -> m SMPSubscriber
     getSMPSubscriber smpServer = do
