@@ -14,7 +14,7 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Map.Strict as M
-import Data.Set (Set)
+import Data.Set (Set, insert)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NotifierId, ProtocolServer)
@@ -155,13 +155,10 @@ mkNtfSubData (NewNtfSub tokenId smpQueue) = do
 addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM ()
 addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} = do
   TM.insert subId sub $ subscriptions st
-  TM.lookup (tokenId, smpServer, notifierId) sRegs
-    >>= ( \case
-            Nothing -> pure ()
-            Just _ -> pure ()
-        )
-  where
-    sRegs = subscriptionLookup st
+  TM.lookup tokenId (tokenSubscriptions st) >>= \case
+    Just tokenSubscriptions -> modifyTVar' tokenSubscriptions $ insert subId
+    Nothing -> pure ()
+  TM.insert (tokenId, smpServer, notifierId) subId (subscriptionLookup st)
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of
