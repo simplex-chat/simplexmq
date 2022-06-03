@@ -4,7 +4,7 @@ export TEAM_ID=5NN7GUYB6T
 # export APNS_KEY_FILE=""
 # export APNS_KEY_ID=""
 export TOPIC=chat.simplex.app
-# export DEVICE_TOKEN=
+export DEVICE_TOKEN=c869294e96b5893ee61a65844f46a1826446f75c0c8b53445d720e4906d6cb6e
 export APNS_HOST_NAME=api.sandbox.push.apple.com
 
 export JWT_ISSUE_TIME=$(date +%s)
@@ -22,4 +22,5 @@ export AUTHENTICATION_TOKEN="${JWT_HEADER}.${JWT_CLAIMS}.${JWT_SIGNED_HEADER_CLA
 # curl -v --header "apns-topic: $TOPIC" --header "apns-push-type: background" --header "apns-priority: 5" --header "authorization: bearer $AUTHENTICATION_TOKEN" --data '{"aps":{"content-available":1}}' --http2 https://${APNS_HOST_NAME}/3/device/${DEVICE_TOKEN}
 
 # mutable-content notification
+# NTF_CAT_CHECK_MESSAGE category will not show alert if the app is in foreground
 curl -v --header "apns-topic: $TOPIC" --header "apns-push-type: alert" --header "authorization: bearer $AUTHENTICATION_TOKEN" --data '{"aps":{"category": "NTF_CAT_CHECK_MESSAGE__SECRET", "mutable-content": 1, "alert":"received encrypted message"}, "data": {"test":"123"}}' --http2 https://${APNS_HOST_NAME}/3/device/${DEVICE_TOKEN}
