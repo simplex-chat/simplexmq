@@ -35,7 +35,8 @@ module Simplex.Messaging.Agent
     AgentMonad,
     AgentErrorMonad,
     getSMPAgentClient,
-    disconnectAgentClient, -- used in tests
+    disconnectAgentClient,
+    resumeAgentClient,
     withAgentLock,
     createConnection,
     joinConnection,
@@ -112,6 +113,9 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c = closeAgentClient c >> logConnection c False
+
+resumeAgentClient :: MonadIO m => AgentClient -> m ()
+resumeAgentClient c = atomically $ writeTVar (active c) True
 
 -- |
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)

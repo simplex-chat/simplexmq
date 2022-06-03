@@ -189,10 +189,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
             _ -> TM.insert srv cVar ps
 
     serverDown :: UnliftIO m -> Map ConnId RcvQueue -> IO ()
-    serverDown u cs = unless (M.null cs) $ do
-      let conns = M.keys cs
-      unless (null conns) . notifySub "" $ DOWN srv conns
-      whenM (readTVarIO active) $ unliftIO u reconnectServer
+    serverDown u cs = unless (M.null cs) $
+      whenM (readTVarIO active) $ do
+        let conns = M.keys cs
+        unless (null conns) . notifySub "" $ DOWN srv conns
+        unliftIO u reconnectServer
 
     reconnectServer :: m ()
     reconnectServer = do
@@ -309,21 +310,30 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
 closeAgentClient :: MonadIO m => AgentClient -> m ()
 closeAgentClient c = liftIO $ do
   atomically $ writeTVar (active c) False
-  closeSMPServerClients c
+  closeProtocolServerClients (clientTimeout smpCfg) $ smpClients c
+  closeProtocolServerClients (clientTimeout ntfCfg) $ ntfClients c
   cancelActions $ reconnections c
   cancelActions $ asyncClients c
   cancelActions $ smpQueueMsgDeliveries c
-
-closeSMPServerClients :: AgentClient -> IO ()
-closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeClient)
+  clear subscrSrvrs
+  clear pendingSubscrSrvrs
+  clear subscrConns
+  clear connMsgsQueued
+  clear smpQueueMsgQueues
   where
-    closeClient smpVar =
-      atomically (readTMVar smpVar) >>= \case
-        Right smp -> closeProtocolClient smp `catchAll_` pure ()
+    clientTimeout sel = tcpTimeout . sel . config $ agentEnv c
+    clear sel = atomically $ writeTVar (sel c) M.empty
+
+closeProtocolServerClients :: Int -> TMap ProtocolServer (ClientVar msg) -> IO ()
+closeProtocolServerClients tcpTimeout cs = readTVarIO cs >>= mapM_ (forkIO . closeClient) >> atomically (writeTVar cs M.empty)
+  where
+    closeClient cVar =
+      tcpTimeout `timeout` atomically (readTMVar cVar) >>= \case
+        Just (Right client) -> closeProtocolClient client `catchAll_` pure ()
         _ -> pure ()
 
-cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
-cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel
+cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
+cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel >> atomically (writeTVar as mempty)
 
 withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
 withAgentLock AgentClient {lock} =
