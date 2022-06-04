@@ -4,7 +4,7 @@ export TEAM_ID=5NN7GUYB6T
 # export APNS_KEY_FILE=""
 # export APNS_KEY_ID=""
 export TOPIC=chat.simplex.app
-export DEVICE_TOKEN=c869294e96b5893ee61a65844f46a1826446f75c0c8b53445d720e4906d6cb6e
+# export DEVICE_TOKEN=
 export APNS_HOST_NAME=api.sandbox.push.apple.com
 
 export JWT_ISSUE_TIME=$(date +%s)
