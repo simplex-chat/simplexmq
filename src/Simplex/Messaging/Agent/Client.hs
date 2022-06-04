@@ -134,7 +134,7 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   lock <- newTMVar ()
   return AgentClient {active, rcvQ, subQ, msgQ, smpServers, ntfServers, smpClients, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
 
-agentDbPath :: AgentClient -> FilePath 
+agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
