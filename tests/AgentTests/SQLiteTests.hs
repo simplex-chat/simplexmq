@@ -27,6 +27,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
 import UnliftIO.Directory (removeFile)
@@ -398,6 +399,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
             broker = (brokerId, ts)
           },
       msgType = AM_A_MSG_,
+      msgFlags = SMP.noMsgFlags,
       msgBody = hw,
       internalHash,
       externalPrevSndHash = "hash_from_sender"
@@ -427,6 +429,7 @@ mkSndMsgData internalId internalSndId internalHash =
       internalSndId,
       internalTs = ts,
       msgType = AM_A_MSG_,
+      msgFlags = SMP.noMsgFlags,
       msgBody = hw,
       internalHash,
       prevMsgHash = internalHash

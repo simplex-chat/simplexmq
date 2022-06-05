@@ -71,7 +71,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -465,14 +465,14 @@ sendConfirmation c sq@SndQueue {server, sndId, sndPublicKey = Just sndPublicKey,
   withLogClient_ c server sndId "SEND <CONF>" $ \smp -> do
     let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
     msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
-    liftClient SMP $ sendSMPMessage smp Nothing sndId msg
+    liftClient SMP $ sendSMPMessage smp Nothing sndId SMP.noMsgFlags msg
 sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> Compatible SMPQueueInfo -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) connReq connInfo =
   withLogClient_ c smpServer senderId "SEND <INV>" $ \smp -> do
     msg <- mkInvitation
-    liftClient SMP $ sendSMPMessage smp Nothing senderId msg
+    liftClient SMP $ sendSMPMessage smp Nothing senderId MsgFlags {notification = True} msg
   where
     mkInvitation :: m ByteString
     -- this is only encrypted with per-queue E2E, not with double ratchet
@@ -501,12 +501,12 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogClient c server rcvId "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
-sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
-sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} agentMsg =
+sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> MsgFlags -> ByteString -> m ()
+sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msgFlags agentMsg =
   withLogClient_ c server sndId "SEND <MSG>" $ \smp -> do
     let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
     msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
-    liftClient SMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
+    liftClient SMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msgFlags msg
 
 agentNtfRegisterToken :: AgentMonad m => AgentClient -> NtfToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> m (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =

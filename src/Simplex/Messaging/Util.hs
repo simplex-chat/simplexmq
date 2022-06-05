@@ -78,3 +78,7 @@ catchAll = E.catch
 catchAll_ :: IO a -> IO a -> IO a
 catchAll_ a = catchAll a . const
 {-# INLINE catchAll_ #-}
+
+eitherToMaybe :: Either a b -> Maybe b
+eitherToMaybe = either (const Nothing) Just
+{-# INLINE eitherToMaybe #-}

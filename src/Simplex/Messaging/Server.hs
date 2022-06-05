@@ -227,10 +227,10 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
     write q t = atomically $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
-send h Client {sndQ, sessionId, activeAt} = forever $ do
+send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
   -- TODO the line below can return Left, but we ignore it and do not disconnect the client
-  void . liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
+  void . liftIO $ tPut h (Nothing, encodeTransmission v sessionId t)
   atomically . writeTVar activeAt =<< liftIO getSystemTime
 
 disconnectTransport :: (Transport c, MonadUnliftIO m) => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> m ()
@@ -248,7 +248,7 @@ verifyTransmission sig_ signed queueId cmd = do
   case cmd of
     Cmd SRecipient (NEW k _) -> pure $ verifyCmdSignature sig_ signed k
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
-    Cmd SSender (SEND _) -> verifyCmd SSender $ verifyMaybe . senderKey
+    Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure True
     Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap snd . notifier
   where
@@ -298,7 +298,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
       case cmd of
         Cmd SSender command ->
           case command of
-            SEND msgBody -> sendMessage st msgBody
+            SEND flags msgBody -> sendMessage st flags msgBody
             PING -> pure (corrId, "", PONG)
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
@@ -309,6 +309,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 (createQueue st rKey dhKey)
                 (pure (corrId, queueId, ERR AUTH))
             SUB -> subscribeQueue queueId
+            GET -> pure (corrId, queueId, OK) -- TODO
             ACK -> acknowledgeMsg
             KEY sKey -> secureQueue_ st sKey
             NKEY nKey -> addQueueNotifier_ st nKey
@@ -419,8 +420,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
         withSub rId f = mapM f =<< TM.lookup rId subscriptions
 
-        sendMessage :: QueueStore -> MsgBody -> m (Transmission BrokerMsg)
-        sendMessage st msgBody
+        sendMessage :: QueueStore -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
+        sendMessage st flags msgBody
           | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
           | otherwise = do
             qr <- atomically $ getQueue st SSender queueId
@@ -454,7 +455,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   msgId <- randomId =<< asks (msgIdBytes . config)
                   ts <- liftIO getSystemTime
                   let c = C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId) msgBody (maxMessageLength + 2)
-                  pure $ Message msgId ts <$> c
+                  pure $ Message msgId ts flags <$> c
 
                 trySendNotification :: STM ()
                 trySendNotification =
@@ -499,7 +500,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             setDelivered = withSub rId $ \s -> tryPutTMVar (delivered s) ()
 
             msgCmd :: Message -> BrokerMsg
-            msgCmd Message {msgId, ts, msgBody} = MSG msgId ts msgBody
+            msgCmd Message {msgId, ts, msgFlags, msgBody} = MSG msgId ts msgFlags msgBody
 
         delQueueAndMsgs :: QueueStore -> m (Transmission BrokerMsg)
         delQueueAndMsgs st = do

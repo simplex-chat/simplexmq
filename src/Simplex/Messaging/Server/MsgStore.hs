@@ -5,11 +5,12 @@ module Simplex.Messaging.Server.MsgStore where
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime)
 import Numeric.Natural
-import Simplex.Messaging.Protocol (MsgBody, MsgId, RecipientId)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, MsgId, RecipientId)
 
 data Message = Message
   { msgId :: MsgId,
     ts :: SystemTime,
+    msgFlags :: MsgFlags,
     msgBody :: MsgBody
   }
 

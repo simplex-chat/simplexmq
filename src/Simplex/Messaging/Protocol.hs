@@ -78,6 +78,8 @@ module Simplex.Messaging.Protocol
     NtfPublicVerifyKey,
     MsgId,
     MsgBody,
+    MsgFlags (..),
+    noMsgFlags,
 
     -- * Parse and serialize
     ProtocolMsgTag (..),
@@ -109,6 +111,7 @@ import Data.Maybe (isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
+import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Network.Socket (HostName, ServiceName)
@@ -214,11 +217,14 @@ data Command (p :: Party) where
   SUB :: Command Recipient
   KEY :: SndPublicVerifyKey -> Command Recipient
   NKEY :: NtfPublicVerifyKey -> Command Recipient
+  GET :: Command Recipient
   ACK :: Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
   -- SMP sender commands
-  SEND :: MsgBody -> Command Sender
+  -- SEND v1 has to be supported for encoding/decoding
+  -- SEND :: MsgBody -> Command Sender
+  SEND :: MsgFlags -> MsgBody -> Command Sender
   PING :: Command Sender
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
@@ -230,7 +236,9 @@ deriving instance Eq (Command p)
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
-  MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
+  -- MSG v1 has to be supported for encoding/decoding
+  -- MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
+  MSG :: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
   NID :: NotifierId -> BrokerMsg
   NMSG :: BrokerMsg
   END :: BrokerMsg
@@ -239,6 +247,83 @@ data BrokerMsg where
   PONG :: BrokerMsg
   deriving (Eq, Show)
 
+newtype MsgFlags = MsgFlags {notification :: Bool}
+  deriving (Eq, Show)
+
+instance Encoding MsgFlags where
+  smpEncode = smpEncodeList . encodeMsgFlags
+  smpP = decodeMsgFlags <$> smpListP
+
+instance StrEncoding MsgFlags where
+  strEncode = strEncodeList . encodeMsgFlags
+  strP = decodeMsgFlags <$> strListP
+
+noMsgFlags :: MsgFlags
+noMsgFlags = MsgFlags {notification = False}
+
+encodeMsgFlags :: MsgFlags -> [MsgFlag]
+encodeMsgFlags MsgFlags {notification}
+  | notification = [MsgFlag MFTNotification $ MFVBool True]
+  | otherwise = []
+
+decodeMsgFlags :: [MsgFlag] -> MsgFlags
+decodeMsgFlags flags = MsgFlags {notification = any isNotification flags}
+  where
+    isNotification = \case
+      MsgFlag MFTNotification (MFVBool True) -> True
+      _ -> False
+
+data MsgFlag = MsgFlag MFTag MFValue
+
+data MFTag = MFTNotification | MFTUnknown Char
+  deriving (Eq)
+
+data MFValue = MFVBool Bool | MFVWord Word16 | MFVUnknown Char ByteString
+
+instance Encoding MsgFlag where
+  smpEncode (MsgFlag t v) = smpEncode (t, v)
+  smpP = MsgFlag <$> smpP <*> smpP
+
+instance Encoding MFTag where
+  smpEncode = \case
+    MFTNotification -> smpEncode 'N'
+    MFTUnknown tag -> smpEncode tag
+  smpP =
+    smpP >>= \case
+      'N' -> pure MFTNotification
+      tag -> pure $ MFTUnknown tag
+
+instance Encoding MFValue where
+  smpEncode = \case
+    MFVBool v -> smpEncode ('B', v)
+    MFVWord v -> smpEncode ('W', v)
+    MFVUnknown t v -> smpEncode (t, v)
+  smpP =
+    smpP >>= \case
+      'B' -> MFVBool <$> smpP
+      'W' -> MFVWord <$> smpP
+      c -> MFVUnknown c <$> smpP
+
+instance StrEncoding MsgFlag where
+  strEncode (MsgFlag t v) = strEncode t <> "=" <> strEncode v
+  strP = MsgFlag <$> strP <* A.char '=' <*> strP
+
+instance StrEncoding MFTag where
+  strEncode = smpEncode
+  strP = smpP
+
+instance StrEncoding MFValue where
+  strEncode f = case f of
+    MFVUnknown c v -> B.cons c $ strEncode v
+    _ -> smpEncode f
+  strP =
+    strP >>= \case
+      'B' -> MFVBool <$> strP
+      'W' -> MFVWord <$> strP
+      c -> MFVUnknown c <$> strP
+
+-- any new flag should be added to include 1 byte length, as ByteString encoding
+
 -- * SMP command tags
 
 data CommandTag (p :: Party) where
@@ -246,6 +331,7 @@ data CommandTag (p :: Party) where
   SUB_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
   NKEY_ :: CommandTag Recipient
+  GET_ :: CommandTag Recipient
   ACK_ :: CommandTag Recipient
   OFF_ :: CommandTag Recipient
   DEL_ :: CommandTag Recipient
@@ -284,6 +370,7 @@ instance PartyI p => Encoding (CommandTag p) where
     SUB_ -> "SUB"
     KEY_ -> "KEY"
     NKEY_ -> "NKEY"
+    GET_ -> "GET"
     ACK_ -> "ACK"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
@@ -298,6 +385,7 @@ instance ProtocolMsgTag CmdTag where
     "SUB" -> Just $ CT SRecipient SUB_
     "KEY" -> Just $ CT SRecipient KEY_
     "NKEY" -> Just $ CT SRecipient NKEY_
+    "GET" -> Just $ CT SRecipient GET_
     "ACK" -> Just $ CT SRecipient ACK_
     "OFF" -> Just $ CT SRecipient OFF_
     "DEL" -> Just $ CT SRecipient DEL_
@@ -572,28 +660,31 @@ instance Protocol BrokerMsg where
 
 class ProtocolMsgTag (Tag msg) => ProtocolEncoding msg where
   type Tag msg
-  encodeProtocol :: msg -> ByteString
-  protocolP :: Tag msg -> Parser msg
+  encodeProtocol :: Version -> msg -> ByteString
+  protocolP :: Version -> Tag msg -> Parser msg
   checkCredentials :: SignedRawTransmission -> msg -> Either ErrorType msg
 
 instance PartyI p => ProtocolEncoding (Command p) where
   type Tag (Command p) = CommandTag p
-  encodeProtocol = \case
+  encodeProtocol v = \case
     NEW rKey dhKey -> e (NEW_, ' ', rKey, dhKey)
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
     NKEY k -> e (NKEY_, ' ', k)
+    GET -> e GET_
     ACK -> e ACK_
     OFF -> e OFF_
     DEL -> e DEL_
-    SEND msg -> e (SEND_, ' ', Tail msg)
+    SEND flags msg
+      | v == 1 -> e (SEND_, ' ', Tail msg)
+      | otherwise -> e (SEND_, ' ', flags, Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP tag = (\(Cmd _ c) -> checkParty c) <$?> protocolP (CT (sParty @p) tag)
+  protocolP v tag = (\(Cmd _ c) -> checkParty c) <$?> protocolP v (CT (sParty @p) tag)
 
   checkCredentials (sig, _, queueId, _) cmd = case cmd of
     -- NEW must have signature but NOT queue ID
@@ -602,7 +693,7 @@ instance PartyI p => ProtocolEncoding (Command p) where
       | not (B.null queueId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     -- SEND must have queue ID, signature is not always required
-    SEND _
+    SEND {}
       | B.null queueId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     -- PING must not have queue ID or signature
@@ -616,21 +707,24 @@ instance PartyI p => ProtocolEncoding (Command p) where
 
 instance ProtocolEncoding Cmd where
   type Tag Cmd = CmdTag
-  encodeProtocol (Cmd _ c) = encodeProtocol c
+  encodeProtocol v (Cmd _ c) = encodeProtocol v c
 
-  protocolP = \case
+  protocolP v = \case
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_ -> NEW <$> _smpP <*> smpP
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
         NKEY_ -> NKEY <$> _smpP
+        GET_ -> pure GET
         ACK_ -> pure ACK
         OFF_ -> pure OFF
         DEL_ -> pure DEL
     CT SSender tag ->
       Cmd SSender <$> case tag of
-        SEND_ -> SEND . unTail <$> _smpP
+        SEND_
+          | v == 1 -> SEND <$> pure noMsgFlags <*> (unTail <$> _smpP)
+          | otherwise -> SEND <$> _smpP <*> (unTail <$> smpP)
         PING_ -> pure PING
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 
@@ -638,9 +732,11 @@ instance ProtocolEncoding Cmd where
 
 instance ProtocolEncoding BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
-  encodeProtocol = \case
+  encodeProtocol v = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
-    MSG msgId ts msgBody -> e (MSG_, ' ', msgId, ts, Tail msgBody)
+    MSG msgId ts flags msgBody
+      | v == 1 -> e (MSG_, ' ', msgId, ts, Tail msgBody)
+      | otherwise -> e (MSG_, ' ', msgId, ts, flags, Tail msgBody)
     NID nId -> e (NID_, ' ', nId)
     NMSG -> e NMSG_
     END -> e END_
@@ -651,8 +747,10 @@ instance ProtocolEncoding BrokerMsg where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP = \case
-    MSG_ -> MSG <$> _smpP <*> smpP <*> (unTail <$> smpP)
+  protocolP v = \case
+    MSG_
+      | v == 1 -> MSG <$> _smpP <*> smpP <*> pure noMsgFlags <*> (unTail <$> smpP)
+      | otherwise -> MSG <$> _smpP <*> smpP <*> smpP <*> (unTail <$> smpP)
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP
     NMSG_ -> pure NMSG
@@ -679,11 +777,11 @@ _smpP :: Encoding a => Parser a
 _smpP = A.space *> smpP
 
 -- | Parse SMP protocol commands and broker messages
-parseProtocol :: ProtocolEncoding msg => ByteString -> Either ErrorType msg
-parseProtocol s =
+parseProtocol :: ProtocolEncoding msg => Version -> ByteString -> Either ErrorType msg
+parseProtocol v s =
   let (tag, params) = B.break (== ' ') s
    in case decodeTag tag of
-        Just cmd -> parse (protocolP cmd) (CMD SYNTAX) params
+        Just cmd -> parse (protocolP v cmd) (CMD SYNTAX) params
         Nothing -> Left $ CMD UNKNOWN
 
 checkParty :: forall t p p'. (PartyI p, PartyI p') => t p' -> Either String (t p)
@@ -742,9 +840,9 @@ instance Encoding CommandError where
 tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
 tPut th (sig, t) = tPutBlock th $ smpEncode (C.signatureBytes sig) <> t
 
-encodeTransmission :: ProtocolEncoding c => ByteString -> Transmission c -> ByteString
-encodeTransmission sessionId (CorrId corrId, queueId, command) =
-  smpEncode (sessionId, corrId, queueId) <> encodeProtocol command
+encodeTransmission :: ProtocolEncoding c => Version -> ByteString -> Transmission c -> ByteString
+encodeTransmission v sessionId (CorrId corrId, queueId, command) =
+  smpEncode (sessionId, corrId, queueId) <> encodeProtocol v command
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
 tGetParse :: Transport c => THandle c -> IO (Either TransportError RawTransmission)
@@ -752,7 +850,7 @@ tGetParse th = (parse transmissionP TEBadBlock =<<) <$> tGetBlock th
 
 -- | Receive client and server transmissions (determined by `cmd` type).
 tGet :: forall cmd c m. (ProtocolEncoding cmd, Transport c, MonadIO m) => THandle c -> m (SignedTransmission cmd)
-tGet th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
+tGet th@THandle {sessionId, thVersion = v} = liftIO (tGetParse th) >>= decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m (SignedTransmission cmd)
     decodeParseValidate = \case
@@ -768,5 +866,5 @@ tGet th@THandle {sessionId} = liftIO (tGetParse th) >>= decodeParseValidate
 
     tParseValidate :: ByteString -> SignedRawTransmission -> m (SignedTransmission cmd)
     tParseValidate signed t@(sig, corrId, entityId, command) = do
-      let cmd = parseProtocol command >>= checkCredentials t
+      let cmd = parseProtocol v command >>= checkCredentials t
       pure (sig, signed, (CorrId corrId, entityId, cmd))

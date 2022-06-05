@@ -47,66 +47,100 @@ class Encoding a where
 
 instance Encoding Char where
   smpEncode = B.singleton
+  {-# INLINE smpEncode #-}
   smpP = A.anyChar
+  {-# INLINE smpP #-}
+
+instance Encoding Bool where
+  smpEncode = \case
+    True -> "T"
+    False -> "F"
+  {-# INLINE smpEncode #-}
+  smpP =
+    smpP >>= \case
+      'T' -> pure True
+      'F' -> pure False
+      _ -> fail "invalid Bool"
+  {-# INLINE smpP #-}
 
 instance Encoding Word16 where
   smpEncode = encodeWord16
+  {-# INLINE smpEncode #-}
   smpP = decodeWord16 <$> A.take 2
+  {-# INLINE smpP #-}
 
 instance Encoding Word32 where
   smpEncode = encodeWord32
+  {-# INLINE smpEncode #-}
   smpP = decodeWord32 <$> A.take 4
+  {-# INLINE smpP #-}
 
 instance Encoding Int64 where
   smpEncode i = w32 (i `shiftR` 32) <> w32 i
+  {-# INLINE smpEncode #-}
   smpP = do
     l <- w32P
     r <- w32P
     pure $ (l `shiftL` 32) .|. r
+  {-# INLINE smpP #-}
 
 w32 :: Int64 -> ByteString
 w32 = smpEncode @Word32 . fromIntegral
+{-# INLINE w32 #-}
 
 w32P :: Parser Int64
 w32P = fromIntegral <$> smpP @Word32
+{-# INLINE w32P #-}
 
 -- ByteStrings are assumed no longer than 255 bytes
 instance Encoding ByteString where
   smpEncode s = B.cons (lenEncode $ B.length s) s
+  {-# INLINE smpEncode #-}
   smpP = A.take =<< lenP
+  {-# INLINE smpP #-}
 
 lenEncode :: Int -> Char
 lenEncode = w2c . fromIntegral
+{-# INLINE lenEncode #-}
 
 lenP :: Parser Int
 lenP = fromIntegral . c2w <$> A.anyChar
+{-# INLINE lenP #-}
 
 instance Encoding a => Encoding (Maybe a) where
   smpEncode s = maybe "0" (("1" <>) . smpEncode) s
+  {-# INLINE smpEncode #-}
   smpP =
     smpP >>= \case
       '0' -> pure Nothing
       '1' -> Just <$> smpP
       _ -> fail "invalid Maybe tag"
+  {-# INLINE smpP #-}
 
 newtype Tail = Tail {unTail :: ByteString}
 
 instance Encoding Tail where
   smpEncode = unTail
+  {-# INLINE smpEncode #-}
   smpP = Tail <$> A.takeByteString
+  {-# INLINE smpP #-}
 
 -- newtype for encoding/decoding ByteStrings over 255 bytes with 2-bytes length prefix
 newtype Large = Large {unLarge :: ByteString}
 
 instance Encoding Large where
   smpEncode (Large s) = smpEncode @Word16 (fromIntegral $ B.length s) <> s
+  {-# INLINE smpEncode #-}
   smpP = do
     len <- fromIntegral <$> smpP @Word16
     Large <$> A.take len
+  {-# INLINE smpP #-}
 
 instance Encoding SystemTime where
   smpEncode = smpEncode . systemSeconds
+  {-# INLINE smpEncode #-}
   smpP = MkSystemTime <$> smpP <*> pure 0
+  {-# INLINE smpP #-}
 
 -- lists encode/parse as a sequence of items prefixed with list length (as 1 byte)
 smpEncodeList :: Encoding a => [a] -> ByteString
@@ -117,7 +151,9 @@ smpListP = (`A.count` smpP) =<< lenP
 
 instance Encoding String where
   smpEncode = smpEncode . B.pack
+  {-# INLINE smpEncode #-}
   smpP = B.unpack <$> smpP
+  {-# INLINE smpP #-}
 
 instance Encoding a => Encoding (L.NonEmpty a) where
   smpEncode = smpEncodeList . L.toList
@@ -128,20 +164,30 @@ instance Encoding a => Encoding (L.NonEmpty a) where
 
 instance (Encoding a, Encoding b) => Encoding (a, b) where
   smpEncode (a, b) = smpEncode a <> smpEncode b
+  {-# INLINE smpEncode #-}
   smpP = (,) <$> smpP <*> smpP
+  {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c) => Encoding (a, b, c) where
   smpEncode (a, b, c) = smpEncode a <> smpEncode b <> smpEncode c
+  {-# INLINE smpEncode #-}
   smpP = (,,) <$> smpP <*> smpP <*> smpP
+  {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c, Encoding d) => Encoding (a, b, c, d) where
   smpEncode (a, b, c, d) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d
+  {-# INLINE smpEncode #-}
   smpP = (,,,) <$> smpP <*> smpP <*> smpP <*> smpP
+  {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c, Encoding d, Encoding e) => Encoding (a, b, c, d, e) where
   smpEncode (a, b, c, d, e) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d <> smpEncode e
+  {-# INLINE smpEncode #-}
   smpP = (,,,,) <$> smpP <*> smpP <*> smpP <*> smpP <*> smpP
+  {-# INLINE smpP #-}
 
 instance (Encoding a, Encoding b, Encoding c, Encoding d, Encoding e, Encoding f) => Encoding (a, b, c, d, e, f) where
   smpEncode (a, b, c, d, e, f) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d <> smpEncode e <> smpEncode f
+  {-# INLINE smpEncode #-}
   smpP = (,,,,,) <$> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP
+  {-# INLINE smpP #-}
