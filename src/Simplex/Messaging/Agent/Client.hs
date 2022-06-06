@@ -71,7 +71,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgId, MsgFlags (..), ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM

@@ -2,8 +2,10 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE NamedFieldPuns, LambdaCase, TupleSections #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.MsgStore.STM where
 
@@ -12,7 +14,7 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Numeric.Natural
-import Simplex.Messaging.Protocol (RecipientId, MsgId)
+import Simplex.Messaging.Protocol (MsgId, RecipientId)
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM

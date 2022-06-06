@@ -339,49 +339,51 @@ testGetCommand t =
 
 testGetSubCommands :: forall c. Transport c => TProxy c -> Spec
 testGetSubCommands t =
-  xit "should retrieve messages with GET and receive with SUB, only one ACK would work" $ do
+  it "should retrieve messages with GET and receive with SUB, only one ACK would work" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
     smpTest3 t $ \rh1 rh2 sh -> do
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh1 sPub
       let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
       Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello 1")
-      Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, _SEND "hello 2")
-      Resp "2a" _ OK <- signSendRecv sh sKey ("2a", sId, _SEND "hello 3")
-      Resp "2b" _ OK <- signSendRecv sh sKey ("2b", sId, _SEND "hello 4")
+      Resp "1a" _ OK <- signSendRecv sh sKey ("1a", sId, _SEND "hello 2")
+      Resp "1b" _ OK <- signSendRecv sh sKey ("1b", sId, _SEND "hello 3")
+      Resp "1c" _ OK <- signSendRecv sh sKey ("1c", sId, _SEND "hello 4")
       -- both get the same if not ACK'd
       Resp "" _ (MSG mId1 _ _ msg1) <- tGet rh1
-      Resp "3" _ (MSG mId1' _ _ msg1') <- signSendRecv rh2 rKey ("3", rId, GET)
+      Resp "2" _ (MSG mId1' _ _ msg1') <- signSendRecv rh2 rKey ("2", rId, GET)
       (dec mId1 msg1, Right "hello 1") #== "received from queue via SUB"
       (dec mId1' msg1', Right "hello 1") #== "retrieved from queue with GET"
       mId1 `shouldBe` mId1'
       msg1 `shouldBe` msg1'
       -- subscriber cannot GET, getter cannot SUB
-      Resp "4" _ (ERR (CMD PROHIBITED)) <- signSendRecv rh1 rKey ("4", rId, GET)
-      Resp "5" _ (ERR (CMD PROHIBITED)) <- signSendRecv rh2 rKey ("5", rId, SUB)
-      Resp "6" _ (MSG mId2 _ _ msg2) <- signSendRecv rh1 rKey ("6", rId, ACK mId1)
+      Resp "3" _ (ERR (CMD PROHIBITED)) <- signSendRecv rh1 rKey ("3", rId, GET)
+      Resp "3a" _ (ERR (CMD PROHIBITED)) <- signSendRecv rh2 rKey ("3a", rId, SUB)
+      -- ACK for SUB delivers the next message
+      Resp "4" _ (MSG mId2 _ _ msg2) <- signSendRecv rh1 rKey ("4", rId, ACK mId1)
       (dec mId2 msg2, Right "hello 2") #== "received from queue via SUB"
+      -- bad msgId returns error
+      Resp "5" _ (ERR NO_MSG) <- signSendRecv rh2 rKey ("5", rId, ACK "1234")
       -- already ACK'd by subscriber, but still returns OK when msgId matches
-      Resp "6a" _ OK <- signSendRecv rh2 rKey ("6a", rId, ACK mId1)
+      Resp "5a" _ OK <- signSendRecv rh2 rKey ("5a", rId, ACK mId1)
       -- msg2 is not lost - even if subscriber does not ACK it, it is delivered to getter
-      Resp "9" _ (MSG mId2' _ _ msg2') <- signSendRecv rh2 rKey ("9", rId, GET)
+      Resp "6" _ (MSG mId2' _ _ msg2') <- signSendRecv rh2 rKey ("6", rId, GET)
       (dec mId2' msg2', Right "hello 2") #== "retrieved from queue with GET"
+      mId2 `shouldBe` mId2'
+      msg2 `shouldBe` msg2'
       -- getter ACK returns OK, even though there is the next message
-      Resp "10" _ OK <- signSendRecv rh2 rKey ("10", rId, ACK mId2')
-
-
-      -- subscriber ACK loses message?
-      Resp "8" _ (MSG mId4 _ _ msg4) <- signSendRecv rh1 rKey ("8", rId, ACK mId2)
-      -- Resp "10" _ OK <- signSendRecv rh2 rKey ("10", rId, ACK mId3)
-      -- message after ACK is not repeated
-      -- Resp "" _ (MSG mId4 _ _ msg4) <- tGet rh1
-      -- Resp "11" _ (MSG mId4' _ _ msg4') <- signSendRecv rh2 rKey ("11", rId, GET)
-      (dec mId4 msg4, Right "hello 4") #== "received from queue via SUB"
-      -- (dec mId4' msg4', Right "hello 4") #== "retrieved from queue with GET"
-      -- mId4 `shouldBe` mId4'
-      -- msg4 `shouldBe` msg4'
-      Resp "12" _ OK <- signSendRecv rh2 rKey ("12", rId, ACK mId4)
-      -- already ACK'd by getter
-      Resp "12a" _ (ERR NO_MSG) <- signSendRecv rh1 rKey ("12a", rId, ACK mId4)
+      Resp "7" _ OK <- signSendRecv rh2 rKey ("7", rId, ACK mId2')
+      Resp "8" _ (MSG mId3 _ _ msg3) <- signSendRecv rh2 rKey ("8", rId, GET)
+      (dec mId3 msg3, Right "hello 3") #== "retrieved from queue with GET"
+      -- subscriber ACK does not lose message
+      Resp "9" _ (MSG mId3' _ _ msg3') <- signSendRecv rh1 rKey ("9", rId, ACK mId2')
+      (dec mId3' msg3', Right "hello 3") #== "retrieved from queue with GET"
+      mId3 `shouldBe` mId3'
+      msg3 `shouldBe` msg3'
+      Resp "10" _ (MSG mId4 _ _ msg4) <- signSendRecv rh1 rKey ("10", rId, ACK mId3)
+      (dec mId4 msg4, Right "hello 4") #== "retrieved from queue with GET"
+      Resp "11" _ OK <- signSendRecv rh1 rKey ("11", rId, ACK mId4)
+      -- no more messages for getter too
+      Resp "12" _ (ERR NO_MSG) <- signSendRecv rh2 rKey ("12", rId, GET)
       pure ()
 
 testWithStoreLog :: ATransport -> Spec
