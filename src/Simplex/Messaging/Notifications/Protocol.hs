@@ -176,7 +176,7 @@ deriving instance Show NtfCmd
 
 instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
-  encodeProtocol = \case
+  encodeProtocol _v = \case
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
     TVFY code -> e (TVFY_, ' ', code)
     TCHK -> e TCHK_
@@ -190,7 +190,7 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP (NCT (sNtfEntity @e) tag)
+  protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
 
   checkCredentials (sig, _, entityId, _) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
@@ -211,9 +211,9 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
 
 instance ProtocolEncoding NtfCmd where
   type Tag NtfCmd = NtfCmdTag
-  encodeProtocol (NtfCmd _ c) = encodeProtocol c
+  encodeProtocol _v (NtfCmd _ c) = encodeProtocol _v c
 
-  protocolP = \case
+  protocolP _v = \case
     NCT SToken tag ->
       NtfCmd SToken <$> case tag of
         TNEW_ -> TNEW <$> _smpP
@@ -274,7 +274,7 @@ data NtfResponse
 
 instance ProtocolEncoding NtfResponse where
   type Tag NtfResponse = NtfResponseTag
-  encodeProtocol = \case
+  encodeProtocol _v = \case
     NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
     NRSubId entId -> e (NRSubId_, ' ', entId)
     NROk -> e NROk_
@@ -286,7 +286,7 @@ instance ProtocolEncoding NtfResponse where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP = \case
+  protocolP _v = \case
     NRTknId_ -> NRTknId <$> _smpP <*> smpP
     NRSubId_ -> NRSubId <$> _smpP
     NROk_ -> pure NROk

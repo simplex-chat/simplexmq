@@ -64,6 +64,7 @@ CREATE TABLE messages(
   internal_snd_id INTEGER,
   msg_type BLOB NOT NULL, --(H)ELLO,(R)EPLY,(D)ELETE. Should SMP confirmation be saved too?
   msg_body BLOB NOT NULL DEFAULT x'',
+  msg_flags TEXT NULL,
   PRIMARY KEY(conn_id, internal_id),
   FOREIGN KEY(conn_id, internal_rcv_id) REFERENCES rcv_messages
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,

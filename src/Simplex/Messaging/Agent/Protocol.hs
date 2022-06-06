@@ -110,7 +110,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:))
+import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -132,6 +132,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( ErrorType,
     MsgBody,
+    MsgFlags,
     MsgId,
     SMPServer,
     SndPublicVerifyKey,
@@ -212,11 +213,11 @@ data ACommand (p :: AParty) where
   END :: ACommand Agent
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent
   UP :: SMPServer -> [ConnId] -> ACommand Agent
-  SEND :: MsgBody -> ACommand Client
+  SEND :: MsgFlags -> MsgBody -> ACommand Client
   MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
-  MSG :: MsgMeta -> MsgBody -> ACommand Agent
+  MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
@@ -840,13 +841,13 @@ commandP =
     acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
-    downsResp = ACmd SAgent .: DOWN <$> strP <* A.space <*> connections
-    upsResp = ACmd SAgent .: UP <$> strP <* A.space <*> connections
-    sendCmd = ACmd SClient . SEND <$> A.takeByteString
+    downsResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
+    upsResp = ACmd SAgent .: UP <$> strP_ <*> connections
+    sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
     msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
-    message = ACmd SAgent .: MSG <$> msgMetaP <* A.space <*> A.takeByteString
+    message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
     connections = strP `A.sepBy'` (A.char ',')
     msgMetaP = do
@@ -877,11 +878,11 @@ serializeCommand = \case
   END -> "END"
   DOWN srv conns -> B.unwords ["DOWN", strEncode srv, connections conns]
   UP srv conns -> B.unwords ["UP", strEncode srv, connections conns]
-  SEND msgBody -> "SEND " <> serializeBinary msgBody
+  SEND msgFlags msgBody -> "SEND " <> smpEncode msgFlags <> " " <> serializeBinary msgBody
   MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
   MERR mId e -> B.unwords ["MERR", bshow mId, strEncode e]
-  MSG msgMeta msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, serializeBinary msgBody]
+  MSG msgMeta msgFlags msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, smpEncode msgFlags, serializeBinary msgBody]
   ACK mId -> "ACK " <> bshow mId
   OFF -> "OFF"
   DEL -> "DEL"
@@ -953,8 +954,8 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
 
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
     cmdWithMsgBody = \case
-      SEND body -> SEND <$$> getBody body
-      MSG msgMeta body -> MSG msgMeta <$$> getBody body
+      SEND msgFlags body -> SEND msgFlags <$$> getBody body
+      MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
       JOIN qUri cInfo -> JOIN qUri <$$> getBody cInfo
       CONF confId cInfo -> CONF confId <$$> getBody cInfo
       LET confId cInfo -> LET confId <$$> getBody cInfo

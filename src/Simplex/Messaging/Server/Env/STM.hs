@@ -113,7 +113,7 @@ data ServerStats = ServerStats
     fromTime :: TVar UTCTime
   }
 
-data SubscriptionThread = NoSub | SubPending | SubThread ThreadId
+data SubscriptionThread = NoSub | SubPending | SubThread ThreadId | ProhibitSub
 
 data Sub = Sub
   { subThread :: SubscriptionThread,
@@ -150,9 +150,15 @@ newServerStats ts = do
   pure ServerStats {qCreated, qSecured, qDeleted, msgSent, msgRecv, msgQueues, fromTime}
 
 newSubscription :: STM Sub
-newSubscription = do
+newSubscription = newSubscription_ NoSub
+
+prohibitedSubscription :: STM Sub
+prohibitedSubscription = newSubscription_ ProhibitSub
+
+newSubscription_ :: SubscriptionThread -> STM Sub
+newSubscription_ subThread = do
   delivered <- newEmptyTMVar
-  return Sub {subThread = NoSub, delivered}
+  return Sub {subThread, delivered}
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do

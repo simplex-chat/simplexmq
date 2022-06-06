@@ -43,7 +43,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (getCurrentTime)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLError, ToRow, field, (:.) (..))
 import qualified Database.SQLite.Simple as DB
@@ -61,9 +61,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client (NtfServer, NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, ProtocolServer (..))
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (bshow, liftIOEither)
+import Simplex.Messaging.Util (bshow, eitherToMaybe, liftIOEither)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
@@ -459,22 +459,25 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       insertSndMsgDetails_ db connId sndMsgData
       updateHashSnd_ db connId sndMsgData
 
-  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, (AgentMessageType, MsgBody, InternalTs))
+  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, PendingMsgData)
   getPendingMsgData st connId msgId =
     liftIOEither . withTransaction st $ \db -> runExceptT $ do
       rq_ <- liftIO $ getRcvQueueByConnId_ db connId
       msgData <-
-        ExceptT . firstRow id SEMsgNotFound $
+        ExceptT . firstRow pendingMsgData SEMsgNotFound $
           DB.query
             db
             [sql|
-                SELECT m.msg_type, m.msg_body, m.internal_ts
+                SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts
                 FROM messages m
                 JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
                 WHERE m.conn_id = ? AND m.internal_id = ?
               |]
             (connId, msgId)
       pure (rq_, msgData)
+    where
+      pendingMsgData :: (AgentMessageType, MsgFlags, MsgBody, InternalTs) -> PendingMsgData
+      pendingMsgData (msgType, msgFlags, msgBody, internalTs) = PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
 
   getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
   getPendingMsgs st connId =
@@ -681,6 +684,10 @@ instance ToField (SConnectionMode c) where toField = toField . connMode
 
 instance FromField AConnectionMode where fromField = fromTextField_ $ fmap connMode' . connModeT
 
+instance ToField MsgFlags where toField = toField . decodeLatin1 . smpEncode
+
+instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
+
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
@@ -862,21 +869,22 @@ updateLastIdsRcv_ dbConn connId newInternalId newInternalRcvId =
 -- * createRcvMsg helpers
 
 insertRcvMsgBase_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgBody, internalRcvId} = do
+insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgFlags, msgBody, internalRcvId} = do
   let MsgMeta {recipient = (internalId, internalTs)} = msgMeta
   DB.executeNamed
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_body)
+        ( conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_flags, msg_body)
       VALUES
-        (:conn_id,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:msg_type, :msg_body);
+        (:conn_id,:internal_id,:internal_ts,:internal_rcv_id,            NULL,:msg_type,:msg_flags,:msg_body);
     |]
     [ ":conn_id" := connId,
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_rcv_id" := internalRcvId,
       ":msg_type" := msgType,
+      ":msg_flags" := msgFlags,
       ":msg_body" := msgBody
     ]
 
@@ -962,15 +970,16 @@ insertSndMsgBase_ dbConn connId SndMsgData {..} = do
     dbConn
     [sql|
       INSERT INTO messages
-        ( conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_body)
+        ( conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_flags, msg_body)
       VALUES
-        (:conn_id,:internal_id,:internal_ts,            NULL,:internal_snd_id,:msg_type, :msg_body);
+        (:conn_id,:internal_id,:internal_ts,            NULL,:internal_snd_id,:msg_type,:msg_flags,:msg_body);
     |]
     [ ":conn_id" := connId,
       ":internal_id" := internalId,
       ":internal_ts" := internalTs,
       ":internal_snd_id" := internalSndId,
       ":msg_type" := msgType,
+      ":msg_flags" := msgFlags,
       ":msg_body" := msgBody
     ]
 

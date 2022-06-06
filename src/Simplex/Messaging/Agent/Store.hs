@@ -24,6 +24,7 @@ import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfTknStatus, NtfTokenId)
 import Simplex.Messaging.Protocol
   ( MsgBody,
+    MsgFlags,
     MsgId,
     RcvDhSecret,
     RcvPrivateSignKey,
@@ -64,7 +65,7 @@ class Monad m => MonadAgentStore s m where
   createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
   updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
-  getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, (AgentMessageType, MsgBody, InternalTs))
+  getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, PendingMsgData)
   getPendingMsgs :: s -> ConnId -> m [InternalId]
   checkRcvMsg :: s -> ConnId -> InternalId -> m ()
   deleteMsg :: s -> ConnId -> InternalId -> m ()
@@ -235,6 +236,7 @@ type PrevSndMsgHash = MsgHash
 data RcvMsgData = RcvMsgData
   { msgMeta :: MsgMeta,
     msgType :: AgentMessageType,
+    msgFlags :: MsgFlags,
     msgBody :: MsgBody,
     internalRcvId :: InternalRcvId,
     internalHash :: MsgHash,
@@ -246,14 +248,18 @@ data SndMsgData = SndMsgData
     internalSndId :: InternalSndId,
     internalTs :: InternalTs,
     msgType :: AgentMessageType,
+    msgFlags :: MsgFlags,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash
   }
 
-data PendingMsg = PendingMsg
-  { connId :: ConnId,
-    msgId :: InternalId
+data PendingMsgData = PendingMsgData
+  { msgId :: InternalId,
+    msgType :: AgentMessageType,
+    msgFlags :: MsgFlags,
+    msgBody :: MsgBody,
+    internalTs :: InternalTs
   }
   deriving (Show)
 

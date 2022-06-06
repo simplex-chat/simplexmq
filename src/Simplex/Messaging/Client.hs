@@ -70,6 +70,7 @@ import Simplex.Messaging.Transport.Client (runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
+import Simplex.Messaging.Version
 import System.Timeout (timeout)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
@@ -79,6 +80,7 @@ data ProtocolClient msg = ProtocolClient
   { action :: Async (),
     connected :: TVar Bool,
     sessionId :: SessionId,
+    thVersion :: Version,
     protocolServer :: ProtocolServer,
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
@@ -146,6 +148,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
         ProtocolClient
           { action = undefined,
             sessionId = undefined,
+            thVersion = undefined,
             connected,
             protocolServer,
             tcpTimeout,
@@ -165,7 +168,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
             `finally` atomically (putTMVar thVar $ Left PCENetworkError)
       th_ <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case th_ of
-        Just (Right THandle {sessionId}) -> Right c {action, sessionId}
+        Just (Right THandle {sessionId, thVersion}) -> Right c {action, sessionId, thVersion}
         Just (Left e) -> Left e
         Nothing -> Left PCENetworkError
 
@@ -179,11 +182,11 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
     client _ c thVar h =
       runExceptT (protocolClientHandshake @msg h $ keyHash protocolServer) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ PCETransportError e
-        Right th@THandle {sessionId} -> do
+        Right th@THandle {sessionId, thVersion} -> do
           atomically $ do
             writeTVar (connected c) True
             putTMVar thVar $ Right th
-          let c' = c {sessionId} :: ProtocolClient msg
+          let c' = c {sessionId, thVersion} :: ProtocolClient msg
           -- TODO remove ping if 0 is passed (or Nothing?)
           raceAny_ [send c' th, process c', receive c' th, ping c']
             `finally` disconnected
@@ -305,9 +308,9 @@ enableSMPQueueNotifications c rpKey rId notifierKey =
 -- | Send SMP message.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#send-message
-sendSMPMessage :: SMPClient -> Maybe SndPrivateSignKey -> SenderId -> MsgBody -> ExceptT ProtocolClientError IO ()
-sendSMPMessage c spKey sId msg =
-  sendSMPCommand c spKey sId (SEND msg) >>= \case
+sendSMPMessage :: SMPClient -> Maybe SndPrivateSignKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT ProtocolClientError IO ()
+sendSMPMessage c spKey sId flags msg =
+  sendSMPCommand c spKey sId (SEND flags msg) >>= \case
     OK -> pure ()
     _ -> throwE PCEUnexpectedResponse
 
@@ -347,9 +350,9 @@ sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
 -- | Send Protocol command
 sendProtocolCommand :: forall msg. ProtocolEncoding (ProtocolCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtocolCommand msg -> ExceptT ProtocolClientError IO msg
-sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, tcpTimeout} pKey qId cmd = do
+sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, thVersion, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
-  t <- signTransmission $ encodeTransmission sessionId (corrId, qId, cmd)
+  t <- signTransmission $ encodeTransmission thVersion sessionId (corrId, qId, cmd)
   ExceptT $ sendRecv corrId t
   where
     lift_ :: STM a -> ExceptT ProtocolClientError IO a

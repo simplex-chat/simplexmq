@@ -39,6 +39,7 @@ module Simplex.Messaging.Agent.Client
     logServer,
     removeSubscription,
     hasActiveSubscription,
+    agentDbPath,
   )
 where
 
@@ -63,13 +64,14 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..))
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -132,6 +134,9 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   lock <- newTMVar ()
   return AgentClient {active, rcvQ, subQ, msgQ, smpServers, ntfServers, smpClients, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
 
+agentDbPath :: AgentClient -> FilePath
+agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
+
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
@@ -184,10 +189,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
             _ -> TM.insert srv cVar ps
 
     serverDown :: UnliftIO m -> Map ConnId RcvQueue -> IO ()
-    serverDown u cs = unless (M.null cs) $ do
-      let conns = M.keys cs
-      unless (null conns) . notifySub "" $ DOWN srv conns
-      whenM (readTVarIO active) $ unliftIO u reconnectServer
+    serverDown u cs = unless (M.null cs) $
+      whenM (readTVarIO active) $ do
+        let conns = M.keys cs
+        unless (null conns) . notifySub "" $ DOWN srv conns
+        unliftIO u reconnectServer
 
     reconnectServer :: m ()
     reconnectServer = do
@@ -304,21 +310,30 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
 closeAgentClient :: MonadIO m => AgentClient -> m ()
 closeAgentClient c = liftIO $ do
   atomically $ writeTVar (active c) False
-  closeSMPServerClients c
+  closeProtocolServerClients (clientTimeout smpCfg) $ smpClients c
+  closeProtocolServerClients (clientTimeout ntfCfg) $ ntfClients c
   cancelActions $ reconnections c
   cancelActions $ asyncClients c
   cancelActions $ smpQueueMsgDeliveries c
-
-closeSMPServerClients :: AgentClient -> IO ()
-closeSMPServerClients c = readTVarIO (smpClients c) >>= mapM_ (forkIO . closeClient)
+  clear subscrSrvrs
+  clear pendingSubscrSrvrs
+  clear subscrConns
+  clear connMsgsQueued
+  clear smpQueueMsgQueues
   where
-    closeClient smpVar =
-      atomically (readTMVar smpVar) >>= \case
-        Right smp -> closeProtocolClient smp `catchAll_` pure ()
+    clientTimeout sel = tcpTimeout . sel . config $ agentEnv c
+    clear sel = atomically $ writeTVar (sel c) M.empty
+
+closeProtocolServerClients :: Int -> TMap ProtocolServer (ClientVar msg) -> IO ()
+closeProtocolServerClients tcpTimeout cs = readTVarIO cs >>= mapM_ (forkIO . closeClient) >> atomically (writeTVar cs M.empty)
+  where
+    closeClient cVar =
+      tcpTimeout `timeout` atomically (readTMVar cVar) >>= \case
+        Just (Right client) -> closeProtocolClient client `catchAll_` pure ()
         _ -> pure ()
 
-cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()
-cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel
+cancelActions :: (Foldable f, Monoid (f (Async ()))) => TVar (f (Async ())) -> IO ()
+cancelActions as = readTVarIO as >>= mapM_ uninterruptibleCancel >> atomically (writeTVar as mempty)
 
 withAgentLock :: MonadUnliftIO m => AgentClient -> m a -> m a
 withAgentLock AgentClient {lock} =
@@ -450,14 +465,14 @@ sendConfirmation c sq@SndQueue {server, sndId, sndPublicKey = Just sndPublicKey,
   withLogClient_ c server sndId "SEND <CONF>" $ \smp -> do
     let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
     msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
-    liftClient SMP $ sendSMPMessage smp Nothing sndId msg
+    liftClient SMP $ sendSMPMessage smp Nothing sndId SMP.noMsgFlags msg
 sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> Compatible SMPQueueInfo -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) connReq connInfo =
   withLogClient_ c smpServer senderId "SEND <INV>" $ \smp -> do
     msg <- mkInvitation
-    liftClient SMP $ sendSMPMessage smp Nothing senderId msg
+    liftClient SMP $ sendSMPMessage smp Nothing senderId MsgFlags {notification = True} msg
   where
     mkInvitation :: m ByteString
     -- this is only encrypted with per-queue E2E, not with double ratchet
@@ -486,12 +501,12 @@ deleteQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogClient c server rcvId "DEL" $ \smp ->
     deleteSMPQueue smp rcvPrivateKey rcvId
 
-sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> ByteString -> m ()
-sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} agentMsg =
+sendAgentMessage :: forall m. AgentMonad m => AgentClient -> SndQueue -> MsgFlags -> ByteString -> m ()
+sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msgFlags agentMsg =
   withLogClient_ c server sndId "SEND <MSG>" $ \smp -> do
     let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
     msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
-    liftClient SMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msg
+    liftClient SMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msgFlags msg
 
 agentNtfRegisterToken :: AgentMonad m => AgentClient -> NtfToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> m (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =

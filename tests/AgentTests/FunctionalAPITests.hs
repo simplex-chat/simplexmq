@@ -18,6 +18,7 @@ import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..))
@@ -34,7 +35,7 @@ get :: MonadIO m => AgentClient -> m (ATransmission 'Agent)
 get c = atomically (readTBQueue $ subQ c)
 
 pattern Msg :: MsgBody -> ACommand 'Agent
-pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} msgBody
+pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
@@ -71,24 +72,24 @@ testAgentClient = do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
     -- message IDs 1 to 4 get assigned to control messages, so first MSG is assigned ID 5
-    5 <- sendMessage alice bobId "hello"
+    5 <- sendMessage alice bobId SMP.noMsgFlags "hello"
     get alice ##> ("", bobId, SENT 5)
-    6 <- sendMessage alice bobId "how are you?"
+    6 <- sendMessage alice bobId SMP.noMsgFlags "how are you?"
     get alice ##> ("", bobId, SENT 6)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessage bob aliceId 5
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
     ackMessage bob aliceId 6
-    7 <- sendMessage bob aliceId "hello too"
+    7 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT 7)
-    8 <- sendMessage bob aliceId "message 1"
+    8 <- sendMessage bob aliceId SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT 8)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessage alice bobId 7
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessage alice bobId 8
     suspendConnection alice bobId
-    9 <- sendMessage bob aliceId "message 2"
+    9 <- sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR 9 (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -237,11 +238,11 @@ testActiveClientNotDisconnected t = do
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings alice bobId bob aliceId = do
-  5 <- sendMessage alice bobId "hello"
+  5 <- sendMessage alice bobId SMP.noMsgFlags "hello"
   get alice ##> ("", bobId, SENT 5)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId 5
-  6 <- sendMessage bob aliceId "hello too"
+  6 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   get bob ##> ("", aliceId, SENT 6)
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId 6

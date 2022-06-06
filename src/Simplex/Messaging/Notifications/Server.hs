@@ -189,9 +189,9 @@ receive th NtfServerClient {rcvQ, sndQ, activeAt} = forever $ do
     write q t = atomically $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> NtfServerClient -> m ()
-send h NtfServerClient {sndQ, sessionId, activeAt} = forever $ do
+send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, activeAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h (Nothing, encodeTransmission sessionId t)
+  void . liftIO $ tPut h (Nothing, encodeTransmission v sessionId t)
   atomically . writeTVar activeAt =<< liftIO getSystemTime
 
 data VerificationResult = VRVerified NtfRequest | VRFailed

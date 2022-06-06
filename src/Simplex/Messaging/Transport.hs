@@ -93,7 +93,7 @@ smpBlockSize :: Int
 smpBlockSize = 16384
 
 supportedSMPVersions :: VersionRange
-supportedSMPVersions = mkVersionRange 1 1
+supportedSMPVersions = mkVersionRange 1 2
 
 simplexMQVersion :: String
 simplexMQVersion = "2.1.1"
