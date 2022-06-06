@@ -67,7 +67,7 @@ class Monad m => MonadAgentStore s m where
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
   getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, PendingMsgData)
   getPendingMsgs :: s -> ConnId -> m [InternalId]
-  checkRcvMsg :: s -> ConnId -> InternalId -> m ()
+  checkRcvMsg :: s -> ConnId -> InternalId -> m MsgId
   deleteMsg :: s -> ConnId -> InternalId -> m ()
 
   -- Double ratchet persistence

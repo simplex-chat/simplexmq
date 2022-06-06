@@ -485,21 +485,18 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       map fromOnly
         <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_id = ?" (Only connId)
 
-  checkRcvMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
+  checkRcvMsg :: SQLiteStore -> ConnId -> InternalId -> m SMP.MsgId
   checkRcvMsg st connId msgId =
     liftIOEither . withTransaction st $ \db ->
-      hasMsg
-        <$> DB.query
+      firstRow fromOnly SEMsgNotFound $
+        DB.query
           db
           [sql|
-            SELECT conn_id, internal_id
+            SELECT broker_id
             FROM rcv_messages
             WHERE conn_id = ? AND internal_id = ?
           |]
           (connId, msgId)
-    where
-      hasMsg :: [(ConnId, InternalId)] -> Either StoreError ()
-      hasMsg r = if null r then Left SEMsgNotFound else Right ()
 
   deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
   deleteMsg st connId msgId =
