@@ -213,20 +213,20 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
           else VRFailed
     NtfCmd SToken c -> do
       t_ <- atomically $ getNtfToken st entId
-      verifyToken t_ $ \t -> verifiedTknCmd t c
+      verifyToken t_ (`verifiedTknCmd` c)
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) -> do
       s_ <- atomically $ findNtfSubscription st smpQueue
       case s_ of
         Nothing -> do
           -- TODO move active token check here to differentiate error
           t_ <- atomically $ getActiveNtfToken st tknId
-          verifyToken t_ $ \_ -> VRVerified (NtfReqNew corrId (ANE SSubscription sub))
+          verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
         Just s@NtfSubData {tokenId = subTknId} ->
           if subTknId == tknId
             then do
               -- TODO move active token check here to differentiate error
               t_ <- atomically $ getActiveNtfToken st subTknId
-              verifyToken t_ $ \_ -> verifiedSubCmd s c
+              verifyToken' t_ $ verifiedSubCmd s c
             else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c -> do
       s_ <- atomically $ getNtfSubscription st entId
@@ -234,7 +234,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
         Just s@NtfSubData {tokenId = subTknId} -> do
           -- TODO move active token check here to differentiate error
           t_ <- atomically $ getActiveNtfToken st subTknId
-          verifyToken t_ $ \_ -> verifiedSubCmd s c
+          verifyToken' t_ $ verifiedSubCmd s c
         _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
   where
     verifiedTknCmd t c = VRVerified (NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
@@ -247,6 +247,8 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
             then positiveVerificationResult t
             else VRFailed
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+    verifyToken' :: Maybe NtfTknData -> VerificationResult -> m VerificationResult
+    verifyToken' t_ = verifyToken t_ . const
 
 client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ, intervalNotifiers} =
