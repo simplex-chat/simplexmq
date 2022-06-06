@@ -20,14 +20,14 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NtfPrivateSignKey)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (whenM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (whenM, ($>>=))
 
 data NtfStore = NtfStore
   { tokens :: TMap NtfTokenId NtfTknData,
     tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
     tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
-    subscriptionLookup :: TMap (NtfTokenId, SMPQueueNtf) NtfSubscriptionId
+    subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId
   }
 
 newNtfStore :: STM NtfStore
@@ -127,20 +127,19 @@ deleteNtfToken st tknId = do
     regs = tokenRegistrations st
     regKey = C.toPubKey C.pubKeyBytes
 
-getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe (NtfSubData, NtfTknData))
+getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe NtfSubData)
 getNtfSubscription st subId =
   TM.lookup subId (subscriptions st)
-    $>>= \sub@NtfSubData {tokenId} ->
-      (sub,) <$$> getActiveNtfToken st tokenId
 
-findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe (NtfTknData, Maybe NtfSubData))
-findNtfSubscription st (NewNtfSub tknId smpQueue _) = do
-  getActiveNtfToken st tknId >>= mapM (\tkn -> (tkn,) <$> getSub)
-  where
-    getSub :: STM (Maybe NtfSubData)
-    getSub =
-      TM.lookup (tknId, smpQueue) (subscriptionLookup st)
-        $>>= (`TM.lookup` subscriptions st)
+findNtfSubscription :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfSubData)
+findNtfSubscription st smpQueue = do
+  TM.lookup smpQueue (subscriptionLookup st)
+    $>>= \subId -> TM.lookup subId (subscriptions st)
+
+findNtfSubscriptionToken :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
+findNtfSubscriptionToken st smpQueue = do
+  findNtfSubscription st smpQueue
+    $>>= \NtfSubData {tokenId} -> getActiveNtfToken st tokenId
 
 getActiveNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
 getActiveNtfToken st tknId =
@@ -160,7 +159,7 @@ addNtfSubscription st subId sub@NtfSubData {smpQueue, tokenId} =
     insertSub ts = do
       modifyTVar' ts $ insert subId
       TM.insert subId sub $ subscriptions st
-      TM.insert (tokenId, smpQueue) subId (subscriptionLookup st)
+      TM.insert smpQueue subId (subscriptionLookup st)
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of
