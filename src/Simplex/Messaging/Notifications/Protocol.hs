@@ -120,7 +120,7 @@ instance ToJSON NtfRegCode where
 
 data NewNtfEntity (e :: NtfEntity) where
   NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
-  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NewNtfEntity 'Subscription -- NtfTokenId -> C.APublicVerifyKey -> SMPQueueNtf
+  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NtfPrivateSignKey -> NewNtfEntity 'Subscription
 
 deriving instance Show (NewNtfEntity e)
 
@@ -129,7 +129,7 @@ data ANewNtfEntity = forall e. NtfEntityI e => ANE (SNtfEntity e) (NewNtfEntity 
 instance NtfEntityI e => Encoding (NewNtfEntity e) where
   smpEncode = \case
     NewNtfTkn tkn verifyKey dhPubKey -> smpEncode ('T', tkn, verifyKey, dhPubKey)
-    NewNtfSub tknId smpQueue -> smpEncode ('S', tknId, smpQueue)
+    NewNtfSub tknId smpQueue notifierKey -> smpEncode ('S', tknId, smpQueue, notifierKey)
   smpP = (\(ANE _ c) -> checkEntity c) <$?> smpP
 
 instance Encoding ANewNtfEntity where
@@ -137,7 +137,7 @@ instance Encoding ANewNtfEntity where
   smpP =
     A.anyChar >>= \case
       'T' -> ANE SToken <$> (NewNtfTkn <$> smpP <*> smpP <*> smpP)
-      'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP)
+      'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP <*> smpP)
       _ -> fail "bad ANewNtfEntity"
 
 instance Protocol NtfResponse where
@@ -231,7 +231,8 @@ instance ProtocolEncoding NtfCmd where
   checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
 
 data NtfResponseTag
-  = NRId_
+  = NRTknId_
+  | NRSubId_
   | NROk_
   | NRErr_
   | NRTkn_
@@ -241,7 +242,8 @@ data NtfResponseTag
 
 instance Encoding NtfResponseTag where
   smpEncode = \case
-    NRId_ -> "ID"
+    NRTknId_ -> "IDTKN"
+    NRSubId_ -> "IDSUB"
     NROk_ -> "OK"
     NRErr_ -> "ERR"
     NRTkn_ -> "TKN"
@@ -251,7 +253,8 @@ instance Encoding NtfResponseTag where
 
 instance ProtocolMsgTag NtfResponseTag where
   decodeTag = \case
-    "ID" -> Just NRId_
+    "IDTKN" -> Just NRTknId_
+    "IDSUB" -> Just NRSubId_
     "OK" -> Just NROk_
     "ERR" -> Just NRErr_
     "TKN" -> Just NRTkn_
@@ -260,7 +263,8 @@ instance ProtocolMsgTag NtfResponseTag where
     _ -> Nothing
 
 data NtfResponse
-  = NRId NtfEntityId C.PublicKeyX25519
+  = NRTknId NtfEntityId C.PublicKeyX25519
+  | NRSubId NtfEntityId
   | NROk
   | NRErr ErrorType
   | NRTkn NtfTknStatus
@@ -271,7 +275,8 @@ data NtfResponse
 instance ProtocolEncoding NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol _v = \case
-    NRId entId dhKey -> e (NRId_, ' ', entId, dhKey)
+    NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
+    NRSubId entId -> e (NRSubId_, ' ', entId)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
     NRTkn stat -> e (NRTkn_, ' ', stat)
@@ -282,7 +287,8 @@ instance ProtocolEncoding NtfResponse where
       e = smpEncode
 
   protocolP _v = \case
-    NRId_ -> NRId <$> _smpP <*> smpP
+    NRTknId_ -> NRTknId <$> _smpP <*> smpP
+    NRSubId_ -> NRSubId <$> _smpP
     NROk_ -> pure NROk
     NRErr_ -> NRErr <$> _smpP
     NRTkn_ -> NRTkn <$> _smpP
@@ -290,8 +296,10 @@ instance ProtocolEncoding NtfResponse where
     NRPong_ -> pure NRPong
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
-    -- ID response must not have queue ID
-    NRId {} -> noEntity
+    -- IDTKN response must not have queue ID
+    NRTknId {} -> noEntity
+    -- IDSUB response must not have queue ID
+    NRSubId {} -> noEntity
     -- ERR response does not always have entity ID
     NRErr _ -> Right cmd
     -- PONG response must not have queue ID
@@ -307,16 +315,15 @@ instance ProtocolEncoding NtfResponse where
 
 data SMPQueueNtf = SMPQueueNtf
   { smpServer :: ProtocolServer,
-    notifierId :: NotifierId,
-    notifierKey :: NtfPrivateSignKey
+    notifierId :: NotifierId
   }
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 instance Encoding SMPQueueNtf where
-  smpEncode SMPQueueNtf {smpServer, notifierId, notifierKey} = smpEncode (smpServer, notifierId, notifierKey)
+  smpEncode SMPQueueNtf {smpServer, notifierId} = smpEncode (smpServer, notifierId)
   smpP = do
-    (smpServer, notifierId, notifierKey) <- smpP
-    pure $ SMPQueueNtf smpServer notifierId notifierKey
+    (smpServer, notifierId) <- smpP
+    pure $ SMPQueueNtf smpServer notifierId
 
 data PushProvider = PPApns
   deriving (Eq, Ord, Show)
