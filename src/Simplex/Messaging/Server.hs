@@ -389,14 +389,13 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         subscribeQueue rId =
           atomically (TM.lookup queueId subscriptions) >>= \case
             Nothing ->
-              atomically newSub >>= deliverMessage tryPeekMsg rId
+              atomically newSub >>= deliver
             Just sub -> readTVarIO sub >>= \case
               Sub {subThread = ProhibitSub} ->
                 -- cannot use SUB in the same connection where GET was used
                 pure (corrId, rId, ERR $ CMD PROHIBITED)
               s ->
-                atomically (tryTakeTMVar $ delivered s)
-                  >> deliverMessage tryPeekMsg rId sub
+                atomically (tryTakeTMVar $ delivered s) >> deliver sub
           where
             newSub :: STM (TVar Sub)
             newSub = do
@@ -404,6 +403,11 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               sub <- newTVar =<< newSubscription NoSub
               TM.insert rId sub subscriptions
               pure sub
+            deliver :: TVar Sub -> m (Transmission BrokerMsg)
+            deliver sub = do
+              q <- getStoreMsgQueue rId
+              msg_ <- atomically $ tryPeekMsg q
+              deliverMessage rId sub q msg_
 
         getMessage :: m (Transmission BrokerMsg)
         getMessage =
@@ -445,17 +449,24 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               atomically (readTVar sub >>= \s -> (s,) <$$> tryTakeTMVar (delivered s)) >>= \case
                 Just (s, msgId')
                   | B.null msgId || msgId == msgId' -> do
-                    stats <- asks serverStats
-                    atomically $ modifyTVar (msgRecv stats) (+ 1)
-                    atomically $ modifyTVar (msgQueues stats) (S.insert queueId)
+                    q <- getStoreMsgQueue queueId
                     case s of
-                      Sub {subThread = ProhibitSub} ->
-                        (getStoreMsgQueue queueId >>= atomically . tryDelMsg) $> ok
-                      _ ->
-                        deliverMessage tryDelPeekMsg queueId sub
+                      Sub {subThread = ProhibitSub} -> do
+                        sameMsgId <- atomically $ tryDelMsg q msgId
+                        when sameMsgId updateStats
+                        pure ok
+                      _ -> do
+                        (sameMsgId, msg_) <- atomically $ tryDelPeekMsg q msgId
+                        when sameMsgId updateStats
+                        deliverMessage queueId sub q msg_
                   | otherwise -> pure $ err NO_MSG
                 _ -> pure $ err NO_MSG
-
+          where
+            updateStats :: m ()
+            updateStats = do
+              stats <- asks serverStats
+              atomically $ modifyTVar (msgRecv stats) (+ 1)
+              atomically $ modifyTVar (msgQueues stats) (S.insert queueId)
 
         sendMessage :: QueueStore -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage st flags msgBody
@@ -504,25 +515,24 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   unlessM (isFullTBQueue sndQ) $
                     writeTBQueue q (CorrId "", nId, NMSG)
 
-        deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> TVar Sub -> m (Transmission BrokerMsg)
-        deliverMessage tryPeek rId sub = readTVarIO sub >>= \case
-          s@Sub {subThread = NoSub} -> do
-            q <- getStoreMsgQueue rId
-            atomically (tryPeek q) >>= \case
-              Nothing -> forkSub q $> ok
+        deliverMessage :: RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
+        deliverMessage rId sub q msg_ = readTVarIO sub >>= \case
+          s@Sub {subThread = NoSub} ->
+            case msg_ of
               Just msg -> atomically (setDelivered s msg) $> (corrId, rId, msgCmd msg)
+              _ -> forkSub $> ok
           _ -> pure ok
           where
-            forkSub :: MsgQueue -> m ()
-            forkSub q = do
+            forkSub :: m ()
+            forkSub = do
               atomically . modifyTVar sub $ \s -> s {subThread = SubPending}
-              t <- forkIO $ subscriber q
+              t <- forkIO subscriber
               atomically . modifyTVar sub $ \case
                 s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
                 s -> s
 
-            subscriber :: MsgQueue -> m ()
-            subscriber q = atomically $ do
+            subscriber :: m ()
+            subscriber = atomically $ do
               msg <- peekMsg q
               writeTBQueue sndQ (CorrId "", rId, msgCmd msg)
               s <- readTVar sub
