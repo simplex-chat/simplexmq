@@ -7,7 +7,7 @@
 
 module Simplex.Messaging.Server.MsgStore.STM where
 
-import Control.Monad (when)
+import Control.Monad (void, when)
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Numeric.Natural
@@ -48,6 +48,9 @@ instance MonadMsgQueue MsgQueue STM where
 
   peekMsg :: MsgQueue -> STM Message
   peekMsg = peekTBQueue . msgQueue
+
+  tryDelMsg :: MsgQueue -> STM ()
+  tryDelMsg = void . tryReadTBQueue . msgQueue
 
   -- atomic delete (== read) last and peek next message if available
   tryDelPeekMsg :: MsgQueue -> STM (Maybe Message)

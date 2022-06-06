@@ -23,5 +23,6 @@ class MonadMsgQueue q m where
   writeMsg :: q -> Message -> m () -- non blocking
   tryPeekMsg :: q -> m (Maybe Message) -- non blocking
   peekMsg :: q -> m Message -- blocking
+  tryDelMsg :: q -> m () -- non blocking
   tryDelPeekMsg :: q -> m (Maybe Message) -- atomic delete (== read) last and peek next message, if available
   deleteExpiredMsgs :: q -> Int64 -> m ()

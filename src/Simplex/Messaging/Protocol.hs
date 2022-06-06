@@ -548,6 +548,8 @@ data CommandError
     UNKNOWN
   | -- | error parsing command
     SYNTAX
+  | -- | command is not allowed (SUB/GET cannot be used with the same queue in the same TCP connection)
+    PROHIBITED
   | -- | transmission has no required credentials (signature or queue ID)
     NO_AUTH
   | -- | transmission has credentials that are not allowed for this command
@@ -757,6 +759,7 @@ instance Encoding CommandError where
   smpEncode e = case e of
     UNKNOWN -> "UNKNOWN"
     SYNTAX -> "SYNTAX"
+    PROHIBITED -> "PROHIBITED"
     NO_AUTH -> "NO_AUTH"
     HAS_AUTH -> "HAS_AUTH"
     NO_ENTITY -> "NO_ENTITY"
@@ -764,6 +767,7 @@ instance Encoding CommandError where
     A.takeTill (== ' ') >>= \case
       "UNKNOWN" -> pure UNKNOWN
       "SYNTAX" -> pure SYNTAX
+      "PROHIBITED" -> pure PROHIBITED
       "NO_AUTH" -> pure NO_AUTH
       "HAS_AUTH" -> pure HAS_AUTH
       "NO_ENTITY" -> pure NO_ENTITY

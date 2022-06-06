@@ -309,7 +309,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 (createQueue st rKey dhKey)
                 (pure (corrId, queueId, ERR AUTH))
             SUB -> subscribeQueue queueId
-            GET -> pure (corrId, queueId, OK) -- TODO
+            GET -> getMessage
             ACK -> acknowledgeMsg
             KEY sKey -> secureQueue_ st sKey
             NKEY nKey -> addQueueNotifier_ st nKey
@@ -387,17 +387,42 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
         subscribeQueue :: RecipientId -> m (Transmission BrokerMsg)
         subscribeQueue rId =
-          atomically (getSubscription rId) >>= deliverMessage tryPeekMsg rId
+          atomically (getSubscription rId) >>= \case
+            Just s -> deliverMessage tryPeekMsg rId s
+            -- cannot use SUB in the same connection where GET was used
+            _ -> pure (corrId, rId, ERR $ CMD PROHIBITED)
 
-        getSubscription :: RecipientId -> STM Sub
+        getSubscription :: RecipientId -> STM (Maybe Sub)
         getSubscription rId = do
           TM.lookup rId subscriptions >>= \case
-            Just s -> tryTakeTMVar (delivered s) $> s
+            Just Sub {subThread = ProhibitSub} -> pure Nothing
+            Just s -> tryTakeTMVar (delivered s) $> Just s
             Nothing -> do
               writeTBQueue subscribedQ (rId, clnt)
               s <- newSubscription
               TM.insert rId s subscriptions
-              return s
+              pure $ Just s
+
+        getMessage :: m (Transmission BrokerMsg)
+        getMessage =
+          atomically getProhibitedSub >>= \case
+            Just s -> do
+              q <- getStoreMsgQueue queueId
+              atomically $
+                tryPeekMsg q >>= \case
+                  Just msg -> tryPutTMVar (delivered s) () $> (corrId, queueId, msgCmd msg)
+                  _ -> pure (corrId, queueId, ERR NO_MSG)
+            _ -> pure (corrId, queueId, ERR $ CMD PROHIBITED) -- cannot use GET in the same connection where there is an active subscription
+          where
+            getProhibitedSub :: STM (Maybe Sub)
+            getProhibitedSub =
+              TM.lookup queueId subscriptions >>= \case
+                Just s@Sub {subThread = ProhibitSub} -> tryTakeTMVar (delivered s) $> Just s
+                Just _ -> pure Nothing
+                Nothing -> do
+                  s <- prohibitedSubscription
+                  TM.insert queueId s subscriptions
+                  pure $ Just s
 
         subscribeNotifications :: m (Transmission BrokerMsg)
         subscribeNotifications = atomically $ do
@@ -414,7 +439,11 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 stats <- asks serverStats
                 atomically $ modifyTVar (msgRecv stats) (+ 1)
                 atomically $ modifyTVar (msgQueues stats) (S.insert queueId)
-                deliverMessage tryDelPeekMsg queueId s
+                case s of
+                  Sub {subThread = ProhibitSub} ->
+                    (getStoreMsgQueue queueId >>= atomically . tryDelMsg) $> ok
+                  _ ->
+                    deliverMessage tryDelPeekMsg queueId s
               _ -> return $ err NO_MSG
 
         withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
@@ -470,9 +499,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
         deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> Sub -> m (Transmission BrokerMsg)
         deliverMessage tryPeek rId = \case
           Sub {subThread = NoSub} -> do
-            ms <- asks msgStore
-            quota <- asks $ msgQueueQuota . config
-            q <- atomically $ getMsgQueue ms rId quota
+            q <- getStoreMsgQueue rId
             atomically (tryPeek q) >>= \case
               Nothing -> forkSub q $> ok
               Just msg -> atomically setDelivered $> (corrId, rId, msgCmd msg)
@@ -499,8 +526,14 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             setDelivered :: STM (Maybe Bool)
             setDelivered = withSub rId $ \s -> tryPutTMVar (delivered s) ()
 
-            msgCmd :: Message -> BrokerMsg
-            msgCmd Message {msgId, ts, msgFlags, msgBody} = MSG msgId ts msgFlags msgBody
+        getStoreMsgQueue :: RecipientId -> m MsgQueue
+        getStoreMsgQueue rId = do
+          ms <- asks msgStore
+          quota <- asks $ msgQueueQuota . config
+          atomically $ getMsgQueue ms rId quota
+
+        msgCmd :: Message -> BrokerMsg
+        msgCmd Message {msgId, ts, msgFlags, msgBody} = MSG msgId ts msgFlags msgBody
 
         delQueueAndMsgs :: QueueStore -> m (Transmission BrokerMsg)
         delQueueAndMsgs st = do
