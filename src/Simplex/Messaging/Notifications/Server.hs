@@ -218,19 +218,29 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
           | verifyCmdSignature sig_ signed tknVerifyKey -> verifiedTknCmd t c
           | otherwise -> VRFailed
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
-    NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId _ _)) -> do
+    NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) -> do
       -- TODO move active token check here to differentiate error
-      r_ <- atomically $ findNtfSubscription st sub
-      pure $ case r_ of
-        Just (NtfTknData {tknVerifyKey}, sub_) ->
-          if verifyCmdSignature sig_ signed tknVerifyKey
-            then case sub_ of
-              Just s@NtfSubData {tokenId}
-                | tknId == tokenId -> verifiedSubCmd s c
-                | otherwise -> VRFailed
-              _ -> VRVerified (NtfReqNew corrId (ANE SSubscription sub))
-            else VRFailed
-        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+      s_ <- atomically $ findNtfSubscription st smpQueue
+      case s_ of
+        Nothing -> do
+          t_ <- atomically $ getActiveNtfToken st tknId
+          pure $ case t_ of
+            Just NtfTknData {tknVerifyKey} ->
+              if verifyCmdSignature sig_ signed tknVerifyKey
+                then VRVerified (NtfReqNew corrId (ANE SSubscription sub))
+                else VRFailed
+            _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+        Just s@NtfSubData {tokenId = subTknId} ->
+          if subTknId == tknId
+            then do
+              t_ <- atomically $ getActiveNtfToken st subTknId
+              pure $ case t_ of
+                Just NtfTknData {tknVerifyKey} ->
+                  if verifyCmdSignature sig_ signed tknVerifyKey
+                    then verifiedSubCmd s c
+                    else VRFailed
+                _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+            else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c -> do
       -- TODO move active token check here to differentiate error
       r_ <- atomically $ getNtfSubscription st entId

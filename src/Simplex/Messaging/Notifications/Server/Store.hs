@@ -138,23 +138,15 @@ getNtfSubscription st subId =
     $>>= \sub@NtfSubData {tokenId} ->
       (sub,) <$$> getActiveNtfToken st tokenId
 
-findNtfSubscription :: NtfStore -> NewNtfEntity 'Subscription -> STM (Maybe (NtfTknData, Maybe NtfSubData))
-findNtfSubscription st (NewNtfSub tknId smpQueue _) = do
-  -- TODO check that tokenId in NtfSubData is equal to passed tknId?
-  -- TODO make such check on controller level and pass SMPQueueNtf instead of NewNtfEntity to reuse for finding token?
-  getActiveNtfToken st tknId >>= mapM (\tkn -> (tkn,) <$> getSub)
-  where
-    getSub :: STM (Maybe NtfSubData)
-    getSub =
-      TM.lookup smpQueue (subscriptionLookup st)
-        $>>= \subId -> TM.lookup subId (subscriptions st)
+findNtfSubscription :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfSubData)
+findNtfSubscription st smpQueue = do
+  TM.lookup smpQueue (subscriptionLookup st)
+    $>>= \subId -> TM.lookup subId (subscriptions st)
 
 findNtfSubscriptionToken :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
 findNtfSubscriptionToken st smpQueue = do
-  TM.lookup smpQueue (subscriptionLookup st)
-    $>>= \subId ->
-      TM.lookup subId (subscriptions st)
-        $>>= \NtfSubData {tokenId} -> getActiveNtfToken st tokenId
+  findNtfSubscription st smpQueue
+    $>>= \NtfSubData {tokenId} -> getActiveNtfToken st tokenId
 
 getActiveNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
 getActiveNtfToken st tknId =
