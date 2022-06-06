@@ -20,7 +20,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NtfPrivateSignKey)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (whenM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (whenM, ($>>=))
 
 data NtfStore = NtfStore
   { tokens :: TMap NtfTokenId NtfTknData,
