@@ -127,11 +127,9 @@ deleteNtfToken st tknId = do
     regs = tokenRegistrations st
     regKey = C.toPubKey C.pubKeyBytes
 
-getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe (NtfSubData, NtfTknData))
+getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe NtfSubData)
 getNtfSubscription st subId =
   TM.lookup subId (subscriptions st)
-    $>>= \sub@NtfSubData {tokenId} ->
-      (sub,) <$$> getActiveNtfToken st tokenId
 
 findNtfSubscription :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfSubData)
 findNtfSubscription st smpQueue = do

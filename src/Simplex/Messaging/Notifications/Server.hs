@@ -213,45 +213,40 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
           else VRFailed
     NtfCmd SToken c -> do
       t_ <- atomically $ getNtfToken st entId
-      pure $ case t_ of
-        Just t@NtfTknData {tknVerifyKey}
-          | verifyCmdSignature sig_ signed tknVerifyKey -> verifiedTknCmd t c
-          | otherwise -> VRFailed
-        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+      verifyToken t_ $ \t -> verifiedTknCmd t c
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) -> do
-      -- TODO move active token check here to differentiate error
       s_ <- atomically $ findNtfSubscription st smpQueue
       case s_ of
         Nothing -> do
+          -- TODO move active token check here to differentiate error
           t_ <- atomically $ getActiveNtfToken st tknId
-          pure $ case t_ of
-            Just NtfTknData {tknVerifyKey} ->
-              if verifyCmdSignature sig_ signed tknVerifyKey
-                then VRVerified (NtfReqNew corrId (ANE SSubscription sub))
-                else VRFailed
-            _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+          verifyToken t_ $ \_ -> VRVerified (NtfReqNew corrId (ANE SSubscription sub))
         Just s@NtfSubData {tokenId = subTknId} ->
           if subTknId == tknId
             then do
+              -- TODO move active token check here to differentiate error
               t_ <- atomically $ getActiveNtfToken st subTknId
-              pure $ case t_ of
-                Just NtfTknData {tknVerifyKey} ->
-                  if verifyCmdSignature sig_ signed tknVerifyKey
-                    then verifiedSubCmd s c
-                    else VRFailed
-                _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+              verifyToken t_ $ \_ -> verifiedSubCmd s c
             else pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
     NtfCmd SSubscription c -> do
-      -- TODO move active token check here to differentiate error
-      r_ <- atomically $ getNtfSubscription st entId
-      pure $ case r_ of
-        Just (s, NtfTknData {tknVerifyKey})
-          | verifyCmdSignature sig_ signed tknVerifyKey -> verifiedSubCmd s c
-          | otherwise -> VRFailed
-        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
+      s_ <- atomically $ getNtfSubscription st entId
+      case s_ of
+        Just s@NtfSubData {tokenId = subTknId} -> do
+          -- TODO move active token check here to differentiate error
+          t_ <- atomically $ getActiveNtfToken st subTknId
+          verifyToken t_ $ \_ -> verifiedSubCmd s c
+        _ -> pure $ maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
   where
     verifiedTknCmd t c = VRVerified (NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
     verifiedSubCmd s c = VRVerified (NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
+    verifyToken :: Maybe NtfTknData -> (NtfTknData -> VerificationResult) -> m VerificationResult
+    verifyToken t_ positiveVerificationResult =
+      pure $ case t_ of
+        Just t@NtfTknData {tknVerifyKey} ->
+          if verifyCmdSignature sig_ signed tknVerifyKey
+            then positiveVerificationResult t
+            else VRFailed
+        _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
 
 client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ, intervalNotifiers} =
