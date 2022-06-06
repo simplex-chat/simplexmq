@@ -78,11 +78,6 @@ data NtfEntityRec (e :: NtfEntity) where
 getNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
 getNtfToken st tknId = TM.lookup tknId (tokens st)
 
--- findNtfToken :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
--- findNtfToken st smpQueue = do
---   TM.lookup smpQueue (subscriptionLookup st) $>>= \(tknId, _) ->
---     getNtfToken st tknId
-
 addNtfToken :: NtfStore -> NtfTokenId -> NtfTknData -> STM ()
 addNtfToken st tknId tkn@NtfTknData {token, tknVerifyKey} = do
   TM.insert tknId tkn $ tokens st
