@@ -191,3 +191,9 @@ instance (Encoding a, Encoding b, Encoding c, Encoding d, Encoding e, Encoding f
   {-# INLINE smpEncode #-}
   smpP = (,,,,,) <$> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP
   {-# INLINE smpP #-}
+
+instance (Encoding a, Encoding b, Encoding c, Encoding d, Encoding e, Encoding f, Encoding g) => Encoding (a, b, c, d, e, f, g) where
+  smpEncode (a, b, c, d, e, f, g) = smpEncode a <> smpEncode b <> smpEncode c <> smpEncode d <> smpEncode e <> smpEncode f <> smpEncode g
+  {-# INLINE smpEncode #-}
+  smpP = (,,,,,,) <$> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP <*> smpP
+  {-# INLINE smpP #-}

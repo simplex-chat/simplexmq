@@ -111,7 +111,6 @@ import Data.Maybe (isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
-import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Network.Socket (HostName, ServiceName)
@@ -251,78 +250,13 @@ newtype MsgFlags = MsgFlags {notification :: Bool}
   deriving (Eq, Show)
 
 instance Encoding MsgFlags where
-  smpEncode = smpEncodeList . encodeMsgFlags
-  smpP = decodeMsgFlags <$> smpListP
-
-instance StrEncoding MsgFlags where
-  strEncode = strEncodeList . encodeMsgFlags
-  strP = decodeMsgFlags <$> strListP
+  smpEncode MsgFlags {notification} = smpEncode notification
+  smpP = do
+    notification <- smpP <* A.takeTill (== ' ')
+    pure MsgFlags {notification}
 
 noMsgFlags :: MsgFlags
 noMsgFlags = MsgFlags {notification = False}
-
-encodeMsgFlags :: MsgFlags -> [MsgFlag]
-encodeMsgFlags MsgFlags {notification}
-  | notification = [MsgFlag MFTNotification $ MFVBool True]
-  | otherwise = []
-
-decodeMsgFlags :: [MsgFlag] -> MsgFlags
-decodeMsgFlags flags = MsgFlags {notification = any isNotification flags}
-  where
-    isNotification = \case
-      MsgFlag MFTNotification (MFVBool True) -> True
-      _ -> False
-
-data MsgFlag = MsgFlag MFTag MFValue
-
-data MFTag = MFTNotification | MFTUnknown Char
-  deriving (Eq)
-
-data MFValue = MFVBool Bool | MFVWord Word16 | MFVUnknown Char ByteString
-
-instance Encoding MsgFlag where
-  smpEncode (MsgFlag t v) = smpEncode (t, v)
-  smpP = MsgFlag <$> smpP <*> smpP
-
-instance Encoding MFTag where
-  smpEncode = \case
-    MFTNotification -> smpEncode 'N'
-    MFTUnknown tag -> smpEncode tag
-  smpP =
-    smpP >>= \case
-      'N' -> pure MFTNotification
-      tag -> pure $ MFTUnknown tag
-
-instance Encoding MFValue where
-  smpEncode = \case
-    MFVBool v -> smpEncode ('B', v)
-    MFVWord v -> smpEncode ('W', v)
-    MFVUnknown t v -> smpEncode (t, v)
-  smpP =
-    smpP >>= \case
-      'B' -> MFVBool <$> smpP
-      'W' -> MFVWord <$> smpP
-      c -> MFVUnknown c <$> smpP
-
-instance StrEncoding MsgFlag where
-  strEncode (MsgFlag t v) = strEncode t <> "=" <> strEncode v
-  strP = MsgFlag <$> strP <* A.char '=' <*> strP
-
-instance StrEncoding MFTag where
-  strEncode = smpEncode
-  strP = smpP
-
-instance StrEncoding MFValue where
-  strEncode f = case f of
-    MFVUnknown c v -> B.cons c $ strEncode v
-    _ -> smpEncode f
-  strP =
-    strP >>= \case
-      'B' -> MFVBool <$> strP
-      'W' -> MFVWord <$> strP
-      c -> MFVUnknown c <$> strP
-
--- any new flag should be added to include 1 byte length, as ByteString encoding
 
 -- * SMP command tags
 
@@ -677,7 +611,7 @@ instance PartyI p => ProtocolEncoding (Command p) where
     DEL -> e DEL_
     SEND flags msg
       | v == 1 -> e (SEND_, ' ', Tail msg)
-      | otherwise -> e (SEND_, ' ', flags, Tail msg)
+      | otherwise -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
     where
@@ -724,7 +658,7 @@ instance ProtocolEncoding Cmd where
       Cmd SSender <$> case tag of
         SEND_
           | v == 1 -> SEND <$> pure noMsgFlags <*> (unTail <$> _smpP)
-          | otherwise -> SEND <$> _smpP <*> (unTail <$> smpP)
+          | otherwise -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 
@@ -736,7 +670,7 @@ instance ProtocolEncoding BrokerMsg where
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
     MSG msgId ts flags msgBody
       | v == 1 -> e (MSG_, ' ', msgId, ts, Tail msgBody)
-      | otherwise -> e (MSG_, ' ', msgId, ts, flags, Tail msgBody)
+      | otherwise -> e (MSG_, ' ', msgId, ts, flags, ' ', Tail msgBody)
     NID nId -> e (NID_, ' ', nId)
     NMSG -> e NMSG_
     END -> e END_
@@ -750,7 +684,7 @@ instance ProtocolEncoding BrokerMsg where
   protocolP v = \case
     MSG_
       | v == 1 -> MSG <$> _smpP <*> smpP <*> pure noMsgFlags <*> (unTail <$> smpP)
-      | otherwise -> MSG <$> _smpP <*> smpP <*> smpP <*> (unTail <$> smpP)
+      | otherwise -> MSG <$> _smpP <*> smpP <*> smpP <*> (unTail <$> _smpP)
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP
     NMSG_ -> pure NMSG

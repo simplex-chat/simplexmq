@@ -684,9 +684,9 @@ instance ToField (SConnectionMode c) where toField = toField . connMode
 
 instance FromField AConnectionMode where fromField = fromTextField_ $ fmap connMode' . connModeT
 
-instance ToField MsgFlags where toField = toField . decodeLatin1 . strEncode
+instance ToField MsgFlags where toField = toField . decodeLatin1 . smpEncode
 
-instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
+instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x

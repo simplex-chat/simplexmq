@@ -843,11 +843,11 @@ commandP =
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
     downsResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
     upsResp = ACmd SAgent .: UP <$> strP_ <*> connections
-    sendCmd = ACmd SClient .: SEND <$> strP_ <*> A.takeByteString
+    sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
     msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
-    message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> strP_ <*> A.takeByteString
+    message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
     connections = strP `A.sepBy'` (A.char ',')
     msgMetaP = do
@@ -878,11 +878,11 @@ serializeCommand = \case
   END -> "END"
   DOWN srv conns -> B.unwords ["DOWN", strEncode srv, connections conns]
   UP srv conns -> B.unwords ["UP", strEncode srv, connections conns]
-  SEND msgFlags msgBody -> "SEND " <> strEncode msgFlags <> " " <> serializeBinary msgBody
+  SEND msgFlags msgBody -> "SEND " <> smpEncode msgFlags <> " " <> serializeBinary msgBody
   MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
   MERR mId e -> B.unwords ["MERR", bshow mId, strEncode e]
-  MSG msgMeta msgFlags msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, strEncode msgFlags, serializeBinary msgBody]
+  MSG msgMeta msgFlags msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, smpEncode msgFlags, serializeBinary msgBody]
   ACK mId -> "ACK " <> bshow mId
   OFF -> "OFF"
   DEL -> "DEL"
