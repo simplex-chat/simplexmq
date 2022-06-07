@@ -1,3 +1,13 @@
+# 2.2.0
+
+SMP server:
+
+- Fix sockets/threads/memory leak
+
+SMP agent:
+
+- Support stopping and resuming agent with `disconnectAgentClient` / `resumeAgentClient`
+
 # 2.1.1
 
 SMP server:
