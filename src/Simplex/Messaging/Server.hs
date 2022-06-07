@@ -455,12 +455,12 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   q <- getStoreMsgQueue queueId
                   case s of
                     Sub {subThread = ProhibitSub} -> do
-                      sameMsgId <- atomically $ tryDelMsg q msgId
-                      when sameMsgId updateStats
+                      msgDeleted <- atomically $ tryDelMsg q msgId
+                      when msgDeleted updateStats
                       pure ok
                     _ -> do
-                      (sameMsgId, msg_) <- atomically $ tryDelPeekMsg q msgId
-                      when sameMsgId updateStats
+                      (msgDeleted, msg_) <- atomically $ tryDelPeekMsg q msgId
+                      when msgDeleted updateStats
                       deliverMessage queueId sub q msg_
                 _ -> pure $ err NO_MSG
           where
