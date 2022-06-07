@@ -217,7 +217,9 @@ data Command (p :: Party) where
   KEY :: SndPublicVerifyKey -> Command Recipient
   NKEY :: NtfPublicVerifyKey -> Command Recipient
   GET :: Command Recipient
-  ACK :: Command Recipient
+  -- ACK v1 has to be supported for encoding/decoding
+  -- ACK :: Command Recipient
+  ACK :: MsgId -> Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
   -- SMP sender commands
@@ -608,7 +610,9 @@ instance PartyI p => ProtocolEncoding (Command p) where
     KEY k -> e (KEY_, ' ', k)
     NKEY k -> e (NKEY_, ' ', k)
     GET -> e GET_
-    ACK -> e ACK_
+    ACK msgId
+      | v == 1 -> e ACK_
+      | otherwise -> e (ACK_, ' ', msgId)
     OFF -> e OFF_
     DEL -> e DEL_
     SEND flags msg
@@ -653,7 +657,9 @@ instance ProtocolEncoding Cmd where
         KEY_ -> KEY <$> _smpP
         NKEY_ -> NKEY <$> _smpP
         GET_ -> pure GET
-        ACK_ -> pure ACK
+        ACK_
+          | v == 1 -> pure $ ACK ""
+          | otherwise -> ACK <$> _smpP
         OFF_ -> pure OFF
         DEL_ -> pure DEL
     CT SSender tag ->

@@ -71,7 +71,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -486,10 +486,10 @@ secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
   withLogClient c server rcvId "KEY <key>" $ \smp ->
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
 
-sendAck :: AgentMonad m => AgentClient -> RcvQueue -> m ()
-sendAck c RcvQueue {server, rcvId, rcvPrivateKey} =
+sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
+sendAck c RcvQueue {server, rcvId, rcvPrivateKey} msgId =
   withLogClient c server rcvId "ACK" $ \smp ->
-    ackSMPMessage smp rcvPrivateKey rcvId
+    ackSMPMessage smp rcvPrivateKey rcvId msgId
 
 suspendQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
 suspendQueue c RcvQueue {server, rcvId, rcvPrivateKey} =

@@ -508,8 +508,8 @@ ackMessage' c connId msgId = do
     ack :: RcvQueue -> m ()
     ack rq = do
       let mId = InternalId msgId
-      withStore $ \st -> checkRcvMsg st connId mId
-      sendAck c rq
+      srvMsgId <- withStore $ \st -> checkRcvMsg st connId mId
+      sendAck c rq srvMsgId
       withStore $ \st -> deleteMsg st connId mId
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
@@ -711,6 +711,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                     _ -> prohibited >> ack
                 _ -> prohibited >> ack
             _ -> prohibited >> ack
+          where
+            ack :: m ()
+            ack = sendAck c rq srvMsgId
+            handleNotifyAck :: m () -> m ()
+            handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
         SMP.END ->
           atomically (TM.lookup srv smpClients $>>= tryReadTMVar >>= processEND)
             >>= logServer "<--" c srv rId
@@ -731,14 +736,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
         notify :: ACommand 'Agent -> m ()
         notify msg = atomically $ writeTBQueue subQ ("", connId, msg)
 
-        handleNotifyAck :: m () -> m ()
-        handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
-
         prohibited :: m ()
         prohibited = notify . ERR $ AGENT A_PROHIBITED
-
-        ack :: m ()
-        ack = sendAck c rq
 
         decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> m (SMP.PrivHeader, AgentMsgEnvelope)
         decryptClientMessage e2eDh SMP.ClientMsgEnvelope {cmNonce, cmEncBody} = do

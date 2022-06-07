@@ -207,10 +207,11 @@ clientDisconnected c@Client {subscriptions, connected} = do
 sameClientSession :: Client -> Client -> Bool
 sameClientSession Client {sessionId} Client {sessionId = s'} = sessionId == s'
 
-cancelSub :: MonadUnliftIO m => Sub -> m ()
-cancelSub = \case
-  Sub {subThread = SubThread t} -> killThread t
-  _ -> return ()
+cancelSub :: MonadUnliftIO m => TVar Sub -> m ()
+cancelSub sub =
+  readTVarIO sub >>= \case
+    Sub {subThread = SubThread t} -> killThread t
+    _ -> return ()
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Client -> m ()
 receive th Client {rcvQ, sndQ, activeAt} = forever $ do
@@ -310,7 +311,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 (pure (corrId, queueId, ERR AUTH))
             SUB -> subscribeQueue queueId
             GET -> getMessage
-            ACK -> acknowledgeMsg
+            ACK msgId -> acknowledgeMsg msgId
             KEY sKey -> secureQueue_ st sKey
             NKEY nKey -> addQueueNotifier_ st nKey
             OFF -> suspendQueue_ st
@@ -387,42 +388,55 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
         subscribeQueue :: RecipientId -> m (Transmission BrokerMsg)
         subscribeQueue rId =
-          atomically (getSubscription rId) >>= \case
-            Just s -> deliverMessage tryPeekMsg rId s
-            -- cannot use SUB in the same connection where GET was used
-            _ -> pure (corrId, rId, ERR $ CMD PROHIBITED)
-
-        getSubscription :: RecipientId -> STM (Maybe Sub)
-        getSubscription rId = do
-          TM.lookup rId subscriptions >>= \case
-            Just Sub {subThread = ProhibitSub} -> pure Nothing
-            Just s -> tryTakeTMVar (delivered s) $> Just s
-            Nothing -> do
+          atomically (TM.lookup rId subscriptions) >>= \case
+            Nothing ->
+              atomically newSub >>= deliver
+            Just sub ->
+              readTVarIO sub >>= \case
+                Sub {subThread = ProhibitSub} ->
+                  -- cannot use SUB in the same connection where GET was used
+                  pure (corrId, rId, ERR $ CMD PROHIBITED)
+                s ->
+                  atomically (tryTakeTMVar $ delivered s) >> deliver sub
+          where
+            newSub :: STM (TVar Sub)
+            newSub = do
               writeTBQueue subscribedQ (rId, clnt)
-              s <- newSubscription
-              TM.insert rId s subscriptions
-              pure $ Just s
+              sub <- newTVar =<< newSubscription NoSub
+              TM.insert rId sub subscriptions
+              pure sub
+            deliver :: TVar Sub -> m (Transmission BrokerMsg)
+            deliver sub = do
+              q <- getStoreMsgQueue rId
+              msg_ <- atomically $ tryPeekMsg q
+              deliverMessage rId sub q msg_
 
         getMessage :: m (Transmission BrokerMsg)
         getMessage =
-          atomically getProhibitedSub >>= \case
-            Just s -> do
+          atomically (TM.lookup queueId subscriptions) >>= \case
+            Nothing ->
+              atomically newSub >>= getMessage_
+            Just sub ->
+              readTVarIO sub >>= \case
+                s@Sub {subThread = ProhibitSub} ->
+                  atomically (tryTakeTMVar $ delivered s)
+                    >> getMessage_ s
+                -- cannot use GET in the same connection where there is an active subscription
+                _ -> pure (corrId, queueId, ERR $ CMD PROHIBITED)
+          where
+            newSub :: STM Sub
+            newSub = do
+              s <- newSubscription ProhibitSub
+              sub <- newTVar s
+              TM.insert queueId sub subscriptions
+              pure s
+            getMessage_ :: Sub -> m (Transmission BrokerMsg)
+            getMessage_ s = do
               q <- getStoreMsgQueue queueId
               atomically $
                 tryPeekMsg q >>= \case
-                  Just msg -> tryPutTMVar (delivered s) () $> (corrId, queueId, msgCmd msg)
+                  Just msg -> setDelivered s msg $> (corrId, queueId, msgCmd msg)
                   _ -> pure (corrId, queueId, ERR NO_MSG)
-            _ -> pure (corrId, queueId, ERR $ CMD PROHIBITED) -- cannot use GET in the same connection where there is an active subscription
-          where
-            getProhibitedSub :: STM (Maybe Sub)
-            getProhibitedSub =
-              TM.lookup queueId subscriptions >>= \case
-                Just s@Sub {subThread = ProhibitSub} -> tryTakeTMVar (delivered s) $> Just s
-                Just _ -> pure Nothing
-                Nothing -> do
-                  s <- prohibitedSubscription
-                  TM.insert queueId s subscriptions
-                  pure $ Just s
 
         subscribeNotifications :: m (Transmission BrokerMsg)
         subscribeNotifications = atomically $ do
@@ -431,23 +445,37 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             TM.insert queueId () ntfSubscriptions
           pure ok
 
-        acknowledgeMsg :: m (Transmission BrokerMsg)
-        acknowledgeMsg =
-          atomically (withSub queueId $ \s -> const s <$$> tryTakeTMVar (delivered s))
-            >>= \case
-              Just (Just s) -> do
-                stats <- asks serverStats
-                atomically $ modifyTVar (msgRecv stats) (+ 1)
-                atomically $ modifyTVar (msgQueues stats) (S.insert queueId)
-                case s of
-                  Sub {subThread = ProhibitSub} ->
-                    (getStoreMsgQueue queueId >>= atomically . tryDelMsg) $> ok
-                  _ ->
-                    deliverMessage tryDelPeekMsg queueId s
-              _ -> return $ err NO_MSG
-
-        withSub :: RecipientId -> (Sub -> STM a) -> STM (Maybe a)
-        withSub rId f = mapM f =<< TM.lookup rId subscriptions
+        acknowledgeMsg :: MsgId -> m (Transmission BrokerMsg)
+        acknowledgeMsg msgId = do
+          atomically (TM.lookup queueId subscriptions) >>= \case
+            Nothing -> pure $ err NO_MSG
+            Just sub ->
+              atomically (getDelivered sub) >>= \case
+                Just s -> do
+                  q <- getStoreMsgQueue queueId
+                  case s of
+                    Sub {subThread = ProhibitSub} -> do
+                      msgDeleted <- atomically $ tryDelMsg q msgId
+                      when msgDeleted updateStats
+                      pure ok
+                    _ -> do
+                      (msgDeleted, msg_) <- atomically $ tryDelPeekMsg q msgId
+                      when msgDeleted updateStats
+                      deliverMessage queueId sub q msg_
+                _ -> pure $ err NO_MSG
+          where
+            getDelivered :: TVar Sub -> STM (Maybe Sub)
+            getDelivered sub = do
+              s@Sub {delivered} <- readTVar sub
+              tryTakeTMVar delivered $>>= \msgId' ->
+                if B.null msgId || msgId == msgId'
+                  then pure $ Just s
+                  else putTMVar delivered msgId' $> Nothing
+            updateStats :: m ()
+            updateStats = do
+              stats <- asks serverStats
+              atomically $ modifyTVar (msgRecv stats) (+ 1)
+              atomically $ modifyTVar (msgQueues stats) (S.insert queueId)
 
         sendMessage :: QueueStore -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage st flags msgBody
@@ -496,35 +524,33 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   unlessM (isFullTBQueue sndQ) $
                     writeTBQueue q (CorrId "", nId, NMSG)
 
-        deliverMessage :: (MsgQueue -> STM (Maybe Message)) -> RecipientId -> Sub -> m (Transmission BrokerMsg)
-        deliverMessage tryPeek rId = \case
-          Sub {subThread = NoSub} -> do
-            q <- getStoreMsgQueue rId
-            atomically (tryPeek q) >>= \case
-              Nothing -> forkSub q $> ok
-              Just msg -> atomically setDelivered $> (corrId, rId, msgCmd msg)
-          _ -> pure ok
+        deliverMessage :: RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
+        deliverMessage rId sub q msg_ =
+          readTVarIO sub >>= \case
+            s@Sub {subThread = NoSub} ->
+              case msg_ of
+                Just msg -> atomically (setDelivered s msg) $> (corrId, rId, msgCmd msg)
+                _ -> forkSub $> ok
+            _ -> pure ok
           where
-            forkSub :: MsgQueue -> m ()
-            forkSub q = do
-              atomically . setSub $ \s -> s {subThread = SubPending}
-              t <- forkIO $ subscriber q
-              atomically . setSub $ \case
+            forkSub :: m ()
+            forkSub = do
+              atomically . modifyTVar sub $ \s -> s {subThread = SubPending}
+              t <- forkIO subscriber
+              atomically . modifyTVar sub $ \case
                 s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
                 s -> s
 
-            subscriber :: MsgQueue -> m ()
-            subscriber q = atomically $ do
+            subscriber :: m ()
+            subscriber = atomically $ do
               msg <- peekMsg q
               writeTBQueue sndQ (CorrId "", rId, msgCmd msg)
-              setSub (\s -> s {subThread = NoSub})
-              void setDelivered
+              s <- readTVar sub
+              void $ setDelivered s msg
+              writeTVar sub s {subThread = NoSub}
 
-            setSub :: (Sub -> Sub) -> STM ()
-            setSub f = TM.adjust f rId subscriptions
-
-            setDelivered :: STM (Maybe Bool)
-            setDelivered = withSub rId $ \s -> tryPutTMVar (delivered s) ()
+        setDelivered :: Sub -> Message -> STM Bool
+        setDelivered s Message {msgId} = tryPutTMVar (delivered s) msgId
 
         getStoreMsgQueue :: RecipientId -> m MsgQueue
         getStoreMsgQueue rId = do
