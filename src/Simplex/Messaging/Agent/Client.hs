@@ -477,7 +477,8 @@ sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) co
     mkInvitation :: m ByteString
     -- this is only encrypted with per-queue E2E, not with double ratchet
     mkInvitation = do
-      let agentEnvelope = AgentInvitation {agentVersion = smpAgentVersion, connReq, connInfo}
+      agentVersion <- asks $ smpAgentVersion . config
+      let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
       agentCbEncryptOnce dhPublicKey . smpEncode $
         SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 

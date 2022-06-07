@@ -32,8 +32,8 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent.Protocol
   ( -- * Protocol parameters
-    smpAgentVersion,
-    smpAgentVRange,
+    currentSMPAgentVersion,
+    supportedSMPAgentVRange,
     e2eEncConnInfoLength,
     e2eEncUserMsgLength,
 
@@ -147,11 +147,11 @@ import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception (Exception)
 
-smpAgentVersion :: Version
-smpAgentVersion = 1
+currentSMPAgentVersion :: Version
+currentSMPAgentVersion = 2
 
-smpAgentVRange :: VersionRange
-smpAgentVRange = mkVersionRange 1 smpAgentVersion
+supportedSMPAgentVRange :: VersionRange
+supportedSMPAgentVRange = mkVersionRange 1 currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
@@ -288,7 +288,9 @@ data SMPConfirmation = SMPConfirmation
     -- | sender's DH public key for simple per-queue e2e encryption
     e2ePubKey :: C.PublicKeyX25519,
     -- | sender's information to be associated with the connection, e.g. sender's profile information
-    connInfo :: ConnInfo
+    connInfo :: ConnInfo,
+    -- | optional reply queues included in confirmation (added in agent protocol v2)
+    smpReplyQueues :: [SMPQueueInfo]
   }
   deriving (Show)
 
@@ -334,31 +336,38 @@ instance Encoding AgentMsgEnvelope where
 
 -- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
-data AgentMessage = AgentConnInfo ConnInfo | AgentMessage APrivHeader AMessage
+data AgentMessage
+  = AgentConnInfo ConnInfo
+  | AgentConnInfoReply (L.NonEmpty SMPQueueInfo) ConnInfo
+  | AgentMessage APrivHeader AMessage
   deriving (Show)
 
 instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
+    AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
+      'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
-data AgentMessageType = AM_CONN_INFO | AM_HELLO_ | AM_REPLY_ | AM_A_MSG_
+data AgentMessageType = AM_CONN_INFO | AM_CONN_INFO_REPLY | AM_HELLO_ | AM_REPLY_ | AM_A_MSG_
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
   smpEncode = \case
     AM_CONN_INFO -> "C"
+    AM_CONN_INFO_REPLY -> "D"
     AM_HELLO_ -> "H"
     AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
+      'D' -> pure AM_CONN_INFO_REPLY
       'H' -> pure AM_HELLO_
       'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
@@ -367,6 +376,7 @@ instance Encoding AgentMessageType where
 agentMessageType :: AgentMessage -> AgentMessageType
 agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
+  AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
   AgentMessage _ aMsg -> case aMsg of
     HELLO -> AM_HELLO_
     REPLY _ -> AM_REPLY_

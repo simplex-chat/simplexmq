@@ -21,7 +21,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Network.Socket
 import Numeric.Natural
-import Simplex.Messaging.Agent.Protocol (SMPServer)
+import Simplex.Messaging.Agent.Protocol (SMPServer, currentSMPAgentVersion, supportedSMPAgentVRange)
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
@@ -29,6 +29,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Client (NtfServer)
 import Simplex.Messaging.Transport (TLS, Transport (..))
+import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
@@ -52,7 +53,9 @@ data AgentConfig = AgentConfig
     resubscriptionConcurrency :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
-    certificateFile :: FilePath
+    certificateFile :: FilePath,
+    smpAgentVersion :: Version,
+    smpAgentVRange :: VersionRange
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -84,7 +87,9 @@ defaultAgentConfig =
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
-      certificateFile = "/etc/opt/simplex-agent/agent.crt"
+      certificateFile = "/etc/opt/simplex-agent/agent.crt",
+      smpAgentVersion = 1, -- currentSMPAgentVersion,
+      smpAgentVRange = mkVersionRange 1 1 -- supportedSMPAgentVRange
     }
 
 data Env = Env

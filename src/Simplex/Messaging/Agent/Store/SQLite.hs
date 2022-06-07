@@ -40,7 +40,7 @@ import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.List (find, foldl', partition)
 import qualified Data.Map.Strict as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -297,16 +297,16 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}, ratchetState} =
+  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
     liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \confirmationId ->
         DB.execute
           db
           [sql|
             INSERT INTO conn_confirmations
-            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, ?, 0);
+            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, 0);
           |]
-          (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo)
+          (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues)
 
   acceptConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
   acceptConfirmation st confirmationId ownConnInfo =
@@ -326,17 +326,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         DB.query
           db
           [sql|
-            SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info
+            SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues
             FROM conn_confirmations
             WHERE confirmation_id = ?;
           |]
           (Only confirmationId)
     where
-      confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo) =
+      confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_) =
         AcceptedConfirmation
           { confirmationId,
             connId,
-            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
+            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
             ratchetState,
             ownConnInfo
           }
@@ -348,17 +348,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         DB.query
           db
           [sql|
-            SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, own_conn_info
+            SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, own_conn_info
             FROM conn_confirmations
             WHERE conn_id = ? AND accepted = 1;
           |]
           (Only connId)
     where
-      confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, ownConnInfo) =
+      confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_, ownConnInfo) =
         AcceptedConfirmation
           { confirmationId,
             connId,
-            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
+            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
             ratchetState,
             ownConnInfo
           }
@@ -685,12 +685,20 @@ instance ToField MsgFlags where toField = toField . decodeLatin1 . smpEncode
 
 instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
+instance ToField [SMPQueueInfo] where toField = toField . smpEncodeList
+
+instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP
+
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
 
 firstRow :: (a -> b) -> e -> IO [a] -> IO (Either e b)
 firstRow f e a = second f . listToEither e <$> a
+
+-- TODO move from simplex-chat
+-- firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
+-- firstRow' f e a = (f <=< listToEither e) <$> a
 
 {- ORMOLU_DISABLE -}
 -- SQLite.Simple only has these up to 10 fields, which is insufficient for some of our queries

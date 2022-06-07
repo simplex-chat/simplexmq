@@ -105,6 +105,8 @@ CREATE TABLE conn_confirmations(
   accepted INTEGER NOT NULL,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  smp_reply_queues BLOB NULL
 ) WITHOUT ROWID;
 CREATE TABLE conn_invitations(
   invitation_id BLOB NOT NULL PRIMARY KEY,

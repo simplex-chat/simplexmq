@@ -26,7 +26,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
-    supportedSMPVersions,
+    supportedSMPServerVRange,
     simplexMQVersion,
 
     -- * Transport connection class
@@ -92,8 +92,8 @@ import UnliftIO.STM
 smpBlockSize :: Int
 smpBlockSize = 16384
 
-supportedSMPVersions :: VersionRange
-supportedSMPVersions = mkVersionRange 1 2
+supportedSMPServerVRange :: VersionRange
+supportedSMPServerVRange = mkVersionRange 1 2
 
 simplexMQVersion :: String
 simplexMQVersion = "2.2.0"
@@ -351,28 +351,28 @@ tGetBlock THandle {connection = c, blockSize} =
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpServerHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
-smpServerHandshake c kh = do
+smpServerHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpServerHandshake c kh smpVRange = do
   let th@THandle {sessionId} = smpTHandle c
-  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
+  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = smpVRange}
   getHandshake th >>= \case
     ClientHandshake {smpVersion, keyHash}
       | keyHash /= kh ->
         throwE $ TEHandshake IDENTITY
-      | smpVersion `isCompatible` supportedSMPVersions -> do
+      | smpVersion `isCompatible` smpVRange -> do
         pure (th :: THandle c) {thVersion = smpVersion}
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpClientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
-smpClientHandshake c keyHash = do
+smpClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpClientHandshake c keyHash smpVRange = do
   let th@THandle {sessionId} = smpTHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
   if sessionId /= sessId
     then throwE TEBadSession
-    else case smpVersionRange `compatibleVersion` supportedSMPVersions of
+    else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible smpVersion) -> do
         sendHandshake th $ ClientHandshake {smpVersion, keyHash}
         pure (th :: THandle c) {thVersion = smpVersion}

@@ -106,7 +106,9 @@ data ProtocolClientConfig = ProtocolClientConfig
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds)
-    smpPing :: Int
+    smpPing :: Int,
+    -- | SMP client-server protocol version range
+    smpServerVRange :: VersionRange
   }
 
 -- | Default protocol client configuration.
@@ -117,7 +119,8 @@ defaultClientConfig =
       defaultTransport = ("443", transport @TLS),
       tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
-      smpPing = 600_000_000 -- 10min
+      smpPing = 600_000_000, -- 10min
+      smpServerVRange = supportedSMPServerVRange
     }
 
 data Request msg = Request
@@ -133,7 +136,7 @@ type Response msg = Either ProtocolClientError msg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall msg. Protocol msg => ProtocolServer -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
-getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing} msgQ disconnected =
+getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing, smpServerVRange} msgQ disconnected =
   (atomically mkProtocolClient >>= runClient useTransport)
     `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
   where
@@ -180,7 +183,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
 
     client :: forall c. Transport c => TProxy c -> ProtocolClient msg -> TMVar (Either ProtocolClientError (THandle c)) -> c -> IO ()
     client _ c thVar h =
-      runExceptT (protocolClientHandshake @msg h $ keyHash protocolServer) >>= \case
+      runExceptT (protocolClientHandshake @msg h (keyHash protocolServer) smpServerVRange) >>= \case
         Left e -> atomically . putTMVar thVar . Left $ PCETransportError e
         Right th@THandle {sessionId, thVersion} -> do
           atomically $ do

@@ -92,6 +92,7 @@ smpServerCLIConfig =
                           }
                     else Nothing,
                 logStatsInterval = Just 86400, -- seconds
-                logStatsStartTime = 0 -- seconds from 00:00 UTC
+                logStatsStartTime = 0, -- seconds from 00:00 UTC
+                smpServerVRange = supportedSMPServerVRange
               }
         }
