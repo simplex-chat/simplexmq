@@ -6,7 +6,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Notifications.Server.Store where
 
@@ -14,7 +13,8 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Map.Strict as M
-import Data.Set (Set, insert)
+import Data.Set (Set)
+import qualified Data.Set as S
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NtfPrivateSignKey)
@@ -154,12 +154,18 @@ mkNtfSubData (NewNtfSub tokenId smpQueue notifierKey) = do
 
 addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM (Maybe ())
 addNtfSubscription st subId sub@NtfSubData {smpQueue, tokenId} =
-  TM.lookup tokenId (tokenSubscriptions st) >>= mapM insertSub
+  TM.lookup tokenId (tokenSubscriptions st) >>= maybe newTokenSub pure >>= insertSub
   where
+    newTokenSub = do
+      ts <- newTVar S.empty
+      TM.insert tokenId ts $ tokenSubscriptions st
+      pure ts
     insertSub ts = do
-      modifyTVar' ts $ insert subId
+      modifyTVar' ts $ S.insert subId
       TM.insert subId sub $ subscriptions st
       TM.insert smpQueue subId (subscriptionLookup st)
+      -- return Nothing if subscription existed before
+      pure $ Just ()
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of
