@@ -55,8 +55,7 @@ runTCPServer started port server = do
     $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       -- catchAll_ is needed here in case the connection was closed earlier
       cId <- atomically $ stateTVar clientId $ \cId -> (cId + 1, cId + 1)
-      let removeThread = atomically $ TM.delete cId clients
-      tId <- mkWeakThreadId =<< forkFinally (server conn) (const $ gracefulClose conn 5000 `catchAll_` removeThread)
+      tId <- mkWeakThreadId =<< forkFinally (server conn) (const $ gracefulClose conn 5000 `catchAll_` atomically (TM.delete cId clients))
       atomically $ TM.insert cId tId clients
 
 closeServer :: TMVar Bool -> TMap Int (Weak ThreadId) -> Socket -> IO ()
