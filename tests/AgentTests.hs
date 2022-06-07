@@ -12,6 +12,7 @@ module AgentTests (agentTests) where
 import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
+import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
 import AgentTests.SchemaDump (schemaDumpTest)
 import Control.Concurrent
@@ -36,6 +37,7 @@ agentTests (ATransport t) = do
   describe "Connection request" connectionRequestTests
   describe "Double ratchet tests" doubleRatchetTests
   describe "Functional API" $ functionalAPITests (ATransport t)
+  describe "Notification tests" $ notificationTests (ATransport t)
   describe "SQLite store" storeTests
   describe "SQLite schema dump" schemaDumpTest
   describe "SMP agent protocol syntax" $ syntaxTests t
