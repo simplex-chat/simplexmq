@@ -123,5 +123,5 @@ testNotificationSubscription (ATransport t) =
           let dec _nonce = C.cbDecrypt _dhShared (C.cbNonce _nonce)
           Resp "" _ (MSG mId1 _ _ msg1) <- tGet rh
           (dec mId1 msg1, Right "hello") #== "delivered from queue"
-          Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK)
+          Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK mId1)
           pure ()
