@@ -94,7 +94,7 @@ data Server = Server
   }
 
 data Client = Client
-  { subscriptions :: TMap RecipientId Sub,
+  { subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (Transmission Cmd),
     sndQ :: TBQueue (Transmission BrokerMsg),
@@ -117,7 +117,7 @@ data SubscriptionThread = NoSub | SubPending | SubThread ThreadId | ProhibitSub
 
 data Sub = Sub
   { subThread :: SubscriptionThread,
-    delivered :: TMVar ()
+    delivered :: TMVar MsgId
   }
 
 newServer :: Natural -> STM Server
@@ -149,14 +149,8 @@ newServerStats ts = do
   fromTime <- newTVar ts
   pure ServerStats {qCreated, qSecured, qDeleted, msgSent, msgRecv, msgQueues, fromTime}
 
-newSubscription :: STM Sub
-newSubscription = newSubscription_ NoSub
-
-prohibitedSubscription :: STM Sub
-prohibitedSubscription = newSubscription_ ProhibitSub
-
-newSubscription_ :: SubscriptionThread -> STM Sub
-newSubscription_ subThread = do
+newSubscription :: SubscriptionThread -> STM Sub
+newSubscription subThread = do
   delivered <- newEmptyTMVar
   return Sub {subThread, delivered}
 

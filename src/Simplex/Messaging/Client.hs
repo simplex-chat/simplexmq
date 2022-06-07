@@ -317,9 +317,9 @@ sendSMPMessage c spKey sId flags msg =
 -- | Acknowledge message delivery (server deletes the message).
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
-ackSMPMessage :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT ProtocolClientError IO ()
-ackSMPMessage c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
-  sendSMPCommand c (Just rpKey) rId ACK >>= \case
+ackSMPMessage :: SMPClient -> RcvPrivateSignKey -> QueueId -> MsgId -> ExceptT ProtocolClientError IO ()
+ackSMPMessage c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId msgId =
+  sendSMPCommand c (Just rpKey) rId (ACK msgId) >>= \case
     OK -> return ()
     cmd@MSG {} ->
       lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
