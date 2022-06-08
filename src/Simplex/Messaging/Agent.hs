@@ -493,7 +493,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                 AM_HELLO_ -> do
                   withStore $ \st -> setSndQueueStatus st sq Active
                   case rq_ of
-                    -- party initiating connection
+                    -- party initiating connection (in v1)
                     Just rq -> do
                       subscribeQueue c rq connId
                       notify CON
@@ -524,7 +524,9 @@ ackMessage' c connId msgId = do
     ack rq = do
       let mId = InternalId msgId
       srvMsgId <- withStore $ \st -> checkRcvMsg st connId mId
-      sendAck c rq srvMsgId
+      sendAck c rq srvMsgId `catchError` \case
+        SMP SMP.NO_MSG -> pure ()
+        e -> throwError e
       withStore $ \st -> deleteMsg st connId mId
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
@@ -728,9 +730,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
             _ -> prohibited >> ack
           where
             ack :: m ()
-            ack = sendAck c rq srvMsgId
+            ack =
+              sendAck c rq srvMsgId `catchError` \case
+                SMP SMP.NO_MSG -> pure ()
+                e -> throwError e
             handleNotifyAck :: m () -> m ()
-            handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
+            handleNotifyAck m =
+              m `catchError` \case
+                AGENT A_DUPLICATE -> ack
+                e -> notify (ERR e) >> ack
         SMP.END ->
           atomically (TM.lookup srv smpClients $>>= tryReadTMVar >>= processEND)
             >>= logServer "<--" c srv rId

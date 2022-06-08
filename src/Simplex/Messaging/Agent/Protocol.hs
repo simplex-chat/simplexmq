@@ -776,6 +776,8 @@ data SMPAgentError
     A_VERSION
   | -- | cannot decrypt message
     A_ENCRYPTION
+  | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown
+    A_DUPLICATE
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance ToJSON SMPAgentError where

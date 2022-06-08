@@ -207,7 +207,7 @@ noMessages c err = tryGet `shouldReturn` ()
   where
     tryGet =
       10000 `timeout` get c >>= \case
-        Just r -> print r >> error err
+        Just _ -> error err
         _ -> return ()
 
 testAsyncInitiatingOffline :: IO ()
