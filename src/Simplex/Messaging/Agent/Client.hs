@@ -14,7 +14,6 @@
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
     newAgentClient,
-    AgentMonad,
     withAgentLock,
     closeAgentClient,
     newRcvQueue,
@@ -31,8 +30,6 @@ module Simplex.Messaging.Agent.Client
     agentNtfDeleteToken,
     agentNtfEnableCron,
     agentNtfCreateSubscription,
-    addNtfSubSupervisor,
-    addNtfSubWorker,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -49,6 +46,7 @@ where
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
+import Simplex.Messaging.Agent.Monad (AgentMonad)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -84,6 +82,7 @@ import System.Timeout (timeout)
 import UnliftIO (async, pooledForConcurrentlyN)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Simplex.Messaging.Agent.NtfSubSupervisor
 
 type ClientVar msg = TMVar (Either AgentErrorType (ProtocolClient msg))
 
@@ -111,9 +110,7 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env,
     smpSubscriber :: Async (),
-    ntfSubSupervisor :: TVar (Maybe (Async ())),
-    ntfSubQ :: TBQueue RcvQueue,
-    ntfSubWorkers :: TMap ProtocolServer (Async ()),
+    ntfSubSupervisor :: NtfSubSupervisor,
     lock :: TMVar ()
   }
 
@@ -137,9 +134,7 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   reconnections <- newTVar []
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
-  ntfSubSupervisor <- newTVar Nothing
-  ntfSubQ <- newTBQueue qSize -- bigger queue size?
-  ntfSubWorkers <- TM.empty
+  ntfSubSupervisor <- newNtfSubSupervisor agentEnv
   lock <- newTMVar ()
   return
     AgentClient
@@ -163,16 +158,11 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
         agentEnv,
         smpSubscriber = undefined,
         ntfSubSupervisor,
-        ntfSubQ,
-        ntfSubWorkers,
         lock
       }
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
-
--- | Agent monad with MonadReader Env and MonadError AgentErrorType
-type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 class ProtocolServerClient msg where
   getProtocolServerClient :: AgentMonad m => AgentClient -> ProtocolServer -> m (ProtocolClient msg)
@@ -482,30 +472,6 @@ removePendingSubscription = removeSubs_ . pendingSubscrSrvrs
 removeSubs_ :: TMap SMPServer (TMap ConnId RcvQueue) -> SMPServer -> ConnId -> STM ()
 removeSubs_ ss server connId =
   TM.lookup server ss >>= mapM_ (TM.delete connId)
-
-
-addNtfSubSupervisor :: AgentMonad m => AgentClient -> m () -> m ()
-addNtfSubSupervisor c supervisor = do
-  supervisor_ <- readTVarIO (ntfSubSupervisor c)
-  case supervisor_ of
-    Nothing -> do
-      nSubSupervisor <- async supervisor
-      atomically $ writeTVar (ntfSubSupervisor c) $ Just nSubSupervisor
-    Just _ -> pure ()
-
--- addNtfSubWorker :: AgentClient -> ProtocolServer -> Async () -> STM ()
--- addNtfSubWorker c srv worker =
---   TM.lookup srv (ntfSubWorkers c) >>= \case
---     Nothing -> TM.insert srv worker (ntfSubWorkers c)
---     Just _ -> pure ()
-
-addNtfSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> m () -> m ()
-addNtfSubWorker c srv worker =
-  atomically (TM.lookup srv (ntfSubWorkers c)) >>= \case
-    Nothing -> do
-      ntfSubWorker <- async worker
-      atomically $ TM.insert srv ntfSubWorker (ntfSubWorkers c)
-    Just _ -> pure ()
 
 logServer :: MonadIO m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =

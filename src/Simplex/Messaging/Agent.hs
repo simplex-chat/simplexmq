@@ -82,6 +82,8 @@ import Data.Word (Word16)
 import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Monad (AgentMonad)
+import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -187,11 +189,6 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
-
--- -- | Create notification subscription
--- createNtfSubscription :: AgentErrorMonad m => AgentClient -> DeviceToken -> ConnId -> m NtfTknStatus
--- createNtfSubscription :: AgentErrorMonad m => AgentClient -> ConnId -> m NtfTknStatus
--- createNtfSubscription c = withAgentEnv c . registerNtfToken' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -560,9 +557,8 @@ registerNtfToken' c deviceToken =
         (Just tknId, Just (NTACron interval)) ->
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
         (Just _tknId, Just NTACheck) -> do
-          -- TODO
-          -- when (ntfTknStatus == NTActive) $
-          --   runNotificationSubSupervisor c tkn
+          when (ntfTknStatus == NTActive) $
+            runNotificationSubSupervisor c tkn
           pure ntfTknStatus -- TODO
           -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
@@ -597,8 +593,7 @@ verifyNtfToken' c deviceToken code nonce =
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
       void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
         agentNtfVerifyToken c tknId tkn code'
-        -- TODO
-        -- runNotificationSubSupervisor c tkn
+        runNotificationSubSupervisor c tkn
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
@@ -626,12 +621,6 @@ deleteNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn, _) -> deleteToken_ c tkn
     _ -> throwError $ CMD PROHIBITED
-
--- createNtfSubscription' :: AgentMonad m => AgentClient -> ConnId -> m ()
--- createNtfSubscription' c connId =
---   withStore (`getDeviceNtfToken` deviceToken) >>= \case
---     (Just tkn, _) -> deleteToken_ c tkn
---     _ -> throwError $ CMD PROHIBITED
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
@@ -688,18 +677,18 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Right _ -> return ()
 
 runNotificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
-runNotificationSubSupervisor c tkn = do
-  addNtfSubSupervisor c $ notificationSubSupervisor c tkn `E.finally` pure () -- TODO
+runNotificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns} tkn = do
+  addNtfSubSupervisor ns $ notificationSubSupervisor c tkn `E.finally` pure () -- TODO
   rcvQueues <- withStore $ \st -> getRcvQueuesWithoutNtfSub st
   forM_ rcvQueues $ \rq -> do
-    atomically $ writeTBQueue (ntfSubQ c) rq
+    atomically $ writeTBQueue (ntfSubQ ns) rq
 
 -- TODO what to do on token change; should ntfToken be read from client env?
 notificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
-notificationSubSupervisor c@AgentClient {ntfSubQ} ntfToken = do
+notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfSubQ}} ntfToken = do
   -- get unique servers from ntf_subscriptions, add workers to ntfSubWorkers
   srvs <- withStore $ \st -> getNtfSubscriptionServers st
-  forM_ srvs $ \srv -> addNtfSubWorker c srv $ notificationSubWorker c srv `E.finally` pure ()
+  forM_ srvs $ \srv -> addNtfSubWorker ns srv $ notificationSubWorker c srv `E.finally` pure ()
   forever $ do
     rcvQueue@RcvQueue {server = smpServer, rcvId} <- atomically $ readTBQueue ntfSubQ
     -- get/create subscription record in ntf_subscriptions
@@ -717,7 +706,7 @@ notificationSubSupervisor c@AgentClient {ntfSubQ} ntfToken = do
       _ -> pure ()
     liftIO $ threadDelay 1000000
   where
-    addWorker srv = addNtfSubWorker c srv $ notificationSubWorker c srv `E.finally` pure () -- TODO
+    addWorker srv = addNtfSubWorker ns srv $ notificationSubWorker c srv `E.finally` pure () -- TODO
 
 notificationSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> m ()
 notificationSubWorker _c srv = forever $ do
