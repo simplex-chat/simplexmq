@@ -60,6 +60,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
@@ -92,7 +93,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, ProtocolServer)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
@@ -186,6 +187,11 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
+
+-- -- | Create notification subscription
+-- createNtfSubscription :: AgentErrorMonad m => AgentClient -> DeviceToken -> ConnId -> m NtfTknStatus
+-- createNtfSubscription :: AgentErrorMonad m => AgentClient -> ConnId -> m NtfTknStatus
+-- createNtfSubscription c = withAgentEnv c . registerNtfToken' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -553,8 +559,11 @@ registerNtfToken' c deviceToken =
           t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
         (Just tknId, Just (NTACron interval)) ->
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
-        (Just _tknId, Just NTACheck) -> pure ntfTknStatus -- TODO
-        -- agentNtfCheckToken c tknId tkn >>= \case
+        (Just _tknId, Just NTACheck) -> do
+          when (ntfTknStatus == NTActive) $
+            runNotificationSubSupervisor c tkn
+          pure ntfTknStatus -- TODO
+          -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
           agentNtfDeleteToken c tknId tkn
           withStore $ \st -> removeNtfToken st tkn $> NTExpired
@@ -585,8 +594,9 @@ verifyNtfToken' c deviceToken code nonce =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
-      void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+      void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
         agentNtfVerifyToken c tknId tkn code'
+        runNotificationSubSupervisor c tkn
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
@@ -614,6 +624,12 @@ deleteNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn, _) -> deleteToken_ c tkn
     _ -> throwError $ CMD PROHIBITED
+
+-- createNtfSubscription' :: AgentMonad m => AgentClient -> ConnId -> m ()
+-- createNtfSubscription' c connId =
+--   withStore (`getDeviceNtfToken` deviceToken) >>= \case
+--     (Just tkn, _) -> deleteToken_ c tkn
+--     _ -> throwError $ CMD PROHIBITED
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
@@ -668,6 +684,52 @@ subscriber c@AgentClient {msgQ} = forever $ do
   withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
+
+runNotificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
+runNotificationSubSupervisor c tkn = do
+  addNtfSubSupervisor c $ notificationSubSupervisor c tkn `E.finally` pure () -- TODO
+  rcvQueues <- withStore $ \st -> getRcvQueuesWithoutNtfSub st
+  forM_ rcvQueues $ \rq -> do
+    atomically $ writeTBQueue (ntfSubQ c) rq
+
+-- TODO what to do on token change; should ntfToken be read from client env?
+notificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
+notificationSubSupervisor c@AgentClient {ntfSubQ} ntfToken = do
+  -- get unique servers from ntf_subscriptions, add workers to ntfSubWorkers
+  srvs <- withStore $ \st -> getNtfSubscriptionServers st
+  forM_ srvs $ \srv -> addNtfSubWorker c srv $ notificationSubWorker c srv `E.finally` pure ()
+  forever $ do
+    rcvQueue@RcvQueue {server = smpServer, rcvId} <- atomically $ readTBQueue ntfSubQ
+    -- get/create subscription record in ntf_subscriptions
+    sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
+    -- TODO what if ntf server is not configured on start (ignore for now)
+    ntfServer_ <- getNtfServer c
+    case (sub_, ntfServer_) of
+      (Nothing, Just ntfServer) -> do
+        currentTime <- liftIO getCurrentTime
+        let newSub = newNtfSubscription ntfServer ntfToken smpServer rcvId currentTime
+        withStore $ \st -> createNtfSubscription st newSub
+        -- lookup workers in ntfSubWorkers; create if it doesn't exist
+        addWorker smpServer
+        addWorker ntfServer
+      _ -> pure ()
+  where
+    addWorker srv = addNtfSubWorker c srv $ notificationSubWorker c srv `E.finally` pure () -- TODO
+
+notificationSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> m ()
+notificationSubWorker _c srv = forever $ do
+  -- get next action from ntf_subscriptions filtering by srv
+  withStore $ \st -> do
+    ntfSub <- getNextNtfSubscription st srv
+    forM_ ntfSub $ \NtfSubscription {ntfSubAction} ->
+      -- process action, updateNtfSubscription (new status, action, can be nId, subId)
+      forM_ ntfSubAction $ \case
+        NSAKey -> pure ()
+        NSANew _nKey -> pure ()
+        NSACheck -> pure ()
+        NSADelete -> pure ()
+  -- wait to reduce aggressiveness of polling (many servers?)
+  liftIO $ threadDelay 3000000
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) = do

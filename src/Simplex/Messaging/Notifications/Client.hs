@@ -10,6 +10,7 @@ module Simplex.Messaging.Notifications.Client where
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Time (UTCTime)
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -18,7 +19,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (blobFieldDecoder)
-import Simplex.Messaging.Protocol (ProtocolServer)
+import Simplex.Messaging.Protocol (NotifierId, NtfPrivateSignKey, ProtocolServer, RecipientId, SMPServer)
 
 type NtfServer = ProtocolServer
 
@@ -129,4 +130,57 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
       ntfDhSecret = Nothing,
       ntfTknStatus = NTNew,
       ntfTknAction = Just NTARegister
+    }
+
+-- TODO parameterize by server type
+data NtfSubAction
+  = NSAKey
+  | NSANew NtfPrivateSignKey
+  | NSACheck
+  | NSADelete
+  deriving (Show)
+
+instance Encoding NtfSubAction where
+  smpEncode = \case
+    NSAKey -> "K"
+    NSANew nKey -> smpEncode ('N', nKey)
+    NSACheck -> "C"
+    NSADelete -> "D"
+  smpP =
+    A.anyChar >>= \case
+      'K' -> pure NSAKey
+      'N' -> NSANew <$> smpP
+      'C' -> pure NSACheck
+      'D' -> pure NSADelete
+      _ -> fail "bad NtfSubAction"
+
+instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
+
+instance ToField NtfSubAction where toField = toField . smpEncode
+
+data NtfSubscription = NtfSubscription
+  { ntfServer :: NtfServer,
+    ntfSubId :: Maybe NtfSubscriptionId,
+    ntfSubStatus :: NtfSubStatus,
+    ntfSubAction :: Maybe NtfSubAction,
+    ntfSubActionTs :: UTCTime,
+    ntfToken :: NtfToken, -- ?
+    smpServer :: SMPServer, -- use SMPQueueNtf?
+    rcvQueueId :: RecipientId,
+    ntfQueueId :: Maybe NotifierId
+  }
+  deriving (Show)
+
+newNtfSubscription :: NtfServer -> NtfToken -> SMPServer -> RecipientId -> UTCTime -> NtfSubscription
+newNtfSubscription ntfServer ntfToken smpServer rcvQueueId ntfSubActionTs =
+  NtfSubscription
+    { ntfServer,
+      ntfSubId = Nothing,
+      ntfSubStatus = NSKey,
+      ntfSubAction = Just NSAKey,
+      ntfSubActionTs,
+      ntfToken,
+      smpServer,
+      rcvQueueId,
+      ntfQueueId = Nothing
     }

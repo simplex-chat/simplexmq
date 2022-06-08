@@ -30,6 +30,9 @@ module Simplex.Messaging.Agent.Client
     agentNtfCheckToken,
     agentNtfDeleteToken,
     agentNtfEnableCron,
+    agentNtfCreateSubscription,
+    addNtfSubSupervisor,
+    addNtfSubWorker,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -71,7 +74,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NtfPrivateSignKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -108,6 +111,9 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env,
     smpSubscriber :: Async (),
+    ntfSubSupervisor :: TVar (Maybe (Async ())),
+    ntfSubQ :: TBQueue RcvQueue,
+    ntfSubWorkers :: TMap ProtocolServer (Async ()),
     lock :: TMVar ()
   }
 
@@ -131,8 +137,36 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   reconnections <- newTVar []
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
+  ntfSubSupervisor <- newTVar Nothing
+  ntfSubQ <- newTBQueue qSize -- bigger queue size?
+  ntfSubWorkers <- TM.empty
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, ntfServers, smpClients, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return
+    AgentClient
+      { active,
+        rcvQ,
+        subQ,
+        msgQ,
+        smpServers,
+        ntfServers,
+        smpClients,
+        ntfClients,
+        subscrSrvrs,
+        pendingSubscrSrvrs,
+        subscrConns,
+        connMsgsQueued,
+        smpQueueMsgQueues,
+        smpQueueMsgDeliveries,
+        reconnections,
+        asyncClients,
+        clientId,
+        agentEnv,
+        smpSubscriber = undefined,
+        ntfSubSupervisor,
+        ntfSubQ,
+        ntfSubWorkers,
+        lock
+      }
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -449,6 +483,30 @@ removeSubs_ :: TMap SMPServer (TMap ConnId RcvQueue) -> SMPServer -> ConnId -> S
 removeSubs_ ss server connId =
   TM.lookup server ss >>= mapM_ (TM.delete connId)
 
+
+addNtfSubSupervisor :: AgentMonad m => AgentClient -> m () -> m ()
+addNtfSubSupervisor c supervisor = do
+  supervisor_ <- readTVarIO (ntfSubSupervisor c)
+  case supervisor_ of
+    Nothing -> do
+      nSubSupervisor <- async supervisor
+      atomically $ writeTVar (ntfSubSupervisor c) $ Just nSubSupervisor
+    Just _ -> pure ()
+
+-- addNtfSubWorker :: AgentClient -> ProtocolServer -> Async () -> STM ()
+-- addNtfSubWorker c srv worker =
+--   TM.lookup srv (ntfSubWorkers c) >>= \case
+--     Nothing -> TM.insert srv worker (ntfSubWorkers c)
+--     Just _ -> pure ()
+
+addNtfSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> m () -> m ()
+addNtfSubWorker c srv worker =
+  atomically (TM.lookup srv (ntfSubWorkers c)) >>= \case
+    Nothing -> do
+      ntfSubWorker <- async worker
+      atomically $ TM.insert srv ntfSubWorker (ntfSubWorkers c)
+    Just _ -> pure ()
+
 logServer :: MonadIO m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
@@ -527,6 +585,10 @@ agentNtfDeleteToken c tknId NtfToken {ntfServer, ntfPrivKey} =
 agentNtfEnableCron :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> Word16 -> m ()
 agentNtfEnableCron c tknId NtfToken {ntfServer, ntfPrivKey} interval =
   withLogClient c ntfServer tknId "TCRN" $ \ntf -> ntfEnableCron ntf ntfPrivKey tknId interval
+
+agentNtfCreateSubscription :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> SMPQueueNtf -> NtfPrivateSignKey -> m NtfSubscriptionId
+agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKey =
+  withLogClient c ntfServer tknId "SNEW" $ \ntf -> ntfCreateSubscription ntf ntfPrivKey (NewNtfSub tknId smpQueue nKey)
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do

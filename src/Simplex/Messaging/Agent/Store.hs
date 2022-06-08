@@ -26,6 +26,7 @@ import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
     MsgId,
+    ProtocolServer,
     RcvDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
@@ -85,6 +86,15 @@ class Monad m => MonadAgentStore s m where
   updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
   updateNtfToken :: s -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
   removeNtfToken :: s -> NtfToken -> m ()
+
+  -- Notification subscription persistence
+  getRcvQueuesWithoutNtfSub :: s -> m [RcvQueue]
+  getNtfSubscriptionServers :: s -> m [ProtocolServer]
+  getNtfSubscription :: s -> RcvQueue -> m (Maybe NtfSubscription)
+  createNtfSubscription :: s -> NtfSubscription -> m () -- get and create as one method?
+  -- updateNtfSubscription :: s -> RcvQueue -> NtfSubStatus -> Maybe NtfSubAction -> UTCTime -> Maybe NtfSubscriptionId -> Maybe NotifierId -> m ()
+  updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
+  getNextNtfSubscription :: s -> ProtocolServer -> m (Maybe NtfSubscription)
 
 -- * Queue types
 
@@ -328,3 +338,13 @@ data StoreError
   | -- | Used in `getMsg` that is not implemented/used. TODO remove.
     SENotImplemented
   deriving (Eq, Show, Exception)
+
+-- * Ntf Subscriptions
+
+-- data NewNtfSubscription = NewNtfSubscription
+--   { ntfServer :: NtfServer,
+--     ntfSubId :: NtfSubscriptionId,
+--     ratchetState :: RatchetX448
+--   }
+
+data NtfSubscriptionAction = NSubSMPAction SMPServer | NSubNtfAction NtfServer

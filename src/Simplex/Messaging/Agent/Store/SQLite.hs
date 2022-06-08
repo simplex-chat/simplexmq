@@ -58,7 +58,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client (NtfServer, NtfTknAction, NtfToken (..))
+import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubscription, NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..))
@@ -634,6 +634,24 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
         |]
         (provider, token, host, port)
+
+  getRcvQueuesWithoutNtfSub :: SQLiteStore -> m [RcvQueue]
+  getRcvQueuesWithoutNtfSub _st = throwError SENotImplemented
+
+  getNtfSubscriptionServers :: SQLiteStore -> m [ProtocolServer]
+  getNtfSubscriptionServers _st = throwError SENotImplemented
+
+  getNtfSubscription :: SQLiteStore -> RcvQueue -> m (Maybe NtfSubscription)
+  getNtfSubscription _st _rcvQueue = throwError SENotImplemented
+
+  createNtfSubscription :: SQLiteStore -> NtfSubscription -> m ()
+  createNtfSubscription _st _ntfSub = throwError SENotImplemented
+
+  updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
+  updateNtfSubscription _st _rcvQueue _ntfSub = throwError SENotImplemented
+
+  getNextNtfSubscription :: s -> ProtocolServer -> m (Maybe NtfSubscription)
+  getNextNtfSubscription _st _srv = throwError SENotImplemented
 
 -- * Auxiliary helpers
 
