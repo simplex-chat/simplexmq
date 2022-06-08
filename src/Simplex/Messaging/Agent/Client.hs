@@ -46,7 +46,6 @@ where
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
-import Simplex.Messaging.Agent.Monad (AgentMonad)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -62,6 +61,8 @@ import Data.Maybe (catMaybes)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Monad (AgentMonad)
+import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -82,7 +83,6 @@ import System.Timeout (timeout)
 import UnliftIO (async, pooledForConcurrentlyN)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Simplex.Messaging.Agent.NtfSubSupervisor
 
 type ClientVar msg = TMVar (Either AgentErrorType (ProtocolClient msg))
 
@@ -433,7 +433,7 @@ newRcvQueue_ a c srv = do
   pure (rq, SMPQueueUri srv sndId SMP.smpClientVRange e2eDhKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
-subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
+subscribeQueue c@AgentClient {ntfSubSupervisor = ns} rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
   atomically $ addPendingSubscription c rq connId
   withLogClient c server rcvId "SUB" $ \smp -> do
     liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
@@ -441,7 +441,9 @@ subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
         atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
           removePendingSubscription c server connId
         throwError e
-      Right _ -> addSubscription c rq connId
+      Right _ -> do
+        addSubscription c rq connId
+        atomically $ writeTBQueue (ntfSubQ ns) rq
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do

@@ -7,10 +7,12 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     newNtfSubSupervisor,
     addNtfSubSupervisor,
     addNtfSubWorker,
+    setNtfSubWorkerSemaphore,
   )
 where
 
 import Control.Concurrent.Async (Async)
+import Control.Monad
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Monad (AgentMonad)
 import Simplex.Messaging.Agent.Store
@@ -24,7 +26,7 @@ import UnliftIO.STM
 data NtfSubSupervisor = NtfSubSupervisor
   { ntfSubSupervisor :: TVar (Maybe (Async ())),
     ntfSubQ :: TBQueue RcvQueue,
-    ntfSubWorkers :: TMap ProtocolServer (Async ())
+    ntfSubWorkers :: TMap ProtocolServer (TMVar (), Async ())
   }
 
 newNtfSubSupervisor :: Env -> STM NtfSubSupervisor
@@ -49,10 +51,17 @@ addNtfSubSupervisor ns action = do
       atomically $ writeTVar (ntfSubSupervisor ns) $ Just nSubSupervisor
     Just _ -> pure ()
 
-addNtfSubWorker :: AgentMonad m => NtfSubSupervisor -> ProtocolServer -> m () -> m ()
+addNtfSubWorker :: AgentMonad m => NtfSubSupervisor -> ProtocolServer -> (TMVar () -> m ()) -> m ()
 addNtfSubWorker ns srv action =
   atomically (TM.lookup srv (ntfSubWorkers ns)) >>= \case
     Nothing -> do
-      ntfSubWorker <- async action
-      atomically $ TM.insert srv ntfSubWorker (ntfSubWorkers ns)
-    Just _ -> pure ()
+      workerSemaphore <- newTMVarIO ()
+      ntfSubWorker <- async $ action workerSemaphore
+      atomically $ TM.insert srv (workerSemaphore, ntfSubWorker) (ntfSubWorkers ns)
+    Just (workerSemaphore, _) -> void . atomically $ tryPutTMVar workerSemaphore ()
+
+setNtfSubWorkerSemaphore :: NtfSubSupervisor -> ProtocolServer -> STM ()
+setNtfSubWorkerSemaphore ns srv =
+  TM.lookup srv (ntfSubWorkers ns) >>= \case
+    Just (workerSemaphore, _) -> void $ tryPutTMVar workerSemaphore ()
+    Nothing -> pure ()

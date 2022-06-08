@@ -688,7 +688,7 @@ notificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
 notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfSubQ}} ntfToken = do
   -- get unique servers from ntf_subscriptions, add workers to ntfSubWorkers
   srvs <- withStore $ \st -> getNtfSubscriptionServers st
-  forM_ srvs $ \srv -> addNtfSubWorker ns srv $ notificationSubWorker c srv `E.finally` pure ()
+  forM_ srvs $ \srv -> addWorker srv
   forever $ do
     rcvQueue@RcvQueue {server = smpServer, rcvId} <- atomically $ readTBQueue ntfSubQ
     -- get/create subscription record in ntf_subscriptions
@@ -703,24 +703,30 @@ notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor 
         -- lookup workers in ntfSubWorkers; create if it doesn't exist
         addWorker smpServer
         addWorker ntfServer
+      (Just _, Just ntfServer) -> do
+        atomically $ do
+          setNtfSubWorkerSemaphore ns smpServer
+          setNtfSubWorkerSemaphore ns ntfServer
       _ -> pure ()
+    -- throttle
     liftIO $ threadDelay 1000000
   where
-    addWorker srv = addNtfSubWorker ns srv $ notificationSubWorker c srv `E.finally` pure () -- TODO
+    addWorker srv = addNtfSubWorker ns srv $ \ws -> notificationSubWorker c srv ws `E.finally` pure () -- TODO
 
-notificationSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> m ()
-notificationSubWorker _c srv = forever $ do
+notificationSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> TMVar () -> m ()
+notificationSubWorker _c srv workerSemaphore = forever $ do
+  _ <- atomically $ readTMVar workerSemaphore
   -- get next action from ntf_subscriptions filtering by srv
-  withStore $ \st -> do
-    ntfSub <- getNextNtfSubscription st srv
-    forM_ ntfSub $ \NtfSubscription {ntfSubAction} ->
+  withStore $ \st -> getNextNtfSubscription st srv >>= \case
+    Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
+    Just NtfSubscription {ntfSubAction} ->
       -- process action, updateNtfSubscription (new status, action, can be nId, subId)
       forM_ ntfSubAction $ \case
         NSAKey -> pure ()
         NSANew _nKey -> pure ()
         NSACheck -> pure ()
         NSADelete -> pure ()
-  -- wait to reduce aggressiveness of polling (many servers?)
+  -- throttle
   liftIO $ threadDelay 2000000
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
