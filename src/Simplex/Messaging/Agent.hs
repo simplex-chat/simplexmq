@@ -560,8 +560,9 @@ registerNtfToken' c deviceToken =
         (Just tknId, Just (NTACron interval)) ->
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
         (Just _tknId, Just NTACheck) -> do
-          when (ntfTknStatus == NTActive) $
-            runNotificationSubSupervisor c tkn
+          -- TODO
+          -- when (ntfTknStatus == NTActive) $
+          --   runNotificationSubSupervisor c tkn
           pure ntfTknStatus -- TODO
           -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
@@ -596,7 +597,8 @@ verifyNtfToken' c deviceToken code nonce =
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
       void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
         agentNtfVerifyToken c tknId tkn code'
-        runNotificationSubSupervisor c tkn
+        -- TODO
+        -- runNotificationSubSupervisor c tkn
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
