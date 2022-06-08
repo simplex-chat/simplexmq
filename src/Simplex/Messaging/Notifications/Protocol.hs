@@ -126,6 +126,8 @@ deriving instance Show (NewNtfEntity e)
 
 data ANewNtfEntity = forall e. NtfEntityI e => ANE (SNtfEntity e) (NewNtfEntity e)
 
+deriving instance Show ANewNtfEntity
+
 instance NtfEntityI e => Encoding (NewNtfEntity e) where
   smpEncode = \case
     NewNtfTkn tkn verifyKey dhPubKey -> smpEncode ('T', tkn, verifyKey, dhPubKey)

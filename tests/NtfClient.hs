@@ -18,8 +18,9 @@ import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson as J
+import qualified Data.Aeson.Types as JT
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import Data.Text (Text)
@@ -42,6 +43,7 @@ import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.KeepAlive
+import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -134,6 +136,9 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       (Nothing, _, (CorrId corrId, qId, Right cmd)) <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
+ntfTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+ntfTest _ test' = runNtfTest test' `shouldReturn` ()
+
 data APNSMockRequest = APNSMockRequest
   { notification :: APNSNotification,
     sendApnsResponse :: APNSMockResponse -> IO ()
@@ -163,9 +168,16 @@ withAPNSMockServer = E.bracket (getAPNSMockServer apnsMockServerConfig) closeAPN
 
 deriving instance Generic APNSAlertBody
 
-deriving instance FromJSON APNSAlertBody
+instance FromJSON APNSAlertBody where
+  parseJSON (J.Object v) = do
+    title <- v .: "title"
+    subtitle <- v .: "subtitle"
+    body <- v .: "body"
+    pure APNSAlertObject {title, subtitle, body}
+  parseJSON (J.String v) = pure $ APNSAlertText v
+  parseJSON invalid = JT.prependFailure "parsing Coord failed, " (JT.typeMismatch "Object" invalid)
 
-instance FromJSON APNSNotificationBody where parseJSON = J.genericParseJSON apnsJSONOptions
+instance FromJSON APNSNotificationBody where parseJSON = J.genericParseJSON apnsJSONOptions {J.rejectUnknownFields = True}
 
 deriving instance FromJSON APNSNotification
 
@@ -185,8 +197,11 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
             APNSRespError status reason ->
               sendResponse . H.responseBuilder status [] . lazyByteString $ J.encode APNSErrorResponse {reason}
       case J.decodeStrict' reqBody of
-        Just notification -> atomically $ writeTBQueue apnsQ APNSMockRequest {notification, sendApnsResponse}
-        _ -> sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
+        Just notification ->
+          atomically $ writeTBQueue apnsQ APNSMockRequest {notification, sendApnsResponse}
+        _ -> do
+          putStrLn $ "runAPNSMockServer J.decodeStrict' error, reqBody: " <> show reqBody
+          sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
 
 closeAPNSMockServer :: APNSMockServer -> IO ()
 closeAPNSMockServer APNSMockServer {action, http2Server} = do

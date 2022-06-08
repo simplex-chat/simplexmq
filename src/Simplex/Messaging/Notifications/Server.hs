@@ -108,12 +108,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       (srv, _sessId, ntfId, msg) <- atomically $ readTBQueue msgQ
       case msg of
         SMP.NMSG -> do
-          -- check when the last NMSG was received from this queue
-          -- update timestamp
-          -- check what was the last hidden notification was sent (and whether to this queue)
-          -- decide whether it should be sent as hidden or visible
-          -- construct and possibly encrypt notification
-          -- send it
           NtfPushServer {pushQ} <- asks pushServer
           st <- asks store
           atomically $
@@ -148,6 +142,8 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
       deliverNotification pp tkn ntf
       atomically $ modifyTVar tknStatus $ \status' -> if status' == NTActive then NTActive else NTConfirmed
     (NTActive, PNCheckMessages) -> do
+      deliverNotification pp tkn ntf
+    (NTActive, PNMessage _ _) -> do
       deliverNotification pp tkn ntf
     _ -> do
       logError "bad notification token status"
@@ -193,6 +189,9 @@ send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, activeAt} = for
   t <- atomically $ readTBQueue sndQ
   void . liftIO $ tPut h (Nothing, encodeTransmission v sessionId t)
   atomically . writeTVar activeAt =<< liftIO getSystemTime
+
+-- instance Show a => Show (TVar a) where
+--   show x = unsafePerformIO $ show <$> readTVarIO x
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
