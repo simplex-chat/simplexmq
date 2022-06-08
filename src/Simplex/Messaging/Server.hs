@@ -65,6 +65,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
+import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
 import UnliftIO.Exception
 import UnliftIO.IO
@@ -209,7 +210,7 @@ sameClientSession Client {sessionId} Client {sessionId = s'} = sessionId == s'
 
 cancelSub :: MonadUnliftIO m => Sub -> m ()
 cancelSub = \case
-  Sub {subThread = SubThread t} -> killThread t
+  Sub {subThread = SubThread t} -> liftIO $ deRefWeak t >>= mapM_ killThread
   _ -> return ()
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader Env m) => THandle c -> Client -> m ()
@@ -480,7 +481,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             forkSub :: MsgQueue -> m ()
             forkSub q = do
               atomically . setSub $ \s -> s {subThread = SubPending}
-              t <- forkIO $ subscriber q
+              t <- mkWeakThreadId =<< forkIO (subscriber q)
               atomically . setSub $ \case
                 s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
                 s -> s
