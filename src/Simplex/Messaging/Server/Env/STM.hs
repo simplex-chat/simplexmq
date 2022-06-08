@@ -32,6 +32,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
+import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
@@ -113,7 +114,7 @@ data ServerStats = ServerStats
     fromTime :: TVar UTCTime
   }
 
-data SubscriptionThread = NoSub | SubPending | SubThread ThreadId | ProhibitSub
+data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
 
 data Sub = Sub
   { subThread :: SubscriptionThread,
