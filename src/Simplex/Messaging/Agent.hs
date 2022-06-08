@@ -262,6 +262,7 @@ newConn c connId cMode = do
   let cData = ConnData {connId}
   connId' <- withStore $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
+  -- atomically $ addRcvQueueToNtfSubQueue ns rq
   let crData = ConnReqUriData simplexChat smpAgentVRange [qUri]
   case cMode of
     SCMContact -> pure (connId', CRContactUri crData)
@@ -679,16 +680,20 @@ subscriber c@AgentClient {msgQ} = forever $ do
 runNotificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
 runNotificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns} tkn = do
   addNtfSubSupervisor ns $ notificationSubSupervisor c tkn `E.finally` pure () -- TODO
+  -- race condition? - notificationSubSupervisor may still be initializing workers when queue is already being written to
+  -- initialize workers here before populating queue?
+  -- check ntfSubLoopStarted in loop?
   rcvQueues <- withStore $ \st -> getRcvQueuesWithoutNtfSub st
   forM_ rcvQueues $ \rq -> do
     atomically $ writeTBQueue (ntfSubQ ns) rq
 
 -- TODO what to do on token change; should ntfToken be read from client env?
 notificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
-notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfSubQ}} ntfToken = do
+notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfSubLoopStarted, ntfSubQ}} ntfToken = do
   -- get unique servers from ntf_subscriptions, add workers to ntfSubWorkers
   srvs <- withStore $ \st -> getNtfSubscriptionServers st
   forM_ srvs $ \srv -> addWorker srv
+  atomically $ writeTVar ntfSubLoopStarted True
   forever $ do
     rcvQueue@RcvQueue {server = smpServer, rcvId} <- atomically $ readTBQueue ntfSubQ
     -- get/create subscription record in ntf_subscriptions

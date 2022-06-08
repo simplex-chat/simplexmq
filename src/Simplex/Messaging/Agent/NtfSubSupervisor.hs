@@ -8,6 +8,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     addNtfSubSupervisor,
     addNtfSubWorker,
     setNtfSubWorkerSemaphore,
+    addRcvQueueToNtfSubQueue,
   )
 where
 
@@ -20,11 +21,13 @@ import Simplex.Messaging.Client.Agent ()
 import Simplex.Messaging.Protocol (ProtocolServer (..))
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util (whenM)
 import UnliftIO (async)
 import UnliftIO.STM
 
 data NtfSubSupervisor = NtfSubSupervisor
   { ntfSubSupervisor :: TVar (Maybe (Async ())),
+    ntfSubLoopStarted :: TVar Bool,
     ntfSubQ :: TBQueue RcvQueue,
     ntfSubWorkers :: TMap ProtocolServer (TMVar (), Async ())
   }
@@ -33,11 +36,13 @@ newNtfSubSupervisor :: Env -> STM NtfSubSupervisor
 newNtfSubSupervisor agentEnv = do
   let qSize = tbqSize $ config agentEnv
   ntfSubSupervisor <- newTVar Nothing
+  ntfSubLoopStarted <- newTVar False
   ntfSubQ <- newTBQueue qSize -- bigger queue size?
   ntfSubWorkers <- TM.empty
   return
     NtfSubSupervisor
       { ntfSubSupervisor,
+        ntfSubLoopStarted,
         ntfSubQ,
         ntfSubWorkers
       }
@@ -65,3 +70,10 @@ setNtfSubWorkerSemaphore ns srv =
   TM.lookup srv (ntfSubWorkers ns) >>= \case
     Just (workerSemaphore, _) -> void $ tryPutTMVar workerSemaphore ()
     Nothing -> pure ()
+
+-- make ntfSubSupervisor Maybe instead? (in Client)
+-- make queue Maybe?
+addRcvQueueToNtfSubQueue :: NtfSubSupervisor -> RcvQueue -> STM ()
+addRcvQueueToNtfSubQueue ns rq =
+  whenM (readTVar $ ntfSubLoopStarted ns) $
+    writeTBQueue (ntfSubQ ns) rq

@@ -443,7 +443,7 @@ subscribeQueue c@AgentClient {ntfSubSupervisor = ns} rq@RcvQueue {server, rcvPri
         throwError e
       Right _ -> do
         addSubscription c rq connId
-        atomically $ writeTBQueue (ntfSubQ ns) rq
+        atomically $ addRcvQueueToNtfSubQueue ns rq
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
