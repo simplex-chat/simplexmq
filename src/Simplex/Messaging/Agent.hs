@@ -713,6 +713,7 @@ notificationSubSupervisor c@AgentClient {ntfSubQ} ntfToken = do
         addWorker smpServer
         addWorker ntfServer
       _ -> pure ()
+    liftIO $ threadDelay 1000000
   where
     addWorker srv = addNtfSubWorker c srv $ notificationSubWorker c srv `E.finally` pure () -- TODO
 
@@ -729,7 +730,7 @@ notificationSubWorker _c srv = forever $ do
         NSACheck -> pure ()
         NSADelete -> pure ()
   -- wait to reduce aggressiveness of polling (many servers?)
-  liftIO $ threadDelay 3000000
+  liftIO $ threadDelay 2000000
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) = do
