@@ -12,7 +12,7 @@ import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI, readStrictIni)
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (simplexMQVersion)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPServerVRange)
 import System.FilePath (combine)
 
 cfgPath :: FilePath
