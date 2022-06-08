@@ -197,6 +197,7 @@ clientDisconnected c@Client {subscriptions, connected} = do
   atomically $ writeTVar connected False
   subs <- readTVarIO subscriptions
   mapM_ cancelSub subs
+  atomically $ writeTVar subscriptions M.empty
   cs <- asks $ subscribers . server
   atomically . mapM_ (\rId -> TM.update deleteCurrentClient rId cs) $ M.keys subs
   where
