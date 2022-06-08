@@ -88,8 +88,8 @@ defaultAgentConfig =
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
-      smpAgentVersion = 1, -- currentSMPAgentVersion,
-      smpAgentVRange = mkVersionRange 1 1 -- supportedSMPAgentVRange
+      smpAgentVersion = currentSMPAgentVersion,
+      smpAgentVRange = supportedSMPAgentVRange
     }
 
 data Env = Env

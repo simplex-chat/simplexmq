@@ -31,6 +31,7 @@ import Simplex.Messaging.Protocol
     SndPrivateSignKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Version
 
 -- * Store management
 
@@ -53,6 +54,7 @@ class Monad m => MonadAgentStore s m where
   acceptConfirmation :: s -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
   getAcceptedConfirmation :: s -> ConnId -> m AcceptedConfirmation
   removeConfirmations :: s -> ConnId -> m ()
+  setHandshakeVersion :: s -> ConnId -> Version -> Bool -> m ()
 
   -- Invitations - sent via Contact connections
   createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
@@ -184,7 +186,11 @@ instance Eq SomeConn where
 
 deriving instance Show SomeConn
 
-newtype ConnData = ConnData {connId :: ConnId}
+data ConnData = ConnData
+  { connId :: ConnId,
+    connAgentVersion :: Version,
+    duplexHandshake :: Maybe Bool -- added in agent protocol v2
+  }
   deriving (Eq, Show)
 
 -- * Confirmation types

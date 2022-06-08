@@ -64,6 +64,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, liftIOEither)
+import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
@@ -192,14 +193,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   createRcvConn st gVar cData q@RcvQueue {server} cMode =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      DB.execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, cMode)
+      DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, cMode, connAgentVersion cData, duplexHandshake cData)
       insertRcvQueue_ db connId q
 
   createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   createSndConn st gVar cData q@SndQueue {server} =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      DB.execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, SCMInvitation)
+      DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, SCMInvitation, connAgentVersion cData, duplexHandshake cData)
       insertSndQueue_ db connId q
 
   getConn :: SQLiteStore -> ConnId -> m SomeConn
@@ -373,6 +374,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE conn_id = :conn_id;
         |]
         [":conn_id" := connId]
+
+  setHandshakeVersion :: SQLiteStore -> ConnId -> Version -> Bool -> m ()
+  setHandshakeVersion st connId aVersion duplexHS =
+    liftIO . withTransaction st $ \db ->
+      DB.execute db "UPDATE connections SET smp_agent_version = ?, duplex_handshake = ? WHERE conn_id = ?" (aVersion, duplexHS, connId)
 
   createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   createInvitation st gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
@@ -799,9 +805,9 @@ getConn_ dbConn connId =
 getConnData_ :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData_ dbConn connId' =
   connData
-    <$> DB.query dbConn "SELECT conn_id, conn_mode FROM connections WHERE conn_id = ?;" (Only connId')
+    <$> DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, duplex_handshake FROM connections WHERE conn_id = ?;" (Only connId')
   where
-    connData [(connId, cMode)] = Just (ConnData {connId}, cMode)
+    connData [(connId, cMode, connAgentVersion, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, duplexHandshake}, cMode)
     connData _ = Nothing
 
 getRcvQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)

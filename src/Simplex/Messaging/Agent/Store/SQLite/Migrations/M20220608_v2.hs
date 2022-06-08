@@ -11,4 +11,6 @@ m20220608_v2 =
 ALTER TABLE messages ADD COLUMN msg_flags TEXT NULL;
 
 ALTER TABLE conn_confirmations ADD COLUMN smp_reply_queues BLOB NULL;
+
+ALTER TABLE connections ADD COLUMN duplex_handshake INTEGER NULL DEFAULT 0;
 |]
