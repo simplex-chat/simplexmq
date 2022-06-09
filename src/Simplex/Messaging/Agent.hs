@@ -732,69 +732,6 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-nSubSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-nSubSupervisor c@AgentClient {ntfSubSupervisor = NtfSubSupervisor {ntfSubQ}} = forever $ do
-  rqc <- atomically $ readTBQueue ntfSubQ
-  -- withAgentLock c (runExceptT $ processNtfSub c rq) >>= \case -- ?
-  runExceptT (processNtfSub c rqc) >>= \case
-    Left e -> liftIO $ print e
-    Right _ -> return ()
-
-processNtfSub :: AgentMonad m => AgentClient -> (RcvQueue, RcvQueueNtfCommand) -> m ()
-processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
-  ntfServer_ <- getNtfServer c
-  ntfToken_ <- readTVarIO ntfTkn
-  case rqc of
-    RQNCCreate -> do
-      sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
-      case (sub_, ntfServer_, ntfToken_) of
-        (Nothing, Just ntfServer, Just tkn) -> do
-          currentTime <- liftIO getCurrentTime
-          let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
-          withStore $ \st -> createNtfSubscription st newSub
-          -- TODO optimize?
-          -- TODO - read action in getNtfSubscription and decide which worker to create
-          -- TODO - SMP worker can create Ntf worker on NKEY completion
-          addNtfSMPWorker smpServer
-          addNtfWorker ntfServer
-        (Just _, Just ntfServer, Just _) -> do
-          addNtfSMPWorker smpServer
-          addNtfWorker ntfServer
-        _ -> pure ()
-    RQNCDelete -> do
-      withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
-      case (ntfServer_, ntfToken_) of
-        (Just ntfServer, Just _) -> addNtfWorker ntfServer
-        _ -> pure ()
-  liftIO $ threadDelay 1000000
-  where
-    addNtfWorker srv = addNtfSubWorker ns srv $ \ws -> nSubWorker c srv ws `E.finally` removeNtfSubWorker ns srv
-    addNtfSMPWorker srv = addNtfSubWorker ns srv $ \ws -> nSubSMPWorker c srv ws `E.finally` removeNtfSubSMPWorker ns srv
-
-nSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-nSubWorker _c srv workerSemaphore = forever $ do
-  void . atomically $ readTMVar workerSemaphore
-  withStore $ \st ->
-    getNextNtfSubscriptionAction st srv >>= \case
-      Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
-      Just (_sub, ntfSubAction) ->
-        forM_ ntfSubAction $ \case
-          NSANew _nKey -> pure ()
-          NSACheck -> pure ()
-          NSADelete -> pure ()
-  liftIO $ threadDelay 1000000
-
-nSubSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-nSubSMPWorker _c srv workerSemaphore = forever $ do
-  void . atomically $ readTMVar workerSemaphore
-  withStore $ \st ->
-    getNextNtfSubscriptionSMPAction st srv >>= \case
-      Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
-      Just (_sub, ntfSubAction) ->
-        forM_ ntfSubAction $ \case
-          NSAKey -> pure ()
-  liftIO $ threadDelay 1000000
-
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) = do
   withStore (\st -> getRcvConn st srv rId) >>= \case
@@ -1084,3 +1021,66 @@ newSndQueue_ a (Compatible (SMPQueueInfo _clientVersion smpServer senderId rcvE2
         e2ePubKey = Just e2ePubKey,
         status = New
       }
+
+nSubSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+nSubSupervisor c@AgentClient {ntfSubSupervisor = NtfSubSupervisor {ntfSubQ}} = forever $ do
+  rqc <- atomically $ readTBQueue ntfSubQ
+  -- withAgentLock c (runExceptT $ processNtfSub c rq) >>= \case -- ?
+  runExceptT (processNtfSub c rqc) >>= \case
+    Left e -> liftIO $ print e
+    Right _ -> return ()
+
+processNtfSub :: AgentMonad m => AgentClient -> (RcvQueue, RcvQueueNtfCommand) -> m ()
+processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
+  ntfServer_ <- getNtfServer c
+  ntfToken_ <- readTVarIO ntfTkn
+  case rqc of
+    RQNCCreate -> do
+      sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
+      case (sub_, ntfServer_, ntfToken_) of
+        (Nothing, Just ntfServer, Just tkn) -> do
+          currentTime <- liftIO getCurrentTime
+          let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
+          withStore $ \st -> createNtfSubscription st newSub
+          -- TODO optimize?
+          -- TODO - read action in getNtfSubscription and decide which worker to create
+          -- TODO - SMP worker can create Ntf worker on NKEY completion
+          addNtfSMPWorker smpServer
+          addNtfWorker ntfServer
+        (Just _, Just ntfServer, Just _) -> do
+          addNtfSMPWorker smpServer
+          addNtfWorker ntfServer
+        _ -> pure ()
+    RQNCDelete -> do
+      withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
+      case (ntfServer_, ntfToken_) of
+        (Just ntfServer, Just _) -> addNtfWorker ntfServer
+        _ -> pure ()
+  liftIO $ threadDelay 1000000
+  where
+    addNtfWorker srv = addNtfSubWorker ns srv $ \ws -> nSubWorker c srv ws `E.finally` removeNtfSubWorker ns srv
+    addNtfSMPWorker srv = addNtfSubWorker ns srv $ \ws -> nSubSMPWorker c srv ws `E.finally` removeNtfSubSMPWorker ns srv
+
+nSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+nSubWorker _c srv workerSemaphore = forever $ do
+  void . atomically $ readTMVar workerSemaphore
+  withStore $ \st ->
+    getNextNtfSubscriptionAction st srv >>= \case
+      Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
+      Just (_sub, ntfSubAction) ->
+        forM_ ntfSubAction $ \case
+          NSANew _nKey -> pure ()
+          NSACheck -> pure ()
+          NSADelete -> pure ()
+  liftIO $ threadDelay 1000000
+
+nSubSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+nSubSMPWorker _c srv workerSemaphore = forever $ do
+  void . atomically $ readTMVar workerSemaphore
+  withStore $ \st ->
+    getNextNtfSubscriptionSMPAction st srv >>= \case
+      Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
+      Just (_sub, ntfSubAction) ->
+        forM_ ntfSubAction $ \case
+          NSAKey -> pure ()
+  liftIO $ threadDelay 1000000
