@@ -104,6 +104,7 @@ import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Data.Set (Set)
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m AgentClient
@@ -558,8 +559,11 @@ registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
         (Just tknId, Just (NTACron interval)) ->
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
         (Just _tknId, Just NTACheck) -> do
+          connIds <- atomically $ do
+            nsUpdateNtfToken' ns tkn
+            getSubscriptions c
           when (ntfTknStatus == NTActive) $
-            populateNtfSubQueue c
+            populateNtfSubQueue c connIds
           pure ntfTknStatus -- TODO
           -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
@@ -597,7 +601,6 @@ verifyNtfToken' c deviceToken code nonce =
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
       void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
         agentNtfVerifyToken c tknId tkn code'
-        populateNtfSubQueue c
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
@@ -646,7 +649,11 @@ withToken c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {deviceToken} from_
   tryError f >>= \case
     Right _ -> do
       withStore $ \st -> updateNtfToken st tkn toStatus toAction_
-      nsUpdateNtfToken ns tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
+      connIds <- atomically $ do
+        nsUpdateNtfToken' ns tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
+        getSubscriptions c
+      when (toStatus == NTActive) $
+        populateNtfSubQueue c connIds
       pure toStatus
     Left e@(NTF AUTH) -> do
       withStore $ \st -> removeNtfToken st tkn
@@ -687,9 +694,8 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-populateNtfSubQueue :: AgentMonad m => AgentClient -> m ()
-populateNtfSubQueue c@AgentClient {ntfSubSupervisor = ns} = do
-  connIds <- atomically $ getSubscriptions c
+populateNtfSubQueue :: AgentMonad m => AgentClient -> Set ConnId -> m ()
+populateNtfSubQueue AgentClient {ntfSubSupervisor = ns} connIds =
   forM_ connIds $ \connId -> do
     rq <- withStore $ \st -> getRcvQueue st connId
     atomically $ addRcvQueueToNtfSubQueue ns rq

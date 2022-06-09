@@ -6,10 +6,11 @@
 module Simplex.Messaging.Agent.NtfSubSupervisor
   ( NtfSubSupervisor (..),
     newNtfSubSupervisor,
-    addNtfSubSupervisor,
+    -- addNtfSubSupervisor,
     addNtfSubWorker,
     setNtfSubWorkerSemaphore,
     nsUpdateNtfToken,
+    nsUpdateNtfToken',
     nsRemoveNtfToken,
     addRcvQueueToNtfSubQueue,
   )
@@ -32,8 +33,7 @@ import UnliftIO.STM
 
 data NtfSubSupervisor = NtfSubSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubSupervisor :: TVar (Maybe (Async ())),
-    ntfSubQ :: TBQueue RcvQueue,
+    ntfSubQ :: TBQueue RcvQueue, -- TODO command type to support deletion via supervisor
     ntfSubWorkers :: TMap ProtocolServer (TMVar (), Async ())
   }
 
@@ -41,25 +41,15 @@ newNtfSubSupervisor :: Env -> STM NtfSubSupervisor
 newNtfSubSupervisor agentEnv = do
   let qSize = tbqSize $ config agentEnv
   ntfTkn <- newTVar Nothing
-  ntfSubSupervisor <- newTVar Nothing
   ntfSubQ <- newTBQueue qSize -- bigger queue size?
   ntfSubWorkers <- TM.empty
   pure
     NtfSubSupervisor
       { ntfTkn,
-        ntfSubSupervisor,
+        -- ntfSubSupervisor,
         ntfSubQ,
         ntfSubWorkers
       }
-
-addNtfSubSupervisor :: AgentMonad m => NtfSubSupervisor -> m () -> m ()
-addNtfSubSupervisor ns action = do
-  supervisor_ <- readTVarIO (ntfSubSupervisor ns)
-  case supervisor_ of
-    Nothing -> do
-      nSubSupervisor <- async action
-      atomically $ writeTVar (ntfSubSupervisor ns) $ Just nSubSupervisor
-    Just _ -> pure ()
 
 addNtfSubWorker :: MonadUnliftIO m => NtfSubSupervisor -> ProtocolServer -> (TMVar () -> m ()) -> m ()
 addNtfSubWorker ns srv action =
@@ -79,6 +69,10 @@ setNtfSubWorkerSemaphore ns srv =
 nsUpdateNtfToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
 nsUpdateNtfToken ns tkn =
   atomically $ writeTVar (ntfTkn ns) (Just tkn)
+
+nsUpdateNtfToken' :: NtfSubSupervisor -> NtfToken -> STM ()
+nsUpdateNtfToken' ns tkn =
+  writeTVar (ntfTkn ns) (Just tkn)
 
 nsRemoveNtfToken :: AgentMonad m => NtfSubSupervisor -> m ()
 nsRemoveNtfToken ns =
