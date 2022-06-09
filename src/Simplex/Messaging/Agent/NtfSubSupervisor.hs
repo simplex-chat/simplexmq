@@ -13,8 +13,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsUpdateNtfToken',
     nsRemoveNtfToken,
     addRcvQueueToNtfSubQueue,
-    cancelNtfSubWorkers,
-    cancelNtfSubSMPWorkers,
+    closeNtfSubSupervisor,
   )
 where
 
@@ -91,11 +90,10 @@ addRcvQueueToNtfSubQueue ns rq = do
     when (ntfTknStatus == NTActive) $
       writeTBQueue (ntfSubQ ns) (rq, RQNCCreate)
 
-cancelNtfSubWorkers :: NtfSubSupervisor -> IO ()
-cancelNtfSubWorkers ns = cancelNtfSubWorkers_ $ ntfSubWorkers ns
-
-cancelNtfSubSMPWorkers :: NtfSubSupervisor -> IO ()
-cancelNtfSubSMPWorkers ns = cancelNtfSubWorkers_ $ ntfSubSMPWorkers ns
+closeNtfSubSupervisor :: NtfSubSupervisor -> IO ()
+closeNtfSubSupervisor ns = do
+  cancelNtfSubWorkers_ $ ntfSubWorkers ns
+  cancelNtfSubWorkers_ $ ntfSubSMPWorkers ns
 
 cancelNtfSubWorkers_ :: TMap NtfServer (TMVar (), Async ()) -> IO ()
 cancelNtfSubWorkers_ workerMap = do

@@ -344,8 +344,7 @@ closeAgentClient c = liftIO $ do
   clear subscrConns
   clear connMsgsQueued
   clear smpQueueMsgQueues
-  cancelNtfSubWorkers $ ntfSubSupervisor c
-  cancelNtfSubSMPWorkers $ ntfSubSupervisor c
+  closeNtfSubSupervisor $ ntfSubSupervisor c
   where
     clientTimeout sel = tcpTimeout . sel . config $ agentEnv c
     clear sel = atomically $ writeTVar (sel c) M.empty
