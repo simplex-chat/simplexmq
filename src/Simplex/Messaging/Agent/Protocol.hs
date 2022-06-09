@@ -338,7 +338,9 @@ instance Encoding AgentMsgEnvelope where
 -- or in case of AgentInvitation - in plain text body)
 data AgentMessage
   = AgentConnInfo ConnInfo
-  | AgentConnInfoReply (L.NonEmpty SMPQueueInfo) ConnInfo
+  | -- AgentConnInfoReply is only used in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
+    -- It makes REPLY message unnecessary.
+    AgentConnInfoReply (L.NonEmpty SMPQueueInfo) ConnInfo
   | AgentMessage APrivHeader AMessage
   deriving (Show)
 
@@ -378,7 +380,12 @@ agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
   AgentMessage _ aMsg -> case aMsg of
+    -- HELLO is used both in v1 and in v2, but differently.
+    -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
+    --   until the queue is secured - the OK response from the server instead of initial AUTH errors confirms it.
+    -- - in v2 duplexHandshake it is sent only once, when it is known that the queue was secured.
     HELLO -> AM_HELLO_
+    -- REPLY is only used in v1
     REPLY _ -> AM_REPLY_
     A_MSG _ -> AM_A_MSG_
 
