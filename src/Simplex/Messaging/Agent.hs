@@ -103,6 +103,7 @@ import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
+import UnliftIO.Concurrent (forkFinally)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -112,7 +113,7 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient initServers
-      race_ (subscriber c) (nSubSupervisor c) `E.finally` disconnectAgentClient c
+      void $ race_ (subscriber c) (nSubSupervisor c) `forkFinally` \_ -> disconnectAgentClient c
       pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
