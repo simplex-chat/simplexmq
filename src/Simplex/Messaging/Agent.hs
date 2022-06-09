@@ -767,8 +767,8 @@ processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} (r
         _ -> pure ()
   liftIO $ threadDelay 1000000
   where
-    addNtfWorker srv = addNtfSubWorker ns srv $ \ws -> nSubWorker c srv ws `E.finally` pure () -- TODO
-    addNtfSMPWorker srv = addNtfSubWorker ns srv $ \ws -> nSubSMPWorker c srv ws `E.finally` pure ()
+    addNtfWorker srv = addNtfSubWorker ns srv $ \ws -> nSubWorker c srv ws `E.finally` removeNtfSubWorker ns srv
+    addNtfSMPWorker srv = addNtfSubWorker ns srv $ \ws -> nSubSMPWorker c srv ws `E.finally` removeNtfSubSMPWorker ns srv
 
 nSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 nSubWorker _c srv workerSemaphore = forever $ do

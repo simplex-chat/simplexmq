@@ -9,6 +9,8 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     newNtfSubSupervisor,
     addNtfSubWorker,
     addNtfSubSMPWorker,
+    removeNtfSubWorker,
+    removeNtfSubSMPWorker,
     nsUpdateNtfToken,
     nsUpdateNtfToken',
     nsRemoveNtfToken,
@@ -70,6 +72,16 @@ addNtfSubWorker_ workerMap srv action =
       ntfSubWorker <- async $ action workerSemaphore
       atomically $ TM.insert srv (workerSemaphore, ntfSubWorker) workerMap
     Just (workerSemaphore, _) -> void . atomically $ tryPutTMVar workerSemaphore ()
+
+removeNtfSubWorker :: MonadUnliftIO m => NtfSubSupervisor -> NtfServer -> m ()
+removeNtfSubWorker ns = removeNtfSubWorker_ $ ntfSubWorkers ns
+
+removeNtfSubSMPWorker :: MonadUnliftIO m => NtfSubSupervisor -> SMPServer -> m ()
+removeNtfSubSMPWorker ns = removeNtfSubWorker_ $ ntfSubSMPWorkers ns
+
+removeNtfSubWorker_ :: MonadUnliftIO m => TMap NtfServer (TMVar (), Async ()) -> ProtocolServer -> m ()
+removeNtfSubWorker_ workerMap srv =
+  atomically (TM.delete srv workerMap)
 
 nsUpdateNtfToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
 nsUpdateNtfToken ns tkn =
