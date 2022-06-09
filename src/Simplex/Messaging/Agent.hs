@@ -559,7 +559,7 @@ registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
         (Just _tknId, Just NTACheck) -> do
           when (ntfTknStatus == NTActive) $
-            runNotificationSubSupervisor c tkn
+            runNotificationSubSupervisor c
           pure ntfTknStatus -- TODO
           -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
@@ -597,7 +597,7 @@ verifyNtfToken' c deviceToken code nonce =
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
       void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
         agentNtfVerifyToken c tknId tkn code'
-        runNotificationSubSupervisor c tkn
+        runNotificationSubSupervisor c
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
@@ -687,9 +687,9 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-runNotificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
-runNotificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns} tkn = do
-  addNtfSubSupervisor ns $ notificationSubSupervisor c tkn `E.finally` pure () -- TODO
+runNotificationSubSupervisor :: AgentMonad m => AgentClient -> m ()
+runNotificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns} = do
+  addNtfSubSupervisor ns $ notificationSubSupervisor c `E.finally` pure () -- TODO
   -- race condition? - notificationSubSupervisor may still be initializing workers when queue is already being written to
   -- initialize workers here before populating queue?
   -- check ntfSubLoopStarted in loop?
@@ -701,9 +701,8 @@ runNotificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns} tkn = do
   forM_ rcvQueues $ \rq -> do
     atomically $ writeTBQueue (ntfSubQ ns) rq
 
--- TODO what to do on token change; should ntfToken be read from client env?
-notificationSubSupervisor :: AgentMonad m => AgentClient -> NtfToken -> m ()
-notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfSubLoopStarted, ntfSubQ}} ntfToken = do
+notificationSubSupervisor :: AgentMonad m => AgentClient -> m ()
+notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfToken, ntfSubLoopStarted, ntfSubQ}} = do
   -- get unique servers from ntf_subscriptions, add workers to ntfSubWorkers
   srvs <- withStore $ \st -> getNtfSubscriptionServers st
   forM_ srvs $ \srv -> addWorker srv
@@ -714,15 +713,16 @@ notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor 
     sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
     -- TODO what if ntf server is not configured on start (ignore for now)
     ntfServer_ <- getNtfServer c
-    case (sub_, ntfServer_) of
-      (Nothing, Just ntfServer) -> do
+    ntfToken_ <- readTVarIO ntfToken
+    case (sub_, ntfServer_, ntfToken_) of
+      (Nothing, Just ntfServer, Just tkn) -> do
         currentTime <- liftIO getCurrentTime
-        let newSub = newNtfSubscription ntfServer ntfToken smpServer rcvId currentTime
+        let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
         withStore $ \st -> createNtfSubscription st newSub
         -- lookup workers in ntfSubWorkers; create if it doesn't exist
         addWorker smpServer
         addWorker ntfServer
-      (Just _, Just ntfServer) -> do
+      (Just _, Just ntfServer, Just _) -> do
         atomically $ do
           setNtfSubWorkerSemaphore ns smpServer
           setNtfSubWorkerSemaphore ns ntfServer
