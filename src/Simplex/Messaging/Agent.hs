@@ -113,7 +113,7 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient initServers
-      void $ race_ (subscriber c) (nSubSupervisor c) `forkFinally` \_ -> disconnectAgentClient c
+      void $ race_ (subscriber c) (nSubSupervisor c) `forkFinally` const (disconnectAgentClient c)
       pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
@@ -772,7 +772,7 @@ processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} (r
 
 nSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 nSubWorker _c srv workerSemaphore = forever $ do
-  _ <- atomically $ readTMVar workerSemaphore
+  void . atomically $ readTMVar workerSemaphore
   withStore $ \st ->
     getNextNtfSubscriptionAction st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
@@ -785,7 +785,7 @@ nSubWorker _c srv workerSemaphore = forever $ do
 
 nSubSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 nSubSMPWorker _c srv workerSemaphore = forever $ do
-  _ <- atomically $ readTMVar workerSemaphore
+  void . atomically $ readTMVar workerSemaphore
   withStore $ \st ->
     getNextNtfSubscriptionSMPAction st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
