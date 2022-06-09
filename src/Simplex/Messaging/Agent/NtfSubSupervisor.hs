@@ -46,9 +46,8 @@ data RcvQueueNtfCommand = RQNCCreate | RQNCDelete
 
 newNtfSubSupervisor :: Env -> STM NtfSubSupervisor
 newNtfSubSupervisor agentEnv = do
-  let qSize = tbqSize $ config agentEnv
   ntfTkn <- newTVar Nothing
-  ntfSubQ <- newTBQueue qSize -- bigger queue size?
+  ntfSubQ <- newTBQueue (ntfSubTbqSize $ config agentEnv)
   ntfSubWorkers <- TM.empty
   ntfSubSMPWorkers <- TM.empty
   pure

@@ -169,7 +169,8 @@ agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      tbqSize = 100,
+      tbqSize = 1,
+      ntfSubTbqSize = 8,
       dbFile = testDB,
       smpCfg =
         defaultClientConfig
