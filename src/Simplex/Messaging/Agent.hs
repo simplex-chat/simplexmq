@@ -796,6 +796,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
           clientMsg <- agentCbDecrypt e2eDh cmNonce cmEncBody
           SMP.ClientMessage privHeader clientBody <- parseMessage clientMsg
           agentEnvelope <- parseMessage clientBody
+          -- Version check is removed here, because when connecting via v1 contact address the agent still sends v2 message,
+          -- to allow duplexHandshake mode, in case the receiving agent was updated to v2 after the address was created.
+          -- aVRange <- asks $ smpAgentVRange . config
+          -- if agentVersion agentEnvelope `isCompatible` aVRange
+          --   then pure (privHeader, agentEnvelope)
+          --   else throwError $ AGENT A_VERSION
           pure (privHeader, agentEnvelope)
 
         parseMessage :: Encoding a => ByteString -> m a
