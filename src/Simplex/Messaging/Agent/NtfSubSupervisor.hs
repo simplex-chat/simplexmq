@@ -15,6 +15,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsUpdateNtfToken',
     nsRemoveNtfToken,
     addRcvQueueToNtfSubQueue,
+    addRcvQueueToNtfSubQueue',
     closeNtfSubSupervisor,
   )
 where
@@ -96,11 +97,14 @@ nsRemoveNtfToken ns =
   atomically $ writeTVar (ntfTkn ns) Nothing
 
 addRcvQueueToNtfSubQueue :: NtfSubSupervisor -> RcvQueue -> STM ()
-addRcvQueueToNtfSubQueue ns rq = do
+addRcvQueueToNtfSubQueue ns rq = addRcvQueueToNtfSubQueue' ns (rq, RQNCCreate)
+
+addRcvQueueToNtfSubQueue' :: NtfSubSupervisor -> (RcvQueue, RcvQueueNtfCommand) -> STM ()
+addRcvQueueToNtfSubQueue' ns rqc = do
   tkn_ <- readTVar $ ntfTkn ns
   forM_ tkn_ $ \NtfToken {ntfTknStatus} ->
-    when (ntfTknStatus == NTActive) $
-      writeTBQueue (ntfSubQ ns) (rq, RQNCCreate)
+    when (ntfTknStatus == NTActive) $ -- don't check if token is active when deleting subscription?
+      writeTBQueue (ntfSubQ ns) rqc
 
 closeNtfSubSupervisor :: NtfSubSupervisor -> IO ()
 closeNtfSubSupervisor ns = do

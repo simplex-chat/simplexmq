@@ -558,7 +558,7 @@ suspendConnection' c connId =
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
 deleteConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
-deleteConnection' c connId =
+deleteConnection' c@AgentClient {ntfSubSupervisor = ns} connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> delete rq
     SomeConn _ (RcvConnection _ rq) -> delete rq
@@ -568,7 +568,9 @@ deleteConnection' c connId =
     delete :: RcvQueue -> m ()
     delete rq = do
       deleteQueue c rq
-      atomically $ removeSubscription c connId
+      atomically $ do
+        removeSubscription c connId
+        addRcvQueueToNtfSubQueue' ns (rq, RQNCDelete)
       withStore (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
