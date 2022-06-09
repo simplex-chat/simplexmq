@@ -91,8 +91,10 @@ class Monad m => MonadAgentStore s m where
 
   -- Notification subscription persistence
   getNtfSubscription :: s -> RcvQueue -> m (Maybe NtfSubscription)
-  createNtfSubscription :: s -> NtfSubscription -> m () -- get and create as one method?
+  createNtfSubscription :: s -> NtfSubscription -> m ()
+  markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
   updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
+  deleteNtfSubscription :: s -> RcvQueue -> m ()
   getNextNtfSubscriptionAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
   getNextNtfSubscriptionSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
 

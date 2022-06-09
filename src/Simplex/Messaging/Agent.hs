@@ -733,32 +733,42 @@ populateNtfSubQueue AgentClient {ntfSubSupervisor = ns} connIds =
 
 nSubSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 nSubSupervisor c@AgentClient {ntfSubSupervisor = NtfSubSupervisor {ntfSubQ}} = forever $ do
-  rq <- atomically $ readTBQueue ntfSubQ
+  rqc <- atomically $ readTBQueue ntfSubQ
   -- withAgentLock c (runExceptT $ processNtfSub c rq) >>= \case -- ?
-  runExceptT (processNtfSub c rq) >>= \case
+  runExceptT (processNtfSub c rqc) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-processNtfSub :: AgentMonad m => AgentClient -> RcvQueue -> m ()
-processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} rcvQueue@RcvQueue {server = smpServer, rcvId} = do
-  sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
+processNtfSub :: AgentMonad m => AgentClient -> (RcvQueue, RcvQueueNtfCommand) -> m ()
+processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
   ntfServer_ <- getNtfServer c
   ntfToken_ <- readTVarIO ntfTkn
-  case (sub_, ntfServer_, ntfToken_) of
-    (Nothing, Just ntfServer, Just tkn) -> do
-      currentTime <- liftIO getCurrentTime
-      let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
-      withStore $ \st -> createNtfSubscription st newSub
-      addNtfWorker ntfServer
-      addNtfSMPWorker smpServer
-    (Just _, Just ntfServer, Just _) -> do
-      addNtfWorker ntfServer
-      addNtfSMPWorker smpServer
-    _ -> pure ()
+  case rqc of
+    RQNCCreate -> do
+      sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
+      case (sub_, ntfServer_, ntfToken_) of
+        (Nothing, Just ntfServer, Just tkn) -> do
+          currentTime <- liftIO getCurrentTime
+          let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
+          withStore $ \st -> createNtfSubscription st newSub
+          -- TODO optimize?
+          -- TODO - read action in getNtfSubscription and decide which worker to create
+          -- TODO - SMP worker can create Ntf worker on NKEY completion
+          addNtfSMPWorker smpServer
+          addNtfWorker ntfServer
+        (Just _, Just ntfServer, Just _) -> do
+          addNtfSMPWorker smpServer
+          addNtfWorker ntfServer
+        _ -> pure ()
+    RQNCDelete -> do
+      withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
+      case (ntfServer_, ntfToken_) of
+        (Just ntfServer, Just _) -> addNtfWorker ntfServer
+        _ -> pure ()
   liftIO $ threadDelay 1000000
   where
     addNtfWorker srv = addNtfSubWorker ns srv $ \ws -> nSubWorker c srv ws `E.finally` pure () -- TODO
-    addNtfSMPWorker srv = addNtfSubWorker ns srv $ \ws -> nSubSMPWorker c srv ws `E.finally` pure () -- TODO
+    addNtfSMPWorker srv = addNtfSubWorker ns srv $ \ws -> nSubSMPWorker c srv ws `E.finally` pure ()
 
 nSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 nSubWorker _c srv workerSemaphore = forever $ do

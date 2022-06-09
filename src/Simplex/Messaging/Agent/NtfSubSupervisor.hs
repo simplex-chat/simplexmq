@@ -5,6 +5,7 @@
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
   ( NtfSubSupervisor (..),
+    RcvQueueNtfCommand (..),
     newNtfSubSupervisor,
     addNtfSubWorker,
     addNtfSubSMPWorker,
@@ -34,10 +35,12 @@ import UnliftIO.STM
 
 data NtfSubSupervisor = NtfSubSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubQ :: TBQueue RcvQueue, -- TODO command type to support deletion via supervisor
+    ntfSubQ :: TBQueue (RcvQueue, RcvQueueNtfCommand),
     ntfSubWorkers :: TMap NtfServer (TMVar (), Async ()),
     ntfSubSMPWorkers :: TMap SMPServer (TMVar (), Async ())
   }
+
+data RcvQueueNtfCommand = RQNCCreate | RQNCDelete
 
 newNtfSubSupervisor :: Env -> STM NtfSubSupervisor
 newNtfSubSupervisor agentEnv = do
@@ -86,7 +89,7 @@ addRcvQueueToNtfSubQueue ns rq = do
   tkn_ <- readTVar $ ntfTkn ns
   forM_ tkn_ $ \NtfToken {ntfTknStatus} ->
     when (ntfTknStatus == NTActive) $
-      writeTBQueue (ntfSubQ ns) rq
+      writeTBQueue (ntfSubQ ns) (rq, RQNCCreate)
 
 cancelNtfSubWorkers :: NtfSubSupervisor -> IO ()
 cancelNtfSubWorkers ns = cancelNtfSubWorkers_ $ ntfSubWorkers ns
