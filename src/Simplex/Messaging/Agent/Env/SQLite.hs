@@ -76,7 +76,7 @@ defaultAgentConfig =
       connIdBytes = 12,
       tbqSize = 64,
       dbFile = "smp-agent.db",
-      dbPoolSize = 4,
+      dbPoolSize = 1,
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = ("5223", transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},

@@ -333,4 +333,6 @@ data StoreError
     SEX3dhKeysNotFound
   | -- | Used in `getMsg` that is not implemented/used. TODO remove.
     SENotImplemented
+  | -- | Used to wrap agent errors inside store operations to avoid race conditions
+    SEAgentError AgentErrorType
   deriving (Eq, Show, Exception)

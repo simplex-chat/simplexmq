@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -19,6 +20,7 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
+    AgentStoreMonad,
     createSQLiteStore,
     connectSQLiteStore,
     withConnection,
@@ -187,6 +189,8 @@ createConn_ st gVar cData create =
     case cData of
       ConnData {connId = ""} -> createWithRandomId gVar $ create db
       ConnData {connId} -> create db connId $> Right connId
+
+type AgentStoreMonad m = (MonadUnliftIO m, MonadError StoreError m, MonadAgentStore SQLiteStore m)
 
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
