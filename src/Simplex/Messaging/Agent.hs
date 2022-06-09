@@ -592,11 +592,9 @@ registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
         (Just tknId, Just (NTACron interval)) ->
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
         (Just _tknId, Just NTACheck) -> do
-          connIds <- atomically $ do
-            nsUpdateNtfToken' ns tkn
-            getSubscriptions c
-          when (ntfTknStatus == NTActive) $
-            populateNtfSubQueue c connIds
+          if ntfTknStatus == NTActive
+            then updateNtfTokenPopulateNtfSubQ c tkn
+            else nsUpdateToken ns tkn
           pure ntfTknStatus -- TODO
           -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
@@ -624,7 +622,7 @@ registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
       let dhSecret = C.dh' srvPubDhKey privDhKey
       withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
-      nsUpdateNtfToken ns tkn
+      nsUpdateToken ns tkn
 
 -- TODO decrypt verification code
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
@@ -667,7 +665,7 @@ deleteToken_ c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {ntfTokenId, ntf
   forM_ ntfTokenId $ \tknId -> do
     let ntfTknAction = Just NTADelete
     withStore $ \st -> updateNtfToken st tkn ntfTknStatus ntfTknAction
-    nsUpdateNtfToken ns tkn {ntfTknStatus, ntfTknAction = ntfTknAction}
+    nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction = ntfTknAction}
     agentNtfDeleteToken c tknId tkn `catchError` \case
       NTF AUTH -> pure ()
       e -> throwError e
@@ -678,15 +676,14 @@ withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, Ntf
 withToken c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
   forM_ from_ $ \(status, action) -> do
     withStore $ \st -> updateNtfToken st tkn status (Just action)
-    nsUpdateNtfToken ns tkn {ntfTknStatus = status, ntfTknAction = Just action}
+    nsUpdateToken ns tkn {ntfTknStatus = status, ntfTknAction = Just action}
   tryError f >>= \case
     Right _ -> do
       withStore $ \st -> updateNtfToken st tkn toStatus toAction_
-      connIds <- atomically $ do
-        nsUpdateNtfToken' ns tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
-        getSubscriptions c
-      when (toStatus == NTActive) $
-        populateNtfSubQueue c connIds
+      let updatedToken = tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
+      if toStatus == NTActive
+        then updateNtfTokenPopulateNtfSubQ c updatedToken
+        else nsUpdateToken ns updatedToken
       pure toStatus
     Left e@(NTF AUTH) -> do
       withStore $ \st -> removeNtfToken st tkn
@@ -694,6 +691,15 @@ withToken c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {deviceToken} from_
       void $ registerNtfToken' c deviceToken
       throwError e
     Left e -> throwError e
+
+updateNtfTokenPopulateNtfSubQ :: AgentMonad m => AgentClient -> NtfToken -> m ()
+updateNtfTokenPopulateNtfSubQ c@AgentClient {ntfSubSupervisor = ns} tkn = do
+  connIds <- atomically $ do
+    nsUpdateToken' ns tkn
+    getSubscriptions c
+  forM_ connIds $ \connId -> do
+    rq <- withStore $ \st -> getRcvQueue st connId
+    atomically $ addRcvQueueToNtfSubQueue ns rq
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c servers = do
@@ -726,12 +732,6 @@ subscriber c@AgentClient {msgQ} = forever $ do
   withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
-
-populateNtfSubQueue :: AgentMonad m => AgentClient -> Set ConnId -> m ()
-populateNtfSubQueue AgentClient {ntfSubSupervisor = ns} connIds =
-  forM_ connIds $ \connId -> do
-    rq <- withStore $ \st -> getRcvQueue st connId
-    atomically $ addRcvQueueToNtfSubQueue ns rq
 
 nSubSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 nSubSupervisor c@AgentClient {ntfSubSupervisor = NtfSubSupervisor {ntfSubQ}} = forever $ do

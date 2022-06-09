@@ -11,8 +11,8 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     addNtfSubSMPWorker,
     removeNtfSubWorker,
     removeNtfSubSMPWorker,
-    nsUpdateNtfToken,
-    nsUpdateNtfToken',
+    nsUpdateToken,
+    nsUpdateToken',
     nsRemoveNtfToken,
     addRcvQueueToNtfSubQueue,
     addRcvQueueToNtfSubQueue',
@@ -84,12 +84,12 @@ removeNtfSubWorker_ :: MonadUnliftIO m => TMap NtfServer (TMVar (), Async ()) ->
 removeNtfSubWorker_ workerMap srv =
   atomically (TM.delete srv workerMap)
 
-nsUpdateNtfToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
-nsUpdateNtfToken ns tkn =
+nsUpdateToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
+nsUpdateToken ns tkn =
   atomically $ writeTVar (ntfTkn ns) (Just tkn)
 
-nsUpdateNtfToken' :: NtfSubSupervisor -> NtfToken -> STM ()
-nsUpdateNtfToken' ns tkn =
+nsUpdateToken' :: NtfSubSupervisor -> NtfToken -> STM ()
+nsUpdateToken' ns tkn =
   writeTVar (ntfTkn ns) (Just tkn)
 
 nsRemoveNtfToken :: AgentMonad m => NtfSubSupervisor -> m ()
