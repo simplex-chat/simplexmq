@@ -166,15 +166,15 @@ agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = db
 
 class ProtocolServerClient msg where
   getProtocolServerClient :: AgentMonad m => AgentClient -> ProtocolServer -> m (ProtocolClient msg)
-  protocolError :: ErrorType -> AgentErrorType
+  clientProtocolError :: ErrorType -> AgentErrorType
 
 instance ProtocolServerClient BrokerMsg where
   getProtocolServerClient = getSMPServerClient
-  protocolError = SMP
+  clientProtocolError = SMP
 
 instance ProtocolServerClient NtfResponse where
   getProtocolServerClient = getNtfServerClient
-  protocolError = NTF
+  clientProtocolError = NTF
 
 getSMPServerClient :: forall m. AgentMonad m => AgentClient -> SMPServer -> m SMPClient
 getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
@@ -383,10 +383,10 @@ withLogClient_ c srv qId cmdStr action = do
   return res
 
 withClient :: forall m msg a. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtocolServer -> (ProtocolClient msg -> ExceptT ProtocolClientError IO a) -> m a
-withClient c srv action = withClient_ c srv $ liftClient (protocolError @msg) . action
+withClient c srv action = withClient_ c srv $ liftClient (clientProtocolError @msg) . action
 
 withLogClient :: forall m msg a. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtocolServer -> QueueId -> ByteString -> (ProtocolClient msg -> ExceptT ProtocolClientError IO a) -> m a
-withLogClient c srv qId cmdStr action = withLogClient_ c srv qId cmdStr $ liftClient (protocolError @msg) . action
+withLogClient c srv qId cmdStr action = withLogClient_ c srv qId cmdStr $ liftClient (clientProtocolError @msg) . action
 
 liftClient :: AgentMonad m => (ErrorType -> AgentErrorType) -> ExceptT ProtocolClientError IO a -> m a
 liftClient = liftError . protocolClientError
@@ -510,7 +510,8 @@ sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) co
     mkInvitation :: m ByteString
     -- this is only encrypted with per-queue E2E, not with double ratchet
     mkInvitation = do
-      let agentEnvelope = AgentInvitation {agentVersion = smpAgentVersion, connReq, connInfo}
+      agentVersion <- asks $ smpAgentVersion . config
+      let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
       agentCbEncryptOnce dhPublicKey . smpEncode $
         SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 
@@ -602,4 +603,5 @@ cryptoError = \case
   C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
   C.AESDecryptError -> AGENT A_ENCRYPTION
   C.CBDecryptError -> AGENT A_ENCRYPTION
+  -- C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
   e -> INTERNAL $ show e

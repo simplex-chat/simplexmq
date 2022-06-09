@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -19,6 +20,7 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
+    AgentStoreMonad,
     createSQLiteStore,
     connectSQLiteStore,
     withConnection,
@@ -40,7 +42,7 @@ import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.List (find, foldl', partition)
 import qualified Data.Map.Strict as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -64,6 +66,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, liftIOEither)
+import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
@@ -187,19 +190,21 @@ createConn_ st gVar cData create =
       ConnData {connId = ""} -> createWithRandomId gVar $ create db
       ConnData {connId} -> create db connId $> Right connId
 
+type AgentStoreMonad m = (MonadUnliftIO m, MonadError StoreError m, MonadAgentStore SQLiteStore m)
+
 instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
   createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
   createRcvConn st gVar cData q@RcvQueue {server} cMode =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      DB.execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, cMode)
+      DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, cMode, connAgentVersion cData, duplexHandshake cData)
       insertRcvQueue_ db connId q
 
   createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
   createSndConn st gVar cData q@SndQueue {server} =
     createConn_ st gVar cData $ \db connId -> do
       upsertServer_ db server
-      DB.execute db "INSERT INTO connections (conn_id, conn_mode) VALUES (?, ?)" (connId, SCMInvitation)
+      DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, SCMInvitation, connAgentVersion cData, duplexHandshake cData)
       insertSndQueue_ db connId q
 
   getConn :: SQLiteStore -> ConnId -> m SomeConn
@@ -300,16 +305,16 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getRcvQueue _st _connId = throwError SENotImplemented
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}, ratchetState} =
+  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
     liftIOEither . withTransaction st $ \db ->
       createWithRandomId gVar $ \confirmationId ->
         DB.execute
           db
           [sql|
             INSERT INTO conn_confirmations
-            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, accepted) VALUES (?, ?, ?, ?, ?, ?, 0);
+            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, 0);
           |]
-          (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo)
+          (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues)
 
   acceptConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
   acceptConfirmation st confirmationId ownConnInfo =
@@ -329,17 +334,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         DB.query
           db
           [sql|
-            SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info
+            SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues
             FROM conn_confirmations
             WHERE confirmation_id = ?;
           |]
           (Only confirmationId)
     where
-      confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo) =
+      confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_) =
         AcceptedConfirmation
           { confirmationId,
             connId,
-            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
+            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
             ratchetState,
             ownConnInfo
           }
@@ -351,17 +356,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         DB.query
           db
           [sql|
-            SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, own_conn_info
+            SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, own_conn_info
             FROM conn_confirmations
             WHERE conn_id = ? AND accepted = 1;
           |]
           (Only connId)
     where
-      confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, ownConnInfo) =
+      confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_, ownConnInfo) =
         AcceptedConfirmation
           { confirmationId,
             connId,
-            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo},
+            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
             ratchetState,
             ownConnInfo
           }
@@ -376,6 +381,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE conn_id = :conn_id;
         |]
         [":conn_id" := connId]
+
+  setHandshakeVersion :: SQLiteStore -> ConnId -> Version -> Bool -> m ()
+  setHandshakeVersion st connId aVersion duplexHS =
+    liftIO . withTransaction st $ \db ->
+      DB.execute db "UPDATE connections SET smp_agent_version = ?, duplex_handshake = ? WHERE conn_id = ?" (aVersion, duplexHS, connId)
 
   createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
   createInvitation st gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
@@ -703,12 +713,20 @@ instance ToField MsgFlags where toField = toField . decodeLatin1 . smpEncode
 
 instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
+instance ToField [SMPQueueInfo] where toField = toField . smpEncodeList
+
+instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP
+
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
 
 firstRow :: (a -> b) -> e -> IO [a] -> IO (Either e b)
 firstRow f e a = second f . listToEither e <$> a
+
+-- TODO move from simplex-chat
+-- firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
+-- firstRow' f e a = (f <=< listToEither e) <$> a
 
 {- ORMOLU_DISABLE -}
 -- SQLite.Simple only has these up to 10 fields, which is insufficient for some of our queries
@@ -809,9 +827,9 @@ getConn_ dbConn connId =
 getConnData_ :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData_ dbConn connId' =
   connData
-    <$> DB.query dbConn "SELECT conn_id, conn_mode FROM connections WHERE conn_id = ?;" (Only connId')
+    <$> DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, duplex_handshake FROM connections WHERE conn_id = ?;" (Only connId')
   where
-    connData [(connId, cMode)] = Just (ConnData {connId}, cMode)
+    connData [(connId, cMode, connAgentVersion, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, duplexHandshake}, cMode)
     connData _ = Nothing
 
 getRcvQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)

@@ -12,7 +12,7 @@ import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI, readStrictIni)
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (simplexMQVersion)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPServerVRange)
 import System.FilePath (combine)
 
 cfgPath :: FilePath
@@ -92,6 +92,7 @@ smpServerCLIConfig =
                           }
                     else Nothing,
                 logStatsInterval = Just 86400, -- seconds
-                logStatsStartTime = 0 -- seconds from 00:00 UTC
+                logStatsStartTime = 0, -- seconds from 00:00 UTC
+                smpServerVRange = supportedSMPServerVRange
               }
         }
