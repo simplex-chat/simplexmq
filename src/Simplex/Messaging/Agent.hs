@@ -545,7 +545,7 @@ setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
-registerNtfToken' c deviceToken =
+registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction}, prevTokens) -> do
       mapM_ (deleteToken_ c) prevTokens
@@ -564,7 +564,9 @@ registerNtfToken' c deviceToken =
           -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
           agentNtfDeleteToken c tknId tkn
-          withStore $ \st -> removeNtfToken st tkn $> NTExpired
+          withStore $ \st -> removeNtfToken st tkn
+          nsRemoveNtfToken ns
+          pure NTExpired
         _ -> pure ntfTknStatus
     _ ->
       getNtfServer c >>= \case
@@ -585,6 +587,7 @@ registerNtfToken' c deviceToken =
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
       let dhSecret = C.dh' srvPubDhKey privDhKey
       withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
+      nsUpdateNtfToken ns tkn
 
 -- TODO decrypt verification code
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
@@ -624,23 +627,30 @@ deleteNtfToken' c deviceToken =
     _ -> throwError $ CMD PROHIBITED
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
-deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+deleteToken_ c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
   forM_ ntfTokenId $ \tknId -> do
-    withStore $ \st -> updateNtfToken st tkn ntfTknStatus (Just NTADelete)
+    let ntfTknAction = Just NTADelete
+    withStore $ \st -> updateNtfToken st tkn ntfTknStatus ntfTknAction
+    nsUpdateNtfToken ns tkn {ntfTknStatus, ntfTknAction = ntfTknAction}
     agentNtfDeleteToken c tknId tkn `catchError` \case
       NTF AUTH -> pure ()
       e -> throwError e
   withStore $ \st -> removeNtfToken st tkn
+  nsRemoveNtfToken ns
 
 withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m NtfTknStatus
-withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
-  forM_ from_ $ \(status, action) -> withStore $ \st -> updateNtfToken st tkn status (Just action)
+withToken c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
+  forM_ from_ $ \(status, action) -> do
+    withStore $ \st -> updateNtfToken st tkn status (Just action)
+    nsUpdateNtfToken ns tkn {ntfTknStatus = status, ntfTknAction = Just action}
   tryError f >>= \case
     Right _ -> do
       withStore $ \st -> updateNtfToken st tkn toStatus toAction_
+      nsUpdateNtfToken ns tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
       pure toStatus
     Left e@(NTF AUTH) -> do
       withStore $ \st -> removeNtfToken st tkn
+      nsRemoveNtfToken ns
       void $ registerNtfToken' c deviceToken
       throwError e
     Left e -> throwError e
@@ -683,6 +693,10 @@ runNotificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns} tkn = do
   -- race condition? - notificationSubSupervisor may still be initializing workers when queue is already being written to
   -- initialize workers here before populating queue?
   -- check ntfSubLoopStarted in loop?
+  -- TODO ! check by Maybe Async instead of flag
+  -- TODO ! start in getSMPAgentClient in race, instead of on token verification / check
+  -- TODO ! use subscriptions in Client (memory) to get subscriptions on ntf_register
+  -- TODO ! when writing to queue on subscribe/create check by active token (token should live in Client)
   rcvQueues <- withStore $ \st -> getRcvQueuesWithoutNtfSub st
   forM_ rcvQueues $ \rq -> do
     atomically $ writeTBQueue (ntfSubQ ns) rq
@@ -722,15 +736,16 @@ notificationSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> TMVar 
 notificationSubWorker _c srv workerSemaphore = forever $ do
   _ <- atomically $ readTMVar workerSemaphore
   -- get next action from ntf_subscriptions filtering by srv
-  withStore $ \st -> getNextNtfSubscription st srv >>= \case
-    Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
-    Just NtfSubscription {ntfSubAction} ->
-      -- process action, updateNtfSubscription (new status, action, can be nId, subId)
-      forM_ ntfSubAction $ \case
-        NSAKey -> pure ()
-        NSANew _nKey -> pure ()
-        NSACheck -> pure ()
-        NSADelete -> pure ()
+  withStore $ \st ->
+    getNextNtfSubscription st srv >>= \case
+      Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
+      Just NtfSubscription {ntfSubAction} ->
+        -- process action, updateNtfSubscription (new status, action, can be nId, subId)
+        forM_ ntfSubAction $ \case
+          NSAKey -> pure ()
+          NSANew _nKey -> pure ()
+          NSACheck -> pure ()
+          NSADelete -> pure ()
   -- throttle
   liftIO $ threadDelay 2000000
 
