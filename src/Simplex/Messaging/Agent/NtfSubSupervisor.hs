@@ -6,17 +6,18 @@
 module Simplex.Messaging.Agent.NtfSubSupervisor
   ( NtfSubSupervisor (..),
     newNtfSubSupervisor,
-    -- addNtfSubSupervisor,
     addNtfSubWorker,
-    setNtfSubWorkerSemaphore,
+    addNtfSubSMPWorker,
     nsUpdateNtfToken,
     nsUpdateNtfToken',
     nsRemoveNtfToken,
     addRcvQueueToNtfSubQueue,
+    cancelNtfSubWorkers,
+    cancelNtfSubSMPWorkers,
   )
 where
 
-import Control.Concurrent.Async (Async)
+import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Monad
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -25,7 +26,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (NtfTknStatus (NTActive))
-import Simplex.Messaging.Protocol (ProtocolServer (..))
+import Simplex.Messaging.Protocol (ProtocolServer (..), SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import UnliftIO (async)
@@ -34,7 +35,8 @@ import UnliftIO.STM
 data NtfSubSupervisor = NtfSubSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
     ntfSubQ :: TBQueue RcvQueue, -- TODO command type to support deletion via supervisor
-    ntfSubWorkers :: TMap ProtocolServer (TMVar (), Async ())
+    ntfSubWorkers :: TMap NtfServer (TMVar (), Async ()),
+    ntfSubSMPWorkers :: TMap SMPServer (TMVar (), Async ())
   }
 
 newNtfSubSupervisor :: Env -> STM NtfSubSupervisor
@@ -43,28 +45,29 @@ newNtfSubSupervisor agentEnv = do
   ntfTkn <- newTVar Nothing
   ntfSubQ <- newTBQueue qSize -- bigger queue size?
   ntfSubWorkers <- TM.empty
+  ntfSubSMPWorkers <- TM.empty
   pure
     NtfSubSupervisor
       { ntfTkn,
-        -- ntfSubSupervisor,
         ntfSubQ,
-        ntfSubWorkers
+        ntfSubWorkers,
+        ntfSubSMPWorkers
       }
 
-addNtfSubWorker :: MonadUnliftIO m => NtfSubSupervisor -> ProtocolServer -> (TMVar () -> m ()) -> m ()
-addNtfSubWorker ns srv action =
-  atomically (TM.lookup srv (ntfSubWorkers ns)) >>= \case
+addNtfSubWorker :: MonadUnliftIO m => NtfSubSupervisor -> NtfServer -> (TMVar () -> m ()) -> m ()
+addNtfSubWorker ns = addNtfSubWorker_ $ ntfSubWorkers ns
+
+addNtfSubSMPWorker :: MonadUnliftIO m => NtfSubSupervisor -> SMPServer -> (TMVar () -> m ()) -> m ()
+addNtfSubSMPWorker ns = addNtfSubWorker_ $ ntfSubSMPWorkers ns
+
+addNtfSubWorker_ :: MonadUnliftIO m => TMap NtfServer (TMVar (), Async ()) -> ProtocolServer -> (TMVar () -> m ()) -> m ()
+addNtfSubWorker_ workerMap srv action =
+  atomically (TM.lookup srv workerMap) >>= \case
     Nothing -> do
       workerSemaphore <- newTMVarIO ()
       ntfSubWorker <- async $ action workerSemaphore
-      atomically $ TM.insert srv (workerSemaphore, ntfSubWorker) (ntfSubWorkers ns)
+      atomically $ TM.insert srv (workerSemaphore, ntfSubWorker) workerMap
     Just (workerSemaphore, _) -> void . atomically $ tryPutTMVar workerSemaphore ()
-
-setNtfSubWorkerSemaphore :: NtfSubSupervisor -> ProtocolServer -> STM ()
-setNtfSubWorkerSemaphore ns srv =
-  TM.lookup srv (ntfSubWorkers ns) >>= \case
-    Just (workerSemaphore, _) -> void $ tryPutTMVar workerSemaphore ()
-    Nothing -> pure ()
 
 nsUpdateNtfToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
 nsUpdateNtfToken ns tkn =
@@ -84,3 +87,15 @@ addRcvQueueToNtfSubQueue ns rq = do
   forM_ tkn_ $ \NtfToken {ntfTknStatus} ->
     when (ntfTknStatus == NTActive) $
       writeTBQueue (ntfSubQ ns) rq
+
+cancelNtfSubWorkers :: NtfSubSupervisor -> IO ()
+cancelNtfSubWorkers ns = cancelNtfSubWorkers_ $ ntfSubWorkers ns
+
+cancelNtfSubSMPWorkers :: NtfSubSupervisor -> IO ()
+cancelNtfSubSMPWorkers ns = cancelNtfSubWorkers_ $ ntfSubSMPWorkers ns
+
+cancelNtfSubWorkers_ :: TMap NtfServer (TMVar (), Async ()) -> IO ()
+cancelNtfSubWorkers_ workerMap = do
+  workers <- readTVarIO workerMap
+  forM_ workers $ \(_, action) -> uninterruptibleCancel action
+  atomically $ writeTVar workerMap mempty

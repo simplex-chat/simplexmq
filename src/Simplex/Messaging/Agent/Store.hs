@@ -26,7 +26,6 @@ import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
     MsgId,
-    ProtocolServer,
     RcvDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
@@ -91,9 +90,9 @@ class Monad m => MonadAgentStore s m where
   -- Notification subscription persistence
   getNtfSubscription :: s -> RcvQueue -> m (Maybe NtfSubscription)
   createNtfSubscription :: s -> NtfSubscription -> m () -- get and create as one method?
-  -- updateNtfSubscription :: s -> RcvQueue -> NtfSubStatus -> Maybe NtfSubAction -> UTCTime -> Maybe NtfSubscriptionId -> Maybe NotifierId -> m ()
   updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
-  getNextNtfSubscription :: s -> ProtocolServer -> m (Maybe NtfSubscription)
+  getNextNtfSubscriptionAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
+  getNextNtfSubscriptionSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
 
 -- * Queue types
 

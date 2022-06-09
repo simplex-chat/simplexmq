@@ -75,6 +75,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
+import Data.Set (Set)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
@@ -95,7 +96,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, ProtocolServer)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
@@ -104,7 +105,6 @@ import System.Random (randomR)
 import UnliftIO.Async (async, race_)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Data.Set (Set)
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m AgentClient
@@ -718,29 +718,40 @@ processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} rc
       currentTime <- liftIO getCurrentTime
       let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
       withStore $ \st -> createNtfSubscription st newSub
-      addWorker smpServer
-      addWorker ntfServer
+      addNtfWorker ntfServer
+      addNtfSMPWorker smpServer
     (Just _, Just ntfServer, Just _) -> do
-      addWorker smpServer
-      addWorker ntfServer
+      addNtfWorker ntfServer
+      addNtfSMPWorker smpServer
     _ -> pure ()
   liftIO $ threadDelay 1000000
   where
-    addWorker srv = addNtfSubWorker ns srv $ \ws -> nSubWorker c srv ws `E.finally` pure () -- TODO
+    addNtfWorker srv = addNtfSubWorker ns srv $ \ws -> nSubWorker c srv ws `E.finally` pure () -- TODO
+    addNtfSMPWorker srv = addNtfSubWorker ns srv $ \ws -> nSubSMPWorker c srv ws `E.finally` pure () -- TODO
 
-nSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> TMVar () -> m ()
+nSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 nSubWorker _c srv workerSemaphore = forever $ do
   _ <- atomically $ readTMVar workerSemaphore
   withStore $ \st ->
-    getNextNtfSubscription st srv >>= \case
+    getNextNtfSubscriptionAction st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
-      Just NtfSubscription {ntfSubAction} ->
+      Just (_sub, ntfSubAction) ->
         forM_ ntfSubAction $ \case
-          NSAKey -> pure ()
           NSANew _nKey -> pure ()
           NSACheck -> pure ()
           NSADelete -> pure ()
-  liftIO $ threadDelay 2000000
+  liftIO $ threadDelay 1000000
+
+nSubSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+nSubSMPWorker _c srv workerSemaphore = forever $ do
+  _ <- atomically $ readTMVar workerSemaphore
+  withStore $ \st ->
+    getNextNtfSubscriptionSMPAction st srv >>= \case
+      Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
+      Just (_sub, ntfSubAction) ->
+        forM_ ntfSubAction $ \case
+          NSAKey -> pure ()
+  liftIO $ threadDelay 1000000
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) = do

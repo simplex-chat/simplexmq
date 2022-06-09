@@ -59,6 +59,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
+import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -84,7 +85,6 @@ import System.Timeout (timeout)
 import UnliftIO (async, pooledForConcurrentlyN)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Data.Set (Set)
 
 type ClientVar msg = TMVar (Either AgentErrorType (ProtocolClient msg))
 
@@ -344,6 +344,8 @@ closeAgentClient c = liftIO $ do
   clear subscrConns
   clear connMsgsQueued
   clear smpQueueMsgQueues
+  cancelNtfSubWorkers $ ntfSubSupervisor c
+  cancelNtfSubSMPWorkers $ ntfSubSupervisor c
   where
     clientTimeout sel = tcpTimeout . sel . config $ agentEnv c
     clear sel = atomically $ writeTVar (sel c) M.empty

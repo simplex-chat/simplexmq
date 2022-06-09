@@ -132,23 +132,19 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
       ntfTknAction = Just NTARegister
     }
 
--- TODO parameterize by server type
 data NtfSubAction
-  = NSAKey
-  | NSANew NtfPrivateSignKey
+  = NSANew NtfPrivateSignKey
   | NSACheck
   | NSADelete
   deriving (Show)
 
 instance Encoding NtfSubAction where
   smpEncode = \case
-    NSAKey -> "K"
     NSANew nKey -> smpEncode ('N', nKey)
     NSACheck -> "C"
     NSADelete -> "D"
   smpP =
     A.anyChar >>= \case
-      'K' -> pure NSAKey
       'N' -> NSANew <$> smpP
       'C' -> pure NSACheck
       'D' -> pure NSADelete
@@ -158,11 +154,26 @@ instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
 
 instance ToField NtfSubAction where toField = toField . smpEncode
 
+data NtfSubSMPAction
+  = NSAKey
+  deriving (Show)
+
+instance Encoding NtfSubSMPAction where
+  smpEncode = \case
+    NSAKey -> "K"
+  smpP =
+    A.anyChar >>= \case
+      'K' -> pure NSAKey
+      _ -> fail "bad NtfSubSMPAction"
+
+instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
+
+instance ToField NtfSubSMPAction where toField = toField . smpEncode
+
 data NtfSubscription = NtfSubscription
   { ntfServer :: NtfServer,
     ntfSubId :: Maybe NtfSubscriptionId,
     ntfSubStatus :: NtfSubStatus,
-    ntfSubAction :: Maybe NtfSubAction,
     ntfSubActionTs :: UTCTime,
     ntfToken :: NtfToken, -- ?
     smpServer :: SMPServer, -- use SMPQueueNtf?
@@ -177,7 +188,6 @@ newNtfSubscription ntfServer ntfToken smpServer rcvQueueId ntfSubActionTs =
     { ntfServer,
       ntfSubId = Nothing,
       ntfSubStatus = NSKey,
-      ntfSubAction = Just NSAKey,
       ntfSubActionTs,
       ntfToken,
       smpServer,
