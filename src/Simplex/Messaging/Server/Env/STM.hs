@@ -31,6 +31,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Version
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -58,7 +59,9 @@ data ServerConfig = ServerConfig
     -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
-    certificateFile :: FilePath
+    certificateFile :: FilePath,
+    -- | SMP client-server protocol version range
+    smpServerVRange :: VersionRange
   }
 
 defaultMessageExpiration :: ExpirationConfig

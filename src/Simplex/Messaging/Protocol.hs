@@ -584,7 +584,7 @@ transmissionP = do
 
 class (ProtocolEncoding msg, ProtocolEncoding (ProtocolCommand msg)) => Protocol msg where
   type ProtocolCommand msg = cmd | cmd -> msg
-  protocolClientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
+  protocolClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
   protocolPing :: ProtocolCommand msg
   protocolError :: msg -> Maybe ErrorType
 

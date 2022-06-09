@@ -175,7 +175,8 @@ smpServer started = do
     runClient :: Transport c => TProxy c -> c -> m ()
     runClient _ h = do
       kh <- asks serverIdentity
-      liftIO (runExceptT $ smpServerHandshake h kh) >>= \case
+      smpVRange <- asks $ smpServerVRange . config
+      liftIO (runExceptT $ smpServerHandshake h kh smpVRange) >>= \case
         Right th -> runClientTransport th
         Left _ -> pure ()
 

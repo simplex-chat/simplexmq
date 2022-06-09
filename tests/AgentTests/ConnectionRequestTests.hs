@@ -48,7 +48,7 @@ connReqData :: ConnReqUriData
 connReqData =
   ConnReqUriData
     { crScheme = simplexChat,
-      crAgentVRange = smpAgentVRange,
+      crAgentVRange = mkVersionRange 1 1,
       crSmpQueues = [queue]
     }
 
@@ -70,7 +70,7 @@ connectionRequest12 :: AConnectionRequestUri
 connectionRequest12 =
   ACR SCMInvitation $
     CRInvitationUri
-      connReqData {crAgentVRange = mkVersionRange 1 2, crSmpQueues = [queue, queue]}
+      connReqData {crAgentVRange = supportedSMPAgentVRange, crSmpQueues = [queue, queue]}
       testE2ERatchetParams13
 
 connectionRequestTests :: Spec

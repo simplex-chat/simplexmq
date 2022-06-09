@@ -678,7 +678,9 @@ data CryptoError
     CERatchetHeader
   | -- | too many skipped messages
     CERatchetTooManySkipped
-  | -- | duplicate message number (or, possibly, skipped message that failed to decrypt?)
+  | -- | earlier message number (or, possibly, skipped message that failed to decrypt?)
+    CERatchetEarlierMessage
+  | -- | duplicate message number
     CERatchetDuplicateMessage
   deriving (Eq, Show, Exception)
 
