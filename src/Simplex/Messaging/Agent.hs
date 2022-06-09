@@ -692,7 +692,7 @@ populateNtfSubQueue c@AgentClient {ntfSubSupervisor = ns} = do
   connIds <- atomically $ getSubscriptions c
   forM_ connIds $ \connId -> do
     rq <- withStore $ \st -> getRcvQueue st connId
-    atomically $ writeTBQueue (ntfSubQ ns) rq
+    atomically $ addRcvQueueToNtfSubQueue ns rq
 
 nSubSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 nSubSupervisor c@AgentClient {ntfSubSupervisor = NtfSubSupervisor {ntfSubQ}} = forever $ do
