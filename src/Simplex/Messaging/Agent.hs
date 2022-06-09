@@ -465,6 +465,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                   AM_HELLO_
+                    -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
+                    -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     | duplexHandshake == Just True -> connErr
                     | otherwise -> do
                       helloTimeout <- asks $ helloTimeout . config
@@ -495,16 +497,20 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   withStore $ \st -> setSndQueueStatus st sq Active
                   case rq_ of
                     -- party initiating connection (in v1)
-                    Just RcvQueue {status} -> do
-                      -- TODO test async handshake, it is unclear why subscribeQueue is needed here
+                    Just RcvQueue {status} ->
+                      -- TODO it is unclear why subscribeQueue was needed here,
+                      -- message delivery can only be enabled for queues that were created in the current session or subscribed
                       -- subscribeQueue c rq connId
+                      --
+                      -- If initiating party were to send CON to the user without waiting for reply HELLO (to reduce handshake time),
+                      -- it would lead to the non-deterministic internal ID of the first sent message, at to some other race conditions,
+                      -- because it can be sent before HELLO is received
+                      -- With `status == Aclive` condition, CON is sent here only by the accepting party, that previously received HELLO
                       when (status == Active) $ notify CON
-                    -- If initiating party were to send CON to the user without waiting for reply HELLO (to reduce handshake time),
-                    -- it would lead to the non-deterministic internal ID of the first sent message,
-                    -- because it can be sent before HELLO is received
-                    -- With `status == Aclive` condition, CON is sent here only by the accepting party, that previously received HELLO
-                    -- notify CON
-                    -- party joining connection
+                    -- Party joining connection sends REPLY after HELLO in v1,
+                    -- it is an error to send REPLY in duplexHandshake mode (v2),
+                    -- and this branch should never be reached as receive is created before the confirmation,
+                    -- so the condition is not necessary here, strictly speaking.
                     _ -> unless (duplexHandshake == Just True) $ do
                       qInfo <- createReplyQueue c connId
                       void . enqueueMessage c cData sq SMP.noMsgFlags $ REPLY [qInfo]
