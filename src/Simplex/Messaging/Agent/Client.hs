@@ -19,6 +19,7 @@ module Simplex.Messaging.Agent.Client
     newRcvQueue,
     subscribeQueue,
     addSubscription,
+    getSubscriptions,
     sendConfirmation,
     sendInvitation,
     RetryInterval (..),
@@ -83,6 +84,7 @@ import System.Timeout (timeout)
 import UnliftIO (async, pooledForConcurrentlyN)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Data.Set (Set)
 
 type ClientVar msg = TMVar (Either AgentErrorType (ProtocolClient msg))
 
@@ -109,7 +111,6 @@ data AgentClient = AgentClient
     asyncClients :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
-    smpSubscriber :: Async (),
     ntfSubSupervisor :: NtfSubSupervisor,
     lock :: TMVar ()
   }
@@ -156,7 +157,6 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
         asyncClients,
         clientId,
         agentEnv,
-        smpSubscriber = undefined,
         ntfSubSupervisor,
         lock
       }
@@ -474,6 +474,11 @@ removePendingSubscription = removeSubs_ . pendingSubscrSrvrs
 removeSubs_ :: TMap SMPServer (TMap ConnId RcvQueue) -> SMPServer -> ConnId -> STM ()
 removeSubs_ ss server connId =
   TM.lookup server ss >>= mapM_ (TM.delete connId)
+
+getSubscriptions :: AgentClient -> STM (Set ConnId)
+getSubscriptions AgentClient {subscrConns} = do
+  m <- readTVar subscrConns
+  pure $ M.keysSet m
 
 logServer :: MonadIO m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =

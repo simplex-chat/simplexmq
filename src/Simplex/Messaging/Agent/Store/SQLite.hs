@@ -296,6 +296,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
+  getRcvQueue :: SQLiteStore -> ConnId -> m RcvQueue
+  getRcvQueue _st _connId = throwError SENotImplemented
+
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo}, ratchetState} =
     liftIOEither . withTransaction st $ \db ->
@@ -634,12 +637,6 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
         |]
         (provider, token, host, port)
-
-  getRcvQueuesWithoutNtfSub :: SQLiteStore -> m [RcvQueue]
-  getRcvQueuesWithoutNtfSub _st = throwError SENotImplemented
-
-  getNtfSubscriptionServers :: SQLiteStore -> m [ProtocolServer]
-  getNtfSubscriptionServers _st = throwError SENotImplemented
 
   getNtfSubscription :: SQLiteStore -> RcvQueue -> m (Maybe NtfSubscription)
   getNtfSubscription _st _rcvQueue = throwError SENotImplemented

@@ -111,8 +111,8 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient initServers
-      action <- async $ subscriber c `E.finally` disconnectAgentClient c
-      pure c {smpSubscriber = action}
+      race_ (subscriber c) (nSubSupervisor c) `E.finally` disconnectAgentClient c
+      pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c = closeAgentClient c >> logConnection c False
@@ -559,7 +559,7 @@ registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
         (Just _tknId, Just NTACheck) -> do
           when (ntfTknStatus == NTActive) $
-            runNotificationSubSupervisor c
+            populateNtfSubQueue c
           pure ntfTknStatus -- TODO
           -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
@@ -597,7 +597,7 @@ verifyNtfToken' c deviceToken code nonce =
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
       void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
         agentNtfVerifyToken c tknId tkn code'
-        runNotificationSubSupervisor c
+        populateNtfSubQueue c
     _ -> throwError $ CMD PROHIBITED
 
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
@@ -687,66 +687,53 @@ subscriber c@AgentClient {msgQ} = forever $ do
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-runNotificationSubSupervisor :: AgentMonad m => AgentClient -> m ()
-runNotificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns} = do
-  addNtfSubSupervisor ns $ notificationSubSupervisor c `E.finally` pure () -- TODO
-  -- race condition? - notificationSubSupervisor may still be initializing workers when queue is already being written to
-  -- initialize workers here before populating queue?
-  -- check ntfSubLoopStarted in loop?
-  -- TODO ! check by Maybe Async instead of flag
-  -- TODO ! start in getSMPAgentClient in race, instead of on token verification / check
-  -- TODO ! use subscriptions in Client (memory) to get subscriptions on ntf_register
-  -- TODO ! when writing to queue on subscribe/create check by active token (token should live in Client)
-  rcvQueues <- withStore $ \st -> getRcvQueuesWithoutNtfSub st
-  forM_ rcvQueues $ \rq -> do
+populateNtfSubQueue :: AgentMonad m => AgentClient -> m ()
+populateNtfSubQueue c@AgentClient {ntfSubSupervisor = ns} = do
+  connIds <- atomically $ getSubscriptions c
+  forM_ connIds $ \connId -> do
+    rq <- withStore $ \st -> getRcvQueue st connId
     atomically $ writeTBQueue (ntfSubQ ns) rq
 
-notificationSubSupervisor :: AgentMonad m => AgentClient -> m ()
-notificationSubSupervisor c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfToken, ntfSubLoopStarted, ntfSubQ}} = do
-  -- get unique servers from ntf_subscriptions, add workers to ntfSubWorkers
-  srvs <- withStore $ \st -> getNtfSubscriptionServers st
-  forM_ srvs $ \srv -> addWorker srv
-  atomically $ writeTVar ntfSubLoopStarted True
-  forever $ do
-    rcvQueue@RcvQueue {server = smpServer, rcvId} <- atomically $ readTBQueue ntfSubQ
-    -- get/create subscription record in ntf_subscriptions
-    sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
-    -- TODO what if ntf server is not configured on start (ignore for now)
-    ntfServer_ <- getNtfServer c
-    ntfToken_ <- readTVarIO ntfToken
-    case (sub_, ntfServer_, ntfToken_) of
-      (Nothing, Just ntfServer, Just tkn) -> do
-        currentTime <- liftIO getCurrentTime
-        let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
-        withStore $ \st -> createNtfSubscription st newSub
-        -- lookup workers in ntfSubWorkers; create if it doesn't exist
-        addWorker smpServer
-        addWorker ntfServer
-      (Just _, Just ntfServer, Just _) -> do
-        atomically $ do
-          setNtfSubWorkerSemaphore ns smpServer
-          setNtfSubWorkerSemaphore ns ntfServer
-      _ -> pure ()
-    -- throttle
-    liftIO $ threadDelay 1000000
-  where
-    addWorker srv = addNtfSubWorker ns srv $ \ws -> notificationSubWorker c srv ws `E.finally` pure () -- TODO
+nSubSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+nSubSupervisor c@AgentClient {ntfSubSupervisor = NtfSubSupervisor {ntfSubQ}} = forever $ do
+  rq <- atomically $ readTBQueue ntfSubQ
+  -- withAgentLock c (runExceptT $ processNtfSub c rq) >>= \case -- ?
+  runExceptT (processNtfSub c rq) >>= \case
+    Left e -> liftIO $ print e
+    Right _ -> return ()
 
-notificationSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> TMVar () -> m ()
-notificationSubWorker _c srv workerSemaphore = forever $ do
+processNtfSub :: AgentMonad m => AgentClient -> RcvQueue -> m ()
+processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} rcvQueue@RcvQueue {server = smpServer, rcvId} = do
+  sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
+  ntfServer_ <- getNtfServer c
+  ntfToken_ <- readTVarIO ntfTkn
+  case (sub_, ntfServer_, ntfToken_) of
+    (Nothing, Just ntfServer, Just tkn) -> do
+      currentTime <- liftIO getCurrentTime
+      let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
+      withStore $ \st -> createNtfSubscription st newSub
+      addWorker smpServer
+      addWorker ntfServer
+    (Just _, Just ntfServer, Just _) -> do
+      addWorker smpServer
+      addWorker ntfServer
+    _ -> pure ()
+  liftIO $ threadDelay 1000000
+  where
+    addWorker srv = addNtfSubWorker ns srv $ \ws -> nSubWorker c srv ws `E.finally` pure () -- TODO
+
+nSubWorker :: AgentMonad m => AgentClient -> ProtocolServer -> TMVar () -> m ()
+nSubWorker _c srv workerSemaphore = forever $ do
   _ <- atomically $ readTMVar workerSemaphore
-  -- get next action from ntf_subscriptions filtering by srv
   withStore $ \st ->
     getNextNtfSubscription st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar workerSemaphore
       Just NtfSubscription {ntfSubAction} ->
-        -- process action, updateNtfSubscription (new status, action, can be nId, subId)
         forM_ ntfSubAction $ \case
           NSAKey -> pure ()
           NSANew _nKey -> pure ()
           NSACheck -> pure ()
           NSADelete -> pure ()
-  -- throttle
   liftIO $ threadDelay 2000000
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()

@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -16,22 +17,22 @@ where
 
 import Control.Concurrent.Async (Async)
 import Control.Monad
+import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Monad (AgentMonad)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
-import Simplex.Messaging.Notifications.Client (NtfToken)
+import Simplex.Messaging.Notifications.Client
+import Simplex.Messaging.Notifications.Protocol (NtfTknStatus (NTActive))
 import Simplex.Messaging.Protocol (ProtocolServer (..))
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (whenM)
 import UnliftIO (async)
 import UnliftIO.STM
 
 data NtfSubSupervisor = NtfSubSupervisor
-  { ntfToken :: TVar (Maybe NtfToken),
+  { ntfTkn :: TVar (Maybe NtfToken),
     ntfSubSupervisor :: TVar (Maybe (Async ())),
-    ntfSubLoopStarted :: TVar Bool,
     ntfSubQ :: TBQueue RcvQueue,
     ntfSubWorkers :: TMap ProtocolServer (TMVar (), Async ())
   }
@@ -39,16 +40,14 @@ data NtfSubSupervisor = NtfSubSupervisor
 newNtfSubSupervisor :: Env -> STM NtfSubSupervisor
 newNtfSubSupervisor agentEnv = do
   let qSize = tbqSize $ config agentEnv
-  ntfToken <- newTVar Nothing
+  ntfTkn <- newTVar Nothing
   ntfSubSupervisor <- newTVar Nothing
-  ntfSubLoopStarted <- newTVar False
   ntfSubQ <- newTBQueue qSize -- bigger queue size?
   ntfSubWorkers <- TM.empty
   pure
     NtfSubSupervisor
-      { ntfToken,
+      { ntfTkn,
         ntfSubSupervisor,
-        ntfSubLoopStarted,
         ntfSubQ,
         ntfSubWorkers
       }
@@ -62,7 +61,7 @@ addNtfSubSupervisor ns action = do
       atomically $ writeTVar (ntfSubSupervisor ns) $ Just nSubSupervisor
     Just _ -> pure ()
 
-addNtfSubWorker :: AgentMonad m => NtfSubSupervisor -> ProtocolServer -> (TMVar () -> m ()) -> m ()
+addNtfSubWorker :: MonadUnliftIO m => NtfSubSupervisor -> ProtocolServer -> (TMVar () -> m ()) -> m ()
 addNtfSubWorker ns srv action =
   atomically (TM.lookup srv (ntfSubWorkers ns)) >>= \case
     Nothing -> do
@@ -79,15 +78,15 @@ setNtfSubWorkerSemaphore ns srv =
 
 nsUpdateNtfToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
 nsUpdateNtfToken ns tkn =
-  atomically $ writeTVar (ntfToken ns) (Just tkn)
+  atomically $ writeTVar (ntfTkn ns) (Just tkn)
 
 nsRemoveNtfToken :: AgentMonad m => NtfSubSupervisor -> m ()
 nsRemoveNtfToken ns =
-  atomically $ writeTVar (ntfToken ns) Nothing
+  atomically $ writeTVar (ntfTkn ns) Nothing
 
--- make ntfSubSupervisor Maybe instead? (in Client)
--- make queue Maybe?
 addRcvQueueToNtfSubQueue :: NtfSubSupervisor -> RcvQueue -> STM ()
-addRcvQueueToNtfSubQueue ns rq =
-  whenM (readTVar $ ntfSubLoopStarted ns) $
-    writeTBQueue (ntfSubQ ns) rq
+addRcvQueueToNtfSubQueue ns rq = do
+  tkn_ <- readTVar $ ntfTkn ns
+  forM_ tkn_ $ \NtfToken {ntfTknStatus} ->
+    when (ntfTknStatus == NTActive) $
+      writeTBQueue (ntfSubQ ns) rq

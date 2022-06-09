@@ -48,6 +48,7 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
+  getRcvQueue :: s -> ConnId -> m RcvQueue
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
@@ -88,8 +89,6 @@ class Monad m => MonadAgentStore s m where
   removeNtfToken :: s -> NtfToken -> m ()
 
   -- Notification subscription persistence
-  getRcvQueuesWithoutNtfSub :: s -> m [RcvQueue]
-  getNtfSubscriptionServers :: s -> m [ProtocolServer]
   getNtfSubscription :: s -> RcvQueue -> m (Maybe NtfSubscription)
   createNtfSubscription :: s -> NtfSubscription -> m () -- get and create as one method?
   -- updateNtfSubscription :: s -> RcvQueue -> NtfSubStatus -> Maybe NtfSubAction -> UTCTime -> Maybe NtfSubscriptionId -> Maybe NotifierId -> m ()
