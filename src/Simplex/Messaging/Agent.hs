@@ -258,7 +258,7 @@ processCommand c (connId, cmd) = case cmd of
   DEL -> deleteConnection' c connId $> (connId, OK)
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
-newConn c connId cMode = do
+newConn c@AgentClient {ntfSubSupervisor = ns} connId cMode = do
   srv <- getSMPServer c
   (rq, qUri) <- newRcvQueue c srv
   g <- asks idsDrg
