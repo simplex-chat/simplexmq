@@ -8,7 +8,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     NtfSubSupervisorInstruction (..),
     newNtfSubSupervisor,
     getNtfServer,
-    nSubSupervisor,
+    ntfSupervisor,
     nsUpdateToken,
     nsUpdateToken',
     nsRemoveNtfToken,
@@ -70,8 +70,8 @@ getNtfServer c = do
       atomically . stateTVar gen $
         first (Just . (servers !!)) . randomR (0, length servers - 1)
 
-nSubSupervisor :: (MonadUnliftIO m, MonadReader Env m) => NtfSubSupervisor -> m ()
-nSubSupervisor ns@NtfSubSupervisor {ntfSubQ} = forever $ do
+ntfSupervisor :: (MonadUnliftIO m, MonadReader Env m) => NtfSubSupervisor -> m ()
+ntfSupervisor ns@NtfSubSupervisor {ntfSubQ} = forever $ do
   rqc <- atomically $ readTBQueue ntfSubQ
   -- withAgentLock c (runExceptT $ processNtfSub c rq) >>= \case -- ?
   runExceptT (processNtfSub ns rqc) >>= \case
@@ -106,9 +106,9 @@ processNtfSub ns@NtfSubSupervisor {ntfTkn} (rcvQueue@RcvQueue {server = smpServe
         _ -> pure ()
   liftIO $ threadDelay 1000000
   where
-    addNtfWorker srv = addNtfSubWorker_ (ntfSubWorkers ns) srv $
+    addNtfWorker srv = addNtfSubWorker (ntfSubWorkers ns) srv $
       \w -> ntfSubWorker ns srv w `E.finally` atomically (TM.delete srv (ntfSubWorkers ns))
-    addNtfSMPWorker srv = addNtfSubWorker_ (ntfSubSMPWorkers ns) srv $
+    addNtfSMPWorker srv = addNtfSubWorker (ntfSubSMPWorkers ns) srv $
       \w -> ntfSMPWorker ns srv w `E.finally` atomically (TM.delete srv (ntfSubSMPWorkers ns))
 
 ntfSubWorker :: AgentMonad m => NtfSubSupervisor -> NtfServer -> TMVar () -> m ()
@@ -135,8 +135,8 @@ ntfSMPWorker _ns srv workAvailable = forever $ do
           NSAKey -> pure ()
   liftIO $ threadDelay 1000000
 
-addNtfSubWorker_ :: MonadUnliftIO m => TMap NtfServer (TMVar (), Async ()) -> ProtocolServer -> (TMVar () -> m ()) -> m ()
-addNtfSubWorker_ workerMap srv action =
+addNtfSubWorker :: MonadUnliftIO m => TMap NtfServer (TMVar (), Async ()) -> ProtocolServer -> (TMVar () -> m ()) -> m ()
+addNtfSubWorker workerMap srv action =
   atomically (TM.lookup srv workerMap) >>= \case
     Nothing -> do
       workAvailable <- newTMVarIO ()
@@ -145,16 +145,13 @@ addNtfSubWorker_ workerMap srv action =
     Just (workAvailable, _) -> void . atomically $ tryPutTMVar workAvailable ()
 
 nsUpdateToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
-nsUpdateToken ns tkn =
-  atomically $ writeTVar (ntfTkn ns) (Just tkn)
+nsUpdateToken ns tkn = atomically $ nsUpdateToken' ns tkn
 
 nsUpdateToken' :: NtfSubSupervisor -> NtfToken -> STM ()
-nsUpdateToken' ns tkn =
-  writeTVar (ntfTkn ns) (Just tkn)
+nsUpdateToken' ns tkn = writeTVar (ntfTkn ns) (Just tkn)
 
 nsRemoveNtfToken :: AgentMonad m => NtfSubSupervisor -> m ()
-nsRemoveNtfToken ns =
-  atomically $ writeTVar (ntfTkn ns) Nothing
+nsRemoveNtfToken ns = atomically $ writeTVar (ntfTkn ns) Nothing
 
 addNtfSubSupervisorInstruction :: NtfSubSupervisor -> (RcvQueue, NtfSubSupervisorInstruction) -> STM ()
 addNtfSubSupervisorInstruction ns rqc = do

@@ -110,7 +110,7 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c@AgentClient {ntfSubSupervisor = ns} <- getAgentClient initServers
-      void $ race_ (subscriber c) (nSubSupervisor ns) `forkFinally` const (disconnectAgentClient c)
+      void $ race_ (subscriber c) (ntfSupervisor ns) `forkFinally` const (disconnectAgentClient c)
       pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
