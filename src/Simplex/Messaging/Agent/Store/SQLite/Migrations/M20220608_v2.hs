@@ -36,9 +36,9 @@ CREATE TABLE ntf_subscriptions (
   ntf_sub_action TEXT, -- if there is an action required on this subscription: create / check / delete
   ntf_sub_smp_action TEXT, -- action with SMP server: nkey; only one of this and ntf_sub_action can (should) be not null in same record
   ntf_sub_action_ts TEXT, -- the earliest time for the action, e.g. checks can be scheduled every X hours
-  marked_for_deletion INTEGER NOT NULL DEFAULT 0, -- to be checked on updates by workers to not overwrite delete command
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL, -- this is to check subscription status periodically to know when it was last checked
+  updated_by_supervisor INTEGER NOT NULL DEFAULT 0, -- to be checked on updates by workers to not overwrite supervisor command (state still should be updated)
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')), -- this is to check subscription status periodically to know when it was last checked
   PRIMARY KEY (smp_host, smp_port, smp_rcv_id),
   FOREIGN KEY (smp_host, smp_port, smp_rcv_id) REFERENCES rcv_queues (host, port, rcv_id)
     ON DELETE SET NULL ON UPDATE CASCADE,

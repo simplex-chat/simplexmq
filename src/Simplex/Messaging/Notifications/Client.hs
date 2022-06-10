@@ -132,6 +132,8 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
       ntfTknAction = Just NTARegister
     }
 
+data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
+
 data NtfSubAction
   = NSANew NtfPrivateSignKey
   | NSACheck
@@ -183,16 +185,16 @@ data NtfSubscription = NtfSubscription
   deriving (Show)
 
 -- ? do we even need token in NtfSubscription? - client can only have one token at a time, tracked on environment level
--- newNtfSubscription :: NtfServer -> NtfToken -> SMPServer -> RecipientId -> UTCTime -> NtfSubscription
--- newNtfSubscription ntfServer ntfToken smpServer rcvQueueId ntfSubActionTs =
-newNtfSubscription :: NtfServer -> SMPServer -> RecipientId -> UTCTime -> NtfSubscription
-newNtfSubscription ntfServer smpServer rcvQueueId ntfSubActionTs =
+-- newNtfSubscription :: SMPServer -> RecipientId -> Maybe NotifierId -> NtfServer -> NtfToken -> NtfSubStatus -> UTCTime -> NtfSubscription
+-- newNtfSubscription smpServer rcvQueueId ntfQueueId ntfServer ntfToken ntfSubStatus ntfSubActionTs =
+newNtfSubscription :: SMPServer -> RecipientId -> Maybe NotifierId -> NtfServer -> NtfSubStatus -> UTCTime -> NtfSubscription
+newNtfSubscription smpServer rcvQueueId ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
   NtfSubscription
     { smpServer,
       rcvQueueId,
-      ntfQueueId = Nothing,
+      ntfQueueId,
       ntfServer,
       ntfSubId = Nothing,
-      ntfSubStatus = NSKey,
+      ntfSubStatus,
       ntfSubActionTs
     }

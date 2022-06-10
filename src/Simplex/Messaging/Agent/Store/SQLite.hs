@@ -60,7 +60,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
+import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..))
@@ -671,8 +671,26 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
          in Just NtfSubscription {smpServer, rcvQueueId = rcvId, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
       ntfSubscription _ = Nothing
 
-  createNtfSubscription :: SQLiteStore -> NtfSubscription -> m ()
-  createNtfSubscription _st _ntfSub = throwError SENotImplemented
+  createNtfSubscription :: SQLiteStore -> NtfSubscription -> NtfSubOrSMPAction -> m ()
+  createNtfSubscription st NtfSubscription {smpServer = (SMPServer host port _), rcvQueueId, ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
+    liftIO . withTransaction st $ \db ->
+      case ntfAction of
+        NtfSubSMPAction nsa ->
+          DB.execute
+            db
+            [sql|
+              INSERT INTO ntf_subscriptions
+                (smp_host, smp_port, smp_rcv_id, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id, ntf_sub_status, ntf_sub_smp_action, ntf_sub_action_ts) VALUES (?,?,?,?,?,?,?,?,?,?)
+            |]
+            (host, port, rcvQueueId, ntfQueueId, ntfHost, ntfPort, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs)
+        NtfSubAction nsa ->
+          DB.execute
+            db
+            [sql|
+              INSERT INTO ntf_subscriptions
+                (smp_host, smp_port, smp_rcv_id, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id, ntf_sub_status, ntf_sub_action, ntf_sub_action_ts) VALUES (?,?,?,?,?,?,?,?,?,?)
+            |]
+            (host, port, rcvQueueId, ntfQueueId, ntfHost, ntfPort, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs)
 
   markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
   markNtfSubscriptionForDeletion _st _rcvQueue = throwError SENotImplemented

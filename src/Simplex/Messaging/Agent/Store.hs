@@ -91,7 +91,7 @@ class Monad m => MonadAgentStore s m where
 
   -- Notification subscription persistence
   getNtfSubscription :: s -> RcvQueue -> m (Maybe NtfSubscription)
-  createNtfSubscription :: s -> NtfSubscription -> m ()
+  createNtfSubscription :: s -> NtfSubscription -> NtfSubOrSMPAction -> m ()
   markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
   updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
   deleteNtfSubscription :: s -> RcvQueue -> m ()
@@ -346,13 +346,3 @@ data StoreError
   | -- | Used to wrap agent errors inside store operations to avoid race conditions
     SEAgentError AgentErrorType
   deriving (Eq, Show, Exception)
-
--- * Ntf Subscriptions
-
--- data NewNtfSubscription = NewNtfSubscription
---   { ntfServer :: NtfServer,
---     ntfSubId :: NtfSubscriptionId,
---     ratchetState :: RatchetX448
---   }
-
-data NtfSubscriptionAction = NSubSMPAction SMPServer | NSubNtfAction NtfServer

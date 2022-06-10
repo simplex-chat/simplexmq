@@ -29,7 +29,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (NtfTknStatus (..))
+import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..))
 import Simplex.Messaging.Protocol (ProtocolServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -55,8 +55,9 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, cmd) = do
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
-          let newSub = newNtfSubscription ntfServer smpServer rcvId currentTime
-          withStore $ \st -> createNtfSubscription st newSub
+          -- TODO add ntfQueueId to RcvQueue; if it exists create subscription with SNEW action
+          let newSub = newNtfSubscription smpServer rcvId Nothing ntfServer NSKey currentTime
+          withStore $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
