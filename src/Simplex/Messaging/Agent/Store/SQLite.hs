@@ -60,7 +60,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client (NtfServer, NtfTknAction, NtfToken (..))
+import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubSMPAction, NtfSubscription, NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..))
@@ -300,6 +300,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE host = :host AND port = :port AND snd_id = :snd_id;
         |]
         [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
+
+  getRcvQueue :: SQLiteStore -> ConnId -> m RcvQueue
+  getRcvQueue _st _connId = throwError SENotImplemented
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
@@ -644,6 +647,27 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
         |]
         (provider, token, host, port)
+
+  getNtfSubscription :: SQLiteStore -> RcvQueue -> m (Maybe NtfSubscription)
+  getNtfSubscription _st _rcvQueue = throwError SENotImplemented
+
+  createNtfSubscription :: SQLiteStore -> NtfSubscription -> m ()
+  createNtfSubscription _st _ntfSub = throwError SENotImplemented
+
+  markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
+  markNtfSubscriptionForDeletion _st _rcvQueue = throwError SENotImplemented
+
+  updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
+  updateNtfSubscription _st _rcvQueue _ntfSub = throwError SENotImplemented
+
+  deleteNtfSubscription :: s -> RcvQueue -> m ()
+  deleteNtfSubscription _st _rcvQueue = throwError SENotImplemented
+
+  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
+  getNextNtfSubAction _st _srv = throwError SENotImplemented
+
+  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
+  getNextNtfSubSMPAction _st _srv = throwError SENotImplemented
 
 -- * Auxiliary helpers
 

@@ -14,12 +14,12 @@
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
     newAgentClient,
-    AgentMonad,
     withAgentLock,
     closeAgentClient,
     newRcvQueue,
     subscribeQueue,
     addSubscription,
+    getSubscriptions,
     sendConfirmation,
     sendInvitation,
     RetryInterval (..),
@@ -30,6 +30,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfCheckToken,
     agentNtfDeleteToken,
     agentNtfEnableCron,
+    agentNtfCreateSubscription,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -58,6 +59,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
+import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -71,7 +73,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NtfPrivateSignKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -94,8 +96,8 @@ data AgentClient = AgentClient
     subQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue (ServerTransmission BrokerMsg),
     smpServers :: TVar (NonEmpty SMPServer),
-    ntfServers :: TVar [NtfServer],
     smpClients :: TMap SMPServer SMPClientVar,
+    ntfServers :: TVar [NtfServer],
     ntfClients :: TMap NtfServer NtfClientVar,
     subscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
     pendingSubscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
@@ -107,7 +109,6 @@ data AgentClient = AgentClient
     asyncClients :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
-    smpSubscriber :: Async (),
     lock :: TMVar ()
   }
 
@@ -119,8 +120,8 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
   smpServers <- newTVar smp
-  ntfServers <- newTVar ntf
   smpClients <- TM.empty
+  ntfServers <- newTVar ntf
   ntfClients <- TM.empty
   subscrSrvrs <- TM.empty
   pendingSubscrSrvrs <- TM.empty
@@ -132,13 +133,10 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, ntfServers, smpClients, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, smpSubscriber = undefined, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
-
--- | Agent monad with MonadReader Env and MonadError AgentErrorType
-type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 class ProtocolServerClient msg where
   getProtocolServerClient :: AgentMonad m => AgentClient -> ProtocolServer -> m (ProtocolClient msg)
@@ -417,7 +415,8 @@ subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
         atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
           removePendingSubscription c server connId
         throwError e
-      Right _ -> addSubscription c rq connId
+      Right _ -> do
+        addSubscription c rq connId
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
@@ -448,6 +447,11 @@ removePendingSubscription = removeSubs_ . pendingSubscrSrvrs
 removeSubs_ :: TMap SMPServer (TMap ConnId RcvQueue) -> SMPServer -> ConnId -> STM ()
 removeSubs_ ss server connId =
   TM.lookup server ss >>= mapM_ (TM.delete connId)
+
+getSubscriptions :: AgentClient -> STM (Set ConnId)
+getSubscriptions AgentClient {subscrConns} = do
+  m <- readTVar subscrConns
+  pure $ M.keysSet m
 
 logServer :: MonadIO m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
@@ -528,6 +532,10 @@ agentNtfDeleteToken c tknId NtfToken {ntfServer, ntfPrivKey} =
 agentNtfEnableCron :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> Word16 -> m ()
 agentNtfEnableCron c tknId NtfToken {ntfServer, ntfPrivKey} interval =
   withLogClient c ntfServer tknId "TCRN" $ \ntf -> ntfEnableCron ntf ntfPrivKey tknId interval
+
+agentNtfCreateSubscription :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> SMPQueueNtf -> NtfPrivateSignKey -> m NtfSubscriptionId
+agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKey =
+  withLogClient c ntfServer tknId "SNEW" $ \ntf -> ntfCreateSubscription ntf ntfPrivKey (NewNtfSub tknId smpQueue nKey)
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do

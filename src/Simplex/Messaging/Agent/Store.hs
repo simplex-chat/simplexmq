@@ -48,6 +48,7 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
   setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
+  getRcvQueue :: s -> ConnId -> m RcvQueue
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
@@ -87,6 +88,15 @@ class Monad m => MonadAgentStore s m where
   updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
   updateNtfToken :: s -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
   removeNtfToken :: s -> NtfToken -> m ()
+
+  -- Notification subscription persistence
+  getNtfSubscription :: s -> RcvQueue -> m (Maybe NtfSubscription)
+  createNtfSubscription :: s -> NtfSubscription -> m ()
+  markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
+  updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
+  deleteNtfSubscription :: s -> RcvQueue -> m ()
+  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
+  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
 
 -- * Queue types
 
@@ -336,3 +346,13 @@ data StoreError
   | -- | Used to wrap agent errors inside store operations to avoid race conditions
     SEAgentError AgentErrorType
   deriving (Eq, Show, Exception)
+
+-- * Ntf Subscriptions
+
+-- data NewNtfSubscription = NewNtfSubscription
+--   { ntfServer :: NtfServer,
+--     ntfSubId :: NtfSubscriptionId,
+--     ratchetState :: RatchetX448
+--   }
+
+data NtfSubscriptionAction = NSubSMPAction SMPServer | NSubNtfAction NtfServer

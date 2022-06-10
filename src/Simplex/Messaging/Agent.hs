@@ -78,9 +78,9 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
-import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -99,6 +99,7 @@ import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
+import UnliftIO.Concurrent (forkFinally)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -108,11 +109,14 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
       c <- getAgentClient initServers
-      action <- async $ subscriber c `E.finally` disconnectAgentClient c
-      pure c {smpSubscriber = action}
+      void $ race_ (subscriber c) (runNtfSupervisor c) `forkFinally` const (disconnectAgentClient c)
+      pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
-disconnectAgentClient c = closeAgentClient c >> logConnection c False
+disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns}} = do
+  closeAgentClient c
+  liftIO $ closeNtfSupervisor ns
+  logConnection c False
 
 resumeAgentClient :: MonadIO m => AgentClient -> m ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
@@ -214,30 +218,6 @@ client c@AgentClient {rcvQ, subQ} = forever $ do
       Left e -> (corrId, connId, ERR e)
       Right (connId', resp) -> (corrId, connId', resp)
 
-withStore :: AgentMonad m => (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
-withStore action = do
-  st <- asks store
-  runExceptT (action st `E.catch` handleInternal) >>= \case
-    Right c -> return c
-    Left e -> throwError $ storeError e
-  where
-    -- TODO when parsing exception happens in store, the agent hangs;
-    -- changing SQLError to SomeException does not help
-    handleInternal :: (MonadError StoreError m') => SQLError -> m' a
-    handleInternal e = throwError . SEInternal $ bshow e
-    storeError :: StoreError -> AgentErrorType
-    storeError = \case
-      SEConnNotFound -> CONN NOT_FOUND
-      SEConnDuplicate -> CONN DUPLICATE
-      SEBadConnType CRcv -> CONN SIMPLEX
-      SEBadConnType CSnd -> CONN SIMPLEX
-      SEInvitationNotFound -> CMD PROHIBITED
-      -- this error is never reported as store error,
-      -- it is used to wrap agent operations when "transaction-like" store access is needed
-      -- NOTE: network IO should NOT be used inside AgentStoreMonad
-      SEAgentError e -> e
-      e -> INTERNAL $ show e
-
 -- | execute any SMP agent command
 processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
 processCommand c (connId, cmd) = case cmd of
@@ -255,12 +235,14 @@ processCommand c (connId, cmd) = case cmd of
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId cMode = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueue c srv
+  (rq, qUri) <- newRcvQueueNtf c srv
   g <- asks idsDrg
   agentVersion <- asks $ smpAgentVersion . config
   let cData = ConnData {connId, connAgentVersion = agentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId' <- withStore $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
+  ns <- asks ntfSupervisor
+  atomically $ sendNtfSubCommand ns (rq, NSCCreate)
   aVRange <- asks $ smpAgentVRange . config
   let crData = ConnReqUriData simplexChat aVRange [qUri]
   case cMode of
@@ -315,7 +297,7 @@ joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInf
 createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> m SMPQueueInfo
 createReplyQueue c connId = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueue c srv
+  (rq, qUri) <- newRcvQueueNtf c srv
   -- TODO reply queue version should be the same as send queue, ignoring it in v1
   let qInfo = toVersionT qUri SMP.smpClientVersion
   addSubscription c rq connId
@@ -361,15 +343,21 @@ subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection cData rq sq) -> do
       resumeMsgDelivery c cData sq
-      subscribeQueue c rq connId
+      subscribe rq
     SomeConn _ (SndConnection cData sq) -> do
       resumeMsgDelivery c cData sq
       case status (sq :: SndQueue) of
         Confirmed -> pure ()
         Active -> throwError $ CONN SIMPLEX
         _ -> throwError $ INTERNAL "unexpected queue status"
-    SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
-    SomeConn _ (ContactConnection _ rq) -> subscribeQueue c rq connId
+    SomeConn _ (RcvConnection _ rq) -> subscribe rq
+    SomeConn _ (ContactConnection _ rq) -> subscribe rq
+  where
+    subscribe :: RcvQueue -> m ()
+    subscribe rq = do
+      subscribeQueue c rq connId
+      ns <- asks ntfSupervisor
+      atomically $ sendNtfSubCommand ns (rq, NSCCreate)
 
 resubscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId =
@@ -562,7 +550,10 @@ deleteConnection' c connId =
     delete :: RcvQueue -> m ()
     delete rq = do
       deleteQueue c rq
-      atomically $ removeSubscription c connId
+      ns <- asks ntfSupervisor
+      atomically $ do
+        removeSubscription c connId
+        sendNtfSubCommand ns (rq, NSCDelete)
       withStore (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
@@ -575,6 +566,7 @@ registerNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction}, prevTokens) -> do
       mapM_ (deleteToken_ c) prevTokens
+      ns <- asks ntfSupervisor
       case (ntfTokenId, ntfTknAction) of
         (Nothing, Just NTARegister) -> registerToken tkn $> NTRegistered
         -- TODO minimal time before repeat registration
@@ -583,11 +575,17 @@ registerNtfToken' c deviceToken =
           t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
         (Just tknId, Just (NTACron interval)) ->
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
-        (Just _tknId, Just NTACheck) -> pure ntfTknStatus -- TODO
-        -- agentNtfCheckToken c tknId tkn >>= \case
+        (Just _tknId, Just NTACheck) -> do
+          if ntfTknStatus == NTActive
+            then initializeNtfSubQ c tkn
+            else atomically $ nsUpdateToken ns tkn
+          pure ntfTknStatus -- TODO
+          -- agentNtfCheckToken c tknId tkn >>= \case
         (Just tknId, Just NTADelete) -> do
           agentNtfDeleteToken c tknId tkn
-          withStore $ \st -> removeNtfToken st tkn $> NTExpired
+          withStore $ \st -> removeNtfToken st tkn
+          atomically $ nsRemoveNtfToken ns
+          pure NTExpired
         _ -> pure ntfTknStatus
     _ ->
       getNtfServer c >>= \case
@@ -608,6 +606,8 @@ registerNtfToken' c deviceToken =
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
       let dhSecret = C.dh' srvPubDhKey privDhKey
       withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
+      ns <- asks ntfSupervisor
+      atomically $ nsUpdateToken ns tkn
 
 -- TODO decrypt verification code
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
@@ -615,7 +615,7 @@ verifyNtfToken' c deviceToken code nonce =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
-      void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+      void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
         agentNtfVerifyToken c tknId tkn code'
     _ -> throwError $ CMD PROHIBITED
 
@@ -647,25 +647,52 @@ deleteNtfToken' c deviceToken =
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+  ns <- asks ntfSupervisor
   forM_ ntfTokenId $ \tknId -> do
-    withStore $ \st -> updateNtfToken st tkn ntfTknStatus (Just NTADelete)
+    let ntfTknAction = Just NTADelete
+    withStore $ \st -> updateNtfToken st tkn ntfTknStatus ntfTknAction
+    atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
     agentNtfDeleteToken c tknId tkn `catchError` \case
       NTF AUTH -> pure ()
       e -> throwError e
   withStore $ \st -> removeNtfToken st tkn
+  atomically $ nsRemoveNtfToken ns
 
 withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m NtfTknStatus
 withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
-  forM_ from_ $ \(status, action) -> withStore $ \st -> updateNtfToken st tkn status (Just action)
+  ns <- asks ntfSupervisor
+  forM_ from_ $ \(status, action) -> do
+    withStore $ \st -> updateNtfToken st tkn status (Just action)
+    atomically $ nsUpdateToken ns tkn {ntfTknStatus = status, ntfTknAction = Just action}
   tryError f >>= \case
     Right _ -> do
       withStore $ \st -> updateNtfToken st tkn toStatus toAction_
+      let updatedToken = tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
+      if toStatus == NTActive
+        then initializeNtfSubQ c updatedToken
+        else atomically $ nsUpdateToken ns updatedToken
       pure toStatus
     Left e@(NTF AUTH) -> do
       withStore $ \st -> removeNtfToken st tkn
+      atomically $ nsRemoveNtfToken ns
       void $ registerNtfToken' c deviceToken
       throwError e
     Left e -> throwError e
+
+initializeNtfSubQ :: AgentMonad m => AgentClient -> NtfToken -> m ()
+initializeNtfSubQ c tkn = do
+  ns <- asks ntfSupervisor
+  connIds <- atomically $ do
+    nsUpdateToken ns tkn
+    getSubscriptions c
+  forM_ connIds $ \connId -> do
+    rq <- withStore $ \st -> getRcvQueue st connId
+    atomically $ sendNtfSubCommand ns (rq, NSCCreate)
+
+-- TODO
+-- There should probably be another function to cancel all subscriptions that would flush the queue first,
+-- so that superwisor stops processing pending commands?
+-- It is an optimization, but I am thinking how it would behave if a user were to flip on/off quickly several times.
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c servers = do
@@ -680,17 +707,6 @@ getSMPServer c = do
       gen <- asks randomServer
       atomically . stateTVar gen $
         first (servers L.!!) . randomR (0, L.length servers - 1)
-
-getNtfServer :: AgentMonad m => AgentClient -> m (Maybe NtfServer)
-getNtfServer c = do
-  ntfServers <- readTVarIO $ ntfServers c
-  case ntfServers of
-    [] -> pure Nothing
-    [srv] -> pure $ Just srv
-    servers -> do
-      gen <- asks randomServer
-      atomically . stateTVar gen $
-        first (Just . (servers !!)) . randomR (0, length servers - 1)
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
@@ -963,6 +979,13 @@ agentRatchetDecrypt st connId encAgentMsg = do
   (agentMsgBody_, rc', skippedDiff) <- liftError (SEAgentError . cryptoError) $ CR.rcDecrypt rc skipped encAgentMsg
   updateRatchet st connId rc' skippedDiff
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
+
+newRcvQueueNtf :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri)
+newRcvQueueNtf c srv = do
+  (rq, qUri) <- newRcvQueue c srv
+  ns <- asks ntfSupervisor
+  atomically $ sendNtfSubCommand ns (rq, NSCCreate)
+  pure (rq, qUri)
 
 newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueueInfo -> m SndQueue
 newSndQueue qInfo =

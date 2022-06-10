@@ -37,6 +37,7 @@ library
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
+      Simplex.Messaging.Agent.NtfSubSupervisor
       Simplex.Messaging.Agent.Protocol
       Simplex.Messaging.Agent.QueryString
       Simplex.Messaging.Agent.RetryInterval
