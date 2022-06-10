@@ -171,26 +171,28 @@ instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
 instance ToField NtfSubSMPAction where toField = toField . smpEncode
 
 data NtfSubscription = NtfSubscription
-  { ntfServer :: NtfServer,
+  { smpServer :: SMPServer,
+    rcvQueueId :: RecipientId,
+    ntfQueueId :: Maybe NotifierId,
+    ntfServer :: NtfServer,
     ntfSubId :: Maybe NtfSubscriptionId,
     ntfSubStatus :: NtfSubStatus,
-    ntfSubActionTs :: UTCTime,
-    ntfToken :: NtfToken, -- ?
-    smpServer :: SMPServer, -- use SMPQueueNtf?
-    rcvQueueId :: RecipientId,
-    ntfQueueId :: Maybe NotifierId
+    ntfSubActionTs :: UTCTime
+    -- ntfToken :: NtfToken
   }
   deriving (Show)
 
-newNtfSubscription :: NtfServer -> NtfToken -> SMPServer -> RecipientId -> UTCTime -> NtfSubscription
-newNtfSubscription ntfServer ntfToken smpServer rcvQueueId ntfSubActionTs =
+-- ? do we even need token in NtfSubscription? - client can only have one token at a time, tracked on environment level
+-- newNtfSubscription :: NtfServer -> NtfToken -> SMPServer -> RecipientId -> UTCTime -> NtfSubscription
+-- newNtfSubscription ntfServer ntfToken smpServer rcvQueueId ntfSubActionTs =
+newNtfSubscription :: NtfServer -> SMPServer -> RecipientId -> UTCTime -> NtfSubscription
+newNtfSubscription ntfServer smpServer rcvQueueId ntfSubActionTs =
   NtfSubscription
-    { ntfServer,
+    { smpServer,
+      rcvQueueId,
+      ntfQueueId = Nothing,
+      ntfServer,
       ntfSubId = Nothing,
       ntfSubStatus = NSKey,
-      ntfSubActionTs,
-      ntfToken,
-      smpServer,
-      rcvQueueId,
-      ntfQueueId = Nothing
+      ntfSubActionTs
     }

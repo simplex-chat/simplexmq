@@ -60,7 +60,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubSMPAction, NtfSubscription, NtfTknAction, NtfToken (..))
+import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..))
@@ -652,7 +652,24 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         (provider, token, host, port)
 
   getNtfSubscription :: SQLiteStore -> RcvQueue -> m (Maybe NtfSubscription)
-  getNtfSubscription _st _rcvQueue = throwError SENotImplemented
+  getNtfSubscription st RcvQueue {server = smpServer@ProtocolServer {host, port}, rcvId} =
+    liftIO . withTransaction st $ \db ->
+      ntfSubscription
+        <$> DB.query
+          db
+          [sql|
+            SELECT ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
+              nsub.smp_ntf_id, nsub.ntf_sub_id, nsub.ntfSubStatus, nsub.ntf_sub_action_ts
+            FROM ntf_subscriptions nsub
+            JOIN ntf_servers ns USING (ntf_host, ntf_port)
+            WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
+          |]
+          (host, port, rcvId)
+    where
+      ntfSubscription [(ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs)] =
+        let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
+         in Just NtfSubscription {smpServer, rcvQueueId = rcvId, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
+      ntfSubscription _ = Nothing
 
   createNtfSubscription :: SQLiteStore -> NtfSubscription -> m ()
   createNtfSubscription _st _ntfSub = throwError SENotImplemented

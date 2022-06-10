@@ -49,29 +49,27 @@ runNtfSupervisor c = forever $ do
 processNtfSub :: forall m. AgentMonad m => AgentClient -> (RcvQueue, NtfSupervisorCommand) -> m ()
 processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, cmd) = do
   ntfServer_ <- getNtfServer c
-  ns <- asks ntfSupervisor
-  ntfToken_ <- readTVarIO $ ntfTkn ns
   case cmd of
     NSCCreate -> do
       sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
-      case (sub_, ntfServer_, ntfToken_) of
-        (Nothing, Just ntfServer, Just tkn) -> do
+      case (sub_, ntfServer_) of
+        (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
-          let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
+          let newSub = newNtfSubscription ntfServer smpServer rcvId currentTime
           withStore $ \st -> createNtfSubscription st newSub
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
           addNtfSMPWorker smpServer
           addNtfWorker ntfServer
-        (Just _, Just ntfServer, Just _) -> do
+        (Just _, Just ntfServer) -> do
           addNtfSMPWorker smpServer
           addNtfWorker ntfServer
         _ -> pure ()
     NSCDelete -> do
       withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
-      case (ntfServer_, ntfToken_) of
-        (Just ntfServer, Just _) -> addNtfWorker ntfServer
+      case ntfServer_ of
+        (Just ntfServer) -> addNtfWorker ntfServer
         _ -> pure ()
   where
     addNtfWorker = addWorker ntfWorkers runNtfWorker
