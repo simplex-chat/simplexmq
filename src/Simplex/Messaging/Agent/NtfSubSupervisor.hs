@@ -24,7 +24,6 @@ import Control.Monad.Reader
 import Data.Bifunctor (first)
 import Data.Time (getCurrentTime)
 import Simplex.Messaging.Agent.Client
-import Simplex.Messaging.Agent.Core (AgentMonad, withStore)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()

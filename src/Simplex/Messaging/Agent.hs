@@ -79,7 +79,6 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
 import Simplex.Messaging.Agent.Client
-import Simplex.Messaging.Agent.Core (AgentMonad, withStore)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol

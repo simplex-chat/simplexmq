@@ -36,7 +36,6 @@ library
   exposed-modules:
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
-      Simplex.Messaging.Agent.Core
       Simplex.Messaging.Agent.Env.SQLite
       Simplex.Messaging.Agent.NtfSubSupervisor
       Simplex.Messaging.Agent.Protocol

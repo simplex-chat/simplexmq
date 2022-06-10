@@ -62,7 +62,6 @@ import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
-import Simplex.Messaging.Agent.Core (AgentMonad)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
