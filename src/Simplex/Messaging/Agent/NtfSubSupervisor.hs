@@ -61,27 +61,26 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
           addNtfSMPWorker smpServer
-          addNtfWorker ntfServer
+          addNtfSubWorker ntfServer
         (Just _, Just ntfServer, Just _) -> do
           addNtfSMPWorker smpServer
-          addNtfWorker ntfServer
+          addNtfSubWorker ntfServer
         _ -> pure ()
     NSIDelete -> do
       withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
       case (ntfServer_, ntfToken_) of
-        (Just ntfServer, Just _) -> addNtfWorker ntfServer
+        (Just ntfServer, Just _) -> addNtfSubWorker ntfServer
         _ -> pure ()
-  liftIO $ threadDelay 1000000
   where
-    addNtfWorker srv = do
+    addNtfSubWorker srv = do
       ws <- asks $ ntfSubWorkers . ntfSubSupervisor
-      addNtfSubWorker ws srv $
+      addWorker ws srv $
         \w -> ntfSubWorker c srv w `E.finally` atomically (TM.delete srv ws)
     addNtfSMPWorker srv = do
-      ws <- asks $ ntfSubSMPWorkers . ntfSubSupervisor
-      addNtfSubWorker ws srv $
+      ws <- asks $ ntfSMPWorkers . ntfSubSupervisor
+      addWorker ws srv $
         \w -> ntfSMPWorker c srv w `E.finally` atomically (TM.delete srv ws)
-    addNtfSubWorker ws srv run =
+    addWorker ws srv run =
       atomically (TM.lookup srv ws) >>= \case
         Nothing -> do
           workAvailable <- newTMVarIO ()
@@ -132,7 +131,7 @@ addNtfSubSupervisorInstruction ns rqc = do
 closeNtfSubSupervisor :: NtfSubSupervisor -> IO ()
 closeNtfSubSupervisor ns = do
   cancelNtfSubWorkers_ $ ntfSubWorkers ns
-  cancelNtfSubWorkers_ $ ntfSubSMPWorkers ns
+  cancelNtfSubWorkers_ $ ntfSMPWorkers ns
 
 cancelNtfSubWorkers_ :: TMap NtfServer (TMVar (), Async ()) -> IO ()
 cancelNtfSubWorkers_ workerMap = do

@@ -170,7 +170,6 @@ agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
       tbqSize = 1,
-      ntfSubTbqSize = 8,
       dbFile = testDB,
       smpCfg =
         defaultClientConfig

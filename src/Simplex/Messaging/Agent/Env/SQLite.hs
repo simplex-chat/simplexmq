@@ -65,7 +65,6 @@ data AgentConfig = AgentConfig
     cmdSignAlg :: C.SignAlg,
     connIdBytes :: Int,
     tbqSize :: Natural,
-    ntfSubTbqSize :: Natural,
     dbFile :: FilePath,
     dbPoolSize :: Int,
     yesToMigrations :: Bool,
@@ -98,7 +97,6 @@ defaultAgentConfig =
       cmdSignAlg = C.SignAlg C.SEd448,
       connIdBytes = 12,
       tbqSize = 64,
-      ntfSubTbqSize = 128,
       dbFile = "smp-agent.db",
       dbPoolSize = 1,
       yesToMigrations = False,
@@ -131,14 +129,14 @@ newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
   store <- liftIO $ createSQLiteStore dbFile dbPoolSize Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  ntfSubSupervisor <- atomically . newNtfSubSupervisor $ ntfSubTbqSize config
+  ntfSubSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   return Env {config, store, idsDrg, clientCounter, randomServer, ntfSubSupervisor}
 
 data NtfSubSupervisor = NtfSubSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
     ntfSubQ :: TBQueue (RcvQueue, NtfSubSupervisorInstruction),
     ntfSubWorkers :: TMap NtfServer (TMVar (), Async ()),
-    ntfSubSMPWorkers :: TMap SMPServer (TMVar (), Async ())
+    ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
   }
 
 data NtfSubSupervisorInstruction = NSICreate | NSIDelete
@@ -148,8 +146,8 @@ newNtfSubSupervisor qSize = do
   ntfTkn <- newTVar Nothing
   ntfSubQ <- newTBQueue qSize
   ntfSubWorkers <- TM.empty
-  ntfSubSMPWorkers <- TM.empty
-  pure NtfSubSupervisor {ntfTkn, ntfSubQ, ntfSubWorkers, ntfSubSMPWorkers}
+  ntfSMPWorkers <- TM.empty
+  pure NtfSubSupervisor {ntfTkn, ntfSubQ, ntfSubWorkers, ntfSMPWorkers}
 
 withStore :: AgentMonad m => (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
 withStore action = do
