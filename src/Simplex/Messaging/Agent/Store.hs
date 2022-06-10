@@ -95,8 +95,8 @@ class Monad m => MonadAgentStore s m where
   markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
   updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
   deleteNtfSubscription :: s -> RcvQueue -> m ()
-  getNextNtfSubscriptionAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
-  getNextNtfSubscriptionSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
+  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
+  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
 
 -- * Queue types
 

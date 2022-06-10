@@ -663,11 +663,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   deleteNtfSubscription :: s -> RcvQueue -> m ()
   deleteNtfSubscription _st _rcvQueue = throwError SENotImplemented
 
-  getNextNtfSubscriptionAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
-  getNextNtfSubscriptionAction _st _srv = throwError SENotImplemented
+  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
+  getNextNtfSubAction _st _srv = throwError SENotImplemented
 
-  getNextNtfSubscriptionSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
-  getNextNtfSubscriptionSMPAction _st _srv = throwError SENotImplemented
+  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
+  getNextNtfSubSMPAction _st _srv = throwError SENotImplemented
 
 -- * Auxiliary helpers
 

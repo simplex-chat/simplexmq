@@ -2,14 +2,14 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
-  ( ntfSupervisor,
+  ( runNtfSupervisor,
     nsUpdateToken,
-    nsUpdateToken',
     nsRemoveNtfToken,
-    addNtfSubSupervisorInstruction,
-    closeNtfSubSupervisor,
+    sendNtfSubCommand,
+    closeNtfSupervisor,
     getNtfServer,
   )
 where
@@ -22,6 +22,7 @@ import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Data.Bifunctor (first)
+import qualified Data.Map.Strict as M
 import Data.Time (getCurrentTime)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -29,6 +30,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (NtfTknStatus (..))
+import Simplex.Messaging.Protocol (ProtocolServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import System.Random (randomR)
@@ -36,21 +38,21 @@ import UnliftIO (async)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-ntfSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-ntfSupervisor c = forever $ do
-  ns <- asks ntfSubSupervisor
-  rqc <- atomically . readTBQueue $ ntfSubQ ns
-  runExceptT (processNtfSub c rqc) >>= \case
+runNtfSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+runNtfSupervisor c = forever $ do
+  ns <- asks ntfSupervisor
+  cmd <- atomically . readTBQueue $ ntfSubQ ns
+  runExceptT (processNtfSub c cmd) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-processNtfSub :: AgentMonad m => AgentClient -> (RcvQueue, NtfSubSupervisorInstruction) -> m ()
-processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
+processNtfSub :: forall m. AgentMonad m => AgentClient -> (RcvQueue, NtfSupervisorCommand) -> m ()
+processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, cmd) = do
   ntfServer_ <- getNtfServer c
-  ns <- asks ntfSubSupervisor
+  ns <- asks ntfSupervisor
   ntfToken_ <- readTVarIO $ ntfTkn ns
-  case rqc of
-    NSICreate -> do
+  case cmd of
+    NSCCreate -> do
       sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
       case (sub_, ntfServer_, ntfToken_) of
         (Nothing, Just ntfServer, Just tkn) -> do
@@ -61,39 +63,39 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
           addNtfSMPWorker smpServer
-          addNtfSubWorker ntfServer
+          addNtfWorker ntfServer
         (Just _, Just ntfServer, Just _) -> do
           addNtfSMPWorker smpServer
-          addNtfSubWorker ntfServer
+          addNtfWorker ntfServer
         _ -> pure ()
-    NSIDelete -> do
+    NSCDelete -> do
       withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
       case (ntfServer_, ntfToken_) of
-        (Just ntfServer, Just _) -> addNtfSubWorker ntfServer
+        (Just ntfServer, Just _) -> addNtfWorker ntfServer
         _ -> pure ()
   where
-    addNtfSubWorker srv = do
-      ws <- asks $ ntfSubWorkers . ntfSubSupervisor
-      addWorker ws srv $
-        \w -> ntfSubWorker c srv w `E.finally` atomically (TM.delete srv ws)
-    addNtfSMPWorker srv = do
-      ws <- asks $ ntfSMPWorkers . ntfSubSupervisor
-      addWorker ws srv $
-        \w -> ntfSMPWorker c srv w `E.finally` atomically (TM.delete srv ws)
-    addWorker ws srv run =
+    addNtfWorker = addWorker ntfWorkers runNtfWorker
+    addNtfSMPWorker = addWorker ntfSMPWorkers runNtfSMPWorker
+    addWorker ::
+      (NtfSupervisor -> TMap ProtocolServer (TMVar (), Async ())) ->
+      (AgentClient -> ProtocolServer -> TMVar () -> m ()) ->
+      ProtocolServer ->
+      m ()
+    addWorker wsSel runWorker srv = do
+      ws <- asks $ wsSel . ntfSupervisor
       atomically (TM.lookup srv ws) >>= \case
         Nothing -> do
-          workAvailable <- newTMVarIO ()
-          ntfWorker <- async $ run workAvailable
-          atomically $ TM.insert srv (workAvailable, ntfWorker) ws
-        Just (workAvailable, _) -> void . atomically $ tryPutTMVar workAvailable ()
+          doWork <- newTMVarIO ()
+          worker <- async $ runWorker c srv doWork `E.finally` atomically (TM.delete srv ws)
+          atomically $ TM.insert srv (doWork, worker) ws
+        Just (doWork, _) -> void . atomically $ tryPutTMVar doWork ()
 
-ntfSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-ntfSubWorker _c srv workAvailable = forever $ do
-  void . atomically $ readTMVar workAvailable
+runNtfWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+runNtfWorker _c srv doWork = forever $ do
+  void . atomically $ readTMVar doWork
   withStore $ \st ->
-    getNextNtfSubscriptionAction st srv >>= \case
-      Nothing -> void . atomically $ tryTakeTMVar workAvailable
+    getNextNtfSubAction st srv >>= \case
+      Nothing -> void . atomically $ tryTakeTMVar doWork
       Just (_sub, ntfSubAction) ->
         forM_ ntfSubAction $ \case
           NSANew _nKey -> pure ()
@@ -101,43 +103,37 @@ ntfSubWorker _c srv workAvailable = forever $ do
           NSADelete -> pure ()
   liftIO $ threadDelay 1000000
 
-ntfSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-ntfSMPWorker _c srv workAvailable = forever $ do
-  void . atomically $ readTMVar workAvailable
+runNtfSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+runNtfSMPWorker _c srv doWork = forever $ do
+  void . atomically $ readTMVar doWork
   withStore $ \st ->
-    getNextNtfSubscriptionSMPAction st srv >>= \case
-      Nothing -> void . atomically $ tryTakeTMVar workAvailable
+    getNextNtfSubSMPAction st srv >>= \case
+      Nothing -> void . atomically $ tryTakeTMVar doWork
       Just (_sub, ntfSubAction) ->
         forM_ ntfSubAction $ \case
           NSSAKey -> pure ()
   liftIO $ threadDelay 1000000
 
-nsUpdateToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
-nsUpdateToken ns tkn = atomically $ nsUpdateToken' ns tkn
+nsUpdateToken :: NtfSupervisor -> NtfToken -> STM ()
+nsUpdateToken ns tkn = writeTVar (ntfTkn ns) $ Just tkn
 
-nsUpdateToken' :: NtfSubSupervisor -> NtfToken -> STM ()
-nsUpdateToken' ns tkn = writeTVar (ntfTkn ns) (Just tkn)
+nsRemoveNtfToken :: NtfSupervisor -> STM ()
+nsRemoveNtfToken ns = writeTVar (ntfTkn ns) Nothing
 
-nsRemoveNtfToken :: AgentMonad m => NtfSubSupervisor -> m ()
-nsRemoveNtfToken ns = atomically $ writeTVar (ntfTkn ns) Nothing
+sendNtfSubCommand :: NtfSupervisor -> (RcvQueue, NtfSupervisorCommand) -> STM ()
+sendNtfSubCommand ns cmd =
+  readTVar (ntfTkn ns)
+    >>= mapM_ (\NtfToken {ntfTknStatus} -> when (ntfTknStatus == NTActive) $ writeTBQueue (ntfSubQ ns) cmd)
 
-addNtfSubSupervisorInstruction :: NtfSubSupervisor -> (RcvQueue, NtfSubSupervisorInstruction) -> STM ()
-addNtfSubSupervisorInstruction ns rqc = do
-  tkn_ <- readTVar $ ntfTkn ns
-  forM_ tkn_ $ \NtfToken {ntfTknStatus} ->
-    when (ntfTknStatus == NTActive) $ -- don't check if token is active when deleting subscription?
-      writeTBQueue (ntfSubQ ns) rqc
+closeNtfSupervisor :: NtfSupervisor -> IO ()
+closeNtfSupervisor ns = do
+  cancelNtfWorkers_ $ ntfWorkers ns
+  cancelNtfWorkers_ $ ntfSMPWorkers ns
 
-closeNtfSubSupervisor :: NtfSubSupervisor -> IO ()
-closeNtfSubSupervisor ns = do
-  cancelNtfSubWorkers_ $ ntfSubWorkers ns
-  cancelNtfSubWorkers_ $ ntfSMPWorkers ns
-
-cancelNtfSubWorkers_ :: TMap NtfServer (TMVar (), Async ()) -> IO ()
-cancelNtfSubWorkers_ workerMap = do
-  workers <- readTVarIO workerMap
-  forM_ workers $ \(_, action) -> uninterruptibleCancel action
-  atomically $ writeTVar workerMap mempty
+cancelNtfWorkers_ :: TMap ProtocolServer (TMVar (), Async ()) -> IO ()
+cancelNtfWorkers_ wsVar = do
+  ws <- atomically $ stateTVar wsVar $ \ws -> (ws, M.empty)
+  forM_ ws $ uninterruptibleCancel . snd
 
 getNtfServer :: AgentMonad m => AgentClient -> m (Maybe NtfServer)
 getNtfServer c = do

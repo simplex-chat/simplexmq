@@ -18,8 +18,8 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultReconnectInterval,
     Env (..),
     newSMPAgentEnv,
-    NtfSubSupervisor (..),
-    NtfSubSupervisorInstruction (..),
+    NtfSupervisor (..),
+    NtfSupervisorCommand (..),
     withStore,
   )
 where
@@ -120,7 +120,7 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
-    ntfSubSupervisor :: NtfSubSupervisor
+    ntfSupervisor :: NtfSupervisor
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -129,25 +129,25 @@ newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
   store <- liftIO $ createSQLiteStore dbFile dbPoolSize Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  ntfSubSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSubSupervisor}
+  ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
 
-data NtfSubSupervisor = NtfSubSupervisor
+data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubQ :: TBQueue (RcvQueue, NtfSubSupervisorInstruction),
-    ntfSubWorkers :: TMap NtfServer (TMVar (), Async ()),
+    ntfSubQ :: TBQueue (RcvQueue, NtfSupervisorCommand),
+    ntfWorkers :: TMap NtfServer (TMVar (), Async ()),
     ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
   }
 
-data NtfSubSupervisorInstruction = NSICreate | NSIDelete
+data NtfSupervisorCommand = NSCCreate | NSCDelete
 
-newNtfSubSupervisor :: Natural -> STM NtfSubSupervisor
+newNtfSubSupervisor :: Natural -> STM NtfSupervisor
 newNtfSubSupervisor qSize = do
   ntfTkn <- newTVar Nothing
   ntfSubQ <- newTBQueue qSize
-  ntfSubWorkers <- TM.empty
+  ntfWorkers <- TM.empty
   ntfSMPWorkers <- TM.empty
-  pure NtfSubSupervisor {ntfTkn, ntfSubQ, ntfSubWorkers, ntfSMPWorkers}
+  pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
 
 withStore :: AgentMonad m => (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
 withStore action = do
