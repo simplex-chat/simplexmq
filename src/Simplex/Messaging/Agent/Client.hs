@@ -63,7 +63,7 @@ import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Monad (AgentMonad)
+import Simplex.Messaging.Agent.Core (AgentMonad)
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -98,7 +98,6 @@ data AgentClient = AgentClient
     subQ :: TBQueue (ATransmission 'Agent),
     msgQ :: TBQueue (ServerTransmission BrokerMsg),
     smpServers :: TVar (NonEmpty SMPServer),
-    ntfServers :: TVar [NtfServer],
     smpClients :: TMap SMPServer SMPClientVar,
     ntfClients :: TMap NtfServer NtfClientVar,
     subscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
@@ -123,7 +122,6 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
   smpServers <- newTVar smp
-  ntfServers <- newTVar ntf
   smpClients <- TM.empty
   ntfClients <- TM.empty
   subscrSrvrs <- TM.empty
@@ -135,9 +133,9 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   reconnections <- newTVar []
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
-  ntfSubSupervisor <- newNtfSubSupervisor agentEnv
+  ntfSubSupervisor <- newNtfSubSupervisor agentEnv ntf
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, ntfServers, smpClients, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, ntfSubSupervisor, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, ntfSubSupervisor, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -422,7 +420,7 @@ subscribeQueue c@AgentClient {ntfSubSupervisor = ns} rq@RcvQueue {server, rcvPri
         throwError e
       Right _ -> do
         addSubscription c rq connId
-        atomically $ addNtfSubSupervisorInstruction ns rq
+        atomically $ addNtfSubSupervisorInstruction ns (rq, NSICreate)
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do

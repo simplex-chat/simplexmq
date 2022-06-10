@@ -60,7 +60,6 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
@@ -79,10 +78,9 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
-import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Client
+import Simplex.Messaging.Agent.Core (AgentMonad, withStore)
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Monad (AgentMonad)
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -111,8 +109,8 @@ getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialA
 getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
-      c <- getAgentClient initServers
-      void $ race_ (subscriber c) (nSubSupervisor c) `forkFinally` const (disconnectAgentClient c)
+      c@AgentClient {ntfSubSupervisor = ns} <- getAgentClient initServers
+      void $ race_ (subscriber c) (nSubSupervisor ns) `forkFinally` const (disconnectAgentClient c)
       pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
@@ -218,30 +216,6 @@ client c@AgentClient {rcvQ, subQ} = forever $ do
       Left e -> (corrId, connId, ERR e)
       Right (connId', resp) -> (corrId, connId', resp)
 
-withStore :: AgentMonad m => (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
-withStore action = do
-  st <- asks store
-  runExceptT (action st `E.catch` handleInternal) >>= \case
-    Right c -> return c
-    Left e -> throwError $ storeError e
-  where
-    -- TODO when parsing exception happens in store, the agent hangs;
-    -- changing SQLError to SomeException does not help
-    handleInternal :: (MonadError StoreError m') => SQLError -> m' a
-    handleInternal e = throwError . SEInternal $ bshow e
-    storeError :: StoreError -> AgentErrorType
-    storeError = \case
-      SEConnNotFound -> CONN NOT_FOUND
-      SEConnDuplicate -> CONN DUPLICATE
-      SEBadConnType CRcv -> CONN SIMPLEX
-      SEBadConnType CSnd -> CONN SIMPLEX
-      SEInvitationNotFound -> CMD PROHIBITED
-      -- this error is never reported as store error,
-      -- it is used to wrap agent operations when "transaction-like" store access is needed
-      -- NOTE: network IO should NOT be used inside AgentStoreMonad
-      SEAgentError e -> e
-      e -> INTERNAL $ show e
-
 -- | execute any SMP agent command
 processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
 processCommand c (connId, cmd) = case cmd of
@@ -265,7 +239,7 @@ newConn c@AgentClient {ntfSubSupervisor = ns} connId cMode = do
   let cData = ConnData {connId, connAgentVersion = agentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId' <- withStore $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
-  atomically $ addNtfSubSupervisorInstruction ns rq
+  atomically $ addNtfSubSupervisorInstruction ns (rq, NSICreate)
   aVRange <- asks $ smpAgentVRange . config
   let crData = ConnReqUriData simplexChat aVRange [qUri]
   case cMode of
@@ -569,7 +543,7 @@ deleteConnection' c@AgentClient {ntfSubSupervisor = ns} connId =
       deleteQueue c rq
       atomically $ do
         removeSubscription c connId
-        addNtfSubSupervisorInstruction' ns (rq, NSIDelete)
+        addNtfSubSupervisorInstruction ns (rq, NSIDelete)
       withStore (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
@@ -603,7 +577,7 @@ registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
           pure NTExpired
         _ -> pure ntfTknStatus
     _ ->
-      getNtfServer c >>= \case
+      getNtfServer ns >>= \case
         Just ntfServer ->
           asks (cmdSignAlg . config) >>= \case
             C.SignAlg a -> do
@@ -698,11 +672,11 @@ updateNtfTokenPopulateNtfSubQ c@AgentClient {ntfSubSupervisor = ns} tkn = do
     getSubscriptions c
   forM_ connIds $ \connId -> do
     rq <- withStore $ \st -> getRcvQueue st connId
-    atomically $ addNtfSubSupervisorInstruction ns rq
+    atomically $ addNtfSubSupervisorInstruction ns (rq, NSICreate)
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
-setNtfServers' c servers = do
-  atomically $ writeTVar (ntfServers c) servers
+setNtfServers' AgentClient {ntfSubSupervisor = ns} servers = do
+  atomically $ writeTVar (ntfServers ns) servers
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do
@@ -713,17 +687,6 @@ getSMPServer c = do
       gen <- asks randomServer
       atomically . stateTVar gen $
         first (servers L.!!) . randomR (0, L.length servers - 1)
-
-getNtfServer :: AgentMonad m => AgentClient -> m (Maybe NtfServer)
-getNtfServer c = do
-  ntfServers <- readTVarIO $ ntfServers c
-  case ntfServers of
-    [] -> pure Nothing
-    [srv] -> pure $ Just srv
-    servers -> do
-      gen <- asks randomServer
-      atomically . stateTVar gen $
-        first (Just . (servers !!)) . randomR (0, length servers - 1)
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
@@ -1021,66 +984,3 @@ newSndQueue_ a (Compatible (SMPQueueInfo _clientVersion smpServer senderId rcvE2
         e2ePubKey = Just e2ePubKey,
         status = New
       }
-
-nSubSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-nSubSupervisor c@AgentClient {ntfSubSupervisor = NtfSubSupervisor {ntfSubQ}} = forever $ do
-  rqc <- atomically $ readTBQueue ntfSubQ
-  -- withAgentLock c (runExceptT $ processNtfSub c rq) >>= \case -- ?
-  runExceptT (processNtfSub c rqc) >>= \case
-    Left e -> liftIO $ print e
-    Right _ -> return ()
-
-processNtfSub :: AgentMonad m => AgentClient -> (RcvQueue, NtfSubSupervisorInstruction) -> m ()
-processNtfSub c@AgentClient {ntfSubSupervisor = ns@NtfSubSupervisor {ntfTkn}} (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
-  ntfServer_ <- getNtfServer c
-  ntfToken_ <- readTVarIO ntfTkn
-  case rqc of
-    NSICreate -> do
-      sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
-      case (sub_, ntfServer_, ntfToken_) of
-        (Nothing, Just ntfServer, Just tkn) -> do
-          currentTime <- liftIO getCurrentTime
-          let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
-          withStore $ \st -> createNtfSubscription st newSub
-          -- TODO optimize?
-          -- TODO - read action in getNtfSubscription and decide which worker to create
-          -- TODO - SMP worker can create Ntf worker on NKEY completion
-          addNtfSMPWorker smpServer
-          addNtfWorker ntfServer
-        (Just _, Just ntfServer, Just _) -> do
-          addNtfSMPWorker smpServer
-          addNtfWorker ntfServer
-        _ -> pure ()
-    NSIDelete -> do
-      withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
-      case (ntfServer_, ntfToken_) of
-        (Just ntfServer, Just _) -> addNtfWorker ntfServer
-        _ -> pure ()
-  liftIO $ threadDelay 1000000
-  where
-    addNtfWorker srv = addNtfSubWorker ns srv $ \ws -> ntfSubWorker c srv ws `E.finally` removeNtfSubWorker ns srv
-    addNtfSMPWorker srv = addNtfSubWorker ns srv $ \ws -> ntfSMPWorker c srv ws `E.finally` removeNtfSubSMPWorker ns srv
-
-ntfSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-ntfSubWorker _c srv workAvailable = forever $ do
-  void . atomically $ readTMVar workAvailable
-  withStore $ \st ->
-    getNextNtfSubscriptionAction st srv >>= \case
-      Nothing -> void . atomically $ tryTakeTMVar workAvailable
-      Just (_sub, ntfSubAction) ->
-        forM_ ntfSubAction $ \case
-          NSANew _nKey -> pure ()
-          NSACheck -> pure ()
-          NSADelete -> pure ()
-  liftIO $ threadDelay 1000000
-
-ntfSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-ntfSMPWorker _c srv workAvailable = forever $ do
-  void . atomically $ readTMVar workAvailable
-  withStore $ \st ->
-    getNextNtfSubscriptionSMPAction st srv >>= \case
-      Nothing -> void . atomically $ tryTakeTMVar workAvailable
-      Just (_sub, ntfSubAction) ->
-        forM_ ntfSubAction $ \case
-          NSAKey -> pure ()
-  liftIO $ threadDelay 1000000
