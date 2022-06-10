@@ -73,6 +73,7 @@ data AgentConfig = AgentConfig
     reconnectInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
     resubscriptionConcurrency :: Int,
+    ntfWorkerThrottle :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
@@ -105,6 +106,7 @@ defaultAgentConfig =
       reconnectInterval = defaultReconnectInterval,
       helloTimeout = 2 * nominalDay,
       resubscriptionConcurrency = 16,
+      ntfWorkerThrottle = 1000000, -- microseconds
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",

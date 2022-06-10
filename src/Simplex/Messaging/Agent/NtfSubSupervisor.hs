@@ -101,7 +101,8 @@ runNtfWorker _c srv doWork = forever $ do
           NSANew _nKey -> pure ()
           NSACheck -> pure ()
           NSADelete -> pure ()
-  liftIO $ threadDelay 1000000
+  delay <- asks $ ntfWorkerThrottle . config
+  liftIO $ threadDelay delay
 
 runNtfSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfSMPWorker _c srv doWork = forever $ do
@@ -111,8 +112,9 @@ runNtfSMPWorker _c srv doWork = forever $ do
       Nothing -> void . atomically $ tryTakeTMVar doWork
       Just (_sub, ntfSubAction) ->
         forM_ ntfSubAction $ \case
-          NSSAKey -> pure ()
-  liftIO $ threadDelay 1000000
+          NSAKey -> pure ()
+  delay <- asks $ ntfWorkerThrottle . config
+  liftIO $ threadDelay delay
 
 nsUpdateToken :: NtfSupervisor -> NtfToken -> STM ()
 nsUpdateToken ns tkn = writeTVar (ntfTkn ns) $ Just tkn
