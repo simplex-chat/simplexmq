@@ -132,7 +132,7 @@ ntfSMPWorker _ns srv workAvailable = forever $ do
       Nothing -> void . atomically $ tryTakeTMVar workAvailable
       Just (_sub, ntfSubAction) ->
         forM_ ntfSubAction $ \case
-          NSAKey -> pure ()
+          NSSAKey -> pure ()
   liftIO $ threadDelay 1000000
 
 addNtfSubWorker :: MonadUnliftIO m => TMap NtfServer (TMVar (), Async ()) -> ProtocolServer -> (TMVar () -> m ()) -> m ()

@@ -155,15 +155,15 @@ instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
 instance ToField NtfSubAction where toField = toField . smpEncode
 
 data NtfSubSMPAction
-  = NSAKey
+  = NSSAKey
   deriving (Show)
 
 instance Encoding NtfSubSMPAction where
   smpEncode = \case
-    NSAKey -> "K"
+    NSSAKey -> "K"
   smpP =
     A.anyChar >>= \case
-      'K' -> pure NSAKey
+      'K' -> pure NSSAKey
       _ -> fail "bad NtfSubSMPAction"
 
 instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
