@@ -302,7 +302,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
   getRcvQueue :: SQLiteStore -> ConnId -> m RcvQueue
-  getRcvQueue _st _connId = throwError SENotImplemented
+  getRcvQueue st connId =
+    liftIOEither . withTransaction st $ \db -> do
+      rq_ <- getRcvQueueByConnId_ db connId
+      pure $ maybe (Left SEConnNotFound) Right rq_
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
