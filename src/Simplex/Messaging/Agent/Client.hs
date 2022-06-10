@@ -137,29 +137,7 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   ntfSubSupervisor <- newNtfSubSupervisor agentEnv
   lock <- newTMVar ()
-  return
-    AgentClient
-      { active,
-        rcvQ,
-        subQ,
-        msgQ,
-        smpServers,
-        ntfServers,
-        smpClients,
-        ntfClients,
-        subscrSrvrs,
-        pendingSubscrSrvrs,
-        subscrConns,
-        connMsgsQueued,
-        smpQueueMsgQueues,
-        smpQueueMsgDeliveries,
-        reconnections,
-        asyncClients,
-        clientId,
-        agentEnv,
-        ntfSubSupervisor,
-        lock
-      }
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, ntfServers, smpClients, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, ntfSubSupervisor, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -444,7 +422,7 @@ subscribeQueue c@AgentClient {ntfSubSupervisor = ns} rq@RcvQueue {server, rcvPri
         throwError e
       Right _ -> do
         addSubscription c rq connId
-        atomically $ addRcvQueueToNtfSubQueue ns rq
+        atomically $ addNtfSubSupervisorInstruction ns rq
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
