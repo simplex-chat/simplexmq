@@ -62,9 +62,8 @@ import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
-import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Core (AgentMonad)
-import Simplex.Messaging.Agent.NtfSubSupervisor
+import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -99,6 +98,7 @@ data AgentClient = AgentClient
     msgQ :: TBQueue (ServerTransmission BrokerMsg),
     smpServers :: TVar (NonEmpty SMPServer),
     smpClients :: TMap SMPServer SMPClientVar,
+    ntfServers :: TVar [NtfServer],
     ntfClients :: TMap NtfServer NtfClientVar,
     subscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
     pendingSubscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
@@ -110,7 +110,6 @@ data AgentClient = AgentClient
     asyncClients :: TVar [Async ()],
     clientId :: Int,
     agentEnv :: Env,
-    ntfSubSupervisor :: NtfSubSupervisor,
     lock :: TMVar ()
   }
 
@@ -123,6 +122,7 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   msgQ <- newTBQueue qSize
   smpServers <- newTVar smp
   smpClients <- TM.empty
+  ntfServers <- newTVar ntf
   ntfClients <- TM.empty
   subscrSrvrs <- TM.empty
   pendingSubscrSrvrs <- TM.empty
@@ -133,9 +133,8 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   reconnections <- newTVar []
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
-  ntfSubSupervisor <- newNtfSubSupervisor agentEnv ntf
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, ntfSubSupervisor, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -320,7 +319,6 @@ closeAgentClient c = liftIO $ do
   clear subscrConns
   clear connMsgsQueued
   clear smpQueueMsgQueues
-  closeNtfSubSupervisor $ ntfSubSupervisor c
   where
     clientTimeout sel = tcpTimeout . sel . config $ agentEnv c
     clear sel = atomically $ writeTVar (sel c) M.empty
@@ -410,7 +408,7 @@ newRcvQueue_ a c srv = do
   pure (rq, SMPQueueUri srv sndId SMP.smpClientVRange e2eDhKey)
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
-subscribeQueue c@AgentClient {ntfSubSupervisor = ns} rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
+subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
   atomically $ addPendingSubscription c rq connId
   withLogClient c server rcvId "SUB" $ \smp -> do
     liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
@@ -420,7 +418,6 @@ subscribeQueue c@AgentClient {ntfSubSupervisor = ns} rq@RcvQueue {server, rcvPri
         throwError e
       Right _ -> do
         addSubscription c rq connId
-        atomically $ addNtfSubSupervisorInstruction ns (rq, NSICreate)
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do

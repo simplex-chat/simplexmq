@@ -4,16 +4,13 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
-  ( NtfSubSupervisor (..),
-    NtfSubSupervisorInstruction (..),
-    newNtfSubSupervisor,
-    getNtfServer,
-    ntfSupervisor,
+  ( ntfSupervisor,
     nsUpdateToken,
     nsUpdateToken',
     nsRemoveNtfToken,
     addNtfSubSupervisorInstruction,
     closeNtfSubSupervisor,
+    getNtfServer,
   )
 where
 
@@ -26,13 +23,13 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Data.Bifunctor (first)
 import Data.Time (getCurrentTime)
+import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Core (AgentMonad, withStore)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (NtfTknStatus (NTActive))
-import Simplex.Messaging.Protocol (ProtocolServer (..), SMPServer)
+import Simplex.Messaging.Notifications.Protocol (NtfTknStatus (..))
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import System.Random (randomR)
@@ -40,48 +37,19 @@ import UnliftIO (async)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-data NtfSubSupervisor = NtfSubSupervisor
-  { ntfServers :: TVar [NtfServer],
-    ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubQ :: TBQueue (RcvQueue, NtfSubSupervisorInstruction),
-    ntfSubWorkers :: TMap NtfServer (TMVar (), Async ()),
-    ntfSubSMPWorkers :: TMap SMPServer (TMVar (), Async ())
-  }
-
-data NtfSubSupervisorInstruction = NSICreate | NSIDelete
-
-newNtfSubSupervisor :: Env -> [NtfServer] -> STM NtfSubSupervisor
-newNtfSubSupervisor agentEnv ntf = do
-  ntfServers <- newTVar ntf
-  ntfTkn <- newTVar Nothing
-  ntfSubQ <- newTBQueue (ntfSubTbqSize $ config agentEnv)
-  ntfSubWorkers <- TM.empty
-  ntfSubSMPWorkers <- TM.empty
-  pure NtfSubSupervisor {ntfServers, ntfTkn, ntfSubQ, ntfSubWorkers, ntfSubSMPWorkers}
-
-getNtfServer :: AgentMonad m => NtfSubSupervisor -> m (Maybe NtfServer)
-getNtfServer c = do
-  ntfServers <- readTVarIO $ ntfServers c
-  case ntfServers of
-    [] -> pure Nothing
-    [srv] -> pure $ Just srv
-    servers -> do
-      gen <- asks randomServer
-      atomically . stateTVar gen $
-        first (Just . (servers !!)) . randomR (0, length servers - 1)
-
-ntfSupervisor :: (MonadUnliftIO m, MonadReader Env m) => NtfSubSupervisor -> m ()
-ntfSupervisor ns@NtfSubSupervisor {ntfSubQ} = forever $ do
-  rqc <- atomically $ readTBQueue ntfSubQ
-  -- withAgentLock c (runExceptT $ processNtfSub c rq) >>= \case -- ?
-  runExceptT (processNtfSub ns rqc) >>= \case
+ntfSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
+ntfSupervisor c = forever $ do
+  ns <- asks ntfSubSupervisor
+  rqc <- atomically . readTBQueue $ ntfSubQ ns
+  runExceptT (processNtfSub c rqc) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-processNtfSub :: AgentMonad m => NtfSubSupervisor -> (RcvQueue, NtfSubSupervisorInstruction) -> m ()
-processNtfSub ns@NtfSubSupervisor {ntfTkn} (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
-  ntfServer_ <- getNtfServer ns
-  ntfToken_ <- readTVarIO ntfTkn
+processNtfSub :: AgentMonad m => AgentClient -> (RcvQueue, NtfSubSupervisorInstruction) -> m ()
+processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, rqc) = do
+  ntfServer_ <- getNtfServer c
+  ns <- asks ntfSubSupervisor
+  ntfToken_ <- readTVarIO $ ntfTkn ns
   case rqc of
     NSICreate -> do
       sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
@@ -106,13 +74,24 @@ processNtfSub ns@NtfSubSupervisor {ntfTkn} (rcvQueue@RcvQueue {server = smpServe
         _ -> pure ()
   liftIO $ threadDelay 1000000
   where
-    addNtfWorker srv = addNtfSubWorker (ntfSubWorkers ns) srv $
-      \w -> ntfSubWorker ns srv w `E.finally` atomically (TM.delete srv (ntfSubWorkers ns))
-    addNtfSMPWorker srv = addNtfSubWorker (ntfSubSMPWorkers ns) srv $
-      \w -> ntfSMPWorker ns srv w `E.finally` atomically (TM.delete srv (ntfSubSMPWorkers ns))
+    addNtfWorker srv = do
+      ws <- asks $ ntfSubWorkers . ntfSubSupervisor
+      addNtfSubWorker ws srv $
+        \w -> ntfSubWorker c srv w `E.finally` atomically (TM.delete srv ws)
+    addNtfSMPWorker srv = do
+      ws <- asks $ ntfSubSMPWorkers . ntfSubSupervisor
+      addNtfSubWorker ws srv $
+        \w -> ntfSMPWorker c srv w `E.finally` atomically (TM.delete srv ws)
+    addNtfSubWorker ws srv run =
+      atomically (TM.lookup srv ws) >>= \case
+        Nothing -> do
+          workAvailable <- newTMVarIO ()
+          ntfWorker <- async $ run workAvailable
+          atomically $ TM.insert srv (workAvailable, ntfWorker) ws
+        Just (workAvailable, _) -> void . atomically $ tryPutTMVar workAvailable ()
 
-ntfSubWorker :: AgentMonad m => NtfSubSupervisor -> NtfServer -> TMVar () -> m ()
-ntfSubWorker _ns srv workAvailable = forever $ do
+ntfSubWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+ntfSubWorker _c srv workAvailable = forever $ do
   void . atomically $ readTMVar workAvailable
   withStore $ \st ->
     getNextNtfSubscriptionAction st srv >>= \case
@@ -124,8 +103,8 @@ ntfSubWorker _ns srv workAvailable = forever $ do
           NSADelete -> pure ()
   liftIO $ threadDelay 1000000
 
-ntfSMPWorker :: AgentMonad m => NtfSubSupervisor -> NtfServer -> TMVar () -> m ()
-ntfSMPWorker _ns srv workAvailable = forever $ do
+ntfSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+ntfSMPWorker _c srv workAvailable = forever $ do
   void . atomically $ readTMVar workAvailable
   withStore $ \st ->
     getNextNtfSubscriptionSMPAction st srv >>= \case
@@ -134,15 +113,6 @@ ntfSMPWorker _ns srv workAvailable = forever $ do
         forM_ ntfSubAction $ \case
           NSSAKey -> pure ()
   liftIO $ threadDelay 1000000
-
-addNtfSubWorker :: MonadUnliftIO m => TMap NtfServer (TMVar (), Async ()) -> ProtocolServer -> (TMVar () -> m ()) -> m ()
-addNtfSubWorker workerMap srv action =
-  atomically (TM.lookup srv workerMap) >>= \case
-    Nothing -> do
-      workAvailable <- newTMVarIO ()
-      ntfWorker <- async $ action workAvailable
-      atomically $ TM.insert srv (workAvailable, ntfWorker) workerMap
-    Just (workAvailable, _) -> void . atomically $ tryPutTMVar workAvailable ()
 
 nsUpdateToken :: AgentMonad m => NtfSubSupervisor -> NtfToken -> m ()
 nsUpdateToken ns tkn = atomically $ nsUpdateToken' ns tkn
@@ -170,3 +140,14 @@ cancelNtfSubWorkers_ workerMap = do
   workers <- readTVarIO workerMap
   forM_ workers $ \(_, action) -> uninterruptibleCancel action
   atomically $ writeTVar workerMap mempty
+
+getNtfServer :: AgentMonad m => AgentClient -> m (Maybe NtfServer)
+getNtfServer c = do
+  ntfServers <- readTVarIO $ ntfServers c
+  case ntfServers of
+    [] -> pure Nothing
+    [srv] -> pure $ Just srv
+    servers -> do
+      gen <- asks randomServer
+      atomically . stateTVar gen $
+        first (Just . (servers !!)) . randomR (0, length servers - 1)

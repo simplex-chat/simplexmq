@@ -109,12 +109,15 @@ getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialA
 getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
   where
     runAgent = do
-      c@AgentClient {ntfSubSupervisor = ns} <- getAgentClient initServers
-      void $ race_ (subscriber c) (ntfSupervisor ns) `forkFinally` const (disconnectAgentClient c)
+      c <- getAgentClient initServers
+      void $ race_ (subscriber c) (ntfSupervisor c) `forkFinally` const (disconnectAgentClient c)
       pure c
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
-disconnectAgentClient c = closeAgentClient c >> logConnection c False
+disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSubSupervisor = ns}} = do
+  closeAgentClient c
+  liftIO $ closeNtfSubSupervisor ns
+  logConnection c False
 
 resumeAgentClient :: MonadIO m => AgentClient -> m ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
@@ -231,14 +234,15 @@ processCommand c (connId, cmd) = case cmd of
   DEL -> deleteConnection' c connId $> (connId, OK)
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
-newConn c@AgentClient {ntfSubSupervisor = ns} connId cMode = do
+newConn c connId cMode = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueue c srv
+  (rq, qUri) <- newRcvQueueNtfSub c srv
   g <- asks idsDrg
   agentVersion <- asks $ smpAgentVersion . config
   let cData = ConnData {connId, connAgentVersion = agentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId' <- withStore $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
+  ns <- asks ntfSubSupervisor
   atomically $ addNtfSubSupervisorInstruction ns (rq, NSICreate)
   aVRange <- asks $ smpAgentVRange . config
   let crData = ConnReqUriData simplexChat aVRange [qUri]
@@ -294,7 +298,7 @@ joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInf
 createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> m SMPQueueInfo
 createReplyQueue c connId = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueue c srv
+  (rq, qUri) <- newRcvQueueNtfSub c srv
   -- TODO reply queue version should be the same as send queue, ignoring it in v1
   let qInfo = toVersionT qUri SMP.smpClientVersion
   addSubscription c rq connId
@@ -340,15 +344,21 @@ subscribeConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection cData rq sq) -> do
       resumeMsgDelivery c cData sq
-      subscribeQueue c rq connId
+      subscribe rq
     SomeConn _ (SndConnection cData sq) -> do
       resumeMsgDelivery c cData sq
       case status (sq :: SndQueue) of
         Confirmed -> pure ()
         Active -> throwError $ CONN SIMPLEX
         _ -> throwError $ INTERNAL "unexpected queue status"
-    SomeConn _ (RcvConnection _ rq) -> subscribeQueue c rq connId
-    SomeConn _ (ContactConnection _ rq) -> subscribeQueue c rq connId
+    SomeConn _ (RcvConnection _ rq) -> subscribe rq
+    SomeConn _ (ContactConnection _ rq) -> subscribe rq
+  where
+    subscribe :: RcvQueue -> m ()
+    subscribe rq = do
+      subscribeQueue c rq connId
+      ns <- asks ntfSubSupervisor
+      atomically $ addNtfSubSupervisorInstruction ns (rq, NSICreate)
 
 resubscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId =
@@ -531,7 +541,7 @@ suspendConnection' c connId =
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
 deleteConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
-deleteConnection' c@AgentClient {ntfSubSupervisor = ns} connId =
+deleteConnection' c connId =
   withStore (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> delete rq
     SomeConn _ (RcvConnection _ rq) -> delete rq
@@ -541,6 +551,7 @@ deleteConnection' c@AgentClient {ntfSubSupervisor = ns} connId =
     delete :: RcvQueue -> m ()
     delete rq = do
       deleteQueue c rq
+      ns <- asks ntfSubSupervisor
       atomically $ do
         removeSubscription c connId
         addNtfSubSupervisorInstruction ns (rq, NSIDelete)
@@ -552,10 +563,11 @@ setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
-registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
+registerNtfToken' c deviceToken =
   withStore (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction}, prevTokens) -> do
       mapM_ (deleteToken_ c) prevTokens
+      ns <- asks ntfSubSupervisor
       case (ntfTokenId, ntfTknAction) of
         (Nothing, Just NTARegister) -> registerToken tkn $> NTRegistered
         -- TODO minimal time before repeat registration
@@ -577,7 +589,7 @@ registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
           pure NTExpired
         _ -> pure ntfTknStatus
     _ ->
-      getNtfServer ns >>= \case
+      getNtfServer c >>= \case
         Just ntfServer ->
           asks (cmdSignAlg . config) >>= \case
             C.SignAlg a -> do
@@ -595,6 +607,7 @@ registerNtfToken' c@AgentClient {ntfSubSupervisor = ns} deviceToken =
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
       let dhSecret = C.dh' srvPubDhKey privDhKey
       withStore $ \st -> updateNtfTokenRegistration st tkn tknId dhSecret
+      ns <- asks ntfSubSupervisor
       nsUpdateToken ns tkn
 
 -- TODO decrypt verification code
@@ -634,7 +647,8 @@ deleteNtfToken' c deviceToken =
     _ -> throwError $ CMD PROHIBITED
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
-deleteToken_ c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+  ns <- asks ntfSubSupervisor
   forM_ ntfTokenId $ \tknId -> do
     let ntfTknAction = Just NTADelete
     withStore $ \st -> updateNtfToken st tkn ntfTknStatus ntfTknAction
@@ -646,7 +660,8 @@ deleteToken_ c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {ntfTokenId, ntf
   nsRemoveNtfToken ns
 
 withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m NtfTknStatus
-withToken c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
+withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
+  ns <- asks ntfSubSupervisor
   forM_ from_ $ \(status, action) -> do
     withStore $ \st -> updateNtfToken st tkn status (Just action)
     nsUpdateToken ns tkn {ntfTknStatus = status, ntfTknAction = Just action}
@@ -666,7 +681,8 @@ withToken c@AgentClient {ntfSubSupervisor = ns} tkn@NtfToken {deviceToken} from_
     Left e -> throwError e
 
 updateNtfTokenPopulateNtfSubQ :: AgentMonad m => AgentClient -> NtfToken -> m ()
-updateNtfTokenPopulateNtfSubQ c@AgentClient {ntfSubSupervisor = ns} tkn = do
+updateNtfTokenPopulateNtfSubQ c tkn = do
+  ns <- asks ntfSubSupervisor
   connIds <- atomically $ do
     nsUpdateToken' ns tkn
     getSubscriptions c
@@ -675,8 +691,8 @@ updateNtfTokenPopulateNtfSubQ c@AgentClient {ntfSubSupervisor = ns} tkn = do
     atomically $ addNtfSubSupervisorInstruction ns (rq, NSICreate)
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
-setNtfServers' AgentClient {ntfSubSupervisor = ns} servers = do
-  atomically $ writeTVar (ntfServers ns) servers
+setNtfServers' c servers = do
+  atomically $ writeTVar (ntfServers c) servers
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do
@@ -959,6 +975,13 @@ agentRatchetDecrypt st connId encAgentMsg = do
   (agentMsgBody_, rc', skippedDiff) <- liftError (SEAgentError . cryptoError) $ CR.rcDecrypt rc skipped encAgentMsg
   updateRatchet st connId rc' skippedDiff
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
+
+newRcvQueueNtfSub :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri)
+newRcvQueueNtfSub c srv = do
+  (rq, qUri) <- newRcvQueue c srv
+  ns <- asks ntfSubSupervisor
+  atomically $ addNtfSubSupervisorInstruction ns (rq, NSICreate)
+  pure (rq, qUri)
 
 newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueueInfo -> m SndQueue
 newSndQueue qInfo =

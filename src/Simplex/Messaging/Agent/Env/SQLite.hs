@@ -12,6 +12,8 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultReconnectInterval,
     Env (..),
     newSMPAgentEnv,
+    NtfSubSupervisor (..),
+    NtfSubSupervisorInstruction (..),
   )
 where
 
@@ -23,14 +25,18 @@ import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol (SMPServer, currentSMPAgentVersion, supportedSMPAgentVRange)
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Store (RcvQueue)
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Client (NtfServer)
+import Simplex.Messaging.Notifications.Client (NtfServer, NtfToken)
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
+import UnliftIO (Async)
 import UnliftIO.STM
 
 data InitialAgentServers = InitialAgentServers
@@ -99,7 +105,8 @@ data Env = Env
     store :: SQLiteStore,
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
-    randomServer :: TVar StdGen
+    randomServer :: TVar StdGen,
+    ntfSubSupervisor :: NtfSubSupervisor
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
@@ -108,4 +115,22 @@ newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
   store <- liftIO $ createSQLiteStore dbFile dbPoolSize Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  return Env {config, store, idsDrg, clientCounter, randomServer}
+  ntfSubSupervisor <- atomically . newNtfSubSupervisor $ ntfSubTbqSize config
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSubSupervisor}
+
+data NtfSubSupervisor = NtfSubSupervisor
+  { ntfTkn :: TVar (Maybe NtfToken),
+    ntfSubQ :: TBQueue (RcvQueue, NtfSubSupervisorInstruction),
+    ntfSubWorkers :: TMap NtfServer (TMVar (), Async ()),
+    ntfSubSMPWorkers :: TMap SMPServer (TMVar (), Async ())
+  }
+
+data NtfSubSupervisorInstruction = NSICreate | NSIDelete
+
+newNtfSubSupervisor :: Natural -> STM NtfSubSupervisor
+newNtfSubSupervisor qSize = do
+  ntfTkn <- newTVar Nothing
+  ntfSubQ <- newTBQueue qSize
+  ntfSubWorkers <- TM.empty
+  ntfSubSMPWorkers <- TM.empty
+  pure NtfSubSupervisor {ntfTkn, ntfSubQ, ntfSubWorkers, ntfSubSMPWorkers}
