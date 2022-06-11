@@ -41,7 +41,6 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.List (intercalate)
 import qualified Data.Map.Strict as M
@@ -52,14 +51,13 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import Network.Socket (ServiceName)
-import Numeric.Natural (Natural)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.STM (MsgQueue, STMMsgStore)
+import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
 import Simplex.Messaging.Server.StoreLog
@@ -68,6 +66,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
+import System.IO.Error (isEOFError)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist)
@@ -558,16 +557,17 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMsgs
       liftIO $ putStrLn $ "restoring messages from file " <> f
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
-      liftIO . withFile f ReadMode $
-        mapM_ (restoreMessage ms quota) . LB.lines <=< LB.hGetContents
+      liftIO . withFile f ReadMode $ restoreMessages ms quota
       where
-        restoreMessage :: STMMsgStore -> Natural -> LB.ByteString -> IO ()
-        restoreMessage ms quota bs = do
-          let s = trimCR $ LB.toStrict bs
-          case strDecode s of
-            Left e -> B.putStrLn $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
-            Right (MsgLogRecord rId msg@Message {msgId}) -> do
-              full <- atomically $ do
-                q <- getMsgQueue ms rId quota
-                ifM (isFull q) (pure True) (writeMsg q msg >> pure False)
-              when full . B.putStrLn $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode msgId
+        restoreMessages ms quota h =
+          try (B.hGetLine h) >>= \case
+            Right s -> restoreMsg s >> restoreMessages ms quota h
+            Left (e :: IOError) -> unless (isEOFError e) . putStrLn $ "error reading file " <> f <> ", restoring messages aborted"
+          where
+            restoreMsg s = case strDecode s of
+              Left e -> B.putStrLn $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
+              Right (MsgLogRecord rId msg) -> do
+                full <- atomically $ do
+                  q <- getMsgQueue ms rId quota
+                  ifM (isFull q) (pure True) (writeMsg q msg >> pure False)
+                when full . B.putStrLn $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId msg)
