@@ -7,6 +7,7 @@
 module Main where
 
 import Control.Logger.Simple
+import Data.Functor (($>))
 import Data.Ini (lookupValue)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI (ServerCLIConfig (..), protocolServerCLI, readStrictIni)
@@ -57,9 +58,11 @@ smpServerCLIConfig =
             \# that will be lost on restart (e.g., as with redis).\n\
             \# This option enables saving memory to append only log,\n\
             \# and restoring it when the server is started.\n\
-            \# Log is compacted on start (deleted objects are removed).\n\
-            \# The messages are not logged.\n"
-              <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
+            \# Log is compacted on start (deleted objects are removed).\n"
+              <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n")
+              <> "# The messages are optionally saved and restored when the server restarts,\n\
+                 \# they are deleted after restarting.\n"
+              <> ("restore_messages: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
               <> "[TRANSPORT]\n"
               <> ("port: " <> defaultServerPort <> "\n")
               <> "websockets: off\n\n"
@@ -80,6 +83,13 @@ smpServerCLIConfig =
                 privateKeyFile = serverKeyFile,
                 certificateFile = serverCrtFile,
                 storeLogFile,
+                storeMsgsFile =
+                  let messagesPath = combine logPath "smp-server-messages.log"
+                   in case lookupValue "STORE_LOG" "restore_messages" ini of
+                        Right "on" -> Just messagesPath
+                        Right _ -> Nothing
+                        -- if the setting is not set, it is enabled when store log is enabled
+                        _ -> storeLogFile $> messagesPath,
                 allowNewQueues = True,
                 messageExpiration = Just defaultMessageExpiration,
                 inactiveClientExpiration =
