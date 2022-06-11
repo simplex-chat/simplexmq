@@ -308,10 +308,28 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       pure $ maybe (Left SEConnNotFound) Right rq_
 
   setRcvQueueNotifierKey :: SQLiteStore -> RcvQueuePrimaryKey -> NtfPublicVerifyKey -> NtfPrivateSignKey -> m ()
-  setRcvQueueNotifierKey _st (SMPServer _host _port _, _rcvId) _ntfPrivateKey _ntfPublicKey = throwError SENotImplemented
+  setRcvQueueNotifierKey st (SMPServer host port _, rcvId) ntfPublicKey ntfPrivateKey =
+    liftIO . withTransaction st $ \db ->
+      DB.execute
+        db
+        [sql|
+          UPDATE rcv_queues
+          SET ntf_public_key = ?, ntf_private_key = ?
+          WHERE host = ? AND port = ? AND rcv_id = ?
+        |]
+        (ntfPublicKey, ntfPrivateKey, host, port, rcvId)
 
   setRcvQueueNotifierId :: SQLiteStore -> RcvQueuePrimaryKey -> NotifierId -> m ()
-  setRcvQueueNotifierId _st (SMPServer _host _port _, _rcvId) _nId = throwError SENotImplemented
+  setRcvQueueNotifierId st (SMPServer host port _, rcvId) nId =
+    liftIO . withTransaction st $ \db ->
+      DB.execute
+        db
+        [sql|
+          UPDATE rcv_queues
+          SET ntf_id = ?
+          WHERE host = ? AND port = ? AND rcv_id = ?
+        |]
+        (nId, host, port, rcvId)
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
