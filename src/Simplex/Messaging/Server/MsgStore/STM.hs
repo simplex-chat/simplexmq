@@ -7,6 +7,7 @@
 
 module Simplex.Messaging.Server.MsgStore.STM where
 
+import Control.Concurrent.STM.TBQueue (flushTBQueue)
 import Control.Monad (when)
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
