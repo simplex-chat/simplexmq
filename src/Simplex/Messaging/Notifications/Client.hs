@@ -135,19 +135,19 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
 data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
 
 data NtfSubAction
-  = NSANew NtfPrivateSignKey
+  = NSANew NotifierId NtfPrivateSignKey
   | NSACheck
   | NSADelete
   deriving (Show)
 
 instance Encoding NtfSubAction where
   smpEncode = \case
-    NSANew nKey -> smpEncode ('N', nKey)
+    NSANew nId nKey -> smpEncode ('N', nId, nKey)
     NSACheck -> "C"
     NSADelete -> "D"
   smpP =
     A.anyChar >>= \case
-      'N' -> NSANew <$> smpP
+      'N' -> NSANew <$> smpP <*> smpP
       'C' -> pure NSACheck
       'D' -> pure NSADelete
       _ -> fail "bad NtfSubAction"

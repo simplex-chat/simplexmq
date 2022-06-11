@@ -30,7 +30,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..))
+import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (SMPQueueNtf))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -59,7 +59,7 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId, ntfPrivateKey, no
           case (notifierId, ntfPrivateKey) of
             (Just nId, Just ntfPrivKey) -> do
               let newSub = newNtfSubscription smpServer rcvId (Just nId) ntfServer NSKey currentTime
-              withStore $ \st -> createNtfSubscription st newSub (NtfSubAction $ NSANew ntfPrivKey)
+              withStore $ \st -> createNtfSubscription st newSub (NtfSubAction $ NSANew nId ntfPrivKey)
             _ -> do
               let newSub = newNtfSubscription smpServer rcvId Nothing ntfServer NSStarted currentTime
               withStore $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
@@ -95,17 +95,29 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId, ntfPrivateKey, no
         Just (doWork, _) -> void . atomically $ tryPutTMVar doWork ()
 
 runNtfWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-runNtfWorker _c srv doWork = forever $ do
+runNtfWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
-  withStore $ \st ->
-    getNextNtfSubAction st srv >>= \case
-      Nothing -> void . atomically $ tryTakeTMVar doWork
-      Just (_sub, ntfSubAction, _rq) -> case ntfSubAction of
-        NSANew _nKey -> pure ()
+  ntfToken_ <- getNtfToken
+  nextSubAction <- withStore (`getNextNtfSubAction` srv)
+  case (ntfToken_, nextSubAction) of
+    (Nothing, _) -> cantDoWork
+    (Just NtfToken {ntfTokenId = Nothing}, _) -> cantDoWork
+    (Just _, Nothing) -> cantDoWork
+    -- ? don't read RcvQueue in getNextNtfSubAction / use notifierId and ntfPrivateKey and don't parameterize command
+    (Just tkn@NtfToken {ntfTokenId = Just tknId}, Just (ntfSub@NtfSubscription {smpServer, rcvQueueId}, ntfSubAction, _rq)) -> do
+      let rqPK = (smpServer, rcvQueueId)
+      case ntfSubAction of
+        NSANew notifierId nKey -> do
+          ntfSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer notifierId) nKey
+          ts <- liftIO getCurrentTime
+          withStore $ \st ->
+            updateNtfSubscription st rqPK ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NSNew, ntfSubActionTs = ts} (NtfSubAction NSACheck)
         NSACheck -> pure ()
         NSADelete -> pure ()
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
+  where
+    cantDoWork = void . atomically $ tryTakeTMVar doWork
 
 runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfSMPWorker c srv doWork = forever $ do
@@ -127,12 +139,11 @@ runNtfSMPWorker c srv doWork = forever $ do
               enableNotificationsWithNKey ntfPubKey ntfPrivKey
           where
             enableNotificationsWithNKey ntfPubKey ntfPrivKey = do
-              withStore $ \st -> setRcvQueueNotifierKey st rqPK ntfPubKey ntfPrivKey
               nId <- enableQueueNotifications c rq ntfPubKey
               ts <- liftIO getCurrentTime
               withStore $ \st -> do
                 setRcvQueueNotifierId st rqPK nId
-                updateNtfSubscription st rqPK ntfSub {ntfQueueId = Just nId, ntfSubStatus = NSKey, ntfSubActionTs = ts} (NtfSubAction $ NSANew ntfPrivKey)
+                updateNtfSubscription st rqPK ntfSub {ntfQueueId = Just nId, ntfSubStatus = NSKey, ntfSubActionTs = ts} (NtfSubAction $ NSANew nId ntfPrivKey)
               kickNtfWorker_ ntfWorkers ntfServer
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
@@ -144,6 +155,11 @@ kickNtfWorker_ wsSel srv = do
     TM.lookup srv ws >>= \case
       Just (doWork, _) -> void $ tryPutTMVar doWork ()
       Nothing -> pure ()
+
+getNtfToken :: AgentMonad m => m (Maybe NtfToken)
+getNtfToken = do
+  tkn <- asks $ ntfTkn . ntfSupervisor
+  readTVarIO tkn
 
 nsUpdateToken :: NtfSupervisor -> NtfToken -> STM ()
 nsUpdateToken ns tkn = writeTVar (ntfTkn ns) $ Just tkn
