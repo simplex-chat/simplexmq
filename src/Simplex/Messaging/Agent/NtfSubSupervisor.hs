@@ -95,11 +95,10 @@ runNtfWorker _c srv doWork = forever $ do
   withStore $ \st ->
     getNextNtfSubAction st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar doWork
-      Just (_sub, ntfSubAction) ->
-        forM_ ntfSubAction $ \case
-          NSANew _nKey -> pure ()
-          NSACheck -> pure ()
-          NSADelete -> pure ()
+      Just (_sub, ntfSubAction) -> case ntfSubAction of
+        NSANew _nKey -> pure ()
+        NSACheck -> pure ()
+        NSADelete -> pure ()
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
 
@@ -109,9 +108,8 @@ runNtfSMPWorker _c srv doWork = forever $ do
   withStore $ \st ->
     getNextNtfSubSMPAction st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar doWork
-      Just (_sub, ntfSubAction) ->
-        forM_ ntfSubAction $ \case
-          NSAKey -> pure ()
+      Just (_sub, ntfSubAction) -> case ntfSubAction of
+        NSAKey -> pure ()
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
 

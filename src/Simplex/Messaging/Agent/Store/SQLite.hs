@@ -658,11 +658,11 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         <$> DB.query
           db
           [sql|
-            SELECT ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
-              nsub.smp_ntf_id, nsub.ntf_sub_id, nsub.ntfSubStatus, nsub.ntf_sub_action_ts
-            FROM ntf_subscriptions nsub
-            JOIN ntf_servers ns USING (ntf_host, ntf_port)
-            WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
+            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+              ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts
+            FROM ntf_subscriptions ns
+            JOIN ntf_servers s USING (ntf_host, ntf_port)
+            WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.smp_rcv_id = ?
           |]
           (host, port, rcvId)
     where
@@ -692,20 +692,62 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             |]
             (host, port, rcvQueueId, ntfQueueId, ntfHost, ntfPort, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs)
 
-  markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
+  markNtfSubscriptionForDeletion :: SQLiteStore -> RcvQueue -> m ()
   markNtfSubscriptionForDeletion _st _rcvQueue = throwError SENotImplemented
 
-  updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
-  updateNtfSubscription _st _rcvQueue _ntfSub = throwError SENotImplemented
+  updateNtfSubscription :: SQLiteStore -> (SMPServer, SMP.RecipientId) -> NtfSubscription -> NtfSubOrSMPAction -> m ()
+  updateNtfSubscription st (_smpServer, _rcvId) _ntfSub ntfAction =
+    liftIO . withTransaction st $ \_db ->
+      case ntfAction of
+        NtfSubAction _nsa -> pure ()
+        NtfSubSMPAction _nsa -> pure ()
 
-  deleteNtfSubscription :: s -> RcvQueue -> m ()
+  deleteNtfSubscription :: SQLiteStore -> RcvQueue -> m ()
   deleteNtfSubscription _st _rcvQueue = throwError SENotImplemented
 
-  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
-  getNextNtfSubAction _st _srv = throwError SENotImplemented
+  getNextNtfSubAction :: SQLiteStore -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction))
+  getNextNtfSubAction st ntfServer@(ProtocolServer ntfHost ntfPort _) =
+    liftIO . withTransaction st $ \db ->
+      ntfSubscription
+        <$> DB.query
+          db
+          [sql|
+            SELECT s.smp_host, s.smp_port, s.smp_key_hash,
+              ns.smp_rcv_id, ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
+            FROM ntf_subscriptions ns
+            JOIN servers s ON s.host = ns.smp_host, s.port = ns.smp_port
+            WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_action IS NOT NULL
+            ORDER BY ns.ntf_sub_action_ts ASC
+            LIMIT 1
+          |]
+          (ntfHost, ntfPort)
+    where
+      ntfSubscription [(smpHost, smpPort, smpKeyHash, rcvQueueId, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
+        let smpServer = SMPServer smpHost smpPort smpKeyHash
+         in Just (NtfSubscription {smpServer, rcvQueueId, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
+      ntfSubscription _ = Nothing
 
-  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
-  getNextNtfSubSMPAction _st _srv = throwError SENotImplemented
+  getNextNtfSubSMPAction :: SQLiteStore -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction))
+  getNextNtfSubSMPAction st smpServer@(SMPServer smpHost smpPort _) =
+    liftIO . withTransaction st $ \db ->
+      ntfSubscription
+        <$> DB.query
+          db
+          [sql|
+            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+              ns.smp_rcv_id, ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
+            FROM ntf_subscriptions ns
+            JOIN ntf_servers s USING (ntf_host, ntf_port)
+            WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL
+            ORDER BY ns.ntf_sub_action_ts ASC
+            LIMIT 1
+          |]
+          (smpHost, smpPort)
+    where
+      ntfSubscription [(ntfHost, ntfPort, ntfKeyHash, rcvQueueId, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
+        let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
+         in Just (NtfSubscription {smpServer, rcvQueueId, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
+      ntfSubscription _ = Nothing
 
 -- * Auxiliary helpers
 
