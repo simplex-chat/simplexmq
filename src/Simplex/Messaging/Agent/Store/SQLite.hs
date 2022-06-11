@@ -696,31 +696,64 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   markNtfSubscriptionForDeletion _st _rcvQueue = throwError SENotImplemented
 
   updateNtfSubscription :: SQLiteStore -> (SMPServer, SMP.RecipientId) -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  updateNtfSubscription st (_smpServer, _rcvId) _ntfSub ntfAction =
-    liftIO . withTransaction st $ \_db ->
-      case ntfAction of
-        NtfSubAction _nsa -> pure ()
-        NtfSubSMPAction _nsa -> pure ()
+  updateNtfSubscription st (SMPServer smpHost smpPort _, rcvQueueId) NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
+    liftIO . withTransaction st $ \db -> do
+      r <- listToMaybe . map fromOnly <$> DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?" (smpHost, smpPort, rcvQueueId)
+      forM_ r $ \updatedBySupervisor -> do
+        updatedAt <- getCurrentTime
+        if updatedBySupervisor
+          then
+            DB.execute
+              db
+              [sql|
+                UPDATE ntf_subscriptions
+                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ? updated_at = ?
+                WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
+              |]
+              (ntfQueueId, ntfSubId, ntfSubStatus, updatedAt, smpHost, smpPort, rcvQueueId)
+          else case ntfAction of
+            NtfSubAction nsa ->
+              DB.execute
+                db
+                [sql|
+                  UPDATE ntf_subscriptions
+                  SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_action_ts = ? updated_at = ?
+                  WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
+                |]
+                (ntfQueueId, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs, updatedAt, smpHost, smpPort, rcvQueueId)
+            NtfSubSMPAction nsa ->
+              DB.execute
+                db
+                [sql|
+                  UPDATE ntf_subscriptions
+                  SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ? updated_at = ?
+                  WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
+                |]
+                (ntfQueueId, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs, updatedAt, smpHost, smpPort, rcvQueueId)
 
   deleteNtfSubscription :: SQLiteStore -> RcvQueue -> m ()
   deleteNtfSubscription _st _rcvQueue = throwError SENotImplemented
 
   getNextNtfSubAction :: SQLiteStore -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction))
   getNextNtfSubAction st ntfServer@(ProtocolServer ntfHost ntfPort _) =
-    liftIO . withTransaction st $ \db ->
-      ntfSubscription
-        <$> DB.query
-          db
-          [sql|
-            SELECT s.smp_host, s.smp_port, s.smp_key_hash,
-              ns.smp_rcv_id, ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
-            FROM ntf_subscriptions ns
-            JOIN servers s ON s.host = ns.smp_host, s.port = ns.smp_port
-            WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_action IS NOT NULL
-            ORDER BY ns.ntf_sub_action_ts ASC
-            LIMIT 1
-          |]
-          (ntfHost, ntfPort)
+    liftIO . withTransaction st $ \db -> do
+      ntfSub <-
+        ntfSubscription
+          <$> DB.query
+            db
+            [sql|
+              SELECT s.host, s.port, s.key_hash,
+                ns.smp_rcv_id, ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
+              FROM ntf_subscriptions ns
+              JOIN servers s ON s.host = ns.smp_host, s.port = ns.smp_port
+              WHERE ns.ntf_host = ? AND ns.ntf_port = ? AND ns.ntf_sub_action IS NOT NULL
+              ORDER BY ns.ntf_sub_action_ts ASC
+              LIMIT 1
+            |]
+            (ntfHost, ntfPort)
+      forM_ ntfSub $ \(NtfSubscription {smpServer = (SMPServer host port _), rcvQueueId}, _) ->
+        DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = 0 WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?" (host, port, rcvQueueId)
+      pure ntfSub
     where
       ntfSubscription [(smpHost, smpPort, smpKeyHash, rcvQueueId, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
         let smpServer = SMPServer smpHost smpPort smpKeyHash
@@ -729,20 +762,24 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
 
   getNextNtfSubSMPAction :: SQLiteStore -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction))
   getNextNtfSubSMPAction st smpServer@(SMPServer smpHost smpPort _) =
-    liftIO . withTransaction st $ \db ->
-      ntfSubscription
-        <$> DB.query
-          db
-          [sql|
-            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
-              ns.smp_rcv_id, ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
-            FROM ntf_subscriptions ns
-            JOIN ntf_servers s USING (ntf_host, ntf_port)
-            WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL
-            ORDER BY ns.ntf_sub_action_ts ASC
-            LIMIT 1
-          |]
-          (smpHost, smpPort)
+    liftIO . withTransaction st $ \db -> do
+      ntfSub <-
+        ntfSubscription
+          <$> DB.query
+            db
+            [sql|
+              SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+                ns.smp_rcv_id, ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
+              FROM ntf_subscriptions ns
+              JOIN ntf_servers s USING (ntf_host, ntf_port)
+              WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL
+              ORDER BY ns.ntf_sub_action_ts ASC
+              LIMIT 1
+            |]
+            (smpHost, smpPort)
+      forM_ ntfSub $ \(NtfSubscription {smpServer = (SMPServer host port _), rcvQueueId}, _) ->
+        DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = 0 WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?" (host, port, rcvQueueId)
+      pure ntfSub
     where
       ntfSubscription [(ntfHost, ntfPort, ntfKeyHash, rcvQueueId, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
         let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
