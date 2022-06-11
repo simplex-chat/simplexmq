@@ -28,9 +28,10 @@ import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..))
-import Simplex.Messaging.Protocol (ProtocolServer)
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import System.Random (randomR)
@@ -47,7 +48,7 @@ runNtfSupervisor c = forever $ do
     Right _ -> return ()
 
 processNtfSub :: forall m. AgentMonad m => AgentClient -> (RcvQueue, NtfSupervisorCommand) -> m ()
-processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, cmd) = do
+processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId, ntfPrivateKey, notifierId}, cmd) = do
   ntfServer_ <- getNtfServer c
   case cmd of
     NSCCreate -> do
@@ -55,9 +56,13 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, cmd) = do
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
-          -- TODO add ntfQueueId to RcvQueue; if it exists create subscription with SNEW action
-          let newSub = newNtfSubscription smpServer rcvId Nothing ntfServer NSKey currentTime
-          withStore $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
+          case (notifierId, ntfPrivateKey) of
+            (Just nId, Just ntfPrivKey) -> do
+              let newSub = newNtfSubscription smpServer rcvId (Just nId) ntfServer NSKey currentTime
+              withStore $ \st -> createNtfSubscription st newSub (NtfSubAction $ NSANew ntfPrivKey)
+            _ -> do
+              let newSub = newNtfSubscription smpServer rcvId Nothing ntfServer NSStarted currentTime
+              withStore $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
@@ -95,23 +100,50 @@ runNtfWorker _c srv doWork = forever $ do
   withStore $ \st ->
     getNextNtfSubAction st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar doWork
-      Just (_sub, ntfSubAction) -> case ntfSubAction of
+      Just (_sub, ntfSubAction, _rq) -> case ntfSubAction of
         NSANew _nKey -> pure ()
         NSACheck -> pure ()
         NSADelete -> pure ()
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
 
-runNtfSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-runNtfSMPWorker _c srv doWork = forever $ do
+runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
-  withStore $ \st ->
-    getNextNtfSubSMPAction st srv >>= \case
-      Nothing -> void . atomically $ tryTakeTMVar doWork
-      Just (_sub, ntfSubAction) -> case ntfSubAction of
-        NSAKey -> pure ()
+  withStore (`getNextNtfSubSMPAction` srv) >>= \case
+    Nothing -> void . atomically $ tryTakeTMVar doWork
+    Just (ntfSub@NtfSubscription {smpServer, rcvQueueId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey, ntfPrivateKey}) -> do
+      let rqPK = (smpServer, rcvQueueId)
+      case ntfSubAction of
+        NSAKey ->
+          -- ? this check can be moved to supervisor, it should then create NSAKey action with Maybe key
+          case (ntfPublicKey, ntfPrivateKey) of
+            (Just ntfPubKey, Just ntfPrivKey) ->
+              enableNotificationsWithNKey ntfPubKey ntfPrivKey
+            _ -> do
+              C.SignAlg a <- asks (cmdSignAlg . config)
+              (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
+              withStore $ \st -> setRcvQueueNotifierKey st rqPK ntfPubKey ntfPrivKey
+              enableNotificationsWithNKey ntfPubKey ntfPrivKey
+          where
+            enableNotificationsWithNKey ntfPubKey ntfPrivKey = do
+              withStore $ \st -> setRcvQueueNotifierKey st rqPK ntfPubKey ntfPrivKey
+              nId <- enableQueueNotifications c rq ntfPubKey
+              ts <- liftIO getCurrentTime
+              withStore $ \st -> do
+                setRcvQueueNotifierId st rqPK nId
+                updateNtfSubscription st rqPK ntfSub {ntfQueueId = Just nId, ntfSubStatus = NSKey, ntfSubActionTs = ts} (NtfSubAction $ NSANew ntfPrivKey)
+              kickNtfWorker_ ntfWorkers ntfServer
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
+
+kickNtfWorker_ :: AgentMonad m => (NtfSupervisor -> TMap ProtocolServer (TMVar (), Async ())) -> ProtocolServer -> m ()
+kickNtfWorker_ wsSel srv = do
+  ws <- asks $ wsSel . ntfSupervisor
+  atomically $
+    TM.lookup srv ws >>= \case
+      Just (doWork, _) -> void $ tryPutTMVar doWork ()
+      Nothing -> pure ()
 
 nsUpdateToken :: NtfSupervisor -> NtfToken -> STM ()
 nsUpdateToken ns tkn = writeTVar (ntfTkn ns) $ Just tkn

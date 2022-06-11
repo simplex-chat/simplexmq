@@ -14,11 +14,11 @@ ALTER TABLE conn_confirmations ADD COLUMN smp_reply_queues BLOB NULL;
 
 ALTER TABLE connections ADD COLUMN duplex_handshake INTEGER NULL DEFAULT 0;
 
-ALTER TABLE rcv_queues ADD COLUMN ntf_id BLOB;
-
 ALTER TABLE rcv_queues ADD COLUMN ntf_public_key BLOB;
 
 ALTER TABLE rcv_queues ADD COLUMN ntf_private_key BLOB;
+
+ALTER TABLE rcv_queues ADD COLUMN ntf_id BLOB;
 
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues (host, port, ntf_id);
 

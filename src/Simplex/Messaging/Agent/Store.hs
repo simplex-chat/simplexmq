@@ -26,6 +26,9 @@ import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
     MsgId,
+    NotifierId,
+    NtfPrivateSignKey,
+    NtfPublicVerifyKey,
     RcvDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
@@ -49,6 +52,10 @@ class Monad m => MonadAgentStore s m where
   setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecretX25519 -> m ()
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
   getRcvQueue :: s -> ConnId -> m RcvQueue
+
+  -- RcvQueue notifier key and ID
+  setRcvQueueNotifierKey :: s -> RcvQueuePrimaryKey -> NtfPublicVerifyKey -> NtfPrivateSignKey -> m ()
+  setRcvQueueNotifierId :: s -> RcvQueuePrimaryKey -> NotifierId -> m ()
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
@@ -83,7 +90,6 @@ class Monad m => MonadAgentStore s m where
 
   -- Notification device token persistence
   createNtfToken :: s -> NtfToken -> m ()
-
   getDeviceNtfToken :: s -> DeviceToken -> m (Maybe NtfToken, [NtfToken])
   updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
   updateNtfToken :: s -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
@@ -93,10 +99,10 @@ class Monad m => MonadAgentStore s m where
   getNtfSubscription :: s -> RcvQueue -> m (Maybe NtfSubscription)
   createNtfSubscription :: s -> NtfSubscription -> NtfSubOrSMPAction -> m ()
   markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
-  updateNtfSubscription :: s -> (SMPServer, SMP.RecipientId) -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  deleteNtfSubscription :: s -> RcvQueue -> m ()
-  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction))
-  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction))
+  updateNtfSubscription :: s -> RcvQueuePrimaryKey -> NtfSubscription -> NtfSubOrSMPAction -> m ()
+  deleteNtfSubscription :: s -> RcvQueuePrimaryKey -> m ()
+  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
+  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
 
 -- * Queue types
 
@@ -116,9 +122,16 @@ data RcvQueue = RcvQueue
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
     -- | queue status
-    status :: QueueStatus
+    status :: QueueStatus,
+    -- | key pair to be used by the notification server to sign transmissions
+    ntfPublicKey :: Maybe NtfPublicVerifyKey,
+    ntfPrivateKey :: Maybe NtfPrivateSignKey,
+    -- | queue ID to be used by the notification server for NSUB command
+    notifierId :: Maybe NotifierId
   }
   deriving (Eq, Show)
+
+type RcvQueuePrimaryKey = (SMPServer, SMP.RecipientId)
 
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue

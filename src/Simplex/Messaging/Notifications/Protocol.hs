@@ -363,7 +363,9 @@ type NtfSubscriptionId = NtfEntityId
 type NtfTokenId = NtfEntityId
 
 data NtfSubStatus
-  = -- | state after NKEY
+  = -- | subscription started
+    NSStarted
+  | -- | state after NKEY
     NSKey
   | -- | state after SNEW
     NSNew
@@ -379,6 +381,7 @@ data NtfSubStatus
 
 instance Encoding NtfSubStatus where
   smpEncode = \case
+    NSStarted -> "START"
     NSKey -> "KEY"
     NSNew -> "NEW"
     NSPending -> "PENDING" -- e.g. after SMP server disconnect/timeout while ntf server is retrying to connect
@@ -387,6 +390,7 @@ instance Encoding NtfSubStatus where
     NSSMPAuth -> "SMP_AUTH"
   smpP =
     A.takeTill (== ' ') >>= \case
+      "START" -> pure NSStarted
       "KEY" -> pure NSKey
       "NEW" -> pure NSNew
       "PENDING" -> pure NSPending

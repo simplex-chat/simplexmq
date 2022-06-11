@@ -36,9 +36,9 @@ CREATE TABLE rcv_queues(
   status TEXT NOT NULL,
   smp_server_version INTEGER NOT NULL DEFAULT 1,
   smp_client_version INTEGER,
-  ntf_id BLOB,
   ntf_public_key BLOB,
   ntf_private_key BLOB,
+  ntf_id BLOB,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
