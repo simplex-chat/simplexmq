@@ -498,18 +498,33 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
       map fromOnly
         <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_id = ?" (Only connId)
 
-  checkRcvMsg :: SQLiteStore -> ConnId -> InternalId -> m SMP.MsgId
-  checkRcvMsg st connId msgId =
-    liftIOEither . withTransaction st $ \db ->
+  setMsgUserAck :: SQLiteStore -> ConnId -> InternalId -> m SMP.MsgId
+  setMsgUserAck st connId agentMsgId =
+    liftIOEither . withTransaction st $ \db -> do
+      DB.execute db "UPDATE rcv_messages SET user_ack = ? WHERE conn_id = ? AND internal_id = ?" (True, connId, agentMsgId)
       firstRow fromOnly SEMsgNotFound $
-        DB.query
+        DB.query db "SELECT broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?" (connId, agentMsgId)
+
+  getLastMsg :: SQLiteStore -> ConnId -> SMP.MsgId -> m (Maybe RcvMsg)
+  getLastMsg st connId msgId =
+    liftIO . withTransaction st $ \db ->
+      fmap rcvMsg . listToMaybe
+        <$> DB.query
           db
           [sql|
-            SELECT broker_id
-            FROM rcv_messages
-            WHERE conn_id = ? AND internal_id = ?
+            SELECT
+              r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity,
+              m.msg_body, r.user_ack
+            FROM rcv_messages r
+            JOIN messages m ON r.internal_id = m.internal_id
+            JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
+            WHERE r.conn_id = ? AND r.broker_id = ?
           |]
           (connId, msgId)
+    where
+      rcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, msgBody, userAck) =
+        let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
+         in RcvMsg {msgMeta, msgBody, userAck}
 
   deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
   deleteMsg st connId msgId =

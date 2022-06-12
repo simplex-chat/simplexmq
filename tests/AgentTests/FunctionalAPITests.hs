@@ -13,7 +13,7 @@ import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
-import SMPClient (cfg, testPort, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
+import SMPClient (cfg, testPort, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
@@ -74,6 +74,9 @@ functionalAPITests t = do
       testAsyncServerOffline t
     it "should notify after HELLO timeout" $
       withSmpServer t testAsyncHelloTimeout
+  describe "Duplicate message delivery" $
+    it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
+      testDuplicateMessage t
   describe "Inactive client disconnection" $ do
     it "should disconnect clients if it was inactive longer than TTL" $
       testInactiveClientDisconnected t
@@ -305,6 +308,62 @@ testAsyncHelloTimeout = do
     aliceId <- joinConnection bob cReq "bob's connInfo"
     get bob ##> ("", aliceId, ERR $ CONN NOT_ACCEPTED)
   pure ()
+
+testDuplicateMessage :: ATransport -> IO ()
+testDuplicateMessage t = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  (aliceId, bobId, bob1) <- withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    Right (aliceId, bobId) <- runExceptT $ do
+      (bobId, qInfo) <- createConnection alice SCMInvitation
+      aliceId <- joinConnection bob qInfo "bob's connInfo"
+      ("", _, CONF confId "bob's connInfo") <- get alice
+      allowConnection alice bobId confId "alice's connInfo"
+      get alice ##> ("", bobId, CON)
+      get bob ##> ("", aliceId, INFO "alice's connInfo")
+      get bob ##> ("", aliceId, CON)
+      4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 4)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      pure (aliceId, bobId)
+    disconnectAgentClient bob
+
+    -- if the agent user did not send ACK, the message will be delivered again
+    bob1 <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+    Right () <- runExceptT $ do
+      subscribeConnection bob1 aliceId
+      get bob1 =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob1 aliceId 4
+      5 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
+      get alice ##> ("", bobId, SENT 5)
+      get bob1 =##> \case ("", c, Msg "hello 2") -> c == aliceId; _ -> False
+
+    pure (aliceId, bobId, bob1)
+
+  get alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
+  get bob1 =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
+  -- commenting two lines below and uncommenting further two lines would also pass,
+  -- it is the scenario tested above, when the message was not acknowledged by the user
+  threadDelay 200000
+  Left (BROKER TIMEOUT) <- runExceptT $ ackMessage bob1 aliceId 5
+
+  disconnectAgentClient alice
+  disconnectAgentClient bob1
+
+  alice2 <- getSMPAgentClient agentCfg initAgentServers
+  bob2 <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    Right () <- runExceptT $ do
+      subscribeConnection bob2 aliceId
+      subscribeConnection alice2 bobId
+      -- get bob2 =##> \case ("", c, Msg "hello 2") -> c == aliceId; _ -> False
+      -- ackMessage bob2 aliceId 5
+      -- message 2 is not delivered again, even though it was delivered to the agent
+      6 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 3"
+      get alice2 ##> ("", bobId, SENT 6)
+      get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
+    pure ()
 
 testInactiveClientDisconnected :: ATransport -> IO ()
 testInactiveClientDisconnected t = do
