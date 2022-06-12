@@ -14,6 +14,8 @@ To give a high-level summary, we at first ignore contention in desired membershi
 
 ### Additions
 
+A formal specification of the protocol is defined in TLA+ and can be defined [here](./2022-06-11-private-groups/groups_invite_without_competition.tla).
+
 #### Proposer (phase 1)
 
 To add a group member, a current member proposes a contact (henceforth the proposer and proposee respectively).
@@ -57,3 +59,10 @@ In the case of contact confusion between members, it is impossible for anyone ou
 Once a member has received a SyncToken message from all other non-proposing members and an Accept message from the proposee, they compare the tokens received.
 If the proposee can present a match, then the member now knows that all parties have agreed to extend membership.
 The member locally commits this result and establishes a new connection with the proposee specifically for group communication.
+
+#### Properties
+
+Model checking our formal specification we can demonstrate three key properties:
+  1. Users outside of the group only learn about the networks of members who agree to share such information with them.
+  1. It is not possible to accidentally establish a group connection with anyone other than the proposee, even if users misidentify the proposee.
+  1. No members will connect with the proposee unless all members correctly identify them.
