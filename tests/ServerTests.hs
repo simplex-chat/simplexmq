@@ -44,6 +44,7 @@ serverTests t@(ATransport t') = do
     describe "GET command" $ testGetCommand t'
     describe "GET & SUB commands" $ testGetSubCommands t'
   describe "Store log" $ testWithStoreLog t
+  describe "Restore messages" $ testRestoreMessages t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
@@ -423,7 +424,7 @@ testWithStoreLog at@(ATransport t) =
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, DEL)
       pure ()
 
-    logSize `shouldReturn` 6
+    logSize testStoreLogFile `shouldReturn` 6
 
     withSmpServerThreadOn at testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
@@ -448,7 +449,7 @@ testWithStoreLog at@(ATransport t) =
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too")
       pure ()
 
-    logSize `shouldReturn` 1
+    logSize testStoreLogFile `shouldReturn` 1
     removeFile testStoreLogFile
   where
     runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
@@ -459,11 +460,79 @@ testWithStoreLog at@(ATransport t) =
     runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
-    logSize :: IO Int
-    logSize =
-      try (length . B.lines <$> B.readFile testStoreLogFile) >>= \case
-        Right l -> pure l
-        Left (_ :: SomeException) -> logSize
+logSize :: FilePath -> IO Int
+logSize f =
+  try (length . B.lines <$> B.readFile f) >>= \case
+    Right l -> pure l
+    Left (_ :: SomeException) -> logSize f
+
+testRestoreMessages :: ATransport -> Spec
+testRestoreMessages at@(ATransport t) =
+  it "should store messages on exit and restore on start" $ do
+    (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
+    recipientId <- newTVarIO ""
+    recipientKey <- newTVarIO Nothing
+    dhShared <- newTVarIO Nothing
+    senderId <- newTVarIO ""
+
+    withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
+      runClient t $ \h1 -> do
+        (sId, rId, rKey, dh) <- createAndSecureQueue h1 sPub
+        atomically $ do
+          writeTVar recipientId rId
+          writeTVar recipientKey $ Just rKey
+          writeTVar dhShared $ Just dh
+          writeTVar senderId sId
+        Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello")
+        Resp "" _ (MSG mId1 _ _ msg1) <- tGet h1
+        Resp "1a" _ OK <- signSendRecv h1 rKey ("1a", rId, ACK mId1)
+        (C.cbDecrypt dh (C.cbNonce mId1) msg1, Right "hello") #== "message delivered"
+      -- messages below are delivered after server restart
+      sId <- readTVarIO senderId
+      Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
+      Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "hello 3")
+      Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello 4")
+      pure ()
+
+    logSize testStoreLogFile `shouldReturn` 2
+    logSize testStoreMsgsFile `shouldReturn` 3
+
+    withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
+      rId <- readTVarIO recipientId
+      Just rKey <- readTVarIO recipientKey
+      Just dh <- readTVarIO dhShared
+      Resp "2" _ (MSG mId2 _ _ msg2) <- signSendRecv h rKey ("2", rId, SUB)
+      (C.cbDecrypt dh (C.cbNonce mId2) msg2, Right "hello 2") #== "restored message delivered"
+      Resp "3" _ (MSG mId3 _ _ msg3) <- signSendRecv h rKey ("3", rId, ACK mId2)
+      (C.cbDecrypt dh (C.cbNonce mId3) msg3, Right "hello 3") #== "restored message delivered"
+      Resp "4" _ (MSG mId4 _ _ msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
+      (C.cbDecrypt dh (C.cbNonce mId4) msg4, Right "hello 4") #== "restored message delivered"
+
+    logSize testStoreLogFile `shouldReturn` 1
+    -- the last message is not removed because it was not ACK'd
+    logSize testStoreMsgsFile `shouldReturn` 1
+
+    withSmpServerStoreMsgLogOn at testPort . runTest t $ \h -> do
+      rId <- readTVarIO recipientId
+      Just rKey <- readTVarIO recipientKey
+      Just dh <- readTVarIO dhShared
+      Resp "4" _ (MSG mId4 _ _ msg4) <- signSendRecv h rKey ("4", rId, SUB)
+      Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId4)
+      (C.cbDecrypt dh (C.cbNonce mId4) msg4, Right "hello 4") #== "restored message delivered"
+
+    logSize testStoreLogFile `shouldReturn` 1
+    logSize testStoreMsgsFile `shouldReturn` 0
+
+    removeFile testStoreLogFile
+    removeFile testStoreMsgsFile
+  where
+    runTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> ThreadId -> Expectation
+    runTest _ test' server = do
+      testSMPClient test' `shouldReturn` ()
+      killThread server
+
+    runClient :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+    runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 createAndSecureQueue :: Transport c => THandle c -> SndPublicVerifyKey -> IO (SenderId, RecipientId, RcvPrivateSignKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
