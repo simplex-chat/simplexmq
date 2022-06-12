@@ -43,6 +43,14 @@ If the Propose recipient wants to add the contact to the group they:
 
 The choice to accept or reject and the generated token should be locally committed before sending messages so conflicting messages are not sent.
 
+_TODO: If a malicious member receives all tokens from the other members, they can then fabricate legitimate Accept messages.
+However, members must only listen to an Accept messages from the user they invited (who they believe to be the proposee).
+This means that when all members agree on the proposee, the ability to fabricate an Accept message is useless.
+When member(s) mistake the proposee for a collaborator of the malicious member, the malicious member can help the collaborator trick the confused member into accepting the collaborator's membership.
+Seemingly, this offers little benefit, because the malicious parties cannot fool any other member.
+The confused party now believes the collaborator to be part of the group, but to what end?
+This can be avoided by moving the TokenSync messages to after receipt of the Accept message, but is less efficient._
+
 #### Proposee
 
 The proposee collects all Invite messages.
