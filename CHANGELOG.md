@@ -1,3 +1,9 @@
+# 2.3.0
+
+SMP server:
+
+- Save and restore undelivered messages, to avoid losing them
+
 # 2.2.0
 
 SMP server:
