@@ -2,7 +2,7 @@
 
 SMP server:
 
-- Save and restore undelivered messages, to avoid losing them
+- Save and restore undelivered messages, to avoid losing them. To save messages the server has to be stopped with SIGINT signal, if it is stopped with SIGTERM undelivered messages would not be saved.
 
 # 2.2.0
 

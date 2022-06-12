@@ -68,7 +68,7 @@ import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
-import UnliftIO.Directory (doesFileExist)
+import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
@@ -557,6 +557,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       liftIO $ mapM_ (restoreMsg ms quota) . B.lines =<< B.readFile f
+      renameFile f $ f <> ".bak"
       where
         restoreMsg ms quota s = case strDecode s of
           Left e -> B.putStrLn $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
