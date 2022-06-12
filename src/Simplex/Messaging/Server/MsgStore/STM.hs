@@ -7,6 +7,7 @@
 
 module Simplex.Messaging.Server.MsgStore.STM where
 
+import Control.Concurrent.STM.TBQueue (flushTBQueue)
 import Control.Monad (when)
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
@@ -35,6 +36,9 @@ instance MonadMsgStore STMMsgStore MsgQueue STM where
 
   delMsgQueue :: STMMsgStore -> RecipientId -> STM ()
   delMsgQueue st rId = TM.delete rId st
+
+  flushMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
+  flushMsgQueue st rId = TM.lookup rId st >>= maybe (pure []) (flushTBQueue . msgQueue)
 
 instance MonadMsgQueue MsgQueue STM where
   isFull :: MsgQueue -> STM Bool

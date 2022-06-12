@@ -35,6 +35,8 @@ SMP server uses in-memory persistence with an optional append-only log of create
 
 To enable store log, initialize server using `smp-server -l` command, or modify `smp-server.ini` created during initialization (uncomment `enable: on` option in the store log section). Use `smp-server --help` for other usage tips.
 
+Starting from version 2.3.0, when store log is enabled, the server would also enable saving undelivered messages on exit and restoring them on start. This can be disabled via a separate setting `restore_messages` in `smp-server.ini` file. Saving messages would only work if the server is stopped with SIGINT signal (keyboard interrupt), if it is stopped with SIGTERM signal the messages would not be saved.
+
 > **Please note:** On initialization SMP server creates a chain of two certificates: a self-signed CA certificate ("offline") and a server certificate used for TLS handshake ("online"). **You should store CA certificate private key securely and delete it from the server. If server TLS credential is compromised this key can be used to sign a new one, keeping the same server identity and established connections.** CA private key location by default is `/etc/opt/simplex/ca.key`.
 
 SMP server implements [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md).
@@ -61,6 +63,7 @@ Now `openssl version` should be saying "OpenSSL". You can now run `smp-server in
 ### SMP client library
 
 [SMP client](https://github.com/simplex-chat/simplexmq/blob/master/src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
+
 - execute commands with a functional API.
 - receive messages and other notifications via STM queue.
 - automatically send keep-alive commands.
@@ -118,11 +121,11 @@ Deployment on Linode is performed via StackScripts, which serve as recipes for L
 - Create a Linode account or login with an already existing one.
 - Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".
 - You can optionally configure the following parameters:
-    - SMP Server store log flag for queue persistence on server restart, recommended.
-    - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) to attach server address etc. as tags to Linode and to add A record to your 2nd level domain (e.g. `example.com` [domain should be created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scopes:
-      - read/write for "linodes"
-      - read/write for "domains"
-    - Domain name to use instead of Linode IP address, e.g. `smp1.example.com`.
+  - SMP Server store log flag for queue persistence on server restart, recommended.
+  - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) to attach server address etc. as tags to Linode and to add A record to your 2nd level domain (e.g. `example.com` [domain should be created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scopes:
+    - read/write for "linodes"
+    - read/write for "domains"
+  - Domain name to use instead of Linode IP address, e.g. `smp1.example.com`.
 - Choose the region and plan, Shared CPU Nanode with 1Gb is sufficient.
 - Provide ssh key to be able to connect to your Linode via ssh. If you haven't provided a Linode API token this step is required to login to your Linode and get the server's fingerprint either from the welcome message or from the file `/etc/opt/simplex/fingerprint` after server starts. See [Linode's guide on ssh](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) .
 - Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode. Connecting Linode IP address to provided domain name may take some additional time.

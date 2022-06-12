@@ -43,6 +43,7 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
+    storeMsgsFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
     -- | time after which the messages can be removed from the queues and check interval, seconds

@@ -96,7 +96,7 @@ supportedSMPVersions :: VersionRange
 supportedSMPVersions = mkVersionRange 1 1
 
 simplexMQVersion :: String
-simplexMQVersion = "2.2.1"
+simplexMQVersion = "2.3.0"
 
 -- * Transport connection class
 
