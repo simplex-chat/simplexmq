@@ -66,7 +66,6 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
-import System.IO.Error (isEOFError)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist)
@@ -538,9 +537,9 @@ randomId n = do
   atomically (C.pseudoRandomBytes n gVar)
 
 saveServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
-saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMsgs
+saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
   where
-    saveMsgs f = do
+    saveMessages f = do
       liftIO $ putStrLn $ "saving messages to file " <> f
       ms <- asks msgStore
       liftIO . withFile f WriteMode $ \h ->
@@ -551,23 +550,18 @@ saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMsgs
             >>= mapM_ (B.hPutStrLn h . strEncode . MsgLogRecord rId)
 
 restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
-restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMsgs
+restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
   where
-    restoreMsgs f = whenM (doesFileExist f) $ do
+    restoreMessages f = whenM (doesFileExist f) $ do
       liftIO $ putStrLn $ "restoring messages from file " <> f
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
-      liftIO . withFile f ReadMode $ restoreMessages ms quota
+      liftIO $ mapM_ (restoreMsg ms quota) . B.lines =<< B.readFile f
       where
-        restoreMessages ms quota h =
-          try (B.hGetLine h) >>= \case
-            Right s -> restoreMsg s >> restoreMessages ms quota h
-            Left (e :: IOError) -> unless (isEOFError e) . putStrLn $ "error reading file " <> f <> ", restoring messages aborted"
-          where
-            restoreMsg s = case strDecode s of
-              Left e -> B.putStrLn $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
-              Right (MsgLogRecord rId msg) -> do
-                full <- atomically $ do
-                  q <- getMsgQueue ms rId quota
-                  ifM (isFull q) (pure True) (writeMsg q msg >> pure False)
-                when full . B.putStrLn $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId msg)
+        restoreMsg ms quota s = case strDecode s of
+          Left e -> B.putStrLn $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
+          Right (MsgLogRecord rId msg) -> do
+            full <- atomically $ do
+              q <- getMsgQueue ms rId quota
+              ifM (isFull q) (pure True) (writeMsg q msg $> False)
+            when full . B.putStrLn $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId msg)
