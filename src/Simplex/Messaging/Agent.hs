@@ -755,8 +755,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                     Right _ -> prohibited >> ack
                     Left e@(AGENT A_DUPLICATE) -> do
                       withStore (\st -> getLastMsg st connId srvMsgId) >>= \case
-                        Just RcvMsg {userAck, msgMeta, msgBody = agentMsgBody}
-                          | userAck -> ack
+                        Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
+                          | userAck -> do
+                            ack
+                            withStore $ \st -> deleteMsg st connId internalId
                           | otherwise -> do
                             liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
                               AgentMessage _ (A_MSG body) -> do
@@ -792,10 +794,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                 SMP SMP.NO_MSG -> pure ()
                 e -> throwError e
             handleNotifyAck :: m () -> m ()
-            handleNotifyAck m =
-              m `catchError` \case
-                AGENT A_DUPLICATE -> ack
-                e -> notify (ERR e) >> ack
+            handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
         SMP.END ->
           atomically (TM.lookup srv smpClients $>>= tryReadTMVar >>= processEND)
             >>= logServer "<--" c srv rId

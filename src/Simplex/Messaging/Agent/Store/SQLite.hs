@@ -524,7 +524,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
     where
       rcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, msgBody, userAck) =
         let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
-         in RcvMsg {msgMeta, msgBody, userAck}
+         in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgBody, userAck}
 
   deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
   deleteMsg st connId msgId =

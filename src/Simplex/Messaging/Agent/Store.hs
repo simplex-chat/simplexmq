@@ -261,7 +261,8 @@ data RcvMsgData = RcvMsgData
   }
 
 data RcvMsg = RcvMsg
-  { msgMeta :: MsgMeta,
+  { internalId :: InternalId,
+    msgMeta :: MsgMeta,
     msgBody :: MsgBody,
     userAck :: Bool
   }
