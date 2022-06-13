@@ -70,7 +70,8 @@ class Monad m => MonadAgentStore s m where
   createSndMsg :: s -> ConnId -> SndMsgData -> m ()
   getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, PendingMsgData)
   getPendingMsgs :: s -> ConnId -> m [InternalId]
-  checkRcvMsg :: s -> ConnId -> InternalId -> m MsgId
+  setMsgUserAck :: s -> ConnId -> InternalId -> m MsgId
+  getLastMsg :: s -> ConnId -> SMP.MsgId -> m (Maybe RcvMsg)
   deleteMsg :: s -> ConnId -> InternalId -> m ()
 
   -- Double ratchet persistence
@@ -247,7 +248,7 @@ type PrevRcvMsgHash = MsgHash
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
 type PrevSndMsgHash = MsgHash
 
--- * Message data containers - used on Msg creation to reduce number of parameters
+-- * Message data containers
 
 data RcvMsgData = RcvMsgData
   { msgMeta :: MsgMeta,
@@ -257,6 +258,13 @@ data RcvMsgData = RcvMsgData
     internalRcvId :: InternalRcvId,
     internalHash :: MsgHash,
     externalPrevSndHash :: MsgHash
+  }
+
+data RcvMsg = RcvMsg
+  { internalId :: InternalId,
+    msgMeta :: MsgMeta,
+    msgBody :: MsgBody,
+    userAck :: Bool
   }
 
 data SndMsgData = SndMsgData

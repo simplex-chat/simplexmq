@@ -524,7 +524,7 @@ ackMessage' c connId msgId = do
     ack :: RcvQueue -> m ()
     ack rq = do
       let mId = InternalId msgId
-      srvMsgId <- withStore $ \st -> checkRcvMsg st connId mId
+      srvMsgId <- withStore $ \st -> setMsgUserAck st connId mId
       sendAck c rq srvMsgId `catchError` \case
         SMP SMP.NO_MSG -> pure ()
         e -> throwError e
@@ -744,15 +744,29 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
             (Just e2eDh, Nothing) -> do
               decryptClientMessage e2eDh clientMsg >>= \case
                 (SMP.PHEmpty, AgentMsgEnvelope _ encAgentMsg) ->
-                  agentClientMsg >>= \case
-                    Just (msgId, msgMeta, aMessage) -> case aMessage of
+                  tryError agentClientMsg >>= \case
+                    Right (Just (msgId, msgMeta, aMessage)) -> case aMessage of
                       HELLO -> helloMsg >> ack >> withStore (\st -> deleteMsg st connId msgId)
                       REPLY cReq -> replyMsg cReq >> ack >> withStore (\st -> deleteMsg st connId msgId)
                       -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                       A_MSG body -> do
                         logServer "<--" c srv rId "MSG <MSG>"
                         notify $ MSG msgMeta msgFlags body
-                    _ -> prohibited >> ack
+                    Right _ -> prohibited >> ack
+                    Left e@(AGENT A_DUPLICATE) -> do
+                      withStore (\st -> getLastMsg st connId srvMsgId) >>= \case
+                        Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
+                          | userAck -> do
+                            ack
+                            withStore $ \st -> deleteMsg st connId internalId
+                          | otherwise -> do
+                            liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
+                              AgentMessage _ (A_MSG body) -> do
+                                logServer "<--" c srv rId "MSG <MSG>"
+                                notify $ MSG msgMeta msgFlags body
+                              _ -> pure ()
+                        _ -> throwError e
+                    Left e -> throwError e
                   where
                     agentClientMsg :: m (Maybe (InternalId, MsgMeta, AMessage))
                     agentClientMsg = withStore $ \st -> do
@@ -767,7 +781,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                               recipient = (unId internalId, internalTs)
                               broker = (srvMsgId, systemToUTCTime srvTs)
                               msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId}
-                              rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash}
+                              rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash}
                           createRcvMsg st connId rcvMsg
                           pure $ Just (internalId, msgMeta, aMessage)
                         _ -> pure Nothing
@@ -780,10 +794,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
                 SMP SMP.NO_MSG -> pure ()
                 e -> throwError e
             handleNotifyAck :: m () -> m ()
-            handleNotifyAck m =
-              m `catchError` \case
-                AGENT A_DUPLICATE -> ack
-                e -> notify (ERR e) >> ack
+            handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
         SMP.END ->
           atomically (TM.lookup srv smpClients $>>= tryReadTMVar >>= processEND)
             >>= logServer "<--" c srv rId
