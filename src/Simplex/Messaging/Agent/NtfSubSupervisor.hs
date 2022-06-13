@@ -69,6 +69,12 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId, ntfPrivateKey, no
           addNtfSMPWorker smpServer
           addNtfWorker ntfServer
         (Just _, Just ntfServer) -> do
+          -- TODO subscription may have to be updated depending on current state:
+          -- TODO - e.g., if it was previously marked for deletion action has to be updated
+          -- TODO - should action depend on subscription status or always be NSAKey (NSANew if notifierId exists)
+          -- TODO   in case worker is currently deleting it? When deleting worker should check for updated_by_supervisor
+          -- TODO   and if it is set perform update instead of delete. If worker was not deleting it yet it should
+          -- TODO   idempotently replay commands.
           addNtfSMPWorker smpServer
           addNtfWorker ntfServer
         _ -> pure ()
