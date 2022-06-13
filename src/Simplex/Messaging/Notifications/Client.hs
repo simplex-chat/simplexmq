@@ -180,13 +180,9 @@ data NtfSubscription = NtfSubscription
     ntfSubId :: Maybe NtfSubscriptionId,
     ntfSubStatus :: NtfSubStatus,
     ntfSubActionTs :: UTCTime
-    -- ntfToken :: NtfToken
   }
   deriving (Show)
 
--- ? do we even need token in NtfSubscription? - client can only have one token at a time, tracked on environment level
--- newNtfSubscription :: SMPServer -> RecipientId -> Maybe NotifierId -> NtfServer -> NtfToken -> NtfSubStatus -> UTCTime -> NtfSubscription
--- newNtfSubscription smpServer rcvQueueId ntfQueueId ntfServer ntfToken ntfSubStatus ntfSubActionTs =
 newNtfSubscription :: SMPServer -> RecipientId -> Maybe NotifierId -> NtfServer -> NtfSubStatus -> UTCTime -> NtfSubscription
 newNtfSubscription smpServer rcvQueueId ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
   NtfSubscription

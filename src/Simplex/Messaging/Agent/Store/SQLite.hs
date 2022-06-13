@@ -713,23 +713,19 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   createNtfSubscription :: SQLiteStore -> NtfSubscription -> NtfSubOrSMPAction -> m ()
   createNtfSubscription st NtfSubscription {smpServer = (SMPServer host port _), rcvQueueId, ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
     liftIO . withTransaction st $ \db ->
-      case ntfAction of
-        NtfSubSMPAction nsa ->
-          DB.execute
-            db
-            [sql|
-              INSERT INTO ntf_subscriptions
-                (smp_host, smp_port, smp_rcv_id, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id, ntf_sub_status, ntf_sub_smp_action, ntf_sub_action_ts) VALUES (?,?,?,?,?,?,?,?,?,?)
-            |]
-            (host, port, rcvQueueId, ntfQueueId, ntfHost, ntfPort, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs)
-        NtfSubAction nsa ->
-          DB.execute
-            db
-            [sql|
-              INSERT INTO ntf_subscriptions
-                (smp_host, smp_port, smp_rcv_id, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id, ntf_sub_status, ntf_sub_action, ntf_sub_action_ts) VALUES (?,?,?,?,?,?,?,?,?,?)
-            |]
-            (host, port, rcvQueueId, ntfQueueId, ntfHost, ntfPort, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs)
+      DB.execute
+        db
+        [sql|
+          INSERT INTO ntf_subscriptions
+            (smp_host, smp_port, smp_rcv_id, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id,
+             ntf_sub_status, ntf_sub_action, ntf_sub_smp_action, ntf_sub_action_ts)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        |]
+        ( (host, port, rcvQueueId, ntfQueueId, ntfHost, ntfPort, ntfSubId)
+            :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs)
+        )
+    where
+      (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
   markNtfSubscriptionForDeletion :: SQLiteStore -> RcvQueue -> m ()
   markNtfSubscriptionForDeletion _st _rcvQueue = throwError SENotImplemented
@@ -750,25 +746,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
                 WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
               |]
               (ntfQueueId, ntfSubId, ntfSubStatus, updatedAt, smpHost, smpPort, rcvQueueId)
-          else case ntfAction of
-            NtfSubSMPAction nsa ->
-              DB.execute
-                db
-                [sql|
-                  UPDATE ntf_subscriptions
-                  SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ? updated_at = ?
-                  WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
-                |]
-                (ntfQueueId, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs, updatedAt, smpHost, smpPort, rcvQueueId)
-            NtfSubAction nsa ->
-              DB.execute
-                db
-                [sql|
-                  UPDATE ntf_subscriptions
-                  SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_action_ts = ? updated_at = ?
-                  WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
-                |]
-                (ntfQueueId, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs, updatedAt, smpHost, smpPort, rcvQueueId)
+          else
+            DB.execute
+              db
+              [sql|
+                UPDATE ntf_subscriptions
+                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ? updated_at = ?
+                WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
+              |]
+              (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs, updatedAt, smpHost, smpPort, rcvQueueId)
+    where
+      (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
   deleteNtfSubscription :: SQLiteStore -> RcvQueuePrimaryKey -> m ()
   deleteNtfSubscription _st _rcvQueue = throwError SENotImplemented
@@ -1252,3 +1240,7 @@ createWithRandomId gVar create = tryCreate 3
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
 randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
+
+ntfSubAndSMPAction :: NtfSubOrSMPAction -> (Maybe NtfSubAction, Maybe NtfSubSMPAction)
+ntfSubAndSMPAction (NtfSubAction nsa) = (Just nsa, Nothing)
+ntfSubAndSMPAction (NtfSubSMPAction nsa) = (Nothing, Just nsa)
