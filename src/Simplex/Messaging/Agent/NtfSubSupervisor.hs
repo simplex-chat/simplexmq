@@ -30,7 +30,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
+import Simplex.Messaging.Notifications.Protocol (NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -58,10 +58,10 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId, notifierId}, cmd)
           currentTime <- liftIO getCurrentTime
           case notifierId of
             (Just nId) -> do
-              let newSub = newNtfSubscription smpServer rcvId (Just nId) ntfServer NSKey currentTime
+              let newSub = newNtfSubscription smpServer rcvId (Just nId) ntfServer NASNKey currentTime
               withStore $ \st -> createNtfSubscription st newSub (NtfSubAction NSANew)
             _ -> do
-              let newSub = newNtfSubscription smpServer rcvId Nothing ntfServer NSStarted currentTime
+              let newSub = newNtfSubscription smpServer rcvId Nothing ntfServer NASStarted currentTime
               withStore $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
@@ -115,7 +115,7 @@ runNtfWorker c srv doWork = forever $ do
                   ntfSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
                   ts <- liftIO getCurrentTime
                   withStore $ \st ->
-                    updateNtfSubscription st rqPK ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NSNew, ntfSubActionTs = ts} (NtfSubAction NSACheck)
+                    updateNtfSubscription st rqPK ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASSNew, ntfSubActionTs = ts} (NtfSubAction NSACheck)
                 | otherwise -> pure () -- error
               _ -> pure () -- error
             NSACheck -> pure ()
@@ -153,7 +153,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                   ts <- liftIO getCurrentTime
                   withStore $ \st -> do
                     setRcvQueueNotifierId st rqPK nId
-                    updateNtfSubscription st rqPK ntfSub {ntfQueueId = Just nId, ntfSubStatus = NSKey, ntfSubActionTs = ts} (NtfSubAction NSANew)
+                    updateNtfSubscription st rqPK ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASNKey, ntfSubActionTs = ts} (NtfSubAction NSANew)
                   kickNtfWorker_ ntfWorkers ntfServer
         Nothing -> noWorkToDo
     _ -> noWorkToDo

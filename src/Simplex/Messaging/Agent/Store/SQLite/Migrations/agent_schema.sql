@@ -174,8 +174,6 @@ CREATE TABLE ntf_subscriptions(
   smp_port TEXT NULL,
   smp_rcv_id BLOB NULL,
   smp_ntf_id BLOB,
-  -- ntf_provider TEXT NOT NULL, -- apn
-  -- ntf_token TEXT NOT NULL, -- or BLOB?
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
   ntf_sub_id BLOB,
@@ -191,6 +189,4 @@ CREATE TABLE ntf_subscriptions(
   ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
-  -- FOREIGN KEY(ntf_provider, ntf_token, ntf_host, ntf_port) REFERENCES ntf_tokens(provider, device_token, ntf_host, ntf_port)
-  -- ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;

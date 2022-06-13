@@ -10,6 +10,7 @@ module Simplex.Messaging.Notifications.Client where
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time (UTCTime)
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -18,7 +19,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Parsers (blobFieldDecoder)
+import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Protocol (NotifierId, ProtocolServer, RecipientId, SMPServer)
 
 type NtfServer = ProtocolServer
@@ -172,18 +173,63 @@ instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
 
 instance ToField NtfSubSMPAction where toField = toField . smpEncode
 
+data NtfAgentSubStatus
+  = -- | subscription started
+    NASStarted
+  | -- | state after NKEY
+    NASNKey
+  | -- | state after SNEW
+    NASSNew
+  | -- | connected and subscribed to SMP server
+    NASActive
+  | -- | communicated by notification server that NEND received (we currently do not support it)
+    NASInactive
+  | -- | communicated by notification server that SMP AUTH error occured
+    NASSMPAuth
+  | -- | state after SDEL (subscription is deleted on notification server)
+    NASSDeleted
+  | -- | state after NDEL (notifier ID and Key are deleted on SMP server and subscription is deleted locally)
+    NASDeleted
+  deriving (Eq, Show)
+
+instance Encoding NtfAgentSubStatus where
+  smpEncode = \case
+    NASStarted -> "START"
+    NASNKey -> "NKEY"
+    NASSNew -> "SNEW"
+    NASActive -> "ACTIVE"
+    NASInactive -> "INACTIVE"
+    NASSMPAuth -> "SMP_AUTH"
+    NASSDeleted -> "SDELETED"
+    NASDeleted -> "DELETED"
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "START" -> pure NASStarted
+      "NKEY" -> pure NASNKey
+      "SNEW" -> pure NASSNew
+      "ACTIVE" -> pure NASActive
+      "INACTIVE" -> pure NASInactive
+      "SMP_AUTH" -> pure NASSMPAuth
+      "SDELETED" -> pure NASSDeleted
+      "DELETED" -> pure NASDeleted
+      _ -> fail "bad NtfAgentSubStatus"
+
+instance FromField NtfAgentSubStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
+
+instance ToField NtfAgentSubStatus where toField = toField . decodeLatin1 . smpEncode
+
 data NtfSubscription = NtfSubscription
   { smpServer :: SMPServer,
     rcvQueueId :: RecipientId,
     ntfQueueId :: Maybe NotifierId,
     ntfServer :: NtfServer,
     ntfSubId :: Maybe NtfSubscriptionId,
-    ntfSubStatus :: NtfSubStatus,
+    ntfSubStatus :: NtfAgentSubStatus,
     ntfSubActionTs :: UTCTime
   }
   deriving (Show)
 
-newNtfSubscription :: SMPServer -> RecipientId -> Maybe NotifierId -> NtfServer -> NtfSubStatus -> UTCTime -> NtfSubscription
+newNtfSubscription :: SMPServer -> RecipientId -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NtfSubscription
 newNtfSubscription smpServer rcvQueueId ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
   NtfSubscription
     { smpServer,
