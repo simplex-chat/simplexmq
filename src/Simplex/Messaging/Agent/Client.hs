@@ -583,5 +583,5 @@ cryptoError = \case
   C.CryptoHeaderError _ -> AGENT A_ENCRYPTION
   C.AESDecryptError -> AGENT A_ENCRYPTION
   C.CBDecryptError -> AGENT A_ENCRYPTION
-  -- C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
+  C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
   e -> INTERNAL $ show e

@@ -52,6 +52,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
@@ -67,6 +68,7 @@ import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
+import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
@@ -90,12 +92,13 @@ smpServer :: forall m. (MonadUnliftIO m, MonadReader Env m) => TMVar Bool -> m (
 smpServer started = do
   s <- asks server
   cfg@ServerConfig {transports} <- asks config
+  restoreServerMessages
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
       map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg
     )
-    `finally` withLog closeStoreLog
+    `finally` (withLog closeStoreLog >> saveServerMessages)
   where
     runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
@@ -593,3 +596,34 @@ randomId :: (MonadUnliftIO m, MonadReader Env m) => Int -> m ByteString
 randomId n = do
   gVar <- asks idsDrg
   atomically (C.pseudoRandomBytes n gVar)
+
+saveServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
+saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
+  where
+    saveMessages f = do
+      liftIO $ putStrLn $ "saving messages to file " <> f
+      ms <- asks msgStore
+      liftIO . withFile f WriteMode $ \h ->
+        readTVarIO ms >>= mapM_ (saveQueueMsgs ms h) . M.keys
+      where
+        saveQueueMsgs ms h rId =
+          atomically (flushMsgQueue ms rId)
+            >>= mapM_ (B.hPutStrLn h . strEncode . MsgLogRecord rId)
+
+restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
+restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
+  where
+    restoreMessages f = whenM (doesFileExist f) $ do
+      liftIO $ putStrLn $ "restoring messages from file " <> f
+      ms <- asks msgStore
+      quota <- asks $ msgQueueQuota . config
+      liftIO $ mapM_ (restoreMsg ms quota) . B.lines =<< B.readFile f
+      renameFile f $ f <> ".bak"
+      where
+        restoreMsg ms quota s = case strDecode s of
+          Left e -> B.putStrLn $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
+          Right (MsgLogRecord rId msg) -> do
+            full <- atomically $ do
+              q <- getMsgQueue ms rId quota
+              ifM (isFull q) (pure True) (writeMsg q msg $> False)
+            when full . B.putStrLn $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId msg)

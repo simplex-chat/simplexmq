@@ -257,6 +257,12 @@ instance Encoding MsgFlags where
     notification <- smpP <* A.takeTill (== ' ')
     pure MsgFlags {notification}
 
+instance StrEncoding MsgFlags where
+  strEncode = smpEncode
+  {-# INLINE strEncode #-}
+  strP = smpP
+  {-# INLINE strP #-}
+
 noMsgFlags :: MsgFlags
 noMsgFlags = MsgFlags {notification = False}
 

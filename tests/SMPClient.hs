@@ -43,6 +43,9 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
 
+testStoreMsgsFile :: FilePath
+testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
+
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
   runTransportClient testHost testPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
@@ -60,6 +63,7 @@ cfg =
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLogFile = Nothing,
+      storeMsgsFile = Nothing,
       allowNewQueues = True,
       messageExpiration = Just defaultMessageExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
@@ -70,6 +74,9 @@ cfg =
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedSMPServerVRange
     }
+
+withSmpServerStoreMsgLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile}

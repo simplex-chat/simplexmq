@@ -26,9 +26,11 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
+import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
@@ -98,6 +100,14 @@ instance StrEncoding Bool where
   {-# INLINE strEncode #-}
   strP = smpP
   {-# INLINE strP #-}
+
+instance StrEncoding Int64 where
+  strEncode = B.pack . show
+  strP = A.decimal
+
+instance StrEncoding SystemTime where
+  strEncode = strEncode . systemSeconds
+  strP = MkSystemTime <$> strP <*> pure 0
 
 -- lists encode/parse as comma-separated strings
 strEncodeList :: StrEncoding a => [a] -> ByteString

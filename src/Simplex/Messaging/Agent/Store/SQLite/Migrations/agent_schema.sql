@@ -86,6 +86,7 @@ CREATE TABLE rcv_messages(
   internal_hash BLOB NOT NULL,
   external_prev_snd_hash BLOB NOT NULL,
   integrity BLOB NOT NULL,
+  user_ack INTEGER NULL DEFAULT 0,
   PRIMARY KEY(conn_id, internal_rcv_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
