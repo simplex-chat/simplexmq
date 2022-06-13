@@ -32,7 +32,7 @@ CREATE TABLE ntf_subscriptions (
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
   ntf_sub_id BLOB,
-  ntf_sub_status TEXT NOT NULL, -- new, created, active, pending, error_auth
+  ntf_sub_status TEXT NOT NULL, -- started, key, new, created, active, pending, error_auth
   ntf_sub_action TEXT, -- if there is an action required on this subscription: create / check / delete
   ntf_sub_smp_action TEXT, -- action with SMP server: nkey; only one of this and ntf_sub_action can (should) be not null in same record
   ntf_sub_action_ts TEXT, -- the earliest time for the action, e.g. checks can be scheduled every X hours

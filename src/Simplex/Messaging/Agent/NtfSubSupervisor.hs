@@ -30,7 +30,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (SMPQueueNtf))
+import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -100,9 +100,9 @@ runNtfWorker c srv doWork = forever $ do
   ntfToken_ <- getNtfToken
   nextSubAction <- withStore (`getNextNtfSubAction` srv)
   case (ntfToken_, nextSubAction) of
-    (Nothing, _) -> cantDoWork
-    (Just NtfToken {ntfTokenId = Nothing}, _) -> cantDoWork
-    (Just _, Nothing) -> cantDoWork
+    (Nothing, _) -> noWorkToDo
+    (Just NtfToken {ntfTokenId = Nothing}, _) -> noWorkToDo
+    (Just _, Nothing) -> noWorkToDo
     -- ? don't read RcvQueue in getNextNtfSubAction / use notifierId and ntfPrivateKey and don't parameterize command
     (Just tkn@NtfToken {ntfTokenId = Just tknId}, Just (ntfSub@NtfSubscription {smpServer, rcvQueueId}, ntfSubAction, _rq)) -> do
       let rqPK = (smpServer, rcvQueueId)
@@ -117,7 +117,7 @@ runNtfWorker c srv doWork = forever $ do
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
   where
-    cantDoWork = void . atomically $ tryTakeTMVar doWork
+    noWorkToDo = void . atomically $ tryTakeTMVar doWork
 
 runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfSMPWorker c srv doWork = forever $ do

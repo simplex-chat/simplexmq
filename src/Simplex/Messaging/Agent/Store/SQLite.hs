@@ -736,21 +736,21 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
               |]
               (ntfQueueId, ntfSubId, ntfSubStatus, updatedAt, smpHost, smpPort, rcvQueueId)
           else case ntfAction of
-            NtfSubAction nsa ->
-              DB.execute
-                db
-                [sql|
-                  UPDATE ntf_subscriptions
-                  SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_action_ts = ? updated_at = ?
-                  WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
-                |]
-                (ntfQueueId, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs, updatedAt, smpHost, smpPort, rcvQueueId)
             NtfSubSMPAction nsa ->
               DB.execute
                 db
                 [sql|
                   UPDATE ntf_subscriptions
                   SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ? updated_at = ?
+                  WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
+                |]
+                (ntfQueueId, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs, updatedAt, smpHost, smpPort, rcvQueueId)
+            NtfSubAction nsa ->
+              DB.execute
+                db
+                [sql|
+                  UPDATE ntf_subscriptions
+                  SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_action_ts = ? updated_at = ?
                   WHERE smp_host = ? AND smp_port = ? AND smp_rcv_id = ?
                 |]
                 (ntfQueueId, ntfSubId, ntfSubStatus, nsa, ntfSubActionTs, updatedAt, smpHost, smpPort, rcvQueueId)
