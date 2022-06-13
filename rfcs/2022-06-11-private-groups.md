@@ -10,21 +10,27 @@ Agents need new behavior in soliciting proposals for membership changes, and for
 
 ## The Protocol
 
-To give a high-level summary, we at first ignore contention in desired membership changes.
-
 ### Additions
 
 A formal specification of the protocol is defined in TLA+ and can be defined [here](./2022-06-11-private-groups/groups_invite_without_competition.tla).
 
-#### Proposer (phase 1)
+The protocol has four roles:
 
-To add a group member, a current member proposes a contact (henceforth the proposer and invitee respectively).
+  1. The proposer, a group member who wants to add a new user
+  1. The invitee, the user the proposer wants to add to the group
+  1. The leader, the user who originally established the group and who orchestrates all proposals on behalf of proposers
+  1. The approvers, all current group members who are neither proposing or leading
+
+A centralized leader is not a drawback in for this algorithm, because in order to validate that all current members have direct connections with the invitee, all members must actively participate.
+The leader allows for a simpler centralized approach, without compromising availability.
+
+#### Proposer
+
 The proposer generates a random invitation identifier and a token.
-They broadcast these to all other current members as a Propose message, also including an informal contact description (such as their contact name).
+The proposer sends an Propose message to the leader that includes the invitation identifier and an informal description of the invitee (such as their contact name).
+The proposer also sends an Invite message to the invitee that includes the token and the current membership count of the group.
 
-The proposer also sends an Invite message to the invitee that includes their token and the current membership count of the group.
-
-#### Non-Proposing Member (phase 1)
+#### Leader and Acceptors (phase 1)
 
 Upon receipt of a Propose message, the user is prompted to see if they want to add the invitee to the group.
 Since the description of the invitee is informal, they may also have to manually select which of their contacts match the description.
@@ -39,7 +45,8 @@ If the Propose recipient wants to add the contact to the group they:
   1. Generate a token.
   1. Store the invitation identifier, proposer's token, and their token.
   1. Broadcast a SyncToken message that includes the invitation identifier and their token.
-  1. Send an Invite message to the invitee that includes the invitation identifier, their token, and the count of current members.
+  1. The Leader: Rebroadcasts the Propose message to all Approvers.
+  1. Approvers: Send an Invite message to the invitee that includes the invitation identifier, their token, and the count of current members.
 
 The choice to accept or reject and the generated token should be locally committed before sending messages so conflicting messages are not sent.
 
@@ -62,9 +69,9 @@ To accept, the invitee responds to all contacts with an Accept message that incl
 
 In the case of contact confusion between members, it is impossible for anyone outside of the group to send an Accept message as they never collect the correct number of tokens.
 
-#### Members (phase 2)
+#### Approvers (phase 2)
 
-Once a member has received a SyncToken message from all other non-proposing members and an Accept message from the invitee, they compare the tokens received.
+Once a member has received a SyncToken message from all other members and an Accept message from the invitee, they compare the tokens received.
 If the invitee can present a match, then the member now knows that all parties have agreed to extend membership.
 The member locally commits this result and establishes a new connection with the invitee specifically for group communication.
 

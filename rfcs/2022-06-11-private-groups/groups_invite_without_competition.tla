@@ -19,19 +19,11 @@ VARIABLES
     perceived_invitee,
     established
 
-\* TODO: This ignores the complexities of competing proposers, or competition
-\* over other membership actions (leave or kick).  These can create uncertainty
-\* about who is in the group currently, which makes it complicated to ensure
-\* that all (and only) current group members are consulted.
-\*
-\* High level idea to solve this: proposers must commit to one action at a
-\* time, each group member is ranked (order of admittence), and higher ranked
-\* proposers can override the current action up until its final stages (drawing
-\* a similarity to Paxos).  The highest ranking group member is (likely, TBD)
-\* live in all their decisions, and the 2nd ranked is live if the higher member
-\* eventually concedes.  That latter is inductive to the lowest rank.  If the
-\* highest ranked member permanently disappears, then then group can never
-\* change again.  Luckily, a brand new group can be formed in this worst case.
+\* Missing in this spec is the Leader role, who orchestrates all changes in
+\* membership so that we can handle contention.  Here, we simply consider the
+\* Proposer and Leader to be one and the same.  It is a small leap to consider
+\* that the reason the Proposer is proposing the change is because they were
+\* prompted by another member.
 Proposer ==
     CHOOSE member \in Members : TRUE
 
