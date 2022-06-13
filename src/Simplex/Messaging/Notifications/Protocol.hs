@@ -391,14 +391,6 @@ instance Encoding NtfSubStatus where
       "SMP_AUTH" -> pure NSSMPAuth
       _ -> fail "bad NtfSubStatus"
 
-instance FromField NtfSubStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
-
-instance ToField NtfSubStatus where toField = toField . decodeLatin1 . smpEncode
-
-instance ToJSON NtfSubStatus where
-  toEncoding = JE.text . decodeLatin1 . smpEncode
-  toJSON = J.String . decodeLatin1 . smpEncode
-
 data NtfTknStatus
   = -- | Token created in DB
     NTNew
