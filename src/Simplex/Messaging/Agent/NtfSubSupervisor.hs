@@ -86,6 +86,8 @@ processNtfSub c (connId, cmd) = do
       case ntfServer_ of
         (Just ntfServer) -> addNtfWorker ntfServer
         _ -> pure ()
+    NSCNtfWorker ntfServer ->
+      addNtfWorker ntfServer
   where
     addNtfWorker = addWorker ntfWorkers runNtfWorker
     addNtfSMPWorker = addWorker ntfSMPWorkers runNtfSMPWorker
@@ -129,7 +131,7 @@ runNtfWorker c srv doWork = forever $ do
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
 
-runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar () -> m ()
 runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
   getNtfToken_ >>= \case
@@ -155,21 +157,14 @@ runNtfSMPWorker c srv doWork = forever $ do
                   withStore $ \st -> do
                     setRcvQueueNotifierId st connId nId
                     updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASNKey, ntfSubActionTs = ts} (NtfSubAction NSANew)
-                  kickNtfWorker_ ntfWorkers ntfServer
+                  ns <- asks ntfSupervisor
+                  atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
         Nothing -> noWorkToDo
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
-
-kickNtfWorker_ :: AgentMonad m => (NtfSupervisor -> TMap ProtocolServer (TMVar (), Async ())) -> ProtocolServer -> m ()
-kickNtfWorker_ wsSel srv = do
-  ws <- asks $ wsSel . ntfSupervisor
-  atomically $
-    TM.lookup srv ws >>= \case
-      Just (doWork, _) -> void $ tryPutTMVar doWork ()
-      Nothing -> pure ()
 
 getNtfToken_ :: AgentMonad m => m (Maybe NtfToken)
 getNtfToken_ = do
