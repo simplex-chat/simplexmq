@@ -686,7 +686,6 @@ initializeNtfSubQ c tkn = do
     nsUpdateToken ns tkn
     getSubscriptions c
   forM_ connIds $ \connId -> atomically $ sendNtfSubCommand ns (connId, NSCCreate)
-    -- rq <- withStore $ \st -> getRcvQueue st connId
 
 -- TODO
 -- There should probably be another function to cancel all subscriptions that would flush the queue first,
