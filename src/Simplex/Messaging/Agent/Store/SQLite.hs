@@ -698,7 +698,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           db
           [sql|
             SELECT s.host, s.port, s.key_hash, ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
-              nsb.smp_rcv_id, nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action_ts
+              nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action_ts
             FROM ntf_subscriptions nsb
             JOIN servers s ON s.host = nsb.smp_host, s.port = nsb.smp_port
             JOIN ntf_servers ns USING (ntf_host, ntf_port)
@@ -706,24 +706,24 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           |]
           (Only connId)
     where
-      ntfSubscription [(smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, rcvQueueId, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs)] =
+      ntfSubscription [(smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs)] =
         let smpServer = SMPServer smpHost smpPort smpKeyHash
             ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
-         in Just NtfSubscription {connId, smpServer, rcvQueueId, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
+         in Just NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
       ntfSubscription _ = Nothing
 
   createNtfSubscription :: SQLiteStore -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  createNtfSubscription st NtfSubscription {smpServer = (SMPServer host port _), rcvQueueId, ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
+  createNtfSubscription st NtfSubscription {smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
     liftIO . withTransaction st $ \db ->
       DB.execute
         db
         [sql|
           INSERT INTO ntf_subscriptions
-            (smp_host, smp_port, smp_rcv_id, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id,
+            (smp_host, smp_port, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id,
              ntf_sub_status, ntf_sub_action, ntf_sub_smp_action, ntf_sub_action_ts)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
         |]
-        ( (host, port, rcvQueueId, ntfQueueId, ntfHost, ntfPort, ntfSubId)
+        ( (host, port, ntfQueueId, ntfHost, ntfPort, ntfSubId)
             :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs)
         )
     where
@@ -772,7 +772,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             db
             [sql|
               SELECT ns.connId, s.host, s.port, s.key_hash,
-                ns.smp_rcv_id, ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
+                ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
               FROM ntf_subscriptions ns
               JOIN servers s ON s.host = ns.smp_host, s.port = ns.smp_port
               WHERE ns.ntf_host = ? AND ns.ntf_port = ? AND ns.ntf_sub_action IS NOT NULL
@@ -787,9 +787,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           pure $ (\rq -> Just (ntfSub, ntfSubAction, rq)) =<< rq_
         Nothing -> pure Nothing
     where
-      ntfSubscription [(connId, smpHost, smpPort, smpKeyHash, rcvQueueId, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
+      ntfSubscription [(connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
         let smpServer = SMPServer smpHost smpPort smpKeyHash
-         in Just (NtfSubscription {connId, smpServer, rcvQueueId, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
+         in Just (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
       ntfSubscription _ = Nothing
 
   getNextNtfSubSMPAction :: SQLiteStore -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
@@ -801,7 +801,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             db
             [sql|
               SELECT ns.connId, s.ntf_host, s.ntf_port, s.ntf_key_hash,
-                ns.smp_rcv_id, ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
+                ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
               FROM ntf_subscriptions ns
               JOIN ntf_servers s USING (ntf_host, ntf_port)
               WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL
@@ -816,9 +816,9 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           pure $ (\rq -> Just (ntfSub, ntfSubAction, rq)) =<< rq_
         Nothing -> pure Nothing
     where
-      ntfSubscription [(connId, ntfHost, ntfPort, ntfKeyHash, rcvQueueId, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
+      ntfSubscription [(connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
         let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
-         in Just (NtfSubscription {connId, smpServer, rcvQueueId, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
+         in Just (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
       ntfSubscription _ = Nothing
 
 -- * Auxiliary helpers

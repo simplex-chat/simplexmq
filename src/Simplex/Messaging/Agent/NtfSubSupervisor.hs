@@ -54,16 +54,16 @@ processNtfSub c (connId, cmd) = do
   case cmd of
     NSCCreate -> do
       sub_ <- withStore $ \st -> getNtfSubscription st connId
-      RcvQueue {notifierId, server = smpServer, rcvId} <- withStore $ \st -> getRcvQueue st connId
+      RcvQueue {notifierId, server = smpServer} <- withStore $ \st -> getRcvQueue st connId
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
           case notifierId of
             (Just nId) -> do
-              let newSub = newNtfSubscription connId smpServer rcvId (Just nId) ntfServer NASNKey currentTime
+              let newSub = newNtfSubscription connId smpServer (Just nId) ntfServer NASNKey currentTime
               withStore $ \st -> createNtfSubscription st newSub (NtfSubAction NSANew)
             _ -> do
-              let newSub = newNtfSubscription connId smpServer rcvId Nothing ntfServer NASStarted currentTime
+              let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASStarted currentTime
               withStore $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
