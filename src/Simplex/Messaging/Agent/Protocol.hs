@@ -82,6 +82,7 @@ module Simplex.Messaging.Agent.Protocol
     QueueStatus (..),
     ACorrId,
     AgentMsgId,
+    AgentPhase (..),
 
     -- * Encode/decode
     serializeCommand,
@@ -223,10 +224,33 @@ data ACommand (p :: AParty) where
   DEL :: ACommand Client
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
+  PHASE :: AgentPhase -> ACommand Agent
 
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
+
+-- | Agent phase allows to have to agent processes concurrently working with the same database
+data AgentPhase
+  = -- | agent is operating normally
+    APActive
+  | -- | agent is paused - no new network operations will be started - they will STM-retry until agentPhase flag is APActive
+    APPaused
+  | -- | agent is suspended - no new database operations will be started - they will STM-retry until agentPhase flag is APActive or APPaused
+    APSuspended
+  deriving (Eq, Show)
+
+instance StrEncoding AgentPhase where
+  strEncode = \case
+    APActive -> "ACTIVE"
+    APPaused -> "PAUSED"
+    APSuspended -> "SUSPENDED"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "ACTIVE" -> pure APActive
+      "PAUSED" -> pure APPaused
+      "SUSPENDED" -> pure APSuspended
+      _ -> fail "bad AgentPhase"
 
 data ConnectionMode = CMInvitation | CMContact
   deriving (Eq, Show)
@@ -908,6 +932,7 @@ serializeCommand = \case
   CON -> "CON"
   ERR e -> "ERR " <> strEncode e
   OK -> "OK"
+  PHASE p -> "PHASE " <> strEncode p
   where
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis

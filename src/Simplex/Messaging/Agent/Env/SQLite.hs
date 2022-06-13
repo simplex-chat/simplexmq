@@ -24,6 +24,7 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
+import Control.Concurrent.STM (retry)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -122,6 +123,7 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
+    agentPhase :: TVar AgentPhase,
     ntfSupervisor :: NtfSupervisor
   }
 
@@ -131,8 +133,9 @@ newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
   store <- liftIO $ createSQLiteStore dbFile dbPoolSize Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
+  agentPhase <- newTVarIO APActive
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+  return Env {config, store, idsDrg, clientCounter, randomServer, agentPhase, ntfSupervisor}
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
@@ -154,6 +157,10 @@ newNtfSubSupervisor qSize = do
 withStore :: AgentMonad m => (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
 withStore action = do
   st <- asks store
+  aPhase <- asks agentPhase
+  atomically $ do
+    p <- readTVar aPhase
+    when (p == APSuspended) retry
   runExceptT (action st `E.catch` handleInternal) >>= \case
     Right c -> return c
     Left e -> throwError $ storeError e

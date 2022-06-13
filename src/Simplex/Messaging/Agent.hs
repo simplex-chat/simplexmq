@@ -56,11 +56,12 @@ module Simplex.Messaging.Agent
     enableNtfCron,
     checkNtfToken,
     deleteNtfToken,
+    setAgentPhase,
     logConnection,
   )
 where
 
-import Control.Concurrent.STM (stateTVar)
+import Control.Concurrent.STM (retry, stateTVar)
 import Control.Logger.Simple (logInfo, showText)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -190,6 +191,9 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
+
+setAgentPhase :: AgentErrorMonad m => AgentClient -> AgentPhase -> m ()
+setAgentPhase c = withAgentEnv c . setAgentPhase'
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -695,8 +699,12 @@ initializeNtfSubQ c tkn = do
 -- It is an optimization, but I am thinking how it would behave if a user were to flip on/off quickly several times.
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
-setNtfServers' c servers = do
-  atomically $ writeTVar (ntfServers c) servers
+setNtfServers' c = atomically . writeTVar (ntfServers c)
+
+setAgentPhase' :: AgentMonad m => AgentPhase -> m ()
+setAgentPhase' p = do
+  aPhase <- asks agentPhase
+  atomically $ writeTVar aPhase p
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do
@@ -717,6 +725,10 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) = do
+  aPhase <- asks agentPhase
+  atomically $ do
+    p <- readTVar aPhase
+    when (p /= APActive) $ writeTBQueue subQ ("", "", PHASE p) >> retry
   withStore (\st -> getRcvConn st srv rId) >>= \case
     SomeConn _ conn@(DuplexConnection cData rq _) -> processSMP conn cData rq
     SomeConn _ conn@(RcvConnection cData rq) -> processSMP conn cData rq
