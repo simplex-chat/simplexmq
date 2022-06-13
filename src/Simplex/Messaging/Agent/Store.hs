@@ -54,8 +54,8 @@ class Monad m => MonadAgentStore s m where
   getRcvQueue :: s -> ConnId -> m RcvQueue
 
   -- RcvQueue notifier key and ID
-  setRcvQueueNotifierKey :: s -> RcvQueuePrimaryKey -> NtfPublicVerifyKey -> NtfPrivateSignKey -> m ()
-  setRcvQueueNotifierId :: s -> RcvQueuePrimaryKey -> NotifierId -> m ()
+  setRcvQueueNotifierKey :: s -> ConnId -> NtfPublicVerifyKey -> NtfPrivateSignKey -> m ()
+  setRcvQueueNotifierId :: s -> ConnId -> NotifierId -> m ()
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
@@ -97,11 +97,11 @@ class Monad m => MonadAgentStore s m where
   removeNtfToken :: s -> NtfToken -> m ()
 
   -- Notification subscription persistence
-  getNtfSubscription :: s -> RcvQueue -> m (Maybe NtfSubscription)
+  getNtfSubscription :: s -> ConnId -> m (Maybe NtfSubscription)
   createNtfSubscription :: s -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
-  updateNtfSubscription :: s -> RcvQueuePrimaryKey -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  deleteNtfSubscription :: s -> RcvQueuePrimaryKey -> m ()
+  markNtfSubscriptionForDeletion :: s -> ConnId -> m ()
+  updateNtfSubscription :: s -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> m ()
+  deleteNtfSubscription :: s -> ConnId -> m ()
   getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
   getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
 
@@ -131,8 +131,6 @@ data RcvQueue = RcvQueue
     notifierId :: Maybe NotifierId
   }
   deriving (Eq, Show)
-
-type RcvQueuePrimaryKey = (SMPServer, SMP.RecipientId)
 
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
 data SndQueue = SndQueue

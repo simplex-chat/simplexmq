@@ -21,6 +21,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Protocol (NotifierId, ProtocolServer, RecipientId, SMPServer)
+import Simplex.Messaging.Agent.Protocol (ConnId)
 
 type NtfServer = ProtocolServer
 
@@ -219,7 +220,8 @@ instance FromField NtfAgentSubStatus where fromField = fromTextField_ $ either (
 instance ToField NtfAgentSubStatus where toField = toField . decodeLatin1 . smpEncode
 
 data NtfSubscription = NtfSubscription
-  { smpServer :: SMPServer,
+  { connId :: ConnId,
+    smpServer :: SMPServer,
     rcvQueueId :: RecipientId,
     ntfQueueId :: Maybe NotifierId,
     ntfServer :: NtfServer,
@@ -229,10 +231,11 @@ data NtfSubscription = NtfSubscription
   }
   deriving (Show)
 
-newNtfSubscription :: SMPServer -> RecipientId -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NtfSubscription
-newNtfSubscription smpServer rcvQueueId ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
+newNtfSubscription :: ConnId -> SMPServer -> RecipientId -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NtfSubscription
+newNtfSubscription connId smpServer rcvQueueId ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
   NtfSubscription
-    { smpServer,
+    { connId,
+      smpServer,
       rcvQueueId,
       ntfQueueId,
       ntfServer,

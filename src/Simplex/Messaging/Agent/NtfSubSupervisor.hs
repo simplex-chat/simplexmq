@@ -26,6 +26,7 @@ import qualified Data.Map.Strict as M
 import Data.Time (getCurrentTime)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
+import Simplex.Messaging.Agent.Protocol (ConnId)
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
@@ -47,21 +48,22 @@ runNtfSupervisor c = forever $ do
     Left e -> liftIO $ print e
     Right _ -> return ()
 
-processNtfSub :: forall m. AgentMonad m => AgentClient -> (RcvQueue, NtfSupervisorCommand) -> m ()
-processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId, notifierId}, cmd) = do
+processNtfSub :: forall m. AgentMonad m => AgentClient -> (ConnId, NtfSupervisorCommand) -> m ()
+processNtfSub c (connId, cmd) = do
   ntfServer_ <- getNtfServer c
   case cmd of
     NSCCreate -> do
-      sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
+      sub_ <- withStore $ \st -> getNtfSubscription st connId
+      RcvQueue {notifierId, server = smpServer, rcvId} <- withStore $ \st -> getRcvQueue st connId
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
           case notifierId of
             (Just nId) -> do
-              let newSub = newNtfSubscription smpServer rcvId (Just nId) ntfServer NASNKey currentTime
+              let newSub = newNtfSubscription connId smpServer rcvId (Just nId) ntfServer NASNKey currentTime
               withStore $ \st -> createNtfSubscription st newSub (NtfSubAction NSANew)
             _ -> do
-              let newSub = newNtfSubscription smpServer rcvId Nothing ntfServer NASStarted currentTime
+              let newSub = newNtfSubscription connId smpServer rcvId Nothing ntfServer NASStarted currentTime
               withStore $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
@@ -79,7 +81,8 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId, notifierId}, cmd)
           addNtfWorker ntfServer
         _ -> pure ()
     NSCDelete -> do
-      withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
+      -- TODO delete notifier ID and Key from SMP server (SDEL, then NDEL)
+      withStore $ \st -> markNtfSubscriptionForDeletion st connId
       case ntfServer_ of
         (Just ntfServer) -> addNtfWorker ntfServer
         _ -> pure ()
@@ -106,8 +109,7 @@ runNtfWorker c srv doWork = forever $ do
   getNtfToken_ >>= \case
     Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} ->
       withStore (`getNextNtfSubAction` srv) >>= \case
-        Just (ntfSub@NtfSubscription {smpServer, rcvQueueId}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId}) -> do
-          let rqPK = (smpServer, rcvQueueId)
+        Just (ntfSub@NtfSubscription {connId, smpServer}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId}) -> do
           case ntfSubAction of
             NSANew -> case (ntfPrivateKey, notifierId) of
               (Just ntfPrivKey, Just nId)
@@ -115,7 +117,7 @@ runNtfWorker c srv doWork = forever $ do
                   ntfSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
                   ts <- liftIO getCurrentTime
                   withStore $ \st ->
-                    updateNtfSubscription st rqPK ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASSNew, ntfSubActionTs = ts} (NtfSubAction NSACheck)
+                    updateNtfSubscription st connId ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASSNew, ntfSubActionTs = ts} (NtfSubAction NSACheck)
                 | otherwise -> pure () -- error
               _ -> pure () -- error
             NSACheck -> pure ()
@@ -133,8 +135,7 @@ runNtfSMPWorker c srv doWork = forever $ do
   getNtfToken_ >>= \case
     Just NtfToken {ntfTknStatus} -> do
       withStore (`getNextNtfSubSMPAction` srv) >>= \case
-        Just (ntfSub@NtfSubscription {smpServer, rcvQueueId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) -> do
-          let rqPK = (smpServer, rcvQueueId)
+        Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) -> do
           case ntfSubAction of
             NSAKey
               | ntfTknStatus == NTActive ->
@@ -144,7 +145,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                   _ -> do
                     C.SignAlg a <- asks (cmdSignAlg . config)
                     (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
-                    withStore $ \st -> setRcvQueueNotifierKey st rqPK ntfPubKey ntfPrivKey
+                    withStore $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
                     enableNotificationsWithNKey ntfPubKey
               | otherwise -> pure () -- error
               where
@@ -152,8 +153,8 @@ runNtfSMPWorker c srv doWork = forever $ do
                   nId <- enableQueueNotifications c rq ntfPubKey
                   ts <- liftIO getCurrentTime
                   withStore $ \st -> do
-                    setRcvQueueNotifierId st rqPK nId
-                    updateNtfSubscription st rqPK ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASNKey, ntfSubActionTs = ts} (NtfSubAction NSANew)
+                    setRcvQueueNotifierId st connId nId
+                    updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASNKey, ntfSubActionTs = ts} (NtfSubAction NSANew)
                   kickNtfWorker_ ntfWorkers ntfServer
         Nothing -> noWorkToDo
     _ -> noWorkToDo
@@ -181,7 +182,7 @@ nsUpdateToken ns tkn = writeTVar (ntfTkn ns) $ Just tkn
 nsRemoveNtfToken :: NtfSupervisor -> STM ()
 nsRemoveNtfToken ns = writeTVar (ntfTkn ns) Nothing
 
-sendNtfSubCommand :: NtfSupervisor -> (RcvQueue, NtfSupervisorCommand) -> STM ()
+sendNtfSubCommand :: NtfSupervisor -> (ConnId, NtfSupervisorCommand) -> STM ()
 sendNtfSubCommand ns cmd =
   readTVar (ntfTkn ns)
     >>= mapM_ (\NtfToken {ntfTknStatus} -> when (ntfTknStatus == NTActive) $ writeTBQueue (ntfSubQ ns) cmd)
