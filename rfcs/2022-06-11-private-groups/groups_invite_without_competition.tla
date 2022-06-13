@@ -16,7 +16,7 @@ VARIABLES
     messages,
     rng_state,
     tokens,
-    perceived_proposee,
+    perceived_invitee,
     established
 
 \* TODO: This ignores the complexities of competing proposers, or competition
@@ -35,13 +35,13 @@ VARIABLES
 Proposer ==
     CHOOSE member \in Members : TRUE
 
-Proposee ==
+Invitee ==
     CHOOSE other \in Others : TRUE
 
 
 Init ==
     /\ messages = {}
-    /\ \E f \in [ Members \ { Proposer } -> Others \union { Nothing } ] : perceived_proposee = f
+    /\ \E f \in [ Members \ { Proposer } -> Others \union { Nothing } ] : perceived_invitee = f
     /\ rng_state = 1
     /\ tokens = [ [ member \in Members |-> Nothing ] EXCEPT ![Proposer] = 0 ]
     /\ established = [ member \in Members |-> Nothing ]
@@ -49,7 +49,7 @@ Init ==
 SendProposal ==
     \E member \in (Members \ { Proposer }) :
         /\ messages' = messages \union { [ sender |-> Proposer, recipient |-> member, type |-> Propose ] }
-        /\ UNCHANGED <<perceived_proposee, rng_state, tokens, established>>
+        /\ UNCHANGED <<perceived_invitee, rng_state, tokens, established>>
 
 \* It's safe to send this message right away, because it reveals nothing at the
 \* moment, just that the proposer wants you to join a group that is the size of
@@ -58,32 +58,32 @@ SendProposal ==
 \* this whole module).  The invite id both correllates the invitations from
 \* each member and distinguishes it from unrelated invites.
 ProposerInvite ==
-    /\ messages' = messages \union { [ sender |-> Proposer, recipient |-> Proposee, type |-> Invite, token |-> 0 ] }
-    /\ UNCHANGED <<perceived_proposee, rng_state, tokens, established>>
+    /\ messages' = messages \union { [ sender |-> Proposer, recipient |-> Invitee, type |-> Invite, token |-> 0 ] }
+    /\ UNCHANGED <<perceived_invitee, rng_state, tokens, established>>
 
 ReceiveProposal ==
     \E message \in messages :
         /\ message.type = Propose
         /\ tokens[message.recipient] = Nothing
-        /\ perceived_proposee[message.recipient] /= Nothing
+        /\ perceived_invitee[message.recipient] /= Nothing
         /\ tokens' = [ tokens EXCEPT ![message.recipient] = rng_state ]
         /\ rng_state' = rng_state + 1
         \* It's safe to send this message right away, as it only agrees to
-        \* reveal information that everyone has agreed to share.  The proposee
+        \* reveal information that everyone has agreed to share.  The invitee
         \* now knows that there's a group that involves this member, the
         \* proposer, and any other members that have sent this message, giving
-        \* the proposee insight into how these contacts are all connected.
+        \* the invitee insight into how these contacts are all connected.
         \* However, that is exactly what they all just agreed to.  Members that
         \* don't agree to send this message remain private.
-        /\ messages' = messages \union { [ sender |-> message.recipient, recipient |-> perceived_proposee[message.recipient], type |-> Invite, token |-> rng_state ] }
-        /\ UNCHANGED <<perceived_proposee, established>>
+        /\ messages' = messages \union { [ sender |-> message.recipient, recipient |-> perceived_invitee[message.recipient], type |-> Invite, token |-> rng_state ] }
+        /\ UNCHANGED <<perceived_invitee, established>>
 
 BroadcastToken ==
     \E from \in (Members \ { Proposer }) :
         \E to \in (Members \ { from }) :
             /\ tokens[from] /= Nothing
             /\ messages' = messages \union { [ sender |-> from, recipient |-> to, type |-> SyncToken, token |-> tokens[from] ] }
-            /\ UNCHANGED <<perceived_proposee, rng_state, tokens, established>>
+            /\ UNCHANGED <<perceived_invitee, rng_state, tokens, established>>
 
 SendAccept ==
     \E other \in Others :
@@ -97,10 +97,10 @@ SendAccept ==
                     \* connection already established but we make no
                     \* assumptions and ensure that there is a direct
                     \* connection.
-                    /\ member /= Proposer => perceived_proposee[member] = other
+                    /\ member /= Proposer => perceived_invitee[member] = other
                     /\ messages' = messages \union { [ sender |-> other, recipient |-> member, type |-> Accept, tokens |-> Tokens ] }
-                    /\ UNCHANGED <<perceived_proposee, rng_state, tokens, established>>
-            ELSE UNCHANGED <<perceived_proposee, messages, rng_state, tokens, established>>
+                    /\ UNCHANGED <<perceived_invitee, rng_state, tokens, established>>
+            ELSE UNCHANGED <<perceived_invitee, messages, rng_state, tokens, established>>
 
 Establish ==
     \E member \in Members :
@@ -116,7 +116,7 @@ Establish ==
                    /\ message.recipient = member
                    /\ message.tokens = Tokens
                    /\ established' = [ established EXCEPT ![member] = message.sender ]
-                   /\ UNCHANGED <<perceived_proposee, messages, rng_state, tokens>>
+                   /\ UNCHANGED <<perceived_invitee, messages, rng_state, tokens>>
 
 Next ==
     \/ SendProposal
@@ -149,15 +149,15 @@ OthersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
             /\  \/ member2 = Proposer
                 \/ tokens[member2] /= Nothing
 
-MembersOnlyEstablishWithProposee ==
+MembersOnlyEstablishWithInvitee ==
     \A member \in Members :
         \/ established[member] = Nothing
-        \/ established[member] = Proposee
+        \/ established[member] = Invitee
 
 EstablishedOnlyIfAllPerceptionsMatch ==
     (\E member \in Members : established[member] /= Nothing) =>
         \A member \in (Members \ { Proposer }) :
-            perceived_proposee[member] = Proposee
+            perceived_invitee[member] = Invitee
 
 \* With this as an (incorrect) invariant, we can see a path to establishing a
 \* connection
@@ -168,7 +168,7 @@ NoOneCanEstablish ==
 \* establishing a connection
 Incompletable ==
     ~(\A member \in Members :
-        established[member] = Proposee
+        established[member] = Invitee
      )
 
 ====
