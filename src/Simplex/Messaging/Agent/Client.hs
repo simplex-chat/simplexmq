@@ -209,6 +209,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
       n <- asks $ resubscriptionConcurrency . config
       withAgentLock c . withClient c srv $ \smp -> do
         cs <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSubscrSrvrs c)
+        -- TODO if any of the subscriptions fails here (e.g. because of timeout), it terminates the whole process for all subscriptions
+        -- instead it should only report successful subscriptions and schedule the next call to reconnectClient to subscribe for the remaining subscriptions
+        -- this way, for each DOWN event there can be several UP events
         conns <- pooledForConcurrentlyN n (maybe [] M.toList cs) $ \sub@(connId, _) ->
           ifM
             (atomically $ hasActiveSubscription c connId)
