@@ -1,0 +1,53 @@
+sequenceDiagram
+  participant M as iOS message<br>notification
+  participant S as iOS system
+  participant N as iOS NSE
+  participant U as iOS UI
+  participant C as Core chat
+  participant A as Core agent
+
+  M ->> N: notification
+  S ->> N: get shared pref
+  note over N: ignore,<br>app is active
+
+  note over M, A: app going to background
+  S ->> U: phase: background<br>(possibly, "will" method)
+  U ->> S: set shared pref "pausing"
+  U ->> C: /_app pause, result CRCmdOk
+  C ->> A: pauseAgent<br>(no new network IO)
+  M ->> N: notification
+  S ->> N: get shared pref
+  note over N: wait/poll for<br>"paused"/"suspending"/"suspended"<br>event/pref
+  A ->> C: event "IO paused"<br>(after in-flight op completed)<br>AGENT PAUSED
+  C ->> U: event "IO paused" (CRAppPaused)
+  U ->> S: set shared pref "paused"
+
+  note over M, A: process notification
+  M ->> N: notification
+  S ->> N: get shared pref
+  N ->> C: /_get message
+  C ->> A: getMessage
+  A ->> C: msg flags
+  C ->> N: msg flags
+  note over N: get messages<br>until notification flag set
+  A ->> C: MSG/CONF/INFO
+  C ->> N: some event
+  N ->> S: show notification
+
+  note over M, A: app about to be suspended<br>(or 15-20 sec after background)
+  S ->> U: background task notice
+  U ->> S: set shared pref "suspending"
+  U ->> C: /_app suspend, response ok
+  C ->> A: suspendAgent<br>(no new DB)
+  A ->> C: event "DB paused"<br>(after in-flight op completed)<br>AGENT SUSPENDED
+  C ->> U: event "DB paused" (CRAppSuspended)
+  U ->> S: set shared pref "suspended"
+
+  note over M, A: app about to be activated
+  S ->> U: phase: active<br>(or inactive?)<br><br>(possibly, "will" method)
+  U ->> S: set shared pref "activating"
+  U ->> C: /_app activate (response result)
+  C ->> A: activateAgent<br>(allow IO/DB)
+  A ->> C: result ()
+  C ->> U: CRCmdOk
+  U ->> S: set shared pref "active"
