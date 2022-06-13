@@ -41,7 +41,7 @@ CREATE TABLE ntf_subscriptions (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')), -- this is to check subscription status periodically to know when it was last checked
   PRIMARY KEY (conn_id),
-  FOREIGN KEY (smp_host, smp_port, smp_rcv_id, conn_id) REFERENCES rcv_queues (host, port, rcv_id, conn_id)
+  FOREIGN KEY (smp_host, smp_port, smp_rcv_id) REFERENCES rcv_queues (host, port, rcv_id)
     ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY (ntf_host, ntf_port) REFERENCES ntf_servers
     ON DELETE RESTRICT ON UPDATE CASCADE
