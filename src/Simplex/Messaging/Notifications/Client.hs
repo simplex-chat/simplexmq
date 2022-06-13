@@ -19,7 +19,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (blobFieldDecoder)
-import Simplex.Messaging.Protocol (NotifierId, NtfPrivateSignKey, ProtocolServer, RecipientId, SMPServer)
+import Simplex.Messaging.Protocol (NotifierId, ProtocolServer, RecipientId, SMPServer)
 
 type NtfServer = ProtocolServer
 
@@ -135,19 +135,19 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
 data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
 
 data NtfSubAction
-  = NSANew NotifierId NtfPrivateSignKey
+  = NSANew
   | NSACheck
   | NSADelete
   deriving (Show)
 
 instance Encoding NtfSubAction where
   smpEncode = \case
-    NSANew nId nKey -> smpEncode ('N', nId, nKey)
+    NSANew -> "N"
     NSACheck -> "C"
     NSADelete -> "D"
   smpP =
     A.anyChar >>= \case
-      'N' -> NSANew <$> smpP <*> smpP
+      'N' -> pure NSANew
       'C' -> pure NSACheck
       'D' -> pure NSADelete
       _ -> fail "bad NtfSubAction"
