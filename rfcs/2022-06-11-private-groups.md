@@ -75,6 +75,39 @@ Once a member has received a SyncToken message from all other members and an Acc
 If the invitee can present a match, then the member now knows that all parties have agreed to extend membership.
 The member locally commits this result and establishes a new connection with the invitee specifically for group communication.
 
+If this member is also the Leader, they also mark the proposal resolved, as the invitee is now committed to the group.
+
+#### Failures
+
+If an approver does not want to invite the invitee, the proposal is doomed, and they will not be invited.
+By notifying the Leader, they can simply mark the proposal as completed.
+
+However, it is not possible to tell the difference between a misidentified invitee and members or the invitee simply needing more time.
+In the case of a misidentified invitee, the proposal can never be resolved, as no invitee will ever receive all tokens, meaning the Leader will never receive an Accept message.
+Since it's only safe to manage one proposal at a time, we must be able to cancel the proposal in order to make progress.
+
+To cancel, the Leader must do so in two phases:
+
+##### Cancellation - Hold (phase 1)
+
+The Leader sends out a Hold message containing the invitation identifier to all members.
+If the member has not started a connection with the invitee, they promise not to do so (though, they can continue to protocol otherwise) and respond with a Holding message.
+If the member has already started a connection with the invitee, they respond with a Committed message, meaning that the invitation was a success and the Leader should not cancel.
+
+##### Cancellation - Cancel or Resume (phase 2)
+
+If the Leader receives a Committed message back from any member, they send a Resume message to all others, so that they can complete the invitation process.
+
+If the Leader receives a Hold message back from all members, then the Leader can commit the proposal as completed in a cancelled state.
+They do not need to notify any members, as the invitation cannot resolve if all members are Holding.
+
+If the Leader does not receive a response from some members, and receives a Hold message from all others, they may optionally kick all members that did not reply.
+This can be useful when an invitation went out after a member has gone permanently offline (such as losing a device).
+If the member cannot be kicked, then the group is permanently stuck with its current membership.
+If all members that are not Holding are kicked, then it is safe to move on, as all remaining members are in the Holding state.
+
+TODO: Ideally, kicked members (or invitees that established connections with kicked members, who think they are part of the group) eventually learn that they are not in the group after all.
+
 #### Properties
 
 Model checking our formal specification we can demonstrate three key properties:
