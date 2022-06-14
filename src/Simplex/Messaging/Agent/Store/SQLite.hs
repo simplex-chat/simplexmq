@@ -770,7 +770,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           DB.query
             db
             [sql|
-              SELECT ns.connId, s.host, s.port, s.key_hash,
+              SELECT ns.conn_id, s.host, s.port, s.key_hash,
                 ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
               FROM ntf_subscriptions ns
               JOIN servers s ON s.host = ns.smp_host AND s.port = ns.smp_port
@@ -798,7 +798,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           DB.query
             db
             [sql|
-              SELECT ns.connId, s.ntf_host, s.ntf_port, s.ntf_key_hash,
+              SELECT ns.conn_id, s.ntf_host, s.ntf_port, s.ntf_key_hash,
                 ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
               FROM ntf_subscriptions ns
               JOIN ntf_servers s USING (ntf_host, ntf_port)

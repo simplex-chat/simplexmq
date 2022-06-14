@@ -202,14 +202,14 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     verifyNtfToken alice tkn verification nonce
     NTActive <- checkNtfToken alice tkn
     -- send message
-    liftIO $ threadDelay 50000
+    liftIO $ threadDelay 2000000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- receive notification
     APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
-    _checkMessage <- ntfData' .-> "checkMessage"
-    _nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
+    _ <- ntfData' .-> "checkMessage"
+    _ <- C.cbNonce <$> ntfData' .-> "nonce"
     liftIO $ sendApnsResponse' APNSRespOk
     -- receive message
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
