@@ -33,7 +33,7 @@ import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
 import System.Directory (removeFile)
 import Test.Hspec
-import UnliftIO.STM
+import UnliftIO
 
 notificationTests :: ATransport -> Spec
 notificationTests t =
@@ -212,6 +212,10 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     messageNotification apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 1
+    -- no unexpected notifications should follow
+    500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+      Nothing -> pure ()
+      _ -> error "unexpected notification"
   pure ()
   where
     baseId = 3
@@ -248,12 +252,13 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
-    messageNotification apnsQ
-    messageNotification apnsQ
-    messageNotification apnsQ
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
+    -- ! race condition here
+    -- messageNotification apnsQ
+    messageNotification apnsQ
+    messageNotification apnsQ
     -- bob sends message
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
@@ -266,6 +271,11 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     messageNotification apnsQ
     get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
     ackMessage bob aliceId $ baseId + 2
+    -- ! currently this fails unpredictably due to race condition on establishing connection
+    -- no unexpected notifications should follow
+    -- 500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+    --   Nothing -> pure ()
+    --   _ -> error "unexpected notification"
   pure ()
   where
     baseId = 3
