@@ -230,7 +230,7 @@ deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
 
--- | Agent phase allows to have to agent processes concurrently working with the same database
+-- | Agent phase allows to have two agent processes concurrently working with the same database
 data AgentPhase
   = -- | agent is operating normally
     APActive
