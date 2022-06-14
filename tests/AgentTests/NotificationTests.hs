@@ -56,6 +56,10 @@ notificationTests t =
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testNotificationSubscriptionExistingConnection apns
+      it "should create new notification subscription for new connection" $ \_ ->
+        withSmpServer t $
+          withAPNSMockServer $ \apns ->
+            withNtfServer t $ testNotificationSubscriptionNewConnection apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -206,11 +210,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- receive notification
-    APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-      atomically $ readTBQueue apnsQ
-    _ <- ntfData' .-> "checkMessage"
-    _ <- C.cbNonce <$> ntfData' .-> "nonce"
-    liftIO $ sendApnsResponse' APNSRespOk
+    messageNotification apnsQ
     -- receive message
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 1
@@ -218,3 +218,61 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
   where
     baseId = 3
     msgId = subtract baseId
+
+testNotificationSubscriptionNewConnection :: APNSMockServer -> IO ()
+testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right () <- runExceptT $ do
+    -- alice registers notification token
+    let aliceTkn = DeviceToken PPApns "abcd"
+    NTRegistered <- registerNtfToken alice aliceTkn
+    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
+      atomically $ readTBQueue apnsQ
+    verification <- ntfData .-> "verification"
+    nonce <- C.cbNonce <$> ntfData .-> "nonce"
+    liftIO $ sendApnsResponse APNSRespOk
+    verifyNtfToken alice aliceTkn verification nonce
+    NTActive <- checkNtfToken alice aliceTkn
+    -- bob registers notification token
+    let bobTkn = DeviceToken PPApns "abcd"
+    NTRegistered <- registerNtfToken bob bobTkn
+    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
+      atomically $ readTBQueue apnsQ
+    verification' <- ntfData' .-> "verification"
+    nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
+    liftIO $ sendApnsResponse' APNSRespOk
+    verifyNtfToken bob bobTkn verification' nonce'
+    NTActive <- checkNtfToken bob bobTkn
+    -- establish connection
+    (bobId, qInfo) <- createConnection alice SCMInvitation
+    aliceId <- joinConnection bob qInfo "bob's connInfo"
+    ("", _, CONF confId "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, CON)
+    -- bob sends message
+    1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
+    get bob ##> ("", aliceId, SENT $ baseId + 1)
+    messageNotification apnsQ
+    get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 1
+    -- alice sends message
+    2 <- msgId <$> sendMessage alice bobId (SMP.MsgFlags True) "hey there"
+    get alice ##> ("", bobId, SENT $ baseId + 2)
+    messageNotification apnsQ
+    get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
+    ackMessage bob aliceId $ baseId + 2
+  pure ()
+  where
+    baseId = 3
+    msgId = subtract baseId
+
+messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()
+messageNotification apnsQ = do
+  APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'}, sendApnsResponse} <-
+    atomically $ readTBQueue apnsQ
+  _ <- ntfData' .-> "checkMessage"
+  _ <- C.cbNonce <$> ntfData' .-> "nonce"
+  liftIO $ sendApnsResponse APNSRespOk

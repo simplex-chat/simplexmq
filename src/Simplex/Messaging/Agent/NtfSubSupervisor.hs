@@ -53,7 +53,7 @@ processNtfSub c (connId, cmd) = do
   ntfServer_ <- getNtfServer c
   case cmd of
     NSCCreate -> do
-      liftIO $ putStrLn "in NSCCreate"
+      -- TODO merge getNtfSubscription and getRcvQueue into one method to read both in same transaction?
       sub_ <- withStore c $ \st -> getNtfSubscription st connId
       RcvQueue {notifierId, server = smpServer} <- withStore c $ \st -> getRcvQueue st connId
       case (sub_, ntfServer_) of
@@ -64,7 +64,6 @@ processNtfSub c (connId, cmd) = do
               let newSub = newNtfSubscription connId smpServer (Just nId) ntfServer NASKey currentTime
               withStore c $ \st -> createNtfSubscription st newSub (NtfSubAction NSACreate)
             _ -> do
-              liftIO $ putStrLn "nId doesn't exist"
               let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew currentTime
               withStore c $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
           -- TODO optimize?
@@ -81,7 +80,7 @@ processNtfSub c (connId, cmd) = do
           -- TODO   idempotently replay commands.
           addNtfSMPWorker smpServer
           addNtfWorker ntfServer
-        _ -> pure ()
+        _ -> pure () -- error - notification server not configured
     NSCDelete -> do
       -- TODO delete notifier ID and Key from SMP server (SDEL, then NDEL)
       withStore c $ \st -> markNtfSubscriptionForDeletion st connId
@@ -102,19 +101,15 @@ processNtfSub c (connId, cmd) = do
       ws <- asks $ wsSel . ntfSupervisor
       atomically (TM.lookup srv ws) >>= \case
         Nothing -> do
-          liftIO $ putStrLn $ "in addWorker - creating new worker" <> show srv
           doWork <- newTMVarIO ()
           worker <- async $ runWorker c srv doWork `E.finally` atomically (TM.delete srv ws)
           atomically $ TM.insert srv (doWork, worker) ws
-        Just (doWork, _) -> do
-          liftIO $ putStrLn $ "in addWorker - worker exists" <> show srv
+        Just (doWork, _) ->
           void . atomically $ tryPutTMVar doWork ()
 
 runNtfWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfWorker c srv doWork = forever $ do
-  liftIO $ putStrLn "Ntf worker"
   void . atomically $ readTMVar doWork
-  liftIO $ putStrLn "Ntf worker - doing work"
   getNtfToken_ >>= \case
     Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} ->
       withStore c (`getNextNtfSubAction` srv) >>= \case
@@ -123,12 +118,11 @@ runNtfWorker c srv doWork = forever $ do
             NSACreate -> case (ntfPrivateKey, notifierId) of
               (Just ntfPrivKey, Just nId)
                 | ntfTknStatus == NTActive -> do
-                  liftIO $ putStrLn "Ntf worker, in NSACreate"
                   ntfSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
                   ts <- liftIO getCurrentTime
                   withStore c $ \st ->
                     updateNtfSubscription st connId ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASCreated, ntfSubActionTs = ts} (NtfSubAction NSACheck)
-                | otherwise -> liftIO $ putStrLn "Ntf worker, NSAKey - token not active" -- error -- TODO move action further to future
+                | otherwise -> pure () -- error -- TODO move action further to future
               _ -> pure () -- error -- TODO move action further to future
             NSACheck -> noWorkToDo
             NSADelete -> noWorkToDo
@@ -141,20 +135,14 @@ runNtfWorker c srv doWork = forever $ do
 
 runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar () -> m ()
 runNtfSMPWorker c srv doWork = forever $ do
-  liftIO $ putStrLn "SMP worker"
   void . atomically $ readTMVar doWork
-  liftIO $ putStrLn "SMP worker - doing work"
   getNtfToken_ >>= \case
-    Just NtfToken {ntfTknStatus} -> do
-      liftIO $ putStrLn $ "SMP worker, before getNextNtfSubSMPAction, srv = " <> show srv
-      sub_ <- withStore c (`getNextNtfSubSMPAction` srv)
-      liftIO $ putStrLn $ "SMP worker, subscription = " <> show sub_
-      case sub_ of
+    Just NtfToken {ntfTknStatus} ->
+      withStore c (`getNextNtfSubSMPAction` srv) >>= \case
         Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) -> do
           case ntfSubAction of
             NSAKey
-              | ntfTknStatus == NTActive -> do
-                liftIO $ putStrLn "SMP worker, NSAKey"
+              | ntfTknStatus == NTActive ->
                 case ntfPublicKey of
                   Just ntfPubKey ->
                     enableNotificationsWithNKey ntfPubKey
@@ -163,7 +151,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                     (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
                     withStore c $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
                     enableNotificationsWithNKey ntfPubKey
-              | otherwise -> liftIO $ putStrLn "SMP worker, NSAKey - token not active" -- error -- TODO move action further to future
+              | otherwise -> pure () -- error -- TODO move action further to future
               where
                 enableNotificationsWithNKey ntfPubKey = do
                   nId <- enableQueueNotifications c rq ntfPubKey
@@ -173,12 +161,8 @@ runNtfSMPWorker c srv doWork = forever $ do
                     updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                   ns <- asks ntfSupervisor
                   atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
-        Nothing -> do
-          liftIO $ putStrLn "SMP worker, no subscription - noWorkToDo"
-          noWorkToDo
-    _ -> do
-      liftIO $ putStrLn "SMP worker, no token - noWorkToDo"
-      noWorkToDo
+        Nothing -> noWorkToDo
+    _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
   where
