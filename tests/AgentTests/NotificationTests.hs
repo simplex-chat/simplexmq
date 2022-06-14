@@ -51,7 +51,7 @@ notificationTests t =
       it "should re-register token when notification server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           testNtfTokenServerRestart t apns
-    fdescribe "Managing notification subscriptions" $ do
+    describe "Managing notification subscriptions" $ do
       it "should create notification subscription for existing connection" $ \_ ->
         withSmpServer t $
           withAPNSMockServer $ \apns ->
@@ -243,11 +243,12 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     verifyNtfToken bob bobTkn verification' nonce'
     NTActive <- checkNtfToken bob bobTkn
     -- establish connection
-    liftIO $ threadDelay 50000
+    liftIO $ threadDelay 200000
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
+    messageNotification apnsQ
     messageNotification apnsQ
     messageNotification apnsQ
     get alice ##> ("", bobId, CON)
@@ -272,8 +273,8 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()
 messageNotification apnsQ = do
-  APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'}, sendApnsResponse} <-
+  APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} <-
     atomically $ readTBQueue apnsQ
-  _ <- ntfData' .-> "checkMessage"
-  _ <- C.cbNonce <$> ntfData' .-> "nonce"
+  _ <- ntfData .-> "checkMessage"
+  _ <- C.cbNonce <$> ntfData .-> "nonce"
   liftIO $ sendApnsResponse APNSRespOk
