@@ -1,4 +1,4 @@
----- MODULE groups_invite_without_competition ----
+---- MODULE groups ----
 
 EXTENDS Naturals, FiniteSets
 

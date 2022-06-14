@@ -12,7 +12,7 @@ Agents need new behavior in soliciting proposals for membership changes, and for
 
 ### Additions
 
-A formal specification of the protocol is defined in TLA+ and can be defined [here](./2022-06-11-private-groups/groups_invite_without_competition.tla).
+A formal specification of the protocol is defined in TLA+ and can be defined [here](./2022-06-11-private-groups/groups.tla).
 
 The protocol has four roles:
 
