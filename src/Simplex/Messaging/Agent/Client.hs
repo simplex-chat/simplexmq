@@ -4,10 +4,12 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -41,12 +43,16 @@ module Simplex.Messaging.Agent.Client
     removeSubscription,
     hasActiveSubscription,
     agentDbPath,
+    beginAgentOperation,
+    endAgentOperation,
+    notifyAgentPhaseChanged,
+    withStore,
   )
 where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
-import Control.Concurrent.STM (stateTVar)
+import Control.Concurrent.STM (retry, stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -62,11 +68,12 @@ import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
+import Database.SQLite.Simple (SQLError)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..))
+import Simplex.Messaging.Agent.Store.SQLite (AgentStoreMonad, SQLiteStore (..))
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
@@ -209,6 +216,9 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
       n <- asks $ resubscriptionConcurrency . config
       withAgentLock c . withClient c srv $ \smp -> do
         cs <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSubscrSrvrs c)
+        -- TODO if any of the subscriptions fails here (e.g. because of timeout), it terminates the whole process for all subscriptions
+        -- instead it should only report successful subscriptions and schedule the next call to reconnectClient to subscribe for the remaining subscriptions
+        -- this way, for each DOWN event there can be several UP events
         conns <- pooledForConcurrentlyN n (maybe [] M.toList cs) $ \sub@(connId, _) ->
           ifM
             (atomically $ hasActiveSubscription c connId)
@@ -320,6 +330,7 @@ closeAgentClient c = liftIO $ do
   clear smpQueueMsgQueues
   where
     clientTimeout sel = tcpTimeout . sel . config $ agentEnv c
+    clear :: (AgentClient -> TMap k a) -> IO ()
     clear sel = atomically $ writeTVar (sel c) M.empty
 
 closeProtocolServerClients :: Int -> TMap ProtocolServer (ClientVar msg) -> IO ()
@@ -576,3 +587,51 @@ cryptoError = \case
   C.CBDecryptError -> AGENT A_ENCRYPTION
   C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
   e -> INTERNAL $ show e
+
+endAgentOperation :: AgentClient -> AgentOperation -> STM ()
+endAgentOperation c@AgentClient {agentEnv = Env {agentOperations}} op = do
+  TM.alter (Just . maybe 0 (\n -> min 0 $ n - 1)) op agentOperations
+  notifyAgentPhaseChanged c
+
+beginAgentOperation :: AgentClient -> AgentOperation -> STM ()
+beginAgentOperation AgentClient {agentEnv = Env {agentPhase, agentOperations}} op = do
+  (p, _) <- readTVar agentPhase
+  when (op `elem` disallowedOperations p) retry
+  TM.alter (Just . maybe 1 (+ 1)) op agentOperations
+
+notifyAgentPhaseChanged :: AgentClient -> STM ()
+notifyAgentPhaseChanged AgentClient {subQ, agentEnv = Env {agentPhase, agentOperations}} = do
+  (p, notified) <- readTVar agentPhase
+  unless notified $ do
+    ops <- readTVar agentOperations
+    let opsPaused = all (maybe True (== 0) . (`M.lookup` ops)) $ disallowedOperations p
+    when opsPaused $ do
+      writeTBQueue subQ ("", "", PHASE p)
+      writeTVar agentPhase (p, True)
+
+withStore :: AgentMonad m => AgentClient -> (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
+withStore c action = do
+  st <- asks store
+  atomically $ beginAgentOperation c AODatabase
+  r <- runExceptT (action st `E.catch` handleInternal)
+  atomically $ endAgentOperation c AODatabase
+  case r of
+    Right res -> pure res
+    Left e -> throwError $ storeError e
+  where
+    -- TODO when parsing exception happens in store, the agent hangs;
+    -- changing SQLError to SomeException does not help
+    handleInternal :: (MonadError StoreError m') => SQLError -> m' a
+    handleInternal e = throwError . SEInternal $ bshow e
+    storeError :: StoreError -> AgentErrorType
+    storeError = \case
+      SEConnNotFound -> CONN NOT_FOUND
+      SEConnDuplicate -> CONN DUPLICATE
+      SEBadConnType CRcv -> CONN SIMPLEX
+      SEBadConnType CSnd -> CONN SIMPLEX
+      SEInvitationNotFound -> CMD PROHIBITED
+      -- this error is never reported as store error,
+      -- it is used to wrap agent operations when "transaction-like" store access is needed
+      -- NOTE: network IO should NOT be used inside AgentStoreMonad
+      SEAgentError e -> e
+      e -> INTERNAL $ show e

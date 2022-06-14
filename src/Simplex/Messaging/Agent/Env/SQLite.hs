@@ -17,10 +17,11 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultAgentConfig,
     defaultReconnectInterval,
     Env (..),
+    AgentOperation (..),
+    disallowedOperations,
     newSMPAgentEnv,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
-    withStore,
   )
 where
 
@@ -30,12 +31,11 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
-import Database.SQLite.Simple (SQLError)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Agent.Store (ConnType (..), RcvQueue, StoreError (..))
+import Simplex.Messaging.Agent.Store (RcvQueue)
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
@@ -45,11 +45,9 @@ import Simplex.Messaging.Notifications.Client (NtfServer, NtfToken)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
-import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
-import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
@@ -122,8 +120,19 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
+    agentPhase :: TVar (AgentPhase, Bool),
+    agentOperations :: TMap AgentOperation Int,
     ntfSupervisor :: NtfSupervisor
   }
+
+data AgentOperation = AONetwork | AODatabase
+  deriving (Eq, Ord)
+
+disallowedOperations :: AgentPhase -> [AgentOperation]
+disallowedOperations = \case
+  APActive -> []
+  APPaused -> [AONetwork]
+  APSuspended -> [AONetwork, AODatabase]
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
@@ -131,8 +140,10 @@ newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
   store <- liftIO $ createSQLiteStore dbFile dbPoolSize Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
+  agentPhase <- newTVarIO (APActive, True)
+  agentOperations <- atomically TM.empty
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+  return Env {config, store, idsDrg, clientCounter, randomServer, agentPhase, agentOperations, ntfSupervisor}
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
@@ -150,27 +161,3 @@ newNtfSubSupervisor qSize = do
   ntfWorkers <- TM.empty
   ntfSMPWorkers <- TM.empty
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
-
-withStore :: AgentMonad m => (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
-withStore action = do
-  st <- asks store
-  runExceptT (action st `E.catch` handleInternal) >>= \case
-    Right c -> return c
-    Left e -> throwError $ storeError e
-  where
-    -- TODO when parsing exception happens in store, the agent hangs;
-    -- changing SQLError to SomeException does not help
-    handleInternal :: (MonadError StoreError m') => SQLError -> m' a
-    handleInternal e = throwError . SEInternal $ bshow e
-    storeError :: StoreError -> AgentErrorType
-    storeError = \case
-      SEConnNotFound -> CONN NOT_FOUND
-      SEConnDuplicate -> CONN DUPLICATE
-      SEBadConnType CRcv -> CONN SIMPLEX
-      SEBadConnType CSnd -> CONN SIMPLEX
-      SEInvitationNotFound -> CMD PROHIBITED
-      -- this error is never reported as store error,
-      -- it is used to wrap agent operations when "transaction-like" store access is needed
-      -- NOTE: network IO should NOT be used inside AgentStoreMonad
-      SEAgentError e -> e
-      e -> INTERNAL $ show e
