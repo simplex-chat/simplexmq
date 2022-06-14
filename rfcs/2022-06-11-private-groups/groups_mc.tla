@@ -10,7 +10,7 @@ NatMC == 0..MaxNum
 
 \* No one is ever confused
 UserPerceptionsMC ==
-  [ x \in Users \X Users \X Users |-> x[3] ]
+  [ x \in [ perceiver : Users, description : [ by : Users, of : Users ] ] |-> x.description.of ]
 
 \* Everyone knows everyone
 ConnectionsMC ==

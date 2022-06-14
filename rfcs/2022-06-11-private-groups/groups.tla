@@ -15,12 +15,16 @@ CONSTANTS
     Nothing,
     (*
     This function describes indirect perceptions about contact descriptions.
-    We can translate "user_percetions[userA, userB, userC] = userD" into the
-    english statement: "userA thinks that when userB describes userC they are
-    referring to userD."  It's possible that userA knows the correct answer
-    (userD = userC), they don't know who userB is talking about (userD =
-    Nothing) or they mistake userC for someone else (userD /= Nothing /\ userD
-    /= userC).
+    We can translate "user_percetions[[ perceiver |-> userA, description |-> [
+    by |-> userB, of |-> userC]]] = userD" into the english statement: "userA
+    thinks that when userB describes userC they are referring to userD."  It's
+    possible that userA knows the correct answer (userD = userC), they don't
+    know who userB is talking about (userD = Nothing) or they mistake userC for
+    someone else (userD /= Nothing /\ userD /= userC).
+    A description is uniquely identified by the user describing and the user
+    being described.  However, the description itself should be treated
+    opaquely by users, since they must guess at who is being described, they
+    cannot ever have access to the internal thoughts of others.
     *)
     UserPerceptions,
     Connections,
@@ -39,9 +43,9 @@ VARIABLES
 
 ASSUME
     /\ Leader \in Users
-    /\ UserPerceptions \in [ Users \X Users \X Users -> Users \union { Nothing } ]
+    /\ UserPerceptions \in [ [ perceiver : Users, description : [ by : Users, of : Users ] ] -> Users \union { Nothing } ]
     \* A user always correctly knows their own perceptions
-    /\ \A user1, user2 \in Users : UserPerceptions[<<user1, user1, user2>>] = user2
+    /\ \A user1, user2 \in Users : UserPerceptions[[ perceiver |-> user1, description |-> [ by |-> user1, of |-> user2 ]]] = user2
     /\ Connections \in [ Users -> SUBSET Users ]
 
 InviteIds == Nat
@@ -75,7 +79,7 @@ SendPropose ==
                 , sender |-> proposer
                 , recipient |-> Leader
                 , invite_id |-> rng_state
-                , invitee |-> invitee
+                , invitee_description |-> [ by |-> proposer, of |-> invitee ]
                 ]
             }
         /\ rng_state' = rng_state + 1
@@ -91,22 +95,15 @@ LeaderReceiveProposal ==
         \* since perceptions never change, which is sufficient to validate our
         \* key properties.  In reality, we need to capture that the proposal is
         \* completed and notify the proposer that the action failed.
-        /\ UserPerceptions[<<Leader, message.sender, message.invitee>>] /= Nothing
+        /\ UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]] /= Nothing
         \* The Leader is always up to date, this is invariant for all other
         \* members
-        /\ UserPerceptions[<<Leader, message.sender, message.invitee>>] \notin group_perceptions[Leader]
-        /\ HasDirectConnection(Leader, UserPerceptions[<<Leader, message.sender, message.invitee>>])
+        /\ UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]] \notin group_perceptions[Leader]
+        /\ HasDirectConnection(Leader, UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]])
         /\ proposal = Nothing
         /\ proposal' =
             [ invite_id |-> message.invite_id
-            \* What's being stored isn't really the actual user, but a
-            \* description of them by the proposer.
-            \* To avoid too many levels of weirdness, this is who the
-            \* proposer's intention, not who the leader thinks this is.  The
-            \* leader will still send the invite who they _think_ this is, not
-            \* necessarily who the proposer intended.
-            , invitee |-> message.invitee
-            , proposer |-> message.sender
+            , invitee_description |-> message.invitee_description
             , group_size |-> Cardinality(group_perceptions[Leader])
             ]
         /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, Leader>>] = rng_state ]
@@ -114,7 +111,7 @@ LeaderReceiveProposal ==
         /\ messages' = messages \union
             {   [ type |-> Invite
                 , sender |-> Leader
-                , recipient |-> UserPerceptions[<<Leader, message.sender, message.invitee>>]
+                , recipient |-> UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]]
                 , invite_id |-> message.invite_id
                 , token |-> rng_state
                 , group_size |-> proposal'.group_size
@@ -126,15 +123,13 @@ LeaderReceiveProposal ==
 RebroadcastProposal ==
     \E member \in (Users \ { Leader }) :
         /\ proposal /= Nothing
-        /\ member /= proposal.proposer
         /\ member \in group_perceptions[Leader]
         /\ messages' = messages \union
             {   [ sender |-> Leader
                 , recipient |-> member
                 , type |-> Propose
                 , invite_id |-> proposal.invite_id
-                , invitee |-> proposal.invitee
-                , proposer |-> proposal.proposer
+                , invitee_description |-> proposal.invitee_description
                 , group_size |-> proposal.group_size
                 ]
             }
@@ -147,8 +142,8 @@ ApproverReceiveProposal ==
         \* UNDERSPECIFIED: The member ignores the message permanently if these
         \* guards fail.  Realistically, they need to notify the Leader that the
         \* proposal is doomed.
-        /\ UserPerceptions[<<message.recipient, message.proposer, message.invitee>>] /= Nothing
-        /\ HasDirectConnection(message.sender, UserPerceptions[<<message.recipient, message.proposer, message.invitee>>])
+        /\ UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]] /= Nothing
+        /\ HasDirectConnection(message.sender, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
         /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
         \* It's safe to send this message right away, as it only agrees to
         \* reveal information that everyone has agreed to share.  The invitee
@@ -159,7 +154,7 @@ ApproverReceiveProposal ==
         \* don't agree to send this message remain private.
         /\ messages' = messages \union
             {   [ sender |-> message.recipient
-                , recipient |-> UserPerceptions[<<message.recipient, message.proposer, message.invitee>>]
+                , recipient |-> UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]]
                 , type |-> Invite
                 , invite_id |-> message.invite_id
                 , token |-> rng_state
