@@ -137,19 +137,19 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
 data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
 
 data NtfSubAction
-  = NSANew
+  = NSACreate
   | NSACheck
   | NSADelete
   deriving (Show)
 
 instance Encoding NtfSubAction where
   smpEncode = \case
-    NSANew -> "N"
+    NSACreate -> "N"
     NSACheck -> "C"
     NSADelete -> "D"
   smpP =
     A.anyChar >>= \case
-      'N' -> pure NSANew
+      'N' -> pure NSACreate
       'C' -> pure NSACheck
       'D' -> pure NSADelete
       _ -> fail "bad NtfSubAction"
@@ -178,7 +178,7 @@ data NtfAgentSubStatus
   = -- | subscription started
     NASNew
   | -- | state after NKEY - notifier ID is assigned to queue on SMP server
-    NASNKey
+    NASKey
   | -- | state after SNEW - subscription created on notification server
     NASCreated
   | -- | connected and subscribed to SMP server
@@ -194,7 +194,7 @@ data NtfAgentSubStatus
 instance Encoding NtfAgentSubStatus where
   smpEncode = \case
     NASNew -> "NEW"
-    NASNKey -> "NKEY"
+    NASKey -> "NKEY"
     NASCreated -> "CREATED"
     NASActive -> "ACTIVE"
     NASEnded -> "ENDED"
@@ -203,7 +203,7 @@ instance Encoding NtfAgentSubStatus where
   smpP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NASNew
-      "NKEY" -> pure NASNKey
+      "NKEY" -> pure NASKey
       "CREATED" -> pure NASCreated
       "ACTIVE" -> pure NASActive
       "ENDED" -> pure NASEnded

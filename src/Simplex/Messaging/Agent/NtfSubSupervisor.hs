@@ -60,10 +60,10 @@ processNtfSub c (connId, cmd) = do
           currentTime <- liftIO getCurrentTime
           case notifierId of
             (Just nId) -> do
-              let newSub = newNtfSubscription connId smpServer (Just nId) ntfServer NASNKey currentTime
-              withStore c $ \st -> createNtfSubscription st newSub (NtfSubAction NSANew)
+              let newSub = newNtfSubscription connId smpServer (Just nId) ntfServer NASKey currentTime
+              withStore c $ \st -> createNtfSubscription st newSub (NtfSubAction NSACreate)
             _ -> do
-              let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASStarted currentTime
+              let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew currentTime
               withStore c $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
@@ -73,7 +73,7 @@ processNtfSub c (connId, cmd) = do
         (Just _, Just ntfServer) -> do
           -- TODO subscription may have to be updated depending on current state:
           -- TODO - e.g., if it was previously marked for deletion action has to be updated
-          -- TODO - should action depend on subscription status or always be NSAKey (NSANew if notifierId exists)
+          -- TODO - should action depend on subscription status or always be NSAKey (NSACreate if notifierId exists)
           -- TODO   in case worker is currently deleting it? When deleting worker should check for updated_by_supervisor
           -- TODO   and if it is set perform update instead of delete. If worker was not deleting it yet it should
           -- TODO   idempotently replay commands.
@@ -113,13 +113,13 @@ runNtfWorker c srv doWork = forever $ do
       withStore c (`getNextNtfSubAction` srv) >>= \case
         Just (ntfSub@NtfSubscription {connId, smpServer}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId}) -> do
           case ntfSubAction of
-            NSANew -> case (ntfPrivateKey, notifierId) of
+            NSACreate -> case (ntfPrivateKey, notifierId) of
               (Just ntfPrivKey, Just nId)
                 | ntfTknStatus == NTActive -> do
                   ntfSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
                   ts <- liftIO getCurrentTime
                   withStore c $ \st ->
-                    updateNtfSubscription st connId ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASSNew, ntfSubActionTs = ts} (NtfSubAction NSACheck)
+                    updateNtfSubscription st connId ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASCreated, ntfSubActionTs = ts} (NtfSubAction NSACheck)
                 | otherwise -> pure () -- error
               _ -> pure () -- error
             NSACheck -> pure ()
@@ -156,7 +156,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                   ts <- liftIO getCurrentTime
                   withStore c $ \st -> do
                     setRcvQueueNotifierId st connId nId
-                    updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASNKey, ntfSubActionTs = ts} (NtfSubAction NSANew)
+                    updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                   ns <- asks ntfSupervisor
                   atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
         Nothing -> noWorkToDo
