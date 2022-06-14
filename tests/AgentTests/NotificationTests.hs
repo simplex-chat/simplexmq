@@ -243,10 +243,13 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     verifyNtfToken bob bobTkn verification' nonce'
     NTActive <- checkNtfToken bob bobTkn
     -- establish connection
+    liftIO $ threadDelay 50000
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
+    messageNotification apnsQ
+    messageNotification apnsQ
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
