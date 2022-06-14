@@ -53,18 +53,18 @@ processNtfSub c (connId, cmd) = do
   ntfServer_ <- getNtfServer c
   case cmd of
     NSCCreate -> do
-      sub_ <- withStore $ \st -> getNtfSubscription st connId
-      RcvQueue {notifierId, server = smpServer} <- withStore $ \st -> getRcvQueue st connId
+      sub_ <- withStore c $ \st -> getNtfSubscription st connId
+      RcvQueue {notifierId, server = smpServer} <- withStore c $ \st -> getRcvQueue st connId
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
           case notifierId of
             (Just nId) -> do
               let newSub = newNtfSubscription connId smpServer (Just nId) ntfServer NASNKey currentTime
-              withStore $ \st -> createNtfSubscription st newSub (NtfSubAction NSANew)
+              withStore c $ \st -> createNtfSubscription st newSub (NtfSubAction NSANew)
             _ -> do
               let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASStarted currentTime
-              withStore $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
+              withStore c $ \st -> createNtfSubscription st newSub (NtfSubSMPAction NSAKey)
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
@@ -82,7 +82,7 @@ processNtfSub c (connId, cmd) = do
         _ -> pure ()
     NSCDelete -> do
       -- TODO delete notifier ID and Key from SMP server (SDEL, then NDEL)
-      withStore $ \st -> markNtfSubscriptionForDeletion st connId
+      withStore c $ \st -> markNtfSubscriptionForDeletion st connId
       case ntfServer_ of
         (Just ntfServer) -> addNtfWorker ntfServer
         _ -> pure ()
@@ -110,7 +110,7 @@ runNtfWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
   getNtfToken_ >>= \case
     Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} ->
-      withStore (`getNextNtfSubAction` srv) >>= \case
+      withStore c (`getNextNtfSubAction` srv) >>= \case
         Just (ntfSub@NtfSubscription {connId, smpServer}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId}) -> do
           case ntfSubAction of
             NSANew -> case (ntfPrivateKey, notifierId) of
@@ -118,7 +118,7 @@ runNtfWorker c srv doWork = forever $ do
                 | ntfTknStatus == NTActive -> do
                   ntfSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
                   ts <- liftIO getCurrentTime
-                  withStore $ \st ->
+                  withStore c $ \st ->
                     updateNtfSubscription st connId ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASSNew, ntfSubActionTs = ts} (NtfSubAction NSACheck)
                 | otherwise -> pure () -- error
               _ -> pure () -- error
@@ -136,7 +136,7 @@ runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
   getNtfToken_ >>= \case
     Just NtfToken {ntfTknStatus} -> do
-      withStore (`getNextNtfSubSMPAction` srv) >>= \case
+      withStore c (`getNextNtfSubSMPAction` srv) >>= \case
         Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) -> do
           case ntfSubAction of
             NSAKey
@@ -147,14 +147,14 @@ runNtfSMPWorker c srv doWork = forever $ do
                   _ -> do
                     C.SignAlg a <- asks (cmdSignAlg . config)
                     (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
-                    withStore $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
+                    withStore c $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
                     enableNotificationsWithNKey ntfPubKey
               | otherwise -> pure () -- error
               where
                 enableNotificationsWithNKey ntfPubKey = do
                   nId <- enableQueueNotifications c rq ntfPubKey
                   ts <- liftIO getCurrentTime
-                  withStore $ \st -> do
+                  withStore c $ \st -> do
                     setRcvQueueNotifierId st connId nId
                     updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASNKey, ntfSubActionTs = ts} (NtfSubAction NSANew)
                   ns <- asks ntfSupervisor
