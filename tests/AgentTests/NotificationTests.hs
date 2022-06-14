@@ -202,7 +202,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     verifyNtfToken alice tkn verification nonce
     NTActive <- checkNtfToken alice tkn
     -- send message
-    liftIO $ threadDelay 2000000
+    liftIO $ threadDelay 50000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- receive notification
