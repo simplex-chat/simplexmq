@@ -506,10 +506,10 @@ type SndPrivateSignKey = C.APrivateSignKey
 -- | Sender's public key used by SMP server to verify authorization of SMP commands.
 type SndPublicVerifyKey = C.APublicVerifyKey
 
--- | Private key used by push notifications server to authorize (sign) LSTN command.
+-- | Private key used by push notifications server to authorize (sign) NSUB command.
 type NtfPrivateSignKey = C.APrivateSignKey
 
--- | Public key used by SMP server to verify authorization of LSTN command sent by push notifications server.
+-- | Public key used by SMP server to verify authorization of NSUB command sent by push notifications server.
 type NtfPublicVerifyKey = C.APublicVerifyKey
 
 -- | SMP message server ID.

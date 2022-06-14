@@ -239,14 +239,14 @@ processCommand c (connId, cmd) = case cmd of
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId cMode = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueueNtf c srv
+  (rq, qUri) <- newRcvQueueNtf c srv connId
   g <- asks idsDrg
   agentVersion <- asks $ smpAgentVersion . config
   let cData = ConnData {connId, connAgentVersion = agentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId' <- withStore c $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
   ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (rq, NSCCreate)
+  atomically $ sendNtfSubCommand ns (connId, NSCCreate)
   aVRange <- asks $ smpAgentVRange . config
   let crData = ConnReqUriData simplexChat aVRange [qUri]
   case cMode of
@@ -301,7 +301,7 @@ joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInf
 createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> m SMPQueueInfo
 createReplyQueue c connId = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueueNtf c srv
+  (rq, qUri) <- newRcvQueueNtf c srv connId
   -- TODO reply queue version should be the same as send queue, ignoring it in v1
   let qInfo = toVersionT qUri SMP.smpClientVersion
   addSubscription c rq connId
@@ -361,7 +361,7 @@ subscribeConnection' c connId =
     subscribe rq = do
       subscribeQueue c rq connId
       ns <- asks ntfSupervisor
-      atomically $ sendNtfSubCommand ns (rq, NSCCreate)
+      atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
 resubscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId =
@@ -564,7 +564,7 @@ deleteConnection' c connId =
       ns <- asks ntfSupervisor
       atomically $ do
         removeSubscription c connId
-        sendNtfSubCommand ns (rq, NSCDelete)
+        sendNtfSubCommand ns (connId, NSCDelete)
       withStore c (`deleteConn` connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
@@ -696,9 +696,7 @@ initializeNtfSubQ c tkn = do
   connIds <- atomically $ do
     nsUpdateToken ns tkn
     getSubscriptions c
-  forM_ connIds $ \connId -> do
-    rq <- withStore c $ \st -> getRcvQueue st connId
-    atomically $ sendNtfSubCommand ns (rq, NSCCreate)
+  forM_ connIds $ \connId -> atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
 -- TODO
 -- There should probably be another function to cancel all subscriptions that would flush the queue first,
@@ -1010,11 +1008,11 @@ agentRatchetDecrypt st connId encAgentMsg = do
   updateRatchet st connId rc' skippedDiff
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
 
-newRcvQueueNtf :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri)
-newRcvQueueNtf c srv = do
+newRcvQueueNtf :: AgentMonad m => AgentClient -> SMPServer -> ConnId -> m (RcvQueue, SMPQueueUri)
+newRcvQueueNtf c srv connId = do
   (rq, qUri) <- newRcvQueue c srv
   ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (rq, NSCCreate)
+  atomically $ sendNtfSubCommand ns (connId, NSCCreate)
   pure (rq, qUri)
 
 newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueueInfo -> m SndQueue

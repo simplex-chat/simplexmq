@@ -10,6 +10,7 @@ module Simplex.Messaging.Notifications.Client where
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time (UTCTime)
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -18,8 +19,9 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Parsers (blobFieldDecoder)
-import Simplex.Messaging.Protocol (NotifierId, NtfPrivateSignKey, ProtocolServer, RecipientId, SMPServer)
+import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Protocol (NotifierId, ProtocolServer, SMPServer)
+import Simplex.Messaging.Agent.Protocol (ConnId)
 
 type NtfServer = ProtocolServer
 
@@ -132,20 +134,22 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
       ntfTknAction = Just NTARegister
     }
 
+data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
+
 data NtfSubAction
-  = NSANew NtfPrivateSignKey
+  = NSACreate
   | NSACheck
   | NSADelete
   deriving (Show)
 
 instance Encoding NtfSubAction where
   smpEncode = \case
-    NSANew nKey -> smpEncode ('N', nKey)
+    NSACreate -> "N"
     NSACheck -> "C"
     NSADelete -> "D"
   smpP =
     A.anyChar >>= \case
-      'N' -> NSANew <$> smpP
+      'N' -> pure NSACreate
       'C' -> pure NSACheck
       'D' -> pure NSADelete
       _ -> fail "bad NtfSubAction"
@@ -170,27 +174,66 @@ instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
 
 instance ToField NtfSubSMPAction where toField = toField . smpEncode
 
+data NtfAgentSubStatus
+  = -- | subscription started
+    NASNew
+  | -- | state after NKEY - notifier ID is assigned to queue on SMP server
+    NASKey
+  | -- | state after SNEW - subscription created on notification server
+    NASCreated
+  | -- | connected and subscribed to SMP server
+    NASActive
+  | -- | communicated by notification server that NEND received (we currently do not support it)
+    NASEnded
+  | -- | communicated by notification server that SMP AUTH error occured
+    NASSMPAuth
+  | -- | state after SDEL (subscription is deleted on notification server)
+    NASDeleted
+  deriving (Eq, Show)
+
+instance Encoding NtfAgentSubStatus where
+  smpEncode = \case
+    NASNew -> "NEW"
+    NASKey -> "NKEY"
+    NASCreated -> "CREATED"
+    NASActive -> "ACTIVE"
+    NASEnded -> "ENDED"
+    NASSMPAuth -> "SMP_AUTH"
+    NASDeleted -> "DELETED"
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "NEW" -> pure NASNew
+      "NKEY" -> pure NASKey
+      "CREATED" -> pure NASCreated
+      "ACTIVE" -> pure NASActive
+      "ENDED" -> pure NASEnded
+      "SMP_AUTH" -> pure NASSMPAuth
+      "DELETED" -> pure NASDeleted
+      _ -> fail "bad NtfAgentSubStatus"
+
+instance FromField NtfAgentSubStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
+
+instance ToField NtfAgentSubStatus where toField = toField . decodeLatin1 . smpEncode
+
 data NtfSubscription = NtfSubscription
-  { ntfServer :: NtfServer,
+  { connId :: ConnId,
+    smpServer :: SMPServer,
+    ntfQueueId :: Maybe NotifierId,
+    ntfServer :: NtfServer,
     ntfSubId :: Maybe NtfSubscriptionId,
-    ntfSubStatus :: NtfSubStatus,
-    ntfSubActionTs :: UTCTime,
-    ntfToken :: NtfToken, -- ?
-    smpServer :: SMPServer, -- use SMPQueueNtf?
-    rcvQueueId :: RecipientId,
-    ntfQueueId :: Maybe NotifierId
+    ntfSubStatus :: NtfAgentSubStatus,
+    ntfSubActionTs :: UTCTime
   }
   deriving (Show)
 
-newNtfSubscription :: NtfServer -> NtfToken -> SMPServer -> RecipientId -> UTCTime -> NtfSubscription
-newNtfSubscription ntfServer ntfToken smpServer rcvQueueId ntfSubActionTs =
+newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NtfSubscription
+newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
   NtfSubscription
-    { ntfServer,
-      ntfSubId = Nothing,
-      ntfSubStatus = NSKey,
-      ntfSubActionTs,
-      ntfToken,
+    { connId,
       smpServer,
-      rcvQueueId,
-      ntfQueueId = Nothing
+      ntfQueueId,
+      ntfServer,
+      ntfSubId = Nothing,
+      ntfSubStatus,
+      ntfSubActionTs
     }

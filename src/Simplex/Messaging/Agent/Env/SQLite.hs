@@ -35,7 +35,6 @@ import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Agent.Store (RcvQueue)
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
@@ -147,12 +146,12 @@ newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubQ :: TBQueue (RcvQueue, NtfSupervisorCommand),
+    ntfSubQ :: TBQueue (ConnId, NtfSupervisorCommand),
     ntfWorkers :: TMap NtfServer (TMVar (), Async ()),
     ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
   }
 
-data NtfSupervisorCommand = NSCCreate | NSCDelete
+data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCNtfWorker NtfServer
 
 newNtfSubSupervisor :: Natural -> STM NtfSupervisor
 newNtfSubSupervisor qSize = do

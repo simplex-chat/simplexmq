@@ -60,10 +60,10 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubSMPAction, NtfSubscription, NtfTknAction, NtfToken (..))
+import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..))
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, liftIOEither)
 import Simplex.Messaging.Version
@@ -302,7 +302,34 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
 
   getRcvQueue :: SQLiteStore -> ConnId -> m RcvQueue
-  getRcvQueue _st _connId = throwError SENotImplemented
+  getRcvQueue st connId =
+    liftIOEither . withTransaction st $ \db -> do
+      rq_ <- getRcvQueueByConnId_ db connId
+      pure $ maybe (Left SEConnNotFound) Right rq_
+
+  setRcvQueueNotifierKey :: SQLiteStore -> ConnId -> NtfPublicVerifyKey -> NtfPrivateSignKey -> m ()
+  setRcvQueueNotifierKey st connId ntfPublicKey ntfPrivateKey =
+    liftIO . withTransaction st $ \db ->
+      DB.execute
+        db
+        [sql|
+          UPDATE rcv_queues
+          SET ntf_public_key = ?, ntf_private_key = ?
+          WHERE conn_id = ?
+        |]
+        (ntfPublicKey, ntfPrivateKey, connId)
+
+  setRcvQueueNotifierId :: SQLiteStore -> ConnId -> NotifierId -> m ()
+  setRcvQueueNotifierId st connId nId =
+    liftIO . withTransaction st $ \db ->
+      DB.execute
+        db
+        [sql|
+          UPDATE rcv_queues
+          SET ntf_id = ?
+          WHERE conn_id = ?
+        |]
+        (nId, connId)
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
@@ -663,26 +690,133 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         (provider, token, host, port)
 
-  getNtfSubscription :: SQLiteStore -> RcvQueue -> m (Maybe NtfSubscription)
-  getNtfSubscription _st _rcvQueue = throwError SENotImplemented
+  getNtfSubscription :: SQLiteStore -> ConnId -> m (Maybe NtfSubscription)
+  getNtfSubscription st connId =
+    liftIO . withTransaction st $ \db ->
+      maybeFirstRow ntfSubscription $
+        DB.query
+          db
+          [sql|
+            SELECT s.host, s.port, s.key_hash, ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
+              nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action_ts
+            FROM ntf_subscriptions nsb
+            JOIN servers s ON s.host = nsb.smp_host, s.port = nsb.smp_port
+            JOIN ntf_servers ns USING (ntf_host, ntf_port)
+            WHERE nsb.conn_id = ?
+          |]
+          (Only connId)
+    where
+      ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs) =
+        let smpServer = SMPServer smpHost smpPort smpKeyHash
+            ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
+         in NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
 
-  createNtfSubscription :: SQLiteStore -> NtfSubscription -> m ()
-  createNtfSubscription _st _ntfSub = throwError SENotImplemented
+  createNtfSubscription :: SQLiteStore -> NtfSubscription -> NtfSubOrSMPAction -> m ()
+  createNtfSubscription st NtfSubscription {smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
+    liftIO . withTransaction st $ \db ->
+      DB.execute
+        db
+        [sql|
+          INSERT INTO ntf_subscriptions
+            (smp_host, smp_port, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id,
+             ntf_sub_status, ntf_sub_action, ntf_sub_smp_action, ntf_sub_action_ts)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
+        |]
+        ( (host, port, ntfQueueId, ntfHost, ntfPort, ntfSubId)
+            :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs)
+        )
+    where
+      (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
-  markNtfSubscriptionForDeletion :: s -> RcvQueue -> m ()
+  markNtfSubscriptionForDeletion :: SQLiteStore -> ConnId -> m ()
   markNtfSubscriptionForDeletion _st _rcvQueue = throwError SENotImplemented
 
-  updateNtfSubscription :: s -> RcvQueue -> NtfSubscription -> m ()
-  updateNtfSubscription _st _rcvQueue _ntfSub = throwError SENotImplemented
+  updateNtfSubscription :: SQLiteStore -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> m ()
+  updateNtfSubscription st connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
+    liftIO . withTransaction st $ \db -> do
+      r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+      forM_ r $ \updatedBySupervisor -> do
+        updatedAt <- getCurrentTime
+        if updatedBySupervisor
+          then
+            DB.execute
+              db
+              [sql|
+                UPDATE ntf_subscriptions
+                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
+                WHERE conn_id = ?
+              |]
+              (ntfQueueId, ntfSubId, ntfSubStatus, False, updatedAt, connId)
+          else
+            DB.execute
+              db
+              [sql|
+                UPDATE ntf_subscriptions
+                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
+                WHERE conn_id = ?
+              |]
+              (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs, False, updatedAt, connId)
+    where
+      (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
-  deleteNtfSubscription :: s -> RcvQueue -> m ()
-  deleteNtfSubscription _st _rcvQueue = throwError SENotImplemented
+  deleteNtfSubscription :: SQLiteStore -> ConnId -> m ()
+  deleteNtfSubscription _st _connId = throwError SENotImplemented
 
-  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, Maybe NtfSubAction))
-  getNextNtfSubAction _st _srv = throwError SENotImplemented
+  getNextNtfSubAction :: SQLiteStore -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
+  getNextNtfSubAction st ntfServer@(ProtocolServer ntfHost ntfPort _) =
+    liftIO . withTransaction st $ \db -> do
+      r <-
+        maybeFirstRow ntfSubscription $
+          DB.query
+            db
+            [sql|
+              SELECT ns.connId, s.host, s.port, s.key_hash,
+                ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
+              FROM ntf_subscriptions ns
+              JOIN servers s ON s.host = ns.smp_host, s.port = ns.smp_port
+              WHERE ns.ntf_host = ? AND ns.ntf_port = ? AND ns.ntf_sub_action IS NOT NULL
+              ORDER BY ns.ntf_sub_action_ts ASC
+              LIMIT 1
+            |]
+            (ntfHost, ntfPort)
+      case r of
+        Just (ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
+          DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
+          rq_ <- getRcvQueueByConnId_ db connId
+          pure $ (\rq -> Just (ntfSub, ntfSubAction, rq)) =<< rq_
+        Nothing -> pure Nothing
+    where
+      ntfSubscription (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
+        let smpServer = SMPServer smpHost smpPort smpKeyHash
+         in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
 
-  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, Maybe NtfSubSMPAction))
-  getNextNtfSubSMPAction _st _srv = throwError SENotImplemented
+  getNextNtfSubSMPAction :: SQLiteStore -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
+  getNextNtfSubSMPAction st smpServer@(SMPServer smpHost smpPort _) =
+    liftIO . withTransaction st $ \db -> do
+      r <-
+        maybeFirstRow ntfSubscription $
+          DB.query
+            db
+            [sql|
+              SELECT ns.connId, s.ntf_host, s.ntf_port, s.ntf_key_hash,
+                ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
+              FROM ntf_subscriptions ns
+              JOIN ntf_servers s USING (ntf_host, ntf_port)
+              WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL
+              ORDER BY ns.ntf_sub_action_ts ASC
+              LIMIT 1
+            |]
+            (smpHost, smpPort)
+      case r of
+        Just (ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
+          DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
+          rq_ <- getRcvQueueByConnId_ db connId
+          pure $ (\rq -> Just (ntfSub, ntfSubAction, rq)) =<< rq_
+        Nothing -> pure Nothing
+    where
+      ntfSubscription (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
+        let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
+         in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
 
 -- * Auxiliary helpers
 
@@ -744,6 +878,9 @@ listToEither e _ = Left e
 
 firstRow :: (a -> b) -> e -> IO [a] -> IO (Either e b)
 firstRow f e a = second f . listToEither e <$> a
+
+maybeFirstRow :: Functor f => (a -> b) -> f [a] -> f (Maybe b)
+maybeFirstRow f q = fmap f . listToMaybe <$> q
 
 -- TODO move from simplex-chat
 -- firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
@@ -855,22 +992,22 @@ getConnData_ dbConn connId' =
 
 getRcvQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
 getRcvQueueByConnId_ dbConn connId =
-  rcvQueue
+  listToMaybe . map rcvQueue
     <$> DB.query
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status
+          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
+          q.ntf_public_key, q.ntf_private_key, q.ntf_id
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    rcvQueue [(keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status)] =
+    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey, ntfPrivateKey, notifierId)) =
       let server = SMPServer host port keyHash
-       in Just RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status}
-    rcvQueue _ = Nothing
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfPublicKey, ntfPrivateKey, notifierId}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =
@@ -1086,3 +1223,7 @@ createWithRandomId gVar create = tryCreate 3
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
 randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
+
+ntfSubAndSMPAction :: NtfSubOrSMPAction -> (Maybe NtfSubAction, Maybe NtfSubSMPAction)
+ntfSubAndSMPAction (NtfSubAction nsa) = (Just nsa, Nothing)
+ntfSubAndSMPAction (NtfSubSMPAction nsa) = (Nothing, Just nsa)
