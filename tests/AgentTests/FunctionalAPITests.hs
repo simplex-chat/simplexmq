@@ -6,7 +6,14 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
-module AgentTests.FunctionalAPITests (functionalAPITests) where
+module AgentTests.FunctionalAPITests
+  ( functionalAPITests,
+    get,
+    (##>),
+    (=##>),
+    pattern Msg,
+  )
+where
 
 import Control.Concurrent (threadDelay)
 import Control.Monad.Except (ExceptT, runExceptT)

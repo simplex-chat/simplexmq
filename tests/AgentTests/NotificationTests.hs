@@ -1,10 +1,15 @@
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 
+import AgentTests.FunctionalAPITests (get, (##>), (=##>), pattern Msg)
 import Control.Concurrent (threadDelay)
 import Control.Monad.Except
 import qualified Data.Aeson as J
@@ -15,6 +20,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
+import SMPClient (withSmpServer)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
@@ -22,6 +28,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Protocol (ErrorType (AUTH))
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
 import System.Directory (removeFile)
@@ -30,7 +37,7 @@ import UnliftIO.STM
 
 notificationTests :: ATransport -> Spec
 notificationTests t =
-  after_ (removeFile testDB) $
+  after_ (removeFile testDB) $ do
     describe "Managing notification tokens" $ do
       it "should register and verify notification token" $
         withAPNSMockServer $ \apns ->
@@ -44,6 +51,11 @@ notificationTests t =
       it "should re-register token when notification server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           testNtfTokenServerRestart t apns
+    fdescribe "Managing notification subscriptions" $ do
+      it "should create new notification subscription for existing connection" $ \_ ->
+        withSmpServer t $
+          withAPNSMockServer $ \apns ->
+            withNtfServer t $ testNotificationSubscriptionExistingConnection apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -165,3 +177,44 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     NTActive <- checkNtfToken a' tkn
     enableNtfCron a' tkn 30
   pure ()
+
+testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
+testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right () <- runExceptT $ do
+    -- establish connection
+    (bobId, qInfo) <- createConnection alice SCMInvitation
+    aliceId <- joinConnection bob qInfo "bob's connInfo"
+    ("", _, CONF confId "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, CON)
+    -- register notification token
+    let tkn = DeviceToken PPApns "abcd"
+    NTRegistered <- registerNtfToken alice tkn
+    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
+      atomically $ readTBQueue apnsQ
+    verification <- ntfData .-> "verification"
+    nonce <- C.cbNonce <$> ntfData .-> "nonce"
+    liftIO $ sendApnsResponse APNSRespOk
+    verifyNtfToken alice tkn verification nonce
+    NTActive <- checkNtfToken alice tkn
+    -- send message
+    liftIO $ threadDelay 50000
+    1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
+    get bob ##> ("", aliceId, SENT $ baseId + 1)
+    -- receive notification
+    APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
+      atomically $ readTBQueue apnsQ
+    _checkMessage <- ntfData' .-> "checkMessage"
+    _nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
+    liftIO $ sendApnsResponse' APNSRespOk
+    -- receive message
+    get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 1
+  pure ()
+  where
+    baseId = 3
+    msgId = subtract baseId
