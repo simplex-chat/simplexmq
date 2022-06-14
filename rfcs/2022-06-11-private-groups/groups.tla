@@ -73,7 +73,6 @@ SendPropose ==
         /\ proposer \in group_perceptions[proposer]
         /\ invitee \notin group_perceptions[proposer]
         /\ HasDirectConnection(proposer, invitee)
-        \* TODO: This can't really all be atomic
         /\ messages' = messages \union
             {   [ type |-> Propose
                 , sender |-> proposer
