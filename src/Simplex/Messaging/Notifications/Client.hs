@@ -176,42 +176,38 @@ instance ToField NtfSubSMPAction where toField = toField . smpEncode
 
 data NtfAgentSubStatus
   = -- | subscription started
-    NASStarted
-  | -- | state after NKEY
+    NASNew
+  | -- | state after NKEY - notifier ID is assigned to queue on SMP server
     NASNKey
-  | -- | state after SNEW
-    NASSNew
+  | -- | state after SNEW - subscription created on notification server
+    NASCreated
   | -- | connected and subscribed to SMP server
     NASActive
   | -- | communicated by notification server that NEND received (we currently do not support it)
-    NASInactive
+    NASEnded
   | -- | communicated by notification server that SMP AUTH error occured
     NASSMPAuth
   | -- | state after SDEL (subscription is deleted on notification server)
-    NASSDeleted
-  | -- | state after NDEL (notifier ID and Key are deleted on SMP server and subscription is deleted locally)
     NASDeleted
   deriving (Eq, Show)
 
 instance Encoding NtfAgentSubStatus where
   smpEncode = \case
-    NASStarted -> "START"
+    NASNew -> "NEW"
     NASNKey -> "NKEY"
-    NASSNew -> "SNEW"
+    NASCreated -> "CREATED"
     NASActive -> "ACTIVE"
-    NASInactive -> "INACTIVE"
+    NASEnded -> "ENDED"
     NASSMPAuth -> "SMP_AUTH"
-    NASSDeleted -> "SDELETED"
     NASDeleted -> "DELETED"
   smpP =
     A.takeTill (== ' ') >>= \case
-      "START" -> pure NASStarted
+      "NEW" -> pure NASNew
       "NKEY" -> pure NASNKey
-      "SNEW" -> pure NASSNew
+      "CREATED" -> pure NASCreated
       "ACTIVE" -> pure NASActive
-      "INACTIVE" -> pure NASInactive
+      "ENDED" -> pure NASEnded
       "SMP_AUTH" -> pure NASSMPAuth
-      "SDELETED" -> pure NASSDeleted
       "DELETED" -> pure NASDeleted
       _ -> fail "bad NtfAgentSubStatus"
 

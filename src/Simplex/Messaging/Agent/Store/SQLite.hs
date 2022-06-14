@@ -693,8 +693,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getNtfSubscription :: SQLiteStore -> ConnId -> m (Maybe NtfSubscription)
   getNtfSubscription st connId =
     liftIO . withTransaction st $ \db ->
-      ntfSubscription
-        <$> DB.query
+      maybeFirstRow ntfSubscription $
+        DB.query
           db
           [sql|
             SELECT s.host, s.port, s.key_hash, ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
@@ -706,11 +706,10 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           |]
           (Only connId)
     where
-      ntfSubscription [(smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs)] =
+      ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs) =
         let smpServer = SMPServer smpHost smpPort smpKeyHash
             ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
-         in Just NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
-      ntfSubscription _ = Nothing
+         in NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
 
   createNtfSubscription :: SQLiteStore -> NtfSubscription -> NtfSubOrSMPAction -> m ()
   createNtfSubscription st NtfSubscription {smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
@@ -735,7 +734,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   updateNtfSubscription :: SQLiteStore -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> m ()
   updateNtfSubscription st connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
     liftIO . withTransaction st $ \db -> do
-      r <- listToMaybe . map fromOnly <$> DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+      r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
       forM_ r $ \updatedBySupervisor -> do
         updatedAt <- getCurrentTime
         if updatedBySupervisor
@@ -744,19 +743,19 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
               db
               [sql|
                 UPDATE ntf_subscriptions
-                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ? updated_at = ?
+                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
                 WHERE conn_id = ?
               |]
-              (ntfQueueId, ntfSubId, ntfSubStatus, updatedAt, connId)
+              (ntfQueueId, ntfSubId, ntfSubStatus, False, updatedAt, connId)
           else
             DB.execute
               db
               [sql|
                 UPDATE ntf_subscriptions
-                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ? updated_at = ?
+                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
                 WHERE conn_id = ?
               |]
-              (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs, updatedAt, connId)
+              (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs, False, updatedAt, connId)
     where
       (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
@@ -767,8 +766,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
   getNextNtfSubAction st ntfServer@(ProtocolServer ntfHost ntfPort _) =
     liftIO . withTransaction st $ \db -> do
       r <-
-        ntfSubscription
-          <$> DB.query
+        maybeFirstRow ntfSubscription $
+          DB.query
             db
             [sql|
               SELECT ns.connId, s.host, s.port, s.key_hash,
@@ -782,22 +781,21 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             (ntfHost, ntfPort)
       case r of
         Just (ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
-          DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = 0 WHERE conn_id = ?" (Only connId)
+          DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
           rq_ <- getRcvQueueByConnId_ db connId
           pure $ (\rq -> Just (ntfSub, ntfSubAction, rq)) =<< rq_
         Nothing -> pure Nothing
     where
-      ntfSubscription [(connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
+      ntfSubscription (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
         let smpServer = SMPServer smpHost smpPort smpKeyHash
-         in Just (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
-      ntfSubscription _ = Nothing
+         in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
 
   getNextNtfSubSMPAction :: SQLiteStore -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
   getNextNtfSubSMPAction st smpServer@(SMPServer smpHost smpPort _) =
     liftIO . withTransaction st $ \db -> do
       r <-
-        ntfSubscription
-          <$> DB.query
+        maybeFirstRow ntfSubscription $
+          DB.query
             db
             [sql|
               SELECT ns.connId, s.ntf_host, s.ntf_port, s.ntf_key_hash,
@@ -811,15 +809,14 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             (smpHost, smpPort)
       case r of
         Just (ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
-          DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = 0 WHERE conn_id = ?" (Only connId)
+          DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
           rq_ <- getRcvQueueByConnId_ db connId
           pure $ (\rq -> Just (ntfSub, ntfSubAction, rq)) =<< rq_
         Nothing -> pure Nothing
     where
-      ntfSubscription [(connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction)] =
+      ntfSubscription (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
         let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
-         in Just (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
-      ntfSubscription _ = Nothing
+         in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
 
 -- * Auxiliary helpers
 
@@ -881,6 +878,9 @@ listToEither e _ = Left e
 
 firstRow :: (a -> b) -> e -> IO [a] -> IO (Either e b)
 firstRow f e a = second f . listToEither e <$> a
+
+maybeFirstRow :: Functor f => (a -> b) -> f [a] -> f (Maybe b)
+maybeFirstRow f q = fmap f . listToMaybe <$> q
 
 -- TODO move from simplex-chat
 -- firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
