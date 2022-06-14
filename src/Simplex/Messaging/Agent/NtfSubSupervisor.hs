@@ -53,12 +53,12 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, cmd) = do
   ntfToken_ <- readTVarIO $ ntfTkn ns
   case cmd of
     NSCCreate -> do
-      sub_ <- withStore $ \st -> getNtfSubscription st rcvQueue
+      sub_ <- withStore c $ \st -> getNtfSubscription st rcvQueue
       case (sub_, ntfServer_, ntfToken_) of
         (Nothing, Just ntfServer, Just tkn) -> do
           currentTime <- liftIO getCurrentTime
           let newSub = newNtfSubscription ntfServer tkn smpServer rcvId currentTime
-          withStore $ \st -> createNtfSubscription st newSub
+          withStore c $ \st -> createNtfSubscription st newSub
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
@@ -69,7 +69,7 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, cmd) = do
           addNtfWorker ntfServer
         _ -> pure ()
     NSCDelete -> do
-      withStore $ \st -> markNtfSubscriptionForDeletion st rcvQueue
+      withStore c $ \st -> markNtfSubscriptionForDeletion st rcvQueue
       case (ntfServer_, ntfToken_) of
         (Just ntfServer, Just _) -> addNtfWorker ntfServer
         _ -> pure ()
@@ -91,9 +91,9 @@ processNtfSub c (rcvQueue@RcvQueue {server = smpServer, rcvId}, cmd) = do
         Just (doWork, _) -> void . atomically $ tryPutTMVar doWork ()
 
 runNtfWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-runNtfWorker _c srv doWork = forever $ do
+runNtfWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
-  withStore $ \st ->
+  withStore c $ \st ->
     getNextNtfSubAction st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar doWork
       Just (_sub, ntfSubAction) ->
@@ -105,9 +105,9 @@ runNtfWorker _c srv doWork = forever $ do
   liftIO $ threadDelay delay
 
 runNtfSMPWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-runNtfSMPWorker _c srv doWork = forever $ do
+runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
-  withStore $ \st ->
+  withStore c $ \st ->
     getNextNtfSubSMPAction st srv >>= \case
       Nothing -> void . atomically $ tryTakeTMVar doWork
       Just (_sub, ntfSubAction) ->

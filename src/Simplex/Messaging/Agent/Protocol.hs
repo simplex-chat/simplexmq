@@ -234,20 +234,24 @@ deriving instance Show (ACommand p)
 data AgentPhase
   = -- | agent is operating normally
     APActive
-  | -- | agent is paused - no new network operations will be started - they will STM-retry until agentPhase flag is APActive
+  | -- | agent is inactive - no new receive operations will be started - they will STM-retry to allow NSE to complete
+    APInactive
+  | -- | agent is paused - no new send/receive operations will be started - they will STM-retry
     APPaused
-  | -- | agent is suspended - no new database operations will be started - they will STM-retry until agentPhase flag is APActive or APPaused
+  | -- | agent is suspended - no new send/receive/database operations will be started - they will STM-retry
     APSuspended
   deriving (Eq, Show)
 
 instance StrEncoding AgentPhase where
   strEncode = \case
     APActive -> "ACTIVE"
+    APInactive -> "INACTIVE"
     APPaused -> "PAUSED"
     APSuspended -> "SUSPENDED"
   strP =
     A.takeTill (== ' ') >>= \case
       "ACTIVE" -> pure APActive
+      "INACTIVE" -> pure APInactive
       "PAUSED" -> pure APPaused
       "SUSPENDED" -> pure APSuspended
       _ -> fail "bad AgentPhase"
