@@ -142,8 +142,8 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   lock <- newTMVar ()
   return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, lock}
 
--- agentDbPath :: AgentClient -> FilePath
--- agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
+agentDbPath :: AgentClient -> FilePath
+agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
 
 class ProtocolServerClient msg where
   getProtocolServerClient :: AgentMonad m => AgentClient -> ProtocolServer -> m (ProtocolClient msg)
