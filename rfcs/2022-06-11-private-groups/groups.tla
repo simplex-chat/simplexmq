@@ -285,16 +285,24 @@ CannotCommunicateWithoutAConnection ==
     \A message \in messages :
         HasDirectConnection(message.sender, message.recipient)
 
-\* An other that receives two invites which share an invite id, knows that
+\* Anyone that receives two invites which share an invite id, knows that
 \* these two contacts know each other and that they are in a group together
 \* with N people.
-\* TODO
-KnowsTwoMembersKnowEachOther(other, member1, member2) ==
-    TRUE
+\* This kind of correlation should only be possible if the invite senders
+\* agreed to invite that individual, meaning that they are willing to divulge
+\* to the invitee that they know all members of the group.  We check this by
+\* seeing if they generated a token for this invite (which means accepting the
+\* proposal).
+NonMembersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
+    \A message1, message2 \in messages :
+        \/ message1 = message2
+        \/  /\ message1.type = Invite
+            /\ message2.type = Invite
+            /\ message1.recipient = message2.recipient
+            /\ message1.invite_id = message2.invite_id
+            =>  /\ tokens[<<message1.invite_id, message1.sender>>] /= Nothing
+                /\ tokens[<<message2.invite_id, message2.sender>>] /= Nothing
 
-\* TODO
-OthersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
-    TRUE
 
 \* TODO
 MembersOnlyEstablishWithInvitee ==
