@@ -42,7 +42,7 @@ module Simplex.Messaging.Agent.Client
     logServer,
     removeSubscription,
     hasActiveSubscription,
-    -- agentDbPath,
+    agentDbPath,
     beginAgentOperation,
     endAgentOperation,
     notifyAgentPhaseChanged,

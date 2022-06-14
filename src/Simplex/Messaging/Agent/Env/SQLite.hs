@@ -125,15 +125,14 @@ data Env = Env
     ntfSupervisor :: NtfSupervisor
   }
 
-data AgentOperation = AOReceiving | AOSending | AODatabase
+data AgentOperation = AONetwork | AODatabase
   deriving (Eq, Ord)
 
 disallowedOperations :: AgentPhase -> [AgentOperation]
 disallowedOperations = \case
   APActive -> []
-  APInactive -> [AOReceiving]
-  APPaused -> [AOReceiving, AOSending]
-  APSuspended -> [AOReceiving, AOSending, AODatabase]
+  APPaused -> [AONetwork]
+  APSuspended -> [AONetwork, AODatabase]
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do

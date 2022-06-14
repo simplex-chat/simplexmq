@@ -435,9 +435,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
   mq <- atomically $ getPendingMsgQ c connId sq
   ri <- asks $ reconnectInterval . config
   forever $ do
-    atomically $ endAgentOperation c AOSending
+    atomically $ endAgentOperation c AONetwork
     msgId <- atomically $ readTQueue mq
-    atomically $ beginAgentOperation c AOSending
+    atomically $ beginAgentOperation c AONetwork
     let mId = unId msgId
     withStore c (\st -> E.try $ getPendingMsgData st connId msgId) >>= \case
       Left (e :: E.SomeException) ->
@@ -521,8 +521,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
     connError msgId = notifyDel msgId . ERR . CONN
     retrySending loop = do
       atomically $ do
-        endAgentOperation c AOSending
-        beginAgentOperation c AOSending
+        endAgentOperation c AONetwork
+        beginAgentOperation c AONetwork
       loop
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
@@ -727,9 +727,9 @@ getSMPServer c = do
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
-  atomically $ endAgentOperation c AOReceiving
+  atomically $ endAgentOperation c AONetwork
   t <- atomically $ readTBQueue msgQ
-  atomically $ beginAgentOperation c AOReceiving
+  atomically $ beginAgentOperation c AONetwork
   withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
