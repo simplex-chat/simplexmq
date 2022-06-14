@@ -209,9 +209,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 50000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
-    -- receive notification
     messageNotification apnsQ
-    -- receive message
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 1
   pure ()
@@ -235,7 +233,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     verifyNtfToken alice aliceTkn verification nonce
     NTActive <- checkNtfToken alice aliceTkn
     -- bob registers notification token
-    let bobTkn = DeviceToken PPApns "abcd"
+    let bobTkn = DeviceToken PPApns "bcde"
     NTRegistered <- registerNtfToken bob bobTkn
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
