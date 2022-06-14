@@ -69,7 +69,6 @@ SendPropose ==
         /\ proposer \in group_perceptions[proposer]
         /\ invitee \notin group_perceptions[proposer]
         /\ HasDirectConnection(proposer, invitee)
-        /\ HasDirectConnection(proposer, Leader) \* Should be invariant
         \* TODO: This can't really all be atomic
         /\ messages' = messages \union
             {   [ type |-> Propose
@@ -129,7 +128,6 @@ RebroadcastProposal ==
         /\ proposal /= Nothing
         /\ member /= proposal.proposer
         /\ member \in group_perceptions[Leader]
-        /\ HasDirectConnection(Leader, member) \* Should be invariant (TODO: Just make an invariant that all senders and recipients can talk)
         /\ messages' = messages \union
             {   [ sender |-> Leader
                 , recipient |-> member
@@ -174,7 +172,6 @@ ApproverReceiveProposal ==
 BroadcastToken ==
     \E from \in Users, invite_id \in InviteIds :
         \E to \in (group_perceptions[from] \ { from }) :
-            /\ HasDirectConnection(from, to) \* Should be invariant
             /\ tokens[<<invite_id, from>>] /= Nothing
             /\ messages' = messages \union
                 {   [ sender |-> from
@@ -207,7 +204,6 @@ SendAccept ==
                         \* so the invitee does not yet believe themself to be
                         \* part of the group.  At least one member must
                         \* establish a connection with them first.
-                        /\ HasDirectConnection(invitee, member) \* should be invariant
                         /\ messages' = messages \union
                             {   [ sender |-> invitee
                                 , recipient |-> member
@@ -284,6 +280,10 @@ Next ==
 
 Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, tokens>>
 
+
+CannotCommunicateWithoutAConnection ==
+    \A message \in messages :
+        HasDirectConnection(message.sender, message.recipient)
 
 \* An other that receives two invites which share an invite id, knows that
 \* these two contacts know each other and that they are in a group together
