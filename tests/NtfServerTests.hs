@@ -24,7 +24,7 @@ import ServerTests
     sampleSig,
     signSendRecv,
     (#==),
-    _SEND,
+    _SEND',
     pattern Resp,
   )
 import qualified Simplex.Messaging.Crypto as C
@@ -110,7 +110,7 @@ testNotificationSubscription (ATransport t) =
           RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", "", SNEW $ NewNtfSub tId q nKey)
           -- send message
           threadDelay 50000
-          Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND "hello")
+          Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
           -- receive notification
           APNSMockRequest {notification, sendApnsResponse = send'} <- atomically $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
