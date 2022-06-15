@@ -142,7 +142,7 @@ ApproverReceiveProposal ==
         \* guards fail.  Realistically, they need to notify the Leader that the
         \* proposal is doomed.
         /\ UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]] /= Nothing
-        /\ HasDirectConnection(message.sender, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
+        /\ HasDirectConnection(message.recipient, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
         /\ IF   tokens[<<message.invite_id, message.recipient>>] = Nothing
            THEN /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
                 /\ rng_state' = rng_state + 1
