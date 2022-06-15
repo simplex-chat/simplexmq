@@ -77,15 +77,15 @@ import qualified UnliftIO.Exception as E
 
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
-    dbConnPool :: TBQueue DB.Connection,
+    dbConnection :: TMVar DB.Connection,
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> Int -> [Migration] -> Bool -> IO SQLiteStore
-createSQLiteStore dbFilePath poolSize migrations yesToMigrations = do
+createSQLiteStore :: FilePath -> [Migration] -> Bool -> IO SQLiteStore
+createSQLiteStore dbFilePath migrations yesToMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
-  st <- connectSQLiteStore dbFilePath poolSize
+  st <- connectSQLiteStore dbFilePath
   checkThreadsafe st
   migrateSchema st migrations yesToMigrations
   pure st
@@ -121,13 +121,11 @@ confirmOrExit s = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-connectSQLiteStore :: FilePath -> Int -> IO SQLiteStore
-connectSQLiteStore dbFilePath poolSize = do
+connectSQLiteStore :: FilePath -> IO SQLiteStore
+connectSQLiteStore dbFilePath = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConnPool <- newTBQueueIO $ toEnum poolSize
-  replicateM_ poolSize $
-    connectDB dbFilePath >>= atomically . writeTBQueue dbConnPool
-  pure SQLiteStore {dbFilePath, dbConnPool, dbNew}
+  dbConnection <- newTMVarIO =<< connectDB dbFilePath
+  pure SQLiteStore {dbFilePath, dbConnection, dbNew}
 
 connectDB :: FilePath -> IO DB.Connection
 connectDB path = do
@@ -160,10 +158,10 @@ handleSQLError err e
   | otherwise = SEInternal $ bshow e
 
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withConnection SQLiteStore {dbConnPool} =
+withConnection SQLiteStore {dbConnection} =
   bracket
-    (atomically $ readTBQueue dbConnPool)
-    (atomically . writeTBQueue dbConnPool)
+    (atomically $ takeTMVar dbConnection)
+    (atomically . putTMVar dbConnection)
 
 withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
 withTransaction st action = withConnection st $ loop 100 100_000
