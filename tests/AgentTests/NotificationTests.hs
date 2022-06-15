@@ -192,8 +192,8 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     ("", _, CONF confId "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
-    get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- register notification token
     let tkn = DeviceToken PPApns "abcd"
@@ -247,18 +247,20 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     verifyNtfToken bob bobTkn verification' nonce'
     NTActive <- checkNtfToken bob bobTkn
     -- establish connection
-    liftIO $ threadDelay 200000
+    liftIO $ threadDelay 50000
     (bobId, qInfo) <- createConnection alice SCMInvitation
+    liftIO $ threadDelay 500000
     aliceId <- joinConnection bob qInfo "bob's connInfo"
+    messageNotification apnsQ
     ("", _, CONF confId "bob's connInfo") <- get alice
+    liftIO $ threadDelay 500000
     allowConnection alice bobId confId "alice's connInfo"
-    get alice ##> ("", bobId, CON)
+    messageNotification apnsQ
     get bob ##> ("", aliceId, INFO "alice's connInfo")
+    messageNotification apnsQ
+    get alice ##> ("", bobId, CON)
+    messageNotification apnsQ
     get bob ##> ("", aliceId, CON)
-    -- ! race condition here
-    -- messageNotification apnsQ
-    messageNotification apnsQ
-    messageNotification apnsQ
     -- bob sends message
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
@@ -271,11 +273,10 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     messageNotification apnsQ
     get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
     ackMessage bob aliceId $ baseId + 2
-    -- ! currently this fails unpredictably due to race condition on establishing connection
     -- no unexpected notifications should follow
-    -- 500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
-    --   Nothing -> pure ()
-    --   _ -> error "unexpected notification"
+    500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+      Nothing -> pure ()
+      _ -> error "unexpected notification"
   pure ()
   where
     baseId = 3
@@ -283,8 +284,10 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()
 messageNotification apnsQ = do
-  APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} <-
-    atomically $ readTBQueue apnsQ
-  _ <- ntfData .-> "checkMessage"
-  _ <- C.cbNonce <$> ntfData .-> "nonce"
-  liftIO $ sendApnsResponse APNSRespOk
+  500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+    Nothing -> error "no notification"
+    Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} -> do
+      _ <- ntfData .-> "checkMessage"
+      _ <- C.cbNonce <$> ntfData .-> "nonce"
+      liftIO $ sendApnsResponse APNSRespOk
+    _ -> error "bad notification"
