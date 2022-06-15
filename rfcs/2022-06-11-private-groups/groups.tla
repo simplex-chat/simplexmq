@@ -305,9 +305,11 @@ NonMembersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
                 /\ tokens[<<message2.invite_id, message2.sender>>] /= Nothing
 
 
-\* TODO
 MembersOnlyEstablishWithInvitee ==
-    TRUE
+    \A member \in ((UNION { group_perceptions[x] : x \in Users }) \ { Leader }) :
+        \E message \in messages :
+            /\ message.type = Propose
+            /\ message.invitee_description.of = member
 
 \* TODO
 EstablishedOnlyIfAllPerceptionsMatch ==
