@@ -123,8 +123,8 @@ runNtfWorker c srv doWork = forever $ do
                   let ntfSubActionTs = addUTCTime 30 ts
                   withStore c $ \st ->
                     updateNtfSubscription st connId ntfSub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated, ntfSubActionTs} (NtfSubAction NSACheck)
-                | otherwise -> pure () -- error -- TODO move action further to future
-              _ -> pure () -- error -- TODO move action further to future
+                | otherwise -> updateSubFutureTs -- error
+              _ -> updateSubFutureTs -- error
             NSACheck -> case ntfSubId of
               Just nSubId ->
                 agentNtfCheckSubscription c nSubId tkn >>= \case
@@ -135,7 +135,7 @@ runNtfWorker c srv doWork = forever $ do
                   NSSMPAuth -> do
                     ts <- liftIO getCurrentTime
                     updateSub NASSMPAuth (NtfSubAction NSADelete) ts
-              Nothing -> pure () -- error -- TODO move action further to future
+              Nothing -> updateSubFutureTs -- error
               where
                 updateSubNextCheck toStatus = do
                   ts <- liftIO getCurrentTime
@@ -146,6 +146,12 @@ runNtfWorker c srv doWork = forever $ do
                   withStore c $ \st ->
                     updateNtfSubscription st connId ntfSub {ntfSubStatus = toStatus, ntfSubActionTs = actionTs} toAction
             NSADelete -> noWorkToDo
+          where
+            updateSubFutureTs = do
+              ts <- liftIO getCurrentTime
+              let retryTs = addUTCTime 300 ts
+              withStore c $ \st ->
+                updateNtfSubscription st connId ntfSub {ntfSubActionTs = retryTs} (NtfSubAction ntfSubAction)
         Nothing -> noWorkToDo
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
@@ -171,7 +177,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                     (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
                     withStore c $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
                     enableNotificationsWithNKey ntfPubKey
-              | otherwise -> pure () -- error -- TODO move action further to future
+              | otherwise -> updateSubFutureTs -- error
               where
                 enableNotificationsWithNKey ntfPubKey = do
                   nId <- enableQueueNotifications c rq ntfPubKey
@@ -181,6 +187,12 @@ runNtfSMPWorker c srv doWork = forever $ do
                     updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                   ns <- asks ntfSupervisor
                   atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
+          where
+            updateSubFutureTs = do
+              ts <- liftIO getCurrentTime
+              let retryTs = addUTCTime 300 ts
+              withStore c $ \st ->
+                updateNtfSubscription st connId ntfSub {ntfSubActionTs = retryTs} (NtfSubSMPAction ntfSubAction)
         Nothing -> noWorkToDo
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config

@@ -51,7 +51,7 @@ notificationTests t =
       it "should re-register token when notification server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           testNtfTokenServerRestart t apns
-    describe "Managing notification subscriptions" $ do
+    fdescribe "Managing notification subscriptions" $ do
       it "should create notification subscription for existing connection" $ \_ ->
         withSmpServer t $
           withAPNSMockServer $ \apns ->
