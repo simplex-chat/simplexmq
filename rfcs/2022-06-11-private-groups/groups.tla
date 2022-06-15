@@ -304,12 +304,19 @@ NonMembersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
             =>  /\ tokens[<<message1.invite_id, message1.sender>>] /= Nothing
                 /\ tokens[<<message2.invite_id, message2.sender>>] /= Nothing
 
+AllMembers ==
+    UNION { group_perceptions[x] : x \in Users }
 
 MembersOnlyEstablishWithInvitee ==
-    \A member \in ((UNION { group_perceptions[x] : x \in Users }) \ { Leader }) :
+    \A member \in (AllMembers \ { Leader }) :
         \E message \in messages :
             /\ message.type = Propose
             /\ message.invitee_description.of = member
+
+AllMembersAreConnectedToAllOtherMembers ==
+    \A member1, member2 \in AllMembers :
+        \/ member1 = member2
+        \/ HasDirectConnection(member1, member2)
 
 \* TODO
 EstablishedOnlyIfAllPerceptionsMatch ==
