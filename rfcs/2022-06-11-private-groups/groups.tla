@@ -265,6 +265,37 @@ Establish ==
 \* piggy-backed on the Cancel message.  Then new invites can be sent.
 
 
+(*
+TODO: Byzantine Modeling
+This is actually a bit easier than it at first seems.  First, we consider only
+one attacker (or a group of fully coordinated attackers), since this is
+obviously worse than multiple independent attackers). We should add two
+constants, CompromisedConnections and CompromisedUsers.  The former represents
+the Connections with a MITM, where the attacker may see all messages, block
+legitimate messages, or fabricate messages from either user that look
+authentic.  The latter represents a user that is either working with or
+corrupted by the attacker, where the attacker may see all messages, drop
+legitimate messages, or fabricate messages from the compromised user.
+
+In order to fabricate messages, the attacker assembles messages from various
+pieces of any message it can see.  It can also generate a set of random values
+that it can use at any time.  Blocked messages must be moved to a special
+variable so that the attacker can "remember" their composite parts, even though
+they prevent their transmition.
+
+In order to represent an attacker setting up new MITM connections, we need to
+model the connection process more explicitly.
+
+Invariants become a bit more challenging.  For example, "all parties should
+agree to new members."  A corrupted member doesn't really have a choice in the
+matter.  We potentially need a new variable as to whether or not a user trusts
+the group, where a user that sees evidence of tampering can stop all further
+participation.  In this case we need to ensure that users always trust valid
+groups, but ideally they always detect when tampering has occurred (notably,
+silent agents are undetectable!).
+*)
+
+
 Next ==
     \/ SendPropose
     \/ LeaderReceiveProposal
