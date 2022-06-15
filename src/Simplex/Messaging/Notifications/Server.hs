@@ -335,7 +335,8 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ
                     Just _ -> writeTBQueue newSubQ (NtfSub sub) $> NRSubId subId
                     _ -> pure $ NRErr AUTH
                 )
-      NtfReqCmd SSubscription (NtfSub NtfSubData {notifierKey = registeredNKey}) (corrId, subId, cmd) ->
+      NtfReqCmd SSubscription (NtfSub NtfSubData {notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
+        status <- readTVarIO subStatus
         (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
@@ -344,7 +345,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ
               if notifierKey == registeredNKey
                 then NRSubId subId
                 else NRErr AUTH
-          SCHK -> pure NROk
+          SCHK -> pure $ NRSub status
           SDEL -> pure NROk
           PING -> pure NRPong
     getId :: m NtfEntityId
