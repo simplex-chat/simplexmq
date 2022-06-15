@@ -239,14 +239,14 @@ processCommand c (connId, cmd) = case cmd of
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId cMode = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueueNtf c srv connId
+  (rq, qUri) <- newRcvQueue c srv
   g <- asks idsDrg
   agentVersion <- asks $ smpAgentVersion . config
   let cData = ConnData {connId, connAgentVersion = agentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId' <- withStore c $ \st -> createRcvConn st g cData rq cMode
   addSubscription c rq connId'
   ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+  atomically $ sendNtfSubCommand ns (connId', NSCCreate)
   aVRange <- asks $ smpAgentVRange . config
   let crData = ConnReqUriData simplexChat aVRange [qUri]
   case cMode of
@@ -301,11 +301,13 @@ joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInf
 createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> m SMPQueueInfo
 createReplyQueue c connId = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueueNtf c srv connId
+  (rq, qUri) <- newRcvQueue c srv
   -- TODO reply queue version should be the same as send queue, ignoring it in v1
   let qInfo = toVersionT qUri SMP.smpClientVersion
   addSubscription c rq connId
   withStore c $ \st -> upgradeSndConnToDuplex st connId rq
+  ns <- asks ntfSupervisor
+  atomically $ sendNtfSubCommand ns (connId, NSCCreate)
   pure qInfo
 
 -- | Approve confirmation (LET command) in Reader monad
@@ -1007,13 +1009,6 @@ agentRatchetDecrypt st connId encAgentMsg = do
   (agentMsgBody_, rc', skippedDiff) <- liftError (SEAgentError . cryptoError) $ CR.rcDecrypt rc skipped encAgentMsg
   updateRatchet st connId rc' skippedDiff
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
-
-newRcvQueueNtf :: AgentMonad m => AgentClient -> SMPServer -> ConnId -> m (RcvQueue, SMPQueueUri)
-newRcvQueueNtf c srv connId = do
-  (rq, qUri) <- newRcvQueue c srv
-  ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (connId, NSCCreate)
-  pure (rq, qUri)
 
 newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueueInfo -> m SndQueue
 newSndQueue qInfo =

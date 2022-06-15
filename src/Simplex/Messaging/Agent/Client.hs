@@ -484,7 +484,7 @@ sendConfirmation c sq@SndQueue {server, sndId, sndPublicKey = Just sndPublicKey,
   withLogClient_ c server sndId "SEND <CONF>" $ \smp -> do
     let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
     msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
-    liftClient SMP $ sendSMPMessage smp Nothing sndId SMP.noMsgFlags msg
+    liftClient SMP $ sendSMPMessage smp Nothing sndId (SMP.MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> Compatible SMPQueueInfo -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()

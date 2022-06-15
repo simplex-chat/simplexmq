@@ -183,6 +183,7 @@ agentCfg =
             defaultTransport = (ntfTestPort, transport @TLS)
           },
       reconnectInterval = defaultReconnectInterval {initialInterval = 50_000},
+      ntfWorkerThrottle = 1000,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"

@@ -53,6 +53,7 @@ processNtfSub c (connId, cmd) = do
   ntfServer_ <- getNtfServer c
   case cmd of
     NSCCreate -> do
+      -- TODO merge getNtfSubscription and getRcvQueue into one method to read both in same transaction?
       sub_ <- withStore c $ \st -> getNtfSubscription st connId
       RcvQueue {notifierId, server = smpServer} <- withStore c $ \st -> getRcvQueue st connId
       case (sub_, ntfServer_) of
@@ -79,7 +80,7 @@ processNtfSub c (connId, cmd) = do
           -- TODO   idempotently replay commands.
           addNtfSMPWorker smpServer
           addNtfWorker ntfServer
-        _ -> pure ()
+        _ -> pure () -- error - notification server not configured
     NSCDelete -> do
       -- TODO delete notifier ID and Key from SMP server (SDEL, then NDEL)
       withStore c $ \st -> markNtfSubscriptionForDeletion st connId
@@ -103,7 +104,8 @@ processNtfSub c (connId, cmd) = do
           doWork <- newTMVarIO ()
           worker <- async $ runWorker c srv doWork `E.finally` atomically (TM.delete srv ws)
           atomically $ TM.insert srv (doWork, worker) ws
-        Just (doWork, _) -> void . atomically $ tryPutTMVar doWork ()
+        Just (doWork, _) ->
+          void . atomically $ tryPutTMVar doWork ()
 
 runNtfWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfWorker c srv doWork = forever $ do
@@ -120,10 +122,10 @@ runNtfWorker c srv doWork = forever $ do
                   ts <- liftIO getCurrentTime
                   withStore c $ \st ->
                     updateNtfSubscription st connId ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASCreated, ntfSubActionTs = ts} (NtfSubAction NSACheck)
-                | otherwise -> pure () -- error
-              _ -> pure () -- error
-            NSACheck -> pure ()
-            NSADelete -> pure ()
+                | otherwise -> pure () -- error -- TODO move action further to future
+              _ -> pure () -- error -- TODO move action further to future
+            NSACheck -> noWorkToDo
+            NSADelete -> noWorkToDo
         Nothing -> noWorkToDo
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
@@ -135,7 +137,7 @@ runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar (
 runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
   getNtfToken_ >>= \case
-    Just NtfToken {ntfTknStatus} -> do
+    Just NtfToken {ntfTknStatus} ->
       withStore c (`getNextNtfSubSMPAction` srv) >>= \case
         Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) -> do
           case ntfSubAction of
@@ -149,7 +151,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                     (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
                     withStore c $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
                     enableNotificationsWithNKey ntfPubKey
-              | otherwise -> pure () -- error
+              | otherwise -> pure () -- error -- TODO move action further to future
               where
                 enableNotificationsWithNKey ntfPubKey = do
                   nId <- enableQueueNotifications c rq ntfPubKey

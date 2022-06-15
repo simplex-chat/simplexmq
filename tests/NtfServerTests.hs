@@ -24,7 +24,7 @@ import ServerTests
     sampleSig,
     signSendRecv,
     (#==),
-    _SEND,
+    _SEND',
     pattern Resp,
   )
 import qualified Simplex.Messaging.Crypto as C
@@ -40,7 +40,7 @@ import UnliftIO.STM
 ntfServerTests :: ATransport -> Spec
 ntfServerTests t = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
-  describe "Managing notification subscriptions" $ testNotificationSubscription t
+  describe "Notification subscriptions" $ testNotificationSubscription t
 
 ntfSyntaxTests :: ATransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -81,7 +81,7 @@ v .-> key =
 
 testNotificationSubscription :: ATransport -> Spec
 testNotificationSubscription (ATransport t) =
-  it "should create new notification subscription and notify when message is received" $ do
+  it "should create notification subscription and notify when message is received" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
     (nPub, nKey) <- C.generateSignatureKeyPair C.SEd25519
     (tknPub, tknKey) <- C.generateSignatureKeyPair C.SEd25519
@@ -110,7 +110,7 @@ testNotificationSubscription (ATransport t) =
           RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", "", SNEW $ NewNtfSub tId q nKey)
           -- send message
           threadDelay 50000
-          Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND "hello")
+          Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
           -- receive notification
           APNSMockRequest {notification, sendApnsResponse = send'} <- atomically $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification

@@ -504,7 +504,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                       q <- getMsgQueue ms (recipientId qr) msgQueueQuota
                       mapM_ (deleteExpiredMsgs q) old
                       ifM (isFull q) (pure $ err QUOTA) $ do
-                        trySendNotification
+                        when (notification flags) trySendNotification
                         writeMsg q msg
                         pure ok
                     when (sent == OK) $ do

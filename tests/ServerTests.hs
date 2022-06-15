@@ -77,6 +77,9 @@ signSendRecv h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
 _SEND :: MsgBody -> Command 'Sender
 _SEND = SEND noMsgFlags
 
+_SEND' :: MsgBody -> Command 'Sender
+_SEND' = SEND MsgFlags {notification = True}
+
 testCreateSecure :: ATransport -> Spec
 testCreateSecure (ATransport t) =
   it "should create (NEW) and secure (KEY) queue" $
@@ -410,7 +413,7 @@ testWithStoreLog at@(ATransport t) =
         writeTVar senderId1 sId1
         writeTVar notifierId nId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
-      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND "hello")
+      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
       Resp "" _ (MSG mId1 _ _ msg1) <- tGet h
       (C.cbDecrypt dhShared (C.cbNonce mId1) msg1, Right "hello") #== "delivered from queue 1"
       Resp "" _ NMSG <- tGet h1
@@ -440,7 +443,7 @@ testWithStoreLog at@(ATransport t) =
       sId1 <- readTVarIO senderId1
       nId <- readTVarIO notifierId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
-      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND "hello")
+      Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
       Resp "cdab" _ (MSG mId3 _ _ msg3) <- signSendRecv h rKey1 ("cdab", rId1, SUB)
       (C.cbDecrypt dh1 (C.cbNonce mId3) msg3, Right "hello") #== "delivered from restored queue"
       Resp "" _ NMSG <- tGet h1
@@ -608,14 +611,14 @@ testMessageNotifications (ATransport t) =
       let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
       Resp "1" _ (NID nId) <- signSendRecv rh rKey ("1", rId, NKEY nPub)
       Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, NSUB)
-      Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND "hello")
+      Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND' "hello")
       Resp "" _ (MSG mId1 _ _ msg1) <- tGet rh
       (dec mId1 msg1, Right "hello") #== "delivered from queue"
       Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, ACK mId1)
       Resp "" _ NMSG <- tGet nh1
       Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, NSUB)
       Resp "" _ END <- tGet nh1
-      Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND "hello again")
+      Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello again")
       Resp "" _ (MSG mId2 _ _ msg2) <- tGet rh
       (dec mId2 msg2, Right "hello again") #== "delivered from queue again"
       Resp "" _ NMSG <- tGet nh2
