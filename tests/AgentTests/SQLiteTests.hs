@@ -44,7 +44,7 @@ withStore2 = before connect2 . after (removeStore . fst)
     connect2 :: IO (SQLiteStore, SQLiteStore)
     connect2 = do
       s1 <- createStore
-      s2 <- connectSQLiteStore (dbFilePath s1) 4
+      s2 <- connectSQLiteStore (dbFilePath s1)
       pure (s1, s2)
 
 createStore :: IO SQLiteStore
@@ -52,7 +52,7 @@ createStore = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  createSQLiteStore (testDB <> show r) 4 Migrations.app True
+  createSQLiteStore (testDB <> show r) Migrations.app True
 
 removeStore :: SQLiteStore -> IO ()
 removeStore store = do
@@ -60,7 +60,7 @@ removeStore store = do
   removeFile $ dbFilePath store
   where
     close :: SQLiteStore -> IO ()
-    close st = mapM_ DB.close =<< atomically (flushTBQueue $ dbConnPool st)
+    close st = mapM_ DB.close =<< atomically (tryTakeTMVar $ dbConnection st)
 
 returnsResult :: (Eq a, Eq e, Show a, Show e) => ExceptT e IO a -> a -> Expectation
 action `returnsResult` r = runExceptT action `shouldReturn` Right r
