@@ -325,8 +325,11 @@ AllMembersAreConnectedToAllOtherMembers ==
         \/ member1 = member2
         \/ HasDirectConnection(member1, member2)
 
-\* TODO
 EstablishedOnlyIfAllPerceptionsMatch ==
-    TRUE
+    \A member \in AllMembers :
+        \A message \in messages :
+            /\ message.type = Propose
+            /\ message.invitee_description.of = member
+            => UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description ]] = member
 
 ====
