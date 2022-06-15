@@ -143,7 +143,10 @@ ApproverReceiveProposal ==
         \* proposal is doomed.
         /\ UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]] /= Nothing
         /\ HasDirectConnection(message.sender, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
-        /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
+        /\ IF   tokens[<<message.invite_id, message.recipient>>] = Nothing
+           THEN /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
+                /\ rng_state' = rng_state + 1
+           ELSE UNCHANGED <<tokens, rng_state>>
         \* It's safe to send this message right away, as it only agrees to
         \* reveal information that everyone has agreed to share.  The invitee
         \* now knows that there's a group that involves this member, the
@@ -156,11 +159,10 @@ ApproverReceiveProposal ==
                 , recipient |-> UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]]
                 , type |-> Invite
                 , invite_id |-> message.invite_id
-                , token |-> rng_state
+                , token |-> tokens'[<<message.invite_id, message.recipient>>]
                 , group_size |-> message.group_size \* TODO: Invariant that all Invites of the same invite_id have the same group size
                 ]
             }
-        /\ rng_state' = rng_state + 1
         /\ UNCHANGED <<group_perceptions, proposal>>
 
 BroadcastToken ==
@@ -278,6 +280,11 @@ Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, tok
 CannotCommunicateWithoutAConnection ==
     \A message \in messages :
         HasDirectConnection(message.sender, message.recipient)
+
+TokensMatch ==
+    \A message \in messages :
+        message.type = Invite =>
+            message.token = tokens[<<message.invite_id, message.sender>>]
 
 \* Anyone that receives two invites which share an invite id, knows that
 \* these two contacts know each other and that they are in a group together
