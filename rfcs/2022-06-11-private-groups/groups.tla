@@ -160,7 +160,7 @@ ApproverReceiveProposal ==
                 , type |-> Invite
                 , invite_id |-> message.invite_id
                 , token |-> tokens'[<<message.invite_id, message.recipient>>]
-                , group_size |-> message.group_size \* TODO: Invariant that all Invites of the same invite_id have the same group size
+                , group_size |-> message.group_size
                 ]
             }
         /\ UNCHANGED <<group_perceptions, proposal>>
@@ -285,6 +285,13 @@ TokensMatch ==
     \A message \in messages :
         message.type = Invite =>
             message.token = tokens[<<message.invite_id, message.sender>>]
+
+GroupSizesMatch ==
+    \A message1, message2 \in messages :
+        /\ message1.type = Invite
+        /\ message2.type = Invite
+        /\ message1.invite_id = message2.invite_id
+        => message1.group_size = message2.group_size
 
 \* Anyone that receives two invites which share an invite id, knows that
 \* these two contacts know each other and that they are in a group together
