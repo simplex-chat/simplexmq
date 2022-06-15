@@ -21,7 +21,7 @@ UserPerceptionsMC ==
 
 \* Everyone knows everyone
 ConnectionsMC ==
-  [ x \in Users |-> { a, b, c, d } ]
+  Users \X Users
 
 SizeConstraint == rng_state < MaxNum + 1
 

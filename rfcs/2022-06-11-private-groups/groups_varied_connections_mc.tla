@@ -14,10 +14,7 @@ UserPerceptionsMC ==
 
 \* A is not connected to D and B is not connected to C
 ConnectionsMC ==
-  [ [ x \in Users |-> { x } ]
-  EXCEPT ![a] = { a, b, c }
-  , ![b] = { a, b, d }
-  ]
+  { <<a, b>>, <<a, c>>, <<b, d>>, <<c, d>> }
 
 SizeConstraint == rng_state < MaxNum + 1
 

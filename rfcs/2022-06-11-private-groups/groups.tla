@@ -46,14 +46,14 @@ ASSUME
     /\ UserPerceptions \in [ [ perceiver : Users, description : [ by : Users, of : Users ] ] -> Users \union { Nothing } ]
     \* A user always correctly knows their own perceptions
     /\ \A user1, user2 \in Users : UserPerceptions[[ perceiver |-> user1, description |-> [ by |-> user1, of |-> user2 ]]] = user2
-    /\ Connections \in [ Users -> SUBSET Users ]
+    /\ Connections \subseteq (Users \X Users)
 
 InviteIds == Nat
 
 HasDirectConnection(x, y) ==
     \/ x = y
-    \/ x \in Connections[y]
-    \/ y \in Connections[x]
+    \/ <<x, y>> \in Connections
+    \/ <<y, x>> \in Connections
 
 Init ==
     /\ messages = {}
