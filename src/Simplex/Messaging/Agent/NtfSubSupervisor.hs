@@ -150,7 +150,7 @@ runNtfWorker c srv doWork = forever $ do
             updateSubNextCheck toStatus = do
               checkInterval <- asks $ ntfSubCheckInterval . config
               let nextCheckTs = addUTCTime checkInterval ts
-              updateSub toStatus (NtfSubAction NSACheck) nextCheckTs
+              updateSub (NASCreated toStatus) (NtfSubAction NSACheck) nextCheckTs
             updateSub toStatus toAction actionTs =
               withStore c $ \st ->
                 updateNtfSubscription st connId ntfSub {ntfSubStatus = toStatus, ntfSubActionTs = actionTs} toAction
