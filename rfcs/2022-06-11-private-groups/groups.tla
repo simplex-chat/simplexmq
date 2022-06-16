@@ -36,6 +36,11 @@ CONSTANTS
 
 VARIABLES
     messages,
+    \* TODO: invites and token should be separated, which allows us to check
+    \* liveness under the condition that the number of proposals is
+    \* constrained.  The number of max number of tokens necessary is then
+    \* fairly easily derived (if we also limit the number available for
+    \* attackers).
     rng_state,
     group_perceptions,
     proposal,
