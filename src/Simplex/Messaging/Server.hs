@@ -7,6 +7,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -45,8 +46,11 @@ import Data.Functor (($>))
 import Data.List (intercalate)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
+import Data.Set (Set)
 import qualified Data.Set as S
 import qualified Data.Text as T
+import Data.Time.Calendar.Month.Compat (pattern MonthDay)
+import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
@@ -159,9 +163,9 @@ smpServer started = do
     logServerStats :: Int -> Int -> m ()
     logServerStats startAt logInterval = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
-      logInfo $ "fromTime,qCreated,qSecured,qDeleted,msgSent,msgRecv,msgQueues"
+      logInfo $ "fromTime,qCreated,qSecured,qDeleted,msgSent,msgRecv,dayMsgQueues,weekMsgQueues,monthMsgQueues"
       threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgQueues} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, dayMsgQueues, weekMsgQueues, monthMsgQueues} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         ts <- liftIO getCurrentTime
@@ -171,9 +175,17 @@ smpServer started = do
         qDeleted' <- atomically $ swapTVar qDeleted 0
         msgSent' <- atomically $ swapTVar msgSent 0
         msgRecv' <- atomically $ swapTVar msgRecv 0
-        msgQueues' <- atomically $ S.size <$> swapTVar msgQueues S.empty
-        logInfo . T.pack $ intercalate "," [show fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', show msgQueues']
+        let day = utctDay ts
+            (_, wDay) = mondayStartWeek day
+            MonthDay _ mDay = day
+        (dayMsgQueues', weekMsgQueues', monthMsgQueues') <-
+          atomically $ (,,) <$> periodCount 1 dayMsgQueues <*> periodCount wDay weekMsgQueues <*> periodCount mDay monthMsgQueues
+        logInfo . T.pack $ intercalate "," [show fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', show dayMsgQueues', weekMsgQueues', monthMsgQueues']
         threadDelay interval
+      where
+        periodCount :: Int -> TVar (Set RecipientId) -> STM String
+        periodCount 1 pVar = show . S.size <$> swapTVar pVar S.empty
+        periodCount _ _ = pure ""
 
     runClient :: Transport c => TProxy c -> c -> m ()
     runClient _ h = do
@@ -481,7 +493,15 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             updateStats = do
               stats <- asks serverStats
               atomically $ modifyTVar (msgRecv stats) (+ 1)
-              atomically $ modifyTVar (msgQueues stats) (S.insert queueId)
+              atomically $ updateActiveQueues stats queueId
+
+        updateActiveQueues :: ServerStats -> RecipientId -> STM ()
+        updateActiveQueues stats qId = do
+          updatePeriod dayMsgQueues
+          updatePeriod weekMsgQueues
+          updatePeriod monthMsgQueues
+          where
+            updatePeriod pSel = modifyTVar (pSel stats) (S.insert qId)
 
         sendMessage :: QueueStore -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage st flags msgBody
@@ -510,7 +530,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                     when (sent == OK) $ do
                       stats <- asks serverStats
                       atomically $ modifyTVar (msgSent stats) (+ 1)
-                      atomically $ modifyTVar (msgQueues stats) (S.insert $ recipientId qr)
+                      atomically $ updateActiveQueues stats $ recipientId qr
                     pure resp
               where
                 mkMessage :: m (Either C.CryptoError Message)
