@@ -111,7 +111,7 @@ processNtfSub c (connId, cmd) = do
 runNtfWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
-  getNtfToken_ >>= \case
+  getNtfToken >>= \case
     Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} -> do
       nextSub_ <- withStore c (`getNextNtfSubAction` srv)
       ts <- liftIO getCurrentTime
@@ -166,7 +166,7 @@ runNtfWorker c srv doWork = forever $ do
 runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar () -> m ()
 runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
-  getNtfToken_ >>= \case
+  getNtfToken >>= \case
     Just NtfToken {ntfTknStatus} -> do
       nextSub_ <- withStore c (`getNextNtfSubSMPAction` srv)
       ts <- liftIO getCurrentTime
@@ -215,10 +215,10 @@ fromPico :: Pico -> Integer
 fromPico (MkFixed i) = i
 
 diffInMillis :: UTCTime -> UTCTime -> Int
-diffInMillis a b = (* 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
+diffInMillis a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
 
-getNtfToken_ :: AgentMonad m => m (Maybe NtfToken)
-getNtfToken_ = do
+getNtfToken :: AgentMonad m => m (Maybe NtfToken)
+getNtfToken = do
   tkn <- asks $ ntfTkn . ntfSupervisor
   readTVarIO tkn
 
