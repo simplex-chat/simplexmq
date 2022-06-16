@@ -46,6 +46,7 @@ import Data.Functor (($>))
 import Data.List (intercalate)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
+import Data.Set (Set)
 import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Time.Calendar.Month.Compat (pattern MonthDay)
@@ -174,16 +175,16 @@ smpServer started = do
         qDeleted' <- atomically $ swapTVar qDeleted 0
         msgSent' <- atomically $ swapTVar msgSent 0
         msgRecv' <- atomically $ swapTVar msgRecv 0
-        dayMsgQueues' <- atomically $ S.size <$> swapTVar dayMsgQueues S.empty
         let day = utctDay ts
             (_, wDay) = mondayStartWeek day
             MonthDay _ mDay = day
-        weekMsgQueues' <- periodCount wDay weekMsgQueues
-        monthMsgQueues' <- periodCount mDay monthMsgQueues
+        (dayMsgQueues', weekMsgQueues', monthMsgQueues') <-
+          atomically $ (,,) <$> periodCount 1 dayMsgQueues <*> periodCount wDay weekMsgQueues <*> periodCount mDay monthMsgQueues
         logInfo . T.pack $ intercalate "," [show fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', show dayMsgQueues', weekMsgQueues', monthMsgQueues']
         threadDelay interval
       where
-        periodCount 1 pVar = atomically $ show . S.size <$> swapTVar pVar S.empty
+        periodCount :: Int -> TVar (Set RecipientId) -> STM String
+        periodCount 1 pVar = show . S.size <$> swapTVar pVar S.empty
         periodCount _ _ = pure ""
 
     runClient :: Transport c => TProxy c -> c -> m ()
