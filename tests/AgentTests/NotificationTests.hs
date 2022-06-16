@@ -143,7 +143,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     -- and the second is not yet verified
     liftIO $ threadDelay 50000
     r <- checkNtfToken a' tkn
-    liftIO $ print $ "checkNtfToken a' tkn: " <> show r
+    liftIO . print $ "checkNtfToken a' tkn: " <> show r
     unless (r == NTConfirmed) $ error "bad status"
     -- now the second token registration is verified
     verifyNtfToken a' tkn verification' nonce'
