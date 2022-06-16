@@ -355,7 +355,7 @@ processConfirmation c rq@RcvQueue {e2ePrivKey} SMPConfirmation {senderKey, e2ePu
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
-subscribeConnection' c connId = do
+subscribeConnection' c connId =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection cData rq sq) -> do
       resumeMsgDelivery c cData sq
