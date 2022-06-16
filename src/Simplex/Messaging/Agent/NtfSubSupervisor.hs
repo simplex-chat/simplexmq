@@ -139,10 +139,10 @@ runNtfWorker c srv doWork = forever $ do
               NSACheck -> case ntfSubId of
                 Just nSubId ->
                   agentNtfCheckSubscription c nSubId tkn >>= \case
-                    NSNew -> updateSubNextCheck (NASCreated NSNew)
-                    NSPending -> updateSubNextCheck (NASCreated NSPending)
-                    NSActive -> updateSubNextCheck (NASCreated NSActive)
-                    NSEnd -> updateSubNextCheck (NASCreated NSEnd)
+                    NSNew -> updateSubNextCheck NSNew
+                    NSPending -> updateSubNextCheck NSPending
+                    NSActive -> updateSubNextCheck NSActive
+                    NSEnd -> updateSubNextCheck NSEnd
                     NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts
                 Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
               NSADelete -> pure ()
