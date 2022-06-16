@@ -127,6 +127,7 @@ library
     , template-haskell ==2.16.*
     , text ==1.2.*
     , time ==1.9.*
+    , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
@@ -187,6 +188,7 @@ executable ntf-server
     , template-haskell ==2.16.*
     , text ==1.2.*
     , time ==1.9.*
+    , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
@@ -247,6 +249,7 @@ executable smp-agent
     , template-haskell ==2.16.*
     , text ==1.2.*
     , time ==1.9.*
+    , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
@@ -307,6 +310,7 @@ executable smp-server
     , template-haskell ==2.16.*
     , text ==1.2.*
     , time ==1.9.*
+    , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
@@ -386,6 +390,7 @@ test-suite smp-server-test
     , template-haskell ==2.16.*
     , text ==1.2.*
     , time ==1.9.*
+    , time-compat ==1.9.*
     , time-manager ==0.0.*
     , timeit ==2.0.*
     , tls >=1.6.0 && <1.7
