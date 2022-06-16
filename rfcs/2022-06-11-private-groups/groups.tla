@@ -81,6 +81,10 @@ SendPropose ==
         /\ invitee \notin group_perceptions[proposer]
         /\ HasDirectConnection(proposer, invitee)
         /\ messages' = messages \union
+            \* TODO: The spec is probably simpler this is a special
+            \* GetProposalToLeader type, and the Leader still proposes to
+            \* themselves.  So the Leader is handled by the users agent, which
+            \* proposes to the user, even if they're agent _is_ the Leader.
             {   [ type |-> Propose
                 , sender |-> proposer
                 , recipient |-> Leader
