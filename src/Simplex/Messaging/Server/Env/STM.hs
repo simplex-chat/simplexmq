@@ -111,7 +111,9 @@ data ServerStats = ServerStats
     qDeleted :: TVar Int,
     msgSent :: TVar Int,
     msgRecv :: TVar Int,
-    msgQueues :: TVar (Set RecipientId),
+    dayMsgQueues :: TVar (Set RecipientId),
+    weekMsgQueues :: TVar (Set RecipientId),
+    monthMsgQueues :: TVar (Set RecipientId),
     fromTime :: TVar UTCTime
   }
 
@@ -147,9 +149,11 @@ newServerStats ts = do
   qDeleted <- newTVar 0
   msgSent <- newTVar 0
   msgRecv <- newTVar 0
-  msgQueues <- newTVar S.empty
+  dayMsgQueues <- newTVar S.empty
+  weekMsgQueues <- newTVar S.empty
+  monthMsgQueues <- newTVar S.empty
   fromTime <- newTVar ts
-  pure ServerStats {qCreated, qSecured, qDeleted, msgSent, msgRecv, msgQueues, fromTime}
+  pure ServerStats {qCreated, qSecured, qDeleted, msgSent, msgRecv, dayMsgQueues, weekMsgQueues, monthMsgQueues, fromTime}
 
 newSubscription :: STM Sub
 newSubscription = do
