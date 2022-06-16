@@ -12,6 +12,8 @@ CONSTANTS
     \* newly invited user.  A predetermined leader simplifies the algorithm
     \* without a loss of fault tolerance.
     Leader,
+    \* TODO: We should call this Null, since we're using null semantics, not
+    \* Maybe semantics (or use Maybe semantics)
     Nothing,
     (*
     This function describes indirect perceptions about contact descriptions.
