@@ -117,7 +117,7 @@ library
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.2.*
+    , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -129,7 +129,7 @@ library
     , text ==1.2.*
     , time ==1.9.*
     , time-manager ==0.0.*
-    , tls >=1.5.7 && <1.6
+    , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -176,7 +176,7 @@ executable ntf-server
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.2.*
+    , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -189,7 +189,7 @@ executable ntf-server
     , text ==1.2.*
     , time ==1.9.*
     , time-manager ==0.0.*
-    , tls >=1.5.7 && <1.6
+    , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -236,7 +236,7 @@ executable smp-agent
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.2.*
+    , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -249,7 +249,7 @@ executable smp-agent
     , text ==1.2.*
     , time ==1.9.*
     , time-manager ==0.0.*
-    , tls >=1.5.7 && <1.6
+    , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -296,7 +296,7 @@ executable smp-server
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.2.*
+    , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -309,7 +309,7 @@ executable smp-server
     , text ==1.2.*
     , time ==1.9.*
     , time-manager ==0.0.*
-    , tls >=1.5.7 && <1.6
+    , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -375,7 +375,7 @@ test-suite smp-server-test
     , iso8601-time ==0.1.*
     , memory ==0.15.*
     , mtl ==2.2.*
-    , network ==3.1.2.*
+    , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
     , optparse-applicative >=0.15 && <0.17
     , process ==1.6.*
@@ -389,7 +389,7 @@ test-suite smp-server-test
     , time ==1.9.*
     , time-manager ==0.0.*
     , timeit ==2.0.*
-    , tls >=1.5.7 && <1.6
+    , tls >=1.6.0 && <1.7
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*

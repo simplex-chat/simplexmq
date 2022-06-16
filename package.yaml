@@ -48,7 +48,7 @@ dependencies:
   - iso8601-time == 0.1.*
   - memory == 0.15.*
   - mtl == 2.2.*
-  - network == 3.1.2.*
+  - network >= 3.1.2.7 && < 3.2
   - network-transport == 0.5.*
   - optparse-applicative >= 0.15 && < 0.17
   - QuickCheck == 2.14.*
@@ -61,7 +61,7 @@ dependencies:
   - text == 1.2.*
   - time == 1.9.*
   - time-manager == 0.0.*
-  - tls >= 1.5.7 && < 1.6
+  - tls >= 1.6.0 && < 1.7
   - transformers == 0.5.*
   - unliftio == 0.2.*
   - unliftio-core == 0.2.*
