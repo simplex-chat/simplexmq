@@ -44,6 +44,7 @@ VARIABLES
     rng_state,
     group_perceptions,
     proposal,
+    complete_proposals,
     tokens
 
 ASSUME
@@ -71,6 +72,7 @@ Init ==
     *)
     /\ group_perceptions = [ [ x \in Users |-> {} ] EXCEPT ![Leader] = { Leader } ]
     /\ proposal = Nothing
+    /\ complete_proposals = {}
     /\ tokens = [ x \in (InviteIds \X Users) |-> Nothing ]
 
 SendPropose ==
@@ -87,42 +89,44 @@ SendPropose ==
                 ]
             }
         /\ rng_state' = rng_state + 1
-        /\ UNCHANGED <<group_perceptions, proposal, tokens>>
+        /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, tokens>>
 
 LeaderReceiveProposal ==
     \E message \in messages :
         /\ message.type = Propose
         /\ message.recipient = Leader
-        \* The Leader will kill the proposal immediately if they don't think
-        \* they know the invitee, or don't have a direct connection.
-        \* UNDERSPECIFIED: In this spec, the message is permanently ignored,
-        \* since perceptions never change, which is sufficient to validate our
-        \* key properties.  In reality, we need to capture that the proposal is
-        \* completed and notify the proposer that the action failed.
-        /\ UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]] /= Nothing
-        \* The Leader is always up to date, this is invariant for all other
-        \* members
-        /\ UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]] \notin group_perceptions[Leader]
-        /\ HasDirectConnection(Leader, UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]])
+        /\ message.invite_id \notin complete_proposals
         /\ proposal = Nothing
-        /\ proposal' =
-            [ invite_id |-> message.invite_id
-            , invitee_description |-> message.invitee_description
-            , group_size |-> Cardinality(group_perceptions[Leader])
-            ]
-        /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, Leader>>] = rng_state ]
-        \* TODO: This can't actually be atomic
-        /\ messages' = messages \union
-            {   [ type |-> Invite
-                , sender |-> Leader
-                , recipient |-> UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]]
-                , invite_id |-> message.invite_id
-                , token |-> rng_state
-                , group_size |-> proposal'.group_size
-                ]
-            }
-        /\ rng_state' = rng_state + 1
-        /\ UNCHANGED <<group_perceptions>>
+        /\  IF  /\ UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]] /= Nothing
+                \* The Leader is always up to date, this is invariant for all
+                \* other members
+                /\ UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]] \notin group_perceptions[Leader]
+                /\ HasDirectConnection(Leader, UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]])
+            THEN
+                /\ proposal' =
+                    [ invite_id |-> message.invite_id
+                    , invitee_description |-> message.invitee_description
+                    , group_size |-> Cardinality(group_perceptions[Leader])
+                    ]
+                /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, Leader>>] = rng_state ]
+                \* TODO: This can't actually be atomic
+                /\ messages' = messages \union
+                    {   [ type |-> Invite
+                        , sender |-> Leader
+                        , recipient |-> UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]]
+                        , invite_id |-> message.invite_id
+                        , token |-> rng_state
+                        , group_size |-> proposal'.group_size
+                        ]
+                    }
+                /\ rng_state' = rng_state + 1
+                /\ UNCHANGED <<group_perceptions, complete_proposals>>
+            ELSE
+                \* UNDERSPECIFIED: In this spec, we mark the proposal as
+                \* completed and move on.  In reality, we need to capture that
+                \* the proposal was rejected and notify the proposer as such.
+                /\ complete_proposals' = complete_proposals \union { message.invite_id }
+                /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, tokens>>
 
 RebroadcastProposal ==
     \E member \in (Users \ { Leader }) :
@@ -137,7 +141,7 @@ RebroadcastProposal ==
                 , group_size |-> proposal.group_size
                 ]
             }
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, tokens>>
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
 
 ApproverReceiveProposal ==
     \E message \in messages :
@@ -151,7 +155,7 @@ ApproverReceiveProposal ==
         /\ IF   tokens[<<message.invite_id, message.recipient>>] = Nothing
            THEN /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
                 /\ rng_state' = rng_state + 1
-           ELSE UNCHANGED <<tokens, rng_state>>
+           ELSE UNCHANGED <<tokens, rng_state, complete_proposals>>
         \* It's safe to send this message right away, as it only agrees to
         \* reveal information that everyone has agreed to share.  The invitee
         \* now knows that there's a group that involves this member, the
@@ -168,7 +172,7 @@ ApproverReceiveProposal ==
                 , group_size |-> message.group_size
                 ]
             }
-        /\ UNCHANGED <<group_perceptions, proposal>>
+        /\ UNCHANGED <<group_perceptions, proposal, complete_proposals>>
 
 BroadcastToken ==
     \E from \in Users, invite_id \in InviteIds :
@@ -182,7 +186,7 @@ BroadcastToken ==
                     , invite_id |-> invite_id
                     ]
                 }
-            /\ UNCHANGED <<rng_state, group_perceptions, proposal, tokens>>
+            /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
 
 \* IMPORTANT: It is NOT inviariant that the invitee matches across the same
 \* invite_id, because some members may have confused the invitee.
@@ -214,7 +218,7 @@ SendAccept ==
                                 ]
                             }
                 ELSE UNCHANGED <<messages>>
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, tokens>>
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
 
 Establish ==
     \E message \in messages :
@@ -236,16 +240,14 @@ Establish ==
                        THEN { invite.sender : invite \in GetInvites(message.invite_id, message.sender) } \union { message.sender }
                        ELSE @
                    ]
-               /\ proposal' =
-                   IF  /\ proposal /= Nothing
+               /\  IF  /\ proposal /= Nothing
                        /\ proposal.invite_id = message.invite_id
                        /\ message.recipient = Leader
-                   THEN Nothing
-                   ELSE proposal
+                   THEN
+                       /\ complete_proposals' = complete_proposals \union { message.invite_id }
+                       /\ proposal' = Nothing
+                   ELSE UNCHANGED <<proposal, complete_proposals>>
                /\ UNCHANGED <<messages, rng_state, tokens>>
-
-\* TODO: Leader needs to rememmber completed proposals so they don't do them
-\* again (kick, add, kick, add, ...)
 
 \* TODO: Members should notify the Leader when the proposal is doomed so they
 \* drop it
@@ -310,7 +312,7 @@ Next ==
     \/ SendAccept
     \/ Establish
 
-Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, tokens>>
+Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, complete_proposals, tokens>>
 
 
 CannotCommunicateWithoutAConnection ==
