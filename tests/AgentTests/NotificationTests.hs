@@ -141,6 +141,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     -- at this point the first token is still active
     NTActive <- checkNtfToken a tkn
     -- and the second is not yet verified
+    -- liftIO $ threadDelay 50000
     NTConfirmed <- checkNtfToken a' tkn
     -- now the second token registration is verified
     verifyNtfToken a' tkn verification' nonce'
