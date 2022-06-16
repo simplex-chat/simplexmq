@@ -119,7 +119,7 @@ runNtfWorker c srv doWork = forever $ do
         Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId, ntfSubActionTs}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId})
           | ntfSubActionTs > ts -> do
             noWorkToDo
-            let wakeUpAfter = diffInMillis ntfSubActionTs ts
+            let wakeUpAfter = diffInMicros ntfSubActionTs ts
             void . async $ do
               liftIO $ threadDelay wakeUpAfter
               void . atomically $ tryPutTMVar doWork ()
@@ -174,7 +174,7 @@ runNtfSMPWorker c srv doWork = forever $ do
         Just (ntfSub@NtfSubscription {connId, ntfServer, ntfSubActionTs}, ntfSubAction, rq@RcvQueue {ntfPublicKey})
           | ntfSubActionTs > ts -> do
             noWorkToDo
-            let wakeUpAfter = diffInMillis ntfSubActionTs ts
+            let wakeUpAfter = diffInMicros ntfSubActionTs ts
             void . async $ do
               liftIO $ threadDelay wakeUpAfter
               void . atomically $ tryPutTMVar doWork ()
@@ -214,8 +214,8 @@ runNtfSMPWorker c srv doWork = forever $ do
 fromPico :: Pico -> Integer
 fromPico (MkFixed i) = i
 
-diffInMillis :: UTCTime -> UTCTime -> Int
-diffInMillis a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
+diffInMicros :: UTCTime -> UTCTime -> Int
+diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
 
 getNtfToken :: AgentMonad m => m (Maybe NtfToken)
 getNtfToken = do
