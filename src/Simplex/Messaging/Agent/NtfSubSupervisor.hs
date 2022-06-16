@@ -133,17 +133,17 @@ runNtfWorker c srv doWork = forever $ do
                     nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
                     let actionTs = addUTCTime 30 ts
                     withStore c $ \st ->
-                      updateNtfSubscription st connId ntfSub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated, ntfSubActionTs = actionTs} (NtfSubAction NSACheck)
+                      updateNtfSubscription st connId ntfSub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew, ntfSubActionTs = actionTs} (NtfSubAction NSACheck)
                   | otherwise -> ntfInternalError c connId "NSACreate - token not active"
                 _ -> ntfInternalError c connId "NSACreate - no notifier key or ID"
               NSACheck -> case ntfSubId of
                 Just nSubId ->
                   agentNtfCheckSubscription c nSubId tkn >>= \case
-                    NSNew -> updateSubNextCheck NASCreated
-                    NSPending -> updateSubNextCheck NASCreated
-                    NSActive -> updateSubNextCheck NASActive
-                    NSEnd -> updateSubNextCheck NASEnded
-                    NSSMPAuth -> updateSub NASSMPAuth (NtfSubAction NSADelete) ts
+                    NSNew -> updateSubNextCheck (NASCreated NSNew)
+                    NSPending -> updateSubNextCheck (NASCreated NSPending)
+                    NSActive -> updateSubNextCheck (NASCreated NSActive)
+                    NSEnd -> updateSubNextCheck (NASCreated NSEnd)
+                    NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts
                 Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
               NSADelete -> pure ()
           where

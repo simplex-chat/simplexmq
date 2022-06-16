@@ -15,13 +15,13 @@ import Data.Time (UTCTime)
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Simplex.Messaging.Agent.Protocol (ConnId)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Protocol (NotifierId, ProtocolServer, SMPServer)
-import Simplex.Messaging.Agent.Protocol (ConnId)
 
 type NtfServer = ProtocolServer
 
@@ -180,13 +180,7 @@ data NtfAgentSubStatus
   | -- | state after NKEY - notifier ID is assigned to queue on SMP server
     NASKey
   | -- | state after SNEW - subscription created on notification server
-    NASCreated
-  | -- | connected and subscribed to SMP server
-    NASActive
-  | -- | communicated by notification server that NEND received (we currently do not support it)
-    NASEnded
-  | -- | communicated by notification server that SMP AUTH error occured
-    NASSMPAuth
+    NASCreated NtfSubStatus
   | -- | state after SDEL (subscription is deleted on notification server)
     NASDeleted
   deriving (Eq, Show)
@@ -194,20 +188,16 @@ data NtfAgentSubStatus
 instance Encoding NtfAgentSubStatus where
   smpEncode = \case
     NASNew -> "NEW"
-    NASKey -> "NKEY"
-    NASCreated -> "CREATED"
-    NASActive -> "ACTIVE"
-    NASEnded -> "ENDED"
-    NASSMPAuth -> "SMP_AUTH"
+    NASKey -> "KEY"
+    NASCreated status -> "CREATED " <> smpEncode status
     NASDeleted -> "DELETED"
   smpP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NASNew
-      "NKEY" -> pure NASKey
-      "CREATED" -> pure NASCreated
-      "ACTIVE" -> pure NASActive
-      "ENDED" -> pure NASEnded
-      "SMP_AUTH" -> pure NASSMPAuth
+      "KEY" -> pure NASKey
+      "CREATED" -> do
+        _ <- A.space
+        NASCreated <$> smpP
       "DELETED" -> pure NASDeleted
       _ -> fail "bad NtfAgentSubStatus"
 
