@@ -29,7 +29,7 @@ import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffT
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (ConnId)
-import qualified Simplex.Messaging.Agent.Protocol as A
+import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
@@ -213,7 +213,7 @@ diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToS
 ntfInternalError :: AgentMonad m => AgentClient -> ConnId -> String -> m ()
 ntfInternalError c@AgentClient {subQ} connId internalErrStr = do
   withStore c $ \st -> setNullNtfSubscriptionAction st connId
-  atomically $ writeTBQueue subQ ("", connId, A.ERR $ A.INTERNAL internalErrStr)
+  atomically $ writeTBQueue subQ ("", connId, AP.ERR $ AP.INTERNAL internalErrStr)
 
 getNtfToken :: AgentMonad m => m (Maybe NtfToken)
 getNtfToken = do
