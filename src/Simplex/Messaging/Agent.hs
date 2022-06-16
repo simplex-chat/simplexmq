@@ -391,7 +391,7 @@ getConnectionMessage' c connId = do
     SomeConn _ (SndConnection {}) -> throwError $ CONN SIMPLEX
 
 getNotificationMessage' :: AgentErrorMonad m => AgentClient -> ByteString -> m (Maybe (SMP.MsgId, MsgFlags))
-getNotificationMessage' c _encMessageInfo = throwError $ CMD PROHIBITED
+getNotificationMessage' _c _encMessageInfo = throwError $ CMD PROHIBITED
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId

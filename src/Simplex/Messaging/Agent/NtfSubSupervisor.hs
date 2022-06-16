@@ -15,7 +15,6 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
   )
 where
 
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
@@ -38,8 +37,10 @@ import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util (unlessM)
 import System.Random (randomR)
 import UnliftIO (async)
+import UnliftIO.Concurrent (forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -118,14 +119,9 @@ runNtfWorker c srv doWork = forever $ do
       nextSub_ <- withStore c (`getNextNtfSubAction` srv)
       ts <- liftIO getCurrentTime
       case nextSub_ of
-        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId, ntfSubActionTs}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId})
-          | ntfSubActionTs > ts -> do
-            noWorkToDo
-            let wakeUpAfter = diffInMicros ntfSubActionTs ts
-            void . async $ do
-              liftIO $ threadDelay wakeUpAfter
-              void . atomically $ tryPutTMVar doWork ()
-          | otherwise ->
+        Nothing -> noWorkToDo
+        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId}) ->
+          unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
               NSACreate -> case (ntfPrivateKey, notifierId) of
                 (Just ntfPrivKey, Just nId)
@@ -154,7 +150,6 @@ runNtfWorker c srv doWork = forever $ do
             updateSub toStatus toAction actionTs =
               withStore c $ \st ->
                 updateNtfSubscription st connId ntfSub {ntfSubStatus = toStatus, ntfSubActionTs = actionTs} toAction
-        Nothing -> noWorkToDo
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
@@ -169,14 +164,9 @@ runNtfSMPWorker c srv doWork = forever $ do
       nextSub_ <- withStore c (`getNextNtfSubSMPAction` srv)
       ts <- liftIO getCurrentTime
       case nextSub_ of
-        Just (ntfSub@NtfSubscription {connId, ntfServer, ntfSubActionTs}, ntfSubAction, rq@RcvQueue {ntfPublicKey})
-          | ntfSubActionTs > ts -> do
-            noWorkToDo
-            let wakeUpAfter = diffInMicros ntfSubActionTs ts
-            void . async $ do
-              liftIO $ threadDelay wakeUpAfter
-              void . atomically $ tryPutTMVar doWork ()
-          | otherwise ->
+        Nothing -> noWorkToDo
+        Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) ->
+          unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
               NSAKey
                 | ntfTknStatus == NTActive ->
@@ -197,12 +187,21 @@ runNtfSMPWorker c srv doWork = forever $ do
                       updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                     ns <- asks ntfSupervisor
                     atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
-        Nothing -> noWorkToDo
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
+
+rescheduleAction :: AgentMonad m => TMVar () -> UTCTime -> NtfSubscription -> m Bool
+rescheduleAction doWork ts NtfSubscription {ntfSubActionTs}
+  | ntfSubActionTs <= ts = pure False
+  | otherwise = do
+    void . atomically $ tryTakeTMVar doWork
+    void . forkIO $ do
+      threadDelay $ diffInMicros ntfSubActionTs ts
+      void . atomically $ tryPutTMVar doWork ()
+    pure True
 
 fromPico :: Pico -> Integer
 fromPico (MkFixed i) = i
