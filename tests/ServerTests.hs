@@ -339,6 +339,7 @@ testGetCommand t =
         Resp "2" _ (MSG mId1 _ _ msg1) <- signSendRecv rh rKey ("2", rId, GET)
         (dec mId1 msg1, Right "hello") #== "retrieved from queue"
         Resp "3" _ OK <- signSendRecv rh rKey ("3", rId, ACK mId1)
+        Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, GET)
         pure ()
 
 testGetSubCommands :: forall c. Transport c => TProxy c -> Spec
@@ -387,7 +388,7 @@ testGetSubCommands t =
       (dec mId4 msg4, Right "hello 4") #== "retrieved from queue with GET"
       Resp "11" _ OK <- signSendRecv rh1 rKey ("11", rId, ACK mId4)
       -- no more messages for getter too
-      Resp "12" _ (ERR NO_MSG) <- signSendRecv rh2 rKey ("12", rId, GET)
+      Resp "12" _ OK <- signSendRecv rh2 rKey ("12", rId, GET)
       pure ()
 
 testWithStoreLog :: ATransport -> Spec

@@ -20,6 +20,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     newRcvQueue,
     subscribeQueue,
+    getQueueMessage,
     addSubscription,
     getSubscriptions,
     sendConfirmation,
@@ -114,6 +115,7 @@ data AgentClient = AgentClient
     connMsgsQueued :: TMap ConnId Bool,
     smpQueueMsgQueues :: TMap (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId),
     smpQueueMsgDeliveries :: TMap (ConnId, SMPServer, SMP.SenderId) (Async ()),
+    getMsgLocks :: TMap (ConnId, SMPServer, SMP.RecipientId) (TMVar ()),
     reconnections :: TVar [Async ()],
     asyncClients :: TVar [Async ()],
     clientId :: Int,
@@ -138,11 +140,12 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   connMsgsQueued <- TM.empty
   smpQueueMsgQueues <- TM.empty
   smpQueueMsgDeliveries <- TM.empty
+  getMsgLocks <- TM.empty
   reconnections <- newTVar []
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -424,6 +427,7 @@ newRcvQueue_ a c srv = do
 
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
+  whenM (atomically . TM.member (connId, server, rcvId) $ getMsgLocks c) . throwError $ CMD PROHIBITED
   atomically $ addPendingSubscription c rq connId
   withLogClient c server rcvId "SUB" $ \smp -> do
     liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
@@ -501,6 +505,23 @@ sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) co
       let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
       agentCbEncryptOnce dhPublicKey . smpEncode $
         SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
+
+getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m (Maybe (MsgId, MsgFlags))
+getQueueMessage c@AgentClient {getMsgLocks} RcvQueue {server, rcvId, rcvPrivateKey} connId =
+  E.bracket (atomically createTakeLock) (atomically . (`putTMVar` ())) $ \_ ->
+    withLogClient c server rcvId "GET" $ \smp ->
+      getSMPMessage smp rcvPrivateKey rcvId
+  where
+    k = (connId, server, rcvId)
+    createTakeLock = do
+      l <- TM.lookup k getMsgLocks >>= maybe newLock pure
+      takeTMVar l
+      pure l
+      where
+        newLock = do
+          l <- newTMVar ()
+          TM.insert k l getMsgLocks
+          pure l
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
 secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =

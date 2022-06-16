@@ -44,6 +44,8 @@ module Simplex.Messaging.Agent
     acceptContact,
     rejectContact,
     subscribeConnection,
+    getConnectionMessage,
+    getNotificationMessage,
     resubscribeConnection,
     sendMessage,
     ackMessage,
@@ -96,7 +98,7 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, ($>>=))
+import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, whenM, ($>>=))
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
@@ -148,6 +150,14 @@ rejectContact c = withAgentEnv c .: rejectContact' c
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection c = withAgentEnv c . subscribeConnection' c
+
+-- | Get connection message (GET command)
+getConnectionMessage :: AgentErrorMonad m => AgentClient -> ConnId -> m (Maybe (SMP.MsgId, MsgFlags))
+getConnectionMessage c = withAgentEnv c . getConnectionMessage' c
+
+-- | Get connection message for received notification
+getNotificationMessage :: AgentErrorMonad m => AgentClient -> ByteString -> m (Maybe (SMP.MsgId, MsgFlags))
+getNotificationMessage c = withAgentEnv c . getNotificationMessage' c
 
 resubscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
@@ -365,11 +375,23 @@ subscribeConnection' c connId =
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
-resubscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+resubscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId =
   unlessM
     (atomically $ hasActiveSubscription c connId)
     (subscribeConnection' c connId)
+
+getConnectionMessage' :: AgentMonad m => AgentClient -> ConnId -> m (Maybe (SMP.MsgId, MsgFlags))
+getConnectionMessage' c connId = do
+  whenM (atomically $ hasActiveSubscription c connId) . throwError $ CMD PROHIBITED
+  withStore c (`getConn` connId) >>= \case
+    SomeConn _ (DuplexConnection _ rq _) -> getQueueMessage c rq connId
+    SomeConn _ (RcvConnection _ rq) -> getQueueMessage c rq connId
+    SomeConn _ (ContactConnection {}) -> throwError $ CMD PROHIBITED
+    SomeConn _ (SndConnection {}) -> throwError $ CONN SIMPLEX
+
+getNotificationMessage' :: AgentErrorMonad m => AgentClient -> ByteString -> m (Maybe (SMP.MsgId, MsgFlags))
+getNotificationMessage' c _encMessageInfo = throwError $ CMD PROHIBITED
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
@@ -532,7 +554,8 @@ ackMessage' c connId msgId = do
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> ack rq
     SomeConn _ (RcvConnection _ rq) -> ack rq
-    _ -> throwError $ CONN SIMPLEX
+    SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
+    SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
   where
     ack :: RcvQueue -> m ()
     ack rq = do
@@ -549,7 +572,8 @@ suspendConnection' c connId =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> suspendQueue c rq
     SomeConn _ (RcvConnection _ rq) -> suspendQueue c rq
-    _ -> throwError $ CONN SIMPLEX
+    SomeConn _ (ContactConnection _ rq) -> suspendQueue c rq
+    SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
 deleteConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()

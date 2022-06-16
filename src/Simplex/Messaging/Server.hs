@@ -442,7 +442,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               atomically $
                 tryPeekMsg q >>= \case
                   Just msg -> setDelivered s msg $> (corrId, queueId, msgCmd msg)
-                  _ -> pure (corrId, queueId, ERR NO_MSG)
+                  _ -> pure (corrId, queueId, OK)
 
         subscribeNotifications :: m (Transmission BrokerMsg)
         subscribeNotifications = atomically $ do

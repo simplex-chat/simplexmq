@@ -214,10 +214,11 @@ instance Transport TLS where
       readChunks :: ByteString -> IO ByteString
       readChunks b
         | B.length b >= n = pure b
-        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
-      handleEOF = \case
-        T.Error_EOF -> E.throwIO TEBadBlock
-        e -> E.throwIO e
+        | otherwise =
+          T.recvData tlsContext >>= \case
+            -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
+            "" -> ioe_EOF
+            s -> readChunks $ b <> s
 
   cPut :: TLS -> ByteString -> IO ()
   cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
