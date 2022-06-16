@@ -163,7 +163,7 @@ data NtfCommand (e :: NtfEntity) where
   TCRN :: Word16 -> NtfCommand 'Token
   -- | create SMP subscription
   SNEW :: NewNtfEntity 'Subscription -> NtfCommand 'Subscription
-  -- | check SMP subscription status (response is STAT)
+  -- | check SMP subscription status (response is SUB)
   SCHK :: NtfCommand 'Subscription
   -- | delete SMP subscription
   SDEL :: NtfCommand 'Subscription

@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
@@ -14,7 +15,6 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
   )
 where
 
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad
@@ -22,21 +22,25 @@ import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Data.Bifunctor (first)
+import Data.Fixed (Fixed (MkFixed), Pico)
 import qualified Data.Map.Strict as M
-import Data.Time (getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (ConnId)
+import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (NtfTknStatus (..), SMPQueueNtf (..))
+import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util (unlessM)
 import System.Random (randomR)
 import UnliftIO (async)
+import UnliftIO.Concurrent (forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -110,23 +114,42 @@ processNtfSub c (connId, cmd) = do
 runNtfWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
-  getNtfToken_ >>= \case
-    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} ->
-      withStore c (`getNextNtfSubAction` srv) >>= \case
-        Just (ntfSub@NtfSubscription {connId, smpServer}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId}) -> do
-          case ntfSubAction of
-            NSACreate -> case (ntfPrivateKey, notifierId) of
-              (Just ntfPrivKey, Just nId)
-                | ntfTknStatus == NTActive -> do
-                  ntfSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
-                  ts <- liftIO getCurrentTime
-                  withStore c $ \st ->
-                    updateNtfSubscription st connId ntfSub {ntfSubId = Just ntfSubId, ntfSubStatus = NASCreated, ntfSubActionTs = ts} (NtfSubAction NSACheck)
-                | otherwise -> pure () -- error -- TODO move action further to future
-              _ -> pure () -- error -- TODO move action further to future
-            NSACheck -> noWorkToDo
-            NSADelete -> noWorkToDo
+  getNtfToken >>= \case
+    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} -> do
+      nextSub_ <- withStore c (`getNextNtfSubAction` srv)
+      ts <- liftIO getCurrentTime
+      case nextSub_ of
         Nothing -> noWorkToDo
+        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId}) ->
+          unlessM (rescheduleAction doWork ts ntfSub) $
+            case ntfSubAction of
+              NSACreate -> case (ntfPrivateKey, notifierId) of
+                (Just ntfPrivKey, Just nId)
+                  | ntfTknStatus == NTActive -> do
+                    nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
+                    let actionTs = addUTCTime 30 ts
+                    withStore c $ \st ->
+                      updateNtfSubscription st connId ntfSub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew, ntfSubActionTs = actionTs} (NtfSubAction NSACheck)
+                  | otherwise -> ntfInternalError c connId "NSACreate - token not active"
+                _ -> ntfInternalError c connId "NSACreate - no notifier key or ID"
+              NSACheck -> case ntfSubId of
+                Just nSubId ->
+                  agentNtfCheckSubscription c nSubId tkn >>= \case
+                    NSNew -> updateSubNextCheck NSNew
+                    NSPending -> updateSubNextCheck NSPending
+                    NSActive -> updateSubNextCheck NSActive
+                    NSEnd -> updateSubNextCheck NSEnd
+                    NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts
+                Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
+              NSADelete -> pure ()
+          where
+            updateSubNextCheck toStatus = do
+              checkInterval <- asks $ ntfSubCheckInterval . config
+              let nextCheckTs = addUTCTime checkInterval ts
+              updateSub (NASCreated toStatus) (NtfSubAction NSACheck) nextCheckTs
+            updateSub toStatus toAction actionTs =
+              withStore c $ \st ->
+                updateNtfSubscription st connId ntfSub {ntfSubStatus = toStatus, ntfSubActionTs = actionTs} toAction
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
@@ -136,40 +159,63 @@ runNtfWorker c srv doWork = forever $ do
 runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar () -> m ()
 runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
-  getNtfToken_ >>= \case
-    Just NtfToken {ntfTknStatus} ->
-      withStore c (`getNextNtfSubSMPAction` srv) >>= \case
-        Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) -> do
-          case ntfSubAction of
-            NSAKey
-              | ntfTknStatus == NTActive ->
-                case ntfPublicKey of
-                  Just ntfPubKey ->
-                    enableNotificationsWithNKey ntfPubKey
-                  _ -> do
-                    C.SignAlg a <- asks (cmdSignAlg . config)
-                    (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
-                    withStore c $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
-                    enableNotificationsWithNKey ntfPubKey
-              | otherwise -> pure () -- error -- TODO move action further to future
-              where
-                enableNotificationsWithNKey ntfPubKey = do
-                  nId <- enableQueueNotifications c rq ntfPubKey
-                  ts <- liftIO getCurrentTime
-                  withStore c $ \st -> do
-                    setRcvQueueNotifierId st connId nId
-                    updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
-                  ns <- asks ntfSupervisor
-                  atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
+  getNtfToken >>= \case
+    Just NtfToken {ntfTknStatus} -> do
+      nextSub_ <- withStore c (`getNextNtfSubSMPAction` srv)
+      ts <- liftIO getCurrentTime
+      case nextSub_ of
         Nothing -> noWorkToDo
+        Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) ->
+          unlessM (rescheduleAction doWork ts ntfSub) $
+            case ntfSubAction of
+              NSAKey
+                | ntfTknStatus == NTActive ->
+                  case ntfPublicKey of
+                    Just ntfPubKey ->
+                      enableNotificationsWithNKey ntfPubKey
+                    _ -> do
+                      C.SignAlg a <- asks (cmdSignAlg . config)
+                      (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
+                      withStore c $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
+                      enableNotificationsWithNKey ntfPubKey
+                | otherwise -> ntfInternalError c connId "NSAKey - token not active"
+                where
+                  enableNotificationsWithNKey ntfPubKey = do
+                    nId <- enableQueueNotifications c rq ntfPubKey
+                    withStore c $ \st -> do
+                      setRcvQueueNotifierId st connId nId
+                      updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
+                    ns <- asks ntfSupervisor
+                    atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
 
-getNtfToken_ :: AgentMonad m => m (Maybe NtfToken)
-getNtfToken_ = do
+rescheduleAction :: AgentMonad m => TMVar () -> UTCTime -> NtfSubscription -> m Bool
+rescheduleAction doWork ts NtfSubscription {ntfSubActionTs}
+  | ntfSubActionTs <= ts = pure False
+  | otherwise = do
+    void . atomically $ tryTakeTMVar doWork
+    void . forkIO $ do
+      threadDelay $ diffInMicros ntfSubActionTs ts
+      void . atomically $ tryPutTMVar doWork ()
+    pure True
+
+fromPico :: Pico -> Integer
+fromPico (MkFixed i) = i
+
+diffInMicros :: UTCTime -> UTCTime -> Int
+diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
+
+ntfInternalError :: AgentMonad m => AgentClient -> ConnId -> String -> m ()
+ntfInternalError c@AgentClient {subQ} connId internalErrStr = do
+  withStore c $ \st -> setNullNtfSubscriptionAction st connId
+  atomically $ writeTBQueue subQ ("", connId, AP.ERR $ AP.INTERNAL internalErrStr)
+
+getNtfToken :: AgentMonad m => m (Maybe NtfToken)
+getNtfToken = do
   tkn <- asks $ ntfTkn . ntfSupervisor
   readTVarIO tkn
 
