@@ -11,7 +11,7 @@ CONSTANTS
     \* need to prove that all members are already directly connected to the
     \* newly invited user.  A predetermined leader simplifies the algorithm
     \* without a loss of fault tolerance.
-    Leader,
+    InitialMembers,
     \* TODO: We should call this Null, since we're using null semantics, not
     \* Maybe semantics (or use Maybe semantics)
     Nothing,
@@ -51,11 +51,15 @@ VARIABLES
     tokens
 
 ASSUME
-    /\ Leader \in Users
+    /\ InitialMembers \subseteq Users
+    /\ Cardinality(InitialMembers) >= 1
     /\ UserPerceptions \in [ [ perceiver : Users, description : [ by : Users, of : Users ] ] -> Users \union { Nothing } ]
     \* A user always correctly knows their own perceptions
     /\ \A user1, user2 \in Users : UserPerceptions[[ perceiver |-> user1, description |-> [ by |-> user1, of |-> user2 ]]] = user2
     /\ Connections \subseteq (Users \X Users)
+
+Leader ==
+    CHOOSE x \in InitialMembers : TRUE
 
 InviteIds == Nat
 
@@ -73,7 +77,7 @@ Init ==
     The empty set means the user doesn't believe themselves to be part of the
     group (they might actually know who some members are).
     *)
-    /\ group_perceptions = [ [ x \in Users |-> {} ] EXCEPT ![Leader] = { Leader } ]
+    /\ group_perceptions = [ x \in Users |-> IF x \in InitialMembers THEN InitialMembers ELSE {} ]
     /\ proposal = Nothing
     /\ complete_proposals = {}
     /\ tokens = [ x \in (InviteIds \X Users) |-> Nothing ]
@@ -373,7 +377,7 @@ AllMembers ==
     UNION { group_perceptions[x] : x \in Users }
 
 MembersOnlyEstablishWithInvitee ==
-    \A member \in (AllMembers \ { Leader }) :
+    \A member \in (AllMembers \ InitialMembers) :
         \E message \in messages :
             /\ message.type = Propose
             /\ message.invitee_description.of = member
