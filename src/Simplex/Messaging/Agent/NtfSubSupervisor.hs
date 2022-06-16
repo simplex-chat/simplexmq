@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
@@ -28,6 +29,7 @@ import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffT
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (ConnId)
+import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
@@ -132,8 +134,8 @@ runNtfWorker c srv doWork = forever $ do
                     let actionTs = addUTCTime 30 ts
                     withStore c $ \st ->
                       updateNtfSubscription st connId ntfSub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated, ntfSubActionTs = actionTs} (NtfSubAction NSACheck)
-                  | otherwise -> updateSubFutureTs -- error
-                _ -> updateSubFutureTs -- error
+                  | otherwise -> ntfInternalError c connId "NSACreate - token not active"
+                _ -> ntfInternalError c connId "NSACreate - no notifier key or ID"
               NSACheck -> case ntfSubId of
                 Just nSubId ->
                   agentNtfCheckSubscription c nSubId tkn >>= \case
@@ -142,7 +144,7 @@ runNtfWorker c srv doWork = forever $ do
                     NSActive -> updateSubNextCheck NASActive
                     NSEnd -> updateSubNextCheck NASEnded
                     NSSMPAuth -> updateSub NASSMPAuth (NtfSubAction NSADelete) ts
-                Nothing -> updateSubFutureTs -- error
+                Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
               NSADelete -> pure ()
           where
             updateSubNextCheck toStatus = do
@@ -152,10 +154,6 @@ runNtfWorker c srv doWork = forever $ do
             updateSub toStatus toAction actionTs =
               withStore c $ \st ->
                 updateNtfSubscription st connId ntfSub {ntfSubStatus = toStatus, ntfSubActionTs = actionTs} toAction
-            updateSubFutureTs = do
-              let retryTs = addUTCTime 300 ts
-              withStore c $ \st ->
-                updateNtfSubscription st connId ntfSub {ntfSubActionTs = retryTs} (NtfSubAction ntfSubAction)
         Nothing -> noWorkToDo
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
@@ -190,7 +188,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                       (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
                       withStore c $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
                       enableNotificationsWithNKey ntfPubKey
-                | otherwise -> updateSubFutureTs -- error
+                | otherwise -> ntfInternalError c connId "NSAKey - token not active"
                 where
                   enableNotificationsWithNKey ntfPubKey = do
                     nId <- enableQueueNotifications c rq ntfPubKey
@@ -199,11 +197,6 @@ runNtfSMPWorker c srv doWork = forever $ do
                       updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                     ns <- asks ntfSupervisor
                     atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
-          where
-            updateSubFutureTs = do
-              let retryTs = addUTCTime 300 ts
-              withStore c $ \st ->
-                updateNtfSubscription st connId ntfSub {ntfSubActionTs = retryTs} (NtfSubSMPAction ntfSubAction)
         Nothing -> noWorkToDo
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
@@ -216,6 +209,11 @@ fromPico (MkFixed i) = i
 
 diffInMicros :: UTCTime -> UTCTime -> Int
 diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
+
+ntfInternalError :: AgentMonad m => AgentClient -> ConnId -> String -> m ()
+ntfInternalError c@AgentClient {subQ} connId internalErrStr = do
+  withStore c $ \st -> setNullNtfSubscriptionAction st connId
+  atomically $ writeTBQueue subQ ("", connId, A.ERR $ A.INTERNAL internalErrStr)
 
 getNtfToken :: AgentMonad m => m (Maybe NtfToken)
 getNtfToken = do

@@ -46,7 +46,7 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock (UTCTime, getCurrentTime)
 import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLError, ToRow, field, (:.) (..))
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
@@ -758,6 +758,22 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
               (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs, False, updatedAt, connId)
     where
       (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
+
+  setNullNtfSubscriptionAction :: SQLiteStore -> ConnId -> m ()
+  setNullNtfSubscriptionAction st connId =
+    liftIO . withTransaction st $ \db -> do
+      r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+      forM_ r $ \updatedBySupervisor ->
+        unless updatedBySupervisor $ do
+          updatedAt <- getCurrentTime
+          DB.execute
+            db
+            [sql|
+              UPDATE ntf_subscriptions
+              SET ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
+              WHERE conn_id = ?
+            |]
+            (Nothing :: Maybe NtfSubAction, Nothing :: Maybe NtfSubSMPAction, Nothing :: Maybe UTCTime, False, updatedAt, connId)
 
   deleteNtfSubscription :: SQLiteStore -> ConnId -> m ()
   deleteNtfSubscription _st _connId = throwError SENotImplemented
