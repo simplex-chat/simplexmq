@@ -32,6 +32,7 @@ CONSTANTS
     Connections,
     \* Request Type
     Propose,
+    Reject,
     Invite,
     Accept,
     SyncToken
@@ -149,36 +150,51 @@ RebroadcastProposal ==
             }
         /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
 
+LeaderReceiveReject ==
+    \E message \in messages :
+        /\ message.type = Reject
+        /\ message.recipient = Leader
+        /\ message.invite_id \notin complete_proposals
+        /\ proposal = Nothing
+        /\ message.invite_id = proposal.invite_id
+        /\ complete_proposals' = complete_proposals \union { message.invite_id }
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, tokens>>
+
 ApproverReceiveProposal ==
     \E message \in messages :
         /\ message.type = Propose
         /\ message.recipient /= Leader
-        \* UNDERSPECIFIED: The member ignores the message permanently if these
-        \* guards fail.  Realistically, they need to notify the Leader that the
-        \* proposal is doomed.
-        /\ UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]] /= Nothing
-        /\ HasDirectConnection(message.recipient, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
-        /\ IF   tokens[<<message.invite_id, message.recipient>>] = Nothing
-           THEN /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
-                /\ rng_state' = rng_state + 1
-           ELSE UNCHANGED <<tokens, rng_state, complete_proposals>>
-        \* It's safe to send this message right away, as it only agrees to
-        \* reveal information that everyone has agreed to share.  The invitee
-        \* now knows that there's a group that involves this member, the
-        \* proposer, and any other members that have sent this message, giving
-        \* the invitee insight into how these contacts are all connected.
-        \* However, that is exactly what they all just agreed to.  Members that
-        \* don't agree to send this message remain private.
-        /\ messages' = messages \union
-            {   [ sender |-> message.recipient
-                , recipient |-> UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]]
-                , type |-> Invite
-                , invite_id |-> message.invite_id
-                , token |-> tokens'[<<message.invite_id, message.recipient>>]
-                , group_size |-> message.group_size
-                ]
-            }
-        /\ UNCHANGED <<group_perceptions, proposal, complete_proposals>>
+        /\ IF   /\ UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]] /= Nothing
+                /\ HasDirectConnection(message.recipient, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
+           THEN /\ IF   tokens[<<message.invite_id, message.recipient>>] = Nothing
+                   THEN /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
+                        /\ rng_state' = rng_state + 1
+                   ELSE UNCHANGED <<tokens, rng_state, complete_proposals>>
+                \* It's safe to send this message right away, as it only agrees to
+                \* reveal information that everyone has agreed to share.  The invitee
+                \* now knows that there's a group that involves this member, the
+                \* proposer, and any other members that have sent this message, giving
+                \* the invitee insight into how these contacts are all connected.
+                \* However, that is exactly what they all just agreed to.  Members that
+                \* don't agree to send this message remain private.
+                /\ messages' = messages \union
+                    {   [ sender |-> message.recipient
+                        , recipient |-> UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]]
+                        , type |-> Invite
+                        , invite_id |-> message.invite_id
+                        , token |-> tokens'[<<message.invite_id, message.recipient>>]
+                        , group_size |-> message.group_size
+                        ]
+                    }
+                /\ UNCHANGED <<group_perceptions, proposal, complete_proposals>>
+           ELSE /\ messages' = messages \union
+                    {   [ sender |-> message.recipient
+                        , recipient |-> Leader
+                        , type |-> Reject
+                        , invite_id |-> message.invite_id
+                        ]
+                    }
+                /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
 
 BroadcastToken ==
     \E from \in Users, invite_id \in InviteIds :
@@ -255,9 +271,6 @@ Establish ==
                    ELSE UNCHANGED <<proposal, complete_proposals>>
                /\ UNCHANGED <<messages, rng_state, tokens>>
 
-\* TODO: Members should notify the Leader when the proposal is doomed so they
-\* drop it
-
 \* TODO: It is impossible to tell if a proposal is doomed because of invitee
 \* confusion or if the invitation is just taking time, as such, the Leader
 \* needs to be able to cancel invitations.  We need this in two stages, one to
@@ -313,6 +326,7 @@ Next ==
     \/ SendPropose
     \/ LeaderReceiveProposal
     \/ RebroadcastProposal
+    \/ LeaderReceiveReject
     \/ ApproverReceiveProposal
     \/ BroadcastToken
     \/ SendAccept
