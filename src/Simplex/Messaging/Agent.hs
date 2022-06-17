@@ -254,7 +254,6 @@ newConn c connId cMode = do
   g <- asks idsDrg
   agentVersion <- asks $ smpAgentVersion . config
   let cData = ConnData {connId, connAgentVersion = agentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
-  -- TODO combine store?
   connId' <- withStore c $ \db -> createRcvConn db g cData rq cMode
   addSubscription c rq connId'
   ns <- asks ntfSupervisor
@@ -324,8 +323,7 @@ createReplyQueue c connId = do
 
 -- | Approve confirmation (LET command) in Reader monad
 allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-allowConnection' c connId confId ownConnInfo = do
-  -- TODO combine store?
+allowConnection' c connId confId ownConnInfo =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection cData rq) -> do
       AcceptedConfirmation {senderConf} <- withStore c $ \db -> runExceptT $ do
@@ -339,7 +337,6 @@ allowConnection' c connId confId ownConnInfo = do
 -- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> ConnInfo -> m ConnId
 acceptContact' c connId invId ownConnInfo = do
-  -- TODO combine store?
   Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ ContactConnection {} -> do
@@ -513,9 +510,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
             Right () -> do
               case msgType of
                 AM_CONN_INFO -> do
-                  -- TODO combine store?
-                  withStore' c $ \db -> setSndQueueStatus db sq Confirmed
-                  when (isJust rq_) $ withStore' c (`removeConfirmations` connId)
+                  withStore' c $ \db -> do
+                    setSndQueueStatus db sq Confirmed
+                    when (isJust rq_) $ removeConfirmations db connId
                   -- TODO possibly notification flag should be ON for one of the parties, to result in contact connected notification
                   unless (duplexHandshake == Just True) . void $ enqueueMessage c cData sq SMP.noMsgFlags HELLO
                 AM_HELLO_ -> do
