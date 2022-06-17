@@ -35,6 +35,7 @@ CONSTANTS
     Holding,
     Continuing,
     \* Request Type
+    PleasePropose,
     Propose,
     Reject,
     Hold,
@@ -94,17 +95,19 @@ Init ==
     /\ committed_proposals = {}
     /\ tokens = [ x \in (InviteIds \X Users) |-> Nothing ]
 
-SendPropose ==
+SendPleasePropose ==
+    \* IMPORTANT: The user should still wait to receive a Propose message from
+    \* the leader before acting further, since they can't send an Invite
+    \* message yet anyway.  The Leader might be queuing a number of proposals,
+    \* and this one could be happening after another, meaning the group size,
+    \* which is important for correct invitee behaviour, cannot be known until
+    \* the Leader officially starts this proposal.
     \E proposer \in Users, invitee \in Users :
         /\ proposer \in group_perceptions[proposer]
         /\ invitee \notin group_perceptions[proposer]
         /\ HasDirectConnection(proposer, invitee)
         /\ messages' = messages \union
-            \* TODO: The spec is probably simpler this is a special
-            \* GetProposalToLeader type, and the Leader still proposes to
-            \* themselves.  So the Leader is handled by the users agent, which
-            \* proposes to the user, even if they're agent _is_ the Leader.
-            {   [ type |-> Propose
+            {   [ type |-> PleasePropose
                 , sender |-> proposer
                 , recipient |-> Leader
                 , invite_id |-> rng_state
@@ -114,43 +117,20 @@ SendPropose ==
         /\ rng_state' = rng_state + 1
         /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, holds, committed_proposals, tokens>>
 
-LeaderReceiveProposal ==
+LeaderReceivePleasePropose ==
     \E message \in messages :
-        /\ message.type = Propose
+        /\ message.type = PleasePropose
         /\ message.recipient = Leader
         /\ message.invite_id \notin complete_proposals
         /\ proposal = Nothing
-        /\  IF  /\ UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]] /= Nothing
-                \* The Leader is always up to date, this is invariant for all
-                \* other members
-                /\ UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]] \notin group_perceptions[Leader]
-                /\ HasDirectConnection(Leader, UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]])
-            THEN
-                /\ proposal' =
-                    [ invite_id |-> message.invite_id
-                    , invitee_description |-> message.invitee_description
-                    , group_size |-> Cardinality(group_perceptions[Leader])
-                    , state |-> Proposing
-                    ]
-                /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, Leader>>] = rng_state ]
-                \* TODO: This can't actually be atomic
-                /\ messages' = messages \union
-                    {   [ type |-> Invite
-                        , sender |-> Leader
-                        , recipient |-> UserPerceptions[[ perceiver |-> Leader, description |-> message.invitee_description]]
-                        , invite_id |-> message.invite_id
-                        , token |-> rng_state
-                        , group_size |-> proposal'.group_size
-                        ]
-                    }
-                /\ rng_state' = rng_state + 1
-                /\ UNCHANGED <<group_perceptions, complete_proposals, holds, committed_proposals>>
-            ELSE
-                \* UNDERSPECIFIED: In this spec, we mark the proposal as
-                \* completed and move on.  In reality, we need to capture that
-                \* the proposal was rejected and notify the proposer as such.
-                /\ complete_proposals' = complete_proposals \union { message.invite_id }
-                /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, holds, committed_proposals, tokens>>
+        \* NOTE: As a slight optimization, the Leader can synchronously accept or reject.
+        /\ proposal' =
+            [ invite_id |-> message.invite_id
+            , invitee_description |-> message.invitee_description
+            , group_size |-> Cardinality(group_perceptions[Leader])
+            , state |-> Proposing
+            ]
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, holds, committed_proposals, tokens>>
 
 BroadcastProposalState ==
     \E member \in Users :
@@ -223,7 +203,6 @@ LeaderReceiveAllHolds ==
 ApproverReceiveProposal ==
     \E message \in messages :
         /\ message.type = Propose
-        /\ message.recipient /= Leader
         /\ IF   /\ UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]] /= Nothing
                 /\ HasDirectConnection(message.recipient, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
            THEN /\ IF   tokens[<<message.invite_id, message.recipient>>] = Nothing
@@ -404,8 +383,8 @@ silent agents are undetectable!).
 
 
 Next ==
-    \/ SendPropose
-    \/ LeaderReceiveProposal
+    \/ SendPleasePropose
+    \/ LeaderReceivePleasePropose
     \/ BroadcastProposalState
     \/ LeaderReceiveReject
     \/ GiveUpOnProposal
