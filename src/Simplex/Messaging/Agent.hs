@@ -87,7 +87,7 @@ import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (AgentStoreMonad, SQLiteStore)
+import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR

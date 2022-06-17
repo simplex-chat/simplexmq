@@ -9,9 +9,7 @@
 
 module Simplex.Messaging.Agent.Store where
 
-import Control.Concurrent.STM (TVar)
 import Control.Exception (Exception)
-import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -19,9 +17,7 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff, SkippedMsgKeys)
-import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfTknStatus, NtfTokenId)
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
@@ -35,76 +31,6 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Version
-
--- * Store management
-
--- | Store class type. Defines store access methods for implementations.
-class Monad m => MonadAgentStore s m where
-  -- Queue and Connection management
-  createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
-  createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
-  getConn :: s -> ConnId -> m SomeConn
-  getRcvConn :: s -> SMPServer -> SMP.RecipientId -> m SomeConn
-  deleteConn :: s -> ConnId -> m ()
-  upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
-  upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
-  setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecretX25519 -> m ()
-  setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
-  getRcvQueue :: s -> ConnId -> m RcvQueue
-
-  -- RcvQueue notifier key and ID
-  setRcvQueueNotifierKey :: s -> ConnId -> NtfPublicVerifyKey -> NtfPrivateSignKey -> m ()
-  setRcvQueueNotifierId :: s -> ConnId -> NotifierId -> m ()
-
-  -- Confirmations
-  createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  acceptConfirmation :: s -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
-  getAcceptedConfirmation :: s -> ConnId -> m AcceptedConfirmation
-  removeConfirmations :: s -> ConnId -> m ()
-  setHandshakeVersion :: s -> ConnId -> Version -> Bool -> m ()
-
-  -- Invitations - sent via Contact connections
-  createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
-  getInvitation :: s -> InvitationId -> m Invitation
-  acceptInvitation :: s -> InvitationId -> ConnInfo -> m ()
-  deleteInvitation :: s -> ConnId -> InvitationId -> m ()
-
-  -- Msg management
-  updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
-  createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
-  updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
-  createSndMsg :: s -> ConnId -> SndMsgData -> m ()
-  getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, PendingMsgData)
-  getPendingMsgs :: s -> ConnId -> m [InternalId]
-  setMsgUserAck :: s -> ConnId -> InternalId -> m MsgId
-  getLastMsg :: s -> ConnId -> SMP.MsgId -> m (Maybe RcvMsg)
-  deleteMsg :: s -> ConnId -> InternalId -> m ()
-
-  -- Double ratchet persistence
-  createRatchetX3dhKeys :: s -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
-  getRatchetX3dhKeys :: s -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
-  createRatchet :: s -> ConnId -> RatchetX448 -> m ()
-  getRatchet :: s -> ConnId -> m RatchetX448
-  getSkippedMsgKeys :: s -> ConnId -> m SkippedMsgKeys
-  updateRatchet :: s -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
-
-  -- Notification device token persistence
-  createNtfToken :: s -> NtfToken -> m ()
-  getDeviceNtfToken :: s -> DeviceToken -> m (Maybe NtfToken, [NtfToken])
-  updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
-  updateNtfToken :: s -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
-  removeNtfToken :: s -> NtfToken -> m ()
-
-  -- Notification subscription persistence
-  getNtfSubscription :: s -> ConnId -> m (Maybe NtfSubscription)
-  createNtfSubscription :: s -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  markNtfSubscriptionForDeletion :: s -> ConnId -> m ()
-  updateNtfSubscription :: s -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  setNullNtfSubscriptionAction :: s -> ConnId -> m ()
-  deleteNtfSubscription :: s -> ConnId -> m ()
-  getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
-  getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
 
 -- * Queue types
 

@@ -30,6 +30,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol (ConnId)
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Client
