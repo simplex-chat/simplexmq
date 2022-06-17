@@ -103,19 +103,21 @@ data PushNotification
 data PNMessageData = PNMessageData
   { smpServer :: SMPServer,
     notifierId :: NotifierId,
+    ntfTs :: SystemTime,
     nmsgNonce :: C.CbNonce,
     encryptedMsgMeta :: EncryptedMsgMetaNtf
   }
 
 instance StrEncoding PNMessageData where
-  strEncode PNMessageData {smpServer, notifierId, nmsgNonce, encryptedMsgMeta} =
-    strEncode smpServer <> "/" <> strEncode notifierId <> " " <> strEncode nmsgNonce <> " " <> strEncode encryptedMsgMeta
+  strEncode PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encryptedMsgMeta} =
+    strEncode smpServer <> "/" <> strEncode notifierId <> " " <> strEncode ntfTs <> " " <> strEncode nmsgNonce <> " " <> strEncode encryptedMsgMeta
   strP = do
     smpServer <- strP <* A.char '/'
     notifierId <- strP <* A.space
+    ntfTs <- strP <* A.space
     nmsgNonce <- strP <* A.space
     encryptedMsgMeta <- strP
-    pure PNMessageData {smpServer, notifierId, nmsgNonce, encryptedMsgMeta}
+    pure PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encryptedMsgMeta}
 
 data APNSNotification = APNSNotification {aps :: APNSNotificationBody, notificationData :: Maybe J.Value}
   deriving (Show, Generic)
