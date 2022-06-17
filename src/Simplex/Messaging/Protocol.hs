@@ -717,7 +717,7 @@ instance ProtocolEncoding BrokerMsg where
       | otherwise -> MSG <$> _smpP <*> smpP <*> smpP <*> (unTail <$> _smpP)
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP
-    NMSG_ -> NMSG <$> _smpP <*> _smpP
+    NMSG_ -> NMSG <$> _smpP <*> smpP
     END_ -> pure END
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
