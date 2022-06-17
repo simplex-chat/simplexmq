@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -27,11 +28,14 @@ import ServerTests
     _SEND',
     pattern Resp,
   )
+import qualified Simplex.Messaging.Agent.Protocol as AP
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import qualified Simplex.Messaging.Notifications.Server.Push.APNS as APNS
+import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Transport
 import Test.Hspec
@@ -91,7 +95,7 @@ testNotificationSubscription (ATransport t) =
       smpTest2 t $ \rh sh ->
         ntfTest t $ \nh -> do
           -- create queue
-          (sId, rId, rKey, _dhShared) <- createAndSecureQueue rh sPub
+          (sId, rId, rKey, rcvDhSecret) <- createAndSecureQueue rh sPub
           -- register and verify token
           RespNtf "1" "" (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", "", TNEW $ NewNtfTkn tkn tknPub dhPub)
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse = send} <-
@@ -116,11 +120,14 @@ testNotificationSubscription (ATransport t) =
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
               Right checkMessage = ntfData' .-> "checkMessage"
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
-              Right smpQueueURI = C.cbDecrypt dhSecret nonce' checkMessage
-          smpQueueURI `shouldBe` strEncode srv <> "/" <> strEncode nId
+              Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' checkMessage
+              Right APNS.PNMessageData {smpServer, notifierId} =
+                parse strP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
+          smpServer `shouldBe` srv
+          notifierId `shouldBe` nId
           send' APNSRespOk
           -- receive message
-          let dec _nonce = C.cbDecrypt _dhShared (C.cbNonce _nonce)
+          let dec _nonce = C.cbDecrypt rcvDhSecret (C.cbNonce _nonce)
           Resp "" _ (MSG mId1 _ _ msg1) <- tGet rh
           (dec mId1 msg1, Right "hello") #== "delivered from queue"
           Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK mId1)
