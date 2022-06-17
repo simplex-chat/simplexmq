@@ -106,6 +106,9 @@ class Monad m => MonadAgentStore s m where
   getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
   getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
 
+  -- Notification decryption
+  getNtfConnIdAndRcvDhSecret :: s -> SMPServer -> NotifierId -> m (ConnId, RcvDhSecret)
+
 -- * Queue types
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.

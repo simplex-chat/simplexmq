@@ -78,6 +78,9 @@ module Simplex.Messaging.Protocol
     NtfPublicVerifyKey,
     MsgId,
     MsgBody,
+    NMSGNonce,
+    EncryptedMsgMetaNtf,
+    MsgMetaNtf (..),
     MsgFlags (..),
     noMsgFlags,
 
@@ -241,12 +244,28 @@ data BrokerMsg where
   -- MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   MSG :: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
   NID :: NotifierId -> BrokerMsg
-  NMSG :: BrokerMsg
+  NMSG :: NMSGNonce -> EncryptedMsgMetaNtf -> BrokerMsg
   END :: BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   deriving (Eq, Show)
+
+type NMSGNonce = ByteString
+
+type EncryptedMsgMetaNtf = ByteString
+
+data MsgMetaNtf = MsgMetaNtf
+  { msgId :: MsgId,
+    msgTs :: SystemTime
+  }
+
+instance Encoding MsgMetaNtf where
+  smpEncode MsgMetaNtf {msgId, msgTs} =
+    smpEncode (msgId, msgTs)
+  smpP = do
+    (msgId, msgTs, Tail _) <- smpP
+    pure MsgMetaNtf {msgId, msgTs}
 
 newtype MsgFlags = MsgFlags {notification :: Bool}
   deriving (Eq, Show)
@@ -686,7 +705,7 @@ instance ProtocolEncoding BrokerMsg where
       | v == 1 -> e (MSG_, ' ', msgId, ts, Tail msgBody)
       | otherwise -> e (MSG_, ' ', msgId, ts, flags, ' ', Tail msgBody)
     NID nId -> e (NID_, ' ', nId)
-    NMSG -> e NMSG_
+    NMSG nmsgNonce encryptedMsgMeta -> e (NMSG_, ' ', nmsgNonce, encryptedMsgMeta)
     END -> e END_
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
@@ -701,7 +720,7 @@ instance ProtocolEncoding BrokerMsg where
       | otherwise -> MSG <$> _smpP <*> smpP <*> smpP <*> (unTail <$> _smpP)
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP
-    NMSG_ -> pure NMSG
+    NMSG_ -> NMSG <$> _smpP <*> _smpP
     END_ -> pure END
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP

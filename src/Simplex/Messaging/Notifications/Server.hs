@@ -24,7 +24,7 @@ import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
-import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderClient)
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (ErrorType (..), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
@@ -107,12 +107,12 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     receiveSMP = forever $ do
       (srv, _sessId, ntfId, msg) <- atomically $ readTBQueue msgQ
       case msg of
-        SMP.NMSG -> do
+        SMP.NMSG nmsgNonce encryptedMsgMeta -> do
           NtfPushServer {pushQ} <- asks pushServer
           st <- asks store
           atomically $
             findNtfSubscriptionToken st (SMPQueueNtf srv ntfId)
-              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage srv ntfId))
+              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage $ PNMessageData {smpServer = srv, notifierId = ntfId, nmsgNonce, encryptedMsgMeta}))
         _ -> pure ()
       pure ()
 
@@ -143,7 +143,7 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
       atomically $ modifyTVar tknStatus $ \status' -> if status' == NTActive then NTActive else NTConfirmed
     (NTActive, PNCheckMessages) -> do
       deliverNotification pp tkn ntf
-    (NTActive, PNMessage _ _) -> do
+    (NTActive, PNMessage {}) -> do
       deliverNotification pp tkn ntf
     _ -> do
       logError "bad notification token status"

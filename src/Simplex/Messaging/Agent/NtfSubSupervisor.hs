@@ -7,6 +7,7 @@
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
   ( runNtfSupervisor,
+    getNtfToken,
     nsUpdateToken,
     nsRemoveNtfToken,
     sendNtfSubCommand,
