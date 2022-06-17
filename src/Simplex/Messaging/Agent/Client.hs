@@ -89,6 +89,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, catchAll_, ifM, liftEitherError, liftError, tryError, unlessM, whenM)
 import Simplex.Messaging.Version
+import System.Posix.Semaphore (semPost, semThreadWait)
 import System.Timeout (timeout)
 import UnliftIO (async, pooledForConcurrentlyN)
 import qualified UnliftIO.Exception as E
@@ -646,13 +647,14 @@ notifyAgentPhaseChanged AgentClient {subQ, agentEnv = Env {agentPhase, agentOper
 
 withStore :: AgentMonad m => AgentClient -> (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
 withStore c action = do
-  st <- asks store
-  atomically $ beginAgentOperation c AODatabase
-  r <- runExceptT (action st `E.catch` handleInternal)
-  atomically $ endAgentOperation c AODatabase
-  case r of
-    Right res -> pure res
-    Left e -> throwError $ storeError e
+  st@SQLiteStore {dbSemaphore} <- asks store
+  E.bracket_ (liftIO $ mapM_ semThreadWait dbSemaphore) (liftIO $ mapM_ semPost dbSemaphore) $ do
+    atomically $ beginAgentOperation c AODatabase
+    r <- runExceptT (action st `E.catch` handleInternal)
+    atomically $ endAgentOperation c AODatabase
+    case r of
+      Right res -> pure res
+      Left e -> throwError $ storeError e
   where
     -- TODO when parsing exception happens in store, the agent hangs;
     -- changing SQLError to SomeException does not help

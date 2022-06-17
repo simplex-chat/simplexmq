@@ -171,6 +171,7 @@ agentCfg =
     { tcpPort = agentTestPort,
       tbqSize = 1,
       dbFile = testDB,
+      dbSemName = Nothing, -- Just "/simplex-agent",
       smpCfg =
         defaultClientConfig
           { qSize = 1,

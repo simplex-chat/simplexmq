@@ -29,6 +29,8 @@ import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import Simplex.Messaging.Util (bshow)
 import System.Directory (removeFile)
+import System.Posix.Files (stdFileMode)
+import System.Posix.Semaphore (OpenSemFlags (..), semOpen, semPost, semThreadWait)
 import System.Timeout
 import Test.Hspec
 
@@ -42,6 +44,7 @@ agentTests (ATransport t) = do
   describe "SQLite schema dump" schemaDumpTest
   describe "SMP agent protocol syntax" $ syntaxTests t
   describe "Establishing duplex connection" $ do
+    it "test semaphore" testSemaphore
     it "should connect via one server and one agent" $
       smpAgentTest2_1_1 $ testDuplexConnection t
     it "should connect via one server and one agent (random IDs)" $
@@ -120,6 +123,12 @@ h #:# err = tryGet `shouldReturn` ()
 
 pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
+
+testSemaphore :: IO ()
+testSemaphore = do
+  sem <- semOpen "/test" OpenSemFlags {semCreate = True, semExclusive = False} stdFileMode 1
+  semThreadWait sem
+  semPost sem
 
 testDuplexConnection :: Transport c => TProxy c -> c -> c -> IO ()
 testDuplexConnection _ alice bob = do

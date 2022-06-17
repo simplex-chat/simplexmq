@@ -44,7 +44,7 @@ withStore2 = before connect2 . after (removeStore . fst)
     connect2 :: IO (SQLiteStore, SQLiteStore)
     connect2 = do
       s1 <- createStore
-      s2 <- connectSQLiteStore (dbFilePath s1)
+      s2 <- connectSQLiteStore (dbFilePath s1) Nothing
       pure (s1, s2)
 
 createStore :: IO SQLiteStore
@@ -52,7 +52,7 @@ createStore = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  createSQLiteStore (testDB <> show r) Migrations.app True
+  createSQLiteStore (testDB <> show r) Nothing Migrations.app True
 
 removeStore :: SQLiteStore -> IO ()
 removeStore store = do

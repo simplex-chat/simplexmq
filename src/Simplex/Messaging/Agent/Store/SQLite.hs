@@ -71,6 +71,8 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
+import System.Posix.Files (stdFileMode)
+import System.Posix.Semaphore (OpenSemFlags (..), Semaphore, semOpen)
 import qualified UnliftIO.Exception as E
 
 -- * SQLite Store implementation
@@ -78,14 +80,15 @@ import qualified UnliftIO.Exception as E
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
     dbConnection :: TMVar DB.Connection,
+    dbSemaphore :: Maybe Semaphore,
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> [Migration] -> Bool -> IO SQLiteStore
-createSQLiteStore dbFilePath migrations yesToMigrations = do
+createSQLiteStore :: FilePath -> Maybe String -> [Migration] -> Bool -> IO SQLiteStore
+createSQLiteStore dbFilePath dbSemName_ migrations yesToMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
-  st <- connectSQLiteStore dbFilePath
+  st <- connectSQLiteStore dbFilePath dbSemName_
   checkThreadsafe st
   migrateSchema st migrations yesToMigrations
   pure st
@@ -121,11 +124,13 @@ confirmOrExit s = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-connectSQLiteStore :: FilePath -> IO SQLiteStore
-connectSQLiteStore dbFilePath = do
+connectSQLiteStore :: FilePath -> Maybe String -> IO SQLiteStore
+connectSQLiteStore dbFilePath dbSemName_ = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConnection <- newTMVarIO =<< connectDB dbFilePath
-  pure SQLiteStore {dbFilePath, dbConnection, dbNew}
+  -- let filemode = unionFileModes ownerReadMode ownerWriteMode
+  dbSemaphore <- forM dbSemName_ $ \name -> semOpen name OpenSemFlags {semCreate = True, semExclusive = False} stdFileMode 1
+  pure SQLiteStore {dbFilePath, dbConnection, dbSemaphore, dbNew}
 
 connectDB :: FilePath -> IO DB.Connection
 connectDB path = do
