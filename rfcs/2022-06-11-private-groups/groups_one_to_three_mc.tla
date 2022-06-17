@@ -1,14 +1,14 @@
----- MODULE groups_mc ----
+---- MODULE groups_one_to_three_mc ----
 
-\* Our most basic model considers a group of two people who both know of two
-\* others (that also know each other), and enough random numbers ar available
-\* to invite either one of them.
+\* In this model, we start with a newly created group (of one) and we consider
+\* the possible the addition of two others (in either order), all of whom know
+\* each other.
 
 EXTENDS groups
 
-CONSTANTS a, b, c, d
+CONSTANTS a, b, c
 
-MaxNum == 3
+MaxNum == 5
 
 NatMC == 0..MaxNum
 
