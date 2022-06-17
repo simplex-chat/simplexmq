@@ -30,9 +30,17 @@ CONSTANTS
     *)
     UserPerceptions,
     Connections,
+    \* Proposal States
+    Proposing,
+    Holding,
+    Continuing,
     \* Request Type
     Propose,
     Reject,
+    Hold,
+    CantHold,
+    WillHold,
+    Continue,
     Invite,
     Accept,
     SyncToken
@@ -48,6 +56,8 @@ VARIABLES
     group_perceptions,
     proposal,
     complete_proposals,
+    holds,
+    committed_proposals,
     tokens
 
 ASSUME
@@ -80,6 +90,8 @@ Init ==
     /\ group_perceptions = [ x \in Users |-> IF x \in InitialMembers THEN InitialMembers ELSE {} ]
     /\ proposal = Nothing
     /\ complete_proposals = {}
+    /\ holds = {}
+    /\ committed_proposals = {}
     /\ tokens = [ x \in (InviteIds \X Users) |-> Nothing ]
 
 SendPropose ==
@@ -100,7 +112,7 @@ SendPropose ==
                 ]
             }
         /\ rng_state' = rng_state + 1
-        /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, tokens>>
+        /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, holds, committed_proposals, tokens>>
 
 LeaderReceiveProposal ==
     \E message \in messages :
@@ -118,6 +130,7 @@ LeaderReceiveProposal ==
                     [ invite_id |-> message.invite_id
                     , invitee_description |-> message.invitee_description
                     , group_size |-> Cardinality(group_perceptions[Leader])
+                    , state |-> Proposing
                     ]
                 /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, Leader>>] = rng_state ]
                 \* TODO: This can't actually be atomic
@@ -131,28 +144,38 @@ LeaderReceiveProposal ==
                         ]
                     }
                 /\ rng_state' = rng_state + 1
-                /\ UNCHANGED <<group_perceptions, complete_proposals>>
+                /\ UNCHANGED <<group_perceptions, complete_proposals, holds, committed_proposals>>
             ELSE
                 \* UNDERSPECIFIED: In this spec, we mark the proposal as
                 \* completed and move on.  In reality, we need to capture that
                 \* the proposal was rejected and notify the proposer as such.
                 /\ complete_proposals' = complete_proposals \union { message.invite_id }
-                /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, tokens>>
+                /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, holds, committed_proposals, tokens>>
 
-RebroadcastProposal ==
-    \E member \in (Users \ { Leader }) :
+BroadcastProposalState ==
+    \E member \in Users :
         /\ proposal /= Nothing
         /\ member \in group_perceptions[Leader]
         /\ messages' = messages \union
-            {   [ sender |-> Leader
-                , recipient |-> member
-                , type |-> Propose
-                , invite_id |-> proposal.invite_id
-                , invitee_description |-> proposal.invitee_description
-                , group_size |-> proposal.group_size
-                ]
+            {   IF  proposal.state = Proposing
+                THEN
+                    [ sender |-> Leader
+                    , recipient |-> member
+                    , type |-> Propose
+                    , invite_id |-> proposal.invite_id
+                    , invitee_description |-> proposal.invitee_description
+                    , group_size |-> proposal.group_size
+                    ]
+                ELSE
+                    [ sender |-> Leader
+                    , recipient |-> member
+                    , type |->
+                        CASE proposal.state = Holding -> Hold
+                          [] proposal.state = Continuing -> Continue
+                    , invite_id |-> proposal.invite_id
+                    ]
             }
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, holds, committed_proposals, tokens>>
 
 LeaderReceiveReject ==
     \E message \in messages :
@@ -162,7 +185,40 @@ LeaderReceiveReject ==
         /\ proposal = Nothing
         /\ message.invite_id = proposal.invite_id
         /\ complete_proposals' = complete_proposals \union { message.invite_id }
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, tokens>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, holds, committed_proposals, tokens>>
+
+\* We don't specify exactly why, but at some point a Leader may realize that a
+\* proposal is likely doomed, even if they never heard a rejection (proposals
+\* with confused contacts can never resolve), and abort the proposal.
+GiveUpOnProposal ==
+    /\ proposal /= Nothing
+    /\ proposal.state = Proposing
+    /\ proposal' = [ proposal EXCEPT !.state = Holding ]
+    /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, holds, committed_proposals, tokens>>
+
+LeaderReceiveCantHold ==
+    \E message \in messages :
+        /\ message.type = CantHold
+        /\ message.recipient = Leader
+        /\ proposal /= Nothing
+        /\ message.invite_id = proposal.invite_id
+        /\ proposal.state = Holding
+        /\ proposal' = [ proposal EXCEPT !.state = Continuing ]
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, holds, committed_proposals, tokens>>
+
+LeaderReceiveAllHolds ==
+    /\ proposal /= Nothing
+    /\ \A member \in group_perceptions[Leader] :
+        \* TODO: This gets a bit problematic when we need to limit the number
+        \* of messages in flight
+        \E message \in messages :
+            /\ message.type = WillHold
+            /\ message.sender = member
+            /\ message.recipient = Leader
+            /\ message.invite_id = proposal.invite_id
+    /\ proposal' = Nothing
+    /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
+    /\ UNCHANGED <<messages, rng_state, group_perceptions, holds, committed_proposals, tokens>>
 
 ApproverReceiveProposal ==
     \E message \in messages :
@@ -173,7 +229,7 @@ ApproverReceiveProposal ==
            THEN /\ IF   tokens[<<message.invite_id, message.recipient>>] = Nothing
                    THEN /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
                         /\ rng_state' = rng_state + 1
-                   ELSE UNCHANGED <<tokens, rng_state, complete_proposals>>
+                   ELSE UNCHANGED <<tokens, rng_state, complete_proposals, holds, committed_proposals>>
                 \* It's safe to send this message right away, as it only agrees to
                 \* reveal information that everyone has agreed to share.  The invitee
                 \* now knows that there's a group that involves this member, the
@@ -190,7 +246,7 @@ ApproverReceiveProposal ==
                         , group_size |-> message.group_size
                         ]
                     }
-                /\ UNCHANGED <<group_perceptions, proposal, complete_proposals>>
+                /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, holds, committed_proposals>>
            ELSE /\ messages' = messages \union
                     {   [ sender |-> message.recipient
                         , recipient |-> Leader
@@ -198,7 +254,30 @@ ApproverReceiveProposal ==
                         , invite_id |-> message.invite_id
                         ]
                     }
-                /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
+                /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, holds, committed_proposals, tokens>>
+
+ApproverReceiveHold ==
+    \E message \in messages :
+        /\ message.type = Hold
+        /\ IF   <<message.invite_id, message.recipient>> \in committed_proposals
+           THEN /\ messages' = messages \union
+                    {   [ type |-> CantHold
+                        , sender |-> message.recipient
+                        , recipient |-> Leader
+                        , invite_id |-> message.invite_id
+                        ]
+                    }
+                /\ UNCHANGED <<holds>>
+           ELSE /\ holds' = holds \union { <<message.invite_id, message.recipient>> }
+                \* TODO: This can't be atomic
+                /\ messages' = messages \union
+                    {   [ type |-> WillHold
+                        , sender |-> message.recipient
+                        , recipient |-> Leader
+                        , invite_id |-> message.invite_id
+                        ]
+                    }
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, committed_proposals, tokens>>
 
 BroadcastToken ==
     \E from \in Users, invite_id \in InviteIds :
@@ -212,7 +291,7 @@ BroadcastToken ==
                     , invite_id |-> invite_id
                     ]
                 }
-            /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
+            /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, holds, committed_proposals, tokens>>
 
 \* IMPORTANT: It is NOT inviariant that the invitee matches across the same
 \* invite_id, because some members may have confused the invitee.
@@ -244,7 +323,7 @@ SendAccept ==
                                 ]
                             }
                 ELSE UNCHANGED <<messages>>
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, holds, committed_proposals, tokens>>
 
 Establish ==
     \E message \in messages :
@@ -254,6 +333,8 @@ Establish ==
                Tokens == { sync.token : sync \in SyncMessages } \union { tokens[<<message.invite_id, message.recipient>>] }
            IN  /\ Senders = (group_perceptions[message.recipient] \ { message.recipient })
                /\ message.tokens = Tokens
+               /\ <<message.invite_id, message.recipient>> \notin holds
+               /\ committed_proposals' = committed_proposals \union { <<message.invite_id, message.recipient>> }
                \* TODO: This can't be atomic
                /\ group_perceptions' =
                    [ group_perceptions
@@ -273,14 +354,10 @@ Establish ==
                        /\ complete_proposals' = complete_proposals \union { message.invite_id }
                        /\ proposal' = Nothing
                    ELSE UNCHANGED <<proposal, complete_proposals>>
-               /\ UNCHANGED <<messages, rng_state, tokens>>
+               /\ UNCHANGED <<messages, rng_state, tokens, holds>>
 
-\* TODO: It is impossible to tell if a proposal is doomed because of invitee
-\* confusion or if the invitation is just taking time, as such, the Leader
-\* needs to be able to cancel invitations.  We need this in two stages, one to
-\* Hold (continue, but do not establish) and then the other to Resume (if
-\* someone _did_ establish, meaning the action is committed) or Cancel (if no
-\* one has).
+\* TODO: If a user reported that they committed to a invitation, the Leader
+\* needs to notify all users to resume the invitation.
 
 \* TODO: Need to be able to Kick.  Notably, this is easier, because we don't
 \* need to confirm identities.
@@ -329,14 +406,18 @@ silent agents are undetectable!).
 Next ==
     \/ SendPropose
     \/ LeaderReceiveProposal
-    \/ RebroadcastProposal
+    \/ BroadcastProposalState
     \/ LeaderReceiveReject
+    \/ GiveUpOnProposal
+    \/ LeaderReceiveCantHold
+    \/ LeaderReceiveAllHolds
     \/ ApproverReceiveProposal
+    \/ ApproverReceiveHold
     \/ BroadcastToken
     \/ SendAccept
     \/ Establish
 
-Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, complete_proposals, tokens>>
+Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, complete_proposals, holds, committed_proposals, tokens>>
 
 
 CannotCommunicateWithoutAConnection ==
