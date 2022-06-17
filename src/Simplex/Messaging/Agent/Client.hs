@@ -656,9 +656,7 @@ withStore c action = do
   r <- liftIO . withTransaction st $ \db ->
     action db `E.catch` handleInternal
   atomically $ endAgentOperation c AODatabase
-  case r of
-    Right res -> pure res
-    Left e -> throwError $ storeError e
+  liftEither $ first storeError r
   where
     -- TODO when parsing exception happens in store, the agent hangs;
     -- changing SQLError to SomeException does not help
