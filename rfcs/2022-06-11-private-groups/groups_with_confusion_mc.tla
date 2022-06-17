@@ -4,7 +4,7 @@ EXTENDS groups
 
 CONSTANTS a, b, c, d
 
-MaxNum == 6
+MaxNum == 5
 
 NatMC == 0..MaxNum
 
