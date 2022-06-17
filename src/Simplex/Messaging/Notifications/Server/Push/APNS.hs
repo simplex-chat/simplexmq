@@ -47,7 +47,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
-import Simplex.Messaging.Protocol (EncryptedMsgMetaNtf, NMSGNonce, NotifierId, SMPServer)
+import Simplex.Messaging.Protocol (EncryptedMsgMetaNtf, NotifierId, SMPServer)
 import Simplex.Messaging.Transport.HTTP2.Client
 import System.Environment (getEnv)
 import UnliftIO.STM
@@ -103,7 +103,7 @@ data PushNotification
 data PNMessageData = PNMessageData
   { smpServer :: SMPServer,
     notifierId :: NotifierId,
-    nmsgNonce :: NMSGNonce,
+    nmsgNonce :: C.CbNonce,
     encryptedMsgMeta :: EncryptedMsgMetaNtf
   }
 

@@ -78,7 +78,6 @@ module Simplex.Messaging.Protocol
     NtfPublicVerifyKey,
     MsgId,
     MsgBody,
-    NMSGNonce,
     EncryptedMsgMetaNtf,
     MsgMetaNtf (..),
     MsgFlags (..),
@@ -244,14 +243,12 @@ data BrokerMsg where
   -- MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   MSG :: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
   NID :: NotifierId -> BrokerMsg
-  NMSG :: NMSGNonce -> EncryptedMsgMetaNtf -> BrokerMsg
+  NMSG :: C.CbNonce -> EncryptedMsgMetaNtf -> BrokerMsg
   END :: BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   deriving (Eq, Show)
-
-type NMSGNonce = ByteString
 
 type EncryptedMsgMetaNtf = ByteString
 
