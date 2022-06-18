@@ -852,8 +852,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
          in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
 
-  getNtfConnIdAndRcvDhSecret :: SQLiteStore -> SMPServer -> NotifierId -> m (ConnId, RcvDhSecret)
-  getNtfConnIdAndRcvDhSecret st (SMPServer host port _) notifierId =
+  getNtfRcvQueue :: SQLiteStore -> SMPServer -> NotifierId -> m (ConnId, RcvDhSecret)
+  getNtfRcvQueue st (SMPServer host port _) notifierId =
     liftIOEither . withTransaction st $ \db -> do
       firstRow id SEConnNotFound $
         DB.query

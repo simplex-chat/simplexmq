@@ -108,7 +108,7 @@ class Monad m => MonadAgentStore s m where
 
   -- Notification decryption
   getActiveNtfToken :: s -> m (Maybe NtfToken)
-  getNtfConnIdAndRcvDhSecret :: s -> SMPServer -> NotifierId -> m (ConnId, RcvDhSecret)
+  getNtfRcvQueue :: s -> SMPServer -> NotifierId -> m (ConnId, RcvDhSecret)
 
 -- * Queue types
 
