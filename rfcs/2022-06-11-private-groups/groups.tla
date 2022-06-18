@@ -33,6 +33,7 @@ CONSTANTS
     \* Proposal States
     Proposing,
     Holding,
+    Cancelling,
     Continuing,
     \* Approver States
     Active,
@@ -47,6 +48,7 @@ CONSTANTS
     CantHold,
     WillHold,
     Continue,
+    Cancel,
     Invite,
     Accept,
     SyncToken
@@ -133,6 +135,7 @@ LeaderReceivePleasePropose ==
             , invitee_description |-> message.invitee_description
             , group_size |-> Cardinality(group_perceptions[Leader])
             , state |-> Proposing
+            , awaiting_hold_response |-> Nothing
             ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states, tokens>>
 
@@ -141,8 +144,7 @@ BroadcastProposalState ==
         /\ proposal /= Nothing
         /\ member \in group_perceptions[Leader]
         /\ messages' = messages \union
-            {   IF  proposal.state = Proposing
-                THEN
+            {   CASE proposal.state = Proposing ->
                     [ sender |-> Leader
                     , recipient |-> member
                     , type |-> Propose
@@ -150,7 +152,14 @@ BroadcastProposalState ==
                     , invitee_description |-> proposal.invitee_description
                     , group_size |-> proposal.group_size
                     ]
-                ELSE
+                  [] proposal.state = Cancelling ->
+                    [ sender |-> Leader
+                    , recipient |-> member
+                    , type |-> Cancel
+                    , invite_id |-> proposal.invite_id
+                    , kicked |-> proposal.awaiting_hold_response
+                    ]
+                  [] TRUE ->
                     [ sender |-> Leader
                     , recipient |-> member
                     , type |->
@@ -177,7 +186,7 @@ LeaderReceiveReject ==
 GiveUpOnProposal ==
     /\ proposal /= Nothing
     /\ proposal.state = Proposing
-    /\ proposal' = [ proposal EXCEPT !.state = Holding ]
+    /\ proposal' = [ proposal EXCEPT !.state = Holding, !.awaiting_hold_response = group_perceptions[Leader] ]
     /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states, tokens>>
 
 LeaderReceiveCantHold ==
@@ -187,22 +196,35 @@ LeaderReceiveCantHold ==
         /\ proposal /= Nothing
         /\ message.invite_id = proposal.invite_id
         /\ proposal.state = Holding
-        /\ proposal' = [ proposal EXCEPT !.state = Continuing ]
+        /\ proposal' = [ proposal EXCEPT !.state = Continuing, !.awaiting_hold_response = Nothing ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states, tokens>>
 
-LeaderReceiveAllHolds ==
+LeaderReceiveHold ==
     /\ proposal /= Nothing
-    /\ \A member \in group_perceptions[Leader] :
-        \* TODO: This gets a bit problematic when we need to limit the number
-        \* of messages in flight
-        \E message \in messages :
-            /\ message.type = WillHold
-            /\ message.sender = member
-            /\ message.recipient = Leader
-            /\ message.invite_id = proposal.invite_id
-    /\ proposal' = Nothing
-    /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
-    /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states, tokens>>
+    /\ proposal.state = Holding
+    /\ \E message \in messages :
+        /\ message.type = WillHold
+        /\ message.recipient = Leader
+        /\ message.invite_id = proposal.invite_id
+        /\ IF   proposal.awaiting_hold_response = { message.sender }
+           THEN /\ proposal' = Nothing
+                /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
+           ELSE /\ proposal' = [ proposal EXCEPT !.awaiting_hold_response = @ \ { message.sender } ]
+                /\ UNCHANGED <<complete_proposals>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states, tokens>>
+
+\* We don't specify exactly why, but this would likely be a human decision
+\* based on trying to start a _new_ proposal, but that not being possible
+\* because of a pending one.  It would then show the users that are not
+\* cooperating and would offer to kick them.
+GiveUpOnMembers ==
+    /\ proposal /= Nothing
+    /\ proposal.state = Holding
+    \* Leader can't be kicked.  Realistically, they should just act
+    \* synchronously when giving up on a proposal.
+    /\ Leader \notin proposal.awaiting_hold_response
+    /\ proposal' = [ proposal EXCEPT !.state = Cancelling ]
+    /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states, tokens>>
 
 ApproverReceiveProposal ==
     \E message \in messages :
@@ -414,7 +436,8 @@ Next ==
     \/ LeaderReceiveReject
     \/ GiveUpOnProposal
     \/ LeaderReceiveCantHold
-    \/ LeaderReceiveAllHolds
+    \/ LeaderReceiveHold
+    \/ GiveUpOnMembers
     \/ ApproverReceiveProposal
     \/ ApproverReceiveHold
     \/ ApproverReceiveContinue
