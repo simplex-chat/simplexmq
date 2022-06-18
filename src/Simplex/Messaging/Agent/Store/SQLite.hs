@@ -20,20 +20,82 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
-    AgentStoreMonad,
     createSQLiteStore,
     connectSQLiteStore,
+
+    -- * Queues and connections
+    createRcvConn,
+    createSndConn,
+    getConn,
+    getRcvConn,
+    deleteConn,
+    upgradeRcvConnToDuplex,
+    upgradeSndConnToDuplex,
+    setRcvQueueStatus,
+    setRcvQueueConfirmedE2E,
+    setSndQueueStatus,
+    getRcvQueue,
+    -- RcvQueue notifier key and ID
+    setRcvQueueNotifierKey,
+    setRcvQueueNotifierId,
+    -- Confirmations
+    createConfirmation,
+    acceptConfirmation,
+    getAcceptedConfirmation,
+    removeConfirmations,
+    setHandshakeVersion,
+    -- Invitations - sent via Contact connections
+    createInvitation,
+    getInvitation,
+    acceptInvitation,
+    deleteInvitation,
+    -- Messages
+    updateRcvIds,
+    createRcvMsg,
+    updateSndIds,
+    createSndMsg,
+    getPendingMsgData,
+    getPendingMsgs,
+    setMsgUserAck,
+    getLastMsg,
+    deleteMsg,
+    -- Double ratchet persistence
+    createRatchetX3dhKeys,
+    getRatchetX3dhKeys,
+    createRatchet,
+    getRatchet,
+    getSkippedMsgKeys,
+    updateRatchet,
+    -- Notification device token persistence
+    createNtfToken,
+    getDeviceNtfToken,
+    updateNtfTokenRegistration,
+    updateNtfToken,
+    removeNtfToken,
+    -- Notification subscription persistence
+    getNtfSubscription,
+    createNtfSubscription,
+    markNtfSubscriptionForDeletion,
+    updateNtfSubscription,
+    setNullNtfSubscriptionAction,
+    deleteNtfSubscription,
+    getNextNtfSubAction,
+    getNextNtfSubSMPAction,
+    getActiveNtfToken,
+    getNtfRcvQueue,
+
+    -- * utilities
     withConnection,
     withTransaction,
     firstRow,
+    firstRow',
+    maybeFirstRow,
   )
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM
-import Control.Exception (bracket)
+import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
-import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import Data.Bifunctor (first, second)
 import Data.ByteString (ByteString)
@@ -47,11 +109,12 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime, getCurrentTime)
-import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), SQLError, ToRow, field, (:.) (..))
+import Database.SQLite.Simple (FromRow, NamedParam (..), Only (..), Query (..), SQLError, ToRow, field, (:.) (..))
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
 import Database.SQLite.Simple.ToField (ToField (..))
+import qualified Database.SQLite3 as SQLite3
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration)
@@ -65,13 +128,15 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus 
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (bshow, eitherToMaybe, liftIOEither)
+import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
+import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
+import UnliftIO.STM
 
 -- * SQLite Store implementation
 
@@ -130,24 +195,27 @@ connectSQLiteStore dbFilePath = do
 connectDB :: FilePath -> IO DB.Connection
 connectDB path = do
   dbConn <- DB.open path
-  DB.execute_ dbConn "PRAGMA foreign_keys = ON;"
-  -- DB.execute_ dbConn "PRAGMA trusted_schema = OFF;"
-  DB.execute_ dbConn "PRAGMA secure_delete = ON;"
-  DB.execute_ dbConn "PRAGMA auto_vacuum = FULL;"
+  SQLite3.exec (DB.connectionHandle dbConn) . fromQuery $
+    [sql|
+      PRAGMA foreign_keys = ON;
+      -- PRAGMA trusted_schema = OFF;
+      PRAGMA secure_delete = ON;
+      PRAGMA auto_vacuum = FULL;
+    |]
   -- _printPragmas dbConn path
   pure dbConn
 
-_printPragmas :: DB.Connection -> FilePath -> IO ()
-_printPragmas db path = do
-  foreign_keys <- DB.query_ db "PRAGMA foreign_keys;" :: IO [[Int]]
-  print $ path <> " foreign_keys: " <> show foreign_keys
-  -- when run via sqlite-simple query for trusted_schema seems to return empty list
-  trusted_schema <- DB.query_ db "PRAGMA trusted_schema;" :: IO [[Int]]
-  print $ path <> " trusted_schema: " <> show trusted_schema
-  secure_delete <- DB.query_ db "PRAGMA secure_delete;" :: IO [[Int]]
-  print $ path <> " secure_delete: " <> show secure_delete
-  auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
-  print $ path <> " auto_vacuum: " <> show auto_vacuum
+-- _printPragmas :: DB.Connection -> FilePath -> IO ()
+-- _printPragmas db path = do
+--   foreign_keys <- DB.query_ db "PRAGMA foreign_keys;" :: IO [[Int]]
+--   print $ path <> " foreign_keys: " <> show foreign_keys
+--   -- when run via sqlite-simple query for trusted_schema seems to return empty list
+--   trusted_schema <- DB.query_ db "PRAGMA trusted_schema;" :: IO [[Int]]
+--   print $ path <> " trusted_schema: " <> show trusted_schema
+--   secure_delete <- DB.query_ db "PRAGMA secure_delete;" :: IO [[Int]]
+--   print $ path <> " secure_delete: " <> show secure_delete
+--   auto_vacuum <- DB.query_ db "PRAGMA auto_vacuum;" :: IO [[Int]]
+--   print $ path <> " auto_vacuum: " <> show auto_vacuum
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
 checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
@@ -164,7 +232,7 @@ withConnection SQLiteStore {dbConnection} =
     (atomically . putTMVar dbConnection)
 
 withTransaction :: forall a. SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransaction st action = withConnection st $ loop 100 100_000
+withTransaction st action = withConnection st $ loop 500 2_000_000
   where
     loop :: Int -> Int -> DB.Connection -> IO a
     loop t tLim db =
@@ -176,694 +244,621 @@ withTransaction st action = withConnection st $ loop 100 100_000
           else E.throwIO e
 
 createConn_ ::
-  (MonadUnliftIO m, MonadError StoreError m) =>
-  SQLiteStore ->
   TVar ChaChaDRG ->
   ConnData ->
-  (DB.Connection -> ByteString -> IO ()) ->
-  m ByteString
-createConn_ st gVar cData create =
-  liftIOEither . checkConstraint SEConnDuplicate . withTransaction st $ \db ->
-    case cData of
-      ConnData {connId = ""} -> createWithRandomId gVar $ create db
-      ConnData {connId} -> create db connId $> Right connId
+  (ByteString -> IO ()) ->
+  IO (Either StoreError ByteString)
+createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
+  ConnData {connId = ""} -> createWithRandomId gVar create
+  ConnData {connId} -> create connId $> Right connId
 
-type AgentStoreMonad m = (MonadUnliftIO m, MonadError StoreError m, MonadAgentStore SQLiteStore m)
+createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
+createRcvConn db gVar cData q@RcvQueue {server} cMode =
+  createConn_ gVar cData $ \connId -> do
+    upsertServer_ db server
+    DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, cMode, connAgentVersion cData, duplexHandshake cData)
+    insertRcvQueue_ db connId q
 
-instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteStore m where
-  createRcvConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
-  createRcvConn st gVar cData q@RcvQueue {server} cMode =
-    createConn_ st gVar cData $ \db connId -> do
+createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
+createSndConn db gVar cData q@SndQueue {server} =
+  createConn_ gVar cData $ \connId -> do
+    upsertServer_ db server
+    DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, SCMInvitation, connAgentVersion cData, duplexHandshake cData)
+    insertSndQueue_ db connId q
+
+getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError SomeConn)
+getRcvConn db ProtocolServer {host, port} rcvId =
+  DB.queryNamed
+    db
+    [sql|
+      SELECT q.conn_id
+      FROM rcv_queues q
+      WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
+    |]
+    [":host" := host, ":port" := port, ":rcv_id" := rcvId]
+    >>= \case
+      [Only connId] -> getConn db connId
+      _ -> pure $ Left SEConnNotFound
+
+deleteConn :: DB.Connection -> ConnId -> IO ()
+deleteConn db connId =
+  DB.executeNamed
+    db
+    "DELETE FROM connections WHERE conn_id = :conn_id;"
+    [":conn_id" := connId]
+
+upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError ())
+upgradeRcvConnToDuplex db connId sq@SndQueue {server} =
+  getConn db connId $>>= \case
+    (SomeConn _ RcvConnection {}) -> do
       upsertServer_ db server
-      DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, cMode, connAgentVersion cData, duplexHandshake cData)
-      insertRcvQueue_ db connId q
+      insertSndQueue_ db connId sq
+      pure $ Right ()
+    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
-  createSndConn :: SQLiteStore -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
-  createSndConn st gVar cData q@SndQueue {server} =
-    createConn_ st gVar cData $ \db connId -> do
+upgradeSndConnToDuplex :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError ())
+upgradeSndConnToDuplex db connId rq@RcvQueue {server} =
+  getConn db connId >>= \case
+    Right (SomeConn _ SndConnection {}) -> do
       upsertServer_ db server
-      DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, SCMInvitation, connAgentVersion cData, duplexHandshake cData)
-      insertSndQueue_ db connId q
+      insertRcvQueue_ db connId rq
+      pure $ Right ()
+    Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+    _ -> pure $ Left SEConnNotFound
 
-  getConn :: SQLiteStore -> ConnId -> m SomeConn
-  getConn st connId =
-    liftIOEither . withTransaction st $ \db ->
-      getConn_ db connId
+setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
+setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
+  -- ? return error if queue does not exist?
+  DB.executeNamed
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET status = :status
+      WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
+    |]
+    [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
-  getRcvConn :: SQLiteStore -> SMPServer -> SMP.RecipientId -> m SomeConn
-  getRcvConn st ProtocolServer {host, port} rcvId =
-    liftIOEither . withTransaction st $ \db ->
-      DB.queryNamed
+setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> IO ()
+setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret =
+  DB.executeNamed
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET e2e_dh_secret = :e2e_dh_secret,
+          status = :status
+      WHERE host = :host AND port = :port AND rcv_id = :rcv_id
+    |]
+    [ ":status" := Confirmed,
+      ":e2e_dh_secret" := e2eDhSecret,
+      ":host" := host,
+      ":port" := port,
+      ":rcv_id" := rcvId
+    ]
+
+setSndQueueStatus :: DB.Connection -> SndQueue -> QueueStatus -> IO ()
+setSndQueueStatus db SndQueue {sndId, server = ProtocolServer {host, port}} status =
+  -- ? return error if queue does not exist?
+  DB.executeNamed
+    db
+    [sql|
+      UPDATE snd_queues
+      SET status = :status
+      WHERE host = :host AND port = :port AND snd_id = :snd_id;
+    |]
+    [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
+
+getRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
+getRcvQueue db connId =
+  maybe (Left SEConnNotFound) Right <$> getRcvQueueByConnId_ db connId
+
+setRcvQueueNotifierKey :: DB.Connection -> ConnId -> NtfPublicVerifyKey -> NtfPrivateSignKey -> IO ()
+setRcvQueueNotifierKey db connId ntfPublicKey ntfPrivateKey =
+  DB.execute
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET ntf_public_key = ?, ntf_private_key = ?
+      WHERE conn_id = ?
+    |]
+    (ntfPublicKey, ntfPrivateKey, connId)
+
+setRcvQueueNotifierId :: DB.Connection -> ConnId -> NotifierId -> IO ()
+setRcvQueueNotifierId db connId nId =
+  DB.execute
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET ntf_id = ?
+      WHERE conn_id = ?
+    |]
+    (nId, connId)
+
+createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
+createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
+  createWithRandomId gVar $ \confirmationId ->
+    DB.execute
+      db
+      [sql|
+        INSERT INTO conn_confirmations
+        (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, 0);
+      |]
+      (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues)
+
+acceptConfirmation :: DB.Connection -> ConfirmationId -> ConnInfo -> IO (Either StoreError AcceptedConfirmation)
+acceptConfirmation db confirmationId ownConnInfo = do
+  DB.executeNamed
+    db
+    [sql|
+      UPDATE conn_confirmations
+      SET accepted = 1,
+          own_conn_info = :own_conn_info
+      WHERE confirmation_id = :confirmation_id;
+    |]
+    [ ":own_conn_info" := ownConnInfo,
+      ":confirmation_id" := confirmationId
+    ]
+  firstRow confirmation SEConfirmationNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues
+        FROM conn_confirmations
+        WHERE confirmation_id = ?;
+      |]
+      (Only confirmationId)
+  where
+    confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_) =
+      AcceptedConfirmation
+        { confirmationId,
+          connId,
+          senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
+          ratchetState,
+          ownConnInfo
+        }
+
+getAcceptedConfirmation :: DB.Connection -> ConnId -> IO (Either StoreError AcceptedConfirmation)
+getAcceptedConfirmation db connId =
+  firstRow confirmation SEConfirmationNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, own_conn_info
+        FROM conn_confirmations
+        WHERE conn_id = ? AND accepted = 1;
+      |]
+      (Only connId)
+  where
+    confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_, ownConnInfo) =
+      AcceptedConfirmation
+        { confirmationId,
+          connId,
+          senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
+          ratchetState,
+          ownConnInfo
+        }
+
+removeConfirmations :: DB.Connection -> ConnId -> IO ()
+removeConfirmations db connId =
+  DB.executeNamed
+    db
+    [sql|
+      DELETE FROM conn_confirmations
+      WHERE conn_id = :conn_id;
+    |]
+    [":conn_id" := connId]
+
+setHandshakeVersion :: DB.Connection -> ConnId -> Version -> Bool -> IO ()
+setHandshakeVersion db connId aVersion duplexHS =
+  DB.execute db "UPDATE connections SET smp_agent_version = ?, duplex_handshake = ? WHERE conn_id = ?" (aVersion, duplexHS, connId)
+
+createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
+createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
+  createWithRandomId gVar $ \invitationId ->
+    DB.execute
+      db
+      [sql|
+        INSERT INTO conn_invitations
+        (invitation_id,  contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
+      |]
+      (invitationId, contactConnId, connReq, recipientConnInfo)
+
+getInvitation :: DB.Connection -> InvitationId -> IO (Either StoreError Invitation)
+getInvitation db invitationId =
+  firstRow invitation SEInvitationNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
+        FROM conn_invitations
+        WHERE invitation_id = ?
+          AND accepted = 0
+      |]
+      (Only invitationId)
+  where
+    invitation (contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted) =
+      Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
+
+acceptInvitation :: DB.Connection -> InvitationId -> ConnInfo -> IO ()
+acceptInvitation db invitationId ownConnInfo =
+  DB.executeNamed
+    db
+    [sql|
+      UPDATE conn_invitations
+      SET accepted = 1,
+          own_conn_info = :own_conn_info
+      WHERE invitation_id = :invitation_id
+    |]
+    [ ":own_conn_info" := ownConnInfo,
+      ":invitation_id" := invitationId
+    ]
+
+deleteInvitation :: DB.Connection -> ConnId -> InvitationId -> IO (Either StoreError ())
+deleteInvitation db contactConnId invId =
+  getConn db contactConnId $>>= \case
+    SomeConn SCContact _ ->
+      Right <$> DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, invId)
+    _ -> pure $ Left SEConnNotFound
+
+updateRcvIds :: DB.Connection -> ConnId -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
+updateRcvIds db connId = do
+  (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ db connId
+  let internalId = InternalId $ unId lastInternalId + 1
+      internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
+  updateLastIdsRcv_ db connId internalId internalRcvId
+  pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
+
+createRcvMsg :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
+createRcvMsg db connId rcvMsgData = do
+  insertRcvMsgBase_ db connId rcvMsgData
+  insertRcvMsgDetails_ db connId rcvMsgData
+  updateHashRcv_ db connId rcvMsgData
+
+updateSndIds :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
+updateSndIds db connId = do
+  (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ db connId
+  let internalId = InternalId $ unId lastInternalId + 1
+      internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
+  updateLastIdsSnd_ db connId internalId internalSndId
+  pure (internalId, internalSndId, prevSndHash)
+
+createSndMsg :: DB.Connection -> ConnId -> SndMsgData -> IO ()
+createSndMsg db connId sndMsgData = do
+  insertSndMsgBase_ db connId sndMsgData
+  insertSndMsgDetails_ db connId sndMsgData
+  updateHashSnd_ db connId sndMsgData
+
+getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
+getPendingMsgData db connId msgId = do
+  rq_ <- getRcvQueueByConnId_ db connId
+  (rq_,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
+  where
+    getMsgData_ =
+      DB.query
         db
         [sql|
-          SELECT q.conn_id
-          FROM rcv_queues q
-          WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
+          SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts
+          FROM messages m
+          JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
+          WHERE m.conn_id = ? AND m.internal_id = ?
         |]
-        [":host" := host, ":port" := port, ":rcv_id" := rcvId]
-        >>= \case
-          [Only connId] -> getConn_ db connId
-          _ -> pure $ Left SEConnNotFound
+        (connId, msgId)
+    pendingMsgData :: (AgentMessageType, MsgFlags, MsgBody, InternalTs) -> PendingMsgData
+    pendingMsgData (msgType, msgFlags, msgBody, internalTs) = PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
 
-  deleteConn :: SQLiteStore -> ConnId -> m ()
-  deleteConn st connId =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        "DELETE FROM connections WHERE conn_id = :conn_id;"
-        [":conn_id" := connId]
+getPendingMsgs :: DB.Connection -> ConnId -> IO [InternalId]
+getPendingMsgs db connId =
+  map fromOnly
+    <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_id = ?" (Only connId)
 
-  upgradeRcvConnToDuplex :: SQLiteStore -> ConnId -> SndQueue -> m ()
-  upgradeRcvConnToDuplex st connId sq@SndQueue {server} =
-    liftIOEither . withTransaction st $ \db ->
-      getConn_ db connId >>= \case
-        Right (SomeConn _ RcvConnection {}) -> do
-          upsertServer_ db server
-          insertSndQueue_ db connId sq
-          pure $ Right ()
-        Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
-        _ -> pure $ Left SEConnNotFound
+setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError SMP.MsgId)
+setMsgUserAck db connId agentMsgId = do
+  DB.execute db "UPDATE rcv_messages SET user_ack = ? WHERE conn_id = ? AND internal_id = ?" (True, connId, agentMsgId)
+  firstRow fromOnly SEMsgNotFound $
+    DB.query db "SELECT broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?" (connId, agentMsgId)
 
-  upgradeSndConnToDuplex :: SQLiteStore -> ConnId -> RcvQueue -> m ()
-  upgradeSndConnToDuplex st connId rq@RcvQueue {server} =
-    liftIOEither . withTransaction st $ \db ->
-      getConn_ db connId >>= \case
-        Right (SomeConn _ SndConnection {}) -> do
-          upsertServer_ db server
-          insertRcvQueue_ db connId rq
-          pure $ Right ()
-        Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
-        _ -> pure $ Left SEConnNotFound
+getLastMsg :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Maybe RcvMsg)
+getLastMsg db connId msgId =
+  maybeFirstRow rcvMsg $
+    DB.query
+      db
+      [sql|
+        SELECT
+          r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity,
+          m.msg_body, r.user_ack
+        FROM rcv_messages r
+        JOIN messages m ON r.internal_id = m.internal_id
+        JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
+        WHERE r.conn_id = ? AND r.broker_id = ?
+      |]
+      (connId, msgId)
+  where
+    rcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, msgBody, userAck) =
+      let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
+       in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgBody, userAck}
 
-  setRcvQueueStatus :: SQLiteStore -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueStatus st RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
-    -- ? throw error if queue does not exist?
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
+deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
+deleteMsg db connId msgId =
+  DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
+
+createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> IO ()
+createRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 =
+  DB.execute db "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2) VALUES (?, ?, ?)" (connId, x3dhPrivKey1, x3dhPrivKey2)
+
+getRatchetX3dhKeys :: DB.Connection -> ConnId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448))
+getRatchetX3dhKeys db connId =
+  fmap hasKeys $
+    firstRow id SEX3dhKeysNotFound $
+      DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2 FROM ratchets WHERE conn_id = ?" (Only connId)
+  where
+    hasKeys = \case
+      Right (Just k1, Just k2) -> Right (k1, k2)
+      _ -> Left SEX3dhKeysNotFound
+
+createRatchet :: DB.Connection -> ConnId -> RatchetX448 -> IO ()
+createRatchet db connId rc =
+  DB.executeNamed
+    db
+    [sql|
+      INSERT INTO ratchets (conn_id, ratchet_state)
+      VALUES (:conn_id, :ratchet_state)
+      ON CONFLICT (conn_id) DO UPDATE SET
+        ratchet_state = :ratchet_state,
+        x3dh_priv_key_1 = NULL,
+        x3dh_priv_key_2 = NULL
+    |]
+    [":conn_id" := connId, ":ratchet_state" := rc]
+
+getRatchet :: DB.Connection -> ConnId -> IO (Either StoreError RatchetX448)
+getRatchet db connId =
+  firstRow' ratchet SERatchetNotFound $ DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
+  where
+    ratchet = maybe (Left SERatchetNotFound) Right . fromOnly
+
+getSkippedMsgKeys :: DB.Connection -> ConnId -> IO SkippedMsgKeys
+getSkippedMsgKeys db connId =
+  skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
+  where
+    skipped ms = foldl' addSkippedKey M.empty ms
+    addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
+      where
+        addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
+
+updateRatchet :: DB.Connection -> ConnId -> RatchetX448 -> SkippedMsgDiff -> IO ()
+updateRatchet db connId rc skipped = do
+  DB.execute db "UPDATE ratchets SET ratchet_state = ? WHERE conn_id = ?" (rc, connId)
+  case skipped of
+    SMDNoChange -> pure ()
+    SMDRemove hk msgN ->
+      DB.execute db "DELETE FROM skipped_messages WHERE conn_id = ? AND header_key = ? AND msg_n = ?" (connId, hk, msgN)
+    SMDAdd smks ->
+      forM_ (M.assocs smks) $ \(hk, mks) ->
+        forM_ (M.assocs mks) $ \(msgN, mk) ->
+          DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
+
+createNtfToken :: DB.Connection -> NtfToken -> IO ()
+createNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey), ntfDhSecret, ntfTknStatus, ntfTknAction} = do
+  upsertNtfServer_ db srv
+  DB.execute
+    db
+    [sql|
+      INSERT INTO ntf_tokens
+        (provider, device_token, ntf_host, ntf_port, tkn_id, tkn_pub_key, tkn_priv_key, tkn_pub_dh_key, tkn_priv_dh_key, tkn_dh_secret, tkn_status, tkn_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    |]
+    (provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)
+
+getDeviceNtfToken :: DB.Connection -> DeviceToken -> IO (Maybe NtfToken, [NtfToken])
+getDeviceNtfToken db t = do
+  tokens <-
+    map ntfToken
+      <$> DB.query_
         db
         [sql|
-          UPDATE rcv_queues
-          SET status = :status
-          WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
+          SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+            t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
+          FROM ntf_tokens t
+          JOIN ntf_servers s USING (ntf_host, ntf_port)
         |]
-        [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
+  pure . first listToMaybe $ partition ((t ==) . deviceToken) tokens
+  where
+    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)) =
+      let ntfServer = ProtocolServer {host, port, keyHash}
+          ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
+       in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
 
-  setRcvQueueConfirmedE2E :: SQLiteStore -> RcvQueue -> C.DhSecretX25519 -> m ()
-  setRcvQueueConfirmedE2E st RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE rcv_queues
-          SET e2e_dh_secret = :e2e_dh_secret,
-              status = :status
-          WHERE host = :host AND port = :port AND rcv_id = :rcv_id
-        |]
-        [ ":status" := Confirmed,
-          ":e2e_dh_secret" := e2eDhSecret,
-          ":host" := host,
-          ":port" := port,
-          ":rcv_id" := rcvId
-        ]
+updateNtfTokenRegistration :: DB.Connection -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> IO ()
+updateNtfTokenRegistration db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknId ntfDhSecret = do
+  updatedAt <- getCurrentTime
+  DB.execute
+    db
+    [sql|
+      UPDATE ntf_tokens
+      SET tkn_id = ?, tkn_dh_secret = ?, tkn_status = ?, tkn_action = ?, updated_at = ?
+      WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+    |]
+    (tknId, ntfDhSecret, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
 
-  setSndQueueStatus :: SQLiteStore -> SndQueue -> QueueStatus -> m ()
-  setSndQueueStatus st SndQueue {sndId, server = ProtocolServer {host, port}} status =
-    -- ? throw error if queue does not exist?
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE snd_queues
-          SET status = :status
-          WHERE host = :host AND port = :port AND snd_id = :snd_id;
-        |]
-        [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
+updateNtfToken :: DB.Connection -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> IO ()
+updateNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknStatus tknAction = do
+  updatedAt <- getCurrentTime
+  DB.execute
+    db
+    [sql|
+      UPDATE ntf_tokens
+      SET tkn_status = ?, tkn_action = ?, updated_at = ?
+      WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+    |]
+    (tknStatus, tknAction, updatedAt, provider, token, host, port)
 
-  getRcvQueue :: SQLiteStore -> ConnId -> m RcvQueue
-  getRcvQueue st connId =
-    liftIOEither . withTransaction st $ \db -> do
-      rq_ <- getRcvQueueByConnId_ db connId
-      pure $ maybe (Left SEConnNotFound) Right rq_
+removeNtfToken :: DB.Connection -> NtfToken -> IO ()
+removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM ntf_tokens
+      WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+    |]
+    (provider, token, host, port)
 
-  setRcvQueueNotifierKey :: SQLiteStore -> ConnId -> NtfPublicVerifyKey -> NtfPrivateSignKey -> m ()
-  setRcvQueueNotifierKey st connId ntfPublicKey ntfPrivateKey =
-    liftIO . withTransaction st $ \db ->
-      DB.execute
-        db
-        [sql|
-          UPDATE rcv_queues
-          SET ntf_public_key = ?, ntf_private_key = ?
-          WHERE conn_id = ?
-        |]
-        (ntfPublicKey, ntfPrivateKey, connId)
+getNtfSubscription :: DB.Connection -> ConnId -> IO (Maybe NtfSubscription)
+getNtfSubscription db connId =
+  maybeFirstRow ntfSubscription $
+    DB.query
+      db
+      [sql|
+        SELECT s.host, s.port, s.key_hash, ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
+          nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action_ts
+        FROM ntf_subscriptions nsb
+        JOIN servers s ON s.host = nsb.smp_host AND s.port = nsb.smp_port
+        JOIN ntf_servers ns USING (ntf_host, ntf_port)
+        WHERE nsb.conn_id = ?
+      |]
+      (Only connId)
+  where
+    ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs) =
+      let smpServer = SMPServer smpHost smpPort smpKeyHash
+          ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
+       in NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
 
-  setRcvQueueNotifierId :: SQLiteStore -> ConnId -> NotifierId -> m ()
-  setRcvQueueNotifierId st connId nId =
-    liftIO . withTransaction st $ \db ->
-      DB.execute
-        db
-        [sql|
-          UPDATE rcv_queues
-          SET ntf_id = ?
-          WHERE conn_id = ?
-        |]
-        (nId, connId)
+createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubOrSMPAction -> IO ()
+createNtfSubscription db NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
+  DB.execute
+    db
+    [sql|
+      INSERT INTO ntf_subscriptions
+        (conn_id, smp_host, smp_port, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id,
+          ntf_sub_status, ntf_sub_action, ntf_sub_smp_action, ntf_sub_action_ts)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    |]
+    ( (connId, host, port, ntfQueueId, ntfHost, ntfPort, ntfSubId)
+        :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs)
+    )
+  where
+    (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
-  createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
-    liftIOEither . withTransaction st $ \db ->
-      createWithRandomId gVar $ \confirmationId ->
+markNtfSubscriptionForDeletion :: DB.Connection -> ConnId -> IO (Either StoreError ())
+markNtfSubscriptionForDeletion _db _rcvQueue = pure $ Left SENotImplemented
+
+updateNtfSubscription :: DB.Connection -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> IO ()
+updateNtfSubscription db connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction = do
+  r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+  forM_ r $ \updatedBySupervisor -> do
+    updatedAt <- getCurrentTime
+    if updatedBySupervisor
+      then
         DB.execute
           db
           [sql|
-            INSERT INTO conn_confirmations
-            (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, 0);
+            UPDATE ntf_subscriptions
+            SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
+            WHERE conn_id = ?
           |]
-          (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues)
-
-  acceptConfirmation :: SQLiteStore -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
-  acceptConfirmation st confirmationId ownConnInfo =
-    liftIOEither . withTransaction st $ \db -> do
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE conn_confirmations
-          SET accepted = 1,
-              own_conn_info = :own_conn_info
-          WHERE confirmation_id = :confirmation_id;
-        |]
-        [ ":own_conn_info" := ownConnInfo,
-          ":confirmation_id" := confirmationId
-        ]
-      firstRow confirmation SEConfirmationNotFound $
-        DB.query
-          db
-          [sql|
-            SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues
-            FROM conn_confirmations
-            WHERE confirmation_id = ?;
-          |]
-          (Only confirmationId)
-    where
-      confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_) =
-        AcceptedConfirmation
-          { confirmationId,
-            connId,
-            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
-            ratchetState,
-            ownConnInfo
-          }
-
-  getAcceptedConfirmation :: SQLiteStore -> ConnId -> m AcceptedConfirmation
-  getAcceptedConfirmation st connId =
-    liftIOEither . withTransaction st $ \db ->
-      firstRow confirmation SEConfirmationNotFound $
-        DB.query
-          db
-          [sql|
-            SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, own_conn_info
-            FROM conn_confirmations
-            WHERE conn_id = ? AND accepted = 1;
-          |]
-          (Only connId)
-    where
-      confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_, ownConnInfo) =
-        AcceptedConfirmation
-          { confirmationId,
-            connId,
-            senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
-            ratchetState,
-            ownConnInfo
-          }
-
-  removeConfirmations :: SQLiteStore -> ConnId -> m ()
-  removeConfirmations st connId =
-    liftIO . withTransaction st $ \db ->
-      DB.executeNamed
-        db
-        [sql|
-          DELETE FROM conn_confirmations
-          WHERE conn_id = :conn_id;
-        |]
-        [":conn_id" := connId]
-
-  setHandshakeVersion :: SQLiteStore -> ConnId -> Version -> Bool -> m ()
-  setHandshakeVersion st connId aVersion duplexHS =
-    liftIO . withTransaction st $ \db ->
-      DB.execute db "UPDATE connections SET smp_agent_version = ?, duplex_handshake = ? WHERE conn_id = ?" (aVersion, duplexHS, connId)
-
-  createInvitation :: SQLiteStore -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
-  createInvitation st gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
-    liftIOEither . withTransaction st $ \db ->
-      createWithRandomId gVar $ \invitationId ->
+          (ntfQueueId, ntfSubId, ntfSubStatus, False, updatedAt, connId)
+      else
         DB.execute
           db
           [sql|
-            INSERT INTO conn_invitations
-            (invitation_id,  contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
+            UPDATE ntf_subscriptions
+            SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
+            WHERE conn_id = ?
           |]
-          (invitationId, contactConnId, connReq, recipientConnInfo)
+          (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs, False, updatedAt, connId)
+  where
+    (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
-  getInvitation :: SQLiteStore -> InvitationId -> m Invitation
-  getInvitation st invitationId =
-    liftIOEither . withTransaction st $ \db ->
-      firstRow invitation SEInvitationNotFound $
-        DB.query
-          db
-          [sql|
-            SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
-            FROM conn_invitations
-            WHERE invitation_id = ?
-              AND accepted = 0
-          |]
-          (Only invitationId)
-    where
-      invitation (contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted) =
-        Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
-
-  acceptInvitation :: SQLiteStore -> InvitationId -> ConnInfo -> m ()
-  acceptInvitation st invitationId ownConnInfo =
-    liftIO . withTransaction st $ \db -> do
-      DB.executeNamed
-        db
-        [sql|
-          UPDATE conn_invitations
-          SET accepted = 1,
-              own_conn_info = :own_conn_info
-          WHERE invitation_id = :invitation_id
-        |]
-        [ ":own_conn_info" := ownConnInfo,
-          ":invitation_id" := invitationId
-        ]
-
-  deleteInvitation :: SQLiteStore -> ConnId -> InvitationId -> m ()
-  deleteInvitation st contactConnId invId =
-    liftIOEither . withTransaction st $ \db ->
-      runExceptT $
-        ExceptT (getConn_ db contactConnId) >>= \case
-          SomeConn SCContact _ ->
-            liftIO $ DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, invId)
-          _ -> throwError SEConnNotFound
-
-  updateRcvIds :: SQLiteStore -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
-  updateRcvIds st connId =
-    liftIO . withTransaction st $ \db -> do
-      (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash) <- retrieveLastIdsAndHashRcv_ db connId
-      let internalId = InternalId $ unId lastInternalId + 1
-          internalRcvId = InternalRcvId $ unRcvId lastInternalRcvId + 1
-      updateLastIdsRcv_ db connId internalId internalRcvId
-      pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
-
-  createRcvMsg :: SQLiteStore -> ConnId -> RcvMsgData -> m ()
-  createRcvMsg st connId rcvMsgData =
-    liftIO . withTransaction st $ \db -> do
-      insertRcvMsgBase_ db connId rcvMsgData
-      insertRcvMsgDetails_ db connId rcvMsgData
-      updateHashRcv_ db connId rcvMsgData
-
-  updateSndIds :: SQLiteStore -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
-  updateSndIds st connId =
-    liftIO . withTransaction st $ \db -> do
-      (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ db connId
-      let internalId = InternalId $ unId lastInternalId + 1
-          internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-      updateLastIdsSnd_ db connId internalId internalSndId
-      pure (internalId, internalSndId, prevSndHash)
-
-  createSndMsg :: SQLiteStore -> ConnId -> SndMsgData -> m ()
-  createSndMsg st connId sndMsgData =
-    liftIO . withTransaction st $ \db -> do
-      insertSndMsgBase_ db connId sndMsgData
-      insertSndMsgDetails_ db connId sndMsgData
-      updateHashSnd_ db connId sndMsgData
-
-  getPendingMsgData :: SQLiteStore -> ConnId -> InternalId -> m (Maybe RcvQueue, PendingMsgData)
-  getPendingMsgData st connId msgId =
-    liftIOEither . withTransaction st $ \db -> runExceptT $ do
-      rq_ <- liftIO $ getRcvQueueByConnId_ db connId
-      msgData <-
-        ExceptT . firstRow pendingMsgData SEMsgNotFound $
-          DB.query
-            db
-            [sql|
-                SELECT m.msg_type, m.msg_flags, m.msg_body, m.internal_ts
-                FROM messages m
-                JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
-                WHERE m.conn_id = ? AND m.internal_id = ?
-              |]
-            (connId, msgId)
-      pure (rq_, msgData)
-    where
-      pendingMsgData :: (AgentMessageType, MsgFlags, MsgBody, InternalTs) -> PendingMsgData
-      pendingMsgData (msgType, msgFlags, msgBody, internalTs) = PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
-
-  getPendingMsgs :: SQLiteStore -> ConnId -> m [InternalId]
-  getPendingMsgs st connId =
-    liftIO . withTransaction st $ \db ->
-      map fromOnly
-        <$> DB.query db "SELECT internal_id FROM snd_messages WHERE conn_id = ?" (Only connId)
-
-  setMsgUserAck :: SQLiteStore -> ConnId -> InternalId -> m SMP.MsgId
-  setMsgUserAck st connId agentMsgId =
-    liftIOEither . withTransaction st $ \db -> do
-      DB.execute db "UPDATE rcv_messages SET user_ack = ? WHERE conn_id = ? AND internal_id = ?" (True, connId, agentMsgId)
-      firstRow fromOnly SEMsgNotFound $
-        DB.query db "SELECT broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?" (connId, agentMsgId)
-
-  getLastMsg :: SQLiteStore -> ConnId -> SMP.MsgId -> m (Maybe RcvMsg)
-  getLastMsg st connId msgId =
-    liftIO . withTransaction st $ \db ->
-      fmap rcvMsg . listToMaybe
-        <$> DB.query
-          db
-          [sql|
-            SELECT
-              r.internal_id, m.internal_ts, r.broker_id, r.broker_ts, r.external_snd_id, r.integrity,
-              m.msg_body, r.user_ack
-            FROM rcv_messages r
-            JOIN messages m ON r.internal_id = m.internal_id
-            JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
-            WHERE r.conn_id = ? AND r.broker_id = ?
-          |]
-          (connId, msgId)
-    where
-      rcvMsg (agentMsgId, internalTs, brokerId, brokerTs, sndMsgId, integrity, msgBody, userAck) =
-        let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity}
-         in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgBody, userAck}
-
-  deleteMsg :: SQLiteStore -> ConnId -> InternalId -> m ()
-  deleteMsg st connId msgId =
-    liftIO . withTransaction st $ \db ->
-      DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
-
-  createRatchetX3dhKeys :: SQLiteStore -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
-  createRatchetX3dhKeys st connId x3dhPrivKey1 x3dhPrivKey2 =
-    liftIO . withTransaction st $ \db ->
-      DB.execute db "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2) VALUES (?, ?, ?)" (connId, x3dhPrivKey1, x3dhPrivKey2)
-
-  getRatchetX3dhKeys :: SQLiteStore -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
-  getRatchetX3dhKeys st connId =
-    liftIOEither . withTransaction st $ \db ->
-      fmap hasKeys $
-        firstRow id SEX3dhKeysNotFound $
-          DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2 FROM ratchets WHERE conn_id = ?" (Only connId)
-    where
-      hasKeys = \case
-        Right (Just k1, Just k2) -> Right (k1, k2)
-        _ -> Left SEX3dhKeysNotFound
-
-  createRatchet :: SQLiteStore -> ConnId -> RatchetX448 -> m ()
-  createRatchet st connId rc =
-    liftIO . withTransaction st $ \db -> do
-      DB.executeNamed
-        db
-        [sql|
-          INSERT INTO ratchets (conn_id, ratchet_state)
-          VALUES (:conn_id, :ratchet_state)
-          ON CONFLICT (conn_id) DO UPDATE SET
-            ratchet_state = :ratchet_state,
-            x3dh_priv_key_1 = NULL,
-            x3dh_priv_key_2 = NULL
-        |]
-        [":conn_id" := connId, ":ratchet_state" := rc]
-
-  getRatchet :: SQLiteStore -> ConnId -> m RatchetX448
-  getRatchet st connId =
-    liftIOEither . withTransaction st $ \db ->
-      ratchet
-        <$> DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
-    where
-      ratchet (Only (Just rc) : _) = Right rc
-      ratchet _ = Left SERatchetNotFound
-
-  getSkippedMsgKeys :: SQLiteStore -> ConnId -> m SkippedMsgKeys
-  getSkippedMsgKeys st connId =
-    liftIO . withTransaction st $ \db ->
-      skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
-    where
-      skipped ms = foldl' addSkippedKey M.empty ms
-      addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
-        where
-          addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
-
-  updateRatchet :: SQLiteStore -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
-  updateRatchet st connId rc skipped =
-    liftIO . withTransaction st $ \db -> do
-      DB.execute db "UPDATE ratchets SET ratchet_state = ? WHERE conn_id = ?" (rc, connId)
-      case skipped of
-        SMDNoChange -> pure ()
-        SMDRemove hk msgN ->
-          DB.execute db "DELETE FROM skipped_messages WHERE conn_id = ? AND header_key = ? AND msg_n = ?" (connId, hk, msgN)
-        SMDAdd smks ->
-          forM_ (M.assocs smks) $ \(hk, mks) ->
-            forM_ (M.assocs mks) $ \(msgN, mk) ->
-              DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
-
-  createNtfToken :: SQLiteStore -> NtfToken -> m ()
-  createNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey), ntfDhSecret, ntfTknStatus, ntfTknAction} =
-    liftIO . withTransaction st $ \db -> do
-      upsertNtfServer_ db srv
-      DB.execute
-        db
-        [sql|
-          INSERT INTO ntf_tokens
-            (provider, device_token, ntf_host, ntf_port, tkn_id, tkn_pub_key, tkn_priv_key, tkn_pub_dh_key, tkn_priv_dh_key, tkn_dh_secret, tkn_status, tkn_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        |]
-        (provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)
-
-  getDeviceNtfToken :: SQLiteStore -> DeviceToken -> m (Maybe NtfToken, [NtfToken])
-  getDeviceNtfToken st t =
-    liftIO . withTransaction st $ \db -> do
-      tokens <-
-        map ntfToken
-          <$> DB.query_
-            db
-            [sql|
-              SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
-                t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
-              FROM ntf_tokens t
-              JOIN ntf_servers s USING (ntf_host, ntf_port)
-            |]
-      pure . first listToMaybe $ partition ((t ==) . deviceToken) tokens
-    where
-      ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)) =
-        let ntfServer = ProtocolServer {host, port, keyHash}
-            ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
-         in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
-
-  updateNtfTokenRegistration :: SQLiteStore -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
-  updateNtfTokenRegistration st NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknId ntfDhSecret =
-    liftIO . withTransaction st $ \db -> do
+setNullNtfSubscriptionAction :: DB.Connection -> ConnId -> IO ()
+setNullNtfSubscriptionAction db connId = do
+  r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+  forM_ r $ \updatedBySupervisor ->
+    unless updatedBySupervisor $ do
       updatedAt <- getCurrentTime
       DB.execute
         db
         [sql|
-          UPDATE ntf_tokens
-          SET tkn_id = ?, tkn_dh_secret = ?, tkn_status = ?, tkn_action = ?, updated_at = ?
-          WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+          UPDATE ntf_subscriptions
+          SET ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
+          WHERE conn_id = ?
         |]
-        (tknId, ntfDhSecret, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
+        (Nothing :: Maybe NtfSubAction, Nothing :: Maybe NtfSubSMPAction, Nothing :: Maybe UTCTime, False, updatedAt, connId)
 
-  updateNtfToken :: SQLiteStore -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
-  updateNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknStatus tknAction =
-    liftIO . withTransaction st $ \db -> do
-      updatedAt <- getCurrentTime
-      DB.execute
+deleteNtfSubscription :: DB.Connection -> ConnId -> IO (Either StoreError ())
+deleteNtfSubscription _db _connId = pure $ Left SENotImplemented
+
+getNextNtfSubAction :: DB.Connection -> NtfServer -> IO (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
+getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
+  maybeFirstRow ntfSubscription getNtfSubAction_ $>>= \(ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
+    DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
+    (ntfSub,ntfSubAction,) <$$> getRcvQueueByConnId_ db connId
+  where
+    getNtfSubAction_ =
+      DB.query
         db
         [sql|
-          UPDATE ntf_tokens
-          SET tkn_status = ?, tkn_action = ?, updated_at = ?
-          WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+          SELECT ns.conn_id, s.host, s.port, s.key_hash,
+            ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
+          FROM ntf_subscriptions ns
+          JOIN servers s ON s.host = ns.smp_host AND s.port = ns.smp_port
+          WHERE ns.ntf_host = ? AND ns.ntf_port = ? AND ns.ntf_sub_action IS NOT NULL
+          ORDER BY ns.ntf_sub_action_ts ASC
+          LIMIT 1
         |]
-        (tknStatus, tknAction, updatedAt, provider, token, host, port)
+        (ntfHost, ntfPort)
+    ntfSubscription (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
+      let smpServer = SMPServer smpHost smpPort smpKeyHash
+       in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
 
-  removeNtfToken :: SQLiteStore -> NtfToken -> m ()
-  removeNtfToken st NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} =
-    liftIO . withTransaction st $ \db ->
-      DB.execute
+getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
+getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
+  maybeFirstRow ntfSubscription getNtfSubAction_ $>>= \(ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
+    DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
+    (ntfSub,ntfSubAction,) <$$> getRcvQueueByConnId_ db connId
+  where
+    getNtfSubAction_ =
+      DB.query
         db
         [sql|
-          DELETE FROM ntf_tokens
-          WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+          SELECT ns.conn_id, s.ntf_host, s.ntf_port, s.ntf_key_hash,
+            ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
+          FROM ntf_subscriptions ns
+          JOIN ntf_servers s USING (ntf_host, ntf_port)
+          WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL
+          ORDER BY ns.ntf_sub_action_ts ASC
+          LIMIT 1
         |]
-        (provider, token, host, port)
+        (smpHost, smpPort)
+    ntfSubscription (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
+      let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
+       in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
 
-  getNtfSubscription :: SQLiteStore -> ConnId -> m (Maybe NtfSubscription)
-  getNtfSubscription st connId =
-    liftIO . withTransaction st $ \db ->
-      maybeFirstRow ntfSubscription $
-        DB.query
-          db
-          [sql|
-            SELECT s.host, s.port, s.key_hash, ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
-              nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action_ts
-            FROM ntf_subscriptions nsb
-            JOIN servers s ON s.host = nsb.smp_host AND s.port = nsb.smp_port
-            JOIN ntf_servers ns USING (ntf_host, ntf_port)
-            WHERE nsb.conn_id = ?
-          |]
-          (Only connId)
-    where
-      ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs) =
-        let smpServer = SMPServer smpHost smpPort smpKeyHash
-            ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
-         in NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
+getActiveNtfToken :: DB.Connection -> IO (Maybe NtfToken)
+getActiveNtfToken db =
+  maybeFirstRow ntfToken $
+    DB.query
+      db
+      [sql|
+        SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+          t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
+        FROM ntf_tokens t
+        JOIN ntf_servers s USING (ntf_host, ntf_port)
+        WHERE t.tkn_status = ?
+      |]
+      (Only NTActive)
+  where
+    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)) =
+      let ntfServer = ProtocolServer {host, port, keyHash}
+          ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
+       in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
 
-  createNtfSubscription :: SQLiteStore -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  createNtfSubscription st NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
-    liftIO . withTransaction st $ \db ->
-      DB.execute
-        db
-        [sql|
-          INSERT INTO ntf_subscriptions
-            (conn_id, smp_host, smp_port, smp_ntf_id, ntf_host, ntf_port, ntf_sub_id,
-             ntf_sub_status, ntf_sub_action, ntf_sub_smp_action, ntf_sub_action_ts)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        |]
-        ( (connId, host, port, ntfQueueId, ntfHost, ntfPort, ntfSubId)
-            :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs)
-        )
-    where
-      (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
-
-  markNtfSubscriptionForDeletion :: SQLiteStore -> ConnId -> m ()
-  markNtfSubscriptionForDeletion _st _rcvQueue = throwError SENotImplemented
-
-  updateNtfSubscription :: SQLiteStore -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> m ()
-  updateNtfSubscription st connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
-    liftIO . withTransaction st $ \db -> do
-      r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
-      forM_ r $ \updatedBySupervisor -> do
-        updatedAt <- getCurrentTime
-        if updatedBySupervisor
-          then
-            DB.execute
-              db
-              [sql|
-                UPDATE ntf_subscriptions
-                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
-                WHERE conn_id = ?
-              |]
-              (ntfQueueId, ntfSubId, ntfSubStatus, False, updatedAt, connId)
-          else
-            DB.execute
-              db
-              [sql|
-                UPDATE ntf_subscriptions
-                SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
-                WHERE conn_id = ?
-              |]
-              (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs, False, updatedAt, connId)
-    where
-      (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
-
-  setNullNtfSubscriptionAction :: SQLiteStore -> ConnId -> m ()
-  setNullNtfSubscriptionAction st connId =
-    liftIO . withTransaction st $ \db -> do
-      r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
-      forM_ r $ \updatedBySupervisor ->
-        unless updatedBySupervisor $ do
-          updatedAt <- getCurrentTime
-          DB.execute
-            db
-            [sql|
-              UPDATE ntf_subscriptions
-              SET ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
-              WHERE conn_id = ?
-            |]
-            (Nothing :: Maybe NtfSubAction, Nothing :: Maybe NtfSubSMPAction, Nothing :: Maybe UTCTime, False, updatedAt, connId)
-
-  deleteNtfSubscription :: SQLiteStore -> ConnId -> m ()
-  deleteNtfSubscription _st _connId = throwError SENotImplemented
-
-  getNextNtfSubAction :: SQLiteStore -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
-  getNextNtfSubAction st ntfServer@(ProtocolServer ntfHost ntfPort _) =
-    liftIO . withTransaction st $ \db -> do
-      r <-
-        maybeFirstRow ntfSubscription $
-          DB.query
-            db
-            [sql|
-              SELECT ns.conn_id, s.host, s.port, s.key_hash,
-                ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
-              FROM ntf_subscriptions ns
-              JOIN servers s ON s.host = ns.smp_host AND s.port = ns.smp_port
-              WHERE ns.ntf_host = ? AND ns.ntf_port = ? AND ns.ntf_sub_action IS NOT NULL
-              ORDER BY ns.ntf_sub_action_ts ASC
-              LIMIT 1
-            |]
-            (ntfHost, ntfPort)
-      case r of
-        Just (ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
-          DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
-          rq_ <- getRcvQueueByConnId_ db connId
-          pure $ (\rq -> Just (ntfSub, ntfSubAction, rq)) =<< rq_
-        Nothing -> pure Nothing
-    where
-      ntfSubscription (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
-        let smpServer = SMPServer smpHost smpPort smpKeyHash
-         in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
-
-  getNextNtfSubSMPAction :: SQLiteStore -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
-  getNextNtfSubSMPAction st smpServer@(SMPServer smpHost smpPort _) =
-    liftIO . withTransaction st $ \db -> do
-      r <-
-        maybeFirstRow ntfSubscription $
-          DB.query
-            db
-            [sql|
-              SELECT ns.conn_id, s.ntf_host, s.ntf_port, s.ntf_key_hash,
-                ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
-              FROM ntf_subscriptions ns
-              JOIN ntf_servers s USING (ntf_host, ntf_port)
-              WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL
-              ORDER BY ns.ntf_sub_action_ts ASC
-              LIMIT 1
-            |]
-            (smpHost, smpPort)
-      case r of
-        Just (ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
-          DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
-          rq_ <- getRcvQueueByConnId_ db connId
-          pure $ (\rq -> Just (ntfSub, ntfSubAction, rq)) =<< rq_
-        Nothing -> pure Nothing
-    where
-      ntfSubscription (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
-        let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
-         in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
-
-  getActiveNtfToken :: SQLiteStore -> m (Maybe NtfToken)
-  getActiveNtfToken st =
-    liftIO . withTransaction st $ \db ->
-      maybeFirstRow ntfToken $
-        DB.query
-          db
-          [sql|
-            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
-              t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
-            FROM ntf_tokens t
-            JOIN ntf_servers s USING (ntf_host, ntf_port)
-            WHERE t.tkn_status = ?
-          |]
-          (Only NTActive)
-    where
-      ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)) =
-        let ntfServer = ProtocolServer {host, port, keyHash}
-            ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
-         in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
-
-  getNtfRcvQueue :: SQLiteStore -> SMPQueueNtf -> m (ConnId, RcvDhSecret)
-  getNtfRcvQueue st SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
-    liftIOEither . withTransaction st $ \db -> do
-      firstRow id SEConnNotFound $
-        DB.query
-          db
-          [sql|
-            SELECT conn_id, rcv_dh_secret
-            FROM rcv_queues
-            WHERE host = ? AND port = ? AND ntf_id = ?
-          |]
-          (host, port, notifierId)
+getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvDhSecret))
+getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
+  firstRow id SEConnNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT conn_id, rcv_dh_secret
+        FROM rcv_queues
+        WHERE host = ? AND port = ? AND ntf_id = ?
+      |]
+      (host, port, notifierId)
 
 -- * Auxiliary helpers
 
@@ -929,9 +924,8 @@ firstRow f e a = second f . listToEither e <$> a
 maybeFirstRow :: Functor f => (a -> b) -> f [a] -> f (Maybe b)
 maybeFirstRow f q = fmap f . listToMaybe <$> q
 
--- TODO move from simplex-chat
--- firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
--- firstRow' f e a = (f <=< listToEither e) <$> a
+firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
+firstRow' f e a = (f <=< listToEither e) <$> a
 
 {- ORMOLU_DISABLE -}
 -- SQLite.Simple only has these up to 10 fields, which is insufficient for some of our queries
@@ -1015,8 +1009,8 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
 
 -- * getConn helpers
 
-getConn_ :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getConn_ dbConn connId =
+getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
+getConn dbConn connId =
   getConnData_ dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
     Just (connData, cMode) -> do

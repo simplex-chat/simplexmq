@@ -50,6 +50,7 @@ module Simplex.Messaging.Agent.Client
     endAgentOperation,
     notifyAgentPhaseChanged,
     withStore,
+    withStore',
   )
 where
 
@@ -72,11 +73,12 @@ import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import Database.SQLite.Simple (SQLError)
+import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (AgentStoreMonad, SQLiteStore (..))
+import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
@@ -644,20 +646,19 @@ notifyAgentPhaseChanged AgentClient {subQ, agentEnv = Env {agentPhase, agentOper
       writeTBQueue subQ ("", "", PHASE p)
       writeTVar agentPhase (p, True)
 
-withStore :: AgentMonad m => AgentClient -> (forall m'. AgentStoreMonad m' => SQLiteStore -> m' a) -> m a
+withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
+withStore' c action = withStore c $ fmap Right . action
+
+withStore :: AgentMonad m => AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
 withStore c action = do
   st <- asks store
   atomically $ beginAgentOperation c AODatabase
-  r <- runExceptT (action st `E.catch` handleInternal)
+  r <- liftIO $ withTransaction st action `E.catch` handleInternal
   atomically $ endAgentOperation c AODatabase
-  case r of
-    Right res -> pure res
-    Left e -> throwError $ storeError e
+  liftEither $ first storeError r
   where
-    -- TODO when parsing exception happens in store, the agent hangs;
-    -- changing SQLError to SomeException does not help
-    handleInternal :: (MonadError StoreError m') => SQLError -> m' a
-    handleInternal e = throwError . SEInternal $ bshow e
+    handleInternal :: SQLError -> IO (Either StoreError a)
+    handleInternal = pure . Left . SEInternal . bshow
     storeError :: StoreError -> AgentErrorType
     storeError = \case
       SEConnNotFound -> CONN NOT_FOUND
