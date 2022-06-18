@@ -86,6 +86,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     withConnection,
     withTransaction,
     firstRow,
+    firstRow',
+    maybeFirstRow,
   )
 where
 
