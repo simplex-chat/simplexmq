@@ -114,7 +114,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           NtfPushServer {pushQ} <- asks pushServer
           atomically $
             findNtfSubscriptionToken st smpQueue
-              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage $ PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
+              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
         _ -> pure ()
       pure ()
 
