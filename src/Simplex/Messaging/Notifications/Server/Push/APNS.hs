@@ -23,7 +23,6 @@ import Data.ASN1.Types
 import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
-import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
@@ -47,7 +46,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
-import Simplex.Messaging.Protocol (EncNMsgMeta, NotifierId, SMPServer)
+import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2.Client
 import System.Environment (getEnv)
 import UnliftIO.STM
@@ -101,23 +100,18 @@ data PushNotification
   | PNCheckMessages
 
 data PNMessageData = PNMessageData
-  { smpServer :: SMPServer,
-    notifierId :: NotifierId,
+  { smpQueue :: SMPQueueNtf,
     ntfTs :: SystemTime,
     nmsgNonce :: C.CbNonce,
     encNMsgMeta :: EncNMsgMeta
   }
 
 instance StrEncoding PNMessageData where
-  strEncode PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encNMsgMeta} =
-    strEncode smpServer <> "/" <> strEncode notifierId <> " " <> strEncode ntfTs <> " " <> strEncode nmsgNonce <> " " <> strEncode encNMsgMeta
+  strEncode PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} =
+    strEncode (smpQueue, ntfTs, nmsgNonce, encNMsgMeta)
   strP = do
-    smpServer <- strP <* A.char '/'
-    notifierId <- strP <* A.space
-    ntfTs <- strP <* A.space
-    nmsgNonce <- strP <* A.space
-    encNMsgMeta <- strP
-    pure PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encNMsgMeta}
+    (smpQueue, ntfTs, nmsgNonce, encNMsgMeta) <- strP
+    pure PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
 
 data APNSNotification = APNSNotification {aps :: APNSNotificationBody, notificationData :: Maybe J.Value}
   deriving (Show, Generic)

@@ -397,8 +397,8 @@ getNotificationMessage' c encMessageInfo nonce = do
   withStore c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
       ntfData <- agentCbDecrypt dhSecret nonce encMessageInfo
-      PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
-      (connId, rcvDhSecret) <- withStore c $ \st -> getNtfRcvQueue st smpServer notifierId
+      PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
+      (connId, rcvDhSecret) <- withStore c $ \st -> getNtfRcvQueue st smpQueue
       nMsgMeta <- agentCbDecrypt rcvDhSecret nmsgNonce encNMsgMeta
       NMsgMeta {msgId, msgTs} <- liftEither (parse smpP (INTERNAL "error parsing NMsgMeta") nMsgMeta)
       liftIO . print $ "getNotificationMessage', ntfTs = " <> show ntfTs <> ", msgId = " <> show msgId <> ", msgTs = " <> show msgTs

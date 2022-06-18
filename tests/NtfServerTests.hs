@@ -121,7 +121,7 @@ testNotificationSubscription (ATransport t) =
               Right checkMessage = ntfData' .-> "checkMessage"
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
               Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' checkMessage
-              Right APNS.PNMessageData {smpServer, notifierId, nmsgNonce, encNMsgMeta} =
+              Right APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer, notifierId}, nmsgNonce, encNMsgMeta} =
                 parse strP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
               Right nMsgMeta = C.cbDecrypt rcvDhSecret nmsgNonce encNMsgMeta
               Right NMsgMeta {msgId, msgTs} = parse smpP (AP.INTERNAL "error parsing NMsgMeta") nMsgMeta

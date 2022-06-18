@@ -61,7 +61,7 @@ import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), Skipp
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -852,8 +852,8 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
             ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
          in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
 
-  getNtfRcvQueue :: SQLiteStore -> SMPServer -> NotifierId -> m (ConnId, RcvDhSecret)
-  getNtfRcvQueue st (SMPServer host port _) notifierId =
+  getNtfRcvQueue :: SQLiteStore -> SMPQueueNtf -> m (ConnId, RcvDhSecret)
+  getNtfRcvQueue st SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
     liftIOEither . withTransaction st $ \db -> do
       firstRow id SEConnNotFound $
         DB.query
