@@ -124,6 +124,7 @@ LeaderReceivePleasePropose ==
     \E message \in messages :
         /\ message.type = PleasePropose
         /\ message.recipient = Leader
+        /\ message.sender \in group_perceptions[Leader]
         /\ message.invite_id \notin complete_proposals
         /\ proposal = Nothing
         \* NOTE: As a slight optimization, the Leader can synchronously accept or reject.
