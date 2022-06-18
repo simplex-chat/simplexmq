@@ -325,7 +325,11 @@ instance Encoding SMPQueueNtf where
   smpEncode SMPQueueNtf {smpServer, notifierId} = smpEncode (smpServer, notifierId)
   smpP = do
     (smpServer, notifierId) <- smpP
-    pure $ SMPQueueNtf smpServer notifierId
+    pure $ SMPQueueNtf {smpServer, notifierId}
+
+instance StrEncoding SMPQueueNtf where
+  strEncode SMPQueueNtf {smpServer, notifierId} = strEncode smpServer <> "/" <> strEncode notifierId
+  strP = SMPQueueNtf <$> strP <* A.char '/' <*> strP
 
 data PushProvider = PPApns
   deriving (Eq, Ord, Show)

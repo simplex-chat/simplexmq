@@ -42,6 +42,7 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.List (intercalate)
 import qualified Data.Map.Strict as M
@@ -56,6 +57,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding (Encoding (smpEncode))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM
@@ -520,11 +522,12 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                     ms <- asks msgStore
                     ServerConfig {messageExpiration, msgQueueQuota} <- asks config
                     old <- liftIO $ mapM expireBeforeEpoch messageExpiration
+                    ntfNonceDrg <- asks idsDrg
                     resp@(_, _, sent) <- atomically $ do
                       q <- getMsgQueue ms (recipientId qr) msgQueueQuota
                       mapM_ (deleteExpiredMsgs q) old
                       ifM (isFull q) (pure $ err QUOTA) $ do
-                        when (notification flags) trySendNotification
+                        when (notification flags) $ trySendNotification msg ntfNonceDrg
                         writeMsg q msg
                         pure ok
                     when (sent == OK) $ do
@@ -540,15 +543,23 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                   let c = C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId) msgBody (maxMessageLength + 2)
                   pure $ Message msgId ts flags <$> c
 
-                trySendNotification :: STM ()
-                trySendNotification =
+                trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
+                trySendNotification msg ntfNonceDrg =
                   forM_ (notifier qr) $ \(nId, _) ->
-                    mapM_ (writeNtf nId) =<< TM.lookup nId notifiers
+                    mapM_ (writeNtf nId msg ntfNonceDrg) =<< TM.lookup nId notifiers
 
-                writeNtf :: NotifierId -> Client -> STM ()
-                writeNtf nId Client {sndQ = q} =
-                  unlessM (isFullTBQueue sndQ) $
-                    writeTBQueue q (CorrId "", nId, NMSG)
+                writeNtf :: NotifierId -> Message -> TVar ChaChaDRG -> Client -> STM ()
+                writeNtf nId msg ntfNonceDrg Client {sndQ = q} =
+                  unlessM (isFullTBQueue sndQ) $ do
+                    (nmsgNonce, encNMsgMeta) <- mkMessageNotification msg ntfNonceDrg
+                    writeTBQueue q (CorrId "", nId, NMSG nmsgNonce encNMsgMeta)
+
+                mkMessageNotification :: Message -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
+                mkMessageNotification Message {msgId, ts} ntfNonceDrg = do
+                  cbNonce <- C.pseudoRandomCbNonce ntfNonceDrg
+                  let msgMeta = NMsgMeta {msgId, msgTs = ts}
+                      encNMsgMeta = C.cbEncrypt (rcvDhSecret qr) cbNonce (smpEncode msgMeta) 128
+                  pure . (cbNonce,) $ fromRight "" encNMsgMeta
 
         deliverMessage :: RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
         deliverMessage rId sub q msg_ =
@@ -646,4 +657,4 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
             full <- atomically $ do
               q <- getMsgQueue ms rId quota
               ifM (isFull q) (pure True) (writeMsg q msg $> False)
-            when full . B.putStrLn $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId msg)
+            when full . B.putStrLn $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))

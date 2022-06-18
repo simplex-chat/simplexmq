@@ -81,6 +81,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteNtfSubscription,
     getNextNtfSubAction,
     getNextNtfSubSMPAction,
+    getActiveNtfToken,
+    getNtfRcvQueue,
 
     -- * utilities
     withConnection,
@@ -122,9 +124,9 @@ import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), Skipp
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..))
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
@@ -826,6 +828,37 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
     ntfSubscription (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
       let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
        in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
+
+getActiveNtfToken :: DB.Connection -> IO (Maybe NtfToken)
+getActiveNtfToken db =
+  maybeFirstRow ntfToken $
+    DB.query
+      db
+      [sql|
+        SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+          t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
+        FROM ntf_tokens t
+        JOIN ntf_servers s USING (ntf_host, ntf_port)
+        WHERE t.tkn_status = ?
+      |]
+      (Only NTActive)
+  where
+    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)) =
+      let ntfServer = ProtocolServer {host, port, keyHash}
+          ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
+       in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
+
+getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvDhSecret))
+getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
+  firstRow id SEConnNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT conn_id, rcv_dh_secret
+        FROM rcv_queues
+        WHERE host = ? AND port = ? AND ntf_id = ?
+      |]
+      (host, port, notifierId)
 
 -- * Auxiliary helpers
 
