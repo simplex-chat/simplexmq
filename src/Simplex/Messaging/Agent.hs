@@ -97,7 +97,7 @@ import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, MsgMetaNtf (..))
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NMsgMeta (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, whenM, ($>>=))
@@ -397,10 +397,10 @@ getNotificationMessage' c encMessageInfo nonce = do
   withStore c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
       ntfData <- agentCbDecrypt dhSecret nonce encMessageInfo
-      PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encryptedMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
+      PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
       (connId, rcvDhSecret) <- withStore c $ \st -> getNtfConnIdAndRcvDhSecret st smpServer notifierId
-      msgMetaNtf <- agentCbDecrypt rcvDhSecret nmsgNonce encryptedMsgMeta
-      MsgMetaNtf {msgId, msgTs} <- liftEither (parse smpP (INTERNAL "error parsing MsgMetaNtf") msgMetaNtf)
+      nMsgMeta <- agentCbDecrypt rcvDhSecret nmsgNonce encNMsgMeta
+      NMsgMeta {msgId, msgTs} <- liftEither (parse smpP (INTERNAL "error parsing NMsgMeta") nMsgMeta)
       liftIO . print $ "getNotificationMessage', ntfTs = " <> show ntfTs <> ", msgId = " <> show msgId <> ", msgTs = " <> show msgTs
       getConnectionMessage' c connId
     _ -> throwError $ CMD PROHIBITED

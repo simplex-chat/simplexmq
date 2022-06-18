@@ -47,7 +47,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
-import Simplex.Messaging.Protocol (EncryptedMsgMetaNtf, NotifierId, SMPServer)
+import Simplex.Messaging.Protocol (EncNMsgMeta, NotifierId, SMPServer)
 import Simplex.Messaging.Transport.HTTP2.Client
 import System.Environment (getEnv)
 import UnliftIO.STM
@@ -105,19 +105,19 @@ data PNMessageData = PNMessageData
     notifierId :: NotifierId,
     ntfTs :: SystemTime,
     nmsgNonce :: C.CbNonce,
-    encryptedMsgMeta :: EncryptedMsgMetaNtf
+    encNMsgMeta :: EncNMsgMeta
   }
 
 instance StrEncoding PNMessageData where
-  strEncode PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encryptedMsgMeta} =
-    strEncode smpServer <> "/" <> strEncode notifierId <> " " <> strEncode ntfTs <> " " <> strEncode nmsgNonce <> " " <> strEncode encryptedMsgMeta
+  strEncode PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encNMsgMeta} =
+    strEncode smpServer <> "/" <> strEncode notifierId <> " " <> strEncode ntfTs <> " " <> strEncode nmsgNonce <> " " <> strEncode encNMsgMeta
   strP = do
     smpServer <- strP <* A.char '/'
     notifierId <- strP <* A.space
     ntfTs <- strP <* A.space
     nmsgNonce <- strP <* A.space
-    encryptedMsgMeta <- strP
-    pure PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encryptedMsgMeta}
+    encNMsgMeta <- strP
+    pure PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encNMsgMeta}
 
 data APNSNotification = APNSNotification {aps :: APNSNotificationBody, notificationData :: Maybe J.Value}
   deriving (Show, Generic)

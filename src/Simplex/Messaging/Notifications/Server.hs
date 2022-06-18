@@ -107,13 +107,13 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     receiveSMP = forever $ do
       (srv, _sessId, ntfId, msg) <- atomically $ readTBQueue msgQ
       case msg of
-        SMP.NMSG nmsgNonce encryptedMsgMeta -> do
+        SMP.NMSG nmsgNonce encNMsgMeta -> do
           ntfTs <- liftIO getSystemTime
           NtfPushServer {pushQ} <- asks pushServer
           st <- asks store
           atomically $
             findNtfSubscriptionToken st (SMPQueueNtf srv ntfId)
-              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage $ PNMessageData {smpServer = srv, notifierId = ntfId, ntfTs, nmsgNonce, encryptedMsgMeta}))
+              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage $ PNMessageData {smpServer = srv, notifierId = ntfId, ntfTs, nmsgNonce, encNMsgMeta}))
         _ -> pure ()
       pure ()
 

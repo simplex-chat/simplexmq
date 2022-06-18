@@ -550,16 +550,16 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 writeNtf :: NotifierId -> Message -> TVar ChaChaDRG -> Client -> STM ()
                 writeNtf nId msg ntfNonceDrg Client {sndQ = q} =
                   unlessM (isFullTBQueue sndQ) $ do
-                    (nmsgNonce, encryptedMsgMeta) <- mkMessageNotification msg ntfNonceDrg
-                    writeTBQueue q (CorrId "", nId, NMSG nmsgNonce encryptedMsgMeta)
+                    (nmsgNonce, encNMsgMeta) <- mkMessageNotification msg ntfNonceDrg
+                    writeTBQueue q (CorrId "", nId, NMSG nmsgNonce encNMsgMeta)
 
-                mkMessageNotification :: Message -> TVar ChaChaDRG -> STM (C.CbNonce, EncryptedMsgMetaNtf)
+                mkMessageNotification :: Message -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
                 mkMessageNotification Message {msgId, ts} ntfNonceDrg = do
                   cbNonce <- C.pseudoRandomCbNonce ntfNonceDrg
-                  let msgMeta = MsgMetaNtf {msgId, msgTs = ts}
+                  let msgMeta = NMsgMeta {msgId, msgTs = ts}
                       c = C.cbEncrypt (rcvDhSecret qr) cbNonce (smpEncode msgMeta) 128
                   pure $ case c of
-                    Right encryptedMsgMeta -> (cbNonce, encryptedMsgMeta)
+                    Right encNMsgMeta -> (cbNonce, encNMsgMeta)
                     Left _ -> (cbNonce, "")
 
         deliverMessage :: RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
