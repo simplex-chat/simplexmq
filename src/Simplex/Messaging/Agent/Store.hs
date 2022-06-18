@@ -21,7 +21,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff, SkippedMsgKeys)
 import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfTknStatus, NtfTokenId)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfTknStatus, NtfTokenId, SMPQueueNtf)
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
@@ -105,6 +105,10 @@ class Monad m => MonadAgentStore s m where
   deleteNtfSubscription :: s -> ConnId -> m ()
   getNextNtfSubAction :: s -> NtfServer -> m (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
   getNextNtfSubSMPAction :: s -> SMPServer -> m (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
+
+  -- Notification decryption
+  getActiveNtfToken :: s -> m (Maybe NtfToken)
+  getNtfRcvQueue :: s -> SMPQueueNtf -> m (ConnId, RcvDhSecret)
 
 -- * Queue types
 

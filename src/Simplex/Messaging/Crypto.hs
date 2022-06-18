@@ -871,7 +871,7 @@ cbDecrypt secret (CbNonce nonce) packet
     tag = Poly1305.auth rs c
 
 newtype CbNonce = CbNonce {unCbNonce :: ByteString}
-  deriving (Show)
+  deriving (Eq, Show)
 
 instance StrEncoding CbNonce where
   strEncode (CbNonce s) = strEncode s

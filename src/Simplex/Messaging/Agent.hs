@@ -92,10 +92,12 @@ import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..))
+import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NMsgMeta (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (bshow, liftError, tryError, unlessM, whenM, ($>>=))
@@ -156,8 +158,8 @@ getConnectionMessage :: AgentErrorMonad m => AgentClient -> ConnId -> m (Maybe (
 getConnectionMessage c = withAgentEnv c . getConnectionMessage' c
 
 -- | Get connection message for received notification
-getNotificationMessage :: AgentErrorMonad m => AgentClient -> ByteString -> m (Maybe (SMP.MsgId, MsgFlags))
-getNotificationMessage c = withAgentEnv c . getNotificationMessage' c
+getNotificationMessage :: AgentErrorMonad m => AgentClient -> ByteString -> C.CbNonce -> m (Maybe (SMP.MsgId, MsgFlags))
+getNotificationMessage c = withAgentEnv c .: getNotificationMessage' c
 
 resubscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
@@ -387,11 +389,23 @@ getConnectionMessage' c connId = do
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> getQueueMessage c rq connId
     SomeConn _ (RcvConnection _ rq) -> getQueueMessage c rq connId
-    SomeConn _ (ContactConnection {}) -> throwError $ CMD PROHIBITED
-    SomeConn _ (SndConnection {}) -> throwError $ CONN SIMPLEX
+    SomeConn _ ContactConnection {} -> throwError $ CMD PROHIBITED
+    SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
 
-getNotificationMessage' :: AgentErrorMonad m => AgentClient -> ByteString -> m (Maybe (SMP.MsgId, MsgFlags))
-getNotificationMessage' _c _encMessageInfo = throwError $ CMD PROHIBITED
+getNotificationMessage' :: forall m. AgentMonad m => AgentClient -> ByteString -> C.CbNonce -> m (Maybe (SMP.MsgId, MsgFlags))
+getNotificationMessage' c encMessageInfo nonce = do
+  withStore c getActiveNtfToken >>= \case
+    Just NtfToken {ntfDhSecret = Just dhSecret} -> do
+      ntfData <- agentCbDecrypt dhSecret nonce encMessageInfo
+      PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
+      (connId, rcvDhSecret) <- withStore c $ \st -> getNtfRcvQueue st smpQueue
+      nMsgMeta <- agentCbDecrypt rcvDhSecret nmsgNonce encNMsgMeta `catchError` const (pure "")
+      let nMsgMetaParsed = parse smpP (INTERNAL "error parsing NMsgMeta") nMsgMeta
+      case nMsgMetaParsed of
+        Right NMsgMeta {msgId, msgTs} -> liftIO . print $ "getNotificationMessage', ntfTs = " <> show ntfTs <> ", msgId = " <> show msgId <> ", msgTs = " <> show msgTs
+        Left _ -> liftIO . print $ "getNotificationMessage', ntfTs = " <> show ntfTs <> ", failed to parse NMsgMeta"
+      getConnectionMessage' c connId
+    _ -> throwError $ CMD PROHIBITED
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId

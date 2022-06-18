@@ -417,7 +417,7 @@ testWithStoreLog at@(ATransport t) =
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
       Resp "" _ (MSG mId1 _ _ msg1) <- tGet h
       (C.cbDecrypt dhShared (C.cbNonce mId1) msg1, Right "hello") #== "delivered from queue 1"
-      Resp "" _ NMSG <- tGet h1
+      Resp "" _ (NMSG _ _) <- tGet h1
 
       (sId2, rId2, rKey2, dhShared2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
@@ -447,7 +447,7 @@ testWithStoreLog at@(ATransport t) =
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
       Resp "cdab" _ (MSG mId3 _ _ msg3) <- signSendRecv h rKey1 ("cdab", rId1, SUB)
       (C.cbDecrypt dh1 (C.cbNonce mId3) msg3, Right "hello") #== "delivered from restored queue"
-      Resp "" _ NMSG <- tGet h1
+      Resp "" _ (NMSG _ _) <- tGet h1
       -- this queue is removed - not restored
       sId2 <- readTVarIO senderId2
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too")
@@ -616,13 +616,13 @@ testMessageNotifications (ATransport t) =
       Resp "" _ (MSG mId1 _ _ msg1) <- tGet rh
       (dec mId1 msg1, Right "hello") #== "delivered from queue"
       Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, ACK mId1)
-      Resp "" _ NMSG <- tGet nh1
+      Resp "" _ (NMSG _ _) <- tGet nh1
       Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, NSUB)
       Resp "" _ END <- tGet nh1
       Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello again")
       Resp "" _ (MSG mId2 _ _ msg2) <- tGet rh
       (dec mId2 msg2, Right "hello again") #== "delivered from queue again"
-      Resp "" _ NMSG <- tGet nh2
+      Resp "" _ (NMSG _ _) <- tGet nh2
       1000 `timeout` tGet @BrokerMsg nh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
