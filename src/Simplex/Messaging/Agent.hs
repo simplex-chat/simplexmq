@@ -394,7 +394,7 @@ getConnectionMessage' c connId = do
 
 getNotificationMessage' :: forall m. AgentMonad m => AgentClient -> ByteString -> C.CbNonce -> m (Maybe (SMP.MsgId, MsgFlags))
 getNotificationMessage' c encMessageInfo nonce = do
-  getNtfToken >>= \case
+  withStore c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
       ntfData <- agentCbDecrypt dhSecret nonce encMessageInfo
       PNMessageData {smpServer, notifierId, ntfTs, nmsgNonce, encryptedMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)

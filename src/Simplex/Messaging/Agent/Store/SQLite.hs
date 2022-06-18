@@ -832,6 +832,26 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
          in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
 
+  getActiveNtfToken :: SQLiteStore -> m (Maybe NtfToken)
+  getActiveNtfToken st =
+    liftIO . withTransaction st $ \db ->
+      maybeFirstRow ntfToken $
+        DB.query
+          db
+          [sql|
+            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+              t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
+            FROM ntf_tokens t
+            JOIN ntf_servers s USING (ntf_host, ntf_port)
+            WHERE t.tkn_status = ?
+          |]
+          (Only NTActive)
+    where
+      ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)) =
+        let ntfServer = ProtocolServer {host, port, keyHash}
+            ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
+         in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
+
   getNtfConnIdAndRcvDhSecret :: SQLiteStore -> SMPServer -> NotifierId -> m (ConnId, RcvDhSecret)
   getNtfConnIdAndRcvDhSecret st (SMPServer host port _) notifierId =
     liftIOEither . withTransaction st $ \db -> do
