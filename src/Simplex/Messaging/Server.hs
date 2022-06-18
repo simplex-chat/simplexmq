@@ -557,10 +557,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 mkMessageNotification Message {msgId, ts} ntfNonceDrg = do
                   cbNonce <- C.pseudoRandomCbNonce ntfNonceDrg
                   let msgMeta = NMsgMeta {msgId, msgTs = ts}
-                      c = C.cbEncrypt (rcvDhSecret qr) cbNonce (smpEncode msgMeta) 128
-                  pure $ case c of
-                    Right encNMsgMeta -> (cbNonce, encNMsgMeta)
-                    Left _ -> (cbNonce, "")
+                      encNMsgMeta = C.cbEncrypt (rcvDhSecret qr) cbNonce (smpEncode msgMeta) 128
+                  pure . (cbNonce,) $ fromRight "" encNMsgMeta
 
         deliverMessage :: RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)
         deliverMessage rId sub q msg_ =
