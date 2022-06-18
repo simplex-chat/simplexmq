@@ -133,7 +133,9 @@ data RcvQueue = RcvQueue
     ntfPublicKey :: Maybe NtfPublicVerifyKey,
     ntfPrivateKey :: Maybe NtfPrivateSignKey,
     -- | queue ID to be used by the notification server for NSUB command
-    notifierId :: Maybe NotifierId
+    notifierId :: Maybe NotifierId,
+    -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
+    rcvNtfDhSecret :: Maybe RcvDhSecret
   }
   deriving (Eq, Show)
 

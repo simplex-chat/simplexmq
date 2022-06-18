@@ -39,6 +39,7 @@ CREATE TABLE rcv_queues(
   ntf_public_key BLOB,
   ntf_private_key BLOB,
   ntf_id BLOB,
+  rcv_ntf_dh_secret BLOB,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,

@@ -169,7 +169,8 @@ rcvQueue1 =
       status = New,
       ntfPublicKey = Nothing,
       ntfPrivateKey = Nothing,
-      notifierId = Nothing
+      notifierId = Nothing,
+      rcvNtfDhSecret = Nothing
     }
 
 sndQueue1 :: SndQueue
@@ -338,7 +339,8 @@ testUpgradeSndConnToDuplex =
               status = New,
               ntfPublicKey = Nothing,
               ntfPrivateKey = Nothing,
-              notifierId = Nothing
+              notifierId = Nothing,
+              rcvNtfDhSecret = Nothing
             }
     upgradeSndConnToDuplex store "conn1" anotherRcvQueue
       `throwsError` SEBadConnType CRcv

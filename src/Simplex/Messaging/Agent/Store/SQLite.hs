@@ -1045,16 +1045,16 @@ getRcvQueueByConnId_ dbConn connId =
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
           q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
-          q.ntf_public_key, q.ntf_private_key, q.ntf_id
+          q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey, ntfPrivateKey, notifierId)) =
+    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret)) =
       let server = SMPServer host port keyHash
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfPublicKey, ntfPrivateKey, notifierId}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =

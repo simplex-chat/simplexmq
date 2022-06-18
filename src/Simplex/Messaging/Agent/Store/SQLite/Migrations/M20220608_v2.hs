@@ -22,6 +22,8 @@ ALTER TABLE rcv_queues ADD COLUMN ntf_private_key BLOB;
 
 ALTER TABLE rcv_queues ADD COLUMN ntf_id BLOB;
 
+ALTER TABLE rcv_queues ADD COLUMN rcv_ntf_dh_secret BLOB;
+
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues (host, port, ntf_id);
 
 CREATE TABLE ntf_subscriptions (
