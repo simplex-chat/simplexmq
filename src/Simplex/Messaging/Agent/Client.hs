@@ -653,15 +653,12 @@ withStore :: AgentMonad m => AgentClient -> (DB.Connection -> IO (Either StoreEr
 withStore c action = do
   st <- asks store
   atomically $ beginAgentOperation c AODatabase
-  r <- liftIO . withTransaction st $ \db ->
-    action db `E.catch` handleInternal
+  r <- liftIO $ withTransaction st action `E.catch` handleInternal
   atomically $ endAgentOperation c AODatabase
   liftEither $ first storeError r
   where
-    -- TODO when parsing exception happens in store, the agent hangs;
-    -- changing SQLError to SomeException does not help
-    handleInternal :: SQLError -> IO a
-    handleInternal = E.throwIO . SEInternal . bshow
+    handleInternal :: SQLError -> IO (Either StoreError a)
+    handleInternal = pure . Left . SEInternal . bshow
     storeError :: StoreError -> AgentErrorType
     storeError = \case
       SEConnNotFound -> CONN NOT_FOUND
