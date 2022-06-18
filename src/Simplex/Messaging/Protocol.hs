@@ -261,6 +261,7 @@ instance Encoding NMsgMeta where
   smpEncode NMsgMeta {msgId, msgTs} =
     smpEncode (msgId, msgTs)
   smpP = do
+    -- Tail here is to allow extension in the future clients/servers
     (msgId, msgTs, Tail _) <- smpP
     pure NMsgMeta {msgId, msgTs}
 
