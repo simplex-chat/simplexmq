@@ -399,9 +399,11 @@ getNotificationMessage' c encMessageInfo nonce = do
       ntfData <- agentCbDecrypt dhSecret nonce encMessageInfo
       PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
       (connId, rcvDhSecret) <- withStore c $ \st -> getNtfRcvQueue st smpQueue
-      nMsgMeta <- agentCbDecrypt rcvDhSecret nmsgNonce encNMsgMeta
-      NMsgMeta {msgId, msgTs} <- liftEither (parse smpP (INTERNAL "error parsing NMsgMeta") nMsgMeta)
-      liftIO . print $ "getNotificationMessage', ntfTs = " <> show ntfTs <> ", msgId = " <> show msgId <> ", msgTs = " <> show msgTs
+      nMsgMeta <- agentCbDecrypt rcvDhSecret nmsgNonce encNMsgMeta `catchError` const (pure "")
+      let nMsgMetaParsed = parse smpP (INTERNAL "error parsing NMsgMeta") nMsgMeta
+      case nMsgMetaParsed of
+        Right NMsgMeta {msgId, msgTs} -> liftIO . print $ "getNotificationMessage', ntfTs = " <> show ntfTs <> ", msgId = " <> show msgId <> ", msgTs = " <> show msgTs
+        Left _ -> liftIO . print $ "getNotificationMessage', ntfTs = " <> show ntfTs <> ", failed to parse NMsgMeta"
       getConnectionMessage' c connId
     _ -> throwError $ CMD PROHIBITED
 
