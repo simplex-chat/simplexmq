@@ -169,21 +169,23 @@ runNtfSMPWorker c srv doWork = forever $ do
           unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
               NSAKey
-                | ntfTknStatus == NTActive ->
+                | ntfTknStatus == NTActive -> do
+                  C.SignAlg a <- asks (cmdSignAlg . config)
                   case ntfPublicKey of
                     Just ntfPubKey ->
                       enableNotificationsWithNKey ntfPubKey
                     _ -> do
-                      C.SignAlg a <- asks (cmdSignAlg . config)
                       (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
                       withStore c $ \st -> setRcvQueueNotifierKey st connId ntfPubKey ntfPrivKey
                       enableNotificationsWithNKey ntfPubKey
                 | otherwise -> ntfInternalError c connId "NSAKey - token not active"
                 where
                   enableNotificationsWithNKey ntfPubKey = do
-                    nId <- enableQueueNotifications c rq ntfPubKey
+                    (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- liftIO C.generateKeyPair'
+                    (nId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPubKey rcvNtfPubDhKey
+                    let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
                     withStore c $ \st -> do
-                      setRcvQueueNotifierId st connId nId
+                      setRcvQueueNtfIdDhKey st connId nId rcvNtfDhSecret
                       updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                     ns <- asks ntfSupervisor
                     atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)

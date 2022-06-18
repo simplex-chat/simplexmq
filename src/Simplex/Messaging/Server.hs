@@ -333,7 +333,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             GET -> getMessage
             ACK msgId -> acknowledgeMsg msgId
             KEY sKey -> secureQueue_ st sKey
-            NKEY nKey -> addQueueNotifier_ st nKey
+            NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
             OFF -> suspendQueue_ st
             DEL -> delQueueAndMsgs st
       where
@@ -387,19 +387,23 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
           atomically $ modifyTVar (qSecured stats) (+ 1)
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
-        addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> m (Transmission BrokerMsg)
-        addQueueNotifier_ st nKey = (corrId,queueId,) <$> addNotifierRetry 3
+        addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
+        addQueueNotifier_ st nKey dhKey = do
+          (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
+          let rcvNtfDhSecret = C.dh' dhKey privDhKey
+          (corrId,queueId,) <$> addNotifierRetry 3 rcvPublicDhKey rcvNtfDhSecret
           where
-            addNotifierRetry :: Int -> m BrokerMsg
-            addNotifierRetry 0 = pure $ ERR INTERNAL
-            addNotifierRetry n = do
+            addNotifierRetry :: Int -> RcvNtfPublicDhKey -> RcvNtfDhSecret -> m BrokerMsg
+            addNotifierRetry 0 _ _ = pure $ ERR INTERNAL
+            addNotifierRetry n rcvPublicDhKey rcvNtfDhSecret = do
               nId <- randomId =<< asks (queueIdBytes . config)
               atomically (addQueueNotifier st queueId nId nKey) >>= \case
-                Left DUPLICATE_ -> addNotifierRetry $ n - 1
+                Left DUPLICATE_ -> addNotifierRetry (n - 1) rcvPublicDhKey rcvNtfDhSecret
                 Left e -> pure $ ERR e
                 Right _ -> do
+                  -- TODO save rcvNtfDhSecret and use for encryption
                   withLog $ \s -> logAddNotifier s queueId nId nKey
-                  pure $ NID nId
+                  pure $ NID nId rcvPublicDhKey
 
         suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
         suspendQueue_ st = do

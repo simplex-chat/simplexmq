@@ -76,6 +76,8 @@ module Simplex.Messaging.Protocol
     SndPublicVerifyKey,
     NtfPrivateSignKey,
     NtfPublicVerifyKey,
+    RcvNtfPublicDhKey,
+    RcvNtfDhSecret,
     MsgId,
     MsgBody,
     EncNMsgMeta,
@@ -217,7 +219,7 @@ data Command (p :: Party) where
   NEW :: RcvPublicVerifyKey -> RcvPublicDhKey -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicVerifyKey -> Command Recipient
-  NKEY :: NtfPublicVerifyKey -> Command Recipient
+  NKEY :: NtfPublicVerifyKey -> RcvNtfPublicDhKey -> Command Recipient
   GET :: Command Recipient
   -- ACK v1 has to be supported for encoding/decoding
   -- ACK :: Command Recipient
@@ -242,7 +244,7 @@ data BrokerMsg where
   -- MSG v1 has to be supported for encoding/decoding
   -- MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   MSG :: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
-  NID :: NotifierId -> BrokerMsg
+  NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   END :: BrokerMsg
   OK :: BrokerMsg
@@ -529,6 +531,12 @@ type NtfPrivateSignKey = C.APrivateSignKey
 -- | Public key used by SMP server to verify authorization of NSUB command sent by push notifications server.
 type NtfPublicVerifyKey = C.APublicVerifyKey
 
+-- | Public key used for DH exchange to encrypt notification metadata from server to recipient
+type RcvNtfPublicDhKey = C.PublicKeyX25519
+
+-- | DH Secret used to encrypt notification metadata from server to recipient
+type RcvNtfDhSecret = C.DhSecretX25519
+
 -- | SMP message server ID.
 type MsgId = ByteString
 
@@ -631,7 +639,7 @@ instance PartyI p => ProtocolEncoding (Command p) where
     NEW rKey dhKey -> e (NEW_, ' ', rKey, dhKey)
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
-    NKEY k -> e (NKEY_, ' ', k)
+    NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
     GET -> e GET_
     ACK msgId
       | v == 1 -> e ACK_
@@ -678,7 +686,7 @@ instance ProtocolEncoding Cmd where
         NEW_ -> NEW <$> _smpP <*> smpP
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
-        NKEY_ -> NKEY <$> _smpP
+        NKEY_ -> NKEY <$> _smpP <*> smpP
         GET_ -> pure GET
         ACK_
           | v == 1 -> pure $ ACK ""
@@ -702,7 +710,7 @@ instance ProtocolEncoding BrokerMsg where
     MSG msgId ts flags msgBody
       | v == 1 -> e (MSG_, ' ', msgId, ts, Tail msgBody)
       | otherwise -> e (MSG_, ' ', msgId, ts, flags, ' ', Tail msgBody)
-    NID nId -> e (NID_, ' ', nId)
+    NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     END -> e END_
     OK -> e OK_
@@ -717,7 +725,7 @@ instance ProtocolEncoding BrokerMsg where
       | v == 1 -> MSG <$> _smpP <*> smpP <*> pure noMsgFlags <*> (unTail <$> smpP)
       | otherwise -> MSG <$> _smpP <*> smpP <*> smpP <*> (unTail <$> _smpP)
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
-    NID_ -> NID <$> _smpP
+    NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     END_ -> pure END
     OK_ -> pure OK

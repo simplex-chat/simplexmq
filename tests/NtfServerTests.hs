@@ -108,7 +108,8 @@ testNotificationSubscription (ATransport t) =
           RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY code)
           RespNtf "2a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("2a", tId, TCHK)
           -- enable queue notifications
-          Resp "3" _ (NID nId) <- signSendRecv rh rKey ("3", rId, NKEY nPub)
+          (rcvNtfPubDhKey, _) <- C.generateKeyPair'
+          Resp "3" _ (NID nId _) <- signSendRecv rh rKey ("3", rId, NKEY nPub rcvNtfPubDhKey)
           let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
               q = SMPQueueNtf srv nId
           RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", "", SNEW $ NewNtfSub tId q nKey)

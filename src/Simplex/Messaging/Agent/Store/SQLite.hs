@@ -63,7 +63,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvDhSecret)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvDhSecret, RcvNtfDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, liftIOEither)
 import Simplex.Messaging.Version
@@ -317,17 +317,17 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
         |]
         (ntfPublicKey, ntfPrivateKey, connId)
 
-  setRcvQueueNotifierId :: SQLiteStore -> ConnId -> NotifierId -> m ()
-  setRcvQueueNotifierId st connId nId =
+  setRcvQueueNtfIdDhKey :: SQLiteStore -> ConnId -> NotifierId -> RcvNtfDhSecret -> m ()
+  setRcvQueueNtfIdDhKey st connId nId rcvNtfDhSecret =
     liftIO . withTransaction st $ \db ->
       DB.execute
         db
         [sql|
           UPDATE rcv_queues
-          SET ntf_id = ?
+          SET ntf_id = ?, rcv_ntf_dh_secret = ?
           WHERE conn_id = ?
         |]
-        (nId, connId)
+        (nId, rcvNtfDhSecret, connId)
 
   createConfirmation :: SQLiteStore -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
   createConfirmation st gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =

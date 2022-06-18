@@ -406,7 +406,8 @@ testWithStoreLog at@(ATransport t) =
 
     withSmpServerStoreLogOn at testPort . runTest t $ \h -> runClient t $ \h1 -> do
       (sId1, rId1, rKey1, dhShared) <- createAndSecureQueue h sPub1
-      Resp "abcd" _ (NID nId) <- signSendRecv h rKey1 ("abcd", rId1, NKEY nPub)
+      (rcvNtfPubDhKey, _) <- C.generateKeyPair'
+      Resp "abcd" _ (NID nId _) <- signSendRecv h rKey1 ("abcd", rId1, NKEY nPub rcvNtfPubDhKey)
       atomically $ do
         writeTVar recipientId1 rId1
         writeTVar recipientKey1 $ Just rKey1
@@ -610,7 +611,8 @@ testMessageNotifications (ATransport t) =
     smpTest4 t $ \rh sh nh1 nh2 -> do
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
       let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
-      Resp "1" _ (NID nId) <- signSendRecv rh rKey ("1", rId, NKEY nPub)
+      (rcvNtfPubDhKey, _) <- C.generateKeyPair'
+      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
       Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, NSUB)
       Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND' "hello")
       Resp "" _ (MSG mId1 _ _ msg1) <- tGet rh

@@ -30,6 +30,7 @@ import Simplex.Messaging.Protocol
     NtfPrivateSignKey,
     NtfPublicVerifyKey,
     RcvDhSecret,
+    RcvNtfDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
   )
@@ -53,9 +54,9 @@ class Monad m => MonadAgentStore s m where
   setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
   getRcvQueue :: s -> ConnId -> m RcvQueue
 
-  -- RcvQueue notifier key and ID
+  -- RcvQueue ntf keys and ID
   setRcvQueueNotifierKey :: s -> ConnId -> NtfPublicVerifyKey -> NtfPrivateSignKey -> m ()
-  setRcvQueueNotifierId :: s -> ConnId -> NotifierId -> m ()
+  setRcvQueueNtfIdDhKey :: s -> ConnId -> NotifierId -> RcvNtfDhSecret -> m ()
 
   -- Confirmations
   createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
@@ -135,7 +136,7 @@ data RcvQueue = RcvQueue
     -- | queue ID to be used by the notification server for NSUB command
     notifierId :: Maybe NotifierId,
     -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
-    rcvNtfDhSecret :: Maybe RcvDhSecret
+    rcvNtfDhSecret :: Maybe RcvNtfDhSecret
   }
   deriving (Eq, Show)
 
