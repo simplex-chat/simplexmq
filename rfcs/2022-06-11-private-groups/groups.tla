@@ -37,6 +37,7 @@ CONSTANTS
     \* Approver States
     Active,
     OnHold,
+    Resumed,
     Committed,
     \* Request Type
     PleasePropose,
@@ -267,6 +268,22 @@ ApproverReceiveHold ==
                     }
         /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
 
+ApproverReceiveContinue ==
+    \E message \in messages :
+        /\ message.type = Continue
+        /\ \/ approver_states[<<message.invite_id, message.recipient>>] = OnHold
+           \* If we see a Continue while Active, we can assume that we missed
+           \* the Hold, and can just skip right to the Resumed state
+           \/ approver_states[<<message.invite_id, message.recipient>>] = Active
+        /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = Resumed ]
+        \* TODO: Currently, this isn't live, because the approver only sends
+        \* Invites on Propose messages.  Since it's possible that the approver
+        \* never received a Propose message at all, the Resume message needs to
+        \* carry enough information that the approver can form an invitation
+        \* from it.  Then it will act as a reminder that makes approvers live
+        \* (if the Leader is).
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals, tokens>>
+
 BroadcastToken ==
     \E from \in Users, invite_id \in InviteIds :
         \E to \in (group_perceptions[from] \ { from }) :
@@ -321,7 +338,8 @@ Establish ==
                Tokens == { sync.token : sync \in SyncMessages } \union { tokens[<<message.invite_id, message.recipient>>] }
            IN  /\ Senders = (group_perceptions[message.recipient] \ { message.recipient })
                /\ message.tokens = Tokens
-               /\ approver_states[<<message.invite_id, message.recipient>>] = Active
+               /\  \/ approver_states[<<message.invite_id, message.recipient>>] = Active
+                   \/ approver_states[<<message.invite_id, message.recipient>>] = Resumed
                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = Committed ]
                \* TODO: This can't be atomic
                /\ group_perceptions' =
@@ -343,9 +361,6 @@ Establish ==
                        /\ proposal' = Nothing
                    ELSE UNCHANGED <<proposal, complete_proposals>>
                /\ UNCHANGED <<messages, rng_state, tokens>>
-
-\* TODO: If a user reported that they committed to a invitation, the Leader
-\* needs to notify all users to resume the invitation.
 
 \* TODO: Need to be able to Kick.  Notably, this is easier, because we don't
 \* need to confirm identities.
@@ -401,6 +416,7 @@ Next ==
     \/ LeaderReceiveAllHolds
     \/ ApproverReceiveProposal
     \/ ApproverReceiveHold
+    \/ ApproverReceiveContinue
     \/ BroadcastToken
     \/ SendAccept
     \/ Establish
