@@ -85,7 +85,7 @@ v .-> key =
 
 testNotificationSubscription :: ATransport -> Spec
 testNotificationSubscription (ATransport t) =
-  it "should create notification subscription and notify when message is received" $ do
+  fit "should create notification subscription and notify when message is received" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
     (nPub, nKey) <- C.generateSignatureKeyPair C.SEd25519
     (tknPub, tknKey) <- C.generateSignatureKeyPair C.SEd25519
@@ -121,14 +121,18 @@ testNotificationSubscription (ATransport t) =
               Right checkMessage = ntfData' .-> "checkMessage"
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
               Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' checkMessage
-              Right APNS.PNMessageData {smpServer, notifierId} =
+              Right APNS.PNMessageData {smpServer, notifierId, nmsgNonce, encryptedMsgMeta} =
                 parse strP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
+              Right msgMetaNtf = C.cbDecrypt rcvDhSecret nmsgNonce encryptedMsgMeta
+              Right MsgMetaNtf {msgId, msgTs} = parse smpP (AP.INTERNAL "error parsing MsgMetaNtf") msgMetaNtf
           smpServer `shouldBe` srv
           notifierId `shouldBe` nId
           send' APNSRespOk
           -- receive message
-          let dec _nonce = C.cbDecrypt rcvDhSecret (C.cbNonce _nonce)
-          Resp "" _ (MSG mId1 _ _ msg1) <- tGet rh
-          (dec mId1 msg1, Right "hello") #== "delivered from queue"
+          Resp "" _ (MSG mId1 mTs _ msg1) <- tGet rh
+          mId1 `shouldBe` msgId
+          mTs `shouldBe` msgTs
+          let decryptedMsg = C.cbDecrypt rcvDhSecret (C.cbNonce mId1) msg1
+          (decryptedMsg, Right "hello") #== "delivered from queue"
           Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK mId1)
           pure ()

@@ -841,7 +841,7 @@ instance (MonadUnliftIO m, MonadError StoreError m) => MonadAgentStore SQLiteSto
           [sql|
             SELECT conn_id, rcv_dh_secret
             FROM rcv_queues
-            WHERE host = ? AND port = 1 AND ntf_id = ?
+            WHERE host = ? AND port = ? AND ntf_id = ?
           |]
           (host, port, notifierId)
 
