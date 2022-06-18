@@ -647,7 +647,7 @@ notifyAgentPhaseChanged AgentClient {subQ, agentEnv = Env {agentPhase, agentOper
       writeTVar agentPhase (p, True)
 
 withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
-withStore' c action = withStore c $ \db -> Right <$> action db
+withStore' c action = withStore c $ fmap Right . action
 
 withStore :: AgentMonad m => AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> m a
 withStore c action = do

@@ -214,7 +214,7 @@ diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToS
 
 ntfInternalError :: AgentMonad m => AgentClient -> ConnId -> String -> m ()
 ntfInternalError c@AgentClient {subQ} connId internalErrStr = do
-  withStore c $ \db -> Right <$> setNullNtfSubscriptionAction db connId
+  withStore' c $ \db -> setNullNtfSubscriptionAction db connId
   atomically $ writeTBQueue subQ ("", connId, AP.ERR $ AP.INTERNAL internalErrStr)
 
 getNtfToken :: AgentMonad m => m (Maybe NtfToken)
