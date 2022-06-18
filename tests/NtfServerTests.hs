@@ -85,7 +85,7 @@ v .-> key =
 
 testNotificationSubscription :: ATransport -> Spec
 testNotificationSubscription (ATransport t) =
-  fit "should create notification subscription and notify when message is received" $ do
+  it "should create notification subscription and notify when message is received" $ do
     (sPub, sKey) <- C.generateSignatureKeyPair C.SEd25519
     (nPub, nKey) <- C.generateSignatureKeyPair C.SEd25519
     (tknPub, tknKey) <- C.generateSignatureKeyPair C.SEd25519
