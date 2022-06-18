@@ -42,6 +42,7 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.List (intercalate)
 import qualified Data.Map.Strict as M
