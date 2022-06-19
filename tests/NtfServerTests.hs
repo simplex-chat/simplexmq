@@ -118,9 +118,9 @@ testNotificationSubscription (ATransport t) =
           -- receive notification
           APNSMockRequest {notification, sendApnsResponse = send'} <- atomically $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
-              Right checkMessage = ntfData' .-> "checkMessage"
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
-              Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' checkMessage
+              Right message = ntfData' .-> "message"
+              Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' message
               Right APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer, notifierId}, nmsgNonce, encNMsgMeta} =
                 parse strP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
               Right nMsgMeta = C.cbDecrypt rcvDhSecret nmsgNonce encNMsgMeta
