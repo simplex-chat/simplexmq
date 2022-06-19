@@ -83,6 +83,7 @@ module Simplex.Messaging.Agent.Protocol
     ACorrId,
     AgentMsgId,
     AgentPhase (..),
+    NotificationInfo (..),
 
     -- * Encode/decode
     serializeCommand,
@@ -119,6 +120,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
@@ -135,6 +137,7 @@ import Simplex.Messaging.Protocol
     MsgBody,
     MsgFlags,
     MsgId,
+    NMsgMeta,
     SMPServer,
     SndPublicVerifyKey,
     SrvLoc (..),
@@ -251,6 +254,17 @@ instance StrEncoding AgentPhase where
       "PAUSED" -> pure APPaused
       "SUSPENDED" -> pure APSuspended
       _ -> fail "bad AgentPhase"
+
+instance ToJSON AgentPhase where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+data NotificationInfo = NotificationInfo
+  { ntfConnId :: ConnId,
+    ntfTs :: SystemTime,
+    ntfMsgMeta :: Maybe NMsgMeta
+  }
+  deriving (Show)
 
 data ConnectionMode = CMInvitation | CMContact
   deriving (Eq, Show)

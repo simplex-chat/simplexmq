@@ -27,7 +27,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags))
+import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsgMeta (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
@@ -189,7 +189,7 @@ testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
-  Right (bobId, checkMessage, nonce) <- runExceptT $ do
+  Right (bobId, nonce, message) <- runExceptT $ do
     -- establish connection
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
@@ -213,16 +213,16 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- notification
-    (checkMessage, nonce) <- messageNotification apnsQ
-    pure (bobId, checkMessage, nonce)
+    (nonce, message) <- messageNotification apnsQ
+    pure (bobId, nonce, message)
 
   -- alice client already has subscription for the connection
-  Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice checkMessage nonce
+  Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice nonce message
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   aliceNtf <- getSMPAgentClient agentCfg initAgentServers
   Right () <- runExceptT $ do
-    Just (_msgId, MsgFlags True) <- getNotificationMessage aliceNtf checkMessage nonce
+    (_, [SMPMsgMeta {msgFlags = MsgFlags True}]) <- getNotificationMessage aliceNtf nonce message
     pure ()
   disconnectAgentClient aliceNtf
 
@@ -299,13 +299,13 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     baseId = 3
     msgId = subtract baseId
 
-messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (ByteString, C.CbNonce)
+messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do
   500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
     Nothing -> error "no notification"
     Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} -> do
-      checkMessage <- ntfData .-> "checkMessage"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      message <- ntfData .-> "message"
       liftIO $ sendApnsResponse APNSRespOk
-      pure (checkMessage, nonce)
+      pure (nonce, message)
     _ -> error "bad notification"

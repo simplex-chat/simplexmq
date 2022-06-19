@@ -71,6 +71,7 @@ data AgentConfig = AgentConfig
     resubscriptionConcurrency :: Int,
     ntfWorkerThrottle :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
+    ntfMaxMessages :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
@@ -104,6 +105,7 @@ defaultAgentConfig =
       resubscriptionConcurrency = 16,
       ntfWorkerThrottle = 1000000, -- microseconds
       ntfSubCheckInterval = nominalDay,
+      ntfMaxMessages = 4,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
