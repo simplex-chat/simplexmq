@@ -27,7 +27,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags))
+import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsgMeta (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
@@ -217,12 +217,12 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     pure (bobId, checkMessage, nonce)
 
   -- alice client already has subscription for the connection
-  Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice checkMessage nonce
+  Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice nonce checkMessage
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   aliceNtf <- getSMPAgentClient agentCfg initAgentServers
   Right () <- runExceptT $ do
-    Just (_msgId, MsgFlags True) <- getNotificationMessage aliceNtf checkMessage nonce
+    (_, [SMPMsgMeta {msgFlags = MsgFlags True}]) <- getNotificationMessage aliceNtf nonce checkMessage
     pure ()
   disconnectAgentClient aliceNtf
 

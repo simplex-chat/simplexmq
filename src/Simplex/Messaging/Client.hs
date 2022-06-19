@@ -291,13 +291,13 @@ subscribeSMPQueue c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --
 -- https://github.covm/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#receive-a-message-from-the-queue
-getSMPMessage :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO (Maybe (MsgId, MsgFlags))
+getSMPMessage :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO (Maybe SMP.SMPMsgMeta)
 getSMPMessage c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
   sendSMPCommand c (Just rpKey) rId GET >>= \case
     OK -> pure Nothing
-    cmd@(MSG msgId _ msgFlags _) -> do
+    cmd@(MSG msgId msgTs msgFlags _) -> do
       lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
-      pure $ Just (msgId, msgFlags)
+      pure $ Just SMP.SMPMsgMeta {msgId, msgTs, msgFlags}
     _ -> throwE PCEUnexpectedResponse
 
 -- | Subscribe to the SMP queue notifications.
