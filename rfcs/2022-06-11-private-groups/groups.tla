@@ -55,17 +55,11 @@ CONSTANTS
 
 VARIABLES
     messages,
-    \* TODO: invites and token should be separated, which allows us to check
-    \* liveness under the condition that the number of proposals is
-    \* constrained.  The number of max number of tokens necessary is then
-    \* fairly easily derived (if we also limit the number available for
-    \* attackers).
     rng_state,
     group_perceptions,
     proposal,
     complete_proposals,
-    approver_states,
-    tokens
+    approver_states
 
 ASSUME
     /\ InitialMembers \subseteq Users
@@ -98,7 +92,6 @@ Init ==
     /\ proposal = Nothing
     /\ complete_proposals = {}
     /\ approver_states = [ x \in (InviteIds \X Users) |-> Nothing ]
-    /\ tokens = [ x \in (InviteIds \X Users) |-> Nothing ]
 
 SendPleasePropose ==
     \* IMPORTANT: The user should still wait to receive a Propose message from
@@ -120,7 +113,7 @@ SendPleasePropose ==
                 ]
             }
         /\ rng_state' = rng_state + 1
-        /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, approver_states, tokens>>
+        /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, approver_states>>
 
 LeaderReceivePleasePropose ==
     \E message \in messages :
@@ -137,7 +130,7 @@ LeaderReceivePleasePropose ==
             , state |-> Proposing
             , awaiting_hold_response |-> Nothing
             ]
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states, tokens>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
 BroadcastProposalState ==
     \E member \in Users :
@@ -168,7 +161,7 @@ BroadcastProposalState ==
                     , invite_id |-> proposal.invite_id
                     ]
             }
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states, tokens>>
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 LeaderReceiveReject ==
     \E message \in messages :
@@ -178,7 +171,7 @@ LeaderReceiveReject ==
         /\ proposal = Nothing
         /\ message.invite_id = proposal.invite_id
         /\ complete_proposals' = complete_proposals \union { message.invite_id }
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, approver_states, tokens>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, approver_states>>
 
 \* We don't specify exactly why, but at some point a Leader may realize that a
 \* proposal is likely doomed, even if they never heard a rejection (proposals
@@ -187,7 +180,7 @@ GiveUpOnProposal ==
     /\ proposal /= Nothing
     /\ proposal.state = Proposing
     /\ proposal' = [ proposal EXCEPT !.state = Holding, !.awaiting_hold_response = group_perceptions[Leader] ]
-    /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states, tokens>>
+    /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
 LeaderReceiveCantHold ==
     \E message \in messages :
@@ -197,7 +190,7 @@ LeaderReceiveCantHold ==
         /\ message.invite_id = proposal.invite_id
         /\ proposal.state = Holding
         /\ proposal' = [ proposal EXCEPT !.state = Continuing, !.awaiting_hold_response = Nothing ]
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states, tokens>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
 LeaderReceiveHold ==
     /\ proposal /= Nothing
@@ -211,7 +204,7 @@ LeaderReceiveHold ==
                 /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
            ELSE /\ proposal' = [ proposal EXCEPT !.awaiting_hold_response = @ \ { message.sender } ]
                 /\ UNCHANGED <<complete_proposals>>
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states, tokens>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
 
 \* We don't specify exactly why, but this would likely be a human decision
 \* based on trying to start a _new_ proposal, but that not being possible
@@ -224,18 +217,15 @@ GiveUpOnMembers ==
     \* synchronously when giving up on a proposal.
     /\ Leader \notin proposal.awaiting_hold_response
     /\ proposal' = [ proposal EXCEPT !.state = Cancelling ]
-    /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states, tokens>>
+    /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
 ApproverReceiveProposal ==
     \E message \in messages :
         /\ message.type = Propose
         /\ IF   /\ UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]] /= Nothing
                 /\ HasDirectConnection(message.recipient, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
-           THEN /\ IF   tokens[<<message.invite_id, message.recipient>>] = Nothing
-                   THEN /\ tokens' = [ tokens EXCEPT ![<<message.invite_id, message.recipient>>] = rng_state ]
-                        /\ rng_state' = rng_state + 1
-                        /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = Active ]
-                   ELSE UNCHANGED <<tokens, rng_state, approver_states>>
+           THEN /\ approver_states[<<message.invite_id, message.recipient>>] = Nothing
+                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = Active ]
                 \* It's safe to send this message right away, as it only agrees to
                 \* reveal information that everyone has agreed to share.  The invitee
                 \* now knows that there's a group that involves this member, the
@@ -248,11 +238,21 @@ ApproverReceiveProposal ==
                         , recipient |-> UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]]
                         , type |-> Invite
                         , invite_id |-> message.invite_id
-                        , token |-> tokens'[<<message.invite_id, message.recipient>>]
+                        \* Token generation is abstract/symbolic.  Instead of
+                        \* the actual value of our token, we just name the
+                        \* generator and its purpose.  That means that 1:1
+                        \* mapping of a token to an invite_id is implied, and
+                        \* it means that approvers must permanently commit to
+                        \* the choice of the token before issuing it.  It is
+                        \* critical that this spec treats a token as opaque,
+                        \* passing around only its value, not looking inside,
+                        \* or "generating" on in the wrong context, or our spec
+                        \* may be impossible to implement.
+                        , token |-> [ for |-> message.invite_id, by |-> message.recipient ]
                         , group_size |-> message.group_size
                         ]
                     }
-                /\ UNCHANGED <<group_perceptions, proposal, complete_proposals>>
+                /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
            ELSE /\ messages' = messages \union
                     {   [ sender |-> message.recipient
                         , recipient |-> Leader
@@ -260,7 +260,7 @@ ApproverReceiveProposal ==
                         , invite_id |-> message.invite_id
                         ]
                     }
-                /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states, tokens>>
+                /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 ApproverReceiveHold ==
     \E message \in messages :
@@ -289,7 +289,7 @@ ApproverReceiveHold ==
                         , invite_id |-> message.invite_id
                         ]
                     }
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, tokens>>
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
 
 ApproverReceiveContinue ==
     \E message \in messages :
@@ -305,21 +305,25 @@ ApproverReceiveContinue ==
         \* carry enough information that the approver can form an invitation
         \* from it.  Then it will act as a reminder that makes approvers live
         \* (if the Leader is).
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals, tokens>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
 
 BroadcastToken ==
     \E from \in Users, invite_id \in InviteIds :
         \E to \in (group_perceptions[from] \ { from }) :
-            /\ tokens[<<invite_id, from>>] /= Nothing
+            /\ approver_states[<<invite_id, from>>] /= Nothing
             /\ messages' = messages \union
                 {   [ sender |-> from
                     , recipient |-> to
                     , type |-> SyncToken
-                    , token |-> tokens[<<invite_id, from>>]
+                    \* Note again that tokens are abstract/symbolic.  In this
+                    \* context, the spec implies that this is using a
+                    \* pregenerated token that is permanently associated for
+                    \* this invite_id.
+                    , token |-> [ for |-> invite_id, by |-> from ]
                     , invite_id |-> invite_id
                     ]
                 }
-            /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states, tokens>>
+            /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 \* IMPORTANT: It is NOT inviariant that the invitee matches across the same
 \* invite_id, because some members may have confused the invitee.
@@ -351,14 +355,15 @@ SendAccept ==
                                 ]
                             }
                 ELSE UNCHANGED <<messages>>
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states, tokens>>
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 Establish ==
     \E message \in messages :
         /\ message.type = Accept
         /\ LET SyncMessages == { sync \in messages : sync.recipient = message.recipient /\ sync.type = SyncToken /\ sync.invite_id = message.invite_id }
                Senders == { sync.sender : sync \in SyncMessages }
-               Tokens == { sync.token : sync \in SyncMessages } \union { tokens[<<message.invite_id, message.recipient>>] }
+               \* Note that it's safe to "access" "its" token here
+               Tokens == { sync.token : sync \in SyncMessages } \union { [ for |-> message.invite_id, by |-> message.recipient ] }
            IN  /\ Senders = (group_perceptions[message.recipient] \ { message.recipient })
                /\ message.tokens = Tokens
                /\  \/ approver_states[<<message.invite_id, message.recipient>>] = Active
@@ -383,7 +388,7 @@ Establish ==
                        /\ complete_proposals' = complete_proposals \union { message.invite_id }
                        /\ proposal' = Nothing
                    ELSE UNCHANGED <<proposal, complete_proposals>>
-               /\ UNCHANGED <<messages, rng_state, tokens>>
+               /\ UNCHANGED <<messages, rng_state>>
 
 \* TODO: Need to be able to Kick.  Notably, this is easier, because we don't
 \* need to confirm identities.
@@ -445,7 +450,7 @@ Next ==
     \/ SendAccept
     \/ Establish
 
-Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states, tokens>>
+Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 
 CannotCommunicateWithoutAConnection ==
@@ -454,8 +459,9 @@ CannotCommunicateWithoutAConnection ==
 
 TokensMatch ==
     \A message \in messages :
-        message.type = Invite =>
-            message.token = tokens[<<message.invite_id, message.sender>>]
+        message.type = Invite \/ message.type = SyncToken =>
+            /\ message.token = [ for |-> message.invite_id, by |-> message.sender ]
+            /\ approver_states[<<message.invite_id, message.sender>>] /= Nothing
 
 GroupSizesMatch ==
     \A message1, message2 \in messages :
@@ -470,8 +476,7 @@ GroupSizesMatch ==
 \* This kind of correlation should only be possible if the invite senders
 \* agreed to invite that individual, meaning that they are willing to divulge
 \* to the invitee that they know all members of the group.  We check this by
-\* seeing if they generated a token for this invite (which means accepting the
-\* proposal).
+\* seeing if they have a state for the invite_id that brought.
 NonMembersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
     \A message1, message2 \in messages :
         \/ message1 = message2
@@ -479,8 +484,8 @@ NonMembersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
             /\ message2.type = Invite
             /\ message1.recipient = message2.recipient
             /\ message1.invite_id = message2.invite_id
-            =>  /\ tokens[<<message1.invite_id, message1.sender>>] /= Nothing
-                /\ tokens[<<message2.invite_id, message2.sender>>] /= Nothing
+            =>  /\ approver_states[<<message1.invite_id, message1.sender>>] /= Nothing
+                /\ approver_states[<<message2.invite_id, message2.sender>>] /= Nothing
 
 AllMembers ==
     UNION { group_perceptions[x] : x \in Users }

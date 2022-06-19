@@ -8,7 +8,7 @@ EXTENDS groups
 
 CONSTANTS a, b, c, d
 
-MaxNum == 3
+MaxNum == 1
 
 NatMC == 0..MaxNum
 
