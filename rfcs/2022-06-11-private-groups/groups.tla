@@ -30,6 +30,7 @@ CONSTANTS
     *)
     UserPerceptions,
     Connections,
+    InviteIds,
     \* Proposal States
     Proposing,
     Holding,
@@ -72,8 +73,6 @@ ASSUME
 Leader ==
     CHOOSE x \in InitialMembers : TRUE
 
-InviteIds == Nat
-
 HasDirectConnection(x, y) ==
     \/ x = y
     \/ <<x, y>> \in Connections
@@ -81,7 +80,7 @@ HasDirectConnection(x, y) ==
 
 Init ==
     /\ messages = {}
-    /\ rng_state = 0
+    /\ rng_state = InviteIds
     (*
     Notably, group members learn about the changes to the group at different
     times, so we need to track their changes in perception individually.
@@ -101,19 +100,22 @@ SendPleasePropose ==
     \* which is important for correct invitee behaviour, cannot be known until
     \* the Leader officially starts this proposal.
     \E proposer \in Users, invitee \in Users :
-        /\ proposer \in group_perceptions[proposer]
-        /\ invitee \notin group_perceptions[proposer]
-        /\ HasDirectConnection(proposer, invitee)
-        /\ messages' = messages \union
-            {   [ type |-> PleasePropose
-                , sender |-> proposer
-                , recipient |-> Leader
-                , invite_id |-> rng_state
-                , invitee_description |-> [ by |-> proposer, of |-> invitee ]
-                ]
-            }
-        /\ rng_state' = rng_state + 1
-        /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, approver_states>>
+        /\ Cardinality(rng_state) > 0
+        /\ LET invite_id == CHOOSE x \in rng_state : TRUE
+           IN
+            /\ proposer \in group_perceptions[proposer]
+            /\ invitee \notin group_perceptions[proposer]
+            /\ HasDirectConnection(proposer, invitee)
+            /\ messages' = messages \union
+                {   [ type |-> PleasePropose
+                    , sender |-> proposer
+                    , recipient |-> Leader
+                    , invite_id |-> invite_id
+                    , invitee_description |-> [ by |-> proposer, of |-> invitee ]
+                    ]
+                }
+            /\ rng_state' = rng_state \ { invite_id }
+            /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, approver_states>>
 
 LeaderReceivePleasePropose ==
     \E message \in messages :

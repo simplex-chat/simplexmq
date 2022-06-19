@@ -4,9 +4,7 @@ EXTENDS groups
 
 CONSTANTS a, b, c, d
 
-MaxNum == 2
-
-NatMC == 0..MaxNum
+InviteIdsMC == 0..1
 
 \* b has confused c and d, so when a describes either of them, b thinks that a
 \* is talking about the other.  This also means that when b describes one, it
@@ -22,8 +20,6 @@ UserPerceptionsMC ==
 \* Everyone knows everyone
 ConnectionsMC ==
   Users \X Users
-
-SizeConstraint == rng_state < MaxNum + 1
 
 \* If b ever joins the group, c and d cannot, because b confuses them.
 CantAddCOrDIfBJoins ==

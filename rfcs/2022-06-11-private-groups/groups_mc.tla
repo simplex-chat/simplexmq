@@ -8,9 +8,7 @@ EXTENDS groups
 
 CONSTANTS a, b, c, d
 
-MaxNum == 1
-
-NatMC == 0..MaxNum
+InviteIdsMC == 0..0
 
 \* No one is ever confused
 UserPerceptionsMC ==
@@ -19,7 +17,5 @@ UserPerceptionsMC ==
 \* Everyone knows everyone
 ConnectionsMC ==
   Users \X Users
-
-SizeConstraint == rng_state < MaxNum + 1
 
 ====

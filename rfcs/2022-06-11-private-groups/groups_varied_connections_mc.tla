@@ -4,9 +4,7 @@ EXTENDS groups
 
 CONSTANTS a, b, c, d
 
-MaxNum == 2
-
-NatMC == 0..MaxNum
+InviteIdsMC == 0..1
 
 \* No one is ever confused
 UserPerceptionsMC ==
@@ -15,8 +13,6 @@ UserPerceptionsMC ==
 \* A is not connected to D and B is not connected to C
 ConnectionsMC ==
   { <<a, b>>, <<a, c>>, <<b, d>>, <<c, d>> }
-
-SizeConstraint == rng_state < MaxNum + 1
 
 SpecialGroupCases ==
    /\ d \notin group_perceptions[Leader]
