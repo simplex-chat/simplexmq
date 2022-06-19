@@ -6,6 +6,8 @@ CONSTANTS a, b, c, d
 
 InviteIdsMC == 0..1
 
+KickIdsMC == 2..2
+
 \* b has confused c and d, so when a describes either of them, b thinks that a
 \* is talking about the other.  This also means that when b describes one, it
 \* does so in a way that is backwards to a.
