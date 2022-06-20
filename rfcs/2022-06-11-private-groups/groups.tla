@@ -51,6 +51,7 @@ CONSTANTS
     WillHold,
     Continue,
     Kick,
+    KickAck,
     Invite,
     Accept,
     SyncToken
@@ -92,7 +93,7 @@ Init ==
     /\ group_perceptions = [ x \in Users |-> IF x \in InitialMembers THEN InitialMembers ELSE {} ]
     /\ proposal = Nothing
     /\ complete_proposals = {}
-    /\ approver_states = [ x \in (InviteIds \X Users) |-> Nothing ]
+    /\ approver_states = [ x \in ((InviteIds \union KickIds) \X Users) |-> Nothing ]
 
 SendPleasePropose ==
     \* IMPORTANT: The user should still wait to receive a Propose message from
@@ -331,6 +332,21 @@ ApproverReceiveContinue ==
         \* (if the Leader is).
         /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
 
+ApproverReceiveKick ==
+    \E message \in messages :
+        /\ message.type = Kick
+        /\ message.sender = Leader
+        /\ approver_states' = [ approver_states EXCEPT ![<<message.kick_id, message.recipient>>] = Committed ]
+        /\ group_perceptions' = [ group_perceptions EXCEPT ![message.recipient] = @ \ message.kicked ]
+        /\ messages' = messages \union
+            {   [ type |-> KickAck
+                , sender |-> message.recipient
+                , recipient |-> message.sender
+                , kick_id |-> message.kick_id
+                ]
+            }
+        /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
+
 BroadcastToken ==
     \E from \in Users, invite_id \in InviteIds :
         \E to \in (group_perceptions[from] \ { from }) :
@@ -479,6 +495,7 @@ Next ==
     \/ ApproverReceiveProposal
     \/ ApproverReceiveHold
     \/ ApproverReceiveContinue
+    \/ ApproverReceiveKick
     \/ BroadcastToken
     \/ SendAccept
     \/ Establish
