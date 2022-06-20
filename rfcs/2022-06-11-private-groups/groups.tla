@@ -232,6 +232,13 @@ GiveUpOnMembers ==
             [ state |-> Kicking
             , kick_id |-> kick_id
             , awaiting_response |-> new_group
+            \* TODO: it's not really implementable to just send the users
+            \* directly, because every user talks to each user via totally
+            \* different channels with no unified identifier.  Some options for
+            \* identifying users is by join order (index, which invitees
+            \* curretnly know about themselves but for anyone else), original
+            \* description (this currently isn't shared with the invitee), or
+            \* by invite_id (which everyone can currently know).
             , kicked |-> proposal.awaiting_response
             ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
