@@ -271,7 +271,7 @@ verifyTransmission sig_ signed queueId cmd = do
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure True
-    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap (\(_, nk, _) -> nk) . notifier
+    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap notifierKey . notifier
   where
     verifyCmd :: SParty p -> (QueueRec -> Bool) -> m Bool
     verifyCmd party f = do
@@ -388,7 +388,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
-        addQueueNotifier_ st nKey dhKey = do
+        addQueueNotifier_ st notifierKey dhKey = do
           (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
           let rcvNtfDhSecret = C.dh' dhKey privDhKey
           (corrId,queueId,) <$> addNotifierRetry 3 rcvPublicDhKey rcvNtfDhSecret
@@ -396,13 +396,14 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             addNotifierRetry :: Int -> RcvNtfPublicDhKey -> RcvNtfDhSecret -> m BrokerMsg
             addNotifierRetry 0 _ _ = pure $ ERR INTERNAL
             addNotifierRetry n rcvPublicDhKey rcvNtfDhSecret = do
-              nId <- randomId =<< asks (queueIdBytes . config)
-              atomically (addQueueNotifier st queueId nId nKey rcvNtfDhSecret) >>= \case
+              notifierId <- randomId =<< asks (queueIdBytes . config)
+              let ntfCreds = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
+              atomically (addQueueNotifier st queueId ntfCreds) >>= \case
                 Left DUPLICATE_ -> addNotifierRetry (n - 1) rcvPublicDhKey rcvNtfDhSecret
                 Left e -> pure $ ERR e
                 Right _ -> do
-                  withLog $ \s -> logAddNotifier s queueId nId nKey rcvNtfDhSecret
-                  pure $ NID nId rcvPublicDhKey
+                  withLog $ \s -> logAddNotifier s queueId ntfCreds
+                  pure $ NID notifierId rcvPublicDhKey
 
         suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
         suspendQueue_ st = do
@@ -548,8 +549,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
                 trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
                 trySendNotification msg ntfNonceDrg =
-                  forM_ (notifier qr) $ \(nId, _, rcvNtfDhSecret) ->
-                    mapM_ (writeNtf nId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup nId notifiers
+                  forM_ (notifier qr) $ \NtfCreds {notifierId, rcvNtfDhSecret} ->
+                    mapM_ (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
 
                 writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM ()
                 writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =

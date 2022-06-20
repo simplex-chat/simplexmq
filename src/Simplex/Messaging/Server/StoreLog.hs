@@ -34,7 +34,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.QueueStore (QueueRec (..), QueueStatus (..))
+import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..), QueueStatus (..))
 import Simplex.Messaging.Transport (trimCR)
 import System.Directory (doesFileExist)
 import System.IO
@@ -48,7 +48,7 @@ data StoreLog (a :: IOMode) where
 data StoreLogRecord
   = CreateQueue QueueRec
   | SecureQueue QueueId SndPublicVerifyKey
-  | AddNotifier QueueId NotifierId NtfPublicVerifyKey RcvNtfDhSecret
+  | AddNotifier QueueId NtfCreds
   | DeleteQueue QueueId
 
 instance StrEncoding QueueRec where
@@ -62,7 +62,7 @@ instance StrEncoding QueueRec where
       ]
       <> maybe "" notifierStr notifier
     where
-      notifierStr (nId, nKey, rcvNtfDhSecret) = " nid=" <> strEncode nId <> " nk=" <> strEncode nKey <> " ndh=" <> strEncode rcvNtfDhSecret
+      notifierStr NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} = " nid=" <> strEncode notifierId <> " nk=" <> strEncode notifierKey <> " ndh=" <> strEncode rcvNtfDhSecret
 
   strP = do
     recipientId <- "rid=" *> strP_
@@ -70,21 +70,23 @@ instance StrEncoding QueueRec where
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
-    notifier <- optional $ (,,) <$> (" nid=" *> strP_) <*> ("nk=" *> strP_) <*> ("ndh=" *> strP)
+    notifier <- optional $ NtfCreds <$> (" nid=" *> strP_) <*> ("nk=" *> strP_) <*> ("ndh=" *> strP)
     pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
     CreateQueue q -> strEncode (Str "CREATE", q)
     SecureQueue rId sKey -> strEncode (Str "SECURE", rId, sKey)
-    AddNotifier rId nId nKey rcvNtfDhSecret -> strEncode (Str "NOTIFIER", rId, nId, nKey, rcvNtfDhSecret)
+    AddNotifier rId NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} -> strEncode (Str "NOTIFIER", rId, notifierId, notifierKey, rcvNtfDhSecret)
     DeleteQueue rId -> strEncode (Str "DELETE", rId)
 
   strP =
     "CREATE " *> (CreateQueue <$> strP)
       <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
-      <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP_ <*> strP_ <*> strP)
+      <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> ntfCredsP)
       <|> "DELETE " *> (DeleteQueue <$> strP)
+    where
+      ntfCredsP = NtfCreds <$> strP_ <*> strP_ <*> strP
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
@@ -115,8 +117,8 @@ logCreateQueue s = writeStoreLogRecord s . CreateQueue
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicVerifyKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
 
-logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NotifierId -> NtfPublicVerifyKey -> RcvNtfDhSecret -> IO ()
-logAddNotifier s qId nId nKey rcvNtfDhSecret = writeStoreLogRecord s $ AddNotifier qId nId nKey rcvNtfDhSecret
+logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NtfCreds -> IO ()
+logAddNotifier s qId ntfCreds = writeStoreLogRecord s $ AddNotifier qId ntfCreds
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
@@ -149,7 +151,7 @@ readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLo
     procLogRecord m = \case
       CreateQueue q -> M.insert (recipientId q) q m
       SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
-      AddNotifier qId nId nKey rcvNtfDhSecret -> M.adjust (\q -> q {notifier = Just (nId, nKey, rcvNtfDhSecret)}) qId m
+      AddNotifier qId ntfCreds -> M.adjust (\q -> q {notifier = Just ntfCreds}) qId m
       DeleteQueue qId -> M.delete qId m
     printError :: LogParsingError -> IO ()
     printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
