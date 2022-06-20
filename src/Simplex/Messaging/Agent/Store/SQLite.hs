@@ -126,7 +126,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvDhSecret, RcvNtfDhSecret)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvNtfDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
@@ -848,13 +848,13 @@ getActiveNtfToken db =
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
 
-getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvDhSecret))
+getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, Maybe RcvNtfDhSecret))
 getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
   firstRow id SEConnNotFound $
     DB.query
       db
       [sql|
-        SELECT conn_id, rcv_dh_secret
+        SELECT conn_id, rcv_ntf_dh_secret
         FROM rcv_queues
         WHERE host = ? AND port = ? AND ntf_id = ?
       |]

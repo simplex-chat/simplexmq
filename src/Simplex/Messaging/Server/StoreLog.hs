@@ -48,7 +48,7 @@ data StoreLog (a :: IOMode) where
 data StoreLogRecord
   = CreateQueue QueueRec
   | SecureQueue QueueId SndPublicVerifyKey
-  | AddNotifier QueueId NotifierId NtfPublicVerifyKey
+  | AddNotifier QueueId NotifierId NtfPublicVerifyKey RcvNtfDhSecret
   | DeleteQueue QueueId
 
 instance StrEncoding QueueRec where
@@ -62,7 +62,7 @@ instance StrEncoding QueueRec where
       ]
       <> maybe "" notifierStr notifier
     where
-      notifierStr (nId, nKey) = " nid=" <> strEncode nId <> " nk=" <> strEncode nKey
+      notifierStr (nId, nKey, rcvNtfDhSecret) = " nid=" <> strEncode nId <> " nk=" <> strEncode nKey <> " ndh=" <> strEncode rcvNtfDhSecret
 
   strP = do
     recipientId <- "rid=" *> strP_
@@ -70,20 +70,20 @@ instance StrEncoding QueueRec where
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
-    notifier <- optional $ (,) <$> (" nid=" *> strP_) <*> ("nk=" *> strP)
+    notifier <- optional $ (,,) <$> (" nid=" *> strP_) <*> ("nk=" *> strP_) <*> ("ndh=" *> strP)
     pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
     CreateQueue q -> strEncode (Str "CREATE", q)
     SecureQueue rId sKey -> strEncode (Str "SECURE", rId, sKey)
-    AddNotifier rId nId nKey -> strEncode (Str "NOTIFIER", rId, nId, nKey)
+    AddNotifier rId nId nKey rcvNtfDhSecret -> strEncode (Str "NOTIFIER", rId, nId, nKey, rcvNtfDhSecret)
     DeleteQueue rId -> strEncode (Str "DELETE", rId)
 
   strP =
     "CREATE " *> (CreateQueue <$> strP)
       <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
-      <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP_ <*> strP)
+      <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP_ <*> strP_ <*> strP)
       <|> "DELETE " *> (DeleteQueue <$> strP)
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
@@ -115,8 +115,8 @@ logCreateQueue s = writeStoreLogRecord s . CreateQueue
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicVerifyKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
 
-logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NotifierId -> NtfPublicVerifyKey -> IO ()
-logAddNotifier s qId nId nKey = writeStoreLogRecord s $ AddNotifier qId nId nKey
+logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NotifierId -> NtfPublicVerifyKey -> RcvNtfDhSecret -> IO ()
+logAddNotifier s qId nId nKey rcvNtfDhSecret = writeStoreLogRecord s $ AddNotifier qId nId nKey rcvNtfDhSecret
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
@@ -149,7 +149,7 @@ readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLo
     procLogRecord m = \case
       CreateQueue q -> M.insert (recipientId q) q m
       SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
-      AddNotifier qId nId nKey -> M.adjust (\q -> q {notifier = Just (nId, nKey)}) qId m
+      AddNotifier qId nId nKey rcvNtfDhSecret -> M.adjust (\q -> q {notifier = Just (nId, nKey, rcvNtfDhSecret)}) qId m
       DeleteQueue qId -> M.delete qId m
     printError :: LogParsingError -> IO ()
     printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s

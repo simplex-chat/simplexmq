@@ -190,4 +190,4 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
     addNotifier q = case notifier q of
       Nothing -> id
-      Just (nId, _) -> M.insert nId (recipientId q)
+      Just (nId, _, _) -> M.insert nId (recipientId q)

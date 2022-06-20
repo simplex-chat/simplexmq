@@ -61,14 +61,14 @@ instance MonadQueueStore QueueStore STM where
         Just _ -> pure Nothing
         _ -> writeTVar qVar q {senderKey = Just sKey} $> Just q
 
-  addQueueNotifier :: QueueStore -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> STM (Either ErrorType QueueRec)
-  addQueueNotifier QueueStore {queues, notifiers} rId nId nKey = do
+  addQueueNotifier :: QueueStore -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> RcvNtfDhSecret -> STM (Either ErrorType QueueRec)
+  addQueueNotifier QueueStore {queues, notifiers} rId nId nKey rcvNtfDhSecret = do
     ifM (TM.member nId notifiers) (pure $ Left DUPLICATE_) $
       withQueue rId queues $ \qVar ->
         readTVar qVar >>= \q -> case notifier q of
           Just _ -> pure Nothing
           _ -> do
-            writeTVar qVar q {notifier = Just (nId, nKey)}
+            writeTVar qVar q {notifier = Just (nId, nKey, rcvNtfDhSecret)}
             TM.insert nId rId notifiers
             pure $ Just q
 
@@ -82,7 +82,7 @@ instance MonadQueueStore QueueStore STM where
       Just qVar ->
         readTVar qVar >>= \q -> do
           TM.delete (senderId q) senders
-          forM_ (notifier q) $ \(nId, _) -> TM.delete nId notifiers
+          forM_ (notifier q) $ \(nId, _, _) -> TM.delete nId notifiers
           pure $ Right ()
       _ -> pure $ Left AUTH
 
