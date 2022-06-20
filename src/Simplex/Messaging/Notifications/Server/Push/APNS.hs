@@ -272,10 +272,10 @@ apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> Either
 apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
   PNVerification (NtfRegCode code) ->
     encrypt code $ \code' ->
-      apn APNSBackground {contentAvailable = 1} . Just $ J.object ["verification" .= code', "nonce" .= nonce]
+      apn APNSBackground {contentAvailable = 1} . Just $ J.object ["nonce" .= nonce, "verification" .= code']
   PNMessage pnMessageData ->
     encrypt (strEncode pnMessageData) $ \ntfData ->
-      apn apnMutableContent . Just $ J.object ["checkMessage" .= ntfData, "nonce" .= nonce]
+      apn apnMutableContent . Just $ J.object ["nonce" .= nonce, "message" .= ntfData]
   PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where

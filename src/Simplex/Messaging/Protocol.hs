@@ -81,6 +81,7 @@ module Simplex.Messaging.Protocol
     MsgId,
     MsgBody,
     EncNMsgMeta,
+    SMPMsgMeta (..),
     NMsgMeta (..),
     MsgFlags (..),
     noMsgFlags,
@@ -254,10 +255,18 @@ data BrokerMsg where
 
 type EncNMsgMeta = ByteString
 
+data SMPMsgMeta = SMPMsgMeta
+  { msgId :: MsgId,
+    msgTs :: SystemTime,
+    msgFlags :: MsgFlags
+  }
+  deriving (Show)
+
 data NMsgMeta = NMsgMeta
   { msgId :: MsgId,
     msgTs :: SystemTime
   }
+  deriving (Show)
 
 instance Encoding NMsgMeta where
   smpEncode NMsgMeta {msgId, msgTs} =
@@ -267,8 +276,10 @@ instance Encoding NMsgMeta where
     (msgId, msgTs, Tail _) <- smpP
     pure NMsgMeta {msgId, msgTs}
 
-newtype MsgFlags = MsgFlags {notification :: Bool}
-  deriving (Eq, Show)
+data MsgFlags = MsgFlags {notification :: Bool}
+  deriving (Eq, Show, Generic)
+
+instance ToJSON MsgFlags where toEncoding = J.genericToEncoding J.defaultOptions
 
 instance Encoding MsgFlags where
   smpEncode MsgFlags {notification} = smpEncode notification

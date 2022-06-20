@@ -56,6 +56,10 @@ tryE :: Monad m => ExceptT e m a -> ExceptT e m (Either e a)
 tryE m = (Right <$> m) `catchE` (pure . Left)
 {-# INLINE tryE #-}
 
+liftE :: (e -> e') -> ExceptT e IO a -> ExceptT e' IO a
+liftE f a = ExceptT $ first f <$> runExceptT a
+{-# INLINE liftE #-}
+
 ifM :: Monad m => m Bool -> m a -> m a -> m a
 ifM ba t f = ba >>= \b -> if b then t else f
 {-# INLINE ifM #-}
