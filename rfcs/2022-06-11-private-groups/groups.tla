@@ -244,6 +244,20 @@ GiveUpOnMembers ==
             ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
 
+LeaderReceiveKickAck ==
+    /\ proposal /= Nothing
+    /\ proposal.state = Kicking
+    /\ \E message \in messages :
+        /\ message.type = KickAck
+        /\ message.recipient = Leader
+        /\ message.kick_id = proposal.kick_id
+        /\ IF   proposal.awaiting_response = { message.sender }
+           THEN /\ proposal' = Nothing
+                /\ complete_proposals' = complete_proposals \union { proposal.kick_id }
+           ELSE /\ proposal' = [ proposal EXCEPT !.awaiting_response = @ \ { message.sender } ]
+                /\ UNCHANGED <<complete_proposals>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
+
 ApproverReceiveProposal ==
     \E message \in messages :
         /\ message.type = Propose
@@ -492,6 +506,7 @@ Next ==
     \/ LeaderReceiveCantHold
     \/ LeaderReceiveHold
     \/ GiveUpOnMembers
+    \/ LeaderReceiveKickAck
     \/ ApproverReceiveProposal
     \/ ApproverReceiveHold
     \/ ApproverReceiveContinue
