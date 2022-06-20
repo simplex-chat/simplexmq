@@ -24,7 +24,7 @@ import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.STM
-import Simplex.Messaging.Server.QueueStore (QueueRec (..))
+import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -190,4 +190,4 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
     addNotifier q = case notifier q of
       Nothing -> id
-      Just (nId, _) -> M.insert nId (recipientId q)
+      Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)

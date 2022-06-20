@@ -271,7 +271,7 @@ verifyTransmission sig_ signed queueId cmd = do
     Cmd SRecipient _ -> verifyCmd SRecipient $ verifyCmdSignature sig_ signed . recipientKey
     Cmd SSender SEND {} -> verifyCmd SSender $ verifyMaybe . senderKey
     Cmd SSender PING -> pure True
-    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap snd . notifier
+    Cmd SNotifier NSUB -> verifyCmd SNotifier $ verifyMaybe . fmap notifierKey . notifier
   where
     verifyCmd :: SParty p -> (QueueRec -> Bool) -> m Bool
     verifyCmd party f = do
@@ -333,7 +333,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             GET -> getMessage
             ACK msgId -> acknowledgeMsg msgId
             KEY sKey -> secureQueue_ st sKey
-            NKEY nKey -> addQueueNotifier_ st nKey
+            NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
             OFF -> suspendQueue_ st
             DEL -> delQueueAndMsgs st
       where
@@ -387,19 +387,23 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
           atomically $ modifyTVar (qSecured stats) (+ 1)
           atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
 
-        addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> m (Transmission BrokerMsg)
-        addQueueNotifier_ st nKey = (corrId,queueId,) <$> addNotifierRetry 3
+        addQueueNotifier_ :: QueueStore -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (Transmission BrokerMsg)
+        addQueueNotifier_ st notifierKey dhKey = do
+          (rcvPublicDhKey, privDhKey) <- liftIO C.generateKeyPair'
+          let rcvNtfDhSecret = C.dh' dhKey privDhKey
+          (corrId,queueId,) <$> addNotifierRetry 3 rcvPublicDhKey rcvNtfDhSecret
           where
-            addNotifierRetry :: Int -> m BrokerMsg
-            addNotifierRetry 0 = pure $ ERR INTERNAL
-            addNotifierRetry n = do
-              nId <- randomId =<< asks (queueIdBytes . config)
-              atomically (addQueueNotifier st queueId nId nKey) >>= \case
-                Left DUPLICATE_ -> addNotifierRetry $ n - 1
+            addNotifierRetry :: Int -> RcvNtfPublicDhKey -> RcvNtfDhSecret -> m BrokerMsg
+            addNotifierRetry 0 _ _ = pure $ ERR INTERNAL
+            addNotifierRetry n rcvPublicDhKey rcvNtfDhSecret = do
+              notifierId <- randomId =<< asks (queueIdBytes . config)
+              let ntfCreds = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
+              atomically (addQueueNotifier st queueId ntfCreds) >>= \case
+                Left DUPLICATE_ -> addNotifierRetry (n - 1) rcvPublicDhKey rcvNtfDhSecret
                 Left e -> pure $ ERR e
                 Right _ -> do
-                  withLog $ \s -> logAddNotifier s queueId nId nKey
-                  pure $ NID nId
+                  withLog $ \s -> logAddNotifier s queueId ntfCreds
+                  pure $ NID notifierId rcvPublicDhKey
 
         suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
         suspendQueue_ st = do
@@ -545,20 +549,20 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
 
                 trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
                 trySendNotification msg ntfNonceDrg =
-                  forM_ (notifier qr) $ \(nId, _) ->
-                    mapM_ (writeNtf nId msg ntfNonceDrg) =<< TM.lookup nId notifiers
+                  forM_ (notifier qr) $ \NtfCreds {notifierId, rcvNtfDhSecret} ->
+                    mapM_ (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
 
-                writeNtf :: NotifierId -> Message -> TVar ChaChaDRG -> Client -> STM ()
-                writeNtf nId msg ntfNonceDrg Client {sndQ = q} =
+                writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM ()
+                writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
                   unlessM (isFullTBQueue sndQ) $ do
-                    (nmsgNonce, encNMsgMeta) <- mkMessageNotification msg ntfNonceDrg
+                    (nmsgNonce, encNMsgMeta) <- mkMessageNotification msg rcvNtfDhSecret ntfNonceDrg
                     writeTBQueue q (CorrId "", nId, NMSG nmsgNonce encNMsgMeta)
 
-                mkMessageNotification :: Message -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
-                mkMessageNotification Message {msgId, ts} ntfNonceDrg = do
+                mkMessageNotification :: Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
+                mkMessageNotification Message {msgId, ts} rcvNtfDhSecret ntfNonceDrg = do
                   cbNonce <- C.pseudoRandomCbNonce ntfNonceDrg
                   let msgMeta = NMsgMeta {msgId, msgTs = ts}
-                      encNMsgMeta = C.cbEncrypt (rcvDhSecret qr) cbNonce (smpEncode msgMeta) 128
+                      encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
                   pure . (cbNonce,) $ fromRight "" encNMsgMeta
 
         deliverMessage :: RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> m (Transmission BrokerMsg)

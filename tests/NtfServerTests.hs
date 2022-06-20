@@ -108,9 +108,11 @@ testNotificationSubscription (ATransport t) =
           RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY code)
           RespNtf "2a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("2a", tId, TCHK)
           -- enable queue notifications
-          Resp "3" _ (NID nId) <- signSendRecv rh rKey ("3", rId, NKEY nPub)
+          (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- C.generateKeyPair'
+          Resp "3" _ (NID nId rcvNtfSrvPubDhKey) <- signSendRecv rh rKey ("3", rId, NKEY nPub rcvNtfPubDhKey)
           let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
               q = SMPQueueNtf srv nId
+              rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
           RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", "", SNEW $ NewNtfSub tId q nKey)
           -- send message
           threadDelay 50000
@@ -123,7 +125,7 @@ testNotificationSubscription (ATransport t) =
               Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' message
               Right APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer, notifierId}, nmsgNonce, encNMsgMeta} =
                 parse strP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
-              Right nMsgMeta = C.cbDecrypt rcvDhSecret nmsgNonce encNMsgMeta
+              Right nMsgMeta = C.cbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta
               Right NMsgMeta {msgId, msgTs} = parse smpP (AP.INTERNAL "error parsing NMsgMeta") nMsgMeta
           smpServer `shouldBe` srv
           notifierId `shouldBe` nId

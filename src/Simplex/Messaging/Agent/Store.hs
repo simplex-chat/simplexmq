@@ -26,6 +26,7 @@ import Simplex.Messaging.Protocol
     NtfPrivateSignKey,
     NtfPublicVerifyKey,
     RcvDhSecret,
+    RcvNtfDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
   )
@@ -51,11 +52,19 @@ data RcvQueue = RcvQueue
     sndId :: Maybe SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
-    -- | key pair to be used by the notification server to sign transmissions
-    ntfPublicKey :: Maybe NtfPublicVerifyKey,
-    ntfPrivateKey :: Maybe NtfPrivateSignKey,
+    -- | credentials used in context of notifications
+    clientNtfCreds :: Maybe ClientNtfCreds
+  }
+  deriving (Eq, Show)
+
+data ClientNtfCreds = ClientNtfCreds
+  { -- | key pair to be used by the notification server to sign transmissions
+    ntfPublicKey :: NtfPublicVerifyKey,
+    ntfPrivateKey :: NtfPrivateSignKey,
     -- | queue ID to be used by the notification server for NSUB command
-    notifierId :: Maybe NotifierId
+    notifierId :: NotifierId,
+    -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
+    rcvNtfDhSecret :: RcvNtfDhSecret
   }
   deriving (Eq, Show)
 

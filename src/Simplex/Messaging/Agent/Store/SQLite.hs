@@ -35,9 +35,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setRcvQueueConfirmedE2E,
     setSndQueueStatus,
     getRcvQueue,
-    -- RcvQueue notifier key and ID
-    setRcvQueueNotifierKey,
-    setRcvQueueNotifierId,
+    setRcvQueueNtfCreds,
     -- Confirmations
     createConfirmation,
     acceptConfirmation,
@@ -126,7 +124,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvDhSecret)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..), RcvNtfDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
@@ -351,27 +349,16 @@ getRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId =
   maybe (Left SEConnNotFound) Right <$> getRcvQueueByConnId_ db connId
 
-setRcvQueueNotifierKey :: DB.Connection -> ConnId -> NtfPublicVerifyKey -> NtfPrivateSignKey -> IO ()
-setRcvQueueNotifierKey db connId ntfPublicKey ntfPrivateKey =
+setRcvQueueNtfCreds :: DB.Connection -> ConnId -> ClientNtfCreds -> IO ()
+setRcvQueueNtfCreds db connId ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} =
   DB.execute
     db
     [sql|
       UPDATE rcv_queues
-      SET ntf_public_key = ?, ntf_private_key = ?
+      SET ntf_public_key = ?, ntf_private_key = ?, ntf_id = ?, rcv_ntf_dh_secret = ?
       WHERE conn_id = ?
     |]
-    (ntfPublicKey, ntfPrivateKey, connId)
-
-setRcvQueueNotifierId :: DB.Connection -> ConnId -> NotifierId -> IO ()
-setRcvQueueNotifierId db connId nId =
-  DB.execute
-    db
-    [sql|
-      UPDATE rcv_queues
-      SET ntf_id = ?
-      WHERE conn_id = ?
-    |]
-    (nId, connId)
+    (ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret, connId)
 
 createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
 createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
@@ -848,17 +835,20 @@ getActiveNtfToken db =
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
 
-getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvDhSecret))
+getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvNtfDhSecret))
 getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
-  firstRow id SEConnNotFound $
+  firstRow' res SEConnNotFound $
     DB.query
       db
       [sql|
-        SELECT conn_id, rcv_dh_secret
+        SELECT conn_id, rcv_ntf_dh_secret
         FROM rcv_queues
         WHERE host = ? AND port = ? AND ntf_id = ?
       |]
       (host, port, notifierId)
+  where
+    res (connId, Just rcvNtfDhSecret) = Right (connId, rcvNtfDhSecret)
+    res _ = Left SEConnNotFound
 
 -- * Auxiliary helpers
 
@@ -1039,16 +1029,19 @@ getRcvQueueByConnId_ dbConn connId =
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
           q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
-          q.ntf_public_key, q.ntf_private_key, q.ntf_id
+          q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey, ntfPrivateKey, notifierId)) =
+    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
       let server = SMPServer host port keyHash
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfPublicKey, ntfPrivateKey, notifierId}
+          clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
+            (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
+            _ -> Nothing
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, clientNtfCreds}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =

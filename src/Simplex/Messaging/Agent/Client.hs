@@ -85,7 +85,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), SMPMsgMeta, SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvNtfPublicDhKey, SMPMsgMeta, SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -421,9 +421,7 @@ newRcvQueue_ a c srv = do
             e2eDhSecret = Nothing,
             sndId = Just sndId,
             status = New,
-            ntfPublicKey = Nothing,
-            ntfPrivateKey = Nothing,
-            notifierId = Nothing
+            clientNtfCreds = Nothing
           }
   pure (rq, SMPQueueUri srv sndId SMP.smpClientVRange e2eDhKey)
 
@@ -530,10 +528,10 @@ secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
   withLogClient c server rcvId "KEY <key>" $ \smp ->
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
 
-enableQueueNotifications :: AgentMonad m => AgentClient -> RcvQueue -> NtfPublicVerifyKey -> m NotifierId
-enableQueueNotifications c RcvQueue {server, rcvId, rcvPrivateKey} notifierKey =
+enableQueueNotifications :: AgentMonad m => AgentClient -> RcvQueue -> NtfPublicVerifyKey -> RcvNtfPublicDhKey -> m (NotifierId, RcvNtfPublicDhKey)
+enableQueueNotifications c RcvQueue {server, rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =
   withLogClient c server rcvId "NKEY <nkey>" $ \smp ->
-    enableSMPQueueNotifications smp rcvPrivateKey rcvId notifierKey
+    enableSMPQueueNotifications smp rcvPrivateKey rcvId notifierKey rcvNtfPublicDhKey
 
 sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
 sendAck c RcvQueue {server, rcvId, rcvPrivateKey} msgId =
