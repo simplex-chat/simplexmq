@@ -9,7 +9,7 @@
 exec &> >(tee -i /var/log/stackscript.log)
 
 # Uncomment next line to enable debugging features
-# set -xeo pipefail
+set -xeo pipefail
 
 cd $HOME
 
@@ -79,7 +79,7 @@ init_opts+=(--ip $ip_address)
 
 [[ -n "$FQDN" ]] && init_opts+=(-n $FQDN)
 
-smp-server init "${init_opts[@]}"
+ntf-server init "${init_opts[@]}"
 
 # Server fingerprint
 fingerprint=$(cat /etc/opt/simplex-notifications/fingerprint)
@@ -98,6 +98,7 @@ fi
 # Set up welcome script
 on_login_script="/opt/simplex-notifications/on_login.sh"
 
+# TODO fix address
 # / Welcome script
 cat > $on_login_script << EOF
 #!/bin/bash
