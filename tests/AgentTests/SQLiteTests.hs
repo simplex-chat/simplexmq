@@ -161,13 +161,7 @@ rcvQueue1 =
       e2eDhSecret = Nothing,
       sndId = Just "2345",
       status = New,
-      ntfQCreds =
-        NtfQCreds
-          { ntfPublicKey = Nothing,
-            ntfPrivateKey = Nothing,
-            notifierId = Nothing,
-            rcvNtfDhSecret = Nothing
-          }
+      ntfQCreds = Nothing
     }
 
 sndQueue1 :: SndQueue
@@ -334,13 +328,7 @@ testUpgradeSndConnToDuplex =
               e2eDhSecret = Nothing,
               sndId = Just "4567",
               status = New,
-              ntfQCreds =
-                NtfQCreds
-                  { ntfPublicKey = Nothing,
-                    ntfPrivateKey = Nothing,
-                    notifierId = Nothing,
-                    rcvNtfDhSecret = Nothing
-                  }
+              ntfQCreds = Nothing
             }
     upgradeSndConnToDuplex db "conn1" anotherRcvQueue
       `shouldReturn` Left (SEBadConnType CRcv)

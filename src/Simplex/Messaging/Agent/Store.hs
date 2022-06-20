@@ -53,18 +53,18 @@ data RcvQueue = RcvQueue
     -- | queue status
     status :: QueueStatus,
     -- | credentials used in context of notifications
-    ntfQCreds :: NtfQCreds
+    ntfQCreds :: Maybe NtfQCreds
   }
   deriving (Eq, Show)
 
 data NtfQCreds = NtfQCreds
   { -- | key pair to be used by the notification server to sign transmissions
-    ntfPublicKey :: Maybe NtfPublicVerifyKey,
-    ntfPrivateKey :: Maybe NtfPrivateSignKey,
+    ntfPublicKey :: NtfPublicVerifyKey,
+    ntfPrivateKey :: NtfPrivateSignKey,
     -- | queue ID to be used by the notification server for NSUB command
-    notifierId :: Maybe NotifierId,
+    notifierId :: NotifierId,
     -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
-    rcvNtfDhSecret :: Maybe RcvNtfDhSecret
+    rcvNtfDhSecret :: RcvNtfDhSecret
   }
   deriving (Eq, Show)
 

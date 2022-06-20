@@ -59,16 +59,16 @@ processNtfSub c (connId, cmd) = do
   case cmd of
     NSCCreate -> do
       -- TODO merge getNtfSubscription and getRcvQueue into one method to read both in same transaction?
-      (sub_, RcvQueue {server = smpServer, ntfQCreds = NtfQCreds {notifierId}}) <- withStore c $ \db -> runExceptT $ do
+      (sub_, RcvQueue {server = smpServer, ntfQCreds}) <- withStore c $ \db -> runExceptT $ do
         sub_ <- liftIO $ getNtfSubscription db connId
         q <- ExceptT $ getRcvQueue db connId
         pure (sub_, q)
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
-          case notifierId of
-            (Just nId) -> do
-              let newSub = newNtfSubscription connId smpServer (Just nId) ntfServer NASKey currentTime
+          case ntfQCreds of
+            Just NtfQCreds {notifierId} -> do
+              let newSub = newNtfSubscription connId smpServer (Just notifierId) ntfServer NASKey currentTime
               withStore' c $ \db -> createNtfSubscription db newSub (NtfSubAction NSACreate)
             _ -> do
               let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew currentTime
@@ -123,13 +123,13 @@ runNtfWorker c srv doWork = forever $ do
       ts <- liftIO getCurrentTime
       case nextSub_ of
         Nothing -> noWorkToDo
-        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfQCreds = NtfQCreds {ntfPrivateKey, notifierId}}) ->
+        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfQCreds}) ->
           unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
-              NSACreate -> case (ntfPrivateKey, notifierId) of
-                (Just ntfPrivKey, Just nId)
+              NSACreate -> case ntfQCreds of
+                Just NtfQCreds {ntfPrivateKey, notifierId}
                   | ntfTknStatus == NTActive -> do
-                    nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer nId) ntfPrivKey
+                    nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer notifierId) ntfPrivateKey
                     let actionTs = addUTCTime 30 ts
                     withStore' c $ \db ->
                       updateNtfSubscription db connId ntfSub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew, ntfSubActionTs = actionTs} (NtfSubAction NSACheck)
@@ -174,13 +174,13 @@ runNtfSMPWorker c srv doWork = forever $ do
               NSAKey
                 | ntfTknStatus == NTActive -> do
                   C.SignAlg a <- asks (cmdSignAlg . config)
-                  (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
+                  (ntfPublicKey, ntfPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
                   (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- liftIO C.generateKeyPair'
-                  (nId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPubKey rcvNtfPubDhKey
+                  (notifierId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPublicKey rcvNtfPubDhKey
                   let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
                   withStore' c $ \st -> do
-                    setRcvQueueNtfCreds st connId NtfQCreds {ntfPublicKey = Just ntfPubKey, ntfPrivateKey = Just ntfPrivKey, notifierId = Just nId, rcvNtfDhSecret = Just rcvNtfDhSecret}
-                    updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
+                    setRcvQueueNtfCreds st connId NtfQCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
+                    updateNtfSubscription st connId ntfSub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                   ns <- asks ntfSupervisor
                   atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
                 | otherwise -> ntfInternalError c connId "NSAKey - token not active"
