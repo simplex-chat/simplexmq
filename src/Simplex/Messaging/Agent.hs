@@ -402,9 +402,16 @@ getNotificationMessage' c nonce encNtfInfo = do
       ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
       PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
       (ntfConnId, rcvNtfDhSecret_) <- withStore c (`getNtfRcvQueue` smpQueue)
-      ntfMsgMeta <- case rcvNtfDhSecret_ of
-        Just rcvNtfDhSecret -> (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchError` \_ -> pure Nothing
-        Nothing -> pure Nothing
+      -- ntfMsgMeta <- case rcvNtfDhSecret_ of
+      --   Just rcvNtfDhSecret -> (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchError` \_ -> pure Nothing
+      --   Nothing -> pure Nothing
+      ntfMsgMeta <-
+        maybe
+          (pure Nothing)
+          ( \rcvNtfDhSecret ->
+              (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchError` \_ -> pure Nothing
+          )
+          rcvNtfDhSecret_
       maxMsgs <- asks $ ntfMaxMessages . config
       (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId maxMsgs ntfMsgMeta []
     _ -> throwError $ CMD PROHIBITED
