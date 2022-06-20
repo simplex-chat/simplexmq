@@ -35,9 +35,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setRcvQueueConfirmedE2E,
     setSndQueueStatus,
     getRcvQueue,
-    -- RcvQueue notifications fields
-    setRcvQueueNotifierKey,
-    setRcvQueueNtfIdDhKey,
+    setRcvQueueNtfCreds,
     -- Confirmations
     createConfirmation,
     acceptConfirmation,
@@ -126,7 +124,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), RcvNtfDhSecret)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..), RcvNtfDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
@@ -351,27 +349,16 @@ getRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId =
   maybe (Left SEConnNotFound) Right <$> getRcvQueueByConnId_ db connId
 
-setRcvQueueNotifierKey :: DB.Connection -> ConnId -> NtfPublicVerifyKey -> NtfPrivateSignKey -> IO ()
-setRcvQueueNotifierKey db connId ntfPublicKey ntfPrivateKey =
+setRcvQueueNtfCreds :: DB.Connection -> ConnId -> NtfQueueCreds -> IO ()
+setRcvQueueNtfCreds db connId NtfQueueCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} =
   DB.execute
     db
     [sql|
       UPDATE rcv_queues
-      SET ntf_public_key = ?, ntf_private_key = ?
+      SET ntf_public_key = ?, ntf_private_key = ?, ntf_id = ?, rcv_ntf_dh_secret = ?
       WHERE conn_id = ?
     |]
-    (ntfPublicKey, ntfPrivateKey, connId)
-
-setRcvQueueNtfIdDhKey :: DB.Connection -> ConnId -> NotifierId -> RcvNtfDhSecret -> IO ()
-setRcvQueueNtfIdDhKey db connId nId rcvNtfDhSecret =
-  DB.execute
-    db
-    [sql|
-      UPDATE rcv_queues
-      SET ntf_id = ?, rcv_ntf_dh_secret = ?
-      WHERE conn_id = ?
-    |]
-    (nId, rcvNtfDhSecret, connId)
+    (ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret, connId)
 
 createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
 createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
@@ -1051,7 +1038,7 @@ getRcvQueueByConnId_ dbConn connId =
   where
     rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret)) =
       let server = SMPServer host port keyHash
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfQueueCreds = NtfQueueCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =

@@ -421,10 +421,13 @@ newRcvQueue_ a c srv = do
             e2eDhSecret = Nothing,
             sndId = Just sndId,
             status = New,
-            ntfPublicKey = Nothing,
-            ntfPrivateKey = Nothing,
-            notifierId = Nothing,
-            rcvNtfDhSecret = Nothing
+            ntfQueueCreds =
+              NtfQueueCreds
+                { ntfPublicKey = Nothing,
+                  ntfPrivateKey = Nothing,
+                  notifierId = Nothing,
+                  rcvNtfDhSecret = Nothing
+                }
           }
   pure (rq, SMPQueueUri srv sndId SMP.smpClientVRange e2eDhKey)
 

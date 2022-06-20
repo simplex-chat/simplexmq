@@ -52,7 +52,13 @@ data RcvQueue = RcvQueue
     sndId :: Maybe SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
-    -- | key pair to be used by the notification server to sign transmissions
+    -- | credentials
+    ntfQueueCreds :: NtfQueueCreds
+  }
+  deriving (Eq, Show)
+
+data NtfQueueCreds = NtfQueueCreds
+  { -- | key pair to be used by the notification server to sign transmissions
     ntfPublicKey :: Maybe NtfPublicVerifyKey,
     ntfPrivateKey :: Maybe NtfPrivateSignKey,
     -- | queue ID to be used by the notification server for NSUB command

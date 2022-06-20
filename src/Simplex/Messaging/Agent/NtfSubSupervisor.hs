@@ -59,7 +59,7 @@ processNtfSub c (connId, cmd) = do
   case cmd of
     NSCCreate -> do
       -- TODO merge getNtfSubscription and getRcvQueue into one method to read both in same transaction?
-      (sub_, RcvQueue {notifierId, server = smpServer}) <- withStore c $ \db -> runExceptT $ do
+      (sub_, RcvQueue {server = smpServer, ntfQueueCreds = NtfQueueCreds {notifierId}}) <- withStore c $ \db -> runExceptT $ do
         sub_ <- liftIO $ getNtfSubscription db connId
         q <- ExceptT $ getRcvQueue db connId
         pure (sub_, q)
@@ -123,7 +123,7 @@ runNtfWorker c srv doWork = forever $ do
       ts <- liftIO getCurrentTime
       case nextSub_ of
         Nothing -> noWorkToDo
-        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfPrivateKey, notifierId}) ->
+        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfQueueCreds = NtfQueueCreds {ntfPrivateKey, notifierId}}) ->
           unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
               NSACreate -> case (ntfPrivateKey, notifierId) of
@@ -168,30 +168,22 @@ runNtfSMPWorker c srv doWork = forever $ do
       ts <- liftIO getCurrentTime
       case nextSub_ of
         Nothing -> noWorkToDo
-        Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq@RcvQueue {ntfPublicKey}) ->
+        Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq) ->
           unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
               NSAKey
                 | ntfTknStatus == NTActive -> do
                   C.SignAlg a <- asks (cmdSignAlg . config)
-                  case ntfPublicKey of
-                    Just ntfPubKey ->
-                      enableNotificationsWithNKey ntfPubKey
-                    _ -> do
-                      (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
-                      withStore' c $ \db -> setRcvQueueNotifierKey db connId ntfPubKey ntfPrivKey
-                      enableNotificationsWithNKey ntfPubKey
+                  (ntfPubKey, ntfPrivKey) <- liftIO $ C.generateSignatureKeyPair a
+                  (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- liftIO C.generateKeyPair'
+                  (nId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPubKey rcvNtfPubDhKey
+                  let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
+                  withStore' c $ \st -> do
+                    setRcvQueueNtfCreds st connId NtfQueueCreds {ntfPublicKey = Just ntfPubKey, ntfPrivateKey = Just ntfPrivKey, notifierId = Just nId, rcvNtfDhSecret = Just rcvNtfDhSecret}
+                    updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
+                  ns <- asks ntfSupervisor
+                  atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
                 | otherwise -> ntfInternalError c connId "NSAKey - token not active"
-                where
-                  enableNotificationsWithNKey ntfPubKey = do
-                    (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- liftIO C.generateKeyPair'
-                    (nId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPubKey rcvNtfPubDhKey
-                    let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
-                    withStore' c $ \st -> do
-                      setRcvQueueNtfIdDhKey st connId nId rcvNtfDhSecret
-                      updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
-                    ns <- asks ntfSupervisor
-                    atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay
