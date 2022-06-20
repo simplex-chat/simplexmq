@@ -349,8 +349,8 @@ getRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId =
   maybe (Left SEConnNotFound) Right <$> getRcvQueueByConnId_ db connId
 
-setRcvQueueNtfCreds :: DB.Connection -> ConnId -> NtfQCreds -> IO ()
-setRcvQueueNtfCreds db connId NtfQCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} =
+setRcvQueueNtfCreds :: DB.Connection -> ConnId -> ClientNtfCreds -> IO ()
+setRcvQueueNtfCreds db connId ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} =
   DB.execute
     db
     [sql|
@@ -1038,10 +1038,10 @@ getRcvQueueByConnId_ dbConn connId =
   where
     rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
       let server = SMPServer host port keyHash
-          ntfQCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
-            (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ NtfQCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
+          clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
+            (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
             _ -> Nothing
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfQCreds}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, clientNtfCreds}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =

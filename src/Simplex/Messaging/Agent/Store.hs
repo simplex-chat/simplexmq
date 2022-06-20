@@ -53,11 +53,11 @@ data RcvQueue = RcvQueue
     -- | queue status
     status :: QueueStatus,
     -- | credentials used in context of notifications
-    ntfQCreds :: Maybe NtfQCreds
+    clientNtfCreds :: Maybe ClientNtfCreds
   }
   deriving (Eq, Show)
 
-data NtfQCreds = NtfQCreds
+data ClientNtfCreds = ClientNtfCreds
   { -- | key pair to be used by the notification server to sign transmissions
     ntfPublicKey :: NtfPublicVerifyKey,
     ntfPrivateKey :: NtfPrivateSignKey,

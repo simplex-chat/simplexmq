@@ -421,7 +421,7 @@ newRcvQueue_ a c srv = do
             e2eDhSecret = Nothing,
             sndId = Just sndId,
             status = New,
-            ntfQCreds = Nothing
+            clientNtfCreds = Nothing
           }
   pure (rq, SMPQueueUri srv sndId SMP.smpClientVRange e2eDhKey)
 

@@ -59,15 +59,15 @@ processNtfSub c (connId, cmd) = do
   case cmd of
     NSCCreate -> do
       -- TODO merge getNtfSubscription and getRcvQueue into one method to read both in same transaction?
-      (sub_, RcvQueue {server = smpServer, ntfQCreds}) <- withStore c $ \db -> runExceptT $ do
+      (sub_, RcvQueue {server = smpServer, clientNtfCreds}) <- withStore c $ \db -> runExceptT $ do
         sub_ <- liftIO $ getNtfSubscription db connId
         q <- ExceptT $ getRcvQueue db connId
         pure (sub_, q)
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
-          case ntfQCreds of
-            Just NtfQCreds {notifierId} -> do
+          case clientNtfCreds of
+            Just ClientNtfCreds {notifierId} -> do
               let newSub = newNtfSubscription connId smpServer (Just notifierId) ntfServer NASKey currentTime
               withStore' c $ \db -> createNtfSubscription db newSub (NtfSubAction NSACreate)
             _ -> do
@@ -123,11 +123,11 @@ runNtfWorker c srv doWork = forever $ do
       ts <- liftIO getCurrentTime
       case nextSub_ of
         Nothing -> noWorkToDo
-        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfQCreds}) ->
+        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {clientNtfCreds}) ->
           unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
-              NSACreate -> case ntfQCreds of
-                Just NtfQCreds {ntfPrivateKey, notifierId}
+              NSACreate -> case clientNtfCreds of
+                Just ClientNtfCreds {ntfPrivateKey, notifierId}
                   | ntfTknStatus == NTActive -> do
                     nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer notifierId) ntfPrivateKey
                     let actionTs = addUTCTime 30 ts
@@ -179,7 +179,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                   (notifierId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPublicKey rcvNtfPubDhKey
                   let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
                   withStore' c $ \st -> do
-                    setRcvQueueNtfCreds st connId NtfQCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
+                    setRcvQueueNtfCreds st connId ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
                     updateNtfSubscription st connId ntfSub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                   ns <- asks ntfSupervisor
                   atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
