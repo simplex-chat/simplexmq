@@ -349,8 +349,8 @@ getRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId =
   maybe (Left SEConnNotFound) Right <$> getRcvQueueByConnId_ db connId
 
-setRcvQueueNtfCreds :: DB.Connection -> ConnId -> NtfQueueCreds -> IO ()
-setRcvQueueNtfCreds db connId NtfQueueCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} =
+setRcvQueueNtfCreds :: DB.Connection -> ConnId -> NtfQCreds -> IO ()
+setRcvQueueNtfCreds db connId NtfQCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} =
   DB.execute
     db
     [sql|
@@ -1038,7 +1038,7 @@ getRcvQueueByConnId_ dbConn connId =
   where
     rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret)) =
       let server = SMPServer host port keyHash
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfQueueCreds = NtfQueueCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, ntfQCreds = NtfQCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =

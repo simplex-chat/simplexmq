@@ -161,8 +161,8 @@ rcvQueue1 =
       e2eDhSecret = Nothing,
       sndId = Just "2345",
       status = New,
-      ntfQueueCreds =
-        NtfQueueCreds
+      ntfQCreds =
+        NtfQCreds
           { ntfPublicKey = Nothing,
             ntfPrivateKey = Nothing,
             notifierId = Nothing,
@@ -334,8 +334,8 @@ testUpgradeSndConnToDuplex =
               e2eDhSecret = Nothing,
               sndId = Just "4567",
               status = New,
-              ntfQueueCreds =
-                NtfQueueCreds
+              ntfQCreds =
+                NtfQCreds
                   { ntfPublicKey = Nothing,
                     ntfPrivateKey = Nothing,
                     notifierId = Nothing,

@@ -421,8 +421,8 @@ newRcvQueue_ a c srv = do
             e2eDhSecret = Nothing,
             sndId = Just sndId,
             status = New,
-            ntfQueueCreds =
-              NtfQueueCreds
+            ntfQCreds =
+              NtfQCreds
                 { ntfPublicKey = Nothing,
                   ntfPrivateKey = Nothing,
                   notifierId = Nothing,

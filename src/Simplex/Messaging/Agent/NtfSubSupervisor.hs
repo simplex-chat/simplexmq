@@ -59,7 +59,7 @@ processNtfSub c (connId, cmd) = do
   case cmd of
     NSCCreate -> do
       -- TODO merge getNtfSubscription and getRcvQueue into one method to read both in same transaction?
-      (sub_, RcvQueue {server = smpServer, ntfQueueCreds = NtfQueueCreds {notifierId}}) <- withStore c $ \db -> runExceptT $ do
+      (sub_, RcvQueue {server = smpServer, ntfQCreds = NtfQCreds {notifierId}}) <- withStore c $ \db -> runExceptT $ do
         sub_ <- liftIO $ getNtfSubscription db connId
         q <- ExceptT $ getRcvQueue db connId
         pure (sub_, q)
@@ -123,7 +123,7 @@ runNtfWorker c srv doWork = forever $ do
       ts <- liftIO getCurrentTime
       case nextSub_ of
         Nothing -> noWorkToDo
-        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfQueueCreds = NtfQueueCreds {ntfPrivateKey, notifierId}}) ->
+        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction, RcvQueue {ntfQCreds = NtfQCreds {ntfPrivateKey, notifierId}}) ->
           unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
               NSACreate -> case (ntfPrivateKey, notifierId) of
@@ -179,7 +179,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                   (nId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPubKey rcvNtfPubDhKey
                   let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
                   withStore' c $ \st -> do
-                    setRcvQueueNtfCreds st connId NtfQueueCreds {ntfPublicKey = Just ntfPubKey, ntfPrivateKey = Just ntfPrivKey, notifierId = Just nId, rcvNtfDhSecret = Just rcvNtfDhSecret}
+                    setRcvQueueNtfCreds st connId NtfQCreds {ntfPublicKey = Just ntfPubKey, ntfPrivateKey = Just ntfPrivKey, notifierId = Just nId, rcvNtfDhSecret = Just rcvNtfDhSecret}
                     updateNtfSubscription st connId ntfSub {ntfQueueId = Just nId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                   ns <- asks ntfSupervisor
                   atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
