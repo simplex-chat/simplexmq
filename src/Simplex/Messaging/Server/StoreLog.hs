@@ -62,7 +62,7 @@ instance StrEncoding QueueRec where
       ]
       <> maybe "" notifierStr notifier
     where
-      notifierStr NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} = " nid=" <> strEncode notifierId <> " nk=" <> strEncode notifierKey <> " ndh=" <> strEncode rcvNtfDhSecret
+      notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
 
   strP = do
     recipientId <- "rid=" *> strP_
@@ -70,23 +70,21 @@ instance StrEncoding QueueRec where
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
-    notifier <- optional $ NtfCreds <$> (" nid=" *> strP_) <*> ("nk=" *> strP_) <*> ("ndh=" *> strP)
+    notifier <- optional $ " notifier=" *> strP
     pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
     CreateQueue q -> strEncode (Str "CREATE", q)
     SecureQueue rId sKey -> strEncode (Str "SECURE", rId, sKey)
-    AddNotifier rId NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} -> strEncode (Str "NOTIFIER", rId, notifierId, notifierKey, rcvNtfDhSecret)
+    AddNotifier rId ntfCreds -> strEncode (Str "NOTIFIER", rId, ntfCreds)
     DeleteQueue rId -> strEncode (Str "DELETE", rId)
 
   strP =
     "CREATE " *> (CreateQueue <$> strP)
       <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
-      <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> ntfCredsP)
+      <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP)
       <|> "DELETE " *> (DeleteQueue <$> strP)
-    where
-      ntfCredsP = NtfCreds <$> strP_ <*> strP_ <*> strP
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
