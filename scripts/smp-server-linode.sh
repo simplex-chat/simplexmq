@@ -158,6 +158,7 @@ Description=SMP server
 Type=simple
 ExecStart=/bin/sh -c "exec $binary start >> /var/opt/simplex/smp-server.log 2>&1"
 KillSignal=SIGINT
+TimeoutStopSec=0
 Restart=always
 RestartSec=10
 LimitNOFILE=1000000
