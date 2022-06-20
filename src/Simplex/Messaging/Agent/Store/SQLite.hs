@@ -848,9 +848,9 @@ getActiveNtfToken db =
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
 
-getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, Maybe RcvNtfDhSecret))
+getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvNtfDhSecret))
 getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
-  firstRow id SEConnNotFound $
+  firstRow' res SEConnNotFound $
     DB.query
       db
       [sql|
@@ -859,6 +859,9 @@ getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} 
         WHERE host = ? AND port = ? AND ntf_id = ?
       |]
       (host, port, notifierId)
+  where
+    res (connId, Just rcvNtfDhSecret) = Right (connId, rcvNtfDhSecret)
+    res _ = Left SEConnNotFound
 
 -- * Auxiliary helpers
 
