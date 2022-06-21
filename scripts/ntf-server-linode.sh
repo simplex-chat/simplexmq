@@ -9,7 +9,7 @@
 exec &> >(tee -i /var/log/stackscript.log)
 
 # Uncomment next line to enable debugging features
-set -xeo pipefail
+# set -xeo pipefail
 
 cd $HOME
 
