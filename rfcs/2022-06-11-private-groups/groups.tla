@@ -217,13 +217,15 @@ LeaderReceiveHold ==
 \* start a new round of kicking.
 GiveUpOnMembers ==
     /\ proposal /= Nothing
-    /\ proposal.state = Holding
+    /\ \/ /\ proposal.state = Holding
+          /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
+       \/ /\ proposal.state = Kicking
+          /\ UNCHANGED <<complete_proposals>>
     \* Leader can't be kicked.  Realistically, they should just act
     \* synchronously when giving up on a proposal.
     /\ [ user |-> Leader, id |-> Nothing ] \notin proposal.awaiting_response
     /\ LET new_group == group_perceptions[Leader] \ proposal.awaiting_response
        IN
-        /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
         /\ proposal' =
             [ state |-> Kicking
             , awaiting_response |-> new_group
@@ -431,26 +433,7 @@ Establish ==
                    ELSE UNCHANGED <<proposal, complete_proposals>>
                /\ UNCHANGED <<messages, rng_state>>
 
-\* TODO: Need to be able to Kick.  Notably, this is easier, because we don't
-\* need to confirm identities.
-
-\* TODO: Need to be able to kick users who are preventing progress in an
-\* invitation.  Any user who is not responding to a Hold is safely kickable.
-\* In the worst case, the kicked user(s) did establish a connection with the
-\* invitee, meaning the kicked and invitee still think they are part of the
-\* group, even though they've been kicked out.  Ideally, they can eventually
-\* learn that they are kicked out.  Once kicked, it's safe to send a Cancel
-\* message to all other members.  In fact, the kicked members can be
-\* piggy-backed on the Cancel message.  Then new invites can be sent.
-
-\* TODO: An irony of cancellation is that while the proposal is "done" from the
-\* perspective that the user cannot be added to the portion of the group that
-\* was holding, we then need acks for cancellation so the Leader can stop
-\* sending Cancel or Kick messages.  It's possible however that one of these
-\* members then goes offline forever!  The only way to handle that would then
-\* be to Kick them too...  So we end up in a place where we have Kicks for
-\* Kicks for Kicks for Kicks....
-
+\* TODO: Need to be able to Kick outside of failed proposals.
 
 (*
 TODO: Byzantine Modeling
