@@ -17,6 +17,7 @@ module Simplex.Messaging.Server.StoreLog
     logSecureQueue,
     logAddNotifier,
     logDeleteQueue,
+    logRemoveNotifier,
     readWriteStoreLog,
   )
 where
@@ -120,6 +121,9 @@ logAddNotifier s qId ntfCreds = writeStoreLogRecord s $ AddNotifier qId ntfCreds
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
+
+logRemoveNotifier :: StoreLog 'WriteMode -> QueueId -> IO ()
+logRemoveNotifier s qId = pure ()
 
 readWriteStoreLog :: StoreLog 'ReadMode -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
 readWriteStoreLog s@(ReadStoreLog f _) = do

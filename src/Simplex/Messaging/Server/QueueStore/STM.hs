@@ -72,6 +72,9 @@ instance MonadQueueStore QueueStore STM where
             TM.insert notifierId rId notifiers
             pure $ Just q
 
+  removeQueueNotifier :: QueueStore -> RecipientId -> STM (Either ErrorType ())
+  removeQueueNotifier QueueStore {queues} rId = pure $ Right ()
+
   suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
   suspendQueue QueueStore {queues} rId =
     withQueue rId queues $ \qVar -> modifyTVar' qVar (\q -> q {status = QueueOff}) $> Just ()
