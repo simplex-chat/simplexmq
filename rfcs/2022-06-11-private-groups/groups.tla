@@ -502,6 +502,14 @@ IdsAreUniqueWithExactlyOneLeader ==
         \/ /\ Cardinality({ member.id : member \in group_perceptions[user] }) = Cardinality(group_perceptions[user])
            /\ Cardinality({ member \in group_perceptions[user] : member.id = Nothing }) = 1
 
+IdsAndLeaderMatchAcrossAllMembers ==
+    \A invite_id \in (InviteIds \union { Nothing }), user1, user2 \in Users :
+        LET matches1 == { member \in group_perceptions[user1] : member.id = invite_id }
+            matches2 == { member \in group_perceptions[user2] : member.id = invite_id }
+        IN  \/ matches1 = {}
+            \/ matches2 = {}
+            \/ matches1 = matches2
+
 CannotCommunicateWithoutAConnection ==
     \A message \in messages :
         HasDirectConnection(message.sender, message.recipient)
