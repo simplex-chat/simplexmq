@@ -70,9 +70,18 @@ ASSUME
     /\ \A user1, user2 \in Users : UserPerceptions[[ perceiver |-> user1, description |-> [ by |-> user1, of |-> user2 ]]] = user2
     /\ Connections \subseteq (Users \X Users)
 
+\* TODO: This is incorrectly used in places where it could not possibly be
+\* known, and instead must be based on perceptions.
 Leader ==
     (CHOOSE member \in InitialMembers : member.id = Nothing).user
 
+\* TODO: This actually has a deeper layer, in that this models the direct
+\* connections that are pre-group, which are only used for
+\* Invite/Accept/Establish messages.  All other messages actually happen over
+\* the established connections that are _specific_ to the group, which only
+\* exist if _both_ parties believe each other to be in the group.  This is
+\* important for things like SyncToken, which otherwise would never occur over
+\* other channels, and could potentially cause issues if they did.
 HasDirectConnection(x, y) ==
     \/ x = y
     \/ <<x, y>> \in Connections
