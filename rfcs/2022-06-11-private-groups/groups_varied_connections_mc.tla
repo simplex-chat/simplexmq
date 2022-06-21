@@ -6,8 +6,6 @@ CONSTANTS a, b, c, d
 
 InviteIdsMC == 0..1
 
-KickIdsMC == 2..2
-
 \* No one is ever confused
 UserPerceptionsMC ==
   [ x \in [ perceiver : Users, description : [ by : Users, of : Users ] ] |-> x.description.of ]
@@ -15,6 +13,9 @@ UserPerceptionsMC ==
 \* A is not connected to D and B is not connected to C
 ConnectionsMC ==
   { <<a, b>>, <<a, c>>, <<b, d>>, <<c, d>> }
+
+InitialMembersMC ==
+  { [ id |-> Nothing, user |-> a ] }
 
 SpecialGroupCases ==
    /\ d \notin group_perceptions[Leader]

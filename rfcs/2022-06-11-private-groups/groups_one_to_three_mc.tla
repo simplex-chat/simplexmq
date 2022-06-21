@@ -10,8 +10,6 @@ CONSTANTS a, b, c
 
 InviteIdsMC == 0..1
 
-KickIdsMC == 2..2
-
 \* No one is ever confused
 UserPerceptionsMC ==
   [ x \in [ perceiver : Users, description : [ by : Users, of : Users ] ] |-> x.description.of ]
@@ -19,5 +17,8 @@ UserPerceptionsMC ==
 \* Everyone knows everyone
 ConnectionsMC ==
   Users \X Users
+
+InitialMembersMC ==
+  { [ id |-> Nothing, user |-> a ] }
 
 ====

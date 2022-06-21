@@ -8,9 +8,7 @@ EXTENDS groups
 
 CONSTANTS a, b, c, d
 
-InviteIdsMC == 0..0
-
-KickIdsMC == 1..1
+InviteIdsMC == 0..1
 
 \* No one is ever confused
 UserPerceptionsMC ==
@@ -19,5 +17,10 @@ UserPerceptionsMC ==
 \* Everyone knows everyone
 ConnectionsMC ==
   Users \X Users
+
+InitialMembersMC ==
+  { [ id |-> Nothing, user |-> a ]
+  , [ id |-> 0, user |-> b ]
+  }
 
 ====

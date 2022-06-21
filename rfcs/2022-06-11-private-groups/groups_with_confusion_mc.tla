@@ -6,8 +6,6 @@ CONSTANTS a, b, c, d
 
 InviteIdsMC == 0..1
 
-KickIdsMC == 2..2
-
 \* b has confused c and d, so when a describes either of them, b thinks that a
 \* is talking about the other.  This also means that when b describes one, it
 \* does so in a way that is backwards to a.
@@ -22,6 +20,9 @@ UserPerceptionsMC ==
 \* Everyone knows everyone
 ConnectionsMC ==
   Users \X Users
+
+InitialMembersMC ==
+  { [ id |-> Nothing, user |-> a ] }
 
 \* If b ever joins the group, c and d cannot, because b confuses them.
 CantAddCOrDIfBJoins ==
