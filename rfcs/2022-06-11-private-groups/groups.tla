@@ -487,6 +487,12 @@ Next ==
 Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 
+IdsAreUniqueWithExactlyOneLeader ==
+    \A user \in Users :
+        \/ group_perceptions[user] = {}
+        \/ /\ Cardinality({ member.id : member \in group_perceptions[user] }) = Cardinality(group_perceptions[user])
+           /\ Cardinality({ member \in group_perceptions[user] : member.id = Nothing }) = 1
+
 CannotCommunicateWithoutAConnection ==
     \A message \in messages :
         HasDirectConnection(message.sender, message.recipient)
