@@ -174,7 +174,7 @@ EOF
 # Start systemd service
 chmod 644 /etc/systemd/system/ntf-server.service
 sudo systemctl enable ntf-server
-# ! APNS key file has to be created manually
+# ! APNS key file and certificate have to be copied manually
 # sudo systemctl start ntf-server
 
 # Reboot Linode to apply upgrades
