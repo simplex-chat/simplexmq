@@ -548,9 +548,9 @@ MembersOnlyEstablishWithInvitee ==
             /\ message.invitee_description.of = member
 
 AllMembersAreConnectedToAllOtherMembers ==
-    \A member1, member2 \in AllMembers :
-        \/ member1 = member2
-        \/ HasDirectConnection(member1, member2)
+    \A user \in Users :
+        \A member \in group_perceptions[user] :
+            HasDirectConnection(user, member.user)
 
 EstablishedOnlyIfAllPerceptionsMatch ==
     \A member \in AllMembers :
