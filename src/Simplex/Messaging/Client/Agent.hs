@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Client.Agent where
@@ -28,6 +29,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, tryE, whenM, ($>>=))
 import System.Timeout (timeout)
 import UnliftIO (async, forConcurrently_)
@@ -61,7 +63,7 @@ data SMPClientAgentConfig = SMPClientAgentConfig
 defaultSMPClientAgentConfig :: SMPClientAgentConfig
 defaultSMPClientAgentConfig =
   SMPClientAgentConfig
-    { smpCfg = defaultClientConfig,
+    { smpCfg = defaultClientConfig {defaultTransport = ("5223", transport @TLS)},
       reconnectInterval =
         RetryInterval
           { initialInterval = second,
