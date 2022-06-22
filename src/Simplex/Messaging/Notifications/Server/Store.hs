@@ -100,12 +100,19 @@ getNtfTokenRegistration st (NewNtfTkn token tknVerifyKey _) =
 
 removeInactiveTokenRegistrations :: NtfStore -> NtfTknData -> STM [NtfTokenId]
 removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
+  removeTokenRegistrations_ (filter ((/= tId) . snd)) st token
+
+removeTokenRegistrations :: NtfStore -> DeviceToken -> STM [NtfTokenId]
+removeTokenRegistrations = removeTokenRegistrations_ id
+
+removeTokenRegistrations_ :: ([(ByteString, NtfTokenId)] -> [(ByteString, NtfTokenId)]) -> NtfStore -> DeviceToken -> STM [NtfTokenId]
+removeTokenRegistrations_ fltr st token =
   TM.lookup token (tokenRegistrations st)
     >>= maybe (pure []) removeRegs
   where
     removeRegs :: TMap ByteString NtfTokenId -> STM [NtfTokenId]
     removeRegs tknRegs = do
-      tIds <- filter ((/= tId) . snd) . M.assocs <$> readTVar tknRegs
+      tIds <- fltr . M.assocs <$> readTVar tknRegs
       forM_ tIds $ \(regKey, tId') -> do
         TM.delete regKey tknRegs
         TM.delete tId' $ tokens st
