@@ -221,6 +221,7 @@ data Command (p :: Party) where
   SUB :: Command Recipient
   KEY :: SndPublicVerifyKey -> Command Recipient
   NKEY :: NtfPublicVerifyKey -> RcvNtfPublicDhKey -> Command Recipient
+  NDEL :: Command Recipient
   GET :: Command Recipient
   -- ACK v1 has to be supported for encoding/decoding
   -- ACK :: Command Recipient
@@ -303,6 +304,7 @@ data CommandTag (p :: Party) where
   SUB_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
   NKEY_ :: CommandTag Recipient
+  NDEL_ :: CommandTag Recipient
   GET_ :: CommandTag Recipient
   ACK_ :: CommandTag Recipient
   OFF_ :: CommandTag Recipient
@@ -342,6 +344,7 @@ instance PartyI p => Encoding (CommandTag p) where
     SUB_ -> "SUB"
     KEY_ -> "KEY"
     NKEY_ -> "NKEY"
+    NDEL_ -> "NDEL"
     GET_ -> "GET"
     ACK_ -> "ACK"
     OFF_ -> "OFF"
@@ -357,6 +360,7 @@ instance ProtocolMsgTag CmdTag where
     "SUB" -> Just $ CT SRecipient SUB_
     "KEY" -> Just $ CT SRecipient KEY_
     "NKEY" -> Just $ CT SRecipient NKEY_
+    "NDEL" -> Just $ CT SRecipient NDEL_
     "GET" -> Just $ CT SRecipient GET_
     "ACK" -> Just $ CT SRecipient ACK_
     "OFF" -> Just $ CT SRecipient OFF_
@@ -651,6 +655,7 @@ instance PartyI p => ProtocolEncoding (Command p) where
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
+    NDEL -> e NDEL_
     GET -> e GET_
     ACK msgId
       | v == 1 -> e ACK_
@@ -698,6 +703,7 @@ instance ProtocolEncoding Cmd where
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
         NKEY_ -> NKEY <$> _smpP <*> smpP
+        NDEL_ -> pure NDEL
         GET_ -> pure GET
         ACK_
           | v == 1 -> pure $ ACK ""

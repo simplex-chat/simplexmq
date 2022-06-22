@@ -334,6 +334,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             ACK msgId -> acknowledgeMsg msgId
             KEY sKey -> secureQueue_ st sKey
             NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
+            NDEL -> deleteQueueNotifier_ st
             OFF -> suspendQueue_ st
             DEL -> delQueueAndMsgs st
       where
@@ -404,6 +405,11 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 Right _ -> do
                   withLog $ \s -> logAddNotifier s queueId ntfCreds
                   pure $ NID notifierId rcvPublicDhKey
+
+        deleteQueueNotifier_ :: QueueStore -> m (Transmission BrokerMsg)
+        deleteQueueNotifier_ st = do
+          withLog (`logDeleteNotifier` queueId)
+          okResp <$> atomically (deleteQueueNotifier st queueId)
 
         suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
         suspendQueue_ st = do
