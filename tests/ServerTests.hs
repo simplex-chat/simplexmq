@@ -612,7 +612,9 @@ testMessageNotifications (ATransport t) =
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
       let dec nonce = C.cbDecrypt dhShared (C.cbNonce nonce)
       (rcvNtfPubDhKey, _) <- C.generateKeyPair'
-      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      Resp "1" _ (NID nId' _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      Resp "1a" _ (NID nId _) <- signSendRecv rh rKey ("1a", rId, NKEY nPub rcvNtfPubDhKey)
+      nId' `shouldNotBe` nId
       Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, NSUB)
       Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND' "hello")
       Resp "" _ (MSG mId1 _ _ msg1) <- tGet rh

@@ -130,7 +130,7 @@ library
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
-    , tls >=1.6.0 && <1.7
+    , tls >=1.5.7 && <1.6
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -191,7 +191,7 @@ executable ntf-server
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
-    , tls >=1.6.0 && <1.7
+    , tls >=1.5.7 && <1.6
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -252,7 +252,7 @@ executable smp-agent
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
-    , tls >=1.6.0 && <1.7
+    , tls >=1.5.7 && <1.6
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -313,7 +313,7 @@ executable smp-server
     , time ==1.9.*
     , time-compat ==1.9.*
     , time-manager ==0.0.*
-    , tls >=1.6.0 && <1.7
+    , tls >=1.5.7 && <1.6
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -394,7 +394,7 @@ test-suite smp-server-test
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , timeit ==2.0.*
-    , tls >=1.6.0 && <1.7
+    , tls >=1.5.7 && <1.6
     , transformers ==0.5.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*

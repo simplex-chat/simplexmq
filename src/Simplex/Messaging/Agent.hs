@@ -390,8 +390,8 @@ getConnectionMessage' :: AgentMonad m => AgentClient -> ConnId -> m (Maybe SMPMs
 getConnectionMessage' c connId = do
   whenM (atomically $ hasActiveSubscription c connId) . throwError $ CMD PROHIBITED
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq _) -> getQueueMessage c rq connId
-    SomeConn _ (RcvConnection _ rq) -> getQueueMessage c rq connId
+    SomeConn _ (DuplexConnection _ rq _) -> getQueueMessage c rq
+    SomeConn _ (RcvConnection _ rq) -> getQueueMessage c rq
     SomeConn _ ContactConnection {} -> throwError $ CMD PROHIBITED
     SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
 
