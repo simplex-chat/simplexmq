@@ -32,6 +32,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfRegisterToken,
     agentNtfVerifyToken,
     agentNtfCheckToken,
+    agentNtfReplaceToken,
     agentNtfDeleteToken,
     agentNtfEnableCron,
     agentNtfCreateSubscription,
@@ -569,6 +570,10 @@ agentNtfVerifyToken c tknId NtfToken {ntfServer, ntfPrivKey} code =
 agentNtfCheckToken :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> m NtfTknStatus
 agentNtfCheckToken c tknId NtfToken {ntfServer, ntfPrivKey} =
   withLogClient c ntfServer tknId "TCHK" $ \ntf -> ntfCheckToken ntf ntfPrivKey tknId
+
+agentNtfReplaceToken :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> DeviceToken -> m ()
+agentNtfReplaceToken c tknId NtfToken {ntfServer, ntfPrivKey} token =
+  withLogClient c ntfServer tknId "TRPL" $ \ntf -> ntfReplaceToken ntf ntfPrivKey tknId token
 
 agentNtfDeleteToken :: AgentMonad m => AgentClient -> NtfTokenId -> NtfToken -> m ()
 agentNtfDeleteToken c tknId NtfToken {ntfServer, ntfPrivKey} =
