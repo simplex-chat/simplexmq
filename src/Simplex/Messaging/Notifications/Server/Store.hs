@@ -24,6 +24,7 @@ import Simplex.Messaging.Util (whenM, ($>>=))
 
 data NtfStore = NtfStore
   { tokens :: TMap NtfTokenId NtfTknData,
+    -- multiple registrations exist to protect from malicious registrations if token is compromised
     tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
     tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
