@@ -625,11 +625,19 @@ testMessageNotifications (ATransport t) =
       Resp "" _ END <- tGet nh1
       Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello again")
       Resp "" _ (MSG mId2 _ _ msg2) <- tGet rh
+      Resp "5a" _ OK <- signSendRecv rh rKey ("5a", rId, ACK mId2)
       (dec mId2 msg2, Right "hello again") #== "delivered from queue again"
       Resp "" _ (NMSG _ _) <- tGet nh2
       1000 `timeout` tGet @BrokerMsg nh1 >>= \case
-        Nothing -> return ()
+        Nothing -> pure ()
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
+      Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, NDEL)
+      Resp "7" _ OK <- signSendRecv sh sKey ("7", sId, _SEND' "hello there")
+      Resp "" _ (MSG mId3 _ _ msg3) <- tGet rh
+      (dec mId3 msg3, Right "hello there") #== "delivered from queue again"
+      1000 `timeout` tGet @BrokerMsg nh2 >>= \case
+        Nothing -> pure ()
+        Just _ -> error "nothing else should be delivered to the 2nd notifier's TCP connection"
 
 testMsgExpireOnSend :: forall c. Transport c => TProxy c -> Spec
 testMsgExpireOnSend t =

@@ -17,7 +17,7 @@ module Simplex.Messaging.Server.StoreLog
     logSecureQueue,
     logAddNotifier,
     logDeleteQueue,
-    logRemoveNotifier,
+    logDeleteNotifier,
     readWriteStoreLog,
   )
 where
@@ -51,6 +51,7 @@ data StoreLogRecord
   | SecureQueue QueueId SndPublicVerifyKey
   | AddNotifier QueueId NtfCreds
   | DeleteQueue QueueId
+  | DeleteNotifier QueueId
 
 instance StrEncoding QueueRec where
   strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
@@ -80,12 +81,14 @@ instance StrEncoding StoreLogRecord where
     SecureQueue rId sKey -> strEncode (Str "SECURE", rId, sKey)
     AddNotifier rId ntfCreds -> strEncode (Str "NOTIFIER", rId, ntfCreds)
     DeleteQueue rId -> strEncode (Str "DELETE", rId)
+    DeleteNotifier rId -> strEncode (Str "NDELETE", rId)
 
   strP =
     "CREATE " *> (CreateQueue <$> strP)
       <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
       <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP)
       <|> "DELETE " *> (DeleteQueue <$> strP)
+      <|> "NDELETE" *> (DeleteNotifier <$> strP)
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
@@ -122,8 +125,8 @@ logAddNotifier s qId ntfCreds = writeStoreLogRecord s $ AddNotifier qId ntfCreds
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
 
-logRemoveNotifier :: StoreLog 'WriteMode -> QueueId -> IO ()
-logRemoveNotifier s qId = pure ()
+logDeleteNotifier :: StoreLog 'WriteMode -> QueueId -> IO ()
+logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 
 readWriteStoreLog :: StoreLog 'ReadMode -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
 readWriteStoreLog s@(ReadStoreLog f _) = do
@@ -155,5 +158,6 @@ readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLo
       SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
       AddNotifier qId ntfCreds -> M.adjust (\q -> q {notifier = Just ntfCreds}) qId m
       DeleteQueue qId -> M.delete qId m
+      DeleteNotifier qId -> M.adjust (\q -> q {notifier = Nothing}) qId m
     printError :: LogParsingError -> IO ()
     printError (e, s) = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s

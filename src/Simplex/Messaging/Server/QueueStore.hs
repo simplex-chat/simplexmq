@@ -39,6 +39,6 @@ class MonadQueueStore s m where
   getQueue :: s -> SParty p -> QueueId -> m (Either ErrorType QueueRec)
   secureQueue :: s -> RecipientId -> SndPublicVerifyKey -> m (Either ErrorType QueueRec)
   addQueueNotifier :: s -> RecipientId -> NtfCreds -> m (Either ErrorType QueueRec)
-  removeQueueNotifier :: s -> RecipientId -> m (Either ErrorType ())
+  deleteQueueNotifier :: s -> RecipientId -> m (Either ErrorType ())
   suspendQueue :: s -> RecipientId -> m (Either ErrorType ())
   deleteQueue :: s -> RecipientId -> m (Either ErrorType ())

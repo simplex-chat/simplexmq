@@ -71,8 +71,13 @@ instance MonadQueueStore QueueStore STM where
         TM.insert nId rId notifiers
         pure $ Just q
 
-  removeQueueNotifier :: QueueStore -> RecipientId -> STM (Either ErrorType ())
-  removeQueueNotifier QueueStore {queues} rId = pure $ Right ()
+  deleteQueueNotifier :: QueueStore -> RecipientId -> STM (Either ErrorType ())
+  deleteQueueNotifier QueueStore {queues, notifiers} rId =
+    withQueue rId queues $ \qVar -> do
+      q <- readTVar qVar
+      forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers
+      writeTVar qVar q {notifier = Nothing}
+      pure $ Just ()
 
   suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
   suspendQueue QueueStore {queues} rId =
