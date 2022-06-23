@@ -187,7 +187,7 @@ testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()
 testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
-  Right (bobId, nonce, message) <- runExceptT $ do
+  Right (bobId, aliceId, nonce, message) <- runExceptT $ do
     -- establish connection
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
@@ -212,7 +212,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- notification
     (nonce, message) <- messageNotification apnsQ
-    pure (bobId, nonce, message)
+    pure (bobId, aliceId, nonce, message)
 
   -- alice client already has subscription for the connection
   Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice nonce message
@@ -227,7 +227,12 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
   Right () <- runExceptT $ do
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 1
-    -- no unexpected notifications should follow
+    -- delete notification subscription
+    deleteNtfSub alice bobId
+    -- send message
+    2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    -- no notifications should follow
     500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
       Nothing -> pure ()
       _ -> error "unexpected notification"
