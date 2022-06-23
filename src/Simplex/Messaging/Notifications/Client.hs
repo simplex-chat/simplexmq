@@ -162,15 +162,18 @@ instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
 instance ToField NtfSubAction where toField = toField . smpEncode
 
 data NtfSubSMPAction
-  = NSAKey
+  = NSSmpAKey
+  | NSSmpADelete
   deriving (Show)
 
 instance Encoding NtfSubSMPAction where
   smpEncode = \case
-    NSAKey -> "K"
+    NSSmpAKey -> "K"
+    NSSmpADelete -> "D"
   smpP =
     A.anyChar >>= \case
-      'K' -> pure NSAKey
+      'K' -> pure NSSmpAKey
+      'D' -> pure NSSmpADelete
       _ -> fail "bad NtfSubSMPAction"
 
 instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
@@ -185,6 +188,10 @@ data NtfAgentSubStatus
   | -- | state after SNEW - subscription created on notification server
     NASCreated NtfSubStatus
   | -- | state after SDEL (subscription is deleted on notification server)
+    NASOff
+  | -- | state after NDEL (notifier credentials are deleted on SMP server)
+    -- Can only exist transiently - if subscription record was updated by notification supervisor mid worker operation,
+    -- and hence got updated instead of being fully deleted in the database post operation by worker
     NASDeleted
   deriving (Eq, Show)
 
@@ -193,6 +200,7 @@ instance Encoding NtfAgentSubStatus where
     NASNew -> "NEW"
     NASKey -> "KEY"
     NASCreated status -> "CREATED " <> smpEncode status
+    NASOff -> "OFF"
     NASDeleted -> "DELETED"
   smpP =
     A.takeTill (== ' ') >>= \case
@@ -201,6 +209,7 @@ instance Encoding NtfAgentSubStatus where
       "CREATED" -> do
         _ <- A.space
         NASCreated <$> smpP
+      "OFF" -> pure NASOff
       "DELETED" -> pure NASDeleted
       _ -> fail "bad NtfAgentSubStatus"
 

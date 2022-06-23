@@ -36,6 +36,7 @@ module Simplex.Messaging.Client
     subscribeSMPQueueNotifications,
     secureSMPQueue,
     enableSMPQueueNotifications,
+    disableSMPQueueNotifications,
     sendSMPMessage,
     ackSMPMessage,
     suspendSMPQueue,
@@ -320,6 +321,12 @@ enableSMPQueueNotifications c rpKey rId notifierKey rcvNtfPublicDhKey =
   sendSMPCommand c (Just rpKey) rId (NKEY notifierKey rcvNtfPublicDhKey) >>= \case
     NID nId rcvNtfSrvPublicDhKey -> pure (nId, rcvNtfSrvPublicDhKey)
     _ -> throwE PCEUnexpectedResponse
+
+-- | Disable notifications for the queue for push notifications server.
+--
+-- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#disable-notifications-command
+disableSMPQueueNotifications :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO ()
+disableSMPQueueNotifications = okSMPCommand NDEL
 
 -- | Send SMP message.
 --
