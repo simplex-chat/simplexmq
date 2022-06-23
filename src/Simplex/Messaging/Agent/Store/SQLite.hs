@@ -799,7 +799,7 @@ getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) =
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE ntf_subscription_id = ?" (False, ntfSubInternalId)
     ntfSubRq <- case cId of
       Nothing -> pure Nothing
-      Just cId' -> getNtfSubRq db cId'
+      Just cId' -> getNtfSubRq_ db cId'
     pure $ Just (ntfSub {ntfSubRcvQueue = ntfSubRq}, ntfSubAction)
   where
     getNtfSubAction_ =
@@ -825,7 +825,7 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE ntf_subscription_id = ?" (False, ntfSubInternalId)
     ntfSubRq <- case cId of
       Nothing -> pure Nothing
-      Just cId' -> getNtfSubRq db cId'
+      Just cId' -> getNtfSubRq_ db cId'
     pure $ Just (ntfSub {ntfSubRcvQueue = ntfSubRq}, ntfSubAction)
   where
     getNtfSubAction_ =
@@ -845,8 +845,8 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
       let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
        in (NtfSubscription {ntfSubInternalId, ntfSubRcvQueue = Nothing, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction, connId)
 
-getNtfSubRq :: DB.Connection -> ConnId -> IO (Maybe NtfSubRcvQueue)
-getNtfSubRq db connId = do
+getNtfSubRq_ :: DB.Connection -> ConnId -> IO (Maybe NtfSubRcvQueue)
+getNtfSubRq_ db connId = do
   rq <- getRcvQueueByConnId_ db connId
   pure $ case rq of
     Nothing -> Nothing
