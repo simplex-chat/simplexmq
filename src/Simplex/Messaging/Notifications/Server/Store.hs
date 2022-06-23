@@ -112,6 +112,7 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
         TM.delete tId' $ tokens st
       pure $ map snd tIds
 
+-- TODO delete token subscriptions
 deleteNtfToken :: NtfStore -> NtfTokenId -> STM ()
 deleteNtfToken st tknId = do
   TM.lookupDelete tknId (tokens st)
@@ -167,6 +168,16 @@ addNtfSubscription st subId sub@NtfSubData {smpQueue, tokenId} =
       TM.insert smpQueue subId (subscriptionLookup st)
       -- return Nothing if subscription existed before
       pure $ Just ()
+
+deleteNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM ()
+deleteNtfSubscription st subId = do
+  TM.lookupDelete subId (subscriptions st)
+    >>= mapM_
+      ( \NtfSubData {smpQueue, tokenId} -> do
+          TM.delete smpQueue $ subscriptionLookup st
+          ts_ <- TM.lookup tokenId (tokenSubscriptions st)
+          forM_ ts_ $ \ts -> modifyTVar' ts $ S.delete subId
+      )
 
 -- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
 -- getNtfRec st ent entId = case ent of
