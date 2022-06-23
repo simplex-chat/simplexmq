@@ -55,6 +55,7 @@ data NtfCommandTag (e :: NtfEntity) where
   TNEW_ :: NtfCommandTag 'Token
   TVFY_ :: NtfCommandTag 'Token
   TCHK_ :: NtfCommandTag 'Token
+  TRPL_ :: NtfCommandTag 'Token
   TDEL_ :: NtfCommandTag 'Token
   TCRN_ :: NtfCommandTag 'Token
   SNEW_ :: NtfCommandTag 'Subscription
@@ -71,6 +72,7 @@ instance NtfEntityI e => Encoding (NtfCommandTag e) where
     TNEW_ -> "TNEW"
     TVFY_ -> "TVFY"
     TCHK_ -> "TCHK"
+    TRPL_ -> "TRPL"
     TDEL_ -> "TDEL"
     TCRN_ -> "TCRN"
     SNEW_ -> "SNEW"
@@ -88,6 +90,7 @@ instance ProtocolMsgTag NtfCmdTag where
     "TNEW" -> Just $ NCT SToken TNEW_
     "TVFY" -> Just $ NCT SToken TVFY_
     "TCHK" -> Just $ NCT SToken TCHK_
+    "TRPL" -> Just $ NCT SToken TRPL_
     "TDEL" -> Just $ NCT SToken TDEL_
     "TCRN" -> Just $ NCT SToken TCRN_
     "SNEW" -> Just $ NCT SSubscription SNEW_
@@ -157,6 +160,8 @@ data NtfCommand (e :: NtfEntity) where
   TVFY :: NtfRegCode -> NtfCommand 'Token
   -- | check token status
   TCHK :: NtfCommand 'Token
+  -- | replace device token (while keeping all existing subscriptions)
+  TRPL :: DeviceToken -> NtfCommand 'Token
   -- | delete token - all subscriptions will be removed and no more notifications will be sent
   TDEL :: NtfCommand 'Token
   -- | enable periodic background notification to fetch the new messages - interval is in minutes, minimum is 20, 0 to disable
@@ -182,6 +187,7 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
     TVFY code -> e (TVFY_, ' ', code)
     TCHK -> e TCHK_
+    TRPL tkn -> e (TRPL_, ' ', tkn)
     TDEL -> e TDEL_
     TCRN int -> e (TCRN_, ' ', int)
     SNEW newSub -> e (SNEW_, ' ', newSub)
@@ -221,6 +227,7 @@ instance ProtocolEncoding NtfCmd where
         TNEW_ -> TNEW <$> _smpP
         TVFY_ -> TVFY <$> _smpP
         TCHK_ -> pure TCHK
+        TRPL_ -> TRPL <$> _smpP
         TDEL_ -> pure TDEL
         TCRN_ -> TCRN <$> _smpP
     NCT SSubscription tag ->
@@ -244,7 +251,7 @@ data NtfResponseTag
 
 instance Encoding NtfResponseTag where
   smpEncode = \case
-    NRTknId_ -> "IDTKN"
+    NRTknId_ -> "IDTKN" -- it should be "TID", "SID"
     NRSubId_ -> "IDSUB"
     NROk_ -> "OK"
     NRErr_ -> "ERR"

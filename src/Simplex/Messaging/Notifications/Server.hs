@@ -296,6 +296,16 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               logDebug "TVFY - incorrect code or token status"
               pure $ NRErr AUTH
           TCHK -> pure $ NRTkn status
+          TRPL token' -> do
+            logDebug "TRPL - replace token"
+            st <- asks store
+            regCode <- getRegCode
+            atomically $ do
+              removeTokenRegistration st tkn
+              writeTVar tknStatus NTRegistered
+              addNtfToken st tknId tkn {token = token', tknRegCode = regCode}
+              writeTBQueue pushQ (tkn, PNVerification regCode)
+            pure NROk
           TDEL -> do
             logDebug "TDEL"
             st <- asks store
