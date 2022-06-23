@@ -112,6 +112,15 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
         TM.delete tId' $ tokens st
       pure $ map snd tIds
 
+removeTokenRegistration :: NtfStore -> NtfTknData -> STM ()
+removeTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
+  TM.lookup token (tokenRegistrations st) >>= mapM_ removeReg
+  where
+    removeReg regs =
+      TM.lookup k regs
+        >>= mapM_ (\tId' -> when (tId == tId') $ TM.delete k regs)
+    k = C.toPubKey C.pubKeyBytes tknVerifyKey
+
 deleteNtfToken :: NtfStore -> NtfTokenId -> STM ()
 deleteNtfToken st tknId = do
   TM.lookupDelete tknId (tokens st)

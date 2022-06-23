@@ -42,6 +42,9 @@ ntfCheckToken c pKey tknId =
     NRTkn stat -> pure stat
     _ -> throwE PCEUnexpectedResponse
 
+ntfReplaceToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> DeviceToken -> ExceptT ProtocolClientError IO ()
+ntfReplaceToken c pKey tknId token = okNtfCommand (TRPL token) c pKey tknId
+
 ntfDeleteToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> ExceptT ProtocolClientError IO ()
 ntfDeleteToken = okNtfCommand TDEL
 
