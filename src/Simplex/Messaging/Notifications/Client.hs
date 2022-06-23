@@ -10,12 +10,14 @@ module Simplex.Messaging.Notifications.Client where
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Int (Int64)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time (UTCTime)
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol (ConnId)
+import Simplex.Messaging.Agent.Store (RcvQueue (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -217,8 +219,38 @@ instance FromField NtfAgentSubStatus where fromField = fromTextField_ $ either (
 
 instance ToField NtfAgentSubStatus where toField = toField . decodeLatin1 . smpEncode
 
-data NtfSubscription = NtfSubscription
+data NewNtfSubscription = NewNtfSubscription
   { connId :: ConnId,
+    smpServer :: SMPServer,
+    ntfQueueId :: Maybe NotifierId,
+    ntfServer :: NtfServer,
+    ntfSubStatus :: NtfAgentSubStatus,
+    ntfSubActionTs :: UTCTime
+  }
+  deriving (Show)
+
+newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NewNtfSubscription
+newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
+  NewNtfSubscription
+    { connId,
+      smpServer,
+      ntfQueueId,
+      ntfServer,
+      ntfSubStatus,
+      ntfSubActionTs
+    }
+
+type NtfSubInternalId = Int64
+
+data NtfSubRcvQueue = NtfSubRcvQueue
+  { connId :: ConnId,
+    rcvQueue :: RcvQueue
+  }
+  deriving (Show)
+
+data NtfSubscription = NtfSubscription
+  { ntfSubInternalId :: NtfSubInternalId,
+    ntfSubRcvQueue :: Maybe NtfSubRcvQueue,
     smpServer :: SMPServer,
     ntfQueueId :: Maybe NotifierId,
     ntfServer :: NtfServer,
@@ -227,15 +259,3 @@ data NtfSubscription = NtfSubscription
     ntfSubActionTs :: UTCTime
   }
   deriving (Show)
-
-newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NtfSubscription
-newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
-  NtfSubscription
-    { connId,
-      smpServer,
-      ntfQueueId,
-      ntfServer,
-      ntfSubId = Nothing,
-      ntfSubStatus,
-      ntfSubActionTs
-    }

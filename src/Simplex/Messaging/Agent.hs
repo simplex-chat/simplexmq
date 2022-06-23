@@ -264,7 +264,7 @@ newConn c connId cMode = do
   connId' <- withStore c $ \db -> createRcvConn db g cData rq cMode
   addSubscription c rq connId'
   ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (connId', NSCCreate)
+  atomically $ sendNtfSubCommand ns (NSCCreate connId')
   aVRange <- asks $ smpAgentVRange . config
   let crData = ConnReqUriData simplexChat aVRange [qUri]
   case cMode of
@@ -325,7 +325,7 @@ createReplyQueue c connId = do
   addSubscription c rq connId
   withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+  atomically $ sendNtfSubCommand ns (NSCCreate connId)
   pure qInfo
 
 -- | Approve confirmation (LET command) in Reader monad
@@ -383,7 +383,7 @@ subscribeConnection' c connId =
     subscribe rq = do
       subscribeQueue c rq connId
       ns <- asks ntfSupervisor
-      atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+      atomically $ sendNtfSubCommand ns (NSCCreate connId)
 
 resubscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId =
@@ -622,11 +622,10 @@ deleteConnection' c connId =
     delete :: RcvQueue -> m ()
     delete rq = do
       deleteQueue c rq
-      ns <- asks ntfSupervisor
-      atomically $ do
-        removeSubscription c connId
-        sendNtfSubCommand ns (connId, NSCDelete)
+      atomically $ removeSubscription c connId
       withStore' c (`deleteConn` connId)
+      ns <- asks ntfSupervisor
+      atomically $ sendNtfSubCommand ns (NSCDelete connId)
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
@@ -721,7 +720,7 @@ deleteNtfToken' c deviceToken =
 deleteNtfSub' :: AgentMonad m => AgentClient -> ConnId -> m ()
 deleteNtfSub' _c connId = do
   ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (connId, NSCDelete)
+  atomically $ sendNtfSubCommand ns (NSCDelete connId)
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
@@ -763,7 +762,7 @@ initializeNtfSubQ c tkn = do
   connIds <- atomically $ do
     nsUpdateToken ns tkn
     getSubscriptions c
-  forM_ connIds $ \connId -> atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+  forM_ connIds $ \connId -> atomically $ sendNtfSubCommand ns (NSCCreate connId)
 
 -- TODO
 -- There should probably be another function to cancel all subscriptions that would flush the queue first,

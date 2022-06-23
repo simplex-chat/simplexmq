@@ -27,7 +27,8 @@ ALTER TABLE rcv_queues ADD COLUMN rcv_ntf_dh_secret BLOB;
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues (host, port, ntf_id);
 
 CREATE TABLE ntf_subscriptions (
-  conn_id BLOB NOT NULL, -- ? make nullable for when connection is deleted but we still need to delete subscription
+  ntf_subscription_id INTEGER PRIMARY KEY,
+  conn_id BLOB,
   smp_host TEXT NULL,
   smp_port TEXT NULL,
   smp_ntf_id BLOB,
@@ -41,12 +42,12 @@ CREATE TABLE ntf_subscriptions (
   updated_by_supervisor INTEGER NOT NULL DEFAULT 0, -- to be checked on updates by workers to not overwrite supervisor command (state still should be updated)
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (conn_id),
-  -- FOREIGN KEY (conn_id) REFERENCES connections
-  --   ON DELETE SET NULL ON UPDATE CASCADE,
+  UNIQUE (conn_id),
+  FOREIGN KEY (conn_id) REFERENCES connections
+    ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY (smp_host, smp_port) REFERENCES servers (host, port)
     ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY (ntf_host, ntf_port) REFERENCES ntf_servers
     ON DELETE RESTRICT ON UPDATE CASCADE
-) WITHOUT ROWID;
+);
 |]

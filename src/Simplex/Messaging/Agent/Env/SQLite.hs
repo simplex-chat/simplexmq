@@ -148,12 +148,16 @@ newSMPAgentEnv config@AgentConfig {dbFile, yesToMigrations} = do
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubQ :: TBQueue (ConnId, NtfSupervisorCommand),
+    ntfSubQ :: TBQueue NtfSupervisorCommand,
     ntfWorkers :: TMap NtfServer (TMVar (), Async ()),
     ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
   }
 
-data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
+data NtfSupervisorCommand
+  = NSCCreate ConnId
+  | NSCDelete ConnId
+  | NSCNtfWorker NtfServer
+  | NSCNtfSMPWorker SMPServer
 
 newNtfSubSupervisor :: Natural -> STM NtfSupervisor
 newNtfSubSupervisor qSize = do
