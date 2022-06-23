@@ -162,18 +162,18 @@ instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
 instance ToField NtfSubAction where toField = toField . smpEncode
 
 data NtfSubSMPAction
-  = NSSmpAKey
-  | NSSmpADelete
+  = NSASmpKey
+  | NSASmpDelete
   deriving (Show)
 
 instance Encoding NtfSubSMPAction where
   smpEncode = \case
-    NSSmpAKey -> "K"
-    NSSmpADelete -> "D"
+    NSASmpKey -> "K"
+    NSASmpDelete -> "D"
   smpP =
     A.anyChar >>= \case
-      'K' -> pure NSSmpAKey
-      'D' -> pure NSSmpADelete
+      'K' -> pure NSASmpKey
+      'D' -> pure NSASmpDelete
       _ -> fail "bad NtfSubSMPAction"
 
 instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
