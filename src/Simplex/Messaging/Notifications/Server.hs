@@ -252,7 +252,7 @@ verifyNtfTransmission (sig_, signed, (corrId, entId, _)) cmd = do
     verifyToken' t_ = verifyToken t_ . const
 
 client :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerClient -> NtfSubscriber -> NtfPushServer -> m ()
-client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ, intervalNotifiers} =
+client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= processCommand
@@ -347,7 +347,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ
                     Just _ -> writeTBQueue newSubQ (NtfSub sub) $> NRSubId subId
                     _ -> pure $ NRErr AUTH
                 )
-      NtfReqCmd SSubscription (NtfSub NtfSubData {notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
+      NtfReqCmd SSubscription (NtfSub NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         status <- readTVarIO subStatus
         (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
@@ -358,7 +358,13 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ} NtfPushServer {pushQ
                 then NRSubId subId
                 else NRErr AUTH
           SCHK -> pure $ NRSub status
-          SDEL -> pure NROk
+          SDEL -> do
+            logDebug "SDEL"
+            st <- asks store
+            atomically $ do
+              deleteNtfSubscription st subId
+              removeSubscription ca smpServer (SPNotifier, notifierId)
+            pure NROk
           PING -> pure NRPong
     getId :: m NtfEntityId
     getId = getRandomBytes =<< asks (subIdBytes . config)

@@ -121,8 +121,8 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client (NtfServer, NtfSubAction, NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
+import Simplex.Messaging.Notifications.Client (NtfAgentSubStatus (NASDeleted), NtfServer, NtfSubAction (NSADelete), NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..), RcvNtfDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -722,8 +722,17 @@ createNtfSubscription db NtfSubscription {connId, smpServer = (SMPServer host po
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
-markNtfSubscriptionForDeletion :: DB.Connection -> ConnId -> IO (Either StoreError ())
-markNtfSubscriptionForDeletion _db _rcvQueue = pure $ Left SENotImplemented
+markNtfSubscriptionForDeletion :: DB.Connection -> ConnId -> IO ()
+markNtfSubscriptionForDeletion db connId = do
+  updatedAt <- getCurrentTime
+  DB.execute
+    db
+    [sql|
+      UPDATE ntf_subscriptions
+      SET ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
+      WHERE conn_id = ?
+    |]
+    (Just NSADelete, Nothing :: Maybe NtfSubSMPAction, updatedAt, True, updatedAt, connId)
 
 updateNtfSubscription :: DB.Connection -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> IO ()
 updateNtfSubscription db connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction = do
@@ -767,8 +776,22 @@ setNullNtfSubscriptionAction db connId = do
         |]
         (Nothing :: Maybe NtfSubAction, Nothing :: Maybe NtfSubSMPAction, Nothing :: Maybe UTCTime, False, updatedAt, connId)
 
-deleteNtfSubscription :: DB.Connection -> ConnId -> IO (Either StoreError ())
-deleteNtfSubscription _db _connId = pure $ Left SENotImplemented
+deleteNtfSubscription :: DB.Connection -> ConnId -> IO ()
+deleteNtfSubscription db connId = do
+  r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+  forM_ r $ \updatedBySupervisor -> do
+    updatedAt <- getCurrentTime
+    if updatedBySupervisor
+      then
+        DB.execute
+          db
+          [sql|
+            UPDATE ntf_subscriptions
+            SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
+            WHERE conn_id = ?
+          |]
+          (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, False, updatedAt, connId)
+      else DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
 getNextNtfSubAction :: DB.Connection -> NtfServer -> IO (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
 getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do

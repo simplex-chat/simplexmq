@@ -153,7 +153,7 @@ data NtfSupervisor = NtfSupervisor
     ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
   }
 
-data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCNtfWorker NtfServer
+data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
 
 newNtfSubSupervisor :: Natural -> STM NtfSupervisor
 newNtfSubSupervisor qSize = do

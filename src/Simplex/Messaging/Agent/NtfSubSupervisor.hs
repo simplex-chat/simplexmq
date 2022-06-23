@@ -72,7 +72,7 @@ processNtfSub c (connId, cmd) = do
               withStore' c $ \db -> createNtfSubscription db newSub (NtfSubAction NSACreate)
             _ -> do
               let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew currentTime
-              withStore' c $ \db -> createNtfSubscription db newSub (NtfSubSMPAction NSAKey)
+              withStore' c $ \db -> createNtfSubscription db newSub (NtfSubSMPAction NSASmpKey)
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
@@ -81,7 +81,7 @@ processNtfSub c (connId, cmd) = do
         (Just _, Just ntfServer) -> do
           -- TODO subscription may have to be updated depending on current state:
           -- TODO - e.g., if it was previously marked for deletion action has to be updated
-          -- TODO - should action depend on subscription status or always be NSAKey (NSACreate if notifierId exists)
+          -- TODO - should action depend on subscription status or always be NSASmpKey (NSACreate if notifierId exists)
           -- TODO   in case worker is currently deleting it? When deleting worker should check for updated_by_supervisor
           -- TODO   and if it is set perform update instead of delete. If worker was not deleting it yet it should
           -- TODO   idempotently replay commands.
@@ -89,13 +89,14 @@ processNtfSub c (connId, cmd) = do
           addNtfWorker ntfServer
         _ -> pure () -- error - notification server not configured
     NSCDelete -> do
-      -- TODO delete notifier ID and Key from SMP server (SDEL, then NDEL)
-      withStore c (`markNtfSubscriptionForDeletion` connId)
+      withStore' c (`markNtfSubscriptionForDeletion` connId)
       case ntfServer_ of
         (Just ntfServer) -> addNtfWorker ntfServer
         _ -> pure ()
     NSCNtfWorker ntfServer ->
       addNtfWorker ntfServer
+    NSCNtfSMPWorker smpServer ->
+      addNtfSMPWorker smpServer
   where
     addNtfWorker = addWorker ntfWorkers runNtfWorker
     addNtfSMPWorker = addWorker ntfSMPWorkers runNtfSMPWorker
@@ -144,7 +145,15 @@ runNtfWorker c srv doWork = forever $ do
                     NSEnd -> updateSubNextCheck NSEnd
                     NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts
                 Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
-              NSADelete -> pure ()
+              NSADelete -> case ntfSubId of
+                Just nSubId ->
+                  agentNtfDeleteSubscription c nSubId tkn
+                    `E.finally` do
+                      withStore' c $ \db ->
+                        updateNtfSubscription db connId ntfSub {ntfSubId = Nothing, ntfSubStatus = NASOff, ntfSubActionTs = ts} (NtfSubSMPAction NSASmpDelete)
+                      ns <- asks ntfSupervisor
+                      atomically $ sendNtfSubCommand ns (connId, NSCNtfSMPWorker smpServer)
+                Nothing -> ntfInternalError c connId "NSADelete - no subscription ID"
           where
             updateSubNextCheck toStatus = do
               checkInterval <- asks $ ntfSubCheckInterval . config
@@ -171,7 +180,7 @@ runNtfSMPWorker c srv doWork = forever $ do
         Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction, rq) ->
           unlessM (rescheduleAction doWork ts ntfSub) $
             case ntfSubAction of
-              NSAKey
+              NSASmpKey
                 | ntfTknStatus == NTActive -> do
                   C.SignAlg a <- asks (cmdSignAlg . config)
                   (ntfPublicKey, ntfPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
@@ -183,7 +192,10 @@ runNtfSMPWorker c srv doWork = forever $ do
                     updateNtfSubscription st connId ntfSub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                   ns <- asks ntfSupervisor
                   atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
-                | otherwise -> ntfInternalError c connId "NSAKey - token not active"
+                | otherwise -> ntfInternalError c connId "NSASmpKey - token not active"
+              NSASmpDelete -> do
+                disableQueueNotifications c rq
+                withStore' c $ \db -> deleteNtfSubscription db connId
     _ -> noWorkToDo
   delay <- asks $ ntfWorkerThrottle . config
   liftIO $ threadDelay delay

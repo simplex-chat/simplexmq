@@ -28,6 +28,7 @@ module Simplex.Messaging.Agent.Client
     RetryInterval (..),
     secureQueue,
     enableQueueNotifications,
+    disableQueueNotifications,
     sendAgentMessage,
     agentNtfRegisterToken,
     agentNtfVerifyToken,
@@ -37,6 +38,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfEnableCron,
     agentNtfCreateSubscription,
     agentNtfCheckSubscription,
+    agentNtfDeleteSubscription,
     agentCbEncrypt,
     agentCbDecrypt,
     cryptoError,
@@ -532,6 +534,11 @@ enableQueueNotifications c RcvQueue {server, rcvId, rcvPrivateKey} notifierKey r
   withLogClient c server rcvId "NKEY <nkey>" $ \smp ->
     enableSMPQueueNotifications smp rcvPrivateKey rcvId notifierKey rcvNtfPublicDhKey
 
+disableQueueNotifications :: AgentMonad m => AgentClient -> RcvQueue -> m ()
+disableQueueNotifications c RcvQueue {server, rcvId, rcvPrivateKey} =
+  withLogClient c server rcvId "NDEL" $ \smp ->
+    disableSMPQueueNotifications smp rcvPrivateKey rcvId
+
 sendAck :: AgentMonad m => AgentClient -> RcvQueue -> MsgId -> m ()
 sendAck c rq@RcvQueue {server, rcvId, rcvPrivateKey} msgId = do
   withLogClient c server rcvId "ACK" $ \smp ->
@@ -590,6 +597,10 @@ agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKe
 agentNtfCheckSubscription :: AgentMonad m => AgentClient -> NtfSubscriptionId -> NtfToken -> m NtfSubStatus
 agentNtfCheckSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
   withLogClient c ntfServer subId "SCHK" $ \ntf -> ntfCheckSubscription ntf ntfPrivKey subId
+
+agentNtfDeleteSubscription :: AgentMonad m => AgentClient -> NtfSubscriptionId -> NtfToken -> m ()
+agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
+  withLogClient c ntfServer subId "SDEL" $ \ntf -> ntfDeleteSubscription ntf ntfPrivKey subId
 
 agentCbEncrypt :: AgentMonad m => SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> m ByteString
 agentCbEncrypt SndQueue {e2eDhSecret} e2ePubKey msg = do

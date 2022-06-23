@@ -58,6 +58,7 @@ module Simplex.Messaging.Agent
     enableNtfCron,
     checkNtfToken,
     deleteNtfToken,
+    deleteNtfSub,
     setAgentPhase,
     logConnection,
   )
@@ -204,6 +205,10 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
+
+-- | Delete notification subscription for connection
+deleteNtfSub :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+deleteNtfSub c = withAgentEnv c . deleteNtfSub' c
 
 setAgentPhase :: AgentErrorMonad m => AgentClient -> AgentPhase -> m ()
 setAgentPhase c = withAgentEnv c . setAgentPhase' c
@@ -711,6 +716,12 @@ deleteNtfToken' c deviceToken =
   withStore' c (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn, _) -> deleteToken_ c tkn
     _ -> throwError $ CMD PROHIBITED
+
+-- | Delete notification subscription for connection, in Reader monad
+deleteNtfSub' :: AgentMonad m => AgentClient -> ConnId -> m ()
+deleteNtfSub' _c connId = do
+  ns <- asks ntfSupervisor
+  atomically $ sendNtfSubCommand ns (connId, NSCDelete)
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
