@@ -27,8 +27,9 @@ import qualified Data.Map.Strict as M
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Protocol (ConnId)
+import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), BrokerErrorType (..), ConnId)
 import qualified Simplex.Messaging.Agent.Protocol as AP
+import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Client.Agent ()
@@ -115,95 +116,117 @@ processNtfSub c (connId, cmd) = do
         Just (doWork, _) ->
           void . atomically $ tryPutTMVar doWork ()
 
-runNtfWorker :: AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
+runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
   getNtfToken >>= \case
-    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus} -> do
+    Just tkn -> do
       nextSub_ <- withStore' c (`getNextNtfSubAction` srv)
-      ts <- liftIO getCurrentTime
       case nextSub_ of
         Nothing -> noWorkToDo
-        Just (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction) ->
-          unlessM (rescheduleAction doWork ts ntfSub) $
-            case ntfSubAction of
-              NSACreate -> do
-                rq_ <- withStore' c (`getRcvQueue` connId)
-                case (rq_, ntfTknStatus) of
-                  (Right RcvQueue {clientNtfCreds = Just ClientNtfCreds {ntfPrivateKey, notifierId}}, NTActive) -> do
-                    nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer notifierId) ntfPrivateKey
-                    let actionTs = addUTCTime 30 ts
-                    withStore' c $ \db ->
-                      updateNtfSubscription db connId ntfSub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew, ntfSubActionTs = actionTs} (NtfSubAction NSACheck)
-                  _ -> ntfInternalError c connId "NSACreate - no notifier queue credentials or token not active"
-              NSACheck -> case ntfSubId of
-                Just nSubId ->
-                  agentNtfCheckSubscription c nSubId tkn >>= \case
-                    NSNew -> updateSubNextCheck NSNew
-                    NSPending -> updateSubNextCheck NSPending
-                    NSActive -> updateSubNextCheck NSActive
-                    NSEnd -> updateSubNextCheck NSEnd
-                    NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts
-                Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
-              NSADelete -> case ntfSubId of
-                Just nSubId ->
-                  agentNtfDeleteSubscription c nSubId tkn
-                    `E.finally` do
-                      withStore' c $ \db ->
-                        updateNtfSubscription db connId ntfSub {ntfSubId = Nothing, ntfSubStatus = NASOff, ntfSubActionTs = ts} (NtfSubSMPAction NSASmpDelete)
-                      ns <- asks ntfSupervisor
-                      atomically $ sendNtfSubCommand ns (connId, NSCNtfSMPWorker smpServer)
-                Nothing -> ntfInternalError c connId "NSADelete - no subscription ID"
-          where
-            updateSubNextCheck toStatus = do
-              checkInterval <- asks $ ntfSubCheckInterval . config
-              let nextCheckTs = addUTCTime checkInterval ts
-              updateSub (NASCreated toStatus) (NtfSubAction NSACheck) nextCheckTs
-            updateSub toStatus toAction actionTs =
-              withStore' c $ \db ->
-                updateNtfSubscription db connId ntfSub {ntfSubStatus = toStatus, ntfSubActionTs = actionTs} toAction
+        Just ntfSub@(NtfSubscription {connId}, _) -> do
+          ri <- asks $ reconnectInterval . config
+          withRetryInterval ri $ \loop ->
+            processAction tkn ntfSub
+              `catchError` ( \e ->
+                               case e of
+                                 BROKER NETWORK -> loop
+                                 BROKER TIMEOUT -> loop
+                                 _ -> ntfInternalError c connId (show e)
+                           )
     _ -> noWorkToDo
-  delay <- asks $ ntfWorkerThrottle . config
-  liftIO $ threadDelay delay
+  throttle <- asks $ ntfWorkerThrottle . config
+  liftIO $ threadDelay throttle
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
+    processAction :: NtfToken -> (NtfSubscription, NtfSubAction) -> m ()
+    processAction tkn@NtfToken {ntfTokenId, ntfTknStatus} (ntfSub@NtfSubscription {connId, smpServer, ntfSubId}, ntfSubAction) = do
+      ts <- liftIO getCurrentTime
+      unlessM (rescheduleAction doWork ts ntfSub) $
+        case ntfSubAction of
+          NSACreate -> do
+            rq_ <- withStore' c (`getRcvQueue` connId)
+            case (rq_, ntfTknStatus, ntfTokenId) of
+              (Right RcvQueue {clientNtfCreds = Just ClientNtfCreds {ntfPrivateKey, notifierId}}, NTActive, Just tknId) -> do
+                nSubId <- agentNtfCreateSubscription c tknId tkn (SMPQueueNtf smpServer notifierId) ntfPrivateKey
+                let actionTs = addUTCTime 30 ts
+                withStore' c $ \db ->
+                  updateNtfSubscription db connId ntfSub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew, ntfSubActionTs = actionTs} (NtfSubAction NSACheck)
+              _ -> ntfInternalError c connId "NSACreate - no notifier queue credentials or token not active"
+          NSACheck -> case ntfSubId of
+            Just nSubId ->
+              agentNtfCheckSubscription c nSubId tkn >>= \case
+                NSNew -> updateSubNextCheck ts NSNew
+                NSPending -> updateSubNextCheck ts NSPending
+                NSActive -> updateSubNextCheck ts NSActive
+                NSEnd -> updateSubNextCheck ts NSEnd
+                NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts
+            Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
+          NSADelete -> case ntfSubId of
+            Just nSubId ->
+              agentNtfDeleteSubscription c nSubId tkn
+                `E.finally` do
+                  withStore' c $ \db ->
+                    updateNtfSubscription db connId ntfSub {ntfSubId = Nothing, ntfSubStatus = NASOff, ntfSubActionTs = ts} (NtfSubSMPAction NSASmpDelete)
+                  ns <- asks ntfSupervisor
+                  atomically $ sendNtfSubCommand ns (connId, NSCNtfSMPWorker smpServer)
+            Nothing -> ntfInternalError c connId "NSADelete - no subscription ID"
+      where
+        updateSubNextCheck ts toStatus = do
+          checkInterval <- asks $ ntfSubCheckInterval . config
+          let nextCheckTs = addUTCTime checkInterval ts
+          updateSub (NASCreated toStatus) (NtfSubAction NSACheck) nextCheckTs
+        updateSub toStatus toAction actionTs =
+          withStore' c $ \db ->
+            updateNtfSubscription db connId ntfSub {ntfSubStatus = toStatus, ntfSubActionTs = actionTs} toAction
 
 runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar () -> m ()
 runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
   getNtfToken >>= \case
-    Just NtfToken {ntfTknStatus} -> do
+    Just tkn -> do
       nextSub_ <- withStore' c (`getNextNtfSubSMPAction` srv)
-      ts <- liftIO getCurrentTime
       case nextSub_ of
         Nothing -> noWorkToDo
-        Just (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction) ->
-          unlessM (rescheduleAction doWork ts ntfSub) $
-            case ntfSubAction of
-              NSASmpKey -> do
-                rq_ <- withStore' c (`getRcvQueue` connId)
-                case (rq_, ntfTknStatus) of
-                  (Right rq, NTActive) -> do
-                    C.SignAlg a <- asks (cmdSignAlg . config)
-                    (ntfPublicKey, ntfPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
-                    (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- liftIO C.generateKeyPair'
-                    (notifierId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPublicKey rcvNtfPubDhKey
-                    let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
-                    withStore' c $ \st -> do
-                      setRcvQueueNtfCreds st connId ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
-                      updateNtfSubscription st connId ntfSub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
-                    ns <- asks ntfSupervisor
-                    atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
-                  _ -> ntfInternalError c connId "NSASmpKey - no rcv queue or token not active"
-              NSASmpDelete -> do
-                rq_ <- withStore' c (`getRcvQueue` connId)
-                forM_ rq_ $ \rq -> disableQueueNotifications c rq
-                withStore' c $ \db -> deleteNtfSubscription db connId
+        Just ntfSub@(NtfSubscription {connId}, _) -> do
+          ri <- asks $ reconnectInterval . config
+          withRetryInterval ri $ \loop ->
+            processAction tkn ntfSub
+              `catchError` ( \e ->
+                               case e of
+                                 BROKER NETWORK -> loop
+                                 BROKER TIMEOUT -> loop
+                                 _ -> ntfInternalError c connId (show e)
+                           )
     _ -> noWorkToDo
-  delay <- asks $ ntfWorkerThrottle . config
-  liftIO $ threadDelay delay
+  throttle <- asks $ ntfWorkerThrottle . config
+  liftIO $ threadDelay throttle
   where
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
+    processAction :: NtfToken -> (NtfSubscription, NtfSubSMPAction) -> m ()
+    processAction NtfToken {ntfTknStatus} (ntfSub@NtfSubscription {connId, ntfServer}, ntfSubAction) = do
+      ts <- liftIO getCurrentTime
+      unlessM (rescheduleAction doWork ts ntfSub) $
+        case ntfSubAction of
+          NSASmpKey -> do
+            rq_ <- withStore' c (`getRcvQueue` connId)
+            case (rq_, ntfTknStatus) of
+              (Right rq, NTActive) -> do
+                C.SignAlg a <- asks (cmdSignAlg . config)
+                (ntfPublicKey, ntfPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
+                (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- liftIO C.generateKeyPair'
+                (notifierId, rcvNtfSrvPubDhKey) <- enableQueueNotifications c rq ntfPublicKey rcvNtfPubDhKey
+                let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
+                withStore' c $ \st -> do
+                  setRcvQueueNtfCreds st connId ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
+                  updateNtfSubscription st connId ntfSub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
+                ns <- asks ntfSupervisor
+                atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
+              _ -> ntfInternalError c connId "NSASmpKey - no rcv queue or token not active"
+          NSASmpDelete -> do
+            rq_ <- withStore' c (`getRcvQueue` connId)
+            forM_ rq_ $ \rq -> disableQueueNotifications c rq
+            withStore' c $ \db -> deleteNtfSubscription db connId
 
 rescheduleAction :: AgentMonad m => TMVar () -> UTCTime -> NtfSubscription -> m Bool
 rescheduleAction doWork ts NtfSubscription {ntfSubActionTs}
