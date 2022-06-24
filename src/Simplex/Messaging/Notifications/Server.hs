@@ -161,7 +161,9 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
             PPConnection _ -> deliverOrErr deliver n e
             PPRetryLater -> deliverOrErr deliver n e
             _ -> err e
-        deliverOrErr deliver n e = if n > 0 then threadDelay 500000 >> retryDeliver deliver (n - 1) else err e
+        deliverOrErr deliver n e
+          | n > 0 = threadDelay 500000 >> retryDeliver deliver (n - 1)
+          | otherwise = err e
         err e = logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
