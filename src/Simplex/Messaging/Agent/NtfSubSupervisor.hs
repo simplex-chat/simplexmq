@@ -194,7 +194,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                       updateNtfSubscription st connId ntfSub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey, ntfSubActionTs = ts} (NtfSubAction NSACreate)
                     ns <- asks ntfSupervisor
                     atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
-                  _ -> ntfInternalError c connId "NSASmpKey - token not active"
+                  _ -> ntfInternalError c connId "NSASmpKey - no rcv queue or token not active"
               NSASmpDelete -> do
                 rq_ <- withStore' c (`getRcvQueue` connId)
                 forM_ rq_ $ \rq -> disableQueueNotifications c rq
