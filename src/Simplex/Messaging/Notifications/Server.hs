@@ -24,7 +24,7 @@ import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
-import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderClient)
+import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderClient, PushProviderError (..))
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (ErrorType (..), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
@@ -133,7 +133,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             -- update subscription status
             pure ()
 
-ntfPush :: MonadUnliftIO m => NtfPushServer -> m ()
+ntfPush :: forall m. MonadUnliftIO m => NtfPushServer -> m ()
 ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
   (tkn@NtfTknData {token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
   logDebug $ "sending push notification to " <> T.pack (show pp)
@@ -153,8 +153,15 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
     deliverNotification :: PushProvider -> PushProviderClient
     deliverNotification pp tkn ntf = do
       deliver <- liftIO $ getPushClient s pp
-      -- TODO retry later based on the error
-      deliver tkn ntf `catchError` \e -> logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
+      -- TODO latest pending notification per subscription
+      retryDeliver deliver (2 :: Integer)
+      where
+        retryDeliver deliver n =
+          deliver tkn ntf `catchError` \e -> case e of
+            PPConnection _ -> if n > 0 then threadDelay 500000 >> retryDeliver deliver (n - 1) else err e
+            PPRetryLater -> if n > 0 then threadDelay 500000 >> retryDeliver deliver (n - 1) else err e
+            _ -> err e
+        err e = logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do
