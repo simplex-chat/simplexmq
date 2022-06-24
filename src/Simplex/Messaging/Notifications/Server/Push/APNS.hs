@@ -121,9 +121,9 @@ instance ToJSON APNSNotification where
   toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 data APNSNotificationBody
-  = APNSAlert {alert :: APNSAlertBody, badge :: Maybe Int, sound :: Maybe Text, category :: Maybe Text}
-  | APNSBackground {contentAvailable :: Int}
+  = APNSBackground {contentAvailable :: Int}
   | APNSMutableContent {mutableContent :: Int, alert :: APNSAlertBody, category :: Maybe Text}
+  | APNSAlert {alert :: APNSAlertBody, badge :: Maybe Int, sound :: Maybe Text, category :: Maybe Text}
   deriving (Show, Generic)
 
 apnsJSONOptions :: J.Options
@@ -268,6 +268,9 @@ disconnectApnsHTTP2Client :: APNSPushClient -> IO ()
 disconnectApnsHTTP2Client APNSPushClient {https2Client} =
   readTVarIO https2Client >>= mapM_ closeHTTP2Client >> atomically (writeTVar https2Client Nothing)
 
+ntfCategoryCheckMessage :: Text
+ntfCategoryCheckMessage = "NTF_CAT_CHECK_MESSAGE"
+
 apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> Either C.CryptoError APNSNotification
 apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
   PNVerification (NtfRegCode code) ->
@@ -282,7 +285,7 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
     encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
     encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
-    apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or some other app event", category = Nothing}
+    apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or another app event", category = Just ntfCategoryCheckMessage}
     apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
     safeDecodeUtf8 = decodeUtf8With onError where onError _ _ = Just '?'
 
