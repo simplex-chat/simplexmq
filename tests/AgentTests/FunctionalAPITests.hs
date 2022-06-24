@@ -89,6 +89,9 @@ functionalAPITests t = do
       testInactiveClientDisconnected t
     it "should NOT disconnect active clients" $
       testActiveClientNotDisconnected t
+  describe "Agent phases" $ do
+    it "should update clients when agent phase changes" $
+      withSmpServer t testAgentPhaseChanges
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -321,18 +324,11 @@ testDuplicateMessage t = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   (aliceId, bobId, bob1) <- withSmpServerStoreMsgLogOn t testPort $ \_ -> do
-    Right (aliceId, bobId) <- runExceptT $ do
-      (bobId, qInfo) <- createConnection alice SCMInvitation
-      aliceId <- joinConnection bob qInfo "bob's connInfo"
-      ("", _, CONF confId "bob's connInfo") <- get alice
-      allowConnection alice bobId confId "alice's connInfo"
-      get alice ##> ("", bobId, CON)
-      get bob ##> ("", aliceId, INFO "alice's connInfo")
-      get bob ##> ("", aliceId, CON)
+    Right (aliceId, bobId) <- runExceptT $ makeConnection alice bob
+    Right () <- runExceptT $ do
       4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
       get alice ##> ("", bobId, SENT 4)
       get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-      pure (aliceId, bobId)
     disconnectAgentClient bob
 
     -- if the agent user did not send ACK, the message will be delivered again
@@ -372,6 +368,17 @@ testDuplicateMessage t = do
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
     pure ()
 
+makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnection alice bob = do
+  (bobId, qInfo) <- createConnection alice SCMInvitation
+  aliceId <- joinConnection bob qInfo "bob's connInfo"
+  ("", _, CONF confId "bob's connInfo") <- get alice
+  allowConnection alice bobId confId "alice's connInfo"
+  get alice ##> ("", bobId, CON)
+  get bob ##> ("", aliceId, INFO "alice's connInfo")
+  get bob ##> ("", aliceId, CON)
+  pure (aliceId, bobId)
+
 testInactiveClientDisconnected :: ATransport -> IO ()
 testInactiveClientDisconnected t = do
   let cfg' = cfg {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
@@ -409,6 +416,28 @@ testActiveClientNotDisconnected t = do
           -- and after 2 sec of inactivity DOWN is sent
           get alice ##> ("", "", DOWN testSMPServer [connId])
     milliseconds ts = systemSeconds ts * 1000 + fromIntegral (systemNanoseconds ts `div` 1000000)
+
+testAgentPhaseChanges :: IO ()
+testAgentPhaseChanges = do
+  a <- getSMPAgentClient agentCfg initAgentServers
+  b <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right () <- runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    4 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 4)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    ackMessage b aId 4
+    setAgentPhase b APPaused
+    get b ##> ("", "", PHASE APPaused)
+    5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
+    get a ##> ("", bId, SENT 5)
+    Nothing <- 100000 `timeout` get b
+    setAgentPhase b APSuspended
+    get b ##> ("", "", PHASE APSuspended)
+    setAgentPhase b APActive
+    get b ##> ("", "", PHASE APActive)
+    get b =##> \case ("", c, Msg "hello 2") -> c == aId; _ -> False
+  pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings alice bobId bob aliceId = do

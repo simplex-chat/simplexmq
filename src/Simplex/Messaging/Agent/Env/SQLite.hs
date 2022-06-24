@@ -127,7 +127,7 @@ data Env = Env
   }
 
 data AgentOperation = AONetwork | AODatabase
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 disallowedOperations :: AgentPhase -> [AgentOperation]
 disallowedOperations = \case
