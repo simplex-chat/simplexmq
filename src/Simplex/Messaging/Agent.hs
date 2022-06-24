@@ -622,11 +622,10 @@ deleteConnection' c connId =
     delete :: RcvQueue -> m ()
     delete rq = do
       deleteQueue c rq
-      ns <- asks ntfSupervisor
-      atomically $ do
-        removeSubscription c connId
-        sendNtfSubCommand ns (connId, NSCDelete)
+      atomically $ removeSubscription c connId
       withStore' c (`deleteConn` connId)
+      ns <- asks ntfSupervisor
+      atomically $ sendNtfSubCommand ns (connId, NSCDelete)
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()

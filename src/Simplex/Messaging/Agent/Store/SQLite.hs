@@ -793,11 +793,11 @@ deleteNtfSubscription db connId = do
           (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, False, updatedAt, connId)
       else DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
-getNextNtfSubAction :: DB.Connection -> NtfServer -> IO (Maybe (NtfSubscription, NtfSubAction, RcvQueue))
+getNextNtfSubAction :: DB.Connection -> NtfServer -> IO (Maybe (NtfSubscription, NtfSubAction))
 getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
-  maybeFirstRow ntfSubscription getNtfSubAction_ $>>= \(ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
+  maybeFirstRow ntfSubscription getNtfSubAction_ $>>= \ntfSub@(NtfSubscription {connId}, _) -> do
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
-    (ntfSub,ntfSubAction,) <$$> getRcvQueueByConnId_ db connId
+    pure $ Just ntfSub
   where
     getNtfSubAction_ =
       DB.query
@@ -816,11 +816,11 @@ getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
       let smpServer = SMPServer smpHost smpPort smpKeyHash
        in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
 
-getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Maybe (NtfSubscription, NtfSubSMPAction, RcvQueue))
+getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Maybe (NtfSubscription, NtfSubSMPAction))
 getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
-  maybeFirstRow ntfSubscription getNtfSubAction_ $>>= \(ntfSub@NtfSubscription {connId}, ntfSubAction) -> do
+  maybeFirstRow ntfSubscription getNtfSubAction_ $>>= \ntfSub@(NtfSubscription {connId}, _) -> do
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
-    (ntfSub,ntfSubAction,) <$$> getRcvQueueByConnId_ db connId
+    pure $ Just ntfSub
   where
     getNtfSubAction_ =
       DB.query
