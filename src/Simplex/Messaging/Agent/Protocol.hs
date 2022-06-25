@@ -83,6 +83,7 @@ module Simplex.Messaging.Agent.Protocol
     ACorrId,
     AgentMsgId,
     AgentPhase (..),
+    NotificationsMode (..),
     NotificationInfo (..),
 
     -- * Encode/decode
@@ -131,6 +132,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Notifications.Protocol (NtfTknStatus)
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( ErrorType,
@@ -228,6 +230,7 @@ data ACommand (p :: AParty) where
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
   PHASE :: AgentPhase -> ACommand Agent
+  NTFMODE :: NtfTknStatus -> NotificationsMode -> ACommand Agent
 
 deriving instance Eq (ACommand p)
 
@@ -256,6 +259,25 @@ instance StrEncoding AgentPhase where
       _ -> fail "bad AgentPhase"
 
 instance ToJSON AgentPhase where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+data NotificationsMode = NMOff | NMPeriodic | NMInstant
+  deriving (Eq, Show)
+
+instance StrEncoding NotificationsMode where
+  strEncode = \case
+    NMOff -> "OFF"
+    NMPeriodic -> "PERIODIC"
+    NMInstant -> "INSTANT"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "OFF" -> pure NMOff
+      "PERIODIC" -> pure NMPeriodic
+      "INSTANT" -> pure NMInstant
+      _ -> fail "bad NotificationsMode"
+
+instance ToJSON NotificationsMode where
   toEncoding = strToJEncoding
   toJSON = strToJSON
 
@@ -947,6 +969,7 @@ serializeCommand = \case
   ERR e -> "ERR " <> strEncode e
   OK -> "OK"
   PHASE p -> "PHASE " <> strEncode p
+  NTFMODE t m -> "NTFMODE " <> smpEncode t <> " " <> strEncode m
   where
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
