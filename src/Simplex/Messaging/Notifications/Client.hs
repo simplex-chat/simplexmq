@@ -15,7 +15,7 @@ import Data.Time (UTCTime)
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
-import Simplex.Messaging.Agent.Protocol (ConnId)
+import Simplex.Messaging.Agent.Protocol (ConnId, NotificationsMode (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -119,12 +119,13 @@ data NtfToken = NtfToken
     -- | token status
     ntfTknStatus :: NtfTknStatus,
     -- | pending token action and the earliest time
-    ntfTknAction :: Maybe NtfTknAction
+    ntfTknAction :: Maybe NtfTknAction,
+    ntfMode :: NotificationsMode
   }
   deriving (Show)
 
-newNtfToken :: DeviceToken -> NtfServer -> C.ASignatureKeyPair -> C.KeyPair 'C.X25519 -> NtfToken
-newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
+newNtfToken :: DeviceToken -> NtfServer -> C.ASignatureKeyPair -> C.KeyPair 'C.X25519 -> NotificationsMode -> NtfToken
+newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
   NtfToken
     { deviceToken,
       ntfServer,
@@ -134,7 +135,8 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
       ntfDhKeys,
       ntfDhSecret = Nothing,
       ntfTknStatus = NTNew,
-      ntfTknAction = Just NTARegister
+      ntfTknAction = Just NTARegister,
+      ntfMode
     }
 
 data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction

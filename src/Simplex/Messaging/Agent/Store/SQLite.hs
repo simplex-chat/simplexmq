@@ -69,6 +69,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getDeviceNtfToken,
     updateNtfTokenRegistration,
     updateNtfToken,
+    setNtfTokenNtfMode,
     removeNtfToken,
     -- Notification subscription persistence
     getNtfSubscription,
@@ -623,15 +624,15 @@ updateRatchet db connId rc skipped = do
           DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
 createNtfToken :: DB.Connection -> NtfToken -> IO ()
-createNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey), ntfDhSecret, ntfTknStatus, ntfTknAction} = do
+createNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey), ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode} = do
   upsertNtfServer_ db srv
   DB.execute
     db
     [sql|
       INSERT INTO ntf_tokens
-        (provider, device_token, ntf_host, ntf_port, tkn_id, tkn_pub_key, tkn_priv_key, tkn_pub_dh_key, tkn_priv_dh_key, tkn_dh_secret, tkn_status, tkn_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (provider, device_token, ntf_host, ntf_port, tkn_id, tkn_pub_key, tkn_priv_key, tkn_pub_dh_key, tkn_priv_dh_key, tkn_dh_secret, tkn_status, tkn_action, ntf_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     |]
-    (provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)
+    ((provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode))
 
 getDeviceNtfToken :: DB.Connection -> DeviceToken -> IO (Maybe NtfToken, [NtfToken])
 getDeviceNtfToken db t = do
@@ -641,16 +642,18 @@ getDeviceNtfToken db t = do
         db
         [sql|
           SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
-            t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
+            t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret,
+            t.tkn_status, t.tkn_action, t.ntf_mode
           FROM ntf_tokens t
           JOIN ntf_servers s USING (ntf_host, ntf_port)
         |]
   pure . first listToMaybe $ partition ((t ==) . deviceToken) tokens
   where
-    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)) =
+    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
       let ntfServer = ProtocolServer {host, port, keyHash}
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
-       in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
+          ntfMode = fromMaybe NMOff ntfMode_
+       in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode}
 
 updateNtfTokenRegistration :: DB.Connection -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> IO ()
 updateNtfTokenRegistration db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknId ntfDhSecret = do
@@ -675,6 +678,18 @@ updateNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
     (tknStatus, tknAction, updatedAt, provider, token, host, port)
+
+setNtfTokenNtfMode :: DB.Connection -> NtfToken -> NotificationsMode -> IO ()
+setNtfTokenNtfMode db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} ntfMode = do
+  updatedAt <- getCurrentTime
+  DB.execute
+    db
+    [sql|
+      UPDATE ntf_tokens
+      SET ntf_mode = ?, updated_at = ?
+      WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+    |]
+    (ntfMode, updatedAt, provider, token, host, port)
 
 removeNtfToken :: DB.Connection -> NtfToken -> IO ()
 removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} =
@@ -846,17 +861,19 @@ getActiveNtfToken db =
       db
       [sql|
         SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
-          t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret, t.tkn_status, t.tkn_action
+          t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret,
+          t.tkn_status, t.tkn_action, t.ntf_mode
         FROM ntf_tokens t
         JOIN ntf_servers s USING (ntf_host, ntf_port)
         WHERE t.tkn_status = ?
       |]
       (Only NTActive)
   where
-    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret, ntfTknStatus, ntfTknAction)) =
+    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
       let ntfServer = ProtocolServer {host, port, keyHash}
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
-       in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction}
+          ntfMode = fromMaybe NMOff ntfMode_
+       in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode}
 
 getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvNtfDhSecret))
 getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =

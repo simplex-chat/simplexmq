@@ -58,7 +58,6 @@ module Simplex.Messaging.Agent
     enableNtfCron,
     checkNtfToken,
     deleteNtfToken,
-    setNtfMode,
     getNtfMode,
     deleteNtfSub,
     setAgentPhase,
@@ -191,8 +190,8 @@ setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c
 
 -- | Register device notifications token
-registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
-registerNtfToken c = withAgentEnv c . registerNtfToken' c
+registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
+registerNtfToken c = withAgentEnv c .: registerNtfToken' c
 
 -- | Verify device notifications token
 verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
@@ -208,10 +207,7 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
 
-setNtfMode :: AgentErrorMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m ()
-setNtfMode c = withAgentEnv c .: setNtfMode' c
-
-getNtfMode :: AgentErrorMonad m => AgentClient -> m (NtfTknStatus, NotificationsMode)
+getNtfMode :: AgentErrorMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
 getNtfMode c = withAgentEnv c $ getNtfMode' c
 
 -- | Delete notification subscription for connection
@@ -640,10 +636,10 @@ setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
-registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
-registerNtfToken' c deviceToken =
+registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
+registerNtfToken' c deviceToken ntfMode =
   withStore' c (`getDeviceNtfToken` deviceToken) >>= \case
-    (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction}, prevTokens) -> do
+    (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = _currentNtfMode}, prevTokens) -> do
       mapM_ (deleteToken_ c) prevTokens
       ns <- asks ntfSupervisor
       case (ntfTokenId, ntfTknAction) of
@@ -655,7 +651,7 @@ registerNtfToken' c deviceToken =
         (Just tknId, Just (NTACron interval)) ->
           t tkn (cronSuccess interval) $ agentNtfEnableCron c tknId tkn interval
         (Just _tknId, Just NTACheck) -> do
-          if ntfTknStatus == NTActive
+          if ntfTknStatus == NTActive && ntfMode == NMInstant
             then initializeNtfSubQ c tkn
             else atomically $ nsUpdateToken ns tkn
           pure ntfTknStatus -- TODO
@@ -673,7 +669,7 @@ registerNtfToken' c deviceToken =
             C.SignAlg a -> do
               tknKeys <- liftIO $ C.generateSignatureKeyPair a
               dhKeys <- liftIO C.generateKeyPair'
-              let tkn = newNtfToken deviceToken ntfServer tknKeys dhKeys
+              let tkn = newNtfToken deviceToken ntfServer tknKeys dhKeys ntfMode
               withStore' c (`createNtfToken` tkn)
               registerToken tkn
               pure NTRegistered
@@ -724,10 +720,7 @@ deleteNtfToken' c deviceToken =
     (Just tkn, _) -> deleteToken_ c tkn
     _ -> throwError $ CMD PROHIBITED
 
-setNtfMode' :: AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m ()
-setNtfMode' _c _deviceToken _ntfMode = throwError $ CMD PROHIBITED
-
-getNtfMode' :: AgentMonad m => AgentClient -> m (NtfTknStatus, NotificationsMode)
+getNtfMode' :: AgentMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
 getNtfMode' _c = throwError $ CMD PROHIBITED
 
 -- | Delete notification subscription for connection, in Reader monad
@@ -750,7 +743,7 @@ deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
   atomically $ nsRemoveNtfToken ns
 
 withToken :: AgentMonad m => AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> m a -> m NtfTknStatus
-withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
+withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do
   ns <- asks ntfSupervisor
   forM_ from_ $ \(status, action) -> do
     withStore' c $ \db -> updateNtfToken db tkn status (Just action)
@@ -759,14 +752,14 @@ withToken c tkn@NtfToken {deviceToken} from_ (toStatus, toAction_) f = do
     Right _ -> do
       withStore' c $ \db -> updateNtfToken db tkn toStatus toAction_
       let updatedToken = tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
-      if toStatus == NTActive
+      if toStatus == NTActive && ntfMode == NMInstant
         then initializeNtfSubQ c updatedToken
         else atomically $ nsUpdateToken ns updatedToken
       pure toStatus
     Left e@(NTF AUTH) -> do
       withStore' c $ \db -> removeNtfToken db tkn
       atomically $ nsRemoveNtfToken ns
-      void $ registerNtfToken' c deviceToken
+      void $ registerNtfToken' c deviceToken ntfMode
       throwError e
     Left e -> throwError e
 
@@ -780,7 +773,7 @@ initializeNtfSubQ c tkn = do
 
 -- TODO
 -- There should probably be another function to cancel all subscriptions that would flush the queue first,
--- so that superwisor stops processing pending commands?
+-- so that supervisor stops processing pending commands?
 -- It is an optimization, but I am thinking how it would behave if a user were to flip on/off quickly several times.
 
 setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
