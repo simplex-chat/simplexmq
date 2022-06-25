@@ -63,8 +63,10 @@ VARIABLES
     complete_proposals,
     approver_states
 
+MemberSet == [ user : Users, id : InviteIds \union { Nothing } ]
+
 ASSUME
-    /\ InitialMembers \subseteq ([ user : Users, id : InviteIds \union { Nothing } ])
+    /\ InitialMembers \subseteq MemberSet
     /\ UserPerceptions \in [ [ perceiver : Users, description : [ by : Users, of : Users ] ] -> Users \union { Nothing } ]
     \* A user always correctly knows their own perceptions
     /\ \A user1, user2 \in Users : UserPerceptions[[ perceiver |-> user1, description |-> [ by |-> user1, of |-> user2 ]]] = user2
@@ -73,7 +75,7 @@ ASSUME
 \* TODO: This is incorrectly used in places where it could not possibly be
 \* known, and instead must be based on perceptions.
 Leader ==
-    (CHOOSE member \in InitialMembers : member.id = Nothing).user
+    CHOOSE member \in InitialMembers : member.id = Nothing
 
 \* TODO: This actually has a deeper layer, in that this models the direct
 \* connections that are pre-group, which are only used for
@@ -95,8 +97,13 @@ Init ==
     times, so we need to track their changes in perception individually.
     The empty set means the user doesn't believe themselves to be part of the
     group (they might actually know who some members are).
+    On top of that, users may consider themselves in multiple groups in at the
+    same time--even in this model where there is only one leader, because the
+    whole point of this protocol is that invites can't be correlated.  As such,
+    we need to consider what the user thinks for themselves given a their id
+    within the group.
     *)
-    /\ group_perceptions = [ user \in Users |-> IF \E member \in InitialMembers : member.user = user THEN InitialMembers ELSE {} ]
+    /\ group_perceptions = [ member \in MemberSet |-> IF member \in InitialMembers THEN InitialMembers ELSE {} ]
     /\ proposal = Nothing
     /\ complete_proposals = {}
     /\ approver_states = [ x \in (InviteIds \X Users) |-> Nothing ]
@@ -108,20 +115,20 @@ SendPleasePropose ==
     \* and this one could be happening after another, meaning the group size,
     \* which is important for correct invitee behaviour, cannot be known until
     \* the Leader officially starts this proposal.
-    \E proposer \in Users, invitee \in Users :
+    \E proposer \in MemberSet, invitee \in Users :
         /\ Cardinality(rng_state) > 0
         /\ LET invite_id == CHOOSE x \in rng_state : TRUE
            IN
             /\ group_perceptions[proposer] /= {}
             /\ \A members \in group_perceptions[proposer] :
                 /\ members.user /= invitee
-            /\ HasDirectConnection(proposer, invitee)
+            /\ HasDirectConnection(proposer.user, invitee)
             /\ messages' = messages \union
                 {   [ type |-> PleasePropose
                     , sender |-> proposer
                     , recipient |-> Leader
                     , invite_id |-> invite_id
-                    , invitee_description |-> [ by |-> proposer, of |-> invitee ]
+                    , invitee_description |-> [ by |-> proposer.user, of |-> invitee ]
                     ]
                 }
             /\ rng_state' = rng_state \ { invite_id }
@@ -131,8 +138,7 @@ LeaderReceivePleasePropose ==
     \E message \in messages :
         /\ message.type = PleasePropose
         /\ message.recipient = Leader
-        /\ \E member \in group_perceptions[Leader] :
-            member.user = message.sender
+        /\ message.sender \in group_perceptions[Leader]
         /\ message.invite_id \notin complete_proposals
         /\ proposal = Nothing
         \* NOTE: As a slight optimization, the Leader can synchronously accept or reject.
@@ -151,7 +157,7 @@ BroadcastProposalState ==
         /\ messages' = messages \union
             {   CASE proposal.state = Proposing ->
                     [ sender |-> Leader
-                    , recipient |-> member.user
+                    , recipient |-> member
                     , type |-> Propose
                     , invite_id |-> proposal.invite_id
                     , invitee_description |-> proposal.invitee_description
@@ -159,13 +165,13 @@ BroadcastProposalState ==
                     ]
                   [] proposal.state = Kicking ->
                     [ sender |-> Leader
-                    , recipient |-> member.user
+                    , recipient |-> member
                     , type |-> Kick
                     , kicked |-> proposal.kicked
                     ]
                   [] TRUE ->
                     [ sender |-> Leader
-                    , recipient |-> member.user
+                    , recipient |-> member
                     , type |->
                         CASE proposal.state = Holding -> Hold
                           [] proposal.state = Continuing -> Continue
@@ -178,6 +184,7 @@ LeaderReceiveReject ==
     \E message \in messages :
         /\ message.type = Reject
         /\ message.recipient = Leader
+        /\ message.sender \in group_perceptions[Leader]
         /\ message.invite_id \notin complete_proposals
         /\ proposal = Nothing
         /\ proposal.state = Proposing
@@ -198,6 +205,7 @@ LeaderReceiveCantHold ==
     \E message \in messages :
         /\ message.type = CantHold
         /\ message.recipient = Leader
+        /\ message.sender \in group_perceptions[Leader]
         /\ proposal /= Nothing
         /\ proposal.state = Holding
         /\ message.invite_id = proposal.invite_id
@@ -210,11 +218,12 @@ LeaderReceiveHold ==
     /\ \E message \in messages :
         /\ message.type = WillHold
         /\ message.recipient = Leader
+        /\ message.sender \in group_perceptions[Leader]
         /\ message.invite_id = proposal.invite_id
-        /\ IF   { member.user : member \in proposal.awaiting_response } = { message.sender }
+        /\ IF   proposal.awaiting_response = { message.sender }
            THEN /\ proposal' = Nothing
                 /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
-           ELSE /\ proposal' = [ proposal EXCEPT !.awaiting_response = { member \in @ : member.user /= message.sender } ]
+           ELSE /\ proposal' = [ proposal EXCEPT !.awaiting_response = { member \in @ : member /= message.sender } ]
                 /\ UNCHANGED <<complete_proposals>>
         /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
 
@@ -232,7 +241,7 @@ GiveUpOnMembers ==
           /\ UNCHANGED <<complete_proposals>>
     \* Leader can't be kicked.  Realistically, they should just act
     \* synchronously when giving up on a proposal.
-    /\ [ user |-> Leader, id |-> Nothing ] \notin proposal.awaiting_response
+    /\ Leader \notin proposal.awaiting_response
     /\ LET new_group == group_perceptions[Leader] \ proposal.awaiting_response
        IN
         /\ proposal' =
@@ -248,19 +257,20 @@ LeaderReceiveKickAck ==
     /\ \E message \in messages :
         /\ message.type = KickAck
         /\ message.recipient = Leader
+        /\ message.sender \in group_perceptions[Leader]
         /\ message.kicked = proposal.kicked
-        /\ IF   { member.user : member \in proposal.awaiting_response } = { message.sender }
+        /\ IF   proposal.awaiting_response = { message.sender }
            THEN proposal' = Nothing
-           ELSE proposal' = [ proposal EXCEPT !.awaiting_response = { member \in @ : member.user /= message.sender } ]
+           ELSE proposal' = [ proposal EXCEPT !.awaiting_response = { member \in @ : member /= message.sender } ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
 ApproverReceiveProposal ==
     \E message \in messages :
         /\ message.type = Propose
-        /\ IF   /\ UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]] /= Nothing
-                /\ HasDirectConnection(message.recipient, UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]])
-           THEN /\ approver_states[<<message.invite_id, message.recipient>>] = Nothing
-                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = Active ]
+        /\ IF   /\ UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]] /= Nothing
+                /\ HasDirectConnection(message.recipient.user, UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]])
+           THEN /\ approver_states[<<message.invite_id, message.recipient.user>>] = Nothing
+                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = <<message.recipient.id, Active>> ]
                 \* It's safe to send this message right away, as it only agrees to
                 \* reveal information that everyone has agreed to share.  The invitee
                 \* now knows that there's a group that involves this member, the
@@ -269,8 +279,8 @@ ApproverReceiveProposal ==
                 \* However, that is exactly what they all just agreed to.  Members that
                 \* don't agree to send this message remain private.
                 /\ messages' = messages \union
-                    {   [ sender |-> message.recipient
-                        , recipient |-> UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description]]
+                    {   [ sender |-> message.recipient.user
+                        , recipient |-> UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]]
                         , type |-> Invite
                         , invite_id |-> message.invite_id
                         \* Token generation is abstract/symbolic.  Instead of
@@ -283,7 +293,7 @@ ApproverReceiveProposal ==
                         \* passing around only its value, not looking inside,
                         \* or "generating" on in the wrong context, or our spec
                         \* may be impossible to implement.
-                        , token |-> [ for |-> message.invite_id, by |-> message.recipient ]
+                        , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
                         , group_size |-> message.group_size
                         ]
                     }
@@ -300,7 +310,8 @@ ApproverReceiveProposal ==
 ApproverReceiveHold ==
     \E message \in messages :
         /\ message.type = Hold
-        /\ IF   approver_states[<<message.invite_id, message.recipient>>] = Committed
+        /\ IF   /\ approver_states[<<message.invite_id, message.recipient.user>>] /= Nothing
+                /\ approver_states[<<message.invite_id, message.recipient.user>>][2] = Committed
            THEN /\ messages' = messages \union
                     {   [ type |-> CantHold
                         , sender |-> message.recipient
@@ -314,8 +325,9 @@ ApproverReceiveHold ==
            \* However, it's not live, because if the Propose message is dropped
            \* and now the Leader is only sending Hold messages, this node is
            \* going to ignore everything.
-           ELSE /\ approver_states[<<message.invite_id, message.recipient>>] = Active
-                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = OnHold ]
+           ELSE /\ approver_states[<<message.invite_id, message.recipient.user>>] /= Nothing
+                /\ approver_states[<<message.invite_id, message.recipient.user>>][2] = Active
+                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ @ EXCEPT ![2] = OnHold ] ]
                 \* TODO: This can't be atomic
                 /\ messages' = messages \union
                     {   [ type |-> WillHold
@@ -329,11 +341,12 @@ ApproverReceiveHold ==
 ApproverReceiveContinue ==
     \E message \in messages :
         /\ message.type = Continue
-        /\ \/ approver_states[<<message.invite_id, message.recipient>>] = OnHold
+        /\ approver_states[<<message.invite_id, message.recipient.user>>] /= Nothing
+        /\ \/ approver_states[<<message.invite_id, message.recipient.user>>][2] = OnHold
            \* If we see a Continue while Active, we can assume that we missed
            \* the Hold, and can just skip right to the Resumed state
-           \/ approver_states[<<message.invite_id, message.recipient>>] = Active
-        /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = Resumed ]
+           \/ approver_states[<<message.invite_id, message.recipient.user>>][2] = Active
+        /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ @ EXCEPT ![2] = Resumed ] ]
         \* TODO: Currently, this isn't live, because the approver only sends
         \* Invites on Propose messages.  Since it's possible that the approver
         \* never received a Propose message at all, the Resume message needs to
@@ -357,19 +370,19 @@ ApproverReceiveKick ==
         /\ UNCHANGED <<rng_state, proposal, complete_proposals, approver_states>>
 
 BroadcastToken ==
-    \E from \in Users, invite_id \in InviteIds :
+    \E from \in MemberSet, invite_id \in InviteIds :
         \E to \in group_perceptions[from] :
-            /\ from /= to.user
-            /\ approver_states[<<invite_id, from>>] /= Nothing
+            /\ from /= to
+            /\ approver_states[<<invite_id, from.user>>] /= Nothing
             /\ messages' = messages \union
                 {   [ sender |-> from
-                    , recipient |-> to.user
+                    , recipient |-> to
                     , type |-> SyncToken
                     \* Note again that tokens are abstract/symbolic.  In this
                     \* context, the spec implies that this is using a
                     \* pregenerated token that is permanently associated for
                     \* this invite_id.
-                    , token |-> [ for |-> invite_id, by |-> from ]
+                    , token |-> [ for |-> invite_id, by |-> from.user ]
                     , invite_id |-> invite_id
                     ]
                 }
@@ -410,29 +423,26 @@ SendAccept ==
 Establish ==
     \E message \in messages :
         /\ message.type = Accept
-        /\ LET SyncMessages == { sync \in messages : sync.recipient = message.recipient /\ sync.type = SyncToken /\ sync.invite_id = message.invite_id }
+        /\ approver_states[<<message.invite_id, message.recipient>>] /= Nothing
+        /\  \/ approver_states[<<message.invite_id, message.recipient>>][2] = Active
+            \/ approver_states[<<message.invite_id, message.recipient>>][2] = Resumed
+        /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>][1]
+               RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
+               SenderMember == [ user |-> message.sender, id |-> message.invite_id ]
+               SyncMessages == { sync \in messages : sync.recipient = RecipientMember /\ sync.type = SyncToken /\ sync.invite_id = message.invite_id }
                Senders == { sync.sender : sync \in SyncMessages }
                \* Note that it's safe to "access" "its" token here
                Tokens == { sync.token : sync \in SyncMessages } \union { [ for |-> message.invite_id, by |-> message.recipient ] }
-           IN  /\ Senders = ({ member.user : member \in group_perceptions[message.recipient] }) \ { message.recipient }
+           IN  /\ Senders = group_perceptions[RecipientMember] \ { RecipientMember }
                /\ message.tokens = Tokens
-               /\  \/ approver_states[<<message.invite_id, message.recipient>>] = Active
-                   \/ approver_states[<<message.invite_id, message.recipient>>] = Resumed
-               /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = Committed ]
+               /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = [ @ EXCEPT ![2] = Committed ] ]
                \* TODO: This can't be atomic
                /\ group_perceptions' =
                    [ group_perceptions
-                   EXCEPT ![message.recipient] = @ \union { [ user |-> message.sender, id |-> message.invite_id ] }
-                   \* If this is the first member to establish, the invitee
-                   \* now knows they are in the group with everyone who
-                   \* invited them
-                   \* TODO: This is dramatically underspecified.  UserIds
-                   \* probably shouldn't be revealed until this point to avoid
-                   \* correllation of other invites.
-                   , ![message.sender] =
-                       group_perceptions[message.recipient] \union { [ user |-> message.sender, id |-> message.invite_id ] }
+                   EXCEPT ![RecipientMember] = @ \union { SenderMember }
+                   ,      ![SenderMember] = @ \union { RecipientMember, SenderMember }
                    ]
-               /\  IF  message.recipient = Leader
+               /\  IF  message.recipient = Leader.user
                    THEN
                        /\ proposal /= Nothing
                        /\ proposal.state \in { Proposing, Continuing }
@@ -496,29 +506,33 @@ Next ==
 Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 
-IdsAreUniqueWithExactlyOneLeader ==
-    \A user \in Users :
-        \/ group_perceptions[user] = {}
-        \/ /\ Cardinality({ member.id : member \in group_perceptions[user] }) = Cardinality(group_perceptions[user])
-           /\ Cardinality({ member \in group_perceptions[user] : member.id = Nothing }) = 1
+IdsAreUnique ==
+    \A member \in MemberSet :
+        \/ group_perceptions[member] = {}
+        \/ Cardinality({ m.id : m \in group_perceptions[member] }) = Cardinality(group_perceptions[member])
 
 IdsAndLeaderMatchAcrossAllMembers ==
-    \A invite_id \in (InviteIds \union { Nothing }), user1, user2 \in Users :
-        LET matches1 == { member \in group_perceptions[user1] : member.id = invite_id }
-            matches2 == { member \in group_perceptions[user2] : member.id = invite_id }
+    \A invite_id \in (InviteIds \union { Nothing }), member1, member2 \in MemberSet :
+        LET matches1 == { member \in group_perceptions[member1] : member.id = invite_id }
+            matches2 == { member \in group_perceptions[member2] : member.id = invite_id }
         IN  \/ matches1 = {}
             \/ matches2 = {}
             \/ matches1 = matches2
 
 CannotCommunicateWithoutAConnection ==
     \A message \in messages :
-        HasDirectConnection(message.sender, message.recipient)
+        IF   message.type \in { Invite, Accept }
+        THEN HasDirectConnection(message.sender, message.recipient)
+        ELSE HasDirectConnection(message.sender.user, message.recipient.user)
 
 TokensMatch ==
     \A message \in messages :
-        message.type = Invite \/ message.type = SyncToken =>
+        /\ message.type = Invite =>
             /\ message.token = [ for |-> message.invite_id, by |-> message.sender ]
             /\ approver_states[<<message.invite_id, message.sender>>] /= Nothing
+        /\ message.type = SyncToken =>
+            /\ message.token = [ for |-> message.invite_id, by |-> message.sender.user ]
+            /\ approver_states[<<message.invite_id, message.sender.user>>] /= Nothing
 
 GroupSizesMatch ==
     \A message1, message2 \in messages :
@@ -544,25 +558,25 @@ NonMembersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
             =>  /\ approver_states[<<message1.invite_id, message1.sender>>] /= Nothing
                 /\ approver_states[<<message2.invite_id, message2.sender>>] /= Nothing
 
-AllMembers ==
-    UNION { { member.user : member \in group_perceptions[x] } : x \in Users }
+AllMembersUsers ==
+    UNION { { member.user : member \in group_perceptions[x] } : x \in MemberSet }
 
 MembersOnlyEstablishWithInvitee ==
-    \A member \in (AllMembers \ { member.user : member \in InitialMembers }) :
+    \A member_user \in (AllMembersUsers \ { member.user : member \in InitialMembers }) :
         \E message \in messages :
             /\ message.type = Propose
-            /\ message.invitee_description.of = member
+            /\ message.invitee_description.of = member_user
 
 AllMembersAreConnectedToAllOtherMembers ==
-    \A user \in Users :
-        \A member \in group_perceptions[user] :
-            HasDirectConnection(user, member.user)
+    \A member1 \in MemberSet :
+        \A member2 \in group_perceptions[member1] :
+            HasDirectConnection(member1.user, member2.user)
 
 EstablishedOnlyIfAllPerceptionsMatch ==
-    \A member \in AllMembers :
+    \A member_user \in AllMembersUsers :
         \A message \in messages :
             /\ message.type = Propose
-            /\ message.invitee_description.of = member
-            => UserPerceptions[[ perceiver |-> message.recipient, description |-> message.invitee_description ]] = member
+            /\ message.invitee_description.of = member_user
+            => UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description ]] = member_user
 
 ====
