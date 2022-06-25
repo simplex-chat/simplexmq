@@ -125,6 +125,8 @@ import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
+import Database.SQLite.Simple.FromField
+import Database.SQLite.Simple.ToField
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.Messaging.Agent.QueryString
@@ -280,6 +282,10 @@ instance StrEncoding NotificationsMode where
 instance ToJSON NotificationsMode where
   toEncoding = strToJEncoding
   toJSON = strToJSON
+
+instance ToField NotificationsMode where toField = toField . strEncode
+
+instance FromField NotificationsMode where fromField = blobFieldDecoder $ parseAll strP
 
 data NotificationInfo = NotificationInfo
   { ntfConnId :: ConnId,

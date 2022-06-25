@@ -164,7 +164,8 @@ tkn_dh_secret BLOB, -- DH secret for e2e encryption of notifications
   tkn_status TEXT NOT NULL,
   tkn_action BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT(datetime('now')), -- this is to check token status periodically to know when it was last checked
+  updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  ntf_mode TEXT NULL, -- this is to check token status periodically to know when it was last checked
   PRIMARY KEY(provider, device_token, ntf_host, ntf_port),
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE

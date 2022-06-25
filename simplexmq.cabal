@@ -49,6 +49,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
