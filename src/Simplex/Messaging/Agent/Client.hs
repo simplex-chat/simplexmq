@@ -644,7 +644,7 @@ cryptoError = \case
 
 endAgentOperation :: AgentClient -> AgentOperation -> STM ()
 endAgentOperation c@AgentClient {agentEnv = Env {agentOperations}} op = do
-  TM.alter (Just . maybe 0 (\n -> min 0 $ n - 1)) op agentOperations
+  TM.alter (Just . maybe 0 (\n -> max 0 $ n - 1)) op agentOperations
   notifyAgentPhaseChanged c
 
 beginAgentOperation :: AgentClient -> AgentOperation -> STM ()
