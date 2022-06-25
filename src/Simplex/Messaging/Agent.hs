@@ -211,8 +211,8 @@ deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
 setNtfMode :: AgentErrorMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m ()
 setNtfMode c = withAgentEnv c .: setNtfMode' c
 
-getNtfMode :: AgentErrorMonad m => AgentClient -> DeviceToken -> m (NtfTknStatus, NotificationsMode)
-getNtfMode c = withAgentEnv c . getNtfMode' c
+getNtfMode :: AgentErrorMonad m => AgentClient -> m (NtfTknStatus, NotificationsMode)
+getNtfMode c = withAgentEnv c $ getNtfMode' c
 
 -- | Delete notification subscription for connection
 deleteNtfSub :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
@@ -727,8 +727,8 @@ deleteNtfToken' c deviceToken =
 setNtfMode' :: AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m ()
 setNtfMode' _c _deviceToken _ntfMode = throwError $ CMD PROHIBITED
 
-getNtfMode' :: AgentMonad m => AgentClient -> DeviceToken -> m (NtfTknStatus, NotificationsMode)
-getNtfMode' _c _deviceToken = throwError $ CMD PROHIBITED
+getNtfMode' :: AgentMonad m => AgentClient -> m (NtfTknStatus, NotificationsMode)
+getNtfMode' _c = throwError $ CMD PROHIBITED
 
 -- | Delete notification subscription for connection, in Reader monad
 deleteNtfSub' :: AgentMonad m => AgentClient -> ConnId -> m ()
