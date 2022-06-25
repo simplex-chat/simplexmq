@@ -427,15 +427,12 @@ testAgentPhaseChanges = do
     get a ##> ("", bId, SENT 4)
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4
-    setAgentPhase b APPaused
-    get b ##> ("", "", PHASE APPaused)
+    suspendAgent b
+    get b ##> ("", "", SUSPENDED)
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
-    setAgentPhase b APSuspended
-    get b ##> ("", "", PHASE APSuspended)
-    setAgentPhase b APActive
-    get b ##> ("", "", PHASE APActive)
+    activateAgent b
     get b =##> \case ("", c, Msg "hello 2") -> c == aId; _ -> False
   pure ()
 
