@@ -638,9 +638,8 @@ setSMPServers' c servers = do
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
 registerNtfToken' c deviceToken ntfMode =
-  withStore' c (`getDeviceNtfToken` deviceToken) >>= \case
-    (Just tkn@NtfToken {ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = _currentNtfMode}, prevTokens) -> do
-      mapM_ (deleteToken_ c) prevTokens
+  withStore' c getCurrentNtfToken >>= \case
+    Just tkn@NtfToken {deviceToken = currentDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = currentNtfMode} -> do
       ns <- asks ntfSupervisor
       case (ntfTokenId, ntfTknAction) of
         (Nothing, Just NTARegister) -> registerToken tkn $> NTRegistered
@@ -687,8 +686,9 @@ registerNtfToken' c deviceToken ntfMode =
 -- TODO decrypt verification code
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
 verifyNtfToken' c deviceToken code nonce =
-  withStore' c (`getDeviceNtfToken` deviceToken) >>= \case
-    (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret}, _) -> do
+  withStore' c getCurrentNtfToken >>= \case
+    Just tkn@NtfToken {deviceToken = currentDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret} -> do
+      when (deviceToken /= currentDeviceToken) . throwError $ CMD PROHIBITED
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
       void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
         agentNtfVerifyToken c tknId tkn code'
@@ -697,8 +697,9 @@ verifyNtfToken' c deviceToken code nonce =
 enableNtfCron' :: AgentMonad m => AgentClient -> DeviceToken -> Word16 -> m ()
 enableNtfCron' c deviceToken interval = do
   when (interval < 20) . throwError $ CMD PROHIBITED
-  withStore' c (`getDeviceNtfToken` deviceToken) >>= \case
-    (Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive}, _) ->
+  withStore' c getCurrentNtfToken >>= \case
+    Just tkn@NtfToken {deviceToken = currentDeviceToken, ntfTokenId = Just tknId, ntfTknStatus = NTActive} -> do
+      when (deviceToken /= currentDeviceToken) . throwError $ CMD PROHIBITED
       void . withToken c tkn (Just (NTActive, NTACron interval)) (cronSuccess interval) $
         agentNtfEnableCron c tknId tkn interval
     _ -> throwError $ CMD PROHIBITED
@@ -710,18 +711,25 @@ cronSuccess interval
 
 checkNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
 checkNtfToken' c deviceToken =
-  withStore' c (`getDeviceNtfToken` deviceToken) >>= \case
-    (Just tkn@NtfToken {ntfTokenId = Just tknId}, _) -> agentNtfCheckToken c tknId tkn
+  withStore' c getCurrentNtfToken >>= \case
+    Just tkn@NtfToken {deviceToken = currentDeviceToken, ntfTokenId = Just tknId} -> do
+      when (deviceToken /= currentDeviceToken) . throwError $ CMD PROHIBITED
+      agentNtfCheckToken c tknId tkn
     _ -> throwError $ CMD PROHIBITED
 
 deleteNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken' c deviceToken =
-  withStore' c (`getDeviceNtfToken` deviceToken) >>= \case
-    (Just tkn, _) -> deleteToken_ c tkn
+  withStore' c getCurrentNtfToken >>= \case
+    Just tkn@NtfToken {deviceToken = currentDeviceToken} -> do
+      when (deviceToken /= currentDeviceToken) . throwError $ CMD PROHIBITED
+      deleteToken_ c tkn
     _ -> throwError $ CMD PROHIBITED
 
 getNtfToken' :: AgentMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
-getNtfToken' _c = throwError $ CMD PROHIBITED
+getNtfToken' c =
+  withStore' c getCurrentNtfToken >>= \case
+    Just NtfToken {deviceToken, ntfTknStatus, ntfMode} -> pure (deviceToken, ntfTknStatus, ntfMode)
+    _ -> throwError $ CMD PROHIBITED
 
 -- | Delete notification subscription for connection, in Reader monad
 deleteNtfSub' :: AgentMonad m => AgentClient -> ConnId -> m ()

@@ -66,10 +66,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRatchet,
     -- Notification device token persistence
     createNtfToken,
-    getDeviceNtfToken,
+    getCurrentNtfToken,
     updateNtfTokenRegistration,
     updateNtfToken,
-    setNtfTokenNtfMode,
     removeNtfToken,
     -- Notification subscription persistence
     getNtfSubscription,
@@ -96,12 +95,12 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG, randomBytesGenerate)
-import Data.Bifunctor (first, second)
+import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
-import Data.List (find, foldl', partition)
+import Data.List (find, foldl')
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -634,25 +633,23 @@ createNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
     |]
     ((provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode))
 
-getDeviceNtfToken :: DB.Connection -> DeviceToken -> IO (Maybe NtfToken, [NtfToken])
-getDeviceNtfToken db t = do
-  tokens <-
-    map ntfToken
-      <$> DB.query_
-        db
-        [sql|
-          SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
-            t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret,
-            t.tkn_status, t.tkn_action, t.ntf_mode
-          FROM ntf_tokens t
-          JOIN ntf_servers s USING (ntf_host, ntf_port)
-        |]
-  pure . first listToMaybe $ partition ((t ==) . deviceToken) tokens
+getCurrentNtfToken :: DB.Connection -> IO (Maybe NtfToken)
+getCurrentNtfToken db = do
+  maybeFirstRow ntfToken $
+    DB.query_
+      db
+      [sql|
+        SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+          t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret,
+          t.tkn_status, t.tkn_action, t.ntf_mode
+        FROM ntf_tokens t
+        JOIN ntf_servers s USING (ntf_host, ntf_port)
+      |]
   where
     ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
       let ntfServer = ProtocolServer {host, port, keyHash}
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
-          ntfMode = fromMaybe NMOff ntfMode_
+          ntfMode = fromMaybe NMPeriodic ntfMode_
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode}
 
 updateNtfTokenRegistration :: DB.Connection -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> IO ()
@@ -678,18 +675,6 @@ updateNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
     (tknStatus, tknAction, updatedAt, provider, token, host, port)
-
-setNtfTokenNtfMode :: DB.Connection -> NtfToken -> NotificationsMode -> IO ()
-setNtfTokenNtfMode db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} ntfMode = do
-  updatedAt <- getCurrentTime
-  DB.execute
-    db
-    [sql|
-      UPDATE ntf_tokens
-      SET ntf_mode = ?, updated_at = ?
-      WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
-    |]
-    (ntfMode, updatedAt, provider, token, host, port)
 
 removeNtfToken :: DB.Connection -> NtfToken -> IO ()
 removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} =
@@ -872,7 +857,7 @@ getActiveNtfToken db =
     ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
       let ntfServer = ProtocolServer {host, port, keyHash}
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
-          ntfMode = fromMaybe NMOff ntfMode_
+          ntfMode = fromMaybe NMPeriodic ntfMode_
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode}
 
 getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvNtfDhSecret))

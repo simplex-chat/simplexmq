@@ -264,17 +264,15 @@ instance ToJSON AgentPhase where
   toEncoding = strToJEncoding
   toJSON = strToJSON
 
-data NotificationsMode = NMOff | NMPeriodic | NMInstant
+data NotificationsMode = NMPeriodic | NMInstant
   deriving (Eq, Show)
 
 instance StrEncoding NotificationsMode where
   strEncode = \case
-    NMOff -> "OFF"
     NMPeriodic -> "PERIODIC"
     NMInstant -> "INSTANT"
   strP =
     A.takeTill (== ' ') >>= \case
-      "OFF" -> pure NMOff
       "PERIODIC" -> pure NMPeriodic
       "INSTANT" -> pure NMInstant
       _ -> fail "bad NotificationsMode"
