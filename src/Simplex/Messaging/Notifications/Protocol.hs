@@ -10,7 +10,7 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -29,7 +29,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
 
 data NtfEntity = Token | Subscription
   deriving (Show)
@@ -349,16 +349,17 @@ instance Encoding PushProvider where
       'A' -> pure PPApns
       _ -> fail "bad PushProvider"
 
-instance TextEncoding PushProvider where
-  textEncode = \case
-    PPApns -> "apple"
-  textDecode = \case
-    "apple" -> Just PPApns
-    _ -> Nothing
+instance StrEncoding PushProvider where
+  strEncode = \case
+    PPApns -> "apns"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "apns" -> pure PPApns
+      _ -> fail "bad PushProvider"
 
-instance FromField PushProvider where fromField = fromTextField_ textDecode
+instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField PushProvider where toField = toField . textEncode
+instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
 data DeviceToken = DeviceToken PushProvider ByteString
   deriving (Eq, Ord, Show)
@@ -366,6 +367,18 @@ data DeviceToken = DeviceToken PushProvider ByteString
 instance Encoding DeviceToken where
   smpEncode (DeviceToken p t) = smpEncode (p, t)
   smpP = DeviceToken <$> smpP <*> smpP
+
+instance StrEncoding DeviceToken where
+  strEncode (DeviceToken p t) = strEncode p <> " " <> t
+  strP = DeviceToken <$> strP <* A.space <*> hexStringP
+    where
+      hexStringP =
+        A.takeWhile (\c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) >>= \s ->
+          if even (B.length s) then pure s else fail "odd number of hex characters"
+
+instance ToJSON DeviceToken where
+  toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
+  toJSON (DeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
 
 type NtfEntityId = ByteString
 
