@@ -267,45 +267,50 @@ LeaderReceiveKickAck ==
 ApproverReceiveProposal ==
     \E message \in messages :
         /\ message.type = Propose
-        /\ IF   /\ UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]] /= Nothing
-                /\ HasDirectConnection(message.recipient.user, UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]])
-           THEN /\ approver_states[<<message.invite_id, message.recipient.user>>] = Nothing
-                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = <<message.recipient.id, Active>> ]
-                \* It's safe to send this message right away, as it only agrees to
-                \* reveal information that everyone has agreed to share.  The invitee
-                \* now knows that there's a group that involves this member, the
-                \* proposer, and any other members that have sent this message, giving
-                \* the invitee insight into how these contacts are all connected.
-                \* However, that is exactly what they all just agreed to.  Members that
-                \* don't agree to send this message remain private.
-                /\ messages' = messages \union
-                    {   [ sender |-> message.recipient.user
-                        , recipient |-> UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]]
-                        , type |-> Invite
-                        , invite_id |-> message.invite_id
-                        \* Token generation is abstract/symbolic.  Instead of
-                        \* the actual value of our token, we just name the
-                        \* generator and its purpose.  That means that 1:1
-                        \* mapping of a token to an invite_id is implied, and
-                        \* it means that approvers must permanently commit to
-                        \* the choice of the token before issuing it.  It is
-                        \* critical that this spec treats a token as opaque,
-                        \* passing around only its value, not looking inside,
-                        \* or "generating" on in the wrong context, or our spec
-                        \* may be impossible to implement.
-                        , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
-                        , group_size |-> message.group_size
-                        ]
-                    }
-                /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
-           ELSE /\ messages' = messages \union
-                    {   [ sender |-> message.recipient
-                        , recipient |-> Leader
-                        , type |-> Reject
-                        , invite_id |-> message.invite_id
-                        ]
-                    }
-                /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
+        /\ LET PerceivedUser == UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]]
+           IN
+               IF
+                   /\ PerceivedUser /= Nothing
+                   /\ HasDirectConnection(message.recipient.user, PerceivedUser)
+               THEN
+                   /\ approver_states[<<message.invite_id, message.recipient.user>>] = Nothing
+                   /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = <<message.recipient.id, Active>> ]
+                   \* It's safe to send this message right away, as it only agrees to
+                   \* reveal information that everyone has agreed to share.  The invitee
+                   \* now knows that there's a group that involves this member, the
+                   \* proposer, and any other members that have sent this message, giving
+                   \* the invitee insight into how these contacts are all connected.
+                   \* However, that is exactly what they all just agreed to.  Members that
+                   \* don't agree to send this message remain private.
+                   /\ messages' = messages \union
+                       {   [ sender |-> message.recipient.user
+                           , recipient |-> PerceivedUser
+                           , type |-> Invite
+                           , invite_id |-> message.invite_id
+                           \* Token generation is abstract/symbolic.  Instead of
+                           \* the actual value of our token, we just name the
+                           \* generator and its purpose.  That means that 1:1
+                           \* mapping of a token to an invite_id is implied, and
+                           \* it means that approvers must permanently commit to
+                           \* the choice of the token before issuing it.  It is
+                           \* critical that this spec treats a token as opaque,
+                           \* passing around only its value, not looking inside,
+                           \* or "generating" on in the wrong context, or our spec
+                           \* may be impossible to implement.
+                           , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                           , group_size |-> message.group_size
+                           ]
+                       }
+                   /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
+               ELSE
+                   /\ messages' = messages \union
+                       {   [ sender |-> message.recipient
+                           , recipient |-> Leader
+                           , type |-> Reject
+                           , invite_id |-> message.invite_id
+                           ]
+                       }
+                   /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 ApproverReceiveHold ==
     \E message \in messages :
