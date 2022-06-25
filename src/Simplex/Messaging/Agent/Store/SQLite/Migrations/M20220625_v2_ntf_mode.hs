@@ -9,4 +9,6 @@ m20220625_v2_ntf_mode :: Query
 m20220625_v2_ntf_mode =
   [sql|
 ALTER TABLE ntf_tokens ADD COLUMN ntf_mode TEXT NULL;
+
+UPDATE ntf_tokens SET provider = 'apns' WHERE provider = 'apple';
 |]
