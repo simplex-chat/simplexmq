@@ -408,20 +408,19 @@ SendAccept ==
                 Tokens == { invite.token : invite \in Invites }
            IN   IF   Cardinality(Inviters) = message.group_size
                 THEN
-                    \E member \in Inviters :
-                        \* IMPORTANT: The Accept may still has a chance of
-                        \* being ignored (or token mismatch or something odd),
-                        \* so the invitee does not yet believe themself to be
-                        \* part of the group.  At least one member must
-                        \* establish a connection with them first.
-                        /\ messages' = messages \union
-                            {   [ sender |-> invitee
-                                , recipient |-> member
-                                , type |-> Accept
-                                , tokens |-> Tokens
-                                , invite_id |-> invite_id
-                                ]
-                            }
+                    \* IMPORTANT: The Accept may still has a chance of being
+                    \* ignored (or token mismatch or something odd), so the
+                    \* invitee does not yet believe themself to be part of the
+                    \* group.  At least one member must establish a connection
+                    \* with them first.
+                    /\ messages' = messages \union
+                        {   [ sender |-> invitee
+                            , recipient |-> message.sender
+                            , type |-> Accept
+                            , tokens |-> Tokens
+                            , invite_id |-> invite_id
+                            ]
+                        }
                 ELSE UNCHANGED <<messages>>
         /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
