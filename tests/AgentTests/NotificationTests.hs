@@ -248,7 +248,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
   Right () <- runExceptT $ do
     -- alice registers notification token
     let aliceTkn = DeviceToken PPApns "abcd"
-    NTRegistered <- registerNtfToken alice aliceTkn NMPeriodic
+    NTRegistered <- registerNtfToken alice aliceTkn NMInstant
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
@@ -258,7 +258,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     NTActive <- checkNtfToken alice aliceTkn
     -- bob registers notification token
     let bobTkn = DeviceToken PPApns "bcde"
-    NTRegistered <- registerNtfToken bob bobTkn NMPeriodic
+    NTRegistered <- registerNtfToken bob bobTkn NMInstant
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"

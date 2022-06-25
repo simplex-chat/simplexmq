@@ -629,7 +629,7 @@ deleteConnection' c connId =
       atomically $ removeSubscription c connId
       withStore' c (`deleteConn` connId)
       ns <- asks ntfSupervisor
-      atomically $ sendNtfSubCommand ns (connId, NSCDelete)
+      atomically $ sendNtfSubCommand' ns (const True) (connId, NSCDelete)
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
@@ -727,7 +727,7 @@ getNtfMode' _c = throwError $ CMD PROHIBITED
 deleteNtfSub' :: AgentMonad m => AgentClient -> ConnId -> m ()
 deleteNtfSub' _c connId = do
   ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (connId, NSCDelete)
+  atomically $ sendNtfSubCommand' ns (const True) (connId, NSCDelete)
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do

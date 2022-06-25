@@ -10,6 +10,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsUpdateToken,
     nsRemoveNtfToken,
     sendNtfSubCommand,
+    sendNtfSubCommand',
     closeNtfSupervisor,
     getNtfServer,
   )
@@ -27,7 +28,7 @@ import qualified Data.Map.Strict as M
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), BrokerErrorType (..), ConnId)
+import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), BrokerErrorType (..), ConnId, NotificationsMode (..))
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
@@ -261,9 +262,13 @@ nsRemoveNtfToken :: NtfSupervisor -> STM ()
 nsRemoveNtfToken ns = writeTVar (ntfTkn ns) Nothing
 
 sendNtfSubCommand :: NtfSupervisor -> (ConnId, NtfSupervisorCommand) -> STM ()
-sendNtfSubCommand ns cmd =
+sendNtfSubCommand ns = sendNtfSubCommand' ns $
+  \NtfToken {ntfTknStatus, ntfMode} -> ntfTknStatus == NTActive && ntfMode == NMInstant
+
+sendNtfSubCommand' :: NtfSupervisor -> (NtfToken -> Bool) -> (ConnId, NtfSupervisorCommand) -> STM ()
+sendNtfSubCommand' ns tknCondition cmd =
   readTVar (ntfTkn ns)
-    >>= mapM_ (\NtfToken {ntfTknStatus} -> when (ntfTknStatus == NTActive) $ writeTBQueue (ntfSubQ ns) cmd)
+    >>= mapM_ (\tkn -> when (tknCondition tkn) $ writeTBQueue (ntfSubQ ns) cmd)
 
 closeNtfSupervisor :: NtfSupervisor -> IO ()
 closeNtfSupervisor ns = do
