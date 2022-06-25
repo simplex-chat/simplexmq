@@ -58,6 +58,8 @@ module Simplex.Messaging.Agent
     enableNtfCron,
     checkNtfToken,
     deleteNtfToken,
+    setNtfMode,
+    getNtfMode,
     deleteNtfSub,
     setAgentPhase,
     logConnection,
@@ -205,6 +207,12 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 
 deleteNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
+
+setNtfMode :: AgentErrorMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m ()
+setNtfMode c = withAgentEnv c .: setNtfMode' c
+
+getNtfMode :: AgentErrorMonad m => AgentClient -> m (NtfTknStatus, NotificationsMode)
+getNtfMode c = withAgentEnv c $ getNtfMode' c
 
 -- | Delete notification subscription for connection
 deleteNtfSub :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
@@ -715,6 +723,12 @@ deleteNtfToken' c deviceToken =
   withStore' c (`getDeviceNtfToken` deviceToken) >>= \case
     (Just tkn, _) -> deleteToken_ c tkn
     _ -> throwError $ CMD PROHIBITED
+
+setNtfMode' :: AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m ()
+setNtfMode' _c _deviceToken _ntfMode = throwError $ CMD PROHIBITED
+
+getNtfMode' :: AgentMonad m => AgentClient -> m (NtfTknStatus, NotificationsMode)
+getNtfMode' _c = throwError $ CMD PROHIBITED
 
 -- | Delete notification subscription for connection, in Reader monad
 deleteNtfSub' :: AgentMonad m => AgentClient -> ConnId -> m ()
