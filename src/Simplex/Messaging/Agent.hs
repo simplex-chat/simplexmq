@@ -85,6 +85,7 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
+-- import GHC.Conc (unsafeIOToSTM)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.NtfSubSupervisor
@@ -108,7 +109,7 @@ import Simplex.Messaging.Util (bshow, eitherToMaybe, liftE, liftError, tryError,
 import Simplex.Messaging.Version
 import System.Random (randomR)
 import UnliftIO.Async (async, race_)
-import UnliftIO.Concurrent (forkFinally)
+import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -215,11 +216,13 @@ getNtfToken c = withAgentEnv c $ getNtfToken' c
 deleteNtfSub :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteNtfSub c = withAgentEnv c . deleteNtfSub' c
 
+-- | Activate operations
 activateAgent :: AgentErrorMonad m => AgentClient -> m ()
 activateAgent c = withAgentEnv c $ activateAgent' c
 
-suspendAgent :: AgentErrorMonad m => AgentClient -> m ()
-suspendAgent c = withAgentEnv c $ suspendAgent' c
+-- | Suspend operations with max delay to deliver pending messages
+suspendAgent :: AgentErrorMonad m => AgentClient -> Int -> m ()
+suspendAgent c = withAgentEnv c . suspendAgent' c
 
 withAgentEnv :: AgentClient -> ReaderT Env m a -> m a
 withAgentEnv c = (`runReaderT` agentEnv c)
@@ -483,6 +486,9 @@ resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
 
 queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> [InternalId] -> m ()
 queuePendingMsgs c connId sq msgIds = atomically $ do
+  modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
+  -- s <- readTVar (msgDeliveryOp c)
+  -- unsafeIOToSTM $ putStrLn $ "msgDeliveryOp: " <> show (opsInProgress s)
   q <- getPendingMsgQ c connId sq
   mapM_ (writeTQueue q) msgIds
 
@@ -501,9 +507,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
   mq <- atomically $ getPendingMsgQ c connId sq
   ri <- asks $ reconnectInterval . config
   forever $ do
-    atomically $ endNetworkOperation c
+    atomically $ endSndNetworkOperation c
     msgId <- atomically $ readTQueue mq
-    atomically $ beginAgentOperation c networkOp
+    atomically $ do
+      beginAgentOperation c AOSndNetwork
+      endMsgDeliveryOperation c
     let mId = unId msgId
     E.try (withStore c $ \db -> getPendingMsgData db connId msgId) >>= \case
       Left (e :: E.SomeException) ->
@@ -587,9 +595,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
     notifyDel msgId cmd = notify cmd >> delMsg msgId
     connError msgId = notifyDel msgId . ERR . CONN
     retrySending loop = do
-      atomically $ do
-        endNetworkOperation c
-        beginAgentOperation c networkOp
+      -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
+      atomically $ endSndNetworkOperation c
+      atomically $ beginAgentOperation c AOSndNetwork
       loop
 
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
@@ -786,19 +794,28 @@ setNtfServers' c = atomically . writeTVar (ntfServers c)
 activateAgent' :: AgentMonad m => AgentClient -> m ()
 activateAgent' c = atomically $ do
   writeTVar (agentState c) ASActive
-  modifyTVar' (databaseOp c) $ \s -> s {opSuspended = False}
-  modifyTVar' (networkOp c) $ \s -> s {opSuspended = False}
-
-suspendAgent' :: AgentMonad m => AgentClient -> m ()
-suspendAgent' c@AgentClient {databaseOp, networkOp} =
-  atomically $ suspend networkOp $ suspend databaseOp $ notifySuspended c
+  activate databaseOp
+  activate sndNetworkOp
+  activate msgDeliveryOp
+  activate rcvNetworkOp
   where
-    suspend opSel whenSuspended = do
-      s <- readTVar opSel
-      writeTVar opSel $! s {opSuspended = True}
-      if opsInProgress s == 0
-        then whenSuspended
-        else writeTVar (agentState c) ASSuspending
+    activate opSel = modifyTVar' (opSel c) $ \s -> s {opSuspended = False}
+
+suspendAgent' :: AgentMonad m => AgentClient -> Int -> m ()
+suspendAgent' c@AgentClient {agentState = as} maxDelay = do
+  state <-
+    atomically $ do
+      writeTVar as ASSuspending
+      suspendOperation c AORcvNetwork $
+        suspendOperation c AOMsgDelivery $
+          suspendSendingAndDatabase c
+      readTVar as
+  when (state == ASSuspending) . void . forkIO $ do
+    threadDelay maxDelay
+    -- liftIO $ putStrLn "suspendAgent after timeout"
+    atomically . whenSuspending c $ do
+      -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
+      suspendSendingAndDatabase c
 
 getSMPServer :: AgentMonad m => AgentClient -> m SMPServer
 getSMPServer c = do
@@ -812,9 +829,9 @@ getSMPServer c = do
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
-  atomically $ endNetworkOperation c
+  atomically $ endRcvNetworkOperation c
   t <- atomically $ readTBQueue msgQ
-  atomically $ beginAgentOperation c networkOp
+  atomically $ beginAgentOperation c AORcvNetwork
   withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()

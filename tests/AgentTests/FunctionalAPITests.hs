@@ -89,9 +89,13 @@ functionalAPITests t = do
       testInactiveClientDisconnected t
     it "should NOT disconnect active clients" $
       testActiveClientNotDisconnected t
-  describe "Agent phases" $ do
-    it "should update clients when agent phase changes" $
-      withSmpServer t testAgentPhaseChanges
+  describe "Suspending agent" $ do
+    it "should update client when agent is suspended" $
+      withSmpServer t testSuspendingAgent
+    it "should complete sending messages when agent is suspended" $
+      testSuspendingAgentCompleteSending t
+    it "should suspend agent on timeout, even if pending messages not sent" $
+      testSuspendingAgentTimeout t
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -417,8 +421,8 @@ testActiveClientNotDisconnected t = do
           get alice ##> ("", "", DOWN testSMPServer [connId])
     milliseconds ts = systemSeconds ts * 1000 + fromIntegral (systemNanoseconds ts `div` 1000000)
 
-testAgentPhaseChanges :: IO ()
-testAgentPhaseChanges = do
+testSuspendingAgent :: IO ()
+testSuspendingAgent = do
   a <- getSMPAgentClient agentCfg initAgentServers
   b <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
@@ -427,13 +431,70 @@ testAgentPhaseChanges = do
     get a ##> ("", bId, SENT 4)
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 4
-    suspendAgent b
+    suspendAgent b 1000000
     get b ##> ("", "", SUSPENDED)
     5 <- sendMessage a bId SMP.noMsgFlags "hello 2"
     get a ##> ("", bId, SENT 5)
     Nothing <- 100000 `timeout` get b
     activateAgent b
     get b =##> \case ("", c, Msg "hello 2") -> c == aId; _ -> False
+  pure ()
+
+testSuspendingAgentCompleteSending :: ATransport -> IO ()
+testSuspendingAgentCompleteSending t = do
+  a <- getSMPAgentClient agentCfg initAgentServers
+  b <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    4 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 4)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    ackMessage b aId 4
+    pure (aId, bId)
+
+  Right () <- runExceptT $ do
+    ("", "", DOWN {}) <- get a
+    ("", "", DOWN {}) <- get b
+    5 <- sendMessage b aId SMP.noMsgFlags "hello too"
+    6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
+    liftIO $ threadDelay 100000
+    suspendAgent b 5000000
+
+  Right () <- withSmpServerStoreLogOn t testPort $ \_ -> runExceptT $ do
+    get b =##> \case ("", c, SENT 5) -> c == aId; ("", "", UP {}) -> True; _ -> False
+    get b =##> \case ("", c, SENT 5) -> c == aId; ("", "", UP {}) -> True; _ -> False
+    get b =##> \case ("", c, SENT 6) -> c == aId; _ -> False
+    ("", "", SUSPENDED) <- get b
+
+    ("", "", UP {}) <- get a
+    get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
+    ackMessage a bId 5
+    get a =##> \case ("", c, Msg "how are you?") -> c == bId; _ -> False
+    ackMessage a bId 6
+
+  pure ()
+
+testSuspendingAgentTimeout :: ATransport -> IO ()
+testSuspendingAgentTimeout t = do
+  a <- getSMPAgentClient agentCfg initAgentServers
+  b <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right (aId, _) <- withSmpServer t . runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    4 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 4)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    ackMessage b aId 4
+    pure (aId, bId)
+
+  Right () <- runExceptT $ do
+    ("", "", DOWN {}) <- get a
+    ("", "", DOWN {}) <- get b
+    5 <- sendMessage b aId SMP.noMsgFlags "hello too"
+    6 <- sendMessage b aId SMP.noMsgFlags "how are you?"
+    suspendAgent b 100000
+    ("", "", SUSPENDED) <- get b
+    pure ()
+
   pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
