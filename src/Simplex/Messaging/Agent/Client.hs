@@ -53,10 +53,7 @@ module Simplex.Messaging.Agent.Client
     AgentOpState (..),
     AgentState (..),
     beginAgentOperation,
-    endRcvNetworkOperation,
-    endMsgDeliveryOperation,
-    endSndNetworkOperation,
-    endDatabaseOperation,
+    endAgentOperation,
     suspendSendingAndDatabase,
     suspendOperation,
     notifySuspended,
@@ -677,26 +674,17 @@ cryptoError = \case
   C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
   e -> INTERNAL $ show e
 
-endRcvNetworkOperation :: AgentClient -> STM ()
-endRcvNetworkOperation c =
-  endOperation c AORcvNetwork $
+endAgentOperation :: AgentClient -> AgentOperation -> STM ()
+endAgentOperation c op = endOperation c op $ case op of
+  AORcvNetwork ->
     suspendOperation c AOMsgDelivery $
       suspendSendingAndDatabase c
-
-endMsgDeliveryOperation :: AgentClient -> STM ()
-endMsgDeliveryOperation c =
-  endOperation c AOMsgDelivery $
+  AOMsgDelivery ->
     suspendSendingAndDatabase c
-
-endSndNetworkOperation :: AgentClient -> STM ()
-endSndNetworkOperation c =
-  endOperation c AOSndNetwork $
+  AOSndNetwork ->
     suspendOperation c AODatabase $
       notifySuspended c
-
-endDatabaseOperation :: AgentClient -> STM ()
-endDatabaseOperation c = do
-  endOperation c AODatabase $
+  AODatabase ->
     notifySuspended c
 
 suspendSendingAndDatabase :: AgentClient -> STM ()
@@ -745,7 +733,7 @@ withStore c action = do
   st <- asks store
   atomically $ beginAgentOperation c AODatabase
   r <- liftIO $ withTransaction st action `E.catch` handleInternal
-  atomically $ endDatabaseOperation c
+  atomically $ endAgentOperation c AODatabase
   liftEither $ first storeError r
   where
     handleInternal :: SQLError -> IO (Either StoreError a)
