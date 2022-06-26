@@ -17,8 +17,6 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultAgentConfig,
     defaultReconnectInterval,
     Env (..),
-    AgentOperation (..),
-    disallowedOperations,
     newSMPAgentEnv,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
@@ -121,19 +119,8 @@ data Env = Env
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
     randomServer :: TVar StdGen,
-    agentPhase :: TVar (AgentPhase, Bool),
-    agentOperations :: TMap AgentOperation Int,
     ntfSupervisor :: NtfSupervisor
   }
-
-data AgentOperation = AONetwork | AODatabase
-  deriving (Eq, Ord, Show)
-
-disallowedOperations :: AgentPhase -> [AgentOperation]
-disallowedOperations = \case
-  APActive -> []
-  APPaused -> [AONetwork]
-  APSuspended -> [AONetwork, AODatabase]
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv config@AgentConfig {dbFile, yesToMigrations} = do
@@ -141,10 +128,8 @@ newSMPAgentEnv config@AgentConfig {dbFile, yesToMigrations} = do
   store <- liftIO $ createSQLiteStore dbFile Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  agentPhase <- newTVarIO (APActive, True)
-  agentOperations <- atomically TM.empty
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  return Env {config, store, idsDrg, clientCounter, randomServer, agentPhase, agentOperations, ntfSupervisor}
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
