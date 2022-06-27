@@ -90,14 +90,14 @@ processNtfSub c (connId, cmd) = do
           addNtfWorker ntfServer
         _ -> pure () -- error - notification server not configured
     NSCDelete -> do
-      withStore' c (`markNtfSubscriptionForDeletion` connId)
+      withStore' c $ \db -> markNtfSubscriptionForDeletion db connId (NtfSubAction NSADelete)
       case ntfServer_ of
         (Just ntfServer) -> addNtfWorker ntfServer
         _ -> pure ()
     NSCSmpDelete -> do
       withStore' c (`getRcvQueue` connId) >>= \case
         Right RcvQueue {server = smpServer} -> do
-          withStore' c (`markNtfSubscriptionForSMPDeletion` connId)
+          withStore' c $ \db -> markNtfSubscriptionForDeletion db connId (NtfSubSMPAction NSASmpDelete)
           addNtfSMPWorker smpServer
         Left _ -> pure ()
     NSCNtfWorker ntfServer ->
