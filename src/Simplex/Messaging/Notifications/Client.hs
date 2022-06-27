@@ -80,7 +80,6 @@ data NtfTknAction
   = NTARegister
   | NTAVerify NtfRegCode -- code to verify token
   | NTACheck
-  | NTACron Word16
   | NTADelete
   deriving (Show)
 
@@ -89,14 +88,12 @@ instance Encoding NtfTknAction where
     NTARegister -> "R"
     NTAVerify code -> smpEncode ('V', code)
     NTACheck -> "C"
-    NTACron interval -> smpEncode ('I', interval)
     NTADelete -> "D"
   smpP =
     A.anyChar >>= \case
       'R' -> pure NTARegister
       'V' -> NTAVerify <$> smpP
       'C' -> pure NTACheck
-      'I' -> NTACron <$> smpP
       'D' -> pure NTADelete
       _ -> fail "bad NtfTknAction"
 

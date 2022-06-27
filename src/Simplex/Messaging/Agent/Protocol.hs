@@ -133,7 +133,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (E2ERatchetParams, E2ERatchetParamsUri)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Protocol (NtfTknStatus)
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( ErrorType,
@@ -231,23 +230,20 @@ data ACommand (p :: AParty) where
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
   SUSPENDED :: ACommand Agent
-  NTFMODE :: NtfTknStatus -> NotificationsMode -> ACommand Agent
 
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
 
-data NotificationsMode = NMOff | NMPeriodic | NMInstant
+data NotificationsMode = NMPeriodic | NMInstant
   deriving (Eq, Show)
 
 instance StrEncoding NotificationsMode where
   strEncode = \case
-    NMOff -> "OFF"
     NMPeriodic -> "PERIODIC"
     NMInstant -> "INSTANT"
   strP =
     A.takeTill (== ' ') >>= \case
-      "OFF" -> pure NMOff
       "PERIODIC" -> pure NMPeriodic
       "INSTANT" -> pure NMInstant
       _ -> fail "bad NotificationsMode"
@@ -948,7 +944,6 @@ serializeCommand = \case
   ERR e -> "ERR " <> strEncode e
   OK -> "OK"
   SUSPENDED -> "SUSPENDED"
-  NTFMODE t m -> "NTFMODE " <> smpEncode t <> " " <> strEncode m
   where
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
