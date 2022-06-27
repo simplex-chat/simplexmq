@@ -49,9 +49,15 @@ module Simplex.Messaging.Agent.Client
     removeSubscription,
     hasActiveSubscription,
     agentDbPath,
+    AgentOperation (..),
+    AgentOpState (..),
+    AgentState (..),
     beginAgentOperation,
     endAgentOperation,
-    notifyAgentPhaseChanged,
+    suspendSendingAndDatabase,
+    suspendOperation,
+    notifySuspended,
+    whenSuspending,
     withStore,
     withStore',
   )
@@ -77,6 +83,7 @@ import Data.Text.Encoding
 import Data.Word (Word16)
 import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as DB
+-- import GHC.Conc (unsafeIOToSTM)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -120,6 +127,11 @@ data AgentClient = AgentClient
     connMsgsQueued :: TMap ConnId Bool,
     smpQueueMsgQueues :: TMap (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId),
     smpQueueMsgDeliveries :: TMap (ConnId, SMPServer, SMP.SenderId) (Async ()),
+    rcvNetworkOp :: TVar AgentOpState,
+    msgDeliveryOp :: TVar AgentOpState,
+    sndNetworkOp :: TVar AgentOpState,
+    databaseOp :: TVar AgentOpState,
+    agentState :: TVar AgentState,
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
     reconnections :: TVar [Async ()],
     asyncClients :: TVar [Async ()],
@@ -127,6 +139,21 @@ data AgentClient = AgentClient
     agentEnv :: Env,
     lock :: TMVar ()
   }
+
+data AgentOperation = AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
+  deriving (Eq, Show)
+
+agentOpSel :: AgentOperation -> (AgentClient -> TVar AgentOpState)
+agentOpSel = \case
+  AORcvNetwork -> rcvNetworkOp
+  AOMsgDelivery -> msgDeliveryOp
+  AOSndNetwork -> sndNetworkOp
+  AODatabase -> databaseOp
+
+data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
+
+data AgentState = ASActive | ASSuspending | ASSuspended
+  deriving (Eq, Show)
 
 newAgentClient :: InitialAgentServers -> Env -> STM AgentClient
 newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
@@ -145,12 +172,17 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   connMsgsQueued <- TM.empty
   smpQueueMsgQueues <- TM.empty
   smpQueueMsgDeliveries <- TM.empty
+  rcvNetworkOp <- newTVar $ AgentOpState False 0
+  msgDeliveryOp <- newTVar $ AgentOpState False 0
+  sndNetworkOp <- newTVar $ AgentOpState False 0
+  databaseOp <- newTVar $ AgentOpState False 0
+  agentState <- newTVar ASActive
   getMsgLocks <- TM.empty
   reconnections <- newTVar []
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -643,25 +675,55 @@ cryptoError = \case
   e -> INTERNAL $ show e
 
 endAgentOperation :: AgentClient -> AgentOperation -> STM ()
-endAgentOperation c@AgentClient {agentEnv = Env {agentOperations}} op = do
-  TM.alter (Just . maybe 0 (\n -> max 0 $ n - 1)) op agentOperations
-  notifyAgentPhaseChanged c
+endAgentOperation c op = endOperation c op $ case op of
+  AORcvNetwork ->
+    suspendOperation c AOMsgDelivery $
+      suspendSendingAndDatabase c
+  AOMsgDelivery ->
+    suspendSendingAndDatabase c
+  AOSndNetwork ->
+    suspendOperation c AODatabase $
+      notifySuspended c
+  AODatabase ->
+    notifySuspended c
+
+suspendSendingAndDatabase :: AgentClient -> STM ()
+suspendSendingAndDatabase c =
+  suspendOperation c AOSndNetwork $
+    suspendOperation c AODatabase $
+      notifySuspended c
+
+suspendOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
+suspendOperation c op endedAction = do
+  n <- stateTVar (agentOpSel op c) $ \s -> (opsInProgress s, s {opSuspended = True})
+  -- unsafeIOToSTM $ putStrLn $ "suspendOperation_ " <> show op <> " " <> show n
+  when (n == 0) $ whenSuspending c endedAction
+
+notifySuspended :: AgentClient -> STM ()
+notifySuspended c = do
+  -- unsafeIOToSTM $ putStrLn "notifySuspended"
+  writeTBQueue (subQ c) ("", "", SUSPENDED)
+  writeTVar (agentState c) ASSuspended
+
+endOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
+endOperation c op endedAction = do
+  (suspended, n) <- stateTVar (agentOpSel op c) $ \s ->
+    let n = max 0 (opsInProgress s - 1)
+     in ((opSuspended s, n), s {opsInProgress = n})
+  -- unsafeIOToSTM $ putStrLn $ "endOperation: " <> show op <> " " <> show suspended <> " " <> show n
+  when (suspended && n == 0) $ whenSuspending c endedAction
+
+whenSuspending :: AgentClient -> STM () -> STM ()
+whenSuspending c = whenM ((== ASSuspending) <$> readTVar (agentState c))
 
 beginAgentOperation :: AgentClient -> AgentOperation -> STM ()
-beginAgentOperation AgentClient {agentEnv = Env {agentPhase, agentOperations}} op = do
-  (p, _) <- readTVar agentPhase
-  when (op `elem` disallowedOperations p) retry
-  TM.alter (Just . maybe 1 (+ 1)) op agentOperations
-
-notifyAgentPhaseChanged :: AgentClient -> STM ()
-notifyAgentPhaseChanged AgentClient {subQ, agentEnv = Env {agentPhase, agentOperations}} = do
-  (p, notified) <- readTVar agentPhase
-  unless notified $ do
-    ops <- readTVar agentOperations
-    let opsPaused = all (maybe True (== 0) . (`M.lookup` ops)) $ disallowedOperations p
-    when opsPaused $ do
-      writeTBQueue subQ ("", "", PHASE p)
-      writeTVar agentPhase (p, True)
+beginAgentOperation c op = do
+  let opVar = agentOpSel op c
+  s <- readTVar opVar
+  -- unsafeIOToSTM $ putStrLn $ "beginOperation? " <> show op <> " " <> show (opsInProgress s)
+  when (opSuspended s) retry
+  -- unsafeIOToSTM $ putStrLn $ "beginOperation! " <> show op <> " " <> show (opsInProgress s + 1)
+  writeTVar opVar $! s {opsInProgress = opsInProgress s + 1}
 
 withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
 withStore' c action = withStore c $ fmap Right . action

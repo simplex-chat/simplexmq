@@ -82,7 +82,6 @@ module Simplex.Messaging.Agent.Protocol
     QueueStatus (..),
     ACorrId,
     AgentMsgId,
-    AgentPhase (..),
     NotificationsMode (..),
     NotificationInfo (..),
 
@@ -231,38 +230,12 @@ data ACommand (p :: AParty) where
   DEL :: ACommand Client
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
-  PHASE :: AgentPhase -> ACommand Agent
+  SUSPENDED :: ACommand Agent
   NTFMODE :: NtfTknStatus -> NotificationsMode -> ACommand Agent
 
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
-
--- | Agent phase allows to have two agent processes concurrently working with the same database
-data AgentPhase
-  = -- | agent is operating normally
-    APActive
-  | -- | agent is paused - no new send/receive operations will be started - they will STM-retry
-    APPaused
-  | -- | agent is suspended - no new send/receive/database operations will be started - they will STM-retry
-    APSuspended
-  deriving (Eq, Show)
-
-instance StrEncoding AgentPhase where
-  strEncode = \case
-    APActive -> "ACTIVE"
-    APPaused -> "PAUSED"
-    APSuspended -> "SUSPENDED"
-  strP =
-    A.takeTill (== ' ') >>= \case
-      "ACTIVE" -> pure APActive
-      "PAUSED" -> pure APPaused
-      "SUSPENDED" -> pure APSuspended
-      _ -> fail "bad AgentPhase"
-
-instance ToJSON AgentPhase where
-  toEncoding = strToJEncoding
-  toJSON = strToJSON
 
 data NotificationsMode = NMPeriodic | NMInstant
   deriving (Eq, Show)
@@ -972,7 +945,7 @@ serializeCommand = \case
   CON -> "CON"
   ERR e -> "ERR " <> strEncode e
   OK -> "OK"
-  PHASE p -> "PHASE " <> strEncode p
+  SUSPENDED -> "SUSPENDED"
   NTFMODE t m -> "NTFMODE " <> smpEncode t <> " " <> strEncode m
   where
     showTs :: UTCTime -> ByteString
