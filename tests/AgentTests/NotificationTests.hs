@@ -72,14 +72,12 @@ testNotificationToken APNSMockServer {apnsQ} = do
   Right () <- runExceptT $ do
     let tkn = DeviceToken PPApns "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    ("", "", NTFMODE NTRegistered NMPeriodic) <- get a
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
     verifyNtfToken a tkn verification nonce
-    ("", "", NTFMODE NTActive NMPeriodic) <- get a
     NTActive <- checkNtfToken a tkn
     deleteNtfToken a tkn
     -- agent deleted this token
@@ -103,14 +101,12 @@ testNtfTokenRepeatRegistration APNSMockServer {apnsQ} = do
   Right () <- runExceptT $ do
     let tkn = DeviceToken PPApns "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    ("", "", NTFMODE NTRegistered NMPeriodic) <- get a
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    ("", "", NTFMODE NTRegistered NMPeriodic) <- get a
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     _ <- ntfData' .-> "verification"
@@ -118,7 +114,6 @@ testNtfTokenRepeatRegistration APNSMockServer {apnsQ} = do
     liftIO $ sendApnsResponse' APNSRespOk
     -- can still use the first verification code, it is the same after decryption
     verifyNtfToken a tkn verification nonce
-    ("", "", NTFMODE NTActive NMPeriodic) <- get a
     NTActive <- checkNtfToken a tkn
     pure ()
   pure ()
@@ -132,17 +127,14 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
   Right () <- runExceptT $ do
     let tkn = DeviceToken PPApns "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    ("", "", NTFMODE NTRegistered NMPeriodic) <- get a
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
     verifyNtfToken a tkn verification nonce
-    ("", "", NTFMODE NTActive NMPeriodic) <- get a
 
     NTRegistered <- registerNtfToken a' tkn NMPeriodic
-    ("", "", NTFMODE NTRegistered NMPeriodic) <- get a'
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
@@ -156,7 +148,6 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     NTConfirmed <- checkNtfToken a' tkn
     -- now the second token registration is verified
     verifyNtfToken a' tkn verification' nonce'
-    ("", "", NTFMODE NTActive NMPeriodic) <- get a'
     -- the first registration is removed
     Left (NTF AUTH) <- tryE $ checkNtfToken a tkn
     -- and the second is active
@@ -170,7 +161,6 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   let tkn = DeviceToken PPApns "abcd"
   Right ntfData <- withNtfServer t . runExceptT $ do
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    ("", "", NTFMODE NTRegistered NMPeriodic) <- get a
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     liftIO $ sendApnsResponse APNSRespOk
@@ -185,14 +175,12 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn verification nonce
-    ("", "", NTFMODE NTRegistered NMPeriodic) <- get a'
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
     nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
     liftIO $ sendApnsResponse' APNSRespOk
     verifyNtfToken a' tkn verification' nonce'
-    ("", "", NTFMODE NTActive NMPeriodic) <- get a'
     NTActive <- checkNtfToken a' tkn
     pure ()
   pure ()
@@ -213,14 +201,12 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     -- register notification token
     let tkn = DeviceToken PPApns "abcd"
     NTRegistered <- registerNtfToken alice tkn NMInstant
-    ("", "", NTFMODE NTRegistered NMInstant) <- get alice
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     verificationNonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
     verifyNtfToken alice tkn verification verificationNonce
-    ("", "", NTFMODE NTActive NMInstant) <- get alice
     NTActive <- checkNtfToken alice tkn
     -- send message
     liftIO $ threadDelay 50000
@@ -265,26 +251,22 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     -- alice registers notification token
     let aliceTkn = DeviceToken PPApns "abcd"
     NTRegistered <- registerNtfToken alice aliceTkn NMInstant
-    ("", "", NTFMODE NTRegistered NMInstant) <- get alice
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
     verifyNtfToken alice aliceTkn verification nonce
-    ("", "", NTFMODE NTActive NMInstant) <- get alice
     NTActive <- checkNtfToken alice aliceTkn
     -- bob registers notification token
     let bobTkn = DeviceToken PPApns "bcde"
     NTRegistered <- registerNtfToken bob bobTkn NMInstant
-    ("", "", NTFMODE NTRegistered NMInstant) <- get bob
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
     nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
     liftIO $ sendApnsResponse' APNSRespOk
     verifyNtfToken bob bobTkn verification' nonce'
-    ("", "", NTFMODE NTActive NMInstant) <- get bob
     NTActive <- checkNtfToken bob bobTkn
     -- establish connection
     liftIO $ threadDelay 50000

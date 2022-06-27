@@ -643,7 +643,7 @@ setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
-registerNtfToken' c@AgentClient {subQ} suppliedDeviceToken suppliedNtfMode =
+registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
       status <- case (ntfTokenId, ntfTknAction) of
@@ -679,7 +679,6 @@ registerNtfToken' c@AgentClient {subQ} suppliedDeviceToken suppliedNtfMode =
           pure NTExpired
         _ -> pure ntfTknStatus
       withStore' c $ \db -> updateNtfMode db tkn suppliedNtfMode
-      atomically $ writeTBQueue subQ ("", "", NTFMODE status suppliedNtfMode)
       pure status
       where
         replaceToken :: NtfTokenId -> m ()
@@ -698,7 +697,6 @@ registerNtfToken' c@AgentClient {subQ} suppliedDeviceToken suppliedNtfMode =
               let tkn = newNtfToken suppliedDeviceToken ntfServer tknKeys dhKeys suppliedNtfMode
               withStore' c (`createNtfToken` tkn)
               registerToken tkn
-              atomically $ writeTBQueue subQ ("", "", NTFMODE NTRegistered suppliedNtfMode)
               pure NTRegistered
         _ -> throwError $ CMD PROHIBITED
   where
@@ -713,7 +711,7 @@ registerNtfToken' c@AgentClient {subQ} suppliedDeviceToken suppliedNtfMode =
 
 -- TODO decrypt verification code
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
-verifyNtfToken' c@AgentClient {subQ} deviceToken code nonce =
+verifyNtfToken' c deviceToken code nonce =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret, ntfMode} -> do
       when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
@@ -725,7 +723,6 @@ verifyNtfToken' c@AgentClient {subQ} deviceToken code nonce =
         cron <- asks $ ntfCron . config
         agentNtfEnableCron c tknId tkn cron
         when (ntfMode == NMInstant) $ initializeNtfSubs c
-      atomically $ writeTBQueue subQ ("", "", NTFMODE toStatus ntfMode)
     _ -> throwError $ CMD PROHIBITED
 
 checkNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
