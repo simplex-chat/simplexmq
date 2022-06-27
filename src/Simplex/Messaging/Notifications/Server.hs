@@ -282,7 +282,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           addNtfToken st tknId tkn
           writeTBQueue pushQ (tkn, PNVerification regCode)
         pure (corrId, "", NRTknId tknId srvDhPubKey)
-      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey), tknCronInterval}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
@@ -326,12 +326,14 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             pure NROk
           TCRN 0 -> do
             logDebug "TCRN 0"
+            atomically $ writeTVar tknCronInterval 0
             cancelInvervalNotifications tknId
             pure NROk
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
             | otherwise -> do
               logDebug "TCRN"
+              atomically $ writeTVar tknCronInterval int
               atomically (TM.lookup tknId intervalNotifiers) >>= \case
                 Nothing -> runIntervalNotifier int
                 Just IntervalNotifier {interval, action} ->
@@ -353,7 +355,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         st <- asks store
         subId <- getId
         atomically $ do
-          sub <- mkNtfSubData newSub
+          sub <- mkNtfSubData subId newSub
           (corrId,"",)
             <$> ( addNtfSubscription st subId sub >>= \case
                     Just _ -> writeTBQueue newSubQ (NtfSub sub) $> NRSubId subId

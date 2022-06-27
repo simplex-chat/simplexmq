@@ -17,6 +17,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NtfPrivateSignKey)
@@ -49,13 +50,15 @@ data NtfTknData = NtfTknData
     tknVerifyKey :: C.APublicVerifyKey,
     tknDhKeys :: C.KeyPair 'C.X25519,
     tknDhSecret :: C.DhSecretX25519,
-    tknRegCode :: NtfRegCode
+    tknRegCode :: NtfRegCode,
+    tknCronInterval :: TVar Word16
   }
 
 mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPair 'C.X25519 -> C.DhSecretX25519 -> NtfRegCode -> STM NtfTknData
 mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tknRegCode = do
   tknStatus <- newTVar NTRegistered
-  pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode}
+  tknCronInterval <- newTVar 0
+  pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval}
 
 -- data NtfSubscriptionsStore = NtfSubscriptionsStore
 
@@ -68,7 +71,8 @@ mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tkn
 -- pure NtfSubscriptionsStore {subscriptions, activeSubscriptions}
 
 data NtfSubData = NtfSubData
-  { smpQueue :: SMPQueueNtf,
+  { ntfSubId :: NtfSubscriptionId,
+    smpQueue :: SMPQueueNtf,
     notifierKey :: NtfPrivateSignKey,
     tokenId :: NtfTokenId,
     subStatus :: TVar NtfSubStatus
@@ -175,10 +179,10 @@ getActiveNtfToken st tknId =
     tStatus <- readTVar tknStatus
     pure $ if tStatus == NTActive then Just tkn else Nothing
 
-mkNtfSubData :: NewNtfEntity 'Subscription -> STM NtfSubData
-mkNtfSubData (NewNtfSub tokenId smpQueue notifierKey) = do
+mkNtfSubData :: NtfSubscriptionId -> NewNtfEntity 'Subscription -> STM NtfSubData
+mkNtfSubData ntfSubId (NewNtfSub tokenId smpQueue notifierKey) = do
   subStatus <- newTVar NSNew
-  pure NtfSubData {smpQueue, tokenId, subStatus, notifierKey}
+  pure NtfSubData {ntfSubId, smpQueue, tokenId, subStatus, notifierKey}
 
 addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM (Maybe ())
 addNtfSubscription st subId sub@NtfSubData {smpQueue, tokenId} =

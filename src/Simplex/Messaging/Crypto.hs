@@ -250,6 +250,12 @@ deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
 
+instance StrEncoding (PrivateKey X25519) where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey <=< strDecode
+  {-# INLINE strDecode #-}
+
 data APrivateKey
   = forall a.
     AlgorithmI a =>
@@ -295,6 +301,12 @@ instance Encoding APrivateSignKey where
   {-# INLINE smpEncode #-}
   smpDecode = decodePrivKey
   {-# INLINE smpDecode #-}
+
+instance StrEncoding APrivateSignKey where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey <=< strDecode
+  {-# INLINE strDecode #-}
 
 data APublicVerifyKey
   = forall a.
