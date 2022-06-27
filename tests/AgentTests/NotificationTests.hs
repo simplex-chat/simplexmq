@@ -31,7 +31,7 @@ import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsg
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
-import System.Directory (removeFile, doesFileExist)
+import System.Directory (doesFileExist, removeFile)
 import Test.Hspec
 import UnliftIO
 
@@ -65,6 +65,10 @@ notificationTests t =
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testNotificationSubscriptionNewConnection apns
+      it "should change notifications mode" $ \_ ->
+        withSmpServer t $
+          withAPNSMockServer $ \apns ->
+            withNtfServer t $ testChangeNotificationsMode apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -296,6 +300,60 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
     ackMessage bob aliceId $ baseId + 2
     -- no unexpected notifications should follow
+    500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+      Nothing -> pure ()
+      _ -> error "unexpected notification"
+  pure ()
+  where
+    baseId = 3
+    msgId = subtract baseId
+
+testChangeNotificationsMode :: APNSMockServer -> IO ()
+testChangeNotificationsMode APNSMockServer {apnsQ} = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right () <- runExceptT $ do
+    -- establish connection
+    (bobId, qInfo) <- createConnection alice SCMInvitation
+    aliceId <- joinConnection bob qInfo "bob's connInfo"
+    ("", _, CONF confId "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, CON)
+    -- register notification token, set mode to NMPeriodic
+    let tkn = DeviceToken PPApns "abcd"
+    NTRegistered <- registerNtfToken alice tkn NMPeriodic
+    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
+      atomically $ readTBQueue apnsQ
+    verification <- ntfData .-> "verification"
+    verificationNonce <- C.cbNonce <$> ntfData .-> "nonce"
+    liftIO $ sendApnsResponse APNSRespOk
+    verifyNtfToken alice tkn verification verificationNonce
+    NTActive <- checkNtfToken alice tkn
+    -- send message, no notification
+    1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
+    get bob ##> ("", aliceId, SENT $ baseId + 1)
+    get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 1
+    -- set mode to NMInstant
+    NTActive <- registerNtfToken alice tkn NMInstant
+    -- send message, receive notification
+    liftIO $ threadDelay 500000
+    2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    void $ messageNotification apnsQ
+    get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 2
+    -- reset mode to NMPeriodic
+    NTActive <- registerNtfToken alice tkn NMPeriodic
+    -- send message, no notification
+    liftIO $ threadDelay 500000
+    3 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello there"
+    get bob ##> ("", aliceId, SENT $ baseId + 3)
+    get alice =##> \case ("", c, Msg "hello there") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 3
+    -- no notifications should follow
     500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
       Nothing -> pure ()
       _ -> error "unexpected notification"

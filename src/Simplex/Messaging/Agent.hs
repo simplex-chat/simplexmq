@@ -662,7 +662,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         (Just tknId, Just NTACheck)
           | savedDeviceToken == suppliedDeviceToken -> do
             ns <- asks ntfSupervisor
-            atomically $ nsUpdateToken ns tkn
+            atomically $ nsUpdateToken ns tkn {ntfMode = suppliedNtfMode}
             when (ntfTknStatus == NTActive) $ do
               cron <- asks $ ntfCron . config
               agentNtfEnableCron c tknId tkn cron
@@ -686,7 +686,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
           agentNtfReplaceToken c tknId tkn suppliedDeviceToken
           withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
           ns <- asks ntfSupervisor
-          atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered}
+          atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
     _ ->
       getNtfServer c >>= \case
         Just ntfServer ->
@@ -707,7 +707,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
       let dhSecret = C.dh' srvPubDhKey privDhKey
       withStore' c $ \db -> updateNtfTokenRegistration db tkn tknId dhSecret
       ns <- asks ntfSupervisor
-      atomically $ nsUpdateToken ns tkn
+      atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
 
 -- TODO decrypt verification code
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
