@@ -140,14 +140,14 @@ deleteNtfToken st tknId = do
     TM.lookupDelete tknId (tokenSubscriptions st)
       >>= mapM
         ( readTVar
-            >=> ( mapM $
-                    \subId -> do
-                      TM.lookupDelete subId (subscriptions st)
-                        >>= mapM
-                          ( \NtfSubData {smpQueue} ->
-                              TM.delete smpQueue (subscriptionLookup st) $> smpQueue
-                          )
-                )
+            >=> mapM
+              ( \subId -> do
+                  TM.lookupDelete subId (subscriptions st)
+                    >>= mapM
+                      ( \NtfSubData {smpQueue} ->
+                          TM.delete smpQueue (subscriptionLookup st) $> smpQueue
+                      )
+              )
               . S.toList
         )
   pure $ maybe [] catMaybes qs
