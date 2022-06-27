@@ -679,7 +679,7 @@ registerNtfToken' c@AgentClient {subQ} suppliedDeviceToken suppliedNtfMode =
           pure NTExpired
         _ -> pure ntfTknStatus
       withStore' c $ \db -> updateNtfMode db tkn suppliedNtfMode
-      -- ! atomically $ writeTBQueue subQ ("", "", NTFMODE ntfTokenStatus suppliedNtfMode)
+      atomically $ writeTBQueue subQ ("", "", NTFMODE status suppliedNtfMode)
       pure status
       where
         replaceToken :: NtfTokenId -> m ()
@@ -698,6 +698,7 @@ registerNtfToken' c@AgentClient {subQ} suppliedDeviceToken suppliedNtfMode =
               let tkn = newNtfToken suppliedDeviceToken ntfServer tknKeys dhKeys suppliedNtfMode
               withStore' c (`createNtfToken` tkn)
               registerToken tkn
+              atomically $ writeTBQueue subQ ("", "", NTFMODE NTRegistered suppliedNtfMode)
               pure NTRegistered
         _ -> throwError $ CMD PROHIBITED
   where
@@ -724,7 +725,7 @@ verifyNtfToken' c@AgentClient {subQ} deviceToken code nonce =
         cron <- asks $ ntfCron . config
         agentNtfEnableCron c tknId tkn cron
         when (ntfMode == NMInstant) $ initializeNtfSubs c
-      -- ! atomically $ writeTBQueue subQ ("", "", NTFMODE toStatus ntfMode)
+      atomically $ writeTBQueue subQ ("", "", NTFMODE toStatus ntfMode)
     _ -> throwError $ CMD PROHIBITED
 
 checkNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
