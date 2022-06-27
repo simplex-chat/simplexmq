@@ -31,13 +31,18 @@ import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsg
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Util (tryE)
-import System.Directory (removeFile)
+import System.Directory (removeFile, doesFileExist)
 import Test.Hspec
 import UnliftIO
 
+removeFileIfExists :: FilePath -> IO ()
+removeFileIfExists filePath = do
+  fileExists <- doesFileExist filePath
+  when fileExists $ removeFile filePath
+
 notificationTests :: ATransport -> Spec
 notificationTests t =
-  after_ (removeFile testDB) $ do
+  after_ (removeFile testDB >> removeFileIfExists testDB2) $ do
     describe "Managing notification tokens" $ do
       it "should register and verify notification token" $
         withAPNSMockServer $ \apns ->

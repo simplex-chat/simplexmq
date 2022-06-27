@@ -643,10 +643,10 @@ setSMPServers' c servers = do
   atomically $ writeTVar (smpServers c) servers
 
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
-registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
+registerNtfToken' c@AgentClient {subQ} suppliedDeviceToken suppliedNtfMode =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
-      ntfTokenStatus <- case (ntfTokenId, ntfTknAction) of
+      status <- case (ntfTokenId, ntfTknAction) of
         (Nothing, Just NTARegister) -> do
           when (savedDeviceToken /= suppliedDeviceToken) $ withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
           registerToken tkn $> NTRegistered
@@ -679,7 +679,8 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
           pure NTExpired
         _ -> pure ntfTknStatus
       withStore' c $ \db -> updateNtfMode db tkn suppliedNtfMode
-      pure ntfTokenStatus
+      -- ! atomically $ writeTBQueue subQ ("", "", NTFMODE ntfTokenStatus suppliedNtfMode)
+      pure status
       where
         replaceToken :: NtfTokenId -> m ()
         replaceToken tknId = do
@@ -711,7 +712,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
 
 -- TODO decrypt verification code
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
-verifyNtfToken' c deviceToken code nonce =
+verifyNtfToken' c@AgentClient {subQ} deviceToken code nonce =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret, ntfMode} -> do
       when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
@@ -723,6 +724,7 @@ verifyNtfToken' c deviceToken code nonce =
         cron <- asks $ ntfCron . config
         agentNtfEnableCron c tknId tkn cron
         when (ntfMode == NMInstant) $ initializeNtfSubs c
+      -- ! atomically $ writeTBQueue subQ ("", "", NTFMODE toStatus ntfMode)
     _ -> throwError $ CMD PROHIBITED
 
 checkNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
