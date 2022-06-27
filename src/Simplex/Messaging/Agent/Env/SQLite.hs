@@ -46,6 +46,7 @@ import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
+import Data.Word (Word16)
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -67,6 +68,7 @@ data AgentConfig = AgentConfig
     reconnectInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
     resubscriptionConcurrency :: Int,
+    ntfCron :: Word16,
     ntfWorkerThrottle :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
     ntfMaxMessages :: Int,
@@ -101,6 +103,7 @@ defaultAgentConfig =
       reconnectInterval = defaultReconnectInterval,
       helloTimeout = 2 * nominalDay,
       resubscriptionConcurrency = 16,
+      ntfCron = 20, -- minutes
       ntfWorkerThrottle = 1000000, -- microseconds
       ntfSubCheckInterval = nominalDay,
       ntfMaxMessages = 4,
@@ -138,7 +141,7 @@ data NtfSupervisor = NtfSupervisor
     ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
   }
 
-data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
+data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
 
 newNtfSubSupervisor :: Natural -> STM NtfSupervisor
 newNtfSubSupervisor qSize = do
