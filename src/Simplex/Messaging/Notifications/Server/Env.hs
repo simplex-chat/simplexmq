@@ -8,7 +8,6 @@
 module Simplex.Messaging.Notifications.Server.Env where
 
 import Control.Concurrent.Async (Async)
-import Control.Monad (void)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
@@ -71,8 +70,6 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   store <- atomically newNtfStore
   subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
-  -- TODO not creating APNS client on start to pass CI test, has to be replaced with mock APNS server
-  void . liftIO $ newPushClient pushServer PPApns
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
@@ -120,11 +117,10 @@ newNtfPushServer qSize apnsConfig = do
   pure NtfPushServer {pushQ, pushClients, intervalNotifiers, apnsConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
-newPushClient NtfPushServer {apnsConfig, pushClients} = \case
-  PPApns -> do
-    c <- apnsPushProviderClient <$> createAPNSPushClient apnsConfig
-    atomically $ TM.insert PPApns c pushClients
-    pure c
+newPushClient NtfPushServer {apnsConfig, pushClients} pp = do
+  c <- apnsPushProviderClient <$> createAPNSPushClient (apnsProviderHost pp) apnsConfig
+  atomically $ TM.insert pp c pushClients
+  pure c
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 getPushClient s@NtfPushServer {pushClients} pp =

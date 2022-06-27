@@ -74,7 +74,7 @@ testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient agentCfg initAgentServers
   Right () <- runExceptT $ do
-    let tkn = DeviceToken PPApns "abcd"
+    let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
@@ -103,7 +103,7 @@ testNtfTokenRepeatRegistration APNSMockServer {apnsQ} = do
   -- withGlobalLogging logCfg $ do
   a <- getSMPAgentClient agentCfg initAgentServers
   Right () <- runExceptT $ do
-    let tkn = DeviceToken PPApns "abcd"
+    let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
@@ -129,7 +129,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient agentCfg initAgentServers
   a' <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
-    let tkn = DeviceToken PPApns "abcd"
+    let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
@@ -162,7 +162,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
 testNtfTokenServerRestart :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   a <- getSMPAgentClient agentCfg initAgentServers
-  let tkn = DeviceToken PPApns "abcd"
+  let tkn = DeviceToken PPApnsTest "abcd"
   Right ntfData <- withNtfServer t . runExceptT $ do
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
@@ -203,7 +203,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- register notification token
-    let tkn = DeviceToken PPApns "abcd"
+    let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice tkn NMInstant
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
@@ -253,7 +253,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     -- alice registers notification token
-    let aliceTkn = DeviceToken PPApns "abcd"
+    let aliceTkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice aliceTkn NMInstant
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
@@ -263,7 +263,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     verifyNtfToken alice aliceTkn verification nonce
     NTActive <- checkNtfToken alice aliceTkn
     -- bob registers notification token
-    let bobTkn = DeviceToken PPApns "bcde"
+    let bobTkn = DeviceToken PPApnsTest "bcde"
     NTRegistered <- registerNtfToken bob bobTkn NMInstant
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
@@ -322,7 +322,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- register notification token, set mode to NMPeriodic
-    let tkn = DeviceToken PPApns "abcd"
+    let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ

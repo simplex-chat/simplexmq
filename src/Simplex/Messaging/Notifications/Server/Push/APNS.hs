@@ -190,11 +190,16 @@ data APNSPushClientConfig = APNSPushClientConfig
     paddedNtfLength :: Int,
     appName :: ByteString,
     appTeamId :: Text,
-    apnsHost :: HostName,
     apnsPort :: ServiceName,
     http2cfg :: HTTP2ClientConfig
   }
   deriving (Show)
+
+apnsProviderHost :: PushProvider -> HostName
+apnsProviderHost = \case
+  PPApnsTest -> "localhost"
+  PPApnsDev -> "api.sandbox.push.apple.com"
+  PPApnsProd -> "api.push.apple.com"
 
 defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
@@ -206,7 +211,6 @@ defaultAPNSPushClientConfig =
       paddedNtfLength = 512,
       appName = "chat.simplex.app",
       appTeamId = "5NN7GUYB6T",
-      apnsHost = "api.sandbox.push.apple.com",
       apnsPort = "443",
       http2cfg = defaultHTTP2ClientConfig
     }
@@ -217,19 +221,20 @@ data APNSPushClient = APNSPushClient
     jwtHeader :: JWTHeader,
     jwtToken :: TVar (JWTToken, SignedJWTToken),
     nonceDrg :: TVar ChaChaDRG,
+    apnsHost :: HostName,
     apnsCfg :: APNSPushClientConfig
   }
 
-createAPNSPushClient :: APNSPushClientConfig -> IO APNSPushClient
-createAPNSPushClient apnsCfg@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
+createAPNSPushClient :: HostName -> APNSPushClientConfig -> IO APNSPushClient
+createAPNSPushClient apnsHost apnsCfg@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
   https2Client <- newTVarIO Nothing
-  void $ connectHTTPS2 apnsCfg https2Client
+  void $ connectHTTPS2 apnsHost apnsCfg https2Client
   privateKey <- readECPrivateKey =<< getEnv authKeyFileEnv
   authKeyId <- T.pack <$> getEnv authKeyIdEnv
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
   jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
   nonceDrg <- drgNew >>= newTVarIO
-  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, apnsCfg}
+  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, apnsHost, apnsCfg}
 
 getApnsJWTToken :: APNSPushClient -> IO SignedJWTToken
 getApnsJWTToken APNSPushClient {apnsCfg = APNSPushClientConfig {appTeamId, tokenTTL}, privateKey, jwtHeader, jwtToken} = do
@@ -250,8 +255,8 @@ mkApnsJWTToken appTeamId jwtHeader privateKey = do
   signedJWT <- signedJWTToken privateKey jwt
   pure (jwt, signedJWT)
 
-connectHTTPS2 :: APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
-connectHTTPS2 APNSPushClientConfig {apnsHost, apnsPort, http2cfg} https2Client = do
+connectHTTPS2 :: HostName -> APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
+connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg} https2Client = do
   r <- getHTTP2Client apnsHost apnsPort http2cfg disconnected
   case r of
     Right client -> atomically . writeTVar https2Client $ Just client
@@ -261,8 +266,8 @@ connectHTTPS2 APNSPushClientConfig {apnsHost, apnsPort, http2cfg} https2Client =
     disconnected = atomically $ writeTVar https2Client Nothing
 
 getApnsHTTP2Client :: APNSPushClient -> IO (Either HTTP2ClientError HTTP2Client)
-getApnsHTTP2Client APNSPushClient {https2Client, apnsCfg} =
-  readTVarIO https2Client >>= maybe (connectHTTPS2 apnsCfg https2Client) (pure . Right)
+getApnsHTTP2Client APNSPushClient {https2Client, apnsHost, apnsCfg} =
+  readTVarIO https2Client >>= maybe (connectHTTPS2 apnsHost apnsCfg https2Client) (pure . Right)
 
 disconnectApnsHTTP2Client :: APNSPushClient -> IO ()
 disconnectApnsHTTP2Client APNSPushClient {https2Client} =
@@ -324,7 +329,7 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
   deriving (Generic, FromJSON)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken PPApns tknStr} pn = do
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken _ tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
