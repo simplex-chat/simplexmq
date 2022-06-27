@@ -75,7 +75,8 @@ Once a member has received a SyncToken message from all other members and an Acc
 If the invitee can present a match, then the member now knows that all parties have agreed to extend membership.
 The member locally commits this result and establishes a new connection with the invitee specifically for group communication.
 
-If this member is also the Leader, they also mark the proposal resolved, as the invitee is now committed to the group.
+Each Approver notifies the Leader that they have established a connection with the invitee.
+This both lets the Leader know that it need not continue to send reminder Propose messages, and it ensures that the Approver does not get kicked in a cancellation (see below).
 
 #### Failures
 
@@ -86,25 +87,22 @@ However, it is not possible to tell the difference between a misidentified invit
 In the case of a misidentified invitee, the proposal can never be resolved, as no invitee will ever receive all tokens, meaning the Leader will never receive an Accept message.
 Since it's only safe to manage one proposal at a time, we must be able to cancel the proposal in order to make progress.
 
-To cancel, the Leader must do so in two phases:
+To cancel, the Leader will face one of two scenarios:
 
-##### Cancellation - Hold (phase 1)
+##### Cancellation - None Established
 
-The Leader sends out a Hold message containing the invitation identifier to all members.
-If the member has not started a connection with the invitee, they promise not to do so (though, they can continue to protocol otherwise) and respond with a Holding message.
-If the member has already started a connection with the invitee, they respond with a Committed message, meaning that the invitation was a success and the Leader should not cancel.
+If the leader has not received any notice of established connections, it can assume that all Approvers are operating normally, and that the invite _probably_ won't work.
+Since it is uncertain about the latter, it resolves the current proposal but immediately begins the process to Kick the invitee.
+If there was confusion about the invitee, then the Kick will resolve immediately, as there's no work to do except record the invitation identifier as being permanently kicked.
+In the case that there was a race between establishing a connection and giving up, then those who established a connection will Kick the invitee and ensure that all group members have same perception of membership.
 
-##### Cancellation - Cancel or Resume (phase 2)
+##### Cancellation - Some Established
 
-If the Leader receives a Committed message back from any member, they send a Resume message to all others, so that they can complete the invitation process.
+If the Leader has received an Established message back from any member, then it knows that there was no confusion over the invitee, and they can be brought into the group.
+However, it is possible that some previous members are unable to complete the invitation process (such as a lost/destroyed device).
+To ensure that the group can complete proposals, the Leader may then Kick any user that has not established a connection (except the Leader).
 
-If the Leader receives a Hold message back from all members, then the Leader can commit the proposal as completed in a cancelled state.
-They do not need to notify any members, as the invitation cannot resolve if all members are Holding.
-
-If the Leader does not receive a response from some members, and receives a Hold message from all others, they may optionally kick all members that did not reply.
-This can be useful when an invitation went out after a member has gone permanently offline (such as losing a device).
-If the member cannot be kicked, then the group is permanently stuck with its current membership.
-If all members that are not Holding are kicked, then it is safe to move on, as all remaining members are in the Holding state.
+TODO: What about a malicious invitee who establishes with everyone but the leader?
 
 TODO: Ideally, kicked members (or invitees that established connections with kicked members, who think they are part of the group) eventually learn that they are not in the group after all.
 
@@ -113,4 +111,5 @@ TODO: Ideally, kicked members (or invitees that established connections with kic
 Model checking our formal specification we can demonstrate three key properties:
   1. Users outside of the group only learn about the networks of members who agree to share such information with them.
   1. It is not possible to accidentally establish a group connection with anyone other than the invitee, even if users misidentify the invitee.
+  1. If a proposal is complete, then all members (according to the leader) agree on who is a member.
   1. No members will connect with the invitee unless all members correctly identify them.

@@ -1,6 +1,6 @@
 ---- MODULE groups ----
 
-EXTENDS Naturals, FiniteSets
+EXTENDS Naturals, FiniteSets, util
 
 CONSTANTS
     Users,
@@ -33,22 +33,15 @@ CONSTANTS
     InviteIds,
     \* Proposal States
     Proposing,
-    Holding,
-    Continuing,
     Kicking,
     \* Approver States
     Active,
-    OnHold,
-    Resumed,
     Committed,
     \* Request Type
     PleasePropose,
     Propose,
     Reject,
-    Hold,
-    CantHold,
-    WillHold,
-    Continue,
+    Established,
     Kick,
     KickAck,
     Invite,
@@ -147,13 +140,13 @@ LeaderReceivePleasePropose ==
             , invitee_description |-> message.invitee_description
             , group_size |-> Cardinality(group_perceptions[Leader])
             , state |-> Proposing
-            , awaiting_response |-> Nothing
+            , awaiting_response |-> group_perceptions[Leader]
             ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
 BroadcastProposalState ==
-    \E member \in group_perceptions[Leader] :
-        /\ proposal /= Nothing
+    /\ proposal /= Nothing
+    /\ \E member \in proposal.awaiting_response :
         /\ messages' = messages \union
             {   CASE proposal.state = Proposing ->
                     [ sender |-> Leader
@@ -168,14 +161,6 @@ BroadcastProposalState ==
                     , recipient |-> member
                     , type |-> Kick
                     , kicked |-> proposal.kicked
-                    ]
-                  [] TRUE ->
-                    [ sender |-> Leader
-                    , recipient |-> member
-                    , type |->
-                        CASE proposal.state = Holding -> Hold
-                          [] proposal.state = Continuing -> Continue
-                    , invite_id |-> proposal.invite_id
                     ]
             }
         /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
@@ -192,40 +177,39 @@ LeaderReceiveReject ==
         /\ complete_proposals' = complete_proposals \union { message.invite_id }
         /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, approver_states>>
 
+LeaderReceiveEstablished ==
+    /\ proposal /= Nothing
+    /\ proposal.state = Proposing
+    /\ \E message \in messages :
+        /\ message.type = Established
+        /\ message.recipient = Leader
+        /\ message.sender \in group_perceptions[Leader]
+        /\ message.invite_id = proposal.invite_id
+        /\ IF  proposal.awaiting_response = { message.sender }
+           THEN
+               /\ proposal' = Nothing
+               /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
+           ELSE
+               /\ proposal' = [ proposal EXCEPT !.awaiting_response = { member \in @ : member /= message.sender } ]
+               /\ UNCHANGED <<complete_proposals>>
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
+
 \* We don't specify exactly why, but at some point a Leader may realize that a
 \* proposal is likely doomed, even if they never heard a rejection (proposals
 \* with confused contacts can never resolve), and abort the proposal.
 GiveUpOnProposal ==
     /\ proposal /= Nothing
     /\ proposal.state = Proposing
-    /\ proposal' = [ proposal EXCEPT !.state = Holding, !.awaiting_response = group_perceptions[Leader] ]
-    /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
-
-LeaderReceiveCantHold ==
-    \E message \in messages :
-        /\ message.type = CantHold
-        /\ message.recipient = Leader
-        /\ message.sender \in group_perceptions[Leader]
-        /\ proposal /= Nothing
-        /\ proposal.state = Holding
-        /\ message.invite_id = proposal.invite_id
-        /\ proposal' = [ proposal EXCEPT !.state = Continuing, !.awaiting_response = Nothing ]
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
-
-LeaderReceiveHold ==
-    /\ proposal /= Nothing
-    /\ proposal.state = Holding
-    /\ \E message \in messages :
-        /\ message.type = WillHold
-        /\ message.recipient = Leader
-        /\ message.sender \in group_perceptions[Leader]
-        /\ message.invite_id = proposal.invite_id
-        /\ IF   proposal.awaiting_response = { message.sender }
-           THEN /\ proposal' = Nothing
-                /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
-           ELSE /\ proposal' = [ proposal EXCEPT !.awaiting_response = { member \in @ : member /= message.sender } ]
-                /\ UNCHANGED <<complete_proposals>>
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
+    \* If _anyone_ has Established, then we won't give up on the invitee (we
+    \* may give up on the member holding us up via GiveUpOnMember).
+    /\ proposal.awaiting_response = group_perceptions[Leader]
+    /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
+    /\ proposal' =
+        [ state |-> Kicking
+        , awaiting_response |-> group_perceptions[Leader]
+        , kicked |-> { proposal.invite_id }
+        ]
+    /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
 
 \* We don't specify exactly why, but this would likely be a human decision
 \* based on trying to start a _new_ proposal, but that not being possible
@@ -235,7 +219,11 @@ LeaderReceiveHold ==
 \* start a new round of kicking.
 GiveUpOnMembers ==
     /\ proposal /= Nothing
-    /\ \/ /\ proposal.state = Holding
+    /\ \/ /\ proposal.state = Proposing
+          \* We don't want to kick current members if this is due to invite
+          \* confusion.  We only go this route if _someone_ has establishd a
+          \* connection, but it's time to kick those who won't.
+          /\ proposal.awaiting_response /= group_perceptions[Leader]
           /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
        \/ /\ proposal.state = Kicking
           /\ UNCHANGED <<complete_proposals>>
@@ -312,59 +300,18 @@ ApproverReceiveProposal ==
                        }
                    /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
-ApproverReceiveHold ==
-    \E message \in messages :
-        /\ message.type = Hold
-        /\ IF   /\ approver_states[<<message.invite_id, message.recipient.user>>] /= Nothing
-                /\ approver_states[<<message.invite_id, message.recipient.user>>][2] = Committed
-           THEN /\ messages' = messages \union
-                    {   [ type |-> CantHold
-                        , sender |-> message.recipient
-                        , recipient |-> Leader
-                        , invite_id |-> message.invite_id
-                        ]
-                    }
-                /\ UNCHANGED <<approver_states>>
-           \* TODO: For the moment, we enforce that we must hear a proposal
-           \* message before holding, because it simplifies token generation.
-           \* However, it's not live, because if the Propose message is dropped
-           \* and now the Leader is only sending Hold messages, this node is
-           \* going to ignore everything.
-           ELSE /\ approver_states[<<message.invite_id, message.recipient.user>>] /= Nothing
-                /\ approver_states[<<message.invite_id, message.recipient.user>>][2] = Active
-                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ @ EXCEPT ![2] = OnHold ] ]
-                \* TODO: This can't be atomic
-                /\ messages' = messages \union
-                    {   [ type |-> WillHold
-                        , sender |-> message.recipient
-                        , recipient |-> Leader
-                        , invite_id |-> message.invite_id
-                        ]
-                    }
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
-
-ApproverReceiveContinue ==
-    \E message \in messages :
-        /\ message.type = Continue
-        /\ approver_states[<<message.invite_id, message.recipient.user>>] /= Nothing
-        /\ \/ approver_states[<<message.invite_id, message.recipient.user>>][2] = OnHold
-           \* If we see a Continue while Active, we can assume that we missed
-           \* the Hold, and can just skip right to the Resumed state
-           \/ approver_states[<<message.invite_id, message.recipient.user>>][2] = Active
-        /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ @ EXCEPT ![2] = Resumed ] ]
-        \* TODO: Currently, this isn't live, because the approver only sends
-        \* Invites on Propose messages.  Since it's possible that the approver
-        \* never received a Propose message at all, the Resume message needs to
-        \* carry enough information that the approver can form an invitation
-        \* from it.  Then it will act as a reminder that makes approvers live
-        \* (if the Leader is).
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
-
 ApproverReceiveKick ==
     \E message \in messages :
         /\ message.type = Kick
         /\ message.sender = Leader
         /\ group_perceptions' = [ group_perceptions EXCEPT ![message.recipient] = { member \in @ : member.id \notin message.kicked } ]
+        /\ approver_states' =
+            FoldSet(
+              LAMBDA next, prev :
+                  [ prev EXCEPT ![<<next, message.recipient.user>>] = <<message.recipient.id, Committed>> ],
+              approver_states,
+              message.kicked
+            )
         /\ messages' = messages \union
             {   [ type |-> KickAck
                 , sender |-> message.recipient
@@ -372,7 +319,7 @@ ApproverReceiveKick ==
                 , kicked |-> message.kicked
                 ]
             }
-        /\ UNCHANGED <<rng_state, proposal, complete_proposals, approver_states>>
+        /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
 BroadcastToken ==
     \E from \in MemberSet, invite_id \in InviteIds :
@@ -428,8 +375,7 @@ Establish ==
     \E message \in messages :
         /\ message.type = Accept
         /\ approver_states[<<message.invite_id, message.recipient>>] /= Nothing
-        /\  \/ approver_states[<<message.invite_id, message.recipient>>][2] = Active
-            \/ approver_states[<<message.invite_id, message.recipient>>][2] = Resumed
+        /\ approver_states[<<message.invite_id, message.recipient>>][2] = Active
         /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>][1]
                RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
                SenderMember == [ user |-> message.sender, id |-> message.invite_id ]
@@ -437,6 +383,10 @@ Establish ==
                Senders == { sync.sender : sync \in SyncMessages }
                \* Note that it's safe to "access" "its" token here
                Tokens == { sync.token : sync \in SyncMessages } \union { [ for |-> message.invite_id, by |-> message.recipient ] }
+               InviteeDoesntBelieveInviterIsKicked ==
+                   /\ RecipientId /= Nothing
+                   /\ approver_states[<<RecipientId, message.sender>>] /= Nothing
+                   /\ approver_states[<<RecipientId, message.sender>>][2] = Committed
            IN  /\ Senders = group_perceptions[RecipientMember] \ { RecipientMember }
                /\ message.tokens = Tokens
                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = [ @ EXCEPT ![2] = Committed ] ]
@@ -444,17 +394,16 @@ Establish ==
                /\ group_perceptions' =
                    [ group_perceptions
                    EXCEPT ![RecipientMember] = @ \union { SenderMember }
-                   ,      ![SenderMember] = @ \union { RecipientMember, SenderMember }
+                   ,      ![SenderMember] = @ \union (IF InviteeDoesntBelieveInviterIsKicked THEN {} ELSE { RecipientMember, SenderMember })
                    ]
-               /\  IF  message.recipient = Leader.user
-                   THEN
-                       /\ proposal /= Nothing
-                       /\ proposal.state \in { Proposing, Continuing }
-                       /\ proposal.invite_id = message.invite_id
-                       /\ complete_proposals' = complete_proposals \union { message.invite_id }
-                       /\ proposal' = Nothing
-                   ELSE UNCHANGED <<proposal, complete_proposals>>
-               /\ UNCHANGED <<messages, rng_state>>
+               /\ messages' = messages \union
+                   {   [ type |-> Established
+                       , sender |-> RecipientMember
+                       , recipient |-> Leader
+                       , invite_id |-> message.invite_id
+                       ]
+                   }
+               /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
 \* TODO: Need to be able to Kick outside of failed proposals.
 
@@ -494,14 +443,11 @@ Next ==
     \/ LeaderReceivePleasePropose
     \/ BroadcastProposalState
     \/ LeaderReceiveReject
+    \/ LeaderReceiveEstablished
     \/ GiveUpOnProposal
-    \/ LeaderReceiveCantHold
-    \/ LeaderReceiveHold
     \/ GiveUpOnMembers
     \/ LeaderReceiveKickAck
     \/ ApproverReceiveProposal
-    \/ ApproverReceiveHold
-    \/ ApproverReceiveContinue
     \/ ApproverReceiveKick
     \/ BroadcastToken
     \/ SendAccept
@@ -582,5 +528,10 @@ EstablishedOnlyIfAllPerceptionsMatch ==
             /\ message.type = Propose
             /\ message.invitee_description.of = member_user
             => UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description ]] = member_user
+
+AllMembersAccordingToTheLeaderAgreeWithTheLeaderWithoutProposal ==
+    proposal = Nothing =>
+        \A member \in group_perceptions[Leader] :
+            group_perceptions[member] = group_perceptions[Leader]
 
 ====
