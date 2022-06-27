@@ -121,7 +121,6 @@ removeTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
         >>= mapM_ (\tId' -> when (tId == tId') $ TM.delete k regs)
     k = C.toPubKey C.pubKeyBytes tknVerifyKey
 
--- TODO delete token subscriptions
 deleteNtfToken :: NtfStore -> NtfTokenId -> STM ()
 deleteNtfToken st tknId = do
   TM.lookupDelete tknId (tokens st)
@@ -133,6 +132,14 @@ deleteNtfToken st tknId = do
                   TM.delete (regKey tknVerifyKey) tIds
                   whenM (TM.null tIds) $ TM.delete token regs
               )
+      )
+  TM.lookupDelete tknId (tokenSubscriptions st)
+    >>= mapM_
+      ( \ts_ -> do
+          ts <- readTVar ts_
+          forM_ ts $ \subId ->
+            TM.lookupDelete subId (subscriptions st)
+              >>= mapM_ (\NtfSubData {smpQueue} -> TM.delete smpQueue $ subscriptionLookup st) -- also removeSubscription
       )
   where
     regs = tokenRegistrations st
