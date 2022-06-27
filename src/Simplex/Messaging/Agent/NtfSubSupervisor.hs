@@ -149,7 +149,7 @@ runNtfWorker c srv doWork = forever $ do
         case ntfSubAction of
           NSACreate ->
             getNtfToken >>= \case
-              Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive} -> do
+              Just tkn@NtfToken {ntfTokenId = Just tknId, ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
                 RcvQueue {clientNtfCreds} <- withStore c (`getRcvQueue` connId)
                 case clientNtfCreds of
                   Just ClientNtfCreds {ntfPrivateKey, notifierId} -> do
@@ -169,7 +169,7 @@ runNtfWorker c srv doWork = forever $ do
                       NSPending -> updateSubNextCheck ts NSPending
                       NSActive -> updateSubNextCheck ts NSActive
                       NSEnd -> updateSubNextCheck ts NSEnd
-                      NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts
+                      NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts -- TODO re-create subscription?
                   Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
               _ -> ntfInternalError c connId "NSACheck - no active token"
           NSADelete -> case ntfSubId of
@@ -217,7 +217,7 @@ runNtfSMPWorker c srv doWork = forever $ do
         case ntfSubAction of
           NSASmpKey ->
             getNtfToken >>= \case
-              Just NtfToken {ntfTknStatus = NTActive} -> do
+              Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
                 rq <- withStore c (`getRcvQueue` connId)
                 C.SignAlg a <- asks (cmdSignAlg . config)
                 (ntfPublicKey, ntfPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
