@@ -645,8 +645,8 @@ setSMPServers' c servers = do
 registerNtfToken' :: forall m. AgentMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
   withStore' c getSavedNtfToken >>= \case
-    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} ->
-      case (ntfTokenId, ntfTknAction) of
+    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
+      ntfTokenStatus <- case (ntfTokenId, ntfTknAction) of
         (Nothing, Just NTARegister) -> do
           when (savedDeviceToken /= suppliedDeviceToken) $ withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
           registerToken tkn $> NTRegistered
@@ -663,12 +663,12 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
           | savedDeviceToken == suppliedDeviceToken -> do
             if ntfTknStatus == NTActive
               then do
-                agentNtfEnableCron c tknId tkn 20 -- TODO parameterize NotificationsMode
-                when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c tkn
-                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ do
-                  ns <- asks ntfSupervisor
-                  atomically $ nsUpdateToken ns tkn
-                  smpDeleteNtfSubs c
+                cron <- asks $ ntfCron . config
+                agentNtfEnableCron c tknId tkn cron
+                ns <- asks ntfSupervisor
+                atomically $ nsUpdateToken ns tkn
+                when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
+                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ smpDeleteNtfSubs c
               else do
                 ns <- asks ntfSupervisor
                 atomically $ nsUpdateToken ns tkn
@@ -682,6 +682,8 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
           atomically $ nsRemoveNtfToken ns
           pure NTExpired
         _ -> pure ntfTknStatus
+      withStore' c $ \db -> updateNtfMode db tkn suppliedNtfMode
+      pure ntfTokenStatus
       where
         replaceToken :: NtfTokenId -> m ()
         replaceToken tknId = do
@@ -715,11 +717,16 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
 verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
 verifyNtfToken' c deviceToken code nonce =
   withStore' c getSavedNtfToken >>= \case
-    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret} -> do
+    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret, ntfMode} -> do
       when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
-      void . withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $ do
-        agentNtfVerifyToken c tknId tkn code'
+      toStatus <-
+        withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+          agentNtfVerifyToken c tknId tkn code'
+      when (toStatus == NTActive) $ do
+        cron <- asks $ ntfCron . config
+        agentNtfEnableCron c tknId tkn cron
+        when (ntfMode == NMInstant) $ initializeNtfSubs c
     _ -> throwError $ CMD PROHIBITED
 
 checkNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
@@ -774,9 +781,7 @@ withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = 
     Right _ -> do
       withStore' c $ \db -> updateNtfToken db tkn toStatus toAction_
       let updatedToken = tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
-      if toStatus == NTActive && ntfMode == NMInstant
-        then initializeNtfSubs c updatedToken
-        else atomically $ nsUpdateToken ns updatedToken
+      atomically $ nsUpdateToken ns updatedToken
       pure toStatus
     Left e@(NTF AUTH) -> do
       withStore' c $ \db -> removeNtfToken db tkn
@@ -785,12 +790,10 @@ withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = 
       throwError e
     Left e -> throwError e
 
-initializeNtfSubs :: AgentMonad m => AgentClient -> NtfToken -> m ()
-initializeNtfSubs c tkn = do
+initializeNtfSubs :: AgentMonad m => AgentClient -> m ()
+initializeNtfSubs c = do
   ns <- asks ntfSupervisor
-  connIds <- atomically $ do
-    nsUpdateToken ns tkn
-    getSubscriptions c
+  connIds <- atomically $ getSubscriptions c
   forM_ connIds $ \connId -> atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
 smpDeleteNtfSubs :: AgentMonad m => AgentClient -> m ()

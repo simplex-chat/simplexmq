@@ -69,6 +69,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getSavedNtfToken,
     updateNtfTokenRegistration,
     updateDeviceToken,
+    updateNtfMode,
     updateNtfToken,
     removeNtfToken,
     -- Notification subscription persistence
@@ -677,6 +678,18 @@ updateDeviceToken db NtfToken {deviceToken = DeviceToken provider token, ntfServ
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
     (toProvider, toToken, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
+
+updateNtfMode :: DB.Connection -> NtfToken -> NotificationsMode -> IO ()
+updateNtfMode db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} ntfMode = do
+  updatedAt <- getCurrentTime
+  DB.execute
+    db
+    [sql|
+      UPDATE ntf_tokens
+      SET ntf_mode = ?, updated_at = ?
+      WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+    |]
+    (ntfMode, updatedAt, provider, token, host, port)
 
 updateNtfToken :: DB.Connection -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> IO ()
 updateNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknStatus tknAction = do
