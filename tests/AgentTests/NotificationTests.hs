@@ -322,7 +322,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- register notification token, set mode to NMPeriodic
-    let tkn = DeviceToken PPApns "abcd"
+    let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
       atomically $ readTBQueue apnsQ
