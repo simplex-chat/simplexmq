@@ -51,9 +51,9 @@ ntfSyntaxTests (ATransport t) = do
   it "unknown command" $ ("", "abcd", "1234", ('H', 'E', 'L', 'L', 'O')) >#> ("", "abcd", "1234", ERR $ CMD UNKNOWN)
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", TNEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
-    it "many parameters" $ (sampleSig, "cdab", "", (TNEW_, (' ', '\x01', 'A'), ('T', 'A', "abcd" :: ByteString), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "dabc", "", (TNEW_, ' ', ('T', 'A', "abcd" :: ByteString), samplePubKey, sampleDhPubKey)) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
-    it "token ID" $ (sampleSig, "abcd", "12345678", (TNEW_, ' ', ('T', 'A', "abcd" :: ByteString), samplePubKey, sampleDhPubKey)) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
+    it "many parameters" $ (sampleSig, "cdab", "", (TNEW_, (' ', '\x01', 'A'), ('T', 'A', 'T', "abcd" :: ByteString), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
+    it "no signature" $ ("", "dabc", "", (TNEW_, ' ', ('T', 'A', 'T', "abcd" :: ByteString), samplePubKey, sampleDhPubKey)) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
+    it "token ID" $ (sampleSig, "abcd", "12345678", (TNEW_, ' ', ('T', 'A', 'T', "abcd" :: ByteString), samplePubKey, sampleDhPubKey)) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
   where
     (>#>) ::
       Encoding smp =>
@@ -90,7 +90,7 @@ testNotificationSubscription (ATransport t) =
     (nPub, nKey) <- C.generateSignatureKeyPair C.SEd25519
     (tknPub, tknKey) <- C.generateSignatureKeyPair C.SEd25519
     (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair'
-    let tkn = DeviceToken PPApns "abcd"
+    let tkn = DeviceToken PPApnsTest "abcd"
     withAPNSMockServer $ \APNSMockServer {apnsQ} ->
       smpTest2 t $ \rh sh ->
         ntfTest t $ \nh -> do
@@ -139,7 +139,7 @@ testNotificationSubscription (ATransport t) =
           Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK mId1)
           pure ()
           -- replace token
-          let tkn' = DeviceToken PPApns "efgh"
+          let tkn' = DeviceToken PPApnsTest "efgh"
           RespNtf "7" tId' NROk <- signSendRecvNtf nh tknKey ("7", tId, TRPL tkn')
           tId `shouldBe` tId'
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}, sendApnsResponse = send2} <-

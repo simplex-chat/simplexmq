@@ -81,8 +81,7 @@ ntfServerCfg =
       smpAgentCfg = defaultSMPClientAgentConfig,
       apnsConfig =
         defaultAPNSPushClientConfig
-          { apnsHost = "localhost",
-            apnsPort = apnsTestPort,
+          { apnsPort = apnsTestPort,
             http2cfg = defaultHTTP2ClientConfig {caStoreFile = "tests/fixtures/ca.crt"}
           },
       inactiveClientExpiration = Just defaultInactiveClientExpiration,

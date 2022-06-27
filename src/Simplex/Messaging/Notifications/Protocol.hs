@@ -338,23 +338,31 @@ instance StrEncoding SMPQueueNtf where
   strEncode SMPQueueNtf {smpServer, notifierId} = strEncode smpServer <> "/" <> strEncode notifierId
   strP = SMPQueueNtf <$> strP <* A.char '/' <*> strP
 
-data PushProvider = PPApns
+data PushProvider = PPApnsDev | PPApnsProd | PPApnsTest
   deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
   smpEncode = \case
-    PPApns -> "A"
+    PPApnsDev -> "AD"
+    PPApnsProd -> "AP"
+    PPApnsTest -> "AT"
   smpP =
-    A.anyChar >>= \case
-      'A' -> pure PPApns
+    A.take 2 >>= \case
+      "AD" -> pure PPApnsDev
+      "AP" -> pure PPApnsProd
+      "AT" -> pure PPApnsTest
       _ -> fail "bad PushProvider"
 
 instance StrEncoding PushProvider where
   strEncode = \case
-    PPApns -> "apns"
+    PPApnsDev -> "apns_dev"
+    PPApnsProd -> "apns_prod"
+    PPApnsTest -> "apns_test"
   strP =
     A.takeTill (== ' ') >>= \case
-      "apns" -> pure PPApns
+      "apns_dev" -> pure PPApnsDev
+      "apns_prod" -> pure PPApnsProd
+      "apns_test" -> pure PPApnsTest
       _ -> fail "bad PushProvider"
 
 instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
