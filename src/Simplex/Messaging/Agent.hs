@@ -194,7 +194,7 @@ registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> Notificat
 registerNtfToken c = withAgentEnv c .: registerNtfToken' c
 
 -- | Verify device notifications token
-verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
+verifyNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> C.CbNonce -> ByteString -> m ()
 verifyNtfToken c = withAgentEnv c .:. verifyNtfToken' c
 
 checkNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> m NtfTknStatus
@@ -710,8 +710,8 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
       atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
 
 -- TODO decrypt verification code
-verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> ByteString -> C.CbNonce -> m ()
-verifyNtfToken' c deviceToken code nonce =
+verifyNtfToken' :: AgentMonad m => AgentClient -> DeviceToken -> C.CbNonce -> ByteString -> m ()
+verifyNtfToken' c deviceToken nonce code =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret, ntfMode} -> do
       when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
