@@ -73,7 +73,6 @@ testNotificationToken APNSMockServer {apnsQ} = do
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     liftIO $ sendApnsResponse APNSRespOk
     verifyNtfToken a tkn verification nonce
-    enableNtfCron a tkn 30
     NTActive <- checkNtfToken a tkn
     deleteNtfToken a tkn
     -- agent deleted this token
@@ -110,7 +109,6 @@ testNtfTokenRepeatRegistration APNSMockServer {apnsQ} = do
     liftIO $ sendApnsResponse' APNSRespOk
     -- can still use the first verification code, it is the same after decryption
     verifyNtfToken a tkn verification nonce
-    enableNtfCron a tkn 30
     NTActive <- checkNtfToken a tkn
     pure ()
   pure ()
@@ -149,7 +147,6 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     Left (NTF AUTH) <- tryE $ checkNtfToken a tkn
     -- and the second is active
     NTActive <- checkNtfToken a' tkn
-    enableNtfCron a' tkn 30
     pure ()
   pure ()
 
@@ -180,7 +177,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     liftIO $ sendApnsResponse' APNSRespOk
     verifyNtfToken a' tkn verification' nonce'
     NTActive <- checkNtfToken a' tkn
-    enableNtfCron a' tkn 30
+    pure ()
   pure ()
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> IO ()

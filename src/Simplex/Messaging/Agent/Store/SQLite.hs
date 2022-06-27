@@ -66,14 +66,16 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateRatchet,
     -- Notification device token persistence
     createNtfToken,
-    getCurrentNtfToken,
+    getSavedNtfToken,
     updateNtfTokenRegistration,
+    updateDeviceToken,
     updateNtfToken,
     removeNtfToken,
     -- Notification subscription persistence
     getNtfSubscription,
     createNtfSubscription,
     markNtfSubscriptionForDeletion,
+    markNtfSubscriptionForSMPDeletion,
     updateNtfSubscription,
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
@@ -121,7 +123,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client (NtfAgentSubStatus (NASDeleted), NtfServer, NtfSubAction (NSADelete), NtfSubOrSMPAction (..), NtfSubSMPAction, NtfSubscription (..), NtfTknAction, NtfToken (..))
+import Simplex.Messaging.Notifications.Client (NtfAgentSubStatus (NASDeleted), NtfServer, NtfSubAction (NSADelete), NtfSubOrSMPAction (..), NtfSubSMPAction (..), NtfSubscription (..), NtfTknAction, NtfToken (..))
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..), RcvNtfDhSecret)
@@ -633,8 +635,8 @@ createNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
     |]
     ((provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode))
 
-getCurrentNtfToken :: DB.Connection -> IO (Maybe NtfToken)
-getCurrentNtfToken db = do
+getSavedNtfToken :: DB.Connection -> IO (Maybe NtfToken)
+getSavedNtfToken db = do
   maybeFirstRow ntfToken $
     DB.query_
       db
@@ -663,6 +665,18 @@ updateNtfTokenRegistration db NtfToken {deviceToken = DeviceToken provider token
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
     (tknId, ntfDhSecret, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
+
+updateDeviceToken :: DB.Connection -> NtfToken -> DeviceToken -> IO ()
+updateDeviceToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} (DeviceToken toProvider toToken) = do
+  updatedAt <- getCurrentTime
+  DB.execute
+    db
+    [sql|
+      UPDATE ntf_tokens
+      SET provider = ?, device_token = ?, tkn_status = ?, tkn_action = ?, updated_at = ?
+      WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
+    |]
+    (toProvider, toToken, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
 
 updateNtfToken :: DB.Connection -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> IO ()
 updateNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknStatus tknAction = do
@@ -733,6 +747,18 @@ markNtfSubscriptionForDeletion db connId = do
       WHERE conn_id = ?
     |]
     (Just NSADelete, Nothing :: Maybe NtfSubSMPAction, updatedAt, True, updatedAt, connId)
+
+markNtfSubscriptionForSMPDeletion :: DB.Connection -> ConnId -> IO ()
+markNtfSubscriptionForSMPDeletion db connId = do
+  updatedAt <- getCurrentTime
+  DB.execute
+    db
+    [sql|
+      UPDATE ntf_subscriptions
+      SET ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
+      WHERE conn_id = ?
+    |]
+    (Nothing :: Maybe NtfSubAction, Just NSASmpDelete, updatedAt, True, updatedAt, connId)
 
 updateNtfSubscription :: DB.Connection -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> IO ()
 updateNtfSubscription db connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction = do

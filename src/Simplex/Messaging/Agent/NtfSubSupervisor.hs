@@ -10,7 +10,6 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsUpdateToken,
     nsRemoveNtfToken,
     sendNtfSubCommand,
-    sendNtfSubCommand',
     closeNtfSupervisor,
     getNtfServer,
   )
@@ -95,6 +94,12 @@ processNtfSub c (connId, cmd) = do
       case ntfServer_ of
         (Just ntfServer) -> addNtfWorker ntfServer
         _ -> pure ()
+    NSCSmpDelete -> do
+      withStore' c (`getRcvQueue` connId) >>= \case
+        Right RcvQueue {server = smpServer} -> do
+          withStore' c (`markNtfSubscriptionForSMPDeletion` connId)
+          addNtfSMPWorker smpServer
+        Left _ -> pure ()
     NSCNtfWorker ntfServer ->
       addNtfWorker ntfServer
     NSCNtfSMPWorker smpServer ->
@@ -174,7 +179,7 @@ runNtfWorker c srv doWork = forever $ do
                   withStore' c $ \db ->
                     updateNtfSubscription db connId ntfSub {ntfSubId = Nothing, ntfSubStatus = NASOff, ntfSubActionTs = ts} (NtfSubSMPAction NSASmpDelete)
                   ns <- asks ntfSupervisor
-                  atomically $ sendNtfSubCommand' ns (const True) (connId, NSCNtfSMPWorker smpServer)
+                  atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
             Nothing -> ntfInternalError c connId "NSADelete - no subscription ID"
       where
         updateSubNextCheck ts toStatus = do
@@ -263,13 +268,13 @@ nsRemoveNtfToken :: NtfSupervisor -> STM ()
 nsRemoveNtfToken ns = writeTVar (ntfTkn ns) Nothing
 
 sendNtfSubCommand :: NtfSupervisor -> (ConnId, NtfSupervisorCommand) -> STM ()
-sendNtfSubCommand ns = sendNtfSubCommand' ns $
-  \NtfToken {ntfTknStatus, ntfMode} -> ntfTknStatus == NTActive && ntfMode == NMInstant
-
-sendNtfSubCommand' :: NtfSupervisor -> (NtfToken -> Bool) -> (ConnId, NtfSupervisorCommand) -> STM ()
-sendNtfSubCommand' ns tknCondition cmd =
+sendNtfSubCommand ns cmd =
   readTVar (ntfTkn ns)
-    >>= mapM_ (\tkn -> when (tknCondition tkn) $ writeTBQueue (ntfSubQ ns) cmd)
+    >>= mapM_
+      ( \NtfToken {ntfTknStatus, ntfMode} ->
+          when (ntfTknStatus == NTActive && ntfMode == NMInstant) $
+            writeTBQueue (ntfSubQ ns) cmd
+      )
 
 closeNtfSupervisor :: NtfSupervisor -> IO ()
 closeNtfSupervisor ns = do
