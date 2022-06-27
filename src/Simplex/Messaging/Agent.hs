@@ -661,17 +661,13 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
           | otherwise -> replaceToken tknId $> NTRegistered
         (Just tknId, Just NTACheck)
           | savedDeviceToken == suppliedDeviceToken -> do
-            if ntfTknStatus == NTActive
-              then do
-                cron <- asks $ ntfCron . config
-                agentNtfEnableCron c tknId tkn cron
-                ns <- asks ntfSupervisor
-                atomically $ nsUpdateToken ns tkn
-                when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
-                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ smpDeleteNtfSubs c
-              else do
-                ns <- asks ntfSupervisor
-                atomically $ nsUpdateToken ns tkn
+            ns <- asks ntfSupervisor
+            atomically $ nsUpdateToken ns tkn
+            when (ntfTknStatus == NTActive) $ do
+              cron <- asks $ ntfCron . config
+              agentNtfEnableCron c tknId tkn cron
+              when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
+              when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ smpDeleteNtfSubs c
             pure ntfTknStatus -- TODO
             -- agentNtfCheckToken c tknId tkn >>= \case
           | otherwise -> replaceToken tknId $> NTRegistered
