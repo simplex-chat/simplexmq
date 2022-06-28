@@ -327,6 +327,8 @@ ApproverReceiveKick(recipient, kicked) ==
             }
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
+\* TODO: This keeps broadcasting after invitee has joined and sends the token
+\* to members who join later too.
 BroadcastToken ==
     \E from \in MemberSet, invite_id \in InviteIds :
         \E to \in group_perceptions[from] :
