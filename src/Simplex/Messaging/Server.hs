@@ -498,7 +498,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             getDelivered sub = do
               s@Sub {delivered} <- readTVar sub
               tryTakeTMVar delivered $>>= \msgId' ->
-                if B.null msgId || msgId == msgId'
+                if msgId == msgId' || B.null msgId
                   then pure $ Just s
                   else putTMVar delivered msgId' $> Nothing
             updateStats :: m ()
