@@ -9,7 +9,15 @@ module Simplex.Messaging.Notifications.Server.StoreLog
   ( StoreLog,
     NtfStoreLogRecord (..),
     readWriteNtfStore,
-    logNtfStoreRecord,
+    logCreateToken,
+    logTokenStatus,
+    logUpdateToken,
+    logTokenCron,
+    logDeleteToken,
+    logCreateSubscription,
+    logSubscriptionStatus,
+    logDeleteSubscription,
+    mkTknRec,
   )
 where
 
@@ -143,6 +151,30 @@ instance StrEncoding NtfSubRec where
 
 logNtfStoreRecord :: StoreLog 'WriteMode -> NtfStoreLogRecord -> IO ()
 logNtfStoreRecord = writeStoreLogRecord
+
+logCreateToken :: StoreLog 'WriteMode -> NtfTknData -> IO ()
+logCreateToken s tkn = logNtfStoreRecord s . CreateToken =<< atomically (mkTknRec tkn)
+
+logTokenStatus :: StoreLog 'WriteMode -> NtfTokenId -> NtfTknStatus -> IO ()
+logTokenStatus s tknId tknStatus = logNtfStoreRecord s $ TokenStatus tknId tknStatus
+
+logUpdateToken :: StoreLog 'WriteMode -> NtfTokenId -> DeviceToken -> NtfRegCode -> IO ()
+logUpdateToken s tknId token regCode = logNtfStoreRecord s $ UpdateToken tknId token regCode
+
+logTokenCron :: StoreLog 'WriteMode -> NtfTokenId -> Word16 -> IO ()
+logTokenCron s tknId cronInt = logNtfStoreRecord s $ TokenCron tknId cronInt
+
+logDeleteToken :: StoreLog 'WriteMode -> NtfTokenId -> IO ()
+logDeleteToken s tknId = logNtfStoreRecord s $ DeleteToken tknId
+
+logCreateSubscription :: StoreLog 'WriteMode -> NtfSubData -> IO ()
+logCreateSubscription s sub = logNtfStoreRecord s . CreateSubscription =<< atomically (mkSubRec sub)
+
+logSubscriptionStatus :: StoreLog 'WriteMode -> NtfSubscriptionId -> NtfSubStatus -> IO ()
+logSubscriptionStatus s subId subStatus = logNtfStoreRecord s $ SubscriptionStatus subId subStatus
+
+logDeleteSubscription :: StoreLog 'WriteMode -> NtfSubscriptionId -> IO ()
+logDeleteSubscription s subId = logNtfStoreRecord s $ DeleteSubscription subId
 
 readWriteNtfStore :: FilePath -> NtfStore -> IO (StoreLog 'WriteMode)
 readWriteNtfStore f st = do
