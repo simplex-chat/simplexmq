@@ -288,7 +288,7 @@ ApproverReceiveProposal(recipient) ==
                    /\ HasDirectConnection(message.recipient.user, PerceivedUser)
                THEN
                    /\ approver_states[<<message.invite_id, message.recipient.user>>] = Nothing
-                   /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = <<message.recipient.id, Active>> ]
+                   /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ for_group |-> message.recipient.id, state |-> Active ] ]
                    \* It's safe to send this message right away, as it only agrees to
                    \* reveal information that everyone has agreed to share.  The invitee
                    \* now knows that there's a group that involves this member, the
@@ -336,7 +336,7 @@ ApproverReceiveKick(recipient, kicked) ==
         /\ approver_states' =
             FoldSet(
               LAMBDA next, prev :
-                  [ prev EXCEPT ![<<next, message.recipient.user>>] = <<message.recipient.id, Committed>> ],
+                  [ prev EXCEPT ![<<next, message.recipient.user>>] = [ for_group |-> message.recipient.id, state |-> Committed ] ],
               approver_states,
               message.kicked
             )
@@ -406,8 +406,8 @@ Establish(recipient) ==
         /\ message.recipient = recipient
         /\ message.type = Accept
         /\ approver_states[<<message.invite_id, message.recipient>>] /= Nothing
-        /\ approver_states[<<message.invite_id, message.recipient>>][2] = Active
-        /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>][1]
+        /\ approver_states[<<message.invite_id, message.recipient>>].state = Active
+        /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>].for_group
                RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
                SenderMember == [ user |-> message.sender, id |-> message.invite_id ]
                SyncMessages == { sync \in messages : sync.recipient = RecipientMember /\ sync.type = SyncToken /\ sync.invite_id = message.invite_id }
@@ -417,10 +417,10 @@ Establish(recipient) ==
                InviteeDoesntBelieveInviterIsKicked ==
                    /\ RecipientId /= Nothing
                    /\ approver_states[<<RecipientId, message.sender>>] /= Nothing
-                   /\ approver_states[<<RecipientId, message.sender>>][2] = Committed
+                   /\ approver_states[<<RecipientId, message.sender>>].state = Committed
            IN  /\ Senders = group_perceptions[RecipientMember] \ { RecipientMember }
                /\ message.tokens = Tokens
-               /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = [ @ EXCEPT ![2] = Committed ] ]
+               /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = [ @ EXCEPT !.state = Committed ] ]
                \* TODO: This can't be atomic
                /\ group_perceptions' =
                    [ group_perceptions
@@ -506,6 +506,19 @@ Fairness ==
 
 Spec == Init /\ [][Next]_AllVars /\ Fairness
 
+
+TypeOk ==
+    approver_states \in [ InviteIds \X Users ->
+        [ state : { Active }
+        , for_group : InviteIds \union { Nothing }
+        ]
+        \union
+        [ state : { Committed }
+        , for_group : InviteIds \union { Nothing }
+        ]
+        \union
+        { Nothing }
+    ]
 
 IdsAreUnique ==
     \A member \in MemberSet :
