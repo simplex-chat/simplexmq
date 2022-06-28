@@ -153,17 +153,18 @@ ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
     deliverNotification :: PushProvider -> PushProviderClient
     deliverNotification pp tkn ntf = do
       deliver <- liftIO $ getPushClient s pp
-      -- TODO latest pending notification per subscription
-      retryDeliver deliver (2 :: Integer)
+      deliver tkn ntf `catchError` \e -> case e of
+        PPConnection _ -> retryDeliver
+        PPRetryLater -> retryDeliver
+        -- TODO alert
+        PPCryptoError _ -> err e
+        PPResponseError _ _ -> err e
+        PPTokenInvalid -> err e
+        PPPermanentError -> err e
       where
-        retryDeliver deliver n =
-          deliver tkn ntf `catchError` \e -> case e of
-            PPConnection _ -> deliverOrErr deliver n e
-            PPRetryLater -> deliverOrErr deliver n e
-            _ -> err e
-        deliverOrErr deliver n e
-          | n > 0 = threadDelay 500000 >> retryDeliver deliver (n - 1)
-          | otherwise = err e
+        retryDeliver = do
+          deliver <- liftIO $ newPushClient s pp
+          deliver tkn ntf `catchError` \e -> err e
         err e = logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
