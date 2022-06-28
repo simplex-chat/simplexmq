@@ -13,6 +13,7 @@ module Simplex.Messaging.Server.StoreLog
     openReadStoreLog,
     storeLogFilePath,
     closeStoreLog,
+    writeStoreLogRecord,
     logCreateQueue,
     logSecureQueue,
     logAddNotifier,
@@ -91,7 +92,10 @@ instance StrEncoding StoreLogRecord where
       <|> "NDELETE" *> (DeleteNotifier <$> strP)
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
-openWriteStoreLog f = WriteStoreLog f <$> openFile f WriteMode
+openWriteStoreLog f = do
+  h <- openFile f WriteMode
+  hSetBuffering h LineBuffering
+  pure $ WriteStoreLog f h
 
 openReadStoreLog :: FilePath -> IO (StoreLog 'ReadMode)
 openReadStoreLog f = do
@@ -108,7 +112,7 @@ closeStoreLog = \case
   WriteStoreLog _ h -> hClose h
   ReadStoreLog _ h -> hClose h
 
-writeStoreLogRecord :: StoreLog 'WriteMode -> StoreLogRecord -> IO ()
+writeStoreLogRecord :: StrEncoding r => StoreLog 'WriteMode -> r -> IO ()
 writeStoreLogRecord (WriteStoreLog _ h) r = do
   B.hPutStrLn h $ strEncode r
   hFlush h

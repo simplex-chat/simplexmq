@@ -5,7 +5,13 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Notifications.Server.StoreLog where
+module Simplex.Messaging.Notifications.Server.StoreLog
+  ( StoreLog,
+    NtfStoreLogRecord (..),
+    readWriteNtfStore,
+    logNtfStoreRecord,
+  )
+where
 
 import Control.Concurrent.STM
 import Control.Monad (void)
@@ -17,6 +23,10 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Protocol (NtfPrivateSignKey)
+import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.Util (whenM)
+import System.Directory (doesFileExist, renameFile)
+import System.IO
 
 data NtfStoreLogRecord
   = CreateToken NtfTknRec
@@ -45,6 +55,12 @@ mkTknData NtfTknRec {ntfTknId, token, tknStatus = status, tknVerifyKey, tknDhKey
   tknCronInterval <- newTVar cronInt
   pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval}
 
+mkTknRec :: NtfTknData -> STM NtfTknRec
+mkTknRec NtfTknData {ntfTknId, token, tknStatus = status, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval = cronInt} = do
+  tknStatus <- readTVar status
+  tknCronInterval <- readTVar cronInt
+  pure NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval}
+
 data NtfSubRec = NtfSubRec
   { ntfSubId :: NtfSubscriptionId,
     smpQueue :: SMPQueueNtf,
@@ -57,6 +73,11 @@ mkSubData :: NtfSubRec -> STM NtfSubData
 mkSubData NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status} = do
   subStatus <- newTVar status
   pure NtfSubData {ntfSubId, smpQueue, notifierKey, tokenId, subStatus}
+
+mkSubRec :: NtfSubData -> STM NtfSubRec
+mkSubRec NtfSubData {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status} = do
+  subStatus <- readTVar status
+  pure NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus}
 
 instance StrEncoding NtfStoreLogRecord where
   strEncode = \case
@@ -120,13 +141,22 @@ instance StrEncoding NtfSubRec where
     subStatus <- "subStatus=" *> strP
     pure NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus}
 
-readNtfStore :: FilePath -> IO NtfStore
-readNtfStore f = do
-  st <- atomically newNtfStore
-  mapM_ (addNtfLogRecord st) . B.lines =<< B.readFile f
-  pure st
+logNtfStoreRecord :: StoreLog 'WriteMode -> NtfStoreLogRecord -> IO ()
+logNtfStoreRecord = writeStoreLogRecord
+
+readWriteNtfStore :: FilePath -> NtfStore -> IO (StoreLog 'WriteMode)
+readWriteNtfStore f st = do
+  whenM (doesFileExist f) $ do
+    readNtfStore f st
+    renameFile f $ f <> ".bak"
+  s <- openWriteStoreLog f
+  writeNtfStore s st
+  pure s
+
+readNtfStore :: FilePath -> NtfStore -> IO ()
+readNtfStore f st = mapM_ addNtfLogRecord . B.lines =<< B.readFile f
   where
-    addNtfLogRecord st s = case strDecode s of
+    addNtfLogRecord s = case strDecode s of
       Left e -> B.putStrLn $ "Log parsing error (" <> B.pack e <> "): " <> B.take 100 s
       Right lr -> atomically $ case lr of
         CreateToken r@NtfTknRec {ntfTknId} -> do
@@ -156,3 +186,10 @@ readNtfStore f = do
             >>= mapM_ (\NtfSubData {subStatus} -> writeTVar subStatus status)
         DeleteSubscription subId ->
           deleteNtfSubscription st subId
+
+writeNtfStore :: StoreLog 'WriteMode -> NtfStore -> IO ()
+writeNtfStore s NtfStore {tokens, subscriptions} = do
+  atomically (readTVar tokens >>= mapM mkTknRec)
+    >>= mapM_ (writeStoreLogRecord s . CreateToken)
+  atomically (readTVar subscriptions >>= mapM mkSubRec)
+    >>= mapM_ (writeStoreLogRecord s . CreateSubscription)
