@@ -69,6 +69,7 @@ ntfServerCLIConfig =
                 apnsConfig = defaultAPNSPushClientConfig,
                 inactiveClientExpiration = Nothing,
                 storeLogFile,
+                resubscribeDelay = 100000, -- 100ms
                 caCertificateFile = caCrtFile,
                 privateKeyFile = serverKeyFile,
                 certificateFile = serverCrtFile
