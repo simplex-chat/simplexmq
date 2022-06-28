@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Main where
@@ -56,7 +57,7 @@ ntfServerCLIConfig =
               <> defaultServerPort
               <> "\n\
                  \websockets: off\n",
-          mkServerConfig = \_storeLogFile transports _ ->
+          mkServerConfig = \storeLogFile transports _ ->
             NtfServerConfig
               { transports,
                 subIdBytes = 24,
@@ -67,6 +68,8 @@ ntfServerCLIConfig =
                 smpAgentCfg = defaultSMPClientAgentConfig,
                 apnsConfig = defaultAPNSPushClientConfig,
                 inactiveClientExpiration = Nothing,
+                storeLogFile,
+                resubscribeDelay = 100000, -- 100ms
                 caCertificateFile = caCrtFile,
                 privateKeyFile = serverKeyFile,
                 certificateFile = serverCrtFile

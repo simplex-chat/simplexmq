@@ -180,7 +180,7 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
   getMsgLocks <- TM.empty
   reconnections <- newTVar []
   asyncClients <- newTVar []
-  clientId <- stateTVar (clientCounter agentEnv) $ \i -> (i + 1, i + 1)
+  clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   lock <- newTMVar ()
   return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 

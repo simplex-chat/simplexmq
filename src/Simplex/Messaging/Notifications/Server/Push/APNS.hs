@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Server.Push.APNS where
 
+import Control.Exception (Exception)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Crypto.Hash.Algorithms (SHA256 (..))
@@ -320,7 +321,7 @@ data PushProviderError
   | PPTokenInvalid
   | PPRetryLater
   | PPPermanentError
-  deriving (Show)
+  deriving (Show, Exception)
 
 type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProviderError IO ()
 

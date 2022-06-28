@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Server where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -17,6 +18,7 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
+import Data.Map.Strict (Map)
 import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
 import Network.Socket (ServiceName)
@@ -26,6 +28,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderClient, PushProviderError (..))
 import Simplex.Messaging.Notifications.Server.Store
+import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (ErrorType (..), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -34,8 +37,8 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
-import UnliftIO (async, uninterruptibleCancel)
-import UnliftIO.Concurrent (forkFinally, threadDelay)
+import UnliftIO (IOMode (..), async, uninterruptibleCancel)
+import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import UnliftIO.Exception
 import UnliftIO.STM
 
@@ -51,7 +54,10 @@ ntfServer :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerConfi
 ntfServer NtfServerConfig {transports} started = do
   s <- asks subscriber
   ps <- asks pushServer
+  subs <- readTVarIO =<< asks (subscriptions . store)
+  void . forkIO $ resubscribe s subs
   raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
+    `finally` withNtfLog closeStoreLog
   where
     runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
@@ -64,6 +70,14 @@ ntfServer NtfServerConfig {transports} started = do
       liftIO (runExceptT $ ntfServerHandshake h kh supportedNTFServerVRange) >>= \case
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
+
+resubscribe :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> m ()
+resubscribe NtfSubscriber {newSubQ} subs = do
+  d <- asks $ resubscribeDelay . config
+  forM_ subs $ \sub -> do
+    atomically $ writeTBQueue newSubQ $ NtfSub sub
+    threadDelay d
+  liftIO $ logInfo "SMP connections resubscribed"
 
 ntfSubscriber :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> m ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
@@ -133,22 +147,25 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             -- update subscription status
             pure ()
 
-ntfPush :: forall m. MonadUnliftIO m => NtfPushServer -> m ()
-ntfPush s@NtfPushServer {pushQ} = liftIO . forever . runExceptT $ do
-  (tkn@NtfTknData {token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
-  logDebug $ "sending push notification to " <> T.pack (show pp)
+ntfPush :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
+ntfPush s@NtfPushServer {pushQ} = forever $ do
+  (tkn@NtfTknData {ntfTknId, token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   status <- readTVarIO tknStatus
   case (status, ntf) of
     (_, PNVerification _) -> do
       -- TODO check token status
-      deliverNotification pp tkn ntf
-      atomically $ modifyTVar tknStatus $ \status' -> if status' == NTActive then NTActive else NTConfirmed
+      liftIO (runExceptT $ deliverNotification pp tkn ntf) >>= \case
+        Right _ -> do
+          status_ <- atomically $ stateTVar tknStatus $ \status' -> if status' == NTActive then (Nothing, NTActive) else (Just NTConfirmed, NTConfirmed)
+          forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
+        _ -> pure ()
     (NTActive, PNCheckMessages) -> do
-      deliverNotification pp tkn ntf
+      liftIO . void . runExceptT $ deliverNotification pp tkn ntf
     (NTActive, PNMessage {}) -> do
-      deliverNotification pp tkn ntf
+      liftIO . void . runExceptT $ deliverNotification pp tkn ntf
     _ -> do
-      logError "bad notification token status"
+      liftIO $ logError "bad notification token status"
   where
     deliverNotification :: PushProvider -> PushProviderClient
     deliverNotification pp tkn ntf = do
@@ -278,12 +295,12 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
-        atomically $ do
-          tkn <- mkNtfTknData tknId newTkn ks dhSecret regCode
-          addNtfToken st tknId tkn
-          writeTBQueue pushQ (tkn, PNVerification regCode)
+        tkn <- atomically $ mkNtfTknData tknId newTkn ks dhSecret regCode
+        atomically $ addNtfToken st tknId tkn
+        atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
+        withNtfLog (`logCreateToken` tkn)
         pure (corrId, "", NRTknId tknId srvDhPubKey)
-      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey), tknCronInterval}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
@@ -302,6 +319,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               atomically $ writeTVar tknStatus NTActive
               tIds <- atomically $ removeInactiveTokenRegistrations st tkn
               forM_ tIds cancelInvervalNotifications
+              withNtfLog $ \s -> logTokenStatus s tknId NTActive
               pure NROk
             | otherwise -> do
               logDebug "TVFY - incorrect code or token status"
@@ -316,6 +334,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               writeTVar tknStatus NTRegistered
               addNtfToken st tknId tkn {token = token', tknRegCode = regCode}
               writeTBQueue pushQ (tkn, PNVerification regCode)
+            withNtfLog $ \s -> logUpdateToken s tknId token' regCode
             pure NROk
           TDEL -> do
             logDebug "TDEL"
@@ -324,21 +343,26 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             forM_ qs $ \SMPQueueNtf {smpServer, notifierId} ->
               atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
             cancelInvervalNotifications tknId
+            withNtfLog (`logDeleteToken` tknId)
             pure NROk
           TCRN 0 -> do
             logDebug "TCRN 0"
+            atomically $ writeTVar tknCronInterval 0
             cancelInvervalNotifications tknId
+            withNtfLog $ \s -> logTokenCron s tknId 0
             pure NROk
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
             | otherwise -> do
               logDebug "TCRN"
+              atomically $ writeTVar tknCronInterval int
               atomically (TM.lookup tknId intervalNotifiers) >>= \case
                 Nothing -> runIntervalNotifier int
                 Just IntervalNotifier {interval, action} ->
                   unless (interval == int) $ do
                     uninterruptibleCancel action
                     runIntervalNotifier int
+              withNtfLog $ \s -> logTokenCron s tknId int
               pure NROk
             where
               runIntervalNotifier interval = do
@@ -353,13 +377,13 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         logDebug "SNEW - new subscription"
         st <- asks store
         subId <- getId
-        atomically $ do
-          sub <- mkNtfSubData newSub
-          (corrId,"",)
-            <$> ( addNtfSubscription st subId sub >>= \case
-                    Just _ -> writeTBQueue newSubQ (NtfSub sub) $> NRSubId subId
-                    _ -> pure $ NRErr AUTH
-                )
+        sub <- atomically $ mkNtfSubData subId newSub
+        resp <-
+          atomically (addNtfSubscription st subId sub) >>= \case
+            Just _ -> atomically (writeTBQueue newSubQ $ NtfSub sub) $> NRSubId subId
+            _ -> pure $ NRErr AUTH
+        withNtfLog (`logCreateSubscription` sub)
+        pure (corrId, "", resp)
       NtfReqCmd SSubscription (NtfSub NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         status <- readTVarIO subStatus
         (corrId,subId,) <$> case cmd of
@@ -376,6 +400,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             st <- asks store
             atomically $ deleteNtfSubscription st subId
             atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
+            withNtfLog (`logDeleteSubscription` subId)
             pure NROk
           PING -> pure NRPong
     getId :: m NtfEntityId
@@ -391,44 +416,5 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
       atomically (TM.lookupDelete tknId intervalNotifiers)
         >>= mapM_ (uninterruptibleCancel . action)
 
--- NReqCreate corrId tokenId smpQueue -> pure (corrId, "", NROk)
--- do
--- st <- asks store
--- (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
--- let dhSecret = C.dh' dhPubKey privDhKey
--- sub <- atomically $ mkNtfSubsciption smpQueue token verifyKey dhSecret
--- addSubRetry 3 st sub >>= \case
---   Nothing -> pure (corrId, "", NRErr INTERNAL)
---   Just sId -> do
---     atomically $ writeTBQueue subQ sub
---     pure (corrId, sId, NRSubId pubDhKey)
--- where
---   addSubRetry :: Int -> NtfSubscriptionsStore -> NtfSubsciption -> m (Maybe NtfSubsciptionId)
---   addSubRetry 0 _ _ = pure Nothing
---   addSubRetry n st sub = do
---     sId <- getId
---     -- create QueueRec record with these ids and keys
---     atomically (addNtfSub st sId sub) >>= \case
---       Nothing -> addSubRetry (n - 1) st sub
---       _ -> pure $ Just sId
---   getId :: m NtfSubsciptionId
---   getId = do
---     n <- asks $ subIdBytes . config
---     gVar <- asks idsDrg
---     atomically (randomBytes n gVar)
--- NReqCommand sub@NtfSubsciption {tokenId, subStatus} (corrId, subId, cmd) ->
---   (corrId,subId,) <$> case cmd of
---     NCSubCreate tokenId smpQueue -> pure NROk
--- do
---   st <- asks store
---   (pubDhKey, privDhKey) <- liftIO C.generateKeyPair'
---   let dhSecret = C.dh' (dhPubKey newSub) privDhKey
---   atomically (updateNtfSub st sub newSub dhSecret) >>= \case
---     Nothing -> pure $ NRErr INTERNAL
---     _ -> atomically $ do
---       whenM ((== NSEnd) <$> readTVar status) $ writeTBQueue subQ sub
---       pure $ NRSubId pubDhKey
--- NCSubCheck -> NRStat <$> readTVarIO subStatus
--- NCSubDelete -> do
---   st <- asks store
---   atomically (deleteNtfSub st subId) $> NROk
+withNtfLog :: (MonadUnliftIO m, MonadReader NtfEnv m) => (StoreLog 'WriteMode -> IO a) -> m ()
+withNtfLog action = liftIO . mapM_ action =<< asks storeLog
