@@ -8,6 +8,7 @@
 
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
+    makeConnection,
     get,
     (##>),
     (=##>),

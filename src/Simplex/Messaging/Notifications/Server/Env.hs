@@ -22,12 +22,14 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Store
+import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Protocol (CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
+import System.IO (IOMode (..))
 import UnliftIO.STM
 
 data NtfServerConfig = NtfServerConfig
@@ -40,6 +42,8 @@ data NtfServerConfig = NtfServerConfig
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
     inactiveClientExpiration :: Maybe ExpirationConfig,
+    storeLogFile :: Maybe FilePath,
+    resubscribeDelay :: Int, -- microseconds
     -- CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -58,6 +62,7 @@ data NtfEnv = NtfEnv
     subscriber :: NtfSubscriber,
     pushServer :: NtfPushServer,
     store :: NtfStore,
+    storeLog :: Maybe (StoreLog 'WriteMode),
     idsDrg :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
@@ -65,14 +70,15 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: (MonadUnliftIO m, MonadRandom m) => NtfServerConfig -> m NtfEnv
-newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, caCertificateFile, certificateFile, privateKeyFile} = do
+newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, caCertificateFile, certificateFile, privateKeyFile} = do
   idsDrg <- newTVarIO =<< drgNew
   store <- atomically newNtfStore
+  storeLog <- liftIO $ mapM (`readWriteNtfStore` store) storeLogFile
   subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg
   pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
   tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
-  pure NtfEnv {config, subscriber, pushServer, store, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
+  pure NtfEnv {config, subscriber, pushServer, store, storeLog, idsDrg, tlsServerParams, serverIdentity = C.KeyHash fp}
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,

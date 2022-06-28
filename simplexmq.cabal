@@ -62,6 +62,7 @@ library
       Simplex.Messaging.Notifications.Server.Env
       Simplex.Messaging.Notifications.Server.Push.APNS
       Simplex.Messaging.Notifications.Server.Store
+      Simplex.Messaging.Notifications.Server.StoreLog
       Simplex.Messaging.Notifications.Transport
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol

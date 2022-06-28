@@ -62,6 +62,9 @@ apnsTestPort = "6010"
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 
+ntfTestStoreLogFile :: FilePath
+ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
+
 testNtfClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testNtfClient client =
   runTransportClient testHost ntfTestPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
@@ -85,16 +88,24 @@ ntfServerCfg =
             http2cfg = defaultHTTP2ClientConfig {caStoreFile = "tests/fixtures/ca.crt"}
           },
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
+      storeLogFile = Nothing,
+      resubscribeDelay = 1000,
       -- CA certificate private key is not needed for initialization
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
     }
 
+withNtfServerStoreLog :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ThreadId -> m a) -> m a
+withNtfServerStoreLog t = withNtfServerCfg t ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile}
+
 withNtfServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withNtfServerThreadOn t port' =
+withNtfServerThreadOn t port' = withNtfServerCfg t ntfServerCfg {transports = [(port', t)]}
+
+withNtfServerCfg :: (MonadUnliftIO m, MonadRandom m) => ATransport -> NtfServerConfig -> (ThreadId -> m a) -> m a
+withNtfServerCfg t cfg =
   serverBracket
-    (\started -> runNtfServerBlocking started ntfServerCfg {transports = [(port', t)]})
+    (\started -> runNtfServerBlocking started cfg {transports = [(ntfTestPort, t)]})
     (pure ())
 
 serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a

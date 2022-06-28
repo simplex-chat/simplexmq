@@ -423,6 +423,10 @@ instance Encoding NtfSubStatus where
       "SMP_AUTH" -> pure NSSMPAuth
       _ -> fail "bad NtfSubStatus"
 
+instance StrEncoding NtfSubStatus where
+  strEncode = smpEncode
+  strP = smpP
+
 data NtfTknStatus
   = -- | Token created in DB
     NTNew
@@ -455,6 +459,10 @@ instance Encoding NtfTknStatus where
       "ACTIVE" -> pure NTActive
       "EXPIRED" -> pure NTExpired
       _ -> fail "bad NtfTknStatus"
+
+instance StrEncoding NtfTknStatus where
+  strEncode = smpEncode
+  strP = smpP
 
 instance FromField NtfTknStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
 
