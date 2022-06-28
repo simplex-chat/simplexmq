@@ -60,16 +60,6 @@ mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tkn
   tknCronInterval <- newTVar 0
   pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval}
 
--- data NtfSubscriptionsStore = NtfSubscriptionsStore
-
--- { subscriptions :: TMap NtfSubsciptionId NtfSubsciption,
---   activeSubscriptions :: TMap (SMPServer, NotifierId) NtfSubsciptionId
--- }
--- do
--- subscriptions <- newTVar M.empty
--- activeSubscriptions <- newTVar M.empty
--- pure NtfSubscriptionsStore {subscriptions, activeSubscriptions}
-
 data NtfSubData = NtfSubData
   { ntfSubId :: NtfSubscriptionId,
     smpQueue :: SMPQueueNtf,

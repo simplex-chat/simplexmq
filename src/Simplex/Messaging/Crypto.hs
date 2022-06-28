@@ -253,7 +253,7 @@ deriving instance Show (PrivateKey a)
 instance StrEncoding (PrivateKey X25519) where
   strEncode = strEncode . encodePrivKey
   {-# INLINE strEncode #-}
-  strDecode = decodePrivKey <=< strDecode
+  strDecode = decodePrivKey
   {-# INLINE strDecode #-}
 
 data APrivateKey
@@ -305,7 +305,7 @@ instance Encoding APrivateSignKey where
 instance StrEncoding APrivateSignKey where
   strEncode = strEncode . encodePrivKey
   {-# INLINE strEncode #-}
-  strDecode = decodePrivKey <=< strDecode
+  strDecode = decodePrivKey
   {-# INLINE strDecode #-}
 
 data APublicVerifyKey

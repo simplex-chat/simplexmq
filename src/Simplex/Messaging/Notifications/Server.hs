@@ -18,6 +18,7 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
+import Data.Map.Strict (Map)
 import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
 import Network.Socket (ServiceName)
@@ -37,7 +38,7 @@ import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Trans
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
 import UnliftIO (IOMode (..), async, uninterruptibleCancel)
-import UnliftIO.Concurrent (forkFinally, threadDelay)
+import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import UnliftIO.Exception
 import UnliftIO.STM
 
@@ -53,7 +54,10 @@ ntfServer :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerConfi
 ntfServer NtfServerConfig {transports} started = do
   s <- asks subscriber
   ps <- asks pushServer
+  subs <- readTVarIO =<< asks (subscriptions . store)
+  void . forkIO $ resubscribe s subs
   raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports)
+    `finally` withNtfLog closeStoreLog
   where
     runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
@@ -66,6 +70,14 @@ ntfServer NtfServerConfig {transports} started = do
       liftIO (runExceptT $ ntfServerHandshake h kh supportedNTFServerVRange) >>= \case
         Right th -> runNtfClientTransport th
         Left _ -> pure ()
+
+resubscribe :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> m ()
+resubscribe NtfSubscriber {newSubQ} subs = do
+  d <- asks $ resubscribeDelay . config
+  forM_ subs $ \sub -> do
+    atomically $ writeTBQueue newSubQ $ NtfSub sub
+    threadDelay d
+  liftIO $ logInfo "SMP connections resubscribed"
 
 ntfSubscriber :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> m ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do

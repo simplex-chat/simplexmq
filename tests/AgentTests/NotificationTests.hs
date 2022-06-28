@@ -9,8 +9,8 @@ module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 
-import AgentTests.FunctionalAPITests (get, (##>), (=##>), pattern Msg)
-import Control.Concurrent (threadDelay)
+import AgentTests.FunctionalAPITests (get, makeConnection, (##>), (=##>), pattern Msg)
+import Control.Concurrent (killThread, threadDelay)
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -69,6 +69,11 @@ notificationTests t =
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testChangeNotificationsMode apns
+    describe "Notifications server store log" $ do
+      it "should save and restore tokens and subscriptions" $ \_ ->
+        withSmpServer t $
+          withAPNSMockServer $ \apns ->
+            testNotificationsStoreLog t apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -253,25 +258,9 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     -- alice registers notification token
-    let aliceTkn = DeviceToken PPApnsTest "abcd"
-    NTRegistered <- registerNtfToken alice aliceTkn NMInstant
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-      atomically $ readTBQueue apnsQ
-    verification <- ntfData .-> "verification"
-    nonce <- C.cbNonce <$> ntfData .-> "nonce"
-    liftIO $ sendApnsResponse APNSRespOk
-    verifyNtfToken alice aliceTkn nonce verification
-    NTActive <- checkNtfToken alice aliceTkn
+    _ <- registerTestToken alice "abcd" NMInstant apnsQ
     -- bob registers notification token
-    let bobTkn = DeviceToken PPApnsTest "bcde"
-    NTRegistered <- registerNtfToken bob bobTkn NMInstant
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
-      atomically $ readTBQueue apnsQ
-    verification' <- ntfData' .-> "verification"
-    nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
-    liftIO $ sendApnsResponse' APNSRespOk
-    verifyNtfToken bob bobTkn nonce' verification'
-    NTActive <- checkNtfToken bob bobTkn
+    _ <- registerTestToken bob "bcde" NMInstant apnsQ
     -- establish connection
     liftIO $ threadDelay 50000
     (bobId, qInfo) <- createConnection alice SCMInvitation
@@ -308,6 +297,19 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     baseId = 3
     msgId = subtract baseId
 
+registerTestToken :: AgentClient -> ByteString -> NotificationsMode -> TBQueue APNSMockRequest -> ExceptT AgentErrorType IO DeviceToken
+registerTestToken a token mode apnsQ = do
+  let tkn = DeviceToken PPApnsTest token
+  NTRegistered <- registerNtfToken a tkn mode
+  APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
+    atomically $ readTBQueue apnsQ
+  verification' <- ntfData' .-> "verification"
+  nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
+  liftIO $ sendApnsResponse' APNSRespOk
+  verifyNtfToken a tkn nonce' verification'
+  NTActive <- checkNtfToken a tkn
+  pure tkn
+
 testChangeNotificationsMode :: APNSMockServer -> IO ()
 testChangeNotificationsMode APNSMockServer {apnsQ} = do
   alice <- getSMPAgentClient agentCfg initAgentServers
@@ -322,15 +324,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- register notification token, set mode to NMPeriodic
-    let tkn = DeviceToken PPApnsTest "abcd"
-    NTRegistered <- registerNtfToken alice tkn NMPeriodic
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
-      atomically $ readTBQueue apnsQ
-    verification <- ntfData .-> "verification"
-    vNonce <- C.cbNonce <$> ntfData .-> "nonce"
-    liftIO $ sendApnsResponse APNSRespOk
-    verifyNtfToken alice tkn vNonce verification
-    NTActive <- checkNtfToken alice tkn
+    tkn <- registerTestToken alice "abcd" NMPeriodic apnsQ
     -- send message, no notification
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
@@ -361,6 +355,33 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
   where
     baseId = 3
     msgId = subtract baseId
+
+testNotificationsStoreLog :: ATransport -> APNSMockServer -> IO ()
+testNotificationsStoreLog t APNSMockServer {apnsQ} = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right (aliceId, bobId) <- withNtfServerStoreLog t $ \threadId -> runExceptT $ do
+    _ <- registerTestToken alice "abcd" NMInstant apnsQ
+    (aliceId, bobId) <- makeConnection alice bob
+    liftIO $ threadDelay 250000
+    4 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
+    get bob ##> ("", aliceId, SENT 4)
+    void $ messageNotification apnsQ
+    get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+    ackMessage alice bobId 4
+    liftIO $ killThread threadId
+    pure (aliceId, bobId)
+
+  liftIO $ threadDelay 250000
+
+  Right () <- withNtfServerStoreLog t $ \threadId -> runExceptT $ do
+    liftIO $ threadDelay 250000
+    5 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
+    get bob ##> ("", aliceId, SENT 5)
+    void $ messageNotification apnsQ
+    get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
+    liftIO $ killThread threadId
+  pure ()
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do

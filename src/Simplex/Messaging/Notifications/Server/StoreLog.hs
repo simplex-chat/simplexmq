@@ -17,7 +17,7 @@ module Simplex.Messaging.Notifications.Server.StoreLog
     logCreateSubscription,
     logSubscriptionStatus,
     logDeleteSubscription,
-    mkTknRec,
+    closeStoreLog,
   )
 where
 
@@ -99,14 +99,14 @@ instance StrEncoding NtfStoreLogRecord where
     DeleteSubscription subId -> strEncode (Str "SDELETE", subId)
   strP =
     A.choice
-      [ "TCREATE" *> (CreateToken <$> strP),
-        "TSTATUS" *> (TokenStatus <$> strP_ <*> strP),
-        "TUPDATE" *> (UpdateToken <$> strP_ <*> strP_ <*> strP),
-        "TCRON" *> (TokenCron <$> strP_ <*> strP),
-        "TDELETE" *> (DeleteToken <$> strP),
-        "SCREATE" *> (CreateSubscription <$> strP),
-        "SSTATUS" *> (SubscriptionStatus <$> strP_ <*> strP),
-        "SDELETE" *> (DeleteSubscription <$> strP)
+      [ "TCREATE " *> (CreateToken <$> strP),
+        "TSTATUS " *> (TokenStatus <$> strP_ <*> strP),
+        "TUPDATE " *> (UpdateToken <$> strP_ <*> strP_ <*> strP),
+        "TCRON " *> (TokenCron <$> strP_ <*> strP),
+        "TDELETE " *> (DeleteToken <$> strP),
+        "SCREATE " *> (CreateSubscription <$> strP),
+        "SSTATUS " *> (SubscriptionStatus <$> strP_ <*> strP),
+        "SDELETE " *> (DeleteSubscription <$> strP)
       ]
 
 instance StrEncoding NtfTknRec where
