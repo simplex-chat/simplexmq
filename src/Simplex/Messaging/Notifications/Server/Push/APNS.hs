@@ -205,7 +205,7 @@ apnsProviderHost = \case
 defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
   APNSPushClientConfig
-    { tokenTTL = 1200, -- 20 minutes
+    { tokenTTL = 1800, -- 30 minutes
       authKeyFileEnv = "APNS_KEY_FILE", -- the environment variables APNS_KEY_FILE and APNS_KEY_ID must be set, or the server would fail to start
       authKeyAlg = "ES256",
       authKeyIdEnv = "APNS_KEY_ID",
