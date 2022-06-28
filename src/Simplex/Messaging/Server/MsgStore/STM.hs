@@ -11,6 +11,7 @@ module Simplex.Messaging.Server.MsgStore.STM where
 
 import Control.Concurrent.STM.TBQueue (flushTBQueue)
 import Control.Monad (when)
+import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
@@ -60,7 +61,7 @@ instance MonadMsgQueue MsgQueue STM where
   tryDelMsg (MsgQueue q) msgId' =
     tryPeekTBQueue q >>= \case
       Just Message {msgId}
-        | msgId == msgId' -> tryReadTBQueue q $> True
+        | msgId == msgId' || B.null msgId' -> tryReadTBQueue q $> True
         | otherwise -> pure False
       _ -> pure False
 
@@ -69,7 +70,7 @@ instance MonadMsgQueue MsgQueue STM where
   tryDelPeekMsg (MsgQueue q) msgId' =
     tryPeekTBQueue q >>= \case
       msg_@(Just Message {msgId})
-        | msgId == msgId' -> (True,) <$> (tryReadTBQueue q >> tryPeekTBQueue q)
+        | msgId == msgId' || B.null msgId' -> (True,) <$> (tryReadTBQueue q >> tryPeekTBQueue q)
         | otherwise -> pure (False, msg_)
       _ -> pure (False, Nothing)
 
