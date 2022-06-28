@@ -26,7 +26,7 @@ import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
-import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderClient, PushProviderError (..))
+import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderError (..))
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
@@ -155,33 +155,41 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
   case (status, ntf) of
     (_, PNVerification _) -> do
       -- TODO check token status
-      liftIO (runExceptT $ deliverNotification pp tkn ntf) >>= \case
+      deliverNotification pp tkn ntf >>= \case
         Right _ -> do
           status_ <- atomically $ stateTVar tknStatus $ \status' -> if status' == NTActive then (Nothing, NTActive) else (Just NTConfirmed, NTConfirmed)
           forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
         _ -> pure ()
     (NTActive, PNCheckMessages) -> do
-      liftIO . void . runExceptT $ deliverNotification pp tkn ntf
+      void $ deliverNotification pp tkn ntf
     (NTActive, PNMessage {}) -> do
-      liftIO . void . runExceptT $ deliverNotification pp tkn ntf
+      void $ deliverNotification pp tkn ntf
     _ -> do
       liftIO $ logError "bad notification token status"
   where
-    deliverNotification :: PushProvider -> PushProviderClient
-    deliverNotification pp tkn ntf = do
+    deliverNotification :: PushProvider -> NtfTknData -> PushNotification -> m (Either PushProviderError ())
+    deliverNotification pp tkn@NtfTknData {ntfTknId, tknStatus} ntf = do
       deliver <- liftIO $ getPushClient s pp
-      -- TODO latest pending notification per subscription
-      retryDeliver deliver (2 :: Integer)
+      liftIO (runExceptT $ deliver tkn ntf) >>= \case
+        Right _ -> pure $ Right ()
+        Left e -> case e of
+          PPConnection _ -> retryDeliver
+          PPRetryLater -> retryDeliver
+          -- TODO alert
+          PPCryptoError _ -> err e
+          PPResponseError _ _ -> err e
+          PPTokenInvalid -> updateTknStatus NTInvalid >> err e
+          PPPermanentError -> err e
       where
-        retryDeliver deliver n =
-          deliver tkn ntf `catchError` \e -> case e of
-            PPConnection _ -> deliverOrErr deliver n e
-            PPRetryLater -> deliverOrErr deliver n e
-            _ -> err e
-        deliverOrErr deliver n e
-          | n > 0 = threadDelay 500000 >> retryDeliver deliver (n - 1)
-          | otherwise = err e
-        err e = logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) >> throwError e
+        retryDeliver :: m (Either PushProviderError ())
+        retryDeliver = do
+          deliver <- liftIO $ newPushClient s pp
+          liftIO (runExceptT $ deliver tkn ntf) >>= either err (pure . Right)
+        updateTknStatus :: NtfTknStatus -> m ()
+        updateTknStatus status = do
+          atomically $ writeTVar tknStatus status
+          withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
+        err e = logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) $> Left e
 
 runNtfClientTransport :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> m ()
 runNtfClientTransport th@THandle {sessionId} = do
