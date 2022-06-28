@@ -158,10 +158,10 @@ LeaderReceivePleasePropose ==
         /\ proposal = Nothing
         \* NOTE: As a slight optimization, the Leader can synchronously accept or reject.
         /\ proposal' =
-            [ invite_id |-> message.invite_id
+            [ type |-> Proposing
+            , invite_id |-> message.invite_id
             , invitee_description |-> message.invitee_description
             , group_size |-> Cardinality(group_perceptions[Leader])
-            , state |-> Proposing
             , awaiting_response |-> group_perceptions[Leader]
             ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
@@ -171,7 +171,7 @@ BroadcastProposalState(recipient) ==
     /\ \E member \in proposal.awaiting_response :
         /\ member = recipient
         /\ AddMessage(
-                CASE proposal.state = Proposing ->
+                CASE proposal.type = Proposing ->
                     [ sender |-> Leader
                     , recipient |-> member
                     , type |-> Propose
@@ -179,7 +179,7 @@ BroadcastProposalState(recipient) ==
                     , invitee_description |-> proposal.invitee_description
                     , group_size |-> proposal.group_size
                     ]
-                  [] proposal.state = Kicking ->
+                  [] proposal.type = Kicking ->
                     [ sender |-> Leader
                     , recipient |-> member
                     , type |-> Kick
@@ -195,14 +195,14 @@ LeaderReceiveReject ==
         /\ message.sender \in group_perceptions[Leader]
         /\ message.invite_id \notin complete_proposals
         /\ proposal = Nothing
-        /\ proposal.state = Proposing
+        /\ proposal.type = Proposing
         /\ message.invite_id = proposal.invite_id
         /\ complete_proposals' = complete_proposals \union { message.invite_id }
         /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, approver_states>>
 
 LeaderReceiveEstablished ==
     /\ proposal /= Nothing
-    /\ proposal.state = Proposing
+    /\ proposal.type = Proposing
     /\ \E message \in messages :
         /\ message.type = Established
         /\ message.recipient = Leader
@@ -222,7 +222,7 @@ LeaderReceiveEstablished ==
 \* with confused contacts can never resolve), and abort the proposal.
 GiveUpOnProposal ==
     /\ proposal /= Nothing
-    /\ proposal.state = Proposing
+    /\ proposal.type = Proposing
     \* If no one has established, then the leader may assume there's been
     \* confusion and will end the proposal, kicking the invitee if they did in
     \* fact join.  If some members have established, but _not_ the leader, the
@@ -234,7 +234,7 @@ GiveUpOnProposal ==
        \/ Leader \in proposal.awaiting_response
     /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
     /\ proposal' =
-        [ state |-> Kicking
+        [ type |-> Kicking
         , awaiting_response |-> group_perceptions[Leader]
         , kicked |-> { proposal.invite_id }
         ]
@@ -248,9 +248,9 @@ GiveUpOnProposal ==
 \* start a new round of kicking.
 GiveUpOnMembers ==
     /\ proposal /= Nothing
-    /\ \/ /\ proposal.state = Proposing
+    /\ \/ /\ proposal.type = Proposing
           /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
-       \/ /\ proposal.state = Kicking
+       \/ /\ proposal.type = Kicking
           /\ UNCHANGED <<complete_proposals>>
     \* Leader can't be kicked.  Realistically, they should just act
     \* synchronously when giving up on a proposal.
@@ -258,7 +258,7 @@ GiveUpOnMembers ==
     /\ LET new_group == group_perceptions[Leader] \ proposal.awaiting_response
        IN
         /\ proposal' =
-            [ state |-> Kicking
+            [ type |-> Kicking
             , awaiting_response |-> new_group
             , kicked |-> { member.id : member \in proposal.awaiting_response }
             ]
@@ -266,7 +266,7 @@ GiveUpOnMembers ==
 
 LeaderReceiveKickAck ==
     /\ proposal /= Nothing
-    /\ proposal.state = Kicking
+    /\ proposal.type = Kicking
     /\ \E message \in messages :
         /\ message.type = KickAck
         /\ message.recipient = Leader
