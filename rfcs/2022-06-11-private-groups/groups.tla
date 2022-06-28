@@ -31,6 +31,11 @@ CONSTANTS
     UserPerceptions,
     Connections,
     InviteIds,
+    \* When specifying liveness, we need requests to be droppable.  This both
+    \* enables that and constrains the maximum size of the messages set, so
+    \* that our state size doesn't blow up.  This needs to be large enough that
+    \* problematic requests will stick around.
+    MaxInFlightRequests,
     \* Proposal States
     Proposing,
     Kicking,
@@ -101,6 +106,23 @@ Init ==
     /\ complete_proposals = {}
     /\ approver_states = [ x \in (InviteIds \X Users) |-> Nothing ]
 
+AddMessage(message) ==
+    IF  \/ MaxInFlightRequests = Nothing
+        \/ Cardinality(messages) < MaxInFlightRequests
+    THEN
+        messages' = messages \union { message }
+    ELSE
+        LET dropped == CHOOSE x \in messages : TRUE
+        IN  messages' = (messages \ { dropped }) \union { message }
+
+\* TODO: Still places were we depend on messages for state where dropping is
+\* problematic.
+DropMessage ==
+    /\ MaxInFlightRequests /= Nothing
+    /\ \E message \in messages :
+        /\ messages' = messages \ { message }
+        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
+
 SendPleasePropose ==
     \* IMPORTANT: The user should still wait to receive a Propose message from
     \* the leader before acting further, since they can't send an Invite
@@ -116,14 +138,14 @@ SendPleasePropose ==
             /\ \A members \in group_perceptions[proposer] :
                 /\ members.user /= invitee
             /\ HasDirectConnection(proposer.user, invitee)
-            /\ messages' = messages \union
-                {   [ type |-> PleasePropose
+            /\ AddMessage(
+                    [ type |-> PleasePropose
                     , sender |-> proposer
                     , recipient |-> Leader
                     , invite_id |-> invite_id
                     , invitee_description |-> [ by |-> proposer.user, of |-> invitee ]
                     ]
-                }
+                )
             /\ rng_state' = rng_state \ { invite_id }
             /\ UNCHANGED <<group_perceptions, proposal, complete_proposals, approver_states>>
 
@@ -148,8 +170,8 @@ BroadcastProposalState(recipient) ==
     /\ proposal /= Nothing
     /\ \E member \in proposal.awaiting_response :
         /\ member = recipient
-        /\ messages' = messages \union
-            {   CASE proposal.state = Proposing ->
+        /\ AddMessage(
+                CASE proposal.state = Proposing ->
                     [ sender |-> Leader
                     , recipient |-> member
                     , type |-> Propose
@@ -163,7 +185,7 @@ BroadcastProposalState(recipient) ==
                     , type |-> Kick
                     , kicked |-> proposal.kicked
                     ]
-            }
+            )
         /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 LeaderReceiveReject ==
@@ -274,8 +296,8 @@ ApproverReceiveProposal(recipient) ==
                    \* the invitee insight into how these contacts are all connected.
                    \* However, that is exactly what they all just agreed to.  Members that
                    \* don't agree to send this message remain private.
-                   /\ messages' = messages \union
-                       {   [ sender |-> message.recipient.user
+                   /\ AddMessage(
+                           [ sender |-> message.recipient.user
                            , recipient |-> PerceivedUser
                            , type |-> Invite
                            , invite_id |-> message.invite_id
@@ -292,16 +314,16 @@ ApproverReceiveProposal(recipient) ==
                            , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
                            , group_size |-> message.group_size
                            ]
-                       }
+                       )
                    /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
                ELSE
-                   /\ messages' = messages \union
-                       {   [ sender |-> message.recipient
+                   /\ AddMessage(
+                           [ sender |-> message.recipient
                            , recipient |-> Leader
                            , type |-> Reject
                            , invite_id |-> message.invite_id
                            ]
-                       }
+                       )
                    /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 ApproverReceiveKick(recipient, kicked) ==
@@ -318,13 +340,13 @@ ApproverReceiveKick(recipient, kicked) ==
               approver_states,
               message.kicked
             )
-        /\ messages' = messages \union
-            {   [ type |-> KickAck
+        /\ AddMessage(
+                [ type |-> KickAck
                 , sender |-> message.recipient
                 , recipient |-> message.sender
                 , kicked |-> message.kicked
                 ]
-            }
+            )
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
 \* TODO: This keeps broadcasting after invitee has joined and sends the token
@@ -334,8 +356,8 @@ BroadcastToken ==
         \E to \in group_perceptions[from] :
             /\ from /= to
             /\ approver_states[<<invite_id, from.user>>] /= Nothing
-            /\ messages' = messages \union
-                {   [ sender |-> from
+            /\ AddMessage(
+                    [ sender |-> from
                     , recipient |-> to
                     , type |-> SyncToken
                     \* Note again that tokens are abstract/symbolic.  In this
@@ -345,7 +367,7 @@ BroadcastToken ==
                     , token |-> [ for |-> invite_id, by |-> from.user ]
                     , invite_id |-> invite_id
                     ]
-                }
+                )
             /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 \* IMPORTANT: It is NOT inviariant that the invitee matches across the same
@@ -368,14 +390,14 @@ SendAccept ==
                     \* invitee does not yet believe themself to be part of the
                     \* group.  At least one member must establish a connection
                     \* with them first.
-                    /\ messages' = messages \union
-                        {   [ sender |-> invitee
+                    /\ AddMessage(
+                            [ sender |-> invitee
                             , recipient |-> message.sender
                             , type |-> Accept
                             , tokens |-> Tokens
                             , invite_id |-> invite_id
                             ]
-                        }
+                        )
                 ELSE UNCHANGED <<messages>>
         /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
@@ -405,13 +427,13 @@ Establish(recipient) ==
                    EXCEPT ![RecipientMember] = @ \union { SenderMember }
                    ,      ![SenderMember] = @ \union (IF InviteeDoesntBelieveInviterIsKicked THEN {} ELSE { RecipientMember, SenderMember })
                    ]
-               /\ messages' = messages \union
-                   {   [ type |-> Established
+               /\ AddMessage(
+                       [ type |-> Established
                        , sender |-> RecipientMember
                        , recipient |-> Leader
                        , invite_id |-> message.invite_id
                        ]
-                   }
+                   )
                /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
 \* TODO: Need to be able to Kick outside of failed proposals.
@@ -448,6 +470,7 @@ silent agents are undetectable!).
 
 
 Next ==
+    \/ DropMessage
     \/ SendPleasePropose
     \/ LeaderReceivePleasePropose
     \/ \E member \in MemberSet : BroadcastProposalState(member)
@@ -466,6 +489,7 @@ AllVars ==
     <<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 Fairness ==
+    /\ WF_AllVars(DropMessage)
     /\ SF_AllVars(LeaderReceivePleasePropose)
     /\ \A member \in MemberSet :
         WF_AllVars(BroadcastProposalState(member))
