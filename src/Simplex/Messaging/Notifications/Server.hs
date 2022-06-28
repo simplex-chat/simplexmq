@@ -179,7 +179,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           PPCryptoError _ -> err e
           PPResponseError _ _ -> err e
           PPTokenInvalid -> updateTknStatus NTInvalid >> err e
-          PPPermanentError -> updateTknStatus NTExpired >> err e
+          PPPermanentError -> err e
       where
         retryDeliver :: m (Either PushProviderError ())
         retryDeliver = do
