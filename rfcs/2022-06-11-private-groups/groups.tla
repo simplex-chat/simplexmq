@@ -144,9 +144,10 @@ LeaderReceivePleasePropose ==
             ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
-BroadcastProposalState ==
+BroadcastProposalState(recipient) ==
     /\ proposal /= Nothing
     /\ \E member \in proposal.awaiting_response :
+        /\ member = recipient
         /\ messages' = messages \union
             {   CASE proposal.state = Proposing ->
                     [ sender |-> Leader
@@ -200,9 +201,15 @@ LeaderReceiveEstablished ==
 GiveUpOnProposal ==
     /\ proposal /= Nothing
     /\ proposal.state = Proposing
-    \* If _anyone_ has Established, then we won't give up on the invitee (we
-    \* may give up on the member holding us up via GiveUpOnMember).
-    /\ proposal.awaiting_response = group_perceptions[Leader]
+    \* If no one has established, then the leader may assume there's been
+    \* confusion and will end the proposal, kicking the invitee if they did in
+    \* fact join.  If some members have established, but _not_ the leader, the
+    \* leader may assume the invitee is being weird and kick them.
+    \* TODO: Should we always start with kicking the invitee and then only
+    \* start kicking current members if they then are nonresponsive to the
+    \* invitee kick?
+    /\ \/ proposal.awaiting_response = group_perceptions[Leader]
+       \/ Leader \in proposal.awaiting_response
     /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
     /\ proposal' =
         [ state |-> Kicking
@@ -220,10 +227,6 @@ GiveUpOnProposal ==
 GiveUpOnMembers ==
     /\ proposal /= Nothing
     /\ \/ /\ proposal.state = Proposing
-          \* We don't want to kick current members if this is due to invite
-          \* confusion.  We only go this route if _someone_ has establishd a
-          \* connection, but it's time to kick those who won't.
-          /\ proposal.awaiting_response /= group_perceptions[Leader]
           /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
        \/ /\ proposal.state = Kicking
           /\ UNCHANGED <<complete_proposals>>
@@ -252,8 +255,9 @@ LeaderReceiveKickAck ==
            ELSE proposal' = [ proposal EXCEPT !.awaiting_response = { member \in @ : member /= message.sender } ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
-ApproverReceiveProposal ==
+ApproverReceiveProposal(recipient) ==
     \E message \in messages :
+        /\ message.recipient = recipient
         /\ message.type = Propose
         /\ LET PerceivedUser == UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]]
            IN
@@ -300,9 +304,11 @@ ApproverReceiveProposal ==
                        }
                    /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
-ApproverReceiveKick ==
+ApproverReceiveKick(recipient, kicked) ==
     \E message \in messages :
         /\ message.type = Kick
+        /\ message.recipient = recipient
+        /\ message.kicked = kicked
         /\ message.sender = Leader
         /\ group_perceptions' = [ group_perceptions EXCEPT ![message.recipient] = { member \in @ : member.id \notin message.kicked } ]
         /\ approver_states' =
@@ -371,8 +377,9 @@ SendAccept ==
                 ELSE UNCHANGED <<messages>>
         /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
-Establish ==
+Establish(recipient) ==
     \E message \in messages :
+        /\ message.recipient = recipient
         /\ message.type = Accept
         /\ approver_states[<<message.invite_id, message.recipient>>] /= Nothing
         /\ approver_states[<<message.invite_id, message.recipient>>][2] = Active
@@ -441,19 +448,37 @@ silent agents are undetectable!).
 Next ==
     \/ SendPleasePropose
     \/ LeaderReceivePleasePropose
-    \/ BroadcastProposalState
+    \/ \E member \in MemberSet : BroadcastProposalState(member)
     \/ LeaderReceiveReject
     \/ LeaderReceiveEstablished
     \/ GiveUpOnProposal
     \/ GiveUpOnMembers
     \/ LeaderReceiveKickAck
-    \/ ApproverReceiveProposal
-    \/ ApproverReceiveKick
+    \/ \E member \in MemberSet : ApproverReceiveProposal(member)
+    \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
     \/ BroadcastToken
     \/ SendAccept
-    \/ Establish
+    \/ \E user \in Users : Establish(user)
 
-Spec == Init /\ [][Next]_<<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
+AllVars ==
+    <<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
+
+Fairness ==
+    /\ SF_AllVars(LeaderReceivePleasePropose)
+    /\ \A member \in MemberSet :
+        WF_AllVars(BroadcastProposalState(member))
+    /\ SF_AllVars(LeaderReceiveReject)
+    /\ SF_AllVars(LeaderReceiveEstablished)
+    /\ WF_AllVars(GiveUpOnProposal)
+    /\ WF_AllVars(GiveUpOnMembers)
+    /\ SF_AllVars(LeaderReceiveKickAck)
+    /\ SF_AllVars(ApproverReceiveProposal(Leader))
+    /\ \A kicked \in SUBSET InviteIds :
+        SF_AllVars(ApproverReceiveKick(Leader, kicked))
+    /\ SF_AllVars(Establish(Leader.user))
+
+
+Spec == Init /\ [][Next]_AllVars /\ Fairness
 
 
 IdsAreUnique ==
@@ -533,5 +558,8 @@ AllMembersAccordingToTheLeaderAgreeWithTheLeaderWithoutProposal ==
     proposal = Nothing =>
         \A member \in group_perceptions[Leader] :
             group_perceptions[member] = group_perceptions[Leader]
+
+AllProposalsResolve ==
+    []<>(proposal = Nothing)
 
 ====

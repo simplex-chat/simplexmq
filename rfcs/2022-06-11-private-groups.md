@@ -102,8 +102,6 @@ If the Leader has received an Established message back from any member, then it 
 However, it is possible that some previous members are unable to complete the invitation process (such as a lost/destroyed device).
 To ensure that the group can complete proposals, the Leader may then Kick any user that has not established a connection (except the Leader).
 
-TODO: What about a malicious invitee who establishes with everyone but the leader?
-
 TODO: Ideally, kicked members (or invitees that established connections with kicked members, who think they are part of the group) eventually learn that they are not in the group after all.
 
 #### Properties
@@ -112,4 +110,5 @@ Model checking our formal specification we can demonstrate three key properties:
   1. Users outside of the group only learn about the networks of members who agree to share such information with them.
   1. It is not possible to accidentally establish a group connection with anyone other than the invitee, even if users misidentify the invitee.
   1. If a proposal is complete, then all members (according to the leader) agree on who is a member.
+  1. Proposals always complete (successfully or otherwise), assuming the Leader is fair (other members don't need to participate).
   1. No members will connect with the invitee unless all members correctly identify them.
