@@ -165,11 +165,8 @@ runNtfWorker c srv doWork = forever $ do
                 case ntfSubId of
                   Just nSubId ->
                     agentNtfCheckSubscription c nSubId tkn >>= \case
-                      NSNew -> updateSubNextCheck ts NSNew
-                      NSPending -> updateSubNextCheck ts NSPending
-                      NSActive -> updateSubNextCheck ts NSActive
-                      NSEnd -> updateSubNextCheck ts NSEnd
                       NSSMPAuth -> updateSub (NASCreated NSSMPAuth) (NtfSubAction NSADelete) ts -- TODO re-create subscription?
+                      status -> updateSubNextCheck ts status
                   Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
               _ -> ntfInternalError c connId "NSACheck - no active token"
           NSADelete -> case ntfSubId of
