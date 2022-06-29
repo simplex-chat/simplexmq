@@ -313,9 +313,9 @@ joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInf
   case ( qUri `compatibleVersion` SMP.smpClientVRange,
          agentVRange `compatibleVersion` aVRange
        ) of
-    (Just qInfo, Just version) -> do
+    (Just qInfo, Just vrsn) -> do
       (connId', cReq) <- newConn c connId SCMInvitation
-      sendInvitation c qInfo version cReq cInfo
+      sendInvitation c qInfo vrsn cReq cInfo
       pure connId'
     _ -> throwError $ AGENT A_VERSION
 
