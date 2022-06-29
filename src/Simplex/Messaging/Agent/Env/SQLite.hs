@@ -1,36 +1,55 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Env.SQLite
-  ( AgentConfig (..),
+  ( AgentMonad,
+    AgentConfig (..),
     InitialAgentServers (..),
     defaultAgentConfig,
     defaultReconnectInterval,
     Env (..),
     newSMPAgentEnv,
+    NtfSupervisor (..),
+    NtfSupervisorCommand (..),
   )
 where
 
+import Control.Monad.Except
 import Control.Monad.IO.Unlift
+import Control.Monad.Reader
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Network.Socket
 import Numeric.Natural
-import Simplex.Messaging.Agent.Protocol (SMPServer)
+import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
+import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Client (NtfServer)
+import Simplex.Messaging.Notifications.Client (NtfServer, NtfToken)
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
+import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
+import UnliftIO (Async)
 import UnliftIO.STM
+import Data.Word (Word16)
+
+-- | Agent monad with MonadReader Env and MonadError AgentErrorType
+type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
 
 data InitialAgentServers = InitialAgentServers
   { smp :: NonEmpty SMPServer,
@@ -43,16 +62,21 @@ data AgentConfig = AgentConfig
     connIdBytes :: Int,
     tbqSize :: Natural,
     dbFile :: FilePath,
-    dbPoolSize :: Int,
     yesToMigrations :: Bool,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
     resubscriptionConcurrency :: Int,
+    ntfCron :: Word16,
+    ntfWorkerThrottle :: Int,
+    ntfSubCheckInterval :: NominalDiffTime,
+    ntfMaxMessages :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
-    certificateFile :: FilePath
+    certificateFile :: FilePath,
+    smpAgentVersion :: Version,
+    smpAgentVRange :: VersionRange
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -73,18 +97,23 @@ defaultAgentConfig =
       connIdBytes = 12,
       tbqSize = 64,
       dbFile = "smp-agent.db",
-      dbPoolSize = 4,
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = ("5223", transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       reconnectInterval = defaultReconnectInterval,
       helloTimeout = 2 * nominalDay,
       resubscriptionConcurrency = 16,
+      ntfCron = 20, -- minutes
+      ntfWorkerThrottle = 1000000, -- microseconds
+      ntfSubCheckInterval = nominalDay,
+      ntfMaxMessages = 4,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
-      certificateFile = "/etc/opt/simplex-agent/agent.crt"
+      certificateFile = "/etc/opt/simplex-agent/agent.crt",
+      smpAgentVersion = currentSMPAgentVersion,
+      smpAgentVRange = supportedSMPAgentVRange
     }
 
 data Env = Env
@@ -92,13 +121,32 @@ data Env = Env
     store :: SQLiteStore,
     idsDrg :: TVar ChaChaDRG,
     clientCounter :: TVar Int,
-    randomServer :: TVar StdGen
+    randomServer :: TVar StdGen,
+    ntfSupervisor :: NtfSupervisor
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config@AgentConfig {dbFile, dbPoolSize, yesToMigrations} = do
+newSMPAgentEnv config@AgentConfig {dbFile, yesToMigrations} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createSQLiteStore dbFile dbPoolSize Migrations.app yesToMigrations
+  store <- liftIO $ createSQLiteStore dbFile Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
-  return Env {config, store, idsDrg, clientCounter, randomServer}
+  ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
+  return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+
+data NtfSupervisor = NtfSupervisor
+  { ntfTkn :: TVar (Maybe NtfToken),
+    ntfSubQ :: TBQueue (ConnId, NtfSupervisorCommand),
+    ntfWorkers :: TMap NtfServer (TMVar (), Async ()),
+    ntfSMPWorkers :: TMap SMPServer (TMVar (), Async ())
+  }
+
+data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
+
+newNtfSubSupervisor :: Natural -> STM NtfSupervisor
+newNtfSubSupervisor qSize = do
+  ntfTkn <- newTVar Nothing
+  ntfSubQ <- newTBQueue qSize
+  ntfWorkers <- TM.empty
+  ntfSMPWorkers <- TM.empty
+  pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}

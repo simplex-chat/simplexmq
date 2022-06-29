@@ -250,6 +250,12 @@ deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
 
+instance StrEncoding (PrivateKey X25519) where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey
+  {-# INLINE strDecode #-}
+
 data APrivateKey
   = forall a.
     AlgorithmI a =>
@@ -295,6 +301,12 @@ instance Encoding APrivateSignKey where
   {-# INLINE smpEncode #-}
   smpDecode = decodePrivKey
   {-# INLINE smpDecode #-}
+
+instance StrEncoding APrivateSignKey where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey
+  {-# INLINE strDecode #-}
 
 data APublicVerifyKey
   = forall a.
@@ -678,7 +690,9 @@ data CryptoError
     CERatchetHeader
   | -- | too many skipped messages
     CERatchetTooManySkipped
-  | -- | duplicate message number (or, possibly, skipped message that failed to decrypt?)
+  | -- | earlier message number (or, possibly, skipped message that failed to decrypt?)
+    CERatchetEarlierMessage
+  | -- | duplicate message number
     CERatchetDuplicateMessage
   deriving (Eq, Show, Exception)
 
@@ -869,7 +883,7 @@ cbDecrypt secret (CbNonce nonce) packet
     tag = Poly1305.auth rs c
 
 newtype CbNonce = CbNonce {unCbNonce :: ByteString}
-  deriving (Show)
+  deriving (Eq, Show)
 
 instance StrEncoding CbNonce where
   strEncode (CbNonce s) = strEncode s

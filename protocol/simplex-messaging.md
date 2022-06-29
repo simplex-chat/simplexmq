@@ -24,6 +24,7 @@
     - [Subscribe to queue](#subscribe-to-queue)
     - [Secure queue command](#secure-queue-command)
     - [Enable notifications command](#enable-notifications-command)
+    - [Disable notifications command](#disable-notifications-command)
     - [Acknowledge message delivery](#acknowledge-message-delivery)
     - [Suspend queue](#suspend-queue)
     - [Delete queue](#delete-queue)
@@ -355,6 +356,7 @@ To protect the privacy of the recipients, there are several commands in SMP prot
 The clients can optionally instruct a dedicated push notification server to subscribe to notifications and deliver push notifications to the device, which can then retrieve the messages in the background and send local notifications to the user - this is out of scope of SMP protocol. The commands that SMP protocol provides to allow it:
 
 - `enableNotifications` (`"NKEY"`) with `notifierId` (`"NID"`) response - see [Enable notifications command](#enable-notifications-command).
+- `disableNotifications` (`"NDEL"`) - see [Disable notifications command](#disable-notifications-command).
 - `subscribeNotifications` (`"NSUB"`) - see [Subscribe to queue notifications](#subscribe-to-queue-notifications).
 - `messageNotification` (`"NMSG"`) - see [Deliver message notification](#deliver-message-notification).
 
@@ -401,7 +403,7 @@ Commands syntax below is provided using [ABNF][8] with [case-sensitive strings e
 
 ```abnf
 smpCommand = ping / recipientCmd / send / subscribeNotifications / serverMsg
-recipientCmd = create / subscribe / secure / enableNotifications /
+recipientCmd = create / subscribe / secure / enableNotifications / disableNotifications /
                acknowledge / suspend / delete
 serverMsg = queueIds / message / notifierId / messageNotification /
             unsubscribed / ok / error
@@ -502,21 +504,41 @@ Once the queue is secured only signed messages can be sent to it.
 This command is sent by the recipient to the server to add notifier's key to the queue, to allow push notifications server to receive notifications when the message arrives, via a separate queue ID, without receiving message content.
 
 ```abnf
-enableNotifications = %s"NKEY " notifierKey
+enableNotifications = %s"NKEY " notifierKey recipientNotificationDhPublicKey
 notifierKey = length x509encoded
 ; the notifier's Ed25519 or Ed448 public key public key to verify NSUB command for this queue
+
+recipientNotificationDhPublicKey = length x509encoded
+; the recipient's Curve25519 key for DH exchange to derive the secret
+; that the server will use to encrypt notification metadata (encryptedNMsgMeta in NMSG)
+; using [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
 ```
 
 The server will respond with `notifierId` response if notifications were enabled and the notifier's key was successfully added to the queue:
 
 ```abnf
-notifierId = %s"NID " notifierId
+notifierId = %s"NID " notifierId srvNotificationDhPublicKey
 notifierId = length *OCTET ; 16-24 bytes
+srvNotificationDhPublicKey = length x509encoded
+; the server's Curve25519 key for DH exchange to derive the secret
+; that the server will use to encrypt notification metadata to the recipient (encryptedNMsgMeta in NMSG)
 ```
 
 This response is sent with the recipient's queue ID (the third part of the transmission).
 
 To receive the message notifications, `subscribeNotifications` command ("NSUB") must be sent signed with the notifier's key.
+
+#### Disable notifications command
+
+This command is sent by the recipient to the server to remove notifier's credentials from the queue:
+
+```abnf
+disableNotifications = %s"NDEL"
+```
+
+The server must respond `ok` to this command if it was successful.
+
+Once notifier's credentials are removed server will no longer send "NMSG" for this queue to notifier.
 
 #### Acknowledge message delivery
 
@@ -735,10 +757,19 @@ See its syntax in [Enable notifications command](#enable-notifications-command)
 The server must deliver message notifications to all simplex queues that were subscribed with `subscribeNotifications` command ("NSUB") on the currently open transport connection. The syntax for the message notification delivery is:
 
 ```abnf
-messageNotification = %s"NMSG"
+messageNotification = %s"NMSG " nmsgNonce encryptedNMsgMeta
+
+encryptedNMsgMeta = <encrypted message metadata passed in notification>
+; metadata E2E encrypted between server and recipient containing server's message ID and timestamp (allows extension),
+; to be passed to the recipient by the notifier for them to decrypt
+; with key negotiated in NKEY and NID commands using nmsgNonce
+
+nmsgNonce = <nonce used in NaCl crypto_box encryption scheme>
+; nonce used by the server for encryption of message metadata, to be passed to the recipient by the notifier
+; for them to use in decryption of E2E encrypted metadata
 ```
 
-Message notification does not contain any message data or meta-data, it only notifies that the message is available.
+Message notification does not contain any message data or non E2E encrypted metadata.
 
 #### Subscription END notification
 

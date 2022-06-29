@@ -49,7 +49,7 @@ testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
   runTransportClient testHost testPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
-    liftIO (runExceptT $ smpClientHandshake h testKeyHash) >>= \case
+    liftIO (runExceptT $ smpClientHandshake h testKeyHash supportedSMPServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -71,7 +71,8 @@ cfg =
       logStatsStartTime = 0,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt"
+      certificateFile = "tests/fixtures/server.crt",
+      smpServerVRange = supportedSMPServerVRange
     }
 
 withSmpServerStoreMsgLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a

@@ -20,7 +20,7 @@ schemaDumpTest =
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
-  void $ createSQLiteStore testDB 1 Migrations.app False
+  void $ createSQLiteStore testDB Migrations.app False
   void $ readCreateProcess (shell $ "touch " <> schema) ""
   savedSchema <- readFile schema
   savedSchema `seq` pure ()

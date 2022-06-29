@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Server.Push.APNS where
 
+import Control.Exception (Exception)
 import Control.Logger.Simple
 import Control.Monad.Except
 import Crypto.Hash.Algorithms (SHA256 (..))
@@ -46,7 +47,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
-import Simplex.Messaging.Protocol (NotifierId, SMPServer)
+import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2.Client
 import System.Environment (getEnv)
 import UnliftIO.STM
@@ -95,9 +96,23 @@ readECPrivateKey f = do
 
 data PushNotification
   = PNVerification NtfRegCode
-  | PNMessage SMPServer NotifierId
+  | PNMessage PNMessageData
   | PNAlert Text
   | PNCheckMessages
+
+data PNMessageData = PNMessageData
+  { smpQueue :: SMPQueueNtf,
+    ntfTs :: SystemTime,
+    nmsgNonce :: C.CbNonce,
+    encNMsgMeta :: EncNMsgMeta
+  }
+
+instance StrEncoding PNMessageData where
+  strEncode PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} =
+    strEncode (smpQueue, ntfTs, nmsgNonce, encNMsgMeta)
+  strP = do
+    (smpQueue, ntfTs, nmsgNonce, encNMsgMeta) <- strP
+    pure PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
 
 data APNSNotification = APNSNotification {aps :: APNSNotificationBody, notificationData :: Maybe J.Value}
   deriving (Show, Generic)
@@ -107,9 +122,9 @@ instance ToJSON APNSNotification where
   toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 data APNSNotificationBody
-  = APNSAlert {alert :: APNSAlertBody, badge :: Maybe Int, sound :: Maybe Text, category :: Maybe Text}
-  | APNSBackground {contentAvailable :: Int}
+  = APNSBackground {contentAvailable :: Int}
   | APNSMutableContent {mutableContent :: Int, alert :: APNSAlertBody, category :: Maybe Text}
+  | APNSAlert {alert :: APNSAlertBody, badge :: Maybe Int, sound :: Maybe Text, category :: Maybe Text}
   deriving (Show, Generic)
 
 apnsJSONOptions :: J.Options
@@ -176,23 +191,27 @@ data APNSPushClientConfig = APNSPushClientConfig
     paddedNtfLength :: Int,
     appName :: ByteString,
     appTeamId :: Text,
-    apnsHost :: HostName,
     apnsPort :: ServiceName,
     http2cfg :: HTTP2ClientConfig
   }
   deriving (Show)
 
+apnsProviderHost :: PushProvider -> HostName
+apnsProviderHost = \case
+  PPApnsTest -> "localhost"
+  PPApnsDev -> "api.sandbox.push.apple.com"
+  PPApnsProd -> "api.push.apple.com"
+
 defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
   APNSPushClientConfig
-    { tokenTTL = 1200, -- 20 minutes
+    { tokenTTL = 1800, -- 30 minutes
       authKeyFileEnv = "APNS_KEY_FILE", -- the environment variables APNS_KEY_FILE and APNS_KEY_ID must be set, or the server would fail to start
       authKeyAlg = "ES256",
       authKeyIdEnv = "APNS_KEY_ID",
-      paddedNtfLength = 256,
+      paddedNtfLength = 512,
       appName = "chat.simplex.app",
       appTeamId = "5NN7GUYB6T",
-      apnsHost = "api.sandbox.push.apple.com",
       apnsPort = "443",
       http2cfg = defaultHTTP2ClientConfig
     }
@@ -203,19 +222,20 @@ data APNSPushClient = APNSPushClient
     jwtHeader :: JWTHeader,
     jwtToken :: TVar (JWTToken, SignedJWTToken),
     nonceDrg :: TVar ChaChaDRG,
+    apnsHost :: HostName,
     apnsCfg :: APNSPushClientConfig
   }
 
-createAPNSPushClient :: APNSPushClientConfig -> IO APNSPushClient
-createAPNSPushClient apnsCfg@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
+createAPNSPushClient :: HostName -> APNSPushClientConfig -> IO APNSPushClient
+createAPNSPushClient apnsHost apnsCfg@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
   https2Client <- newTVarIO Nothing
-  void $ connectHTTPS2 apnsCfg https2Client
+  void $ connectHTTPS2 apnsHost apnsCfg https2Client
   privateKey <- readECPrivateKey =<< getEnv authKeyFileEnv
   authKeyId <- T.pack <$> getEnv authKeyIdEnv
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
   jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
   nonceDrg <- drgNew >>= newTVarIO
-  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, apnsCfg}
+  pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, apnsHost, apnsCfg}
 
 getApnsJWTToken :: APNSPushClient -> IO SignedJWTToken
 getApnsJWTToken APNSPushClient {apnsCfg = APNSPushClientConfig {appTeamId, tokenTTL}, privateKey, jwtHeader, jwtToken} = do
@@ -236,8 +256,8 @@ mkApnsJWTToken appTeamId jwtHeader privateKey = do
   signedJWT <- signedJWTToken privateKey jwt
   pure (jwt, signedJWT)
 
-connectHTTPS2 :: APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
-connectHTTPS2 APNSPushClientConfig {apnsHost, apnsPort, http2cfg} https2Client = do
+connectHTTPS2 :: HostName -> APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
+connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg} https2Client = do
   r <- getHTTP2Client apnsHost apnsPort http2cfg disconnected
   case r of
     Right client -> atomically . writeTVar https2Client $ Just client
@@ -247,28 +267,31 @@ connectHTTPS2 APNSPushClientConfig {apnsHost, apnsPort, http2cfg} https2Client =
     disconnected = atomically $ writeTVar https2Client Nothing
 
 getApnsHTTP2Client :: APNSPushClient -> IO (Either HTTP2ClientError HTTP2Client)
-getApnsHTTP2Client APNSPushClient {https2Client, apnsCfg} =
-  readTVarIO https2Client >>= maybe (connectHTTPS2 apnsCfg https2Client) (pure . Right)
+getApnsHTTP2Client APNSPushClient {https2Client, apnsHost, apnsCfg} =
+  readTVarIO https2Client >>= maybe (connectHTTPS2 apnsHost apnsCfg https2Client) (pure . Right)
 
 disconnectApnsHTTP2Client :: APNSPushClient -> IO ()
 disconnectApnsHTTP2Client APNSPushClient {https2Client} =
   readTVarIO https2Client >>= mapM_ closeHTTP2Client >> atomically (writeTVar https2Client Nothing)
 
+ntfCategoryCheckMessage :: Text
+ntfCategoryCheckMessage = "NTF_CAT_CHECK_MESSAGE"
+
 apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> Either C.CryptoError APNSNotification
 apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
   PNVerification (NtfRegCode code) ->
     encrypt code $ \code' ->
-      apn APNSBackground {contentAvailable = 1} . Just $ J.object ["verification" .= code', "nonce" .= nonce]
-  PNMessage srv nId ->
-    encrypt (strEncode srv <> "/" <> strEncode nId) $ \ntfQueue ->
-      apn apnMutableContent . Just $ J.object ["checkMessage" .= ntfQueue, "nonce" .= nonce]
+      apn APNSBackground {contentAvailable = 1} . Just $ J.object ["nonce" .= nonce, "verification" .= code']
+  PNMessage pnMessageData ->
+    encrypt (strEncode pnMessageData) $ \ntfData ->
+      apn apnMutableContent . Just $ J.object ["nonce" .= nonce, "message" .= ntfData]
   PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
   where
     encrypt :: ByteString -> (Text -> APNSNotification) -> Either C.CryptoError APNSNotification
     encrypt ntfData f = f . safeDecodeUtf8 . U.encode <$> C.cbEncrypt tknDhSecret nonce ntfData paddedLen
     apn aps notificationData = APNSNotification {aps, notificationData}
-    apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or some other app event", category = Nothing}
+    apnMutableContent = APNSMutableContent {mutableContent = 1, alert = APNSAlertText "Encrypted message or another app event", category = Just ntfCategoryCheckMessage}
     apnAlert alert = APNSAlert {alert, badge = Nothing, sound = Nothing, category = Nothing}
     safeDecodeUtf8 = decodeUtf8With onError where onError _ _ = Just '?'
 
@@ -298,7 +321,7 @@ data PushProviderError
   | PPTokenInvalid
   | PPRetryLater
   | PPPermanentError
-  deriving (Show)
+  deriving (Show, Exception)
 
 type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProviderError IO ()
 
@@ -307,7 +330,7 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
   deriving (Generic, FromJSON)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken PPApns tknStr} pn = do
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken _ tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.pseudoRandomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn

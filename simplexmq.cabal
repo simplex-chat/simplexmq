@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        2.3.1
+version:        3.0.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -37,6 +37,7 @@ library
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
+      Simplex.Messaging.Agent.NtfSubSupervisor
       Simplex.Messaging.Agent.Protocol
       Simplex.Messaging.Agent.QueryString
       Simplex.Messaging.Agent.RetryInterval
@@ -47,7 +48,8 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220404_ntf_subscriptions_draft
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
@@ -60,6 +62,7 @@ library
       Simplex.Messaging.Notifications.Server.Env
       Simplex.Messaging.Notifications.Server.Push.APNS
       Simplex.Messaging.Notifications.Server.Store
+      Simplex.Messaging.Notifications.Server.StoreLog
       Simplex.Messaging.Notifications.Transport
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol

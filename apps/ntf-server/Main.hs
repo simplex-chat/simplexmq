@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Main where
@@ -41,7 +42,7 @@ ntfServerCLIConfig =
           fingerprintFile = combine cfgPath "fingerprint",
           defaultServerPort = "443",
           executableName = "ntf-server",
-          serverVersion = "SMP notifications server v0.1.0",
+          serverVersion = "SMP notifications server v1.0.0-beta.0",
           mkIniFile = \enableStoreLog defaultServerPort ->
             "[STORE_LOG]\n\
             \# The server uses STM memory for persistence,\n\
@@ -56,7 +57,7 @@ ntfServerCLIConfig =
               <> defaultServerPort
               <> "\n\
                  \websockets: off\n",
-          mkServerConfig = \_storeLogFile transports _ ->
+          mkServerConfig = \storeLogFile transports _ ->
             NtfServerConfig
               { transports,
                 subIdBytes = 24,
@@ -67,6 +68,8 @@ ntfServerCLIConfig =
                 smpAgentCfg = defaultSMPClientAgentConfig,
                 apnsConfig = defaultAPNSPushClientConfig,
                 inactiveClientExpiration = Nothing,
+                storeLogFile,
+                resubscribeDelay = 100000, -- 100ms
                 caCertificateFile = caCrtFile,
                 privateKeyFile = serverKeyFile,
                 certificateFile = serverCrtFile

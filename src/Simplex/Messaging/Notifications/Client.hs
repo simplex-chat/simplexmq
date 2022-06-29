@@ -10,15 +10,18 @@ module Simplex.Messaging.Notifications.Client where
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Time (UTCTime)
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Simplex.Messaging.Agent.Protocol (ConnId, NotificationsMode (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Parsers (blobFieldDecoder)
-import Simplex.Messaging.Protocol (ProtocolServer)
+import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Protocol (NotifierId, ProtocolServer, SMPServer)
 
 type NtfServer = ProtocolServer
 
@@ -27,7 +30,7 @@ type NtfClient = ProtocolClient NtfResponse
 ntfRegisterToken :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Token -> ExceptT ProtocolClientError IO (NtfTokenId, C.PublicKeyX25519)
 ntfRegisterToken c pKey newTkn =
   sendNtfCommand c (Just pKey) "" (TNEW newTkn) >>= \case
-    NRId tknId dhKey -> pure (tknId, dhKey)
+    NRTknId tknId dhKey -> pure (tknId, dhKey)
     _ -> throwE PCEUnexpectedResponse
 
 ntfVerifyToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> NtfRegCode -> ExceptT ProtocolClientError IO ()
@@ -39,16 +42,19 @@ ntfCheckToken c pKey tknId =
     NRTkn stat -> pure stat
     _ -> throwE PCEUnexpectedResponse
 
+ntfReplaceToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> DeviceToken -> ExceptT ProtocolClientError IO ()
+ntfReplaceToken c pKey tknId token = okNtfCommand (TRPL token) c pKey tknId
+
 ntfDeleteToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> ExceptT ProtocolClientError IO ()
 ntfDeleteToken = okNtfCommand TDEL
 
 ntfEnableCron :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> Word16 -> ExceptT ProtocolClientError IO ()
 ntfEnableCron c pKey tknId int = okNtfCommand (TCRN int) c pKey tknId
 
-ntfCreateSubsciption :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Subscription -> ExceptT ProtocolClientError IO (NtfSubscriptionId, C.PublicKeyX25519)
-ntfCreateSubsciption c pKey newSub =
+ntfCreateSubscription :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Subscription -> ExceptT ProtocolClientError IO NtfSubscriptionId
+ntfCreateSubscription c pKey newSub =
   sendNtfCommand c (Just pKey) "" (SNEW newSub) >>= \case
-    NRId subId dhKey -> pure (subId, dhKey)
+    NRSubId subId -> pure subId
     _ -> throwE PCEUnexpectedResponse
 
 ntfCheckSubscription :: NtfClient -> C.APrivateSignKey -> NtfSubscriptionId -> ExceptT ProtocolClientError IO NtfSubStatus
@@ -74,7 +80,6 @@ data NtfTknAction
   = NTARegister
   | NTAVerify NtfRegCode -- code to verify token
   | NTACheck
-  | NTACron Word16
   | NTADelete
   deriving (Show)
 
@@ -83,14 +88,12 @@ instance Encoding NtfTknAction where
     NTARegister -> "R"
     NTAVerify code -> smpEncode ('V', code)
     NTACheck -> "C"
-    NTACron interval -> smpEncode ('I', interval)
     NTADelete -> "D"
   smpP =
     A.anyChar >>= \case
       'R' -> pure NTARegister
       'V' -> NTAVerify <$> smpP
       'C' -> pure NTACheck
-      'I' -> NTACron <$> smpP
       'D' -> pure NTADelete
       _ -> fail "bad NtfTknAction"
 
@@ -113,12 +116,13 @@ data NtfToken = NtfToken
     -- | token status
     ntfTknStatus :: NtfTknStatus,
     -- | pending token action and the earliest time
-    ntfTknAction :: Maybe NtfTknAction
+    ntfTknAction :: Maybe NtfTknAction,
+    ntfMode :: NotificationsMode
   }
   deriving (Show)
 
-newNtfToken :: DeviceToken -> NtfServer -> C.ASignatureKeyPair -> C.KeyPair 'C.X25519 -> NtfToken
-newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
+newNtfToken :: DeviceToken -> NtfServer -> C.ASignatureKeyPair -> C.KeyPair 'C.X25519 -> NotificationsMode -> NtfToken
+newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
   NtfToken
     { deviceToken,
       ntfServer,
@@ -128,5 +132,109 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys =
       ntfDhKeys,
       ntfDhSecret = Nothing,
       ntfTknStatus = NTNew,
-      ntfTknAction = Just NTARegister
+      ntfTknAction = Just NTARegister,
+      ntfMode
+    }
+
+data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
+
+data NtfSubAction
+  = NSACreate
+  | NSACheck
+  | NSADelete
+  deriving (Show)
+
+instance Encoding NtfSubAction where
+  smpEncode = \case
+    NSACreate -> "N"
+    NSACheck -> "C"
+    NSADelete -> "D"
+  smpP =
+    A.anyChar >>= \case
+      'N' -> pure NSACreate
+      'C' -> pure NSACheck
+      'D' -> pure NSADelete
+      _ -> fail "bad NtfSubAction"
+
+instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
+
+instance ToField NtfSubAction where toField = toField . smpEncode
+
+data NtfSubSMPAction
+  = NSASmpKey
+  | NSASmpDelete
+  deriving (Show)
+
+instance Encoding NtfSubSMPAction where
+  smpEncode = \case
+    NSASmpKey -> "K"
+    NSASmpDelete -> "D"
+  smpP =
+    A.anyChar >>= \case
+      'K' -> pure NSASmpKey
+      'D' -> pure NSASmpDelete
+      _ -> fail "bad NtfSubSMPAction"
+
+instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
+
+instance ToField NtfSubSMPAction where toField = toField . smpEncode
+
+data NtfAgentSubStatus
+  = -- | subscription started
+    NASNew
+  | -- | state after NKEY - notifier ID is assigned to queue on SMP server
+    NASKey
+  | -- | state after SNEW - subscription created on notification server
+    NASCreated NtfSubStatus
+  | -- | state after SDEL (subscription is deleted on notification server)
+    NASOff
+  | -- | state after NDEL (notifier credentials are deleted on SMP server)
+    -- Can only exist transiently - if subscription record was updated by notification supervisor mid worker operation,
+    -- and hence got updated instead of being fully deleted in the database post operation by worker
+    NASDeleted
+  deriving (Eq, Show)
+
+instance Encoding NtfAgentSubStatus where
+  smpEncode = \case
+    NASNew -> "NEW"
+    NASKey -> "KEY"
+    NASCreated status -> "CREATED " <> smpEncode status
+    NASOff -> "OFF"
+    NASDeleted -> "DELETED"
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "NEW" -> pure NASNew
+      "KEY" -> pure NASKey
+      "CREATED" -> do
+        _ <- A.space
+        NASCreated <$> smpP
+      "OFF" -> pure NASOff
+      "DELETED" -> pure NASDeleted
+      _ -> fail "bad NtfAgentSubStatus"
+
+instance FromField NtfAgentSubStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
+
+instance ToField NtfAgentSubStatus where toField = toField . decodeLatin1 . smpEncode
+
+data NtfSubscription = NtfSubscription
+  { connId :: ConnId,
+    smpServer :: SMPServer,
+    ntfQueueId :: Maybe NotifierId,
+    ntfServer :: NtfServer,
+    ntfSubId :: Maybe NtfSubscriptionId,
+    ntfSubStatus :: NtfAgentSubStatus,
+    ntfSubActionTs :: UTCTime
+  }
+  deriving (Show)
+
+newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NtfSubscription
+newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
+  NtfSubscription
+    { connId,
+      smpServer,
+      ntfQueueId,
+      ntfServer,
+      ntfSubId = Nothing,
+      ntfSubStatus,
+      ntfSubActionTs
     }

@@ -6,30 +6,42 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Notifications.Server.Store where
 
 import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
+import Data.Functor (($>))
 import qualified Data.Map.Strict as M
+import Data.Maybe (catMaybes)
+import Data.Set (Set)
+import qualified Data.Set as S
+import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Protocol (NtfPrivateSignKey)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM, ($>>=))
 
 data NtfStore = NtfStore
   { tokens :: TMap NtfTokenId NtfTknData,
-    tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId)
+    -- multiple registrations exist to protect from malicious registrations if token is compromised
+    tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
+    subscriptions :: TMap NtfSubscriptionId NtfSubData,
+    tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
+    subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId
   }
 
 newNtfStore :: STM NtfStore
 newNtfStore = do
   tokens <- TM.empty
   tokenRegistrations <- TM.empty
-  pure NtfStore {tokens, tokenRegistrations}
+  subscriptions <- TM.empty
+  tokenSubscriptions <- TM.empty
+  subscriptionLookup <- TM.empty
+  pure NtfStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup}
 
 data NtfTknData = NtfTknData
   { ntfTknId :: NtfTokenId,
@@ -38,26 +50,20 @@ data NtfTknData = NtfTknData
     tknVerifyKey :: C.APublicVerifyKey,
     tknDhKeys :: C.KeyPair 'C.X25519,
     tknDhSecret :: C.DhSecretX25519,
-    tknRegCode :: NtfRegCode
+    tknRegCode :: NtfRegCode,
+    tknCronInterval :: TVar Word16
   }
 
 mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPair 'C.X25519 -> C.DhSecretX25519 -> NtfRegCode -> STM NtfTknData
 mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tknRegCode = do
   tknStatus <- newTVar NTRegistered
-  pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode}
-
--- data NtfSubscriptionsStore = NtfSubscriptionsStore
-
--- { subscriptions :: TMap NtfSubsciptionId NtfSubsciption,
---   activeSubscriptions :: TMap (SMPServer, NotifierId) NtfSubsciptionId
--- }
--- do
--- subscriptions <- newTVar M.empty
--- activeSubscriptions <- newTVar M.empty
--- pure NtfSubscriptionsStore {subscriptions, activeSubscriptions}
+  tknCronInterval <- newTVar 0
+  pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval}
 
 data NtfSubData = NtfSubData
-  { smpQueue :: SMPQueueNtf,
+  { ntfSubId :: NtfSubscriptionId,
+    smpQueue :: SMPQueueNtf,
+    notifierKey :: NtfPrivateSignKey,
     tokenId :: NtfTokenId,
     subStatus :: TVar NtfSubStatus
   }
@@ -102,7 +108,16 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
         TM.delete tId' $ tokens st
       pure $ map snd tIds
 
-deleteNtfToken :: NtfStore -> NtfTokenId -> STM ()
+removeTokenRegistration :: NtfStore -> NtfTknData -> STM ()
+removeTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
+  TM.lookup token (tokenRegistrations st) >>= mapM_ removeReg
+  where
+    removeReg regs =
+      TM.lookup k regs
+        >>= mapM_ (\tId' -> when (tId == tId') $ TM.delete k regs)
+    k = C.toPubKey C.pubKeyBytes tknVerifyKey
+
+deleteNtfToken :: NtfStore -> NtfTokenId -> STM [SMPQueueNtf]
 deleteNtfToken st tknId = do
   TM.lookupDelete tknId (tokens st)
     >>= mapM_
@@ -114,42 +129,72 @@ deleteNtfToken st tknId = do
                   whenM (TM.null tIds) $ TM.delete token regs
               )
       )
+
+  qs <-
+    TM.lookupDelete tknId (tokenSubscriptions st)
+      >>= mapM
+        ( readTVar
+            >=> mapM
+              ( \subId -> do
+                  TM.lookupDelete subId (subscriptions st)
+                    >>= mapM
+                      ( \NtfSubData {smpQueue} ->
+                          TM.delete smpQueue (subscriptionLookup st) $> smpQueue
+                      )
+              )
+              . S.toList
+        )
+  pure $ maybe [] catMaybes qs
   where
     regs = tokenRegistrations st
     regKey = C.toPubKey C.pubKeyBytes
 
--- getNtfRec :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e))
--- getNtfRec st ent entId = case ent of
---   SToken -> NtfTkn <$$> TM.lookup entId (tokens st)
---   SSubscription -> pure Nothing
+getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe NtfSubData)
+getNtfSubscription st subId =
+  TM.lookup subId (subscriptions st)
 
--- getNtfVerifyKey :: NtfStore -> SNtfEntity e -> NtfEntityId -> STM (Maybe (NtfEntityRec e, C.APublicVerifyKey))
--- getNtfVerifyKey st ent entId =
---   getNtfRec st ent entId >>= \case
---     Just r@(NtfTkn NtfTknData {tknVerifyKey}) -> pure $ Just (r, tknVerifyKey)
---     Just r@(NtfSub NtfSubData {tokenId}) ->
---       getNtfRec st SToken tokenId >>= \case
---         Just (NtfTkn NtfTknData {tknVerifyKey}) -> pure $ Just (r, tknVerifyKey)
---         _ -> pure Nothing
---     _ -> pure Nothing
+findNtfSubscription :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfSubData)
+findNtfSubscription st smpQueue = do
+  TM.lookup smpQueue (subscriptionLookup st)
+    $>>= \subId -> TM.lookup subId (subscriptions st)
 
--- mkNtfSubsciption :: SMPQueueNtf -> NtfTokenId -> STM NtfSubsciption
--- mkNtfSubsciption smpQueue tokenId = do
---   subStatus <- newTVar NSNew
---   pure NtfSubsciption {smpQueue, tokenId, subStatus}
+findNtfSubscriptionToken :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
+findNtfSubscriptionToken st smpQueue = do
+  findNtfSubscription st smpQueue
+    $>>= \NtfSubData {tokenId} -> getActiveNtfToken st tokenId
 
--- getNtfSub :: NtfSubscriptionsStore -> NtfSubsciptionId -> STM (Maybe NtfSubsciption)
--- getNtfSub st subId = pure Nothing -- maybe (pure $ Left AUTH) (fmap Right . readTVar) . M.lookup subId . subscriptions =<< readTVar st
+getActiveNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
+getActiveNtfToken st tknId =
+  getNtfToken st tknId $>>= \tkn@NtfTknData {tknStatus} -> do
+    tStatus <- readTVar tknStatus
+    pure $ if tStatus == NTActive then Just tkn else Nothing
 
--- getNtfSubViaSMPQueue :: NtfSubscriptionsStore -> SMPQueueNtf -> STM (Maybe NtfSubsciption)
--- getNtfSubViaSMPQueue st smpQueue = pure Nothing
+mkNtfSubData :: NtfSubscriptionId -> NewNtfEntity 'Subscription -> STM NtfSubData
+mkNtfSubData ntfSubId (NewNtfSub tokenId smpQueue notifierKey) = do
+  subStatus <- newTVar NSNew
+  pure NtfSubData {ntfSubId, smpQueue, tokenId, subStatus, notifierKey}
 
--- -- replace keeping status
--- updateNtfSub :: NtfSubscriptionsStore -> NtfSubsciption -> SMPQueueNtf -> NtfTokenId -> C.DhSecretX25519 -> STM (Maybe ())
--- updateNtfSub st sub smpQueue tokenId dhSecret = pure Nothing
+addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM (Maybe ())
+addNtfSubscription st subId sub@NtfSubData {smpQueue, tokenId} =
+  TM.lookup tokenId (tokenSubscriptions st) >>= maybe newTokenSub pure >>= insertSub
+  where
+    newTokenSub = do
+      ts <- newTVar S.empty
+      TM.insert tokenId ts $ tokenSubscriptions st
+      pure ts
+    insertSub ts = do
+      modifyTVar' ts $ S.insert subId
+      TM.insert subId sub $ subscriptions st
+      TM.insert smpQueue subId (subscriptionLookup st)
+      -- return Nothing if subscription existed before
+      pure $ Just ()
 
--- addNtfSub :: NtfSubscriptionsStore -> NtfSubsciptionId -> NtfSubsciption -> STM (Maybe ())
--- addNtfSub st subId sub = pure Nothing
-
--- deleteNtfSub :: NtfSubscriptionsStore -> NtfSubsciptionId -> STM ()
--- deleteNtfSub st subId = pure ()
+deleteNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM ()
+deleteNtfSubscription st subId = do
+  TM.lookupDelete subId (subscriptions st)
+    >>= mapM_
+      ( \NtfSubData {smpQueue, tokenId} -> do
+          TM.delete smpQueue $ subscriptionLookup st
+          ts_ <- TM.lookup tokenId (tokenSubscriptions st)
+          forM_ ts_ $ \ts -> modifyTVar' ts $ S.delete subId
+      )

@@ -7,19 +7,20 @@ import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime)
 import Numeric.Natural
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (MsgBody, MsgId, RecipientId)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, MsgId, RecipientId)
 
 data Message = Message
   { msgId :: MsgId,
     ts :: SystemTime,
+    msgFlags :: MsgFlags,
     msgBody :: MsgBody
   }
 
 instance StrEncoding Message where
-  strEncode Message {msgId, ts, msgBody} = strEncode (msgId, ts, msgBody)
+  strEncode Message {msgId, ts, msgFlags, msgBody} = strEncode (msgId, ts, msgFlags, msgBody)
   strP = do
-    (msgId, ts, msgBody) <- strP
-    pure Message {msgId, ts, msgBody}
+    (msgId, ts, msgFlags, msgBody) <- strP
+    pure Message {msgId, ts, msgFlags, msgBody}
 
 data MsgLogRecord = MsgLogRecord RecipientId Message
 
@@ -37,5 +38,6 @@ class MonadMsgQueue q m where
   writeMsg :: q -> Message -> m () -- non blocking
   tryPeekMsg :: q -> m (Maybe Message) -- non blocking
   peekMsg :: q -> m Message -- blocking
-  tryDelPeekMsg :: q -> m (Maybe Message) -- atomic delete (== read) last and peek next message, if available
+  tryDelMsg :: q -> MsgId -> m Bool -- non blocking
+  tryDelPeekMsg :: q -> MsgId -> m (Bool, Maybe Message) -- atomic delete (== read) last and peek next message, if available
   deleteExpiredMsgs :: q -> Int64 -> m ()

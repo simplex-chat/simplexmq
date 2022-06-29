@@ -24,13 +24,14 @@ import Simplex.Messaging.Crypto (KeyHash (..))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.STM
-import Simplex.Messaging.Server.QueueStore (QueueRec (..))
+import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Version
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -59,7 +60,9 @@ data ServerConfig = ServerConfig
     -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
-    certificateFile :: FilePath
+    certificateFile :: FilePath,
+    -- | SMP client-server protocol version range
+    smpServerVRange :: VersionRange
   }
 
 defaultMessageExpiration :: ExpirationConfig
@@ -96,7 +99,7 @@ data Server = Server
   }
 
 data Client = Client
-  { subscriptions :: TMap RecipientId Sub,
+  { subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (Transmission Cmd),
     sndQ :: TBQueue (Transmission BrokerMsg),
@@ -117,11 +120,11 @@ data ServerStats = ServerStats
     fromTime :: TVar UTCTime
   }
 
-data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId)
+data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
 
 data Sub = Sub
   { subThread :: SubscriptionThread,
-    delivered :: TMVar ()
+    delivered :: TMVar MsgId
   }
 
 newServer :: Natural -> STM Server
@@ -155,10 +158,10 @@ newServerStats ts = do
   fromTime <- newTVar ts
   pure ServerStats {qCreated, qSecured, qDeleted, msgSent, msgRecv, dayMsgQueues, weekMsgQueues, monthMsgQueues, fromTime}
 
-newSubscription :: STM Sub
-newSubscription = do
+newSubscription :: SubscriptionThread -> STM Sub
+newSubscription subThread = do
   delivered <- newEmptyTMVar
-  return Sub {subThread = NoSub, delivered}
+  return Sub {subThread, delivered}
 
 newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
@@ -187,4 +190,4 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
     addNotifier q = case notifier q of
       Nothing -> id
-      Just (nId, _) -> M.insert nId (recipientId q)
+      Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)

@@ -19,6 +19,8 @@ CREATE TABLE connections(
   last_rcv_msg_hash BLOB NOT NULL DEFAULT x'',
   last_snd_msg_hash BLOB NOT NULL DEFAULT x'',
   smp_agent_version INTEGER NOT NULL DEFAULT 1
+  ,
+  duplex_handshake INTEGER NULL DEFAULT 0
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -34,6 +36,10 @@ CREATE TABLE rcv_queues(
   status TEXT NOT NULL,
   smp_server_version INTEGER NOT NULL DEFAULT 1,
   smp_client_version INTEGER,
+  ntf_public_key BLOB,
+  ntf_private_key BLOB,
+  ntf_id BLOB,
+  rcv_ntf_dh_secret BLOB,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -64,6 +70,7 @@ CREATE TABLE messages(
   internal_snd_id INTEGER,
   msg_type BLOB NOT NULL, --(H)ELLO,(R)EPLY,(D)ELETE. Should SMP confirmation be saved too?
   msg_body BLOB NOT NULL DEFAULT x'',
+  msg_flags TEXT NULL,
   PRIMARY KEY(conn_id, internal_id),
   FOREIGN KEY(conn_id, internal_rcv_id) REFERENCES rcv_messages
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
@@ -80,6 +87,7 @@ CREATE TABLE rcv_messages(
   internal_hash BLOB NOT NULL,
   external_prev_snd_hash BLOB NOT NULL,
   integrity BLOB NOT NULL,
+  user_ack INTEGER NULL DEFAULT 0,
   PRIMARY KEY(conn_id, internal_rcv_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
@@ -104,6 +112,8 @@ CREATE TABLE conn_confirmations(
   accepted INTEGER NOT NULL,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  smp_reply_queues BLOB NULL
 ) WITHOUT ROWID;
 CREATE TABLE conn_invitations(
   invitation_id BLOB NOT NULL PRIMARY KEY,
@@ -141,7 +151,7 @@ CREATE TABLE ntf_servers(
   PRIMARY KEY(ntf_host, ntf_port)
 ) WITHOUT ROWID;
 CREATE TABLE ntf_tokens(
-  provider TEXT NOT NULL, -- apn
+  provider TEXT NOT NULL, -- apns
   device_token TEXT NOT NULL, -- ! this field is mislabeled and is actually saved as binary
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
@@ -154,8 +164,31 @@ tkn_dh_secret BLOB, -- DH secret for e2e encryption of notifications
   tkn_status TEXT NOT NULL,
   tkn_action BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT(datetime('now')), -- this is to check token status periodically to know when it was last checked
+  updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  ntf_mode TEXT NULL, -- this is to check token status periodically to know when it was last checked
   PRIMARY KEY(provider, device_token, ntf_host, ntf_port),
+  FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
+  ON DELETE RESTRICT ON UPDATE CASCADE
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
+CREATE TABLE ntf_subscriptions(
+  conn_id BLOB NOT NULL,
+  smp_host TEXT NULL,
+  smp_port TEXT NULL,
+  smp_ntf_id BLOB,
+  ntf_host TEXT NOT NULL,
+  ntf_port TEXT NOT NULL,
+  ntf_sub_id BLOB,
+  ntf_sub_status TEXT NOT NULL, -- see NtfAgentSubStatus
+  ntf_sub_action TEXT, -- if there is an action required on this subscription: NtfSubAction
+  ntf_sub_smp_action TEXT, -- action with SMP server: NtfSubSMPAction; only one of this and ntf_sub_action can(should) be not null in same record
+  ntf_sub_action_ts TEXT, -- the earliest time for the action, e.g. checks can be scheduled every X hours
+  updated_by_supervisor INTEGER NOT NULL DEFAULT 0, -- to be checked on updates by workers to not overwrite supervisor command(state still should be updated)
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  PRIMARY KEY(conn_id),
+  FOREIGN KEY(smp_host, smp_port) REFERENCES servers(host, port)
+  ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;

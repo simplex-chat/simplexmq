@@ -1,7 +1,6 @@
 {-# LANGUAGE TypeApplications #-}
 
 import AgentTests (agentTests)
-import AgentTests.NotificationTests (notificationTests)
 import CoreTests.EncodingTests
 import CoreTests.ProtocolErrorTests
 import CoreTests.VersionRangeTests
@@ -25,8 +24,6 @@ main = do
       describe "Version range" versionRangeTests
     describe "SMP server via TLS" $ serverTests (transport @TLS)
     describe "SMP server via WebSockets" $ serverTests (transport @WS)
-    describe "Notifications server" $ do
-      ntfServerTests (transport @TLS)
-      notificationTests (transport @TLS)
+    describe "Notifications server" $ ntfServerTests (transport @TLS)
     describe "SMP client agent" $ agentTests (transport @TLS)
   removeDirectoryRecursive "tests/tmp"

@@ -10,7 +10,7 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -29,7 +29,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
 
 data NtfEntity = Token | Subscription
   deriving (Show)
@@ -55,6 +55,7 @@ data NtfCommandTag (e :: NtfEntity) where
   TNEW_ :: NtfCommandTag 'Token
   TVFY_ :: NtfCommandTag 'Token
   TCHK_ :: NtfCommandTag 'Token
+  TRPL_ :: NtfCommandTag 'Token
   TDEL_ :: NtfCommandTag 'Token
   TCRN_ :: NtfCommandTag 'Token
   SNEW_ :: NtfCommandTag 'Subscription
@@ -71,6 +72,7 @@ instance NtfEntityI e => Encoding (NtfCommandTag e) where
     TNEW_ -> "TNEW"
     TVFY_ -> "TVFY"
     TCHK_ -> "TCHK"
+    TRPL_ -> "TRPL"
     TDEL_ -> "TDEL"
     TCRN_ -> "TCRN"
     SNEW_ -> "SNEW"
@@ -88,6 +90,7 @@ instance ProtocolMsgTag NtfCmdTag where
     "TNEW" -> Just $ NCT SToken TNEW_
     "TVFY" -> Just $ NCT SToken TVFY_
     "TCHK" -> Just $ NCT SToken TCHK_
+    "TRPL" -> Just $ NCT SToken TRPL_
     "TDEL" -> Just $ NCT SToken TDEL_
     "TCRN" -> Just $ NCT SToken TCRN_
     "SNEW" -> Just $ NCT SSubscription SNEW_
@@ -120,16 +123,18 @@ instance ToJSON NtfRegCode where
 
 data NewNtfEntity (e :: NtfEntity) where
   NewNtfTkn :: DeviceToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
-  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NewNtfEntity 'Subscription -- NtfTokenId -> C.APublicVerifyKey -> SMPQueueNtf
+  NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NtfPrivateSignKey -> NewNtfEntity 'Subscription
 
 deriving instance Show (NewNtfEntity e)
 
 data ANewNtfEntity = forall e. NtfEntityI e => ANE (SNtfEntity e) (NewNtfEntity e)
 
+deriving instance Show ANewNtfEntity
+
 instance NtfEntityI e => Encoding (NewNtfEntity e) where
   smpEncode = \case
     NewNtfTkn tkn verifyKey dhPubKey -> smpEncode ('T', tkn, verifyKey, dhPubKey)
-    NewNtfSub tknId smpQueue -> smpEncode ('S', tknId, smpQueue)
+    NewNtfSub tknId smpQueue notifierKey -> smpEncode ('S', tknId, smpQueue, notifierKey)
   smpP = (\(ANE _ c) -> checkEntity c) <$?> smpP
 
 instance Encoding ANewNtfEntity where
@@ -137,7 +142,7 @@ instance Encoding ANewNtfEntity where
   smpP =
     A.anyChar >>= \case
       'T' -> ANE SToken <$> (NewNtfTkn <$> smpP <*> smpP <*> smpP)
-      'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP)
+      'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP <*> smpP)
       _ -> fail "bad ANewNtfEntity"
 
 instance Protocol NtfResponse where
@@ -155,13 +160,15 @@ data NtfCommand (e :: NtfEntity) where
   TVFY :: NtfRegCode -> NtfCommand 'Token
   -- | check token status
   TCHK :: NtfCommand 'Token
+  -- | replace device token (while keeping all existing subscriptions)
+  TRPL :: DeviceToken -> NtfCommand 'Token
   -- | delete token - all subscriptions will be removed and no more notifications will be sent
   TDEL :: NtfCommand 'Token
   -- | enable periodic background notification to fetch the new messages - interval is in minutes, minimum is 20, 0 to disable
   TCRN :: Word16 -> NtfCommand 'Token
   -- | create SMP subscription
   SNEW :: NewNtfEntity 'Subscription -> NtfCommand 'Subscription
-  -- | check SMP subscription status (response is STAT)
+  -- | check SMP subscription status (response is SUB)
   SCHK :: NtfCommand 'Subscription
   -- | delete SMP subscription
   SDEL :: NtfCommand 'Subscription
@@ -176,10 +183,11 @@ deriving instance Show NtfCmd
 
 instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
-  encodeProtocol = \case
+  encodeProtocol _v = \case
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
     TVFY code -> e (TVFY_, ' ', code)
     TCHK -> e TCHK_
+    TRPL tkn -> e (TRPL_, ' ', tkn)
     TDEL -> e TDEL_
     TCRN int -> e (TCRN_, ' ', int)
     SNEW newSub -> e (SNEW_, ' ', newSub)
@@ -190,7 +198,7 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP (NCT (sNtfEntity @e) tag)
+  protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
 
   checkCredentials (sig, _, entityId, _) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
@@ -211,14 +219,15 @@ instance NtfEntityI e => ProtocolEncoding (NtfCommand e) where
 
 instance ProtocolEncoding NtfCmd where
   type Tag NtfCmd = NtfCmdTag
-  encodeProtocol (NtfCmd _ c) = encodeProtocol c
+  encodeProtocol _v (NtfCmd _ c) = encodeProtocol _v c
 
-  protocolP = \case
+  protocolP _v = \case
     NCT SToken tag ->
       NtfCmd SToken <$> case tag of
         TNEW_ -> TNEW <$> _smpP
         TVFY_ -> TVFY <$> _smpP
         TCHK_ -> pure TCHK
+        TRPL_ -> TRPL <$> _smpP
         TDEL_ -> pure TDEL
         TCRN_ -> TCRN <$> _smpP
     NCT SSubscription tag ->
@@ -231,7 +240,8 @@ instance ProtocolEncoding NtfCmd where
   checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
 
 data NtfResponseTag
-  = NRId_
+  = NRTknId_
+  | NRSubId_
   | NROk_
   | NRErr_
   | NRTkn_
@@ -241,7 +251,8 @@ data NtfResponseTag
 
 instance Encoding NtfResponseTag where
   smpEncode = \case
-    NRId_ -> "ID"
+    NRTknId_ -> "IDTKN" -- it should be "TID", "SID"
+    NRSubId_ -> "IDSUB"
     NROk_ -> "OK"
     NRErr_ -> "ERR"
     NRTkn_ -> "TKN"
@@ -251,7 +262,8 @@ instance Encoding NtfResponseTag where
 
 instance ProtocolMsgTag NtfResponseTag where
   decodeTag = \case
-    "ID" -> Just NRId_
+    "IDTKN" -> Just NRTknId_
+    "IDSUB" -> Just NRSubId_
     "OK" -> Just NROk_
     "ERR" -> Just NRErr_
     "TKN" -> Just NRTkn_
@@ -260,7 +272,8 @@ instance ProtocolMsgTag NtfResponseTag where
     _ -> Nothing
 
 data NtfResponse
-  = NRId NtfEntityId C.PublicKeyX25519
+  = NRTknId NtfEntityId C.PublicKeyX25519
+  | NRSubId NtfEntityId
   | NROk
   | NRErr ErrorType
   | NRTkn NtfTknStatus
@@ -270,8 +283,9 @@ data NtfResponse
 
 instance ProtocolEncoding NtfResponse where
   type Tag NtfResponse = NtfResponseTag
-  encodeProtocol = \case
-    NRId entId dhKey -> e (NRId_, ' ', entId, dhKey)
+  encodeProtocol _v = \case
+    NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
+    NRSubId entId -> e (NRSubId_, ' ', entId)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
     NRTkn stat -> e (NRTkn_, ' ', stat)
@@ -281,8 +295,9 @@ instance ProtocolEncoding NtfResponse where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP = \case
-    NRId_ -> NRId <$> _smpP <*> smpP
+  protocolP _v = \case
+    NRTknId_ -> NRTknId <$> _smpP <*> smpP
+    NRSubId_ -> NRSubId <$> _smpP
     NROk_ -> pure NROk
     NRErr_ -> NRErr <$> _smpP
     NRTkn_ -> NRTkn <$> _smpP
@@ -290,8 +305,10 @@ instance ProtocolEncoding NtfResponse where
     NRPong_ -> pure NRPong
 
   checkCredentials (_, _, entId, _) cmd = case cmd of
-    -- ID response must not have queue ID
-    NRId {} -> noEntity
+    -- IDTKN response must not have queue ID
+    NRTknId {} -> noEntity
+    -- IDSUB response must not have queue ID
+    NRSubId {} -> noEntity
     -- ERR response does not always have entity ID
     NRErr _ -> Right cmd
     -- PONG response must not have queue ID
@@ -307,38 +324,50 @@ instance ProtocolEncoding NtfResponse where
 
 data SMPQueueNtf = SMPQueueNtf
   { smpServer :: ProtocolServer,
-    notifierId :: NotifierId,
-    notifierKey :: NtfPrivateSignKey
+    notifierId :: NotifierId
   }
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 instance Encoding SMPQueueNtf where
-  smpEncode SMPQueueNtf {smpServer, notifierId, notifierKey} = smpEncode (smpServer, notifierId, notifierKey)
+  smpEncode SMPQueueNtf {smpServer, notifierId} = smpEncode (smpServer, notifierId)
   smpP = do
-    (smpServer, notifierId, notifierKey) <- smpP
-    pure $ SMPQueueNtf smpServer notifierId notifierKey
+    (smpServer, notifierId) <- smpP
+    pure $ SMPQueueNtf {smpServer, notifierId}
 
-data PushProvider = PPApns
+instance StrEncoding SMPQueueNtf where
+  strEncode SMPQueueNtf {smpServer, notifierId} = strEncode smpServer <> "/" <> strEncode notifierId
+  strP = SMPQueueNtf <$> strP <* A.char '/' <*> strP
+
+data PushProvider = PPApnsDev | PPApnsProd | PPApnsTest
   deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
   smpEncode = \case
-    PPApns -> "A"
+    PPApnsDev -> "AD"
+    PPApnsProd -> "AP"
+    PPApnsTest -> "AT"
   smpP =
-    A.anyChar >>= \case
-      'A' -> pure PPApns
+    A.take 2 >>= \case
+      "AD" -> pure PPApnsDev
+      "AP" -> pure PPApnsProd
+      "AT" -> pure PPApnsTest
       _ -> fail "bad PushProvider"
 
-instance TextEncoding PushProvider where
-  textEncode = \case
-    PPApns -> "apple"
-  textDecode = \case
-    "apple" -> Just PPApns
-    _ -> Nothing
+instance StrEncoding PushProvider where
+  strEncode = \case
+    PPApnsDev -> "apns_dev"
+    PPApnsProd -> "apns_prod"
+    PPApnsTest -> "apns_test"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "apns_dev" -> pure PPApnsDev
+      "apns_prod" -> pure PPApnsProd
+      "apns_test" -> pure PPApnsTest
+      _ -> fail "bad PushProvider"
 
-instance FromField PushProvider where fromField = fromTextField_ textDecode
+instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField PushProvider where toField = toField . textEncode
+instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
 data DeviceToken = DeviceToken PushProvider ByteString
   deriving (Eq, Ord, Show)
@@ -346,6 +375,18 @@ data DeviceToken = DeviceToken PushProvider ByteString
 instance Encoding DeviceToken where
   smpEncode (DeviceToken p t) = smpEncode (p, t)
   smpP = DeviceToken <$> smpP <*> smpP
+
+instance StrEncoding DeviceToken where
+  strEncode (DeviceToken p t) = strEncode p <> " " <> t
+  strP = DeviceToken <$> strP <* A.space <*> hexStringP
+    where
+      hexStringP =
+        A.takeWhile (\c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) >>= \s ->
+          if even (B.length s) then pure s else fail "odd number of hex characters"
+
+instance ToJSON DeviceToken where
+  toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
+  toJSON (DeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
 
 type NtfEntityId = ByteString
 
@@ -360,10 +401,14 @@ data NtfSubStatus
     NSPending
   | -- | connected and subscribed to SMP server
     NSActive
+  | -- | disconnected/unsubscribed from SMP server
+    NSInactive
   | -- | NEND received (we currently do not support it)
     NSEnd
   | -- | SMP AUTH error
     NSSMPAuth
+  | -- | SMP error other than AUTH
+    NSSMPErr ErrorType
   deriving (Eq, Show)
 
 instance Encoding NtfSubStatus where
@@ -371,16 +416,26 @@ instance Encoding NtfSubStatus where
     NSNew -> "NEW"
     NSPending -> "PENDING" -- e.g. after SMP server disconnect/timeout while ntf server is retrying to connect
     NSActive -> "ACTIVE"
+    NSInactive -> "INACTIVE"
     NSEnd -> "END"
     NSSMPAuth -> "SMP_AUTH"
+    NSSMPErr err -> "SMP_ERR " <> smpEncode err
   smpP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NSNew
       "PENDING" -> pure NSPending
       "ACTIVE" -> pure NSActive
+      "INACTIVE" -> pure NSInactive
       "END" -> pure NSEnd
       "SMP_AUTH" -> pure NSSMPAuth
+      "SMP_ERR" -> do
+        _ <- A.space
+        NSSMPErr <$> smpP
       _ -> fail "bad NtfSubStatus"
+
+instance StrEncoding NtfSubStatus where
+  strEncode = smpEncode
+  strP = smpP
 
 data NtfTknStatus
   = -- | Token created in DB
@@ -414,6 +469,10 @@ instance Encoding NtfTknStatus where
       "ACTIVE" -> pure NTActive
       "EXPIRED" -> pure NTExpired
       _ -> fail "bad NtfTknStatus"
+
+instance StrEncoding NtfTknStatus where
+  strEncode = smpEncode
+  strP = smpP
 
 instance FromField NtfTknStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
 

@@ -9,9 +9,7 @@
 
 module Simplex.Messaging.Agent.Store where
 
-import Control.Concurrent.STM (TVar)
 import Control.Exception (Exception)
-import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -19,71 +17,21 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff, SkippedMsgKeys)
-import Simplex.Messaging.Notifications.Client
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfTknStatus, NtfTokenId)
+import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
 import Simplex.Messaging.Protocol
   ( MsgBody,
+    MsgFlags,
     MsgId,
+    NotifierId,
+    NtfPrivateSignKey,
+    NtfPublicVerifyKey,
     RcvDhSecret,
+    RcvNtfDhSecret,
     RcvPrivateSignKey,
     SndPrivateSignKey,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-
--- * Store management
-
--- | Store class type. Defines store access methods for implementations.
-class Monad m => MonadAgentStore s m where
-  -- Queue and Connection management
-  createRcvConn :: s -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> m ConnId
-  createSndConn :: s -> TVar ChaChaDRG -> ConnData -> SndQueue -> m ConnId
-  getConn :: s -> ConnId -> m SomeConn
-  getRcvConn :: s -> SMPServer -> SMP.RecipientId -> m SomeConn
-  deleteConn :: s -> ConnId -> m ()
-  upgradeRcvConnToDuplex :: s -> ConnId -> SndQueue -> m ()
-  upgradeSndConnToDuplex :: s -> ConnId -> RcvQueue -> m ()
-  setRcvQueueStatus :: s -> RcvQueue -> QueueStatus -> m ()
-  setRcvQueueConfirmedE2E :: s -> RcvQueue -> C.DhSecretX25519 -> m ()
-  setSndQueueStatus :: s -> SndQueue -> QueueStatus -> m ()
-
-  -- Confirmations
-  createConfirmation :: s -> TVar ChaChaDRG -> NewConfirmation -> m ConfirmationId
-  acceptConfirmation :: s -> ConfirmationId -> ConnInfo -> m AcceptedConfirmation
-  getAcceptedConfirmation :: s -> ConnId -> m AcceptedConfirmation
-  removeConfirmations :: s -> ConnId -> m ()
-
-  -- Invitations - sent via Contact connections
-  createInvitation :: s -> TVar ChaChaDRG -> NewInvitation -> m InvitationId
-  getInvitation :: s -> InvitationId -> m Invitation
-  acceptInvitation :: s -> InvitationId -> ConnInfo -> m ()
-  deleteInvitation :: s -> ConnId -> InvitationId -> m ()
-
-  -- Msg management
-  updateRcvIds :: s -> ConnId -> m (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
-  createRcvMsg :: s -> ConnId -> RcvMsgData -> m ()
-  updateSndIds :: s -> ConnId -> m (InternalId, InternalSndId, PrevSndMsgHash)
-  createSndMsg :: s -> ConnId -> SndMsgData -> m ()
-  getPendingMsgData :: s -> ConnId -> InternalId -> m (Maybe RcvQueue, (AgentMessageType, MsgBody, InternalTs))
-  getPendingMsgs :: s -> ConnId -> m [InternalId]
-  checkRcvMsg :: s -> ConnId -> InternalId -> m ()
-  deleteMsg :: s -> ConnId -> InternalId -> m ()
-
-  -- Double ratchet persistence
-  createRatchetX3dhKeys :: s -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> m ()
-  getRatchetX3dhKeys :: s -> ConnId -> m (C.PrivateKeyX448, C.PrivateKeyX448)
-  createRatchet :: s -> ConnId -> RatchetX448 -> m ()
-  getRatchet :: s -> ConnId -> m RatchetX448
-  getSkippedMsgKeys :: s -> ConnId -> m SkippedMsgKeys
-  updateRatchet :: s -> ConnId -> RatchetX448 -> SkippedMsgDiff -> m ()
-
-  -- Notification device token persistence
-  createNtfToken :: s -> NtfToken -> m ()
-
-  getDeviceNtfToken :: s -> DeviceToken -> m (Maybe NtfToken, [NtfToken])
-  updateNtfTokenRegistration :: s -> NtfToken -> NtfTokenId -> C.DhSecretX25519 -> m ()
-  updateNtfToken :: s -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> m ()
-  removeNtfToken :: s -> NtfToken -> m ()
+import Simplex.Messaging.Version
 
 -- * Queue types
 
@@ -103,7 +51,20 @@ data RcvQueue = RcvQueue
     -- | sender queue ID
     sndId :: Maybe SMP.SenderId,
     -- | queue status
-    status :: QueueStatus
+    status :: QueueStatus,
+    -- | credentials used in context of notifications
+    clientNtfCreds :: Maybe ClientNtfCreds
+  }
+  deriving (Eq, Show)
+
+data ClientNtfCreds = ClientNtfCreds
+  { -- | key pair to be used by the notification server to sign transmissions
+    ntfPublicKey :: NtfPublicVerifyKey,
+    ntfPrivateKey :: NtfPrivateSignKey,
+    -- | queue ID to be used by the notification server for NSUB command
+    notifierId :: NotifierId,
+    -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
+    rcvNtfDhSecret :: RcvNtfDhSecret
   }
   deriving (Eq, Show)
 
@@ -183,7 +144,11 @@ instance Eq SomeConn where
 
 deriving instance Show SomeConn
 
-newtype ConnData = ConnData {connId :: ConnId}
+data ConnData = ConnData
+  { connId :: ConnId,
+    connAgentVersion :: Version,
+    duplexHandshake :: Maybe Bool -- added in agent protocol v2
+  }
   deriving (Eq, Show)
 
 -- * Confirmation types
@@ -230,15 +195,23 @@ type PrevRcvMsgHash = MsgHash
 -- | Corresponds to `last_snd_msg_hash` in `connections` table
 type PrevSndMsgHash = MsgHash
 
--- * Message data containers - used on Msg creation to reduce number of parameters
+-- * Message data containers
 
 data RcvMsgData = RcvMsgData
   { msgMeta :: MsgMeta,
     msgType :: AgentMessageType,
+    msgFlags :: MsgFlags,
     msgBody :: MsgBody,
     internalRcvId :: InternalRcvId,
     internalHash :: MsgHash,
     externalPrevSndHash :: MsgHash
+  }
+
+data RcvMsg = RcvMsg
+  { internalId :: InternalId,
+    msgMeta :: MsgMeta,
+    msgBody :: MsgBody,
+    userAck :: Bool
   }
 
 data SndMsgData = SndMsgData
@@ -246,14 +219,18 @@ data SndMsgData = SndMsgData
     internalSndId :: InternalSndId,
     internalTs :: InternalTs,
     msgType :: AgentMessageType,
+    msgFlags :: MsgFlags,
     msgBody :: MsgBody,
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash
   }
 
-data PendingMsg = PendingMsg
-  { connId :: ConnId,
-    msgId :: InternalId
+data PendingMsgData = PendingMsgData
+  { msgId :: InternalId,
+    msgType :: AgentMessageType,
+    msgFlags :: MsgFlags,
+    msgBody :: MsgBody,
+    internalTs :: InternalTs
   }
   deriving (Show)
 
@@ -321,4 +298,6 @@ data StoreError
     SEX3dhKeysNotFound
   | -- | Used in `getMsg` that is not implemented/used. TODO remove.
     SENotImplemented
+  | -- | Used to wrap agent errors inside store operations to avoid race conditions
+    SEAgentError AgentErrorType
   deriving (Eq, Show, Exception)

@@ -32,6 +32,7 @@ import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -78,11 +79,27 @@ instance FromJSON Str where
 
 instance StrEncoding a => StrEncoding (Maybe a) where
   strEncode = maybe "" strEncode
+  {-# INLINE strEncode #-}
   strP = optional strP
+  {-# INLINE strP #-}
 
 instance StrEncoding Word16 where
   strEncode = B.pack . show
+  {-# INLINE strEncode #-}
   strP = A.decimal
+  {-# INLINE strP #-}
+
+instance StrEncoding Char where
+  strEncode = smpEncode
+  {-# INLINE strEncode #-}
+  strP = strP
+  {-# INLINE strP #-}
+
+instance StrEncoding Bool where
+  strEncode = smpEncode
+  {-# INLINE strEncode #-}
+  strP = smpP
+  {-# INLINE strP #-}
 
 instance StrEncoding Int64 where
   strEncode = B.pack . show
@@ -109,19 +126,27 @@ listItem = parseAll strP <$?> A.takeTill (== ',')
 
 instance (StrEncoding a, StrEncoding b) => StrEncoding (a, b) where
   strEncode (a, b) = B.unwords [strEncode a, strEncode b]
+  {-# INLINE strEncode #-}
   strP = (,) <$> strP_ <*> strP
+  {-# INLINE strP #-}
 
 instance (StrEncoding a, StrEncoding b, StrEncoding c) => StrEncoding (a, b, c) where
   strEncode (a, b, c) = B.unwords [strEncode a, strEncode b, strEncode c]
+  {-# INLINE strEncode #-}
   strP = (,,) <$> strP_ <*> strP_ <*> strP
+  {-# INLINE strP #-}
 
 instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d) => StrEncoding (a, b, c, d) where
   strEncode (a, b, c, d) = B.unwords [strEncode a, strEncode b, strEncode c, strEncode d]
+  {-# INLINE strEncode #-}
   strP = (,,,) <$> strP_ <*> strP_ <*> strP_ <*> strP
+  {-# INLINE strP #-}
 
 instance (StrEncoding a, StrEncoding b, StrEncoding c, StrEncoding d, StrEncoding e) => StrEncoding (a, b, c, d, e) where
   strEncode (a, b, c, d, e) = B.unwords [strEncode a, strEncode b, strEncode c, strEncode d, strEncode e]
+  {-# INLINE strEncode #-}
   strP = (,,,,) <$> strP_ <*> strP_ <*> strP_ <*> strP_ <*> strP
+  {-# INLINE strP #-}
 
 strP_ :: StrEncoding a => Parser a
 strP_ = strP <* A.space

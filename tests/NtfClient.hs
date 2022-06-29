@@ -18,8 +18,9 @@ import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson as J
+import qualified Data.Aeson.Types as JT
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import Data.Text (Text)
@@ -42,6 +43,7 @@ import Simplex.Messaging.Transport.HTTP2 (http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.KeepAlive
+import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -60,10 +62,13 @@ apnsTestPort = "6010"
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 
+ntfTestStoreLogFile :: FilePath
+ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
+
 testNtfClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testNtfClient client =
   runTransportClient testHost ntfTestPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
-    liftIO (runExceptT $ ntfClientHandshake h testKeyHash) >>= \case
+    liftIO (runExceptT $ ntfClientHandshake h testKeyHash supportedNTFServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -79,21 +84,28 @@ ntfServerCfg =
       smpAgentCfg = defaultSMPClientAgentConfig,
       apnsConfig =
         defaultAPNSPushClientConfig
-          { apnsHost = "localhost",
-            apnsPort = apnsTestPort,
+          { apnsPort = apnsTestPort,
             http2cfg = defaultHTTP2ClientConfig {caStoreFile = "tests/fixtures/ca.crt"}
           },
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
+      storeLogFile = Nothing,
+      resubscribeDelay = 1000,
       -- CA certificate private key is not needed for initialization
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"
     }
 
+withNtfServerStoreLog :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ThreadId -> m a) -> m a
+withNtfServerStoreLog t = withNtfServerCfg t ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile}
+
 withNtfServerThreadOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withNtfServerThreadOn t port' =
+withNtfServerThreadOn t port' = withNtfServerCfg t ntfServerCfg {transports = [(port', t)]}
+
+withNtfServerCfg :: (MonadUnliftIO m, MonadRandom m) => ATransport -> NtfServerConfig -> (ThreadId -> m a) -> m a
+withNtfServerCfg t cfg =
   serverBracket
-    (\started -> runNtfServerBlocking started ntfServerCfg {transports = [(port', t)]})
+    (\started -> runNtfServerBlocking started cfg {transports = [(ntfTestPort, t)]})
     (pure ())
 
 serverBracket :: MonadUnliftIO m => (TMVar Bool -> m ()) -> m () -> (ThreadId -> m a) -> m a
@@ -134,6 +146,9 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       (Nothing, _, (CorrId corrId, qId, Right cmd)) <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
+ntfTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+ntfTest _ test' = runNtfTest test' `shouldReturn` ()
+
 data APNSMockRequest = APNSMockRequest
   { notification :: APNSNotification,
     sendApnsResponse :: APNSMockResponse -> IO ()
@@ -163,9 +178,16 @@ withAPNSMockServer = E.bracket (getAPNSMockServer apnsMockServerConfig) closeAPN
 
 deriving instance Generic APNSAlertBody
 
-deriving instance FromJSON APNSAlertBody
+instance FromJSON APNSAlertBody where
+  parseJSON (J.Object v) = do
+    title <- v .: "title"
+    subtitle <- v .: "subtitle"
+    body <- v .: "body"
+    pure APNSAlertObject {title, subtitle, body}
+  parseJSON (J.String v) = pure $ APNSAlertText v
+  parseJSON invalid = JT.prependFailure "parsing Coord failed, " (JT.typeMismatch "Object" invalid)
 
-instance FromJSON APNSNotificationBody where parseJSON = J.genericParseJSON apnsJSONOptions
+instance FromJSON APNSNotificationBody where parseJSON = J.genericParseJSON apnsJSONOptions {J.rejectUnknownFields = True}
 
 deriving instance FromJSON APNSNotification
 
@@ -185,8 +207,11 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
             APNSRespError status reason ->
               sendResponse . H.responseBuilder status [] . lazyByteString $ J.encode APNSErrorResponse {reason}
       case J.decodeStrict' reqBody of
-        Just notification -> atomically $ writeTBQueue apnsQ APNSMockRequest {notification, sendApnsResponse}
-        _ -> sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
+        Just notification ->
+          atomically $ writeTBQueue apnsQ APNSMockRequest {notification, sendApnsResponse}
+        _ -> do
+          putStrLn $ "runAPNSMockServer J.decodeStrict' error, reqBody: " <> show reqBody
+          sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
 
 closeAPNSMockServer :: APNSMockServer -> IO ()
 closeAPNSMockServer APNSMockServer {action, http2Server} = do
