@@ -7,6 +7,7 @@
 
 module Simplex.Messaging.Notifications.Server.Env where
 
+import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
 import Control.Monad.IO.Unlift
 import Crypto.Random
@@ -30,6 +31,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport)
 import Simplex.Messaging.Transport.Server (loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
+import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
 data NtfServerConfig = NtfServerConfig
@@ -93,14 +95,16 @@ newNtfSubscriber qSize smpAgentCfg = do
   smpAgent <- newSMPClientAgent smpAgentCfg
   pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
 
-newtype SMPSubscriber = SMPSubscriber
-  { newSubQ :: TBQueue (NtfEntityRec 'Subscription)
+data SMPSubscriber = SMPSubscriber
+  { newSubQ :: TQueue (NtfEntityRec 'Subscription),
+    subThreadId :: TVar (Maybe (Weak ThreadId))
   }
 
-newSMPSubscriber :: Natural -> STM SMPSubscriber
-newSMPSubscriber qSize = do
-  newSubQ <- newTBQueue qSize
-  pure SMPSubscriber {newSubQ}
+newSMPSubscriber :: STM SMPSubscriber
+newSMPSubscriber = do
+  newSubQ <- newTQueue
+  subThreadId <- newTVar Nothing
+  pure SMPSubscriber {newSubQ, subThreadId}
 
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfTknData, PushNotification),
