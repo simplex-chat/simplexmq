@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -25,6 +26,7 @@ import SMPClient (cfg, testPort, withSmpServer, withSmpServerConfigOn, withSmpSe
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
+import Simplex.Messaging.Client (ProtocolClientConfig (..))
 import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
@@ -46,8 +48,11 @@ get c = atomically (readTBQueue $ subQ c)
 pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody
 
+smpCfgV1 :: ProtocolClientConfig
+smpCfgV1 = (smpCfg agentCfg) {smpServerVRange = mkVersionRange 1 1}
+
 agentCfgV1 :: AgentConfig
-agentCfgV1 = agentCfg {smpAgentVersion = 1, smpAgentVRange = mkVersionRange 1 1}
+agentCfgV1 = agentCfg {smpAgentVersion = 1, smpAgentVRange = mkVersionRange 1 1, smpCfg = smpCfgV1}
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
