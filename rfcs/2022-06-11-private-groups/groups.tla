@@ -286,6 +286,8 @@ ApproverReceiveProposal(recipient) ==
                IF
                    /\ PerceivedUser /= Nothing
                    /\ HasDirectConnection(message.recipient.user, PerceivedUser)
+                   /\ \A members \in group_perceptions[message.recipient] :
+                       /\ members.user /= PerceivedUser
                THEN
                    /\ approver_states[<<message.invite_id, message.recipient.user>>].state = Nothing
                    /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ for_group |-> message.recipient.id, state |-> Active ] ]
