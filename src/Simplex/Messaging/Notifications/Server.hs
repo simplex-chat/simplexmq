@@ -157,10 +157,12 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     updateSubStatus smpQueue status = do
       st <- asks store
-      s_ <- atomically $ findNtfSubscription st smpQueue
-      forM_ s_ $ \NtfSubData {ntfSubId, subStatus} -> do
-        atomically $ writeTVar subStatus status
-        withNtfLog $ \sl -> logSubscriptionStatus sl ntfSubId status
+      atomically (findNtfSubscription st smpQueue)
+        >>= mapM_
+          ( \NtfSubData {ntfSubId, subStatus} -> do
+              atomically $ writeTVar subStatus status
+              withNtfLog $ \sl -> logSubscriptionStatus sl ntfSubId status
+          )
 
 ntfPush :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
