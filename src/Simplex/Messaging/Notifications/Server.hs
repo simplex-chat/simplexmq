@@ -155,7 +155,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               PCEProtocolError e -> case e of
                 AUTH -> updateSubStatus smpQueue NSSMPAuth
                 _ -> updateSubStatus smpQueue (NSSMPErr e)
-              PCEResponseError e -> logErr err
+              PCEResponseError e -> logErr e
               PCEUnexpectedResponse -> logErr err
               PCESignatureError e -> logErr e
               PCEIOError e -> logErr e
