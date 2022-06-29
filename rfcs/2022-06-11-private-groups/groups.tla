@@ -39,7 +39,8 @@ CONSTANTS
     \* Proposal States
     Proposing,
     Kicking,
-    \* Approver States
+    \* User States
+    Invited,
     Active,
     Committed,
     \* Request Type
@@ -372,36 +373,40 @@ BroadcastToken ==
                 )
             /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
-\* IMPORTANT: It is NOT inviariant that the invitee matches across the same
-\* invite_id, because some members may have confused the invitee.
-GetInvites(invite_id, invitee) ==
-    { message \in messages : message.type = Invite /\ message.recipient = invitee /\ message.invite_id = invite_id }
-
 SendAccept ==
     \E message \in messages :
         /\ message.type = Invite
-        /\ LET  invitee == message.recipient
-                invite_id == message.invite_id
-                Invites == GetInvites(invite_id, invitee)
-                Inviters == { invite.sender : invite \in Invites }
-                Tokens == { invite.token : invite \in Invites }
-           IN   IF   Cardinality(Inviters) = message.group_size
+        /\ LET key == <<message.invite_id, message.recipient>>
+           IN
+            /\ approver_states' =
+                IF  approver_states[key].state = Nothing
                 THEN
-                    \* IMPORTANT: The Accept may still has a chance of being
-                    \* ignored (or token mismatch or something odd), so the
-                    \* invitee does not yet believe themself to be part of the
-                    \* group.  At least one member must establish a connection
-                    \* with them first.
-                    /\ AddMessage(
-                            [ sender |-> invitee
-                            , recipient |-> message.sender
-                            , type |-> Accept
-                            , tokens |-> Tokens
-                            , invite_id |-> invite_id
-                            ]
-                        )
-                ELSE UNCHANGED <<messages>>
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
+                    [ approver_states EXCEPT ![key] =
+                        [ state |-> Invited, tokens |-> { message.token }, members |-> { message.sender } ]
+                    ]
+                ELSE
+                    [ approver_states EXCEPT ![key] =
+                        [ @ EXCEPT !.tokens = @ \union { message.token }, !.members = @ \union { message.sender } ]
+                    ]
+               \* TODO: For Byzantine considerations, the invitee should be
+               \* able to lose trust if things don't line up as expected
+            /\ IF   Cardinality(approver_states'[key].members) = message.group_size
+               THEN
+                   \* IMPORTANT: The Accept may still has a chance of being
+                   \* ignored (or token mismatch or something odd), so the
+                   \* invitee does not yet believe themself to be part of the
+                   \* group.  At least one member must establish a connection
+                   \* with them first.
+                   /\ AddMessage(
+                           [ sender |-> message.recipient
+                           , recipient |-> message.sender
+                           , type |-> Accept
+                           , tokens |-> approver_states'[key].tokens
+                           , invite_id |-> message.invite_id
+                           ]
+                      )
+               ELSE UNCHANGED <<messages>>
+            /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
 
 Establish(recipient) ==
     \E message \in messages :
@@ -509,6 +514,11 @@ Spec == Init /\ [][Next]_AllVars /\ Fairness
 
 TypeOk ==
     approver_states \in [ InviteIds \X Users ->
+        [ state : { Invited }
+        , tokens : SUBSET [ for : InviteIds, by : Users ]
+        , members : SUBSET Users
+        ]
+        \union
         [ state : { Active }
         , for_group : InviteIds \union { Nothing }
         ]
