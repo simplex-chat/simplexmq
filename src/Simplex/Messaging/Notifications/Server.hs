@@ -132,8 +132,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             findNtfSubscriptionToken st smpQueue
               >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
         SMP.END -> updateSubStatus smpQueue NSInactive
-        SMP.ERR AUTH -> updateSubStatus smpQueue NSSMPAuth
-        SMP.ERR e -> updateSubStatus smpQueue (NSSMPErr e)
         _ -> pure ()
       pure ()
 
