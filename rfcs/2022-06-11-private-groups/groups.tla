@@ -235,7 +235,7 @@ GiveUpOnProposal ==
     /\ complete_proposals' = complete_proposals \union { proposal.invite_id }
     /\ proposal' =
         [ type |-> Kicking
-        , awaiting_response |-> group_perceptions[Leader]
+        , awaiting_response |-> { member \in group_perceptions[Leader] : member.id /= proposal.invite_id }
         , kicked |-> { proposal.invite_id }
         ]
     /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
