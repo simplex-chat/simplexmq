@@ -104,7 +104,7 @@ Init ==
     /\ group_perceptions = [ member \in MemberSet |-> IF member \in InitialMembers THEN InitialMembers ELSE {} ]
     /\ proposal = Nothing
     /\ complete_proposals = {}
-    /\ approver_states = [ x \in (InviteIds \X Users) |-> Nothing ]
+    /\ approver_states = [ x \in (InviteIds \X Users) |-> [ state |-> Nothing ] ]
 
 AddMessage(message) ==
     IF  \/ MaxInFlightRequests = Nothing
@@ -287,7 +287,7 @@ ApproverReceiveProposal(recipient) ==
                    /\ PerceivedUser /= Nothing
                    /\ HasDirectConnection(message.recipient.user, PerceivedUser)
                THEN
-                   /\ approver_states[<<message.invite_id, message.recipient.user>>] = Nothing
+                   /\ approver_states[<<message.invite_id, message.recipient.user>>].state = Nothing
                    /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ for_group |-> message.recipient.id, state |-> Active ] ]
                    \* It's safe to send this message right away, as it only agrees to
                    \* reveal information that everyone has agreed to share.  The invitee
@@ -336,7 +336,7 @@ ApproverReceiveKick(recipient, kicked) ==
         /\ approver_states' =
             FoldSet(
               LAMBDA next, prev :
-                  [ prev EXCEPT ![<<next, message.recipient.user>>] = [ for_group |-> message.recipient.id, state |-> Committed ] ],
+                  [ prev EXCEPT ![<<next, message.recipient.user>>] = [ state |-> Committed ] ],
               approver_states,
               message.kicked
             )
@@ -355,7 +355,7 @@ BroadcastToken ==
     \E from \in MemberSet, invite_id \in InviteIds :
         \E to \in group_perceptions[from] :
             /\ from /= to
-            /\ approver_states[<<invite_id, from.user>>] /= Nothing
+            /\ approver_states[<<invite_id, from.user>>].state /= Nothing
             /\ AddMessage(
                     [ sender |-> from
                     , recipient |-> to
@@ -405,7 +405,6 @@ Establish(recipient) ==
     \E message \in messages :
         /\ message.recipient = recipient
         /\ message.type = Accept
-        /\ approver_states[<<message.invite_id, message.recipient>>] /= Nothing
         /\ approver_states[<<message.invite_id, message.recipient>>].state = Active
         /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>].for_group
                RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
@@ -416,11 +415,10 @@ Establish(recipient) ==
                Tokens == { sync.token : sync \in SyncMessages } \union { [ for |-> message.invite_id, by |-> message.recipient ] }
                InviteeDoesntBelieveInviterIsKicked ==
                    /\ RecipientId /= Nothing
-                   /\ approver_states[<<RecipientId, message.sender>>] /= Nothing
                    /\ approver_states[<<RecipientId, message.sender>>].state = Committed
            IN  /\ Senders = group_perceptions[RecipientMember] \ { RecipientMember }
                /\ message.tokens = Tokens
-               /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = [ @ EXCEPT !.state = Committed ] ]
+               /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = [ state |-> Committed ] ]
                \* TODO: This can't be atomic
                /\ group_perceptions' =
                    [ group_perceptions
@@ -513,11 +511,8 @@ TypeOk ==
         , for_group : InviteIds \union { Nothing }
         ]
         \union
-        [ state : { Committed }
-        , for_group : InviteIds \union { Nothing }
+        [ state : { Nothing, Committed }
         ]
-        \union
-        { Nothing }
     ]
 
 IdsAreUnique ==
@@ -543,10 +538,10 @@ TokensMatch ==
     \A message \in messages :
         /\ message.type = Invite =>
             /\ message.token = [ for |-> message.invite_id, by |-> message.sender ]
-            /\ approver_states[<<message.invite_id, message.sender>>] /= Nothing
+            /\ approver_states[<<message.invite_id, message.sender>>].state /= Nothing
         /\ message.type = SyncToken =>
             /\ message.token = [ for |-> message.invite_id, by |-> message.sender.user ]
-            /\ approver_states[<<message.invite_id, message.sender.user>>] /= Nothing
+            /\ approver_states[<<message.invite_id, message.sender.user>>].state /= Nothing
 
 GroupSizesMatch ==
     \A message1, message2 \in messages :
@@ -569,8 +564,8 @@ NonMembersOnlyKnowMembersKnowEachOtherIfMembersAcceptedProposal ==
             /\ message2.type = Invite
             /\ message1.recipient = message2.recipient
             /\ message1.invite_id = message2.invite_id
-            =>  /\ approver_states[<<message1.invite_id, message1.sender>>] /= Nothing
-                /\ approver_states[<<message2.invite_id, message2.sender>>] /= Nothing
+            =>  /\ approver_states[<<message1.invite_id, message1.sender>>].state /= Nothing
+                /\ approver_states[<<message2.invite_id, message2.sender>>].state /= Nothing
 
 AllMembersUsers ==
     UNION { { member.user : member \in group_perceptions[x] } : x \in MemberSet }
