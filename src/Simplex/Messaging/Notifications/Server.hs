@@ -109,10 +109,11 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       forever $
         atomically (peekTBQueue subscriberSubQ) >>= \case
           NtfSub NtfSubData {smpQueue, notifierKey} -> do
+            updateSubStatus smpQueue NSPending
             let SMPQueueNtf {smpServer, notifierId} = smpQueue
             liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
               Right _ -> do
-                -- update subscription status
+                updateSubStatus smpQueue NSActive
                 _ <- atomically $ readTBQueue subscriberSubQ
                 pure ()
               Left _e -> pure ()
@@ -120,15 +121,18 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     receiveSMP :: m ()
     receiveSMP = forever $ do
       (srv, _sessId, ntfId, msg) <- atomically $ readTBQueue msgQ
+      let smpQueue = SMPQueueNtf srv ntfId
       case msg of
         SMP.NMSG nmsgNonce encNMsgMeta -> do
           ntfTs <- liftIO getSystemTime
-          let smpQueue = SMPQueueNtf srv ntfId
           st <- asks store
           NtfPushServer {pushQ} <- asks pushServer
           atomically $
             findNtfSubscriptionToken st smpQueue
               >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
+        SMP.END -> updateSubStatus smpQueue NSInactive
+        SMP.ERR AUTH -> updateSubStatus smpQueue NSSMPAuth
+        SMP.ERR e -> updateSubStatus smpQueue (NSSMPErr e)
         _ -> pure ()
       pure ()
 
@@ -136,16 +140,27 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       forever $
         atomically (readTBQueue agentQ) >>= \case
           CAConnected _ -> pure ()
-          CADisconnected _srv _subs -> do
-            -- update subscription statuses
-            pure ()
+          CADisconnected srv subs ->
+            forM_ subs $ \(_, ntfId) -> do
+              let smpQueue = SMPQueueNtf srv ntfId
+              updateSubStatus smpQueue NSInactive
           CAReconnected _ -> pure ()
-          CAResubscribed _srv _sub -> do
-            -- update subscription status
-            pure ()
-          CASubError _srv _sub _err -> do
-            -- update subscription status
-            pure ()
+          CAResubscribed srv sub -> do
+            let ntfId = snd sub
+                smpQueue = SMPQueueNtf srv ntfId
+            updateSubStatus smpQueue NSActive
+          CASubError srv sub err -> do
+            logError (T.pack $ "ntfSubscriber receiveAgent CASubError: " <> show err)
+            let ntfId = snd sub
+                smpQueue = SMPQueueNtf srv ntfId
+            updateSubStatus smpQueue NSInactive
+
+    updateSubStatus smpQueue status = do
+      st <- asks store
+      s_ <- atomically $ findNtfSubscription st smpQueue
+      forM_ s_ $ \NtfSubData {ntfSubId, subStatus} -> do
+        atomically $ writeTVar subStatus status
+        withNtfLog $ \sl -> logSubscriptionStatus sl ntfSubId status
 
 ntfPush :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfPushServer -> m ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do

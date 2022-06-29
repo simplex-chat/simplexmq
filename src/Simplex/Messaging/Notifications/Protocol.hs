@@ -401,10 +401,14 @@ data NtfSubStatus
     NSPending
   | -- | connected and subscribed to SMP server
     NSActive
+  | -- | disconnected/unsubscribed from SMP server
+    NSInactive
   | -- | NEND received (we currently do not support it)
     NSEnd
   | -- | SMP AUTH error
     NSSMPAuth
+  | -- | SMP error other than AUTH
+    NSSMPErr ErrorType
   deriving (Eq, Show)
 
 instance Encoding NtfSubStatus where
@@ -412,15 +416,21 @@ instance Encoding NtfSubStatus where
     NSNew -> "NEW"
     NSPending -> "PENDING" -- e.g. after SMP server disconnect/timeout while ntf server is retrying to connect
     NSActive -> "ACTIVE"
+    NSInactive -> "INACTIVE"
     NSEnd -> "END"
     NSSMPAuth -> "SMP_AUTH"
+    NSSMPErr err -> "SMP_ERR " <> smpEncode err
   smpP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NSNew
       "PENDING" -> pure NSPending
       "ACTIVE" -> pure NSActive
+      "INACTIVE" -> pure NSInactive
       "END" -> pure NSEnd
       "SMP_AUTH" -> pure NSSMPAuth
+      "SMP_ERR" -> do
+        _ <- A.space
+        NSSMPErr <$> smpP
       _ -> fail "bad NtfSubStatus"
 
 instance StrEncoding NtfSubStatus where
