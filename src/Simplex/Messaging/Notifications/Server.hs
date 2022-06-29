@@ -22,6 +22,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Client (ProtocolClientError (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
@@ -150,10 +151,21 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
                 smpQueue = SMPQueueNtf srv ntfId
             updateSubStatus smpQueue NSActive
           CASubError srv sub err -> do
-            logError (T.pack $ "ntfSubscriber receiveAgent CASubError: " <> show err)
             let ntfId = snd sub
                 smpQueue = SMPQueueNtf srv ntfId
-            updateSubStatus smpQueue NSInactive
+            case err of
+              PCEProtocolError e -> case e of
+                AUTH -> updateSubStatus smpQueue NSSMPAuth
+                _ -> updateSubStatus smpQueue (NSSMPErr e)
+              PCEResponseError e -> updateSubStatus smpQueue (NSSMPErr e)
+              PCEUnexpectedResponse -> logErr err >> updateSubStatus smpQueue NSInactive
+              PCEResponseTimeout -> updateSubStatus smpQueue NSInactive
+              PCENetworkError -> updateSubStatus smpQueue NSInactive
+              PCETransportError e -> logErr e >> updateSubStatus smpQueue NSInactive
+              PCESignatureError e -> logErr e >> updateSubStatus smpQueue NSInactive
+              PCEIOError e -> logErr e >> updateSubStatus smpQueue NSInactive
+            where
+              logErr e = logError (T.pack $ "ntfSubscriber receiveAgent error: " <> show e)
 
     updateSubStatus smpQueue status = do
       st <- asks store
