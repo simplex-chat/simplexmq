@@ -157,11 +157,9 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
                 _ -> updateSubStatus smpQueue (NSSMPErr e)
               PCEResponseError e -> logErr err
               PCEUnexpectedResponse -> logErr err >> updateSubStatus smpQueue NSInactive
-              PCEResponseTimeout -> updateSubStatus smpQueue NSInactive
-              PCENetworkError -> updateSubStatus smpQueue NSInactive
-              PCETransportError e -> logErr e >> updateSubStatus smpQueue NSInactive
-              PCESignatureError e -> logErr e >> updateSubStatus smpQueue NSInactive
-              PCEIOError e -> logErr e >> updateSubStatus smpQueue NSInactive
+              PCESignatureError e -> logErr e
+              PCEIOError e -> logErr e
+              _ -> pure ()
             where
               logErr e = logError (T.pack $ "ntfSubscriber receiveAgent error: " <> show e)
 
