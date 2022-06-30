@@ -56,8 +56,9 @@ runNtfSupervisor c = forever $ do
     Right _ -> return ()
 
 processNtfSub :: forall m. AgentMonad m => AgentClient -> (ConnId, NtfSupervisorCommand) -> m ()
-processNtfSub c (connId, cmd) = do
+processNtfSub c@AgentClient {subQ} (connId, cmd) = do
   ntfServer_ <- getNtfServer c
+  ts <- liftIO getCurrentTime
   case cmd of
     NSCCreate -> do
       (sub_, RcvQueue {server = smpServer, clientNtfCreds}) <- withStore c $ \db -> runExceptT $ do
@@ -79,27 +80,37 @@ processNtfSub c (connId, cmd) = do
           -- TODO - SMP worker can create Ntf worker on NKEY completion
           addNtfSMPWorker smpServer
           addNtfWorker ntfServer
-        (Just _, Just ntfServer) -> do
-          -- TODO subscription may have to be updated depending on current state:
-          -- TODO - e.g., if it was previously marked for deletion action has to be updated
-          -- TODO - should action depend on subscription status or always be NSASmpKey (NSACreate if notifierId exists)
-          -- TODO   in case worker is currently deleting it? When deleting worker should check for updated_by_supervisor
-          -- TODO   and if it is set perform update instead of delete. If worker was not deleting it yet it should
-          -- TODO   idempotently replay commands.
+        (Just (sub@NtfSubscription {ntfSubStatus}, action), Just ntfServer) -> do
+          case action of
+            -- action was set to NULL after worker internal error
+            Nothing -> resetSubscription
+            Just (a, _) ->
+              -- subscription was marked for deletion
+              when (isDeleteNtfSubAction a) $
+                if ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
+                  then resetSubscription
+                  else withStore' c $ \db ->
+                    supervisorUpdateNtfSubscription db sub {ntfServer} (NtfSubNTFAction NSACreate) ts
           addNtfSMPWorker smpServer
           addNtfWorker ntfServer
-        _ -> pure () -- error - notification server not configured
+          where
+            resetSubscription :: m ()
+            resetSubscription = withStore' c $ \db ->
+              supervisorUpdateNtfSubscription db sub {ntfQueueId = Nothing, ntfServer, ntfSubId = Nothing, ntfSubStatus = NASNew} (NtfSubSMPAction NSASmpKey) ts
+        _ -> pure () -- err "NSCCreate - notification server not configured"
     NSCDelete -> do
-      withStore' c $ \db -> markNtfSubscriptionForDeletion db connId (NtfSubNTFAction NSADelete)
-      case ntfServer_ of
-        (Just ntfServer) -> addNtfWorker ntfServer
-        _ -> pure ()
+      sub_ <- withStore' c $ \db -> do
+        supervisorUpdateNtfSubAction db connId (NtfSubNTFAction NSADelete) ts
+        getNtfSubscription db connId
+      case sub_ of
+        (Just (NtfSubscription {ntfServer}, _)) -> addNtfWorker ntfServer
+        _ -> pure () -- err "NSCDelete - no subscription"
     NSCSmpDelete -> do
       withStore' c (`getRcvQueue` connId) >>= \case
         Right RcvQueue {server = smpServer} -> do
-          withStore' c $ \db -> markNtfSubscriptionForDeletion db connId (NtfSubSMPAction NSASmpDelete)
+          withStore' c $ \db -> supervisorUpdateNtfSubAction db connId (NtfSubSMPAction NSASmpDelete) ts
           addNtfSMPWorker smpServer
-        Left _ -> pure ()
+        _ -> err "NSCSmpDelete - no rcv queue"
     NSCNtfWorker ntfServer ->
       addNtfWorker ntfServer
     NSCNtfSMPWorker smpServer ->
@@ -121,6 +132,8 @@ processNtfSub c (connId, cmd) = do
           atomically $ TM.insert srv (doWork, worker) ws
         Just (doWork, _) ->
           void . atomically $ tryPutTMVar doWork ()
+    err :: String -> m ()
+    err internalErrStr = atomically $ writeTBQueue subQ ("", connId, AP.ERR $ AP.INTERNAL internalErrStr)
 
 runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfWorker c srv doWork = forever $ do
@@ -157,7 +170,7 @@ runNtfWorker c srv doWork = forever $ do
                     -- TODO smaller retry until Active, less frequently (daily?) once Active
                     let actionTs' = addUTCTime 30 ts
                     withStore' c $ \db ->
-                      updateNtfSubscription db connId sub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew} (NtfSubNTFAction NSACheck) actionTs'
+                      updateNtfSubscription db sub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew} (NtfSubNTFAction NSACheck) actionTs'
                   _ -> ntfInternalError c connId "NSACreate - no notifier queue credentials"
               _ -> ntfInternalError c connId "NSACreate - no active token"
           NSACheck ->
@@ -175,7 +188,7 @@ runNtfWorker c srv doWork = forever $ do
               (getNtfToken >>= \tkn -> forM_ tkn $ agentNtfDeleteSubscription c nSubId)
                 `E.finally` do
                   withStore' c $ \db ->
-                    updateNtfSubscription db connId sub {ntfSubId = Nothing, ntfSubStatus = NASOff} (NtfSubSMPAction NSASmpDelete) ts
+                    updateNtfSubscription db sub {ntfSubId = Nothing, ntfSubStatus = NASOff} (NtfSubSMPAction NSASmpDelete) ts
                   ns <- asks ntfSupervisor
                   atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
             Nothing -> ntfInternalError c connId "NSADelete - no subscription ID"
@@ -186,7 +199,7 @@ runNtfWorker c srv doWork = forever $ do
           updateSub (NASCreated toStatus) (NtfSubNTFAction NSACheck) nextCheckTs
         updateSub toStatus toAction actionTs' =
           withStore' c $ \db ->
-            updateNtfSubscription db connId sub {ntfSubStatus = toStatus} toAction actionTs'
+            updateNtfSubscription db sub {ntfSubStatus = toStatus} toAction actionTs'
 
 runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar () -> m ()
 runNtfSMPWorker c srv doWork = forever $ do
@@ -224,7 +237,7 @@ runNtfSMPWorker c srv doWork = forever $ do
                 let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
                 withStore' c $ \st -> do
                   setRcvQueueNtfCreds st connId ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
-                  updateNtfSubscription st connId sub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NtfSubNTFAction NSACreate) ts
+                  updateNtfSubscription st sub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NtfSubNTFAction NSACreate) ts
                 ns <- asks ntfSupervisor
                 atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
               _ -> ntfInternalError c connId "NSASmpKey - no active token"
