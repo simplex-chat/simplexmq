@@ -64,6 +64,7 @@ library
       Simplex.Messaging.Notifications.Server.Store
       Simplex.Messaging.Notifications.Server.StoreLog
       Simplex.Messaging.Notifications.Transport
+      Simplex.Messaging.Notifications.Types
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server
