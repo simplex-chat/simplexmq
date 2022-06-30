@@ -87,7 +87,7 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
             Just (a, _) ->
               -- subscription was marked for deletion
               when (isDeleteNtfSubAction a) $
-                if ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
+                if ntfSubStatus == NASNew || ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
                   then resetSubscription
                   else withStore' c $ \db ->
                     supervisorUpdateNtfSubscription db sub {ntfServer} (NtfSubNTFAction NSACreate) ts
