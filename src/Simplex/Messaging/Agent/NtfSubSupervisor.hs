@@ -186,12 +186,15 @@ runNtfWorker c srv doWork = forever $ do
           NSADelete -> case ntfSubId of
             Just nSubId ->
               (getNtfToken >>= \tkn -> forM_ tkn $ agentNtfDeleteSubscription c nSubId)
-                `E.finally` do
-                  withStore' c $ \db ->
-                    updateNtfSubscription db sub {ntfSubId = Nothing, ntfSubStatus = NASOff} (NtfSubSMPAction NSASmpDelete) ts
-                  ns <- asks ntfSupervisor
-                  atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
-            Nothing -> ntfInternalError c connId "NSADelete - no subscription ID"
+                `E.finally` carryOnWithDeletion
+            Nothing -> carryOnWithDeletion
+            where
+              carryOnWithDeletion :: m ()
+              carryOnWithDeletion = do
+                withStore' c $ \db ->
+                  updateNtfSubscription db sub {ntfSubId = Nothing, ntfSubStatus = NASOff} (NtfSubSMPAction NSASmpDelete) ts
+                ns <- asks ntfSupervisor
+                atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
       where
         updateSubNextCheck ts toStatus = do
           checkInterval <- asks $ ntfSubCheckInterval . config
