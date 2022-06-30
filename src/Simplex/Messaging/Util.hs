@@ -10,6 +10,8 @@ import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Text (Text)
+import qualified Data.Text as T
 import UnliftIO.Async
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -31,6 +33,10 @@ f <$?> m = either fail pure . f =<< m
 bshow :: Show a => a -> ByteString
 bshow = B.pack . show
 {-# INLINE bshow #-}
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show
+{-# INLINE tshow #-}
 
 maybeWord :: (a -> ByteString) -> Maybe a -> ByteString
 maybeWord f = maybe "" $ B.cons ' ' . f

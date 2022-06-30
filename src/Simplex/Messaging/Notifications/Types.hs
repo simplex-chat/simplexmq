@@ -81,6 +81,7 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
     }
 
 data NtfSubAction = NtfSubNTFAction NtfSubNTFAction | NtfSubSMPAction NtfSubSMPAction
+  deriving (Show)
 
 isDeleteNtfSubAction :: NtfSubAction -> Bool
 isDeleteNtfSubAction = \case

@@ -18,6 +18,7 @@ where
 
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
+import Control.Logger.Simple (logInfo)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -40,7 +41,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (unlessM)
+import Simplex.Messaging.Util (tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO (async)
 import UnliftIO.Concurrent (forkIO, threadDelay)
@@ -57,6 +58,7 @@ runNtfSupervisor c = forever $ do
 
 processNtfSub :: forall m. AgentMonad m => AgentClient -> (ConnId, NtfSupervisorCommand) -> m ()
 processNtfSub c@AgentClient {subQ} (connId, cmd) = do
+  logInfo $ "processNtfSub - connId = " <> tshow connId <> " - cmd = " <> tshow cmd
   ntfServer_ <- getNtfServer c
   ts <- liftIO getCurrentTime
   case cmd of
@@ -65,6 +67,7 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
         sub_ <- liftIO $ getNtfSubscription db connId
         q <- ExceptT $ getRcvQueue db connId
         pure (sub_, q)
+      logInfo $ "processNtfSub, NSCCreate - sub_ = " <> tshow sub_
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
@@ -102,12 +105,14 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
       sub_ <- withStore' c $ \db -> do
         supervisorUpdateNtfSubAction db connId (NtfSubNTFAction NSADelete) ts
         getNtfSubscription db connId
+      logInfo $ "processNtfSub, NSCDelete - sub_ = " <> tshow sub_
       case sub_ of
         (Just (NtfSubscription {ntfServer}, _)) -> addNtfWorker ntfServer
         _ -> pure () -- err "NSCDelete - no subscription"
     NSCSmpDelete -> do
       withStore' c (`getRcvQueue` connId) >>= \case
-        Right RcvQueue {server = smpServer} -> do
+        Right rq@RcvQueue {server = smpServer} -> do
+          logInfo $ "processNtfSub, NSCSmpDelete - rq = " <> tshow rq
           withStore' c $ \db -> supervisorUpdateNtfSubAction db connId (NtfSubSMPAction NSASmpDelete) ts
           addNtfSMPWorker smpServer
         _ -> err "NSCSmpDelete - no rcv queue"
@@ -139,13 +144,15 @@ runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -
 runNtfWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
   nextSub_ <- withStore' c (`getNextNtfSubNTFAction` srv)
+  logInfo $ "runNtfWorker, nextSub_ " <> tshow nextSub_
   case nextSub_ of
     Nothing -> noWorkToDo
     Just a@(NtfSubscription {connId}, _, _) -> do
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \loop ->
         processAction a
-          `catchError` ( \e ->
+          `catchError` ( \e -> do
+                           logInfo $ "runNtfWorker, error " <> tshow e
                            case e of
                              BROKER NETWORK -> loop
                              BROKER TIMEOUT -> loop
@@ -208,13 +215,15 @@ runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar (
 runNtfSMPWorker c srv doWork = forever $ do
   void . atomically $ readTMVar doWork
   nextSub_ <- withStore' c (`getNextNtfSubSMPAction` srv)
+  logInfo $ "runNtfSMPWorker, nextSub_ " <> tshow nextSub_
   case nextSub_ of
     Nothing -> noWorkToDo
     Just a@(NtfSubscription {connId}, _, _) -> do
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \loop ->
         processAction a
-          `catchError` ( \e ->
+          `catchError` ( \e -> do
+                           logInfo $ "runNtfSMPWorker, error " <> tshow e
                            case e of
                              BROKER NETWORK -> loop
                              BROKER TIMEOUT -> loop
