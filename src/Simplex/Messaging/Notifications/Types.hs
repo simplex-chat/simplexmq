@@ -81,6 +81,17 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
     }
 
 data NtfSubAction = NtfSubNTFAction NtfSubNTFAction | NtfSubSMPAction NtfSubSMPAction
+  deriving (Show)
+
+isDeleteNtfSubAction :: NtfSubAction -> Bool
+isDeleteNtfSubAction = \case
+  NtfSubNTFAction a -> case a of
+    NSACreate -> False
+    NSACheck -> False
+    NSADelete -> True
+  NtfSubSMPAction a -> case a of
+    NSASmpKey -> False
+    NSASmpDelete -> True
 
 type NtfActionTs = UTCTime
 
