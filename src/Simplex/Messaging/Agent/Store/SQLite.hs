@@ -123,7 +123,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client
+import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..), RcvNtfDhSecret)

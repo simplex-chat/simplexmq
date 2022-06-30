@@ -96,9 +96,9 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId)
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
+import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, SMPMsgMeta)
 import qualified Simplex.Messaging.Protocol as SMP

@@ -35,8 +35,8 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
+import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
