@@ -180,7 +180,7 @@ CREATE TABLE ntf_subscriptions(
   ntf_port TEXT NOT NULL,
   ntf_sub_id BLOB,
   ntf_sub_status TEXT NOT NULL, -- see NtfAgentSubStatus
-  ntf_sub_action TEXT, -- if there is an action required on this subscription: NtfSubAction
+  ntf_sub_action TEXT, -- if there is an action required on this subscription: NtfSubNTFAction
   ntf_sub_smp_action TEXT, -- action with SMP server: NtfSubSMPAction; only one of this and ntf_sub_action can(should) be not null in same record
   ntf_sub_action_ts TEXT, -- the earliest time for the action, e.g. checks can be scheduled every X hours
   updated_by_supervisor INTEGER NOT NULL DEFAULT 0, -- to be checked on updates by workers to not overwrite supervisor command(state still should be updated)

@@ -136,15 +136,27 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
       ntfMode
     }
 
-data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
+data NtfSubAction = NtfSubNTFAction NtfSubNTFAction | NtfSubSMPAction NtfSubSMPAction
 
-data NtfSubAction
+data NtfSubActionData = NtfSubActionData
+  { action :: NtfSubAction,
+    actionTs :: UTCTime,
+    ntfSubscription :: NtfSubscription
+  }
+
+data NtfSubNTFActionData = NtfSubNTFActionData
+  { ntfAction :: NtfSubNTFAction,
+    actionTs :: UTCTime,
+    ntfSubscription :: NtfSubscription
+  }
+
+data NtfSubNTFAction
   = NSACreate
   | NSACheck
   | NSADelete
   deriving (Show)
 
-instance Encoding NtfSubAction where
+instance Encoding NtfSubNTFAction where
   smpEncode = \case
     NSACreate -> "N"
     NSACheck -> "C"
@@ -154,11 +166,17 @@ instance Encoding NtfSubAction where
       'N' -> pure NSACreate
       'C' -> pure NSACheck
       'D' -> pure NSADelete
-      _ -> fail "bad NtfSubAction"
+      _ -> fail "bad NtfSubNTFAction"
 
-instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
+instance FromField NtfSubNTFAction where fromField = blobFieldDecoder smpDecode
 
-instance ToField NtfSubAction where toField = toField . smpEncode
+instance ToField NtfSubNTFAction where toField = toField . smpEncode
+
+data NtfSubSMPActionData = NtfSubSMPActionData
+  { smpAction :: NtfSubSMPAction,
+    actionTs :: UTCTime,
+    ntfSubscription :: NtfSubscription
+  }
 
 data NtfSubSMPAction
   = NSASmpKey
@@ -222,19 +240,17 @@ data NtfSubscription = NtfSubscription
     ntfQueueId :: Maybe NotifierId,
     ntfServer :: NtfServer,
     ntfSubId :: Maybe NtfSubscriptionId,
-    ntfSubStatus :: NtfAgentSubStatus,
-    ntfSubActionTs :: UTCTime
+    ntfSubStatus :: NtfAgentSubStatus
   }
   deriving (Show)
 
-newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NtfSubscription
-newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
+newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> NtfSubscription
+newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus =
   NtfSubscription
     { connId,
       smpServer,
       ntfQueueId,
       ntfServer,
       ntfSubId = Nothing,
-      ntfSubStatus,
-      ntfSubActionTs
+      ntfSubStatus
     }
