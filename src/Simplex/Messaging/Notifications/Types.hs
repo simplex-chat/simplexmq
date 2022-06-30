@@ -4,22 +4,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Notifications.Types
-  ( NtfServer,
-    NtfTknAction (..),
-    NtfToken (..),
-    newNtfToken,
-    NtfSubAction (..),
-    NtfSubActionData (..),
-    NtfSubNTFActionData (..),
-    NtfSubNTFAction (..),
-    NtfSubSMPActionData (..),
-    NtfSubSMPAction (..),
-    NtfAgentSubStatus (..),
-    NtfSubscription (..),
-    newNtfSubscription,
-  )
-where
+module Simplex.Messaging.Notifications.Types where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -97,17 +82,7 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
 
 data NtfSubAction = NtfSubNTFAction NtfSubNTFAction | NtfSubSMPAction NtfSubSMPAction
 
-data NtfSubActionData = NtfSubActionData
-  { action :: NtfSubAction,
-    actionTs :: UTCTime,
-    ntfSubscription :: NtfSubscription
-  }
-
-data NtfSubNTFActionData = NtfSubNTFActionData
-  { ntfAction :: NtfSubNTFAction,
-    actionTs :: UTCTime,
-    ntfSubscription :: NtfSubscription
-  }
+type NtfActionTs = UTCTime
 
 data NtfSubNTFAction
   = NSACreate
@@ -130,12 +105,6 @@ instance Encoding NtfSubNTFAction where
 instance FromField NtfSubNTFAction where fromField = blobFieldDecoder smpDecode
 
 instance ToField NtfSubNTFAction where toField = toField . smpEncode
-
-data NtfSubSMPActionData = NtfSubSMPActionData
-  { smpAction :: NtfSubSMPAction,
-    actionTs :: UTCTime,
-    ntfSubscription :: NtfSubscription
-  }
 
 data NtfSubSMPAction
   = NSASmpKey

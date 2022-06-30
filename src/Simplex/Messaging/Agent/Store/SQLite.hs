@@ -79,7 +79,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateNtfSubscription,
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
-    getNextNtfSubAction,
+    getNextNtfSubNTFAction,
     getNextNtfSubSMPAction,
     getActiveNtfToken,
     getNtfRcvQueue,
@@ -123,8 +123,8 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
+import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..), RcvNtfDhSecret)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -732,8 +732,9 @@ getNtfSubscription db connId =
           ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
        in NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
 
-createNtfSubscription :: DB.Connection -> NtfSubActionData -> IO ()
-createNtfSubscription db NtfSubActionData {action, actionTs, ntfSubscription = NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus}} =
+createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
+createNtfSubscription db ntfSubscription action actionTs = do
+  let NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} = ntfSubscription
   DB.execute
     db
     [sql|
@@ -762,8 +763,8 @@ markNtfSubscriptionForDeletion db connId ntfAction = do
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
-updateNtfSubscription :: DB.Connection -> ConnId -> NtfSubActionData -> IO ()
-updateNtfSubscription db connId NtfSubActionData {action, actionTs, ntfSubscription = NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus}} = do
+updateNtfSubscription :: DB.Connection -> ConnId -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
+updateNtfSubscription db connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus} action actionTs = do
   r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
   forM_ r $ \updatedBySupervisor -> do
     updatedAt <- getCurrentTime
@@ -821,9 +822,9 @@ deleteNtfSubscription db connId = do
           (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, False, updatedAt, connId)
       else DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
-getNextNtfSubAction :: DB.Connection -> NtfServer -> IO (Maybe NtfSubNTFActionData)
-getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
-  maybeFirstRow ntfSubscriptionData getNtfSubAction_ $>>= \a@NtfSubNTFActionData {ntfSubscription = NtfSubscription {connId}} -> do
+getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs))
+getNextNtfSubNTFAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
+  maybeFirstRow ntfSubAction getNtfSubAction_ $>>= \a@(NtfSubscription {connId}, _, _) -> do
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
     pure $ Just a
   where
@@ -840,14 +841,14 @@ getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
           LIMIT 1
         |]
         (ntfHost, ntfPort)
-    ntfSubscriptionData (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, ntfAction) =
+    ntfSubAction (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
       let smpServer = SMPServer smpHost smpPort smpKeyHash
           ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
-       in NtfSubNTFActionData {ntfAction, actionTs, ntfSubscription}
+       in (ntfSubscription, action, actionTs)
 
-getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Maybe NtfSubSMPActionData)
+getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Maybe (NtfSubscription, NtfSubSMPAction, NtfActionTs))
 getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
-  maybeFirstRow ntfSubscriptionData getNtfSubAction_ $>>= \a@NtfSubSMPActionData {ntfSubscription = NtfSubscription {connId}} -> do
+  maybeFirstRow ntfSubAction getNtfSubAction_ $>>= \a@(NtfSubscription {connId}, _, _) -> do
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
     pure $ Just a
   where
@@ -864,10 +865,10 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
           LIMIT 1
         |]
         (smpHost, smpPort)
-    ntfSubscriptionData (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, smpAction) =
+    ntfSubAction (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
       let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
           ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
-       in NtfSubSMPActionData {ntfSubscription, smpAction, actionTs}
+       in (ntfSubscription, action, actionTs)
 
 getActiveNtfToken :: DB.Connection -> IO (Maybe NtfToken)
 getActiveNtfToken db =
@@ -1314,5 +1315,5 @@ randomId :: TVar ChaChaDRG -> Int -> IO ByteString
 randomId gVar n = U.encode <$> (atomically . stateTVar gVar $ randomBytesGenerate n)
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
-ntfSubAndSMPAction (NtfSubNTFAction nsa) = (Just nsa, Nothing)
-ntfSubAndSMPAction (NtfSubSMPAction nsa) = (Nothing, Just nsa)
+ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)
+ntfSubAndSMPAction (NtfSubSMPAction action) = (Nothing, Just action)
