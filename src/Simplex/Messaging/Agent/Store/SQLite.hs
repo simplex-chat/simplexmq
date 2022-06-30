@@ -123,7 +123,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client (NtfAgentSubStatus (..), NtfServer, NtfSubAction (..), NtfSubOrSMPAction (..), NtfSubSMPAction (..), NtfSubscription (..), NtfTknAction (..), NtfToken (..))
+import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..), RcvNtfDhSecret)
@@ -719,7 +719,7 @@ getNtfSubscription db connId =
       db
       [sql|
         SELECT s.host, s.port, s.key_hash, ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
-          nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action_ts
+          nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status
         FROM ntf_subscriptions nsb
         JOIN servers s ON s.host = nsb.smp_host AND s.port = nsb.smp_port
         JOIN ntf_servers ns USING (ntf_host, ntf_port)
@@ -727,13 +727,13 @@ getNtfSubscription db connId =
       |]
       (Only connId)
   where
-    ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs) =
+    ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus) =
       let smpServer = SMPServer smpHost smpPort smpKeyHash
           ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
-       in NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}
+       in NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
 
-createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubOrSMPAction -> IO ()
-createNtfSubscription db NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction =
+createNtfSubscription :: DB.Connection -> NtfSubOrSMPActionData -> IO ()
+createNtfSubscription db NtfSubOrSMPActionData {action, actionTs, ntfSubscription = NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus}} =
   DB.execute
     db
     [sql|
@@ -743,10 +743,10 @@ createNtfSubscription db NtfSubscription {connId, smpServer = (SMPServer host po
       VALUES (?,?,?,?,?,?,?,?,?,?,?)
     |]
     ( (connId, host, port, ntfQueueId, ntfHost, ntfPort, ntfSubId)
-        :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs)
+        :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, actionTs)
     )
   where
-    (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
+    (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 markNtfSubscriptionForDeletion :: DB.Connection -> ConnId -> NtfSubOrSMPAction -> IO ()
 markNtfSubscriptionForDeletion db connId ntfAction = do
@@ -762,8 +762,8 @@ markNtfSubscriptionForDeletion db connId ntfAction = do
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
 
-updateNtfSubscription :: DB.Connection -> ConnId -> NtfSubscription -> NtfSubOrSMPAction -> IO ()
-updateNtfSubscription db connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs} ntfAction = do
+updateNtfSubscription :: DB.Connection -> ConnId -> NtfSubOrSMPActionData -> IO ()
+updateNtfSubscription db connId NtfSubOrSMPActionData {action, actionTs, ntfSubscription = NtfSubscription {ntfQueueId, ntfSubId, ntfSubStatus}} = do
   r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
   forM_ r $ \updatedBySupervisor -> do
     updatedAt <- getCurrentTime
@@ -785,9 +785,9 @@ updateNtfSubscription db connId NtfSubscription {ntfQueueId, ntfSubId, ntfSubSta
             SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
             WHERE conn_id = ?
           |]
-          (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, ntfSubActionTs, False, updatedAt, connId)
+          (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, actionTs, False, updatedAt, connId)
   where
-    (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction ntfAction
+    (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 setNullNtfSubscriptionAction :: DB.Connection -> ConnId -> IO ()
 setNullNtfSubscriptionAction db connId = do
@@ -821,11 +821,11 @@ deleteNtfSubscription db connId = do
           (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, False, updatedAt, connId)
       else DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
-getNextNtfSubAction :: DB.Connection -> NtfServer -> IO (Maybe (NtfSubscription, NtfSubAction))
+getNextNtfSubAction :: DB.Connection -> NtfServer -> IO (Maybe NtfSubActionData)
 getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
-  maybeFirstRow ntfSubscription getNtfSubAction_ $>>= \ntfSub@(NtfSubscription {connId}, _) -> do
+  maybeFirstRow ntfSubscriptionData getNtfSubAction_ $>>= \a@NtfSubActionData {ntfSubscription = NtfSubscription {connId}} -> do
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
-    pure $ Just ntfSub
+    pure $ Just a
   where
     getNtfSubAction_ =
       DB.query
@@ -840,15 +840,16 @@ getNextNtfSubAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
           LIMIT 1
         |]
         (ntfHost, ntfPort)
-    ntfSubscription (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
+    ntfSubscriptionData (connId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, ntfAction) =
       let smpServer = SMPServer smpHost smpPort smpKeyHash
-       in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
+          ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
+       in NtfSubActionData {ntfAction, actionTs, ntfSubscription}
 
-getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Maybe (NtfSubscription, NtfSubSMPAction))
+getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Maybe NtfSubSMPActionData)
 getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
-  maybeFirstRow ntfSubscription getNtfSubAction_ $>>= \ntfSub@(NtfSubscription {connId}, _) -> do
+  maybeFirstRow ntfSubscriptionData getNtfSubAction_ $>>= \a@NtfSubSMPActionData {ntfSubscription = NtfSubscription {connId}} -> do
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
-    pure $ Just ntfSub
+    pure $ Just a
   where
     getNtfSubAction_ =
       DB.query
@@ -858,14 +859,15 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
             ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
           FROM ntf_subscriptions ns
           JOIN ntf_servers s USING (ntf_host, ntf_port)
-          WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL
+          WHERE ns.smp_host = ? AND ns.smp_port = ? AND ns.ntf_sub_smp_action IS NOT NULL AND ns.ntf_sub_action_ts IS NOT NULL
           ORDER BY ns.ntf_sub_action_ts ASC
           LIMIT 1
         |]
         (smpHost, smpPort)
-    ntfSubscription (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfSubActionTs, ntfSubAction) =
+    ntfSubscriptionData (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, smpAction) =
       let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
-       in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus, ntfSubActionTs}, ntfSubAction)
+          ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
+       in NtfSubSMPActionData {ntfSubscription, smpAction, actionTs}
 
 getActiveNtfToken :: DB.Connection -> IO (Maybe NtfToken)
 getActiveNtfToken db =

@@ -138,6 +138,18 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
 
 data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
 
+data NtfSubOrSMPActionData = NtfSubOrSMPActionData
+  { action :: NtfSubOrSMPAction,
+    actionTs :: UTCTime,
+    ntfSubscription :: NtfSubscription
+  }
+
+data NtfSubActionData = NtfSubActionData
+  { ntfAction :: NtfSubAction,
+    actionTs :: UTCTime,
+    ntfSubscription :: NtfSubscription
+  }
+
 data NtfSubAction
   = NSACreate
   | NSACheck
@@ -159,6 +171,12 @@ instance Encoding NtfSubAction where
 instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
 
 instance ToField NtfSubAction where toField = toField . smpEncode
+
+data NtfSubSMPActionData = NtfSubSMPActionData
+  { smpAction :: NtfSubSMPAction,
+    actionTs :: UTCTime,
+    ntfSubscription :: NtfSubscription
+  }
 
 data NtfSubSMPAction
   = NSASmpKey
@@ -222,19 +240,17 @@ data NtfSubscription = NtfSubscription
     ntfQueueId :: Maybe NotifierId,
     ntfServer :: NtfServer,
     ntfSubId :: Maybe NtfSubscriptionId,
-    ntfSubStatus :: NtfAgentSubStatus,
-    ntfSubActionTs :: UTCTime
+    ntfSubStatus :: NtfAgentSubStatus
   }
   deriving (Show)
 
-newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> UTCTime -> NtfSubscription
-newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus ntfSubActionTs =
+newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> NtfSubscription
+newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus =
   NtfSubscription
     { connId,
       smpServer,
       ntfQueueId,
       ntfServer,
       ntfSubId = Nothing,
-      ntfSubStatus,
-      ntfSubActionTs
+      ntfSubStatus
     }

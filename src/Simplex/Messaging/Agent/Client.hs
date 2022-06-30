@@ -81,7 +81,6 @@ import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
-import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as DB
 -- import GHC.Conc (unsafeIOToSTM)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -735,7 +734,7 @@ withStore c action = do
   atomically $ endAgentOperation c AODatabase
   liftEither $ first storeError r
   where
-    handleInternal :: SQLError -> IO (Either StoreError a)
+    handleInternal :: E.SomeException -> IO (Either StoreError a)
     handleInternal = pure . Left . SEInternal . bshow
     storeError :: StoreError -> AgentErrorType
     storeError = \case

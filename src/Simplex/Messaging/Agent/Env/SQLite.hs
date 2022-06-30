@@ -29,6 +29,7 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
+import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol
@@ -46,7 +47,6 @@ import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
 import UnliftIO.STM
-import Data.Word (Word16)
 
 -- | Agent monad with MonadReader Env and MonadError AgentErrorType
 type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorType m)
@@ -142,6 +142,7 @@ data NtfSupervisor = NtfSupervisor
   }
 
 data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
+  deriving (Show)
 
 newNtfSubSupervisor :: Natural -> STM NtfSupervisor
 newNtfSubSupervisor qSize = do
