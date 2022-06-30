@@ -426,7 +426,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               if notifierKey == registeredNKey
                 then NRSubId subId
                 else NRErr AUTH
-          SCHK -> pure $ NRSub status
+          SCHK -> do
+            logDebug "SCHK"
+            pure $ NRSub status
           SDEL -> do
             logDebug "SDEL"
             st <- asks store
