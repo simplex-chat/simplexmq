@@ -136,27 +136,27 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
       ntfMode
     }
 
-data NtfSubOrSMPAction = NtfSubAction NtfSubAction | NtfSubSMPAction NtfSubSMPAction
-
-data NtfSubOrSMPActionData = NtfSubOrSMPActionData
-  { action :: NtfSubOrSMPAction,
-    actionTs :: UTCTime,
-    ntfSubscription :: NtfSubscription
-  }
+data NtfSubAction = NtfSubNTFAction NtfSubNTFAction | NtfSubSMPAction NtfSubSMPAction
 
 data NtfSubActionData = NtfSubActionData
-  { ntfAction :: NtfSubAction,
+  { action :: NtfSubAction,
     actionTs :: UTCTime,
     ntfSubscription :: NtfSubscription
   }
 
-data NtfSubAction
+data NtfSubNTFActionData = NtfSubNTFActionData
+  { ntfAction :: NtfSubNTFAction,
+    actionTs :: UTCTime,
+    ntfSubscription :: NtfSubscription
+  }
+
+data NtfSubNTFAction
   = NSACreate
   | NSACheck
   | NSADelete
   deriving (Show)
 
-instance Encoding NtfSubAction where
+instance Encoding NtfSubNTFAction where
   smpEncode = \case
     NSACreate -> "N"
     NSACheck -> "C"
@@ -166,11 +166,11 @@ instance Encoding NtfSubAction where
       'N' -> pure NSACreate
       'C' -> pure NSACheck
       'D' -> pure NSADelete
-      _ -> fail "bad NtfSubAction"
+      _ -> fail "bad NtfSubNTFAction"
 
-instance FromField NtfSubAction where fromField = blobFieldDecoder smpDecode
+instance FromField NtfSubNTFAction where fromField = blobFieldDecoder smpDecode
 
-instance ToField NtfSubAction where toField = toField . smpEncode
+instance ToField NtfSubNTFAction where toField = toField . smpEncode
 
 data NtfSubSMPActionData = NtfSubSMPActionData
   { smpAction :: NtfSubSMPAction,
