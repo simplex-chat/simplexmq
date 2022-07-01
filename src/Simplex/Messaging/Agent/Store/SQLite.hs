@@ -797,10 +797,10 @@ updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (Proto
           db
           [sql|
             UPDATE ntf_subscriptions
-            SET smp_ntf_id = ?, ntf_host = ?, ntf_port = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
+            SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
             WHERE conn_id = ?
           |]
-          (ntfQueueId, ntfHost, ntfPort, ntfSubId, ntfSubStatus, False, updatedAt, connId)
+          (ntfQueueId, ntfSubId, ntfSubStatus, False, updatedAt, connId)
       else
         DB.execute
           db
