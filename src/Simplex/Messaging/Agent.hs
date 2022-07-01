@@ -811,6 +811,7 @@ activateAgent' c = atomically $ do
   activate sndNetworkOp
   activate msgDeliveryOp
   activate rcvNetworkOp
+  activate ntfNetworkOp
   where
     activate opSel = modifyTVar' (opSel c) $ \s -> s {opSuspended = False}
 
@@ -819,6 +820,7 @@ suspendAgent' c@AgentClient {agentState = as} maxDelay = do
   state <-
     atomically $ do
       writeTVar as ASSuspending
+      suspendOperation c AONtfNetwork $ pure ()
       suspendOperation c AORcvNetwork $
         suspendOperation c AOMsgDelivery $
           suspendSendingAndDatabase c
@@ -842,12 +844,11 @@ getSMPServer c = do
 
 subscriber :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
 subscriber c@AgentClient {msgQ} = forever $ do
-  atomically $ endAgentOperation c AORcvNetwork
   t <- atomically $ readTBQueue msgQ
-  atomically $ beginAgentOperation c AORcvNetwork
-  withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
-    Left e -> liftIO $ print e
-    Right _ -> return ()
+  agentOperationBracket c AORcvNetwork $
+    withAgentLock c (runExceptT $ processSMPTransmission c t) >>= \case
+      Left e -> liftIO $ print e
+      Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) =
