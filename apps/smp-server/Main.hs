@@ -59,10 +59,10 @@ smpServerCLIConfig =
             \# This option enables saving memory to append only log,\n\
             \# and restoring it when the server is started.\n\
             \# Log is compacted on start (deleted objects are removed).\n"
-              <> ("enable: " <> (if enableStoreLog then "on" else "off  # on") <> "\n")
+              <> ("enable: " <> (if enableStoreLog then "on" else "off") <> "\n")
               <> "# The messages are optionally saved and restored when the server restarts,\n\
                  \# they are deleted after restarting.\n"
-              <> ("restore_messages: " <> (if enableStoreLog then "on" else "off  # on") <> "\n\n")
+              <> ("restore_messages: " <> (if enableStoreLog then "on" else "off") <> "\n\n")
               <> "[TRANSPORT]\n"
               <> ("port: " <> defaultServerPort <> "\n")
               <> "websockets: off\n\n"
