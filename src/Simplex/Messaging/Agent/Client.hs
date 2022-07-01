@@ -422,7 +422,7 @@ protocolClientError :: (ErrorType -> AgentErrorType) -> ProtocolClientError -> A
 protocolClientError protocolError_ = \case
   PCEProtocolError e -> protocolError_ e
   PCEResponseError e -> BROKER $ RESPONSE e
-  PCEUnexpectedResponse -> BROKER UNEXPECTED
+  PCEUnexpectedResponse _ -> BROKER UNEXPECTED
   PCEResponseTimeout -> BROKER TIMEOUT
   PCENetworkError -> BROKER NETWORK
   PCETransportError e -> BROKER $ TRANSPORT e

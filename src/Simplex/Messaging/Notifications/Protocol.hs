@@ -403,12 +403,12 @@ data NtfSubStatus
     NSActive
   | -- | disconnected/unsubscribed from SMP server
     NSInactive
-  | -- | NEND received (we currently do not support it)
+  | -- | END received
     NSEnd
   | -- | SMP AUTH error
-    NSSMPAuth
+    NSAuth
   | -- | SMP error other than AUTH
-    NSSMPErr ErrorType
+    NSErr ByteString
   deriving (Eq, Show)
 
 instance Encoding NtfSubStatus where
@@ -418,8 +418,8 @@ instance Encoding NtfSubStatus where
     NSActive -> "ACTIVE"
     NSInactive -> "INACTIVE"
     NSEnd -> "END"
-    NSSMPAuth -> "SMP_AUTH"
-    NSSMPErr err -> "SMP_ERR " <> smpEncode err
+    NSAuth -> "AUTH"
+    NSErr err -> "ERR " <> err
   smpP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NSNew
@@ -427,10 +427,8 @@ instance Encoding NtfSubStatus where
       "ACTIVE" -> pure NSActive
       "INACTIVE" -> pure NSInactive
       "END" -> pure NSEnd
-      "SMP_AUTH" -> pure NSSMPAuth
-      "SMP_ERR" -> do
-        _ <- A.space
-        NSSMPErr <$> smpP
+      "AUTH" -> pure NSAuth
+      "ERR" -> NSErr <$> (A.space *> A.takeByteString)
       _ -> fail "bad NtfSubStatus"
 
 instance StrEncoding NtfSubStatus where
