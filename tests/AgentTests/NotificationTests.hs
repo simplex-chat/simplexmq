@@ -56,7 +56,7 @@ notificationTests t =
       it "should re-register token when notification server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           testNtfTokenServerRestart t apns
-    fdescribe "Managing notification subscriptions" $ do
+    describe "Managing notification subscriptions" $ do
       it "should create notification subscription for existing connection" $ \_ ->
         withSmpServer t $
           withAPNSMockServer $ \apns ->
@@ -69,7 +69,7 @@ notificationTests t =
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testChangeNotificationsMode apns
-      fit "should change token" $ \_ ->
+      it "should change token" $ \_ ->
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testChangeToken apns
@@ -400,6 +400,7 @@ testChangeToken APNSMockServer {apnsQ} = do
 
   alice1 <- getSMPAgentClient agentCfg initAgentServers
   Right () <- runExceptT $ do
+    subscribeConnection alice1 bobId
     -- change notification token
     void $ registerTestToken alice1 "bcde" NMInstant apnsQ
     -- send message, receive notification
@@ -408,7 +409,7 @@ testChangeToken APNSMockServer {apnsQ} = do
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     void $ messageNotification apnsQ
     get alice1 =##> \case ("", c, Msg "hello there") -> c == bobId; _ -> False
-    ackMessage alice bobId $ baseId + 2
+    ackMessage alice1 bobId $ baseId + 2
     -- no notifications should follow
     noNotification apnsQ
   pure ()
