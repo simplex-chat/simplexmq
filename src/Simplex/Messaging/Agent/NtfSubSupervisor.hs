@@ -18,7 +18,7 @@ where
 
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (stateTVar)
-import Control.Logger.Simple (logInfo)
+import Control.Logger.Simple (logError, logInfo)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -49,12 +49,14 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 runNtfSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-runNtfSupervisor c = forever $ do
+runNtfSupervisor c = forever . handleError $ do
   ns <- asks ntfSupervisor
   cmd <- atomically . readTBQueue $ ntfSubQ ns
   runExceptT (processNtfSub c cmd) >>= \case
     Left e -> liftIO $ print e
     Right _ -> return ()
+  where
+    handleError = E.handle $ \(e :: E.SomeException) -> logError $ "runNtfSupervisor error " <> tshow e
 
 processNtfSub :: forall m. AgentMonad m => AgentClient -> (ConnId, NtfSupervisorCommand) -> m ()
 processNtfSub c@AgentClient {subQ} (connId, cmd) = do
