@@ -116,7 +116,9 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             updateSubStatus smpQueue NSPending
             let SMPQueueNtf {smpServer, notifierId} = smpQueue
             liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
-              Right _ -> updateSubStatus smpQueue NSActive
+              Right _ -> do
+                updateSubStatus smpQueue NSActive
+                void . atomically $ readTQueue subscriberSubQ
               Left err -> do
                 handleSubError smpQueue err
                 case err of
