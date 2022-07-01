@@ -68,15 +68,15 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
       logInfo $ "processNtfSub, NSCCreate - a = " <> tshow a
       case a of
         Nothing -> do
-          withNtfServer c $ \confNtfServer -> do
+          withNtfServer c $ \ntfServer -> do
             case clientNtfCreds of
               Just ClientNtfCreds {notifierId} -> do
-                let newSub = newNtfSubscription connId smpServer (Just notifierId) confNtfServer NASKey
+                let newSub = newNtfSubscription connId smpServer (Just notifierId) ntfServer NASKey
                 ts <- liftIO getCurrentTime
                 withStore' c $ \db -> createNtfSubscription db newSub (NtfSubNTFAction NSACreate) ts
-                addNtfNTFWorker confNtfServer
+                addNtfNTFWorker ntfServer
               Nothing -> do
-                let newSub = newNtfSubscription connId smpServer Nothing confNtfServer NASNew
+                let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew
                 ts <- liftIO getCurrentTime
                 withStore' c $ \db -> createNtfSubscription db newSub (NtfSubSMPAction NSASmpKey) ts
                 addNtfSMPWorker smpServer
