@@ -291,7 +291,13 @@ ApproverReceiveProposal(recipient) ==
                        /\ members.user /= PerceivedUser
                THEN
                    /\ approver_states[<<message.invite_id, message.recipient.user>>].state = Nothing
-                   /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ for_group |-> message.recipient.id, state |-> Active ] ]
+                   /\ approver_states' =
+                       [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] =
+                           [ for_group |-> message.recipient.id
+                           , state |-> Active
+                           , tokens |-> { [ for |-> message.invite_id, by |-> message.recipient.user ] }
+                           ]
+                       ]
                    \* It's safe to send this message right away, as it only agrees to
                    \* reveal information that everyone has agreed to share.  The invitee
                    \* now knows that there's a group that involves this member, the
@@ -373,6 +379,15 @@ BroadcastToken ==
                 )
             /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
+ReceiveSyncToken ==
+    \E message \in messages :
+        /\ message.type = SyncToken
+        /\ message.sender \in group_perceptions[message.recipient] \* Should be invariant
+        /\ approver_states[<<message.invite_id, message.recipient.user>>].state = Active
+        /\ approver_states[<<message.invite_id, message.recipient.user>>].for_group = message.recipient.id \* Should be invariant
+        /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ @ EXCEPT !.tokens = @ \union { message.token } ] ]
+        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
+
 SendAccept ==
     \E message \in messages :
         /\ message.type = Invite
@@ -416,14 +431,11 @@ Establish(recipient) ==
         /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>].for_group
                RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
                SenderMember == [ user |-> message.sender, id |-> message.invite_id ]
-               SyncMessages == { sync \in messages : sync.recipient = RecipientMember /\ sync.type = SyncToken /\ sync.invite_id = message.invite_id }
-               Senders == { sync.sender : sync \in SyncMessages }
-               \* Note that it's safe to "access" "its" token here
-               Tokens == { sync.token : sync \in SyncMessages } \union { [ for |-> message.invite_id, by |-> message.recipient ] }
+               Tokens == approver_states[<<message.invite_id, message.recipient>>].tokens
                InviteeDoesntBelieveInviterIsKicked ==
                    /\ RecipientId /= Nothing
                    /\ approver_states[<<RecipientId, message.sender>>].state = Committed
-           IN  /\ Senders = group_perceptions[RecipientMember] \ { RecipientMember }
+           IN  /\ Cardinality(group_perceptions[RecipientMember]) = Cardinality(Tokens)
                /\ message.tokens = Tokens
                /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = [ state |-> Committed ] ]
                \* TODO: This can't be atomic
@@ -487,6 +499,7 @@ Next ==
     \/ \E member \in MemberSet : ApproverReceiveProposal(member)
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
     \/ BroadcastToken
+    \/ ReceiveSyncToken
     \/ SendAccept
     \/ \E user \in Users : Establish(user)
 
@@ -521,6 +534,7 @@ TypeOk ==
         \union
         [ state : { Active }
         , for_group : InviteIds \union { Nothing }
+        , tokens : SUBSET [ for : InviteIds, by : Users ]
         ]
         \union
         [ state : { Nothing, Committed }
