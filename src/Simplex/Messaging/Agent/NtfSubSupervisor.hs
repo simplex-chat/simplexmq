@@ -63,7 +63,7 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
   ts <- liftIO getCurrentTime
   case cmd of
     NSCCreate -> do
-      (sub_, RcvQueue {server = smpServer}) <- withStore c $ \db -> runExceptT $ do
+      (sub_, RcvQueue {server = smpServer, clientNtfCreds}) <- withStore c $ \db -> runExceptT $ do
         sub_ <- liftIO $ getNtfSubscription db connId
         q <- ExceptT $ getRcvQueue db connId
         pure (sub_, q)
@@ -71,8 +71,13 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
       case (sub_, ntfServer_) of
         (Nothing, Just ntfServer) -> do
           currentTime <- liftIO getCurrentTime
-          let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew
-          withStore' c $ \db -> createNtfSubscription db newSub (NtfSubSMPAction NSASmpKey) currentTime
+          case clientNtfCreds of
+            Just ClientNtfCreds {notifierId} -> do
+              let newSub = newNtfSubscription connId smpServer (Just notifierId) ntfServer NASKey
+              withStore' c $ \db -> createNtfSubscription db newSub (NtfSubNTFAction NSACreate) currentTime
+            _ -> do
+              let newSub = newNtfSubscription connId smpServer Nothing ntfServer NASNew
+              withStore' c $ \db -> createNtfSubscription db newSub (NtfSubSMPAction NSASmpKey) currentTime
           -- TODO optimize?
           -- TODO - read action in getNtfSubscription and decide which worker to create
           -- TODO - SMP worker can create Ntf worker on NKEY completion
@@ -249,11 +254,11 @@ runNtfSMPWorker c srv doWork = forever $ do
                 atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
               _ -> ntfInternalError c connId "NSASmpKey - no active token"
           NSASmpDelete -> do
-            rq_ <- withStore' c (`getRcvQueue` connId)
-            forM_ rq_ $ \rq -> disableQueueNotifications c rq
-            withStore' c $ \db -> do
-              deleteNtfSubscription db connId
+            rq_ <- withStore' c $ \db -> do
               setRcvQueueNtfCreds db connId Nothing
+              getRcvQueue db connId
+            forM_ rq_ $ \rq -> disableQueueNotifications c rq
+            withStore' c $ \db -> deleteNtfSubscription db connId
 
 rescheduleAction :: AgentMonad m => TMVar () -> UTCTime -> UTCTime -> m Bool
 rescheduleAction doWork ts actionTs
