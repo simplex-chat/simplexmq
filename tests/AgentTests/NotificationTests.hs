@@ -335,6 +335,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- set mode to NMPeriodic
     NTActive <- registerNtfToken alice tkn NMPeriodic
     -- send message, no notification
+    liftIO $ threadDelay 500000
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     noNotification apnsQ
@@ -352,6 +353,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- turn off notifications
     deleteNtfToken alice tkn
     -- send message, no notification
+    liftIO $ threadDelay 500000
     4 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "why hello there"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     noNotification apnsQ
