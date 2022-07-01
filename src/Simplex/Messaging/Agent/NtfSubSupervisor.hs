@@ -197,7 +197,7 @@ runNtfWorker c srv doWork = forever $ do
                 case ntfSubId of
                   Just nSubId ->
                     agentNtfCheckSubscription c nSubId tkn >>= \case
-                      NSSMPAuth -> do
+                      NSAuth -> do
                         getNtfServer c >>= \case
                           Just ntfServer -> do
                             withStore' c $ \db ->

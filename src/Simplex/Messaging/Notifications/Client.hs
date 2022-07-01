@@ -10,6 +10,7 @@ import Data.Word (Word16)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Util (bshow)
 
 type NtfClient = ProtocolClient NtfResponse
 
@@ -17,7 +18,7 @@ ntfRegisterToken :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Token -> Exc
 ntfRegisterToken c pKey newTkn =
   sendNtfCommand c (Just pKey) "" (TNEW newTkn) >>= \case
     NRTknId tknId dhKey -> pure (tknId, dhKey)
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 ntfVerifyToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> NtfRegCode -> ExceptT ProtocolClientError IO ()
 ntfVerifyToken c pKey tknId code = okNtfCommand (TVFY code) c pKey tknId
@@ -26,7 +27,7 @@ ntfCheckToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> ExceptT Protoco
 ntfCheckToken c pKey tknId =
   sendNtfCommand c (Just pKey) tknId TCHK >>= \case
     NRTkn stat -> pure stat
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 ntfReplaceToken :: NtfClient -> C.APrivateSignKey -> NtfTokenId -> DeviceToken -> ExceptT ProtocolClientError IO ()
 ntfReplaceToken c pKey tknId token = okNtfCommand (TRPL token) c pKey tknId
@@ -41,13 +42,13 @@ ntfCreateSubscription :: NtfClient -> C.APrivateSignKey -> NewNtfEntity 'Subscri
 ntfCreateSubscription c pKey newSub =
   sendNtfCommand c (Just pKey) "" (SNEW newSub) >>= \case
     NRSubId subId -> pure subId
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 ntfCheckSubscription :: NtfClient -> C.APrivateSignKey -> NtfSubscriptionId -> ExceptT ProtocolClientError IO NtfSubStatus
 ntfCheckSubscription c pKey subId =
   sendNtfCommand c (Just pKey) subId SCHK >>= \case
     NRSub stat -> pure stat
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 ntfDeleteSubscription :: NtfClient -> C.APrivateSignKey -> NtfSubscriptionId -> ExceptT ProtocolClientError IO ()
 ntfDeleteSubscription = okNtfCommand SDEL
@@ -60,4 +61,4 @@ okNtfCommand :: NtfEntityI e => NtfCommand e -> NtfClient -> C.APrivateSignKey -
 okNtfCommand cmd c pKey entId =
   sendNtfCommand c (Just pKey) entId cmd >>= \case
     NROk -> return ()
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r

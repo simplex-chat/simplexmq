@@ -224,7 +224,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
                     Right r -> case protocolError r of
                       Just e -> Left $ PCEProtocolError e
                       _ -> Right r
-                  else Left PCEUnexpectedResponse
+                  else Left . PCEUnexpectedResponse $ bshow respOrErr
       where
         sendMsg :: QueueId -> Either ErrorType msg -> IO ()
         sendMsg qId = \case
@@ -248,7 +248,7 @@ data ProtocolClientError
     -- e.g. server should respond `IDS` or `ERR` to `NEW` command,
     -- other responses would result in this error.
     -- Forwarded to the agent client as `ERR BROKER UNEXPECTED`.
-    PCEUnexpectedResponse
+    PCEUnexpectedResponse ByteString
   | -- | Used for TCP connection and command response timeouts.
     -- Forwarded to the agent client as `ERR BROKER TIMEOUT`.
     PCEResponseTimeout
@@ -276,7 +276,7 @@ createSMPQueue ::
 createSMPQueue c rpKey rKey dhKey =
   sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey) >>= \case
     IDS qik -> pure qik
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Subscribe to the SMP queue.
 --
@@ -287,7 +287,7 @@ subscribeSMPQueue c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
     OK -> return ()
     cmd@MSG {} ->
       lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --
@@ -299,7 +299,7 @@ getSMPMessage c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
     cmd@(MSG msgId msgTs msgFlags _) -> do
       lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
       pure $ Just SMP.SMPMsgMeta {msgId, msgTs, msgFlags}
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Subscribe to the SMP queue notifications.
 --
@@ -320,7 +320,7 @@ enableSMPQueueNotifications :: SMPClient -> RcvPrivateSignKey -> RecipientId -> 
 enableSMPQueueNotifications c rpKey rId notifierKey rcvNtfPublicDhKey =
   sendSMPCommand c (Just rpKey) rId (NKEY notifierKey rcvNtfPublicDhKey) >>= \case
     NID nId rcvNtfSrvPublicDhKey -> pure (nId, rcvNtfSrvPublicDhKey)
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Disable notifications for the queue for push notifications server.
 --
@@ -335,7 +335,7 @@ sendSMPMessage :: SMPClient -> Maybe SndPrivateSignKey -> SenderId -> MsgFlags -
 sendSMPMessage c spKey sId flags msg =
   sendSMPCommand c spKey sId (SEND flags msg) >>= \case
     OK -> pure ()
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Acknowledge message delivery (server deletes the message).
 --
@@ -346,7 +346,7 @@ ackSMPMessage c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId msgId
     OK -> return ()
     cmd@MSG {} ->
       lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Irreversibly suspend SMP queue.
 -- The existing messages from the queue will still be delivered.
@@ -365,7 +365,7 @@ okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateSignKey -> Queue
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c (Just pKey) qId cmd >>= \case
     OK -> return ()
-    _ -> throwE PCEUnexpectedResponse
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Send SMP command
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT ProtocolClientError IO BrokerMsg

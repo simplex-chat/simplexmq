@@ -111,27 +111,20 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     runSMPSubscriber :: SMPSubscriber -> m ()
     runSMPSubscriber SMPSubscriber {newSubQ = subscriberSubQ} =
       forever $
-        atomically (peekTQueue subscriberSubQ) >>= \case
-          NtfSub NtfSubData {smpQueue, notifierKey} -> do
+        atomically (peekTQueue subscriberSubQ)
+          >>= \(NtfSub NtfSubData {smpQueue, notifierKey}) -> do
             updateSubStatus smpQueue NSPending
             let SMPQueueNtf {smpServer, notifierId} = smpQueue
             liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
-              Right _ -> update smpQueue NSActive
-              Left err -> case err of
-                PCEProtocolError AUTH -> update smpQueue NSSMPAuth
-                PCEProtocolError e -> update smpQueue $ NSSMPErr e
-                PCEIOError e -> log' $ "IOError " <> T.pack (show e)
-                PCEResponseError e -> log' $ "ResponseError " <> T.pack (show e)
-                PCEUnexpectedResponse -> log' "UnexpectedResponse"
-                PCETransportError e -> log' $ "TransportError " <> T.pack (show e)
-                PCESignatureError e -> log' $ "SignatureError " <> T.pack (show e)
-                PCEResponseTimeout -> pure ()
-                PCENetworkError -> pure ()
-      where
-        update smpQueue status = do
-          updateSubStatus smpQueue status
-          void . atomically $ readTQueue subscriberSubQ
-        log' e = logError $ "SMPSubscriber subscribeQueue " <> e
+              Right _ -> do
+                updateSubStatus smpQueue NSActive
+                void . atomically $ readTQueue subscriberSubQ
+              Left err -> do
+                handleSubError smpQueue err
+                case err of
+                  PCEResponseTimeout -> pure ()
+                  PCENetworkError -> pure ()
+                  _ -> void . atomically $ readTQueue subscriberSubQ
 
     receiveSMP :: m ()
     receiveSMP = forever $ do
@@ -145,7 +138,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           atomically $
             findNtfSubscriptionToken st smpQueue
               >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
-        SMP.END -> updateSubStatus smpQueue NSInactive
+        SMP.END -> updateSubStatus smpQueue NSEnd
         _ -> pure ()
       pure ()
 
@@ -162,20 +155,23 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             let ntfId = snd sub
                 smpQueue = SMPQueueNtf srv ntfId
             updateSubStatus smpQueue NSActive
-          CASubError srv sub err -> do
-            let ntfId = snd sub
-                smpQueue = SMPQueueNtf srv ntfId
-            case err of
-              PCEProtocolError e -> case e of
-                AUTH -> updateSubStatus smpQueue NSSMPAuth
-                _ -> updateSubStatus smpQueue (NSSMPErr e)
-              PCEResponseError e -> logErr e
-              PCEUnexpectedResponse -> logErr err
-              PCESignatureError e -> logErr e
-              PCEIOError e -> logErr e
-              _ -> pure ()
-            where
-              logErr e = logError $ "ntfSubscriber receiveAgent error: " <> T.pack (show e)
+          CASubError srv (_, ntfId) err ->
+            handleSubError (SMPQueueNtf srv ntfId) err
+
+    handleSubError :: SMPQueueNtf -> ProtocolClientError -> m ()
+    handleSubError smpQueue = \case
+      PCEProtocolError AUTH -> updateSubStatus smpQueue NSAuth
+      PCEProtocolError e -> updateErr "SMP error " e
+      PCEIOError e -> updateErr "IOError " e
+      PCEResponseError e -> updateErr "ResponseError " e
+      PCEUnexpectedResponse r -> updateErr "UnexpectedResponse " r
+      PCETransportError e -> updateErr "TransportError " e
+      PCESignatureError e -> updateErr "SignatureError " e
+      PCEResponseTimeout -> pure ()
+      PCENetworkError -> pure ()
+      where
+        updateErr :: Show e => ByteString -> e -> m ()
+        updateErr errType e = updateSubStatus smpQueue . NSErr $ errType <> bshow e
 
     updateSubStatus smpQueue status = do
       st <- asks store
@@ -370,7 +366,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             | otherwise -> do
               logDebug "TVFY - incorrect code or token status"
               pure $ NRErr AUTH
-          TCHK -> pure $ NRTkn status
+          TCHK -> do
+            logDebug "TCHK"
+            pure $ NRTkn status
           TRPL token' -> do
             logDebug "TRPL - replace token"
             st <- asks store
