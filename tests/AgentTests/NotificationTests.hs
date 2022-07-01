@@ -56,7 +56,7 @@ notificationTests t =
       it "should re-register token when notification server is restarted" $ \_ ->
         withAPNSMockServer $ \apns ->
           testNtfTokenServerRestart t apns
-    describe "Managing notification subscriptions" $ do
+    fdescribe "Managing notification subscriptions" $ do
       it "should create notification subscription for existing connection" $ \_ ->
         withSmpServer t $
           withAPNSMockServer $ \apns ->
@@ -69,6 +69,10 @@ notificationTests t =
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testChangeNotificationsMode apns
+      fit "should change token" $ \_ ->
+        withSmpServer t $
+          withAPNSMockServer $ \apns ->
+            withNtfServer t $ testChangeToken apns
     describe "Notifications server store log" $ do
       it "should save and restore tokens and subscriptions" $ \_ ->
         withSmpServer t $
@@ -244,9 +248,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     -- no notifications should follow
-    500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
-      Nothing -> pure ()
-      _ -> error "unexpected notification"
+    noNotification apnsQ
   pure ()
   where
     baseId = 3
@@ -289,9 +291,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
     ackMessage bob aliceId $ baseId + 2
     -- no unexpected notifications should follow
-    500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
-      Nothing -> pure ()
-      _ -> error "unexpected notification"
+    noNotification apnsQ
   pure ()
   where
     baseId = 3
@@ -323,34 +323,94 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
-    -- register notification token, set mode to NMPeriodic
-    tkn <- registerTestToken alice "abcd" NMPeriodic apnsQ
-    -- send message, no notification
+    -- register notification token, set mode to NMInstant
+    tkn <- registerTestToken alice "abcd" NMInstant apnsQ
+    -- send message, receive notification
+    liftIO $ threadDelay 500000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
+    void $ messageNotification apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 1
+    -- set mode to NMPeriodic
+    NTActive <- registerNtfToken alice tkn NMPeriodic
+    -- send message, no notification
+    2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    noNotification apnsQ
+    get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 2
     -- set mode to NMInstant
     NTActive <- registerNtfToken alice tkn NMInstant
     -- send message, receive notification
     liftIO $ threadDelay 500000
-    2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
-    get bob ##> ("", aliceId, SENT $ baseId + 2)
-    void $ messageNotification apnsQ
-    get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
-    ackMessage alice bobId $ baseId + 2
-    -- reset mode to NMPeriodic
-    NTActive <- registerNtfToken alice tkn NMPeriodic
-    -- send message, no notification
-    liftIO $ threadDelay 500000
     3 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello there"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
+    void $ messageNotification apnsQ
     get alice =##> \case ("", c, Msg "hello there") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 3
+    -- turn off notifications
+    deleteNtfToken alice tkn
+    -- send message, no notification
+    4 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "why hello there"
+    get bob ##> ("", aliceId, SENT $ baseId + 4)
+    noNotification apnsQ
+    get alice =##> \case ("", c, Msg "why hello there") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 4
+    -- turn on notifications, set mode to NMInstant
+    void $ registerTestToken alice "abcd" NMInstant apnsQ
+    -- send message, receive notification
+    liftIO $ threadDelay 500000
+    5 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hey"
+    get bob ##> ("", aliceId, SENT $ baseId + 5)
+    void $ messageNotification apnsQ
+    get alice =##> \case ("", c, Msg "hey") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 5
     -- no notifications should follow
-    500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
-      Nothing -> pure ()
-      _ -> error "unexpected notification"
+    noNotification apnsQ
+  pure ()
+  where
+    baseId = 3
+    msgId = subtract baseId
+
+testChangeToken :: APNSMockServer -> IO ()
+testChangeToken APNSMockServer {apnsQ} = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right (aliceId, bobId) <- runExceptT $ do
+    -- establish connection
+    (bobId, qInfo) <- createConnection alice SCMInvitation
+    aliceId <- joinConnection bob qInfo "bob's connInfo"
+    ("", _, CONF confId "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, CON)
+    -- register notification token, set mode to NMInstant
+    void $ registerTestToken alice "abcd" NMInstant apnsQ
+    -- send message, receive notification
+    liftIO $ threadDelay 500000
+    1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
+    get bob ##> ("", aliceId, SENT $ baseId + 1)
+    void $ messageNotification apnsQ
+    get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 1
+    pure (aliceId, bobId)
+  disconnectAgentClient alice
+
+  alice1 <- getSMPAgentClient agentCfg initAgentServers
+  Right () <- runExceptT $ do
+    -- change notification token
+    void $ registerTestToken alice1 "bcde" NMInstant apnsQ
+    -- send message, receive notification
+    liftIO $ threadDelay 500000
+    2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello there"
+    get bob ##> ("", aliceId, SENT $ baseId + 2)
+    void $ messageNotification apnsQ
+    get alice1 =##> \case ("", c, Msg "hello there") -> c == bobId; _ -> False
+    ackMessage alice bobId $ baseId + 2
+    -- no notifications should follow
+    noNotification apnsQ
   pure ()
   where
     baseId = 3
@@ -393,3 +453,9 @@ messageNotification apnsQ = do
       liftIO $ sendApnsResponse APNSRespOk
       pure (nonce, message)
     _ -> error "bad notification"
+
+noNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()
+noNotification apnsQ = do
+  500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+    Nothing -> pure ()
+    _ -> error "unexpected notification"
