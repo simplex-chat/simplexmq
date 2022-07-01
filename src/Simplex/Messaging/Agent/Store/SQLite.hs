@@ -787,7 +787,7 @@ supervisorUpdateNtfSubAction db connId action actionTs = do
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 updateNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
-updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfSubId, ntfSubStatus} action actionTs = do
+updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (ProtocolServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action actionTs = do
   r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
   forM_ r $ \updatedBySupervisor -> do
     updatedAt <- getCurrentTime
@@ -806,10 +806,10 @@ updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfSubId, ntfSubSt
           db
           [sql|
             UPDATE ntf_subscriptions
-            SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
+            SET smp_ntf_id = ?, ntf_host = ?, ntf_port = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
             WHERE conn_id = ?
           |]
-          (ntfQueueId, ntfSubId, ntfSubStatus, ntfSubAction, ntfSubSMPAction, actionTs, False, updatedAt, connId)
+          ((ntfQueueId, ntfHost, ntfPort, ntfSubId) :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, actionTs, False, updatedAt, connId))
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 

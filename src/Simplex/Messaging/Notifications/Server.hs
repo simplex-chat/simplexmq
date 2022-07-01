@@ -112,7 +112,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     runSMPSubscriber SMPSubscriber {newSubQ = subscriberSubQ} =
       forever $
         atomically (peekTQueue subscriberSubQ)
-          >>= \NtfSub NtfSubData {smpQueue, notifierKey} -> do
+          >>= \(NtfSub NtfSubData {smpQueue, notifierKey}) -> do
             updateSubStatus smpQueue NSPending
             let SMPQueueNtf {smpServer, notifierId} = smpQueue
             liftIO (runExceptT $ subscribeQueue ca smpServer ((SPNotifier, notifierId), notifierKey)) >>= \case
