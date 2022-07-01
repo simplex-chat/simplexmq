@@ -25,6 +25,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Data.Bifunctor (first)
 import Data.Fixed (Fixed (MkFixed), Pico)
+import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import Simplex.Messaging.Agent.Client
@@ -68,7 +69,7 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
       logInfo $ "processNtfSub, NSCCreate - a = " <> tshow a
       case a of
         Nothing -> do
-          withNtfServer c $ \confNtfServer -> do
+          void . withNtfServer c $ \confNtfServer -> do
             case clientNtfCreds of
               Just ClientNtfCreds {notifierId} -> do
                 let newSub = newNtfSubscription connId smpServer (Just notifierId) confNtfServer NASKey
@@ -89,7 +90,7 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
               | isDeleteNtfSubAction action -> do
                 if ntfSubStatus == NASNew || ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
                   then resetSubscription
-                  else withNtfServer c $ \confNtfServer -> do
+                  else void . withNtfServer c $ \confNtfServer -> do
                     ts <- liftIO getCurrentTime
                     withStore' c $ \db ->
                       supervisorUpdateNtfSubscription db sub {ntfServer = confNtfServer} (NtfSubNTFAction NSACreate) ts
@@ -100,7 +101,7 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
           where
             resetSubscription :: m ()
             resetSubscription =
-              withNtfServer c $ \confNtfServer -> do
+              void . withNtfServer c $ \confNtfServer -> do
                 ts <- liftIO getCurrentTime
                 withStore' c $ \db ->
                   supervisorUpdateNtfSubscription db sub {ntfQueueId = Nothing, ntfServer = confNtfServer, ntfSubId = Nothing, ntfSubStatus = NASNew} (NtfSubSMPAction NSASmpKey) ts
@@ -146,12 +147,12 @@ processNtfSub c@AgentClient {subQ} (connId, cmd) = do
     err :: String -> m ()
     err internalErrStr = atomically $ writeTBQueue subQ ("", connId, AP.ERR $ AP.INTERNAL internalErrStr)
 
-withNtfServer :: AgentMonad m => AgentClient -> (NtfServer -> m ()) -> m ()
+withNtfServer :: AgentMonad m => AgentClient -> (NtfServer -> m ()) -> m Bool
 withNtfServer c action = do
   ntfServer_ <- getNtfServer c
   case ntfServer_ of
-    Just confNtfServer -> action confNtfServer
-    _ -> pure () -- err "NSCCreate - notification server not configured"
+    Just confNtfServer -> action confNtfServer $> True
+    _ -> pure False
 
 runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
 runNtfWorker c srv doWork = forever $ do
@@ -199,11 +200,13 @@ runNtfWorker c srv doWork = forever $ do
                 case ntfSubId of
                   Just nSubId ->
                     agentNtfCheckSubscription c nSubId tkn >>= \case
-                      NSSMPAuth -> withNtfServer c $ \confNtfServer -> do
-                        withStore' c $ \db ->
-                          updateNtfSubscription db sub {ntfServer = confNtfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NtfSubSMPAction NSASmpKey) ts
-                        ns <- asks ntfSupervisor
-                        atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
+                      NSSMPAuth -> do
+                        resetSuccessful <- withNtfServer c $ \confNtfServer -> do
+                          withStore' c $ \db ->
+                            updateNtfSubscription db sub {ntfServer = confNtfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NtfSubSMPAction NSASmpKey) ts
+                          ns <- asks ntfSupervisor
+                          atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
+                        unless resetSuccessful $ ntfInternalError c connId "NSACheck - failed to reset subscription, notification server not configured"
                       status -> updateSubNextCheck ts status
                   Nothing -> ntfInternalError c connId "NSACheck - no subscription ID"
               _ -> ntfInternalError c connId "NSACheck - no active token"
