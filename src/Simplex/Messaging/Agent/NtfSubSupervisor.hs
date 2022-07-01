@@ -173,7 +173,7 @@ runNtfWorker c srv doWork = do
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \loop ->
             processAction a
-              `catchError` retryOnError "NtfWorker" loop (ntfInternalError c connId . show)
+              `catchError` retryOnError c "NtfWorker" loop (ntfInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     processAction :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> m ()
     processAction (sub@NtfSubscription {connId, smpServer, ntfSubId}, action, actionTs) = do
@@ -248,7 +248,7 @@ runNtfSMPWorker c srv doWork = do
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \loop ->
             processAction a
-              `catchError` retryOnError "NtfSMPWorker" loop (ntfInternalError c connId . show)
+              `catchError` retryOnError c "NtfSMPWorker" loop (ntfInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     processAction :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> m ()
     processAction (sub@NtfSubscription {connId, ntfServer}, smpAction, actionTs) = do
@@ -293,13 +293,18 @@ fromPico (MkFixed i) = i
 diffInMicros :: UTCTime -> UTCTime -> Int
 diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
 
-retryOnError :: AgentMonad m => Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
-retryOnError name loop done e = do
+retryOnError :: AgentMonad m => AgentClient -> Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
+retryOnError c name loop done e = do
   logError $ name <> " error: " <> tshow e
   case e of
-    BROKER NETWORK -> loop
-    BROKER TIMEOUT -> loop
+    BROKER NETWORK -> retryLoop
+    BROKER TIMEOUT -> retryLoop
     _ -> done e
+  where
+    retryLoop = do
+      atomically $ endAgentOperation c AONtfNetwork
+      atomically $ beginAgentOperation c AONtfNetwork
+      loop
 
 ntfInternalError :: AgentMonad m => AgentClient -> ConnId -> String -> m ()
 ntfInternalError c@AgentClient {subQ} connId internalErrStr = do
