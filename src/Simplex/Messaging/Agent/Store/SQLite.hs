@@ -352,8 +352,8 @@ getRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId =
   maybe (Left SEConnNotFound) Right <$> getRcvQueueByConnId_ db connId
 
-setRcvQueueNtfCreds :: DB.Connection -> ConnId -> ClientNtfCreds -> IO ()
-setRcvQueueNtfCreds db connId ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} =
+setRcvQueueNtfCreds :: DB.Connection -> ConnId -> Maybe ClientNtfCreds -> IO ()
+setRcvQueueNtfCreds db connId clientNtfCreds =
   DB.execute
     db
     [sql|
@@ -361,7 +361,11 @@ setRcvQueueNtfCreds db connId ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notif
       SET ntf_public_key = ?, ntf_private_key = ?, ntf_id = ?, rcv_ntf_dh_secret = ?
       WHERE conn_id = ?
     |]
-    (ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret, connId)
+    (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_, connId)
+  where
+    (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) = case clientNtfCreds of
+      Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} -> (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
+      Nothing -> (Nothing, Nothing, Nothing, Nothing)
 
 createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
 createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
