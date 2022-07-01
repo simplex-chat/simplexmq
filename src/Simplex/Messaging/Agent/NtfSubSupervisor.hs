@@ -26,6 +26,7 @@ import Control.Monad.Reader
 import Data.Bifunctor (first)
 import Data.Fixed (Fixed (MkFixed), Pico)
 import qualified Data.Map.Strict as M
+import Data.Text (Text)
 import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -49,14 +50,17 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 runNtfSupervisor :: (MonadUnliftIO m, MonadReader Env m) => AgentClient -> m ()
-runNtfSupervisor c = forever . handleError $ do
+runNtfSupervisor c = do
   ns <- asks ntfSupervisor
-  cmd <- atomically . readTBQueue $ ntfSubQ ns
-  runExceptT (processNtfSub c cmd) >>= \case
-    Left e -> liftIO $ print e
-    Right _ -> return ()
+  forever . handleError $ do
+    cmd <- atomically . readTBQueue $ ntfSubQ ns
+    agentOperationBracket c AONtfNetwork $
+      runExceptT (processNtfSub c cmd) >>= \case
+        Left e -> liftIO $ print e
+        Right _ -> return ()
   where
-    handleError = E.handle $ \(e :: E.SomeException) -> logError $ "runNtfSupervisor error " <> tshow e
+    handleError = E.handle $ \(e :: E.SomeException) -> do
+      logError $ "runNtfSupervisor error " <> tshow e
 
 processNtfSub :: forall m. AgentMonad m => AgentClient -> (ConnId, NtfSupervisorCommand) -> m ()
 processNtfSub c@AgentClient {subQ} (connId, cmd) = do
@@ -152,26 +156,24 @@ withNtfServer :: AgentMonad m => AgentClient -> (NtfServer -> m ()) -> m ()
 withNtfServer c action = getNtfServer c >>= mapM_ action
 
 runNtfWorker :: forall m. AgentMonad m => AgentClient -> NtfServer -> TMVar () -> m ()
-runNtfWorker c srv doWork = forever $ do
-  void . atomically $ readTMVar doWork
-  nextSub_ <- withStore' c (`getNextNtfSubNTFAction` srv)
-  logInfo $ "runNtfWorker, nextSub_ " <> tshow nextSub_
-  case nextSub_ of
-    Nothing -> noWorkToDo
-    Just a@(NtfSubscription {connId}, _, _) -> do
-      ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \loop ->
-        processAction a
-          `catchError` ( \e -> do
-                           logInfo $ "runNtfWorker, error " <> tshow e
-                           case e of
-                             BROKER NETWORK -> loop
-                             BROKER TIMEOUT -> loop
-                             _ -> ntfInternalError c connId (show e)
-                       )
-  throttle <- asks $ ntfWorkerThrottle . config
-  liftIO $ threadDelay throttle
+runNtfWorker c srv doWork = do
+  delay <- asks $ ntfWorkerDelay . config
+  forever $ do
+    void . atomically $ readTMVar doWork
+    agentOperationBracket c AONtfNetwork runNtfOperation
+    threadDelay delay
   where
+    runNtfOperation :: m ()
+    runNtfOperation = do
+      nextSub_ <- withStore' c (`getNextNtfSubNTFAction` srv)
+      logInfo $ "runNtfWorker, nextSub_ " <> tshow nextSub_
+      case nextSub_ of
+        Nothing -> noWorkToDo
+        Just a@(NtfSubscription {connId}, _, _) -> do
+          ri <- asks $ reconnectInterval . config
+          withRetryInterval ri $ \loop ->
+            processAction a
+              `catchError` retryOnError c "NtfWorker" loop (ntfInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     processAction :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> m ()
     processAction (sub@NtfSubscription {connId, smpServer, ntfSubId}, action, actionTs) = do
@@ -230,26 +232,23 @@ runNtfWorker c srv doWork = forever $ do
             updateNtfSubscription db sub {ntfSubStatus = toStatus} toAction actionTs'
 
 runNtfSMPWorker :: forall m. AgentMonad m => AgentClient -> SMPServer -> TMVar () -> m ()
-runNtfSMPWorker c srv doWork = forever $ do
-  void . atomically $ readTMVar doWork
-  nextSub_ <- withStore' c (`getNextNtfSubSMPAction` srv)
-  logInfo $ "runNtfSMPWorker, nextSub_ " <> tshow nextSub_
-  case nextSub_ of
-    Nothing -> noWorkToDo
-    Just a@(NtfSubscription {connId}, _, _) -> do
-      ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \loop ->
-        processAction a
-          `catchError` ( \e -> do
-                           logInfo $ "runNtfSMPWorker, error " <> tshow e
-                           case e of
-                             BROKER NETWORK -> loop
-                             BROKER TIMEOUT -> loop
-                             _ -> ntfInternalError c connId (show e)
-                       )
-  throttle <- asks $ ntfWorkerThrottle . config
-  liftIO $ threadDelay throttle
+runNtfSMPWorker c srv doWork = do
+  delay <- asks $ ntfSMPWorkerDelay . config
+  forever $ do
+    void . atomically $ readTMVar doWork
+    agentOperationBracket c AONtfNetwork runNtfSMPOperation
+    threadDelay delay
   where
+    runNtfSMPOperation = do
+      nextSub_ <- withStore' c (`getNextNtfSubSMPAction` srv)
+      logInfo $ "runNtfSMPWorker, nextSub_ " <> tshow nextSub_
+      case nextSub_ of
+        Nothing -> noWorkToDo
+        Just a@(NtfSubscription {connId}, _, _) -> do
+          ri <- asks $ reconnectInterval . config
+          withRetryInterval ri $ \loop ->
+            processAction a
+              `catchError` retryOnError c "NtfSMPWorker" loop (ntfInternalError c connId . show)
     noWorkToDo = void . atomically $ tryTakeTMVar doWork
     processAction :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> m ()
     processAction (sub@NtfSubscription {connId, ntfServer}, smpAction, actionTs) = do
@@ -293,6 +292,19 @@ fromPico (MkFixed i) = i
 
 diffInMicros :: UTCTime -> UTCTime -> Int
 diffInMicros a b = (`div` 1000000) . fromInteger . fromPico . nominalDiffTimeToSeconds $ diffUTCTime a b
+
+retryOnError :: AgentMonad m => AgentClient -> Text -> m () -> (AgentErrorType -> m ()) -> AgentErrorType -> m ()
+retryOnError c name loop done e = do
+  logError $ name <> " error: " <> tshow e
+  case e of
+    BROKER NETWORK -> retryLoop
+    BROKER TIMEOUT -> retryLoop
+    _ -> done e
+  where
+    retryLoop = do
+      atomically $ endAgentOperation c AONtfNetwork
+      atomically $ beginAgentOperation c AONtfNetwork
+      loop
 
 ntfInternalError :: AgentMonad m => AgentClient -> ConnId -> String -> m ()
 ntfInternalError c@AgentClient {subQ} connId internalErrStr = do

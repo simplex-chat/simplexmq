@@ -68,7 +68,8 @@ data AgentConfig = AgentConfig
     helloTimeout :: NominalDiffTime,
     resubscriptionConcurrency :: Int,
     ntfCron :: Word16,
-    ntfWorkerThrottle :: Int,
+    ntfWorkerDelay :: Int,
+    ntfSMPWorkerDelay :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
     ntfMaxMessages :: Int,
     caCertificateFile :: FilePath,
@@ -103,7 +104,8 @@ defaultAgentConfig =
       helloTimeout = 2 * nominalDay,
       resubscriptionConcurrency = 16,
       ntfCron = 20, -- minutes
-      ntfWorkerThrottle = 1000000, -- microseconds
+      ntfWorkerDelay = 100000, -- microseconds
+      ntfSMPWorkerDelay = 500000, -- microseconds
       ntfSubCheckInterval = nominalDay,
       ntfMaxMessages = 4,
       -- CA certificate private key is not needed for initialization
