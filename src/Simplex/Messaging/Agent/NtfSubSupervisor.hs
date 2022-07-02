@@ -57,13 +57,14 @@ runNtfSupervisor c = do
     handleError connId $
       agentOperationBracket c AONtfNetwork $
         runExceptT (processNtfSub c cmd) >>= \case
-          Left e -> liftIO $ print e
+          Left e -> notifyErr connId e
           Right _ -> return ()
   where
     handleError :: ConnId -> m () -> m ()
     handleError connId = E.handle $ \(e :: E.SomeException) -> do
       logError $ "runNtfSupervisor error " <> tshow e
-      notifyInternalError c connId $ "runNtfSupervisor error " <> show e
+      notifyErr connId e
+    notifyErr connId e = notifyInternalError c connId $ "runNtfSupervisor error " <> show e
 
 processNtfSub :: forall m. AgentMonad m => AgentClient -> (ConnId, NtfSupervisorCommand) -> m ()
 processNtfSub c (connId, cmd) = do
