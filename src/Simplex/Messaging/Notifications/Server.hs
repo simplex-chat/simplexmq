@@ -376,8 +376,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             atomically $ do
               removeTokenRegistration st tkn
               writeTVar tknStatus NTRegistered
-              addNtfToken st tknId tkn {token = token', tknRegCode = regCode}
-              writeTBQueue pushQ (tkn, PNVerification regCode)
+              let tkn' = tkn {token = token', tknRegCode = regCode}
+              addNtfToken st tknId tkn'
+              writeTBQueue pushQ (tkn', PNVerification regCode)
             withNtfLog $ \s -> logUpdateToken s tknId token' regCode
             pure NROk
           TDEL -> do
