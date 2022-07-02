@@ -55,9 +55,9 @@ runNtfSupervisor c = do
   forever $ do
     cmd@(connId, _) <- atomically . readTBQueue $ ntfSubQ ns
     handleError connId . agentOperationBracket c AONtfNetwork $
-        runExceptT (processNtfSub c cmd) >>= \case
-          Left e -> notifyErr connId e
-          Right _ -> return ()
+      runExceptT (processNtfSub c cmd) >>= \case
+        Left e -> notifyErr connId e
+        Right _ -> return ()
   where
     handleError :: ConnId -> m () -> m ()
     handleError connId = E.handle $ \(e :: E.SomeException) -> do
