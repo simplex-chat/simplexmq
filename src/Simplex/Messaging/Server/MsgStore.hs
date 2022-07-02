@@ -4,35 +4,10 @@
 
 module Simplex.Messaging.Server.MsgStore where
 
-import Control.Applicative ((<|>))
-import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
-import Data.Time.Clock.System (SystemTime)
 import Numeric.Natural
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, MsgId, RecipientId, noMsgFlags)
-
-data Message = Message
-  { msgId :: MsgId,
-    ts :: SystemTime,
-    msgFlags :: MsgFlags,
-    msgBody :: MsgBody
-  }
-
-instance StrEncoding Message where
-  strEncode Message {msgId, ts, msgFlags, msgBody} =
-    B.unwords
-      [ strEncode msgId,
-        strEncode ts,
-        "flags=" <> strEncode msgFlags,
-        strEncode msgBody
-      ]
-  strP = do
-    msgId <- strP_
-    ts <- strP_
-    msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
-    msgBody <- strP
-    pure Message {msgId, ts, msgFlags, msgBody}
+import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 
 data MsgLogRecord = MsgLogRecord RecipientId Message
 

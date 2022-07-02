@@ -465,7 +465,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
               q <- getStoreMsgQueue queueId
               atomically $
                 tryPeekMsg q >>= \case
-                  Just msg -> setDelivered s msg $> (corrId, queueId, msgCmd msg)
+                  Just msg -> setDelivered s msg $> (corrId, queueId, MSG msg)
                   _ -> pure (corrId, queueId, OK)
 
         subscribeNotifications :: m (Transmission BrokerMsg)
@@ -516,7 +516,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             updatePeriod pSel = modifyTVar (pSel stats) (S.insert qId)
 
         sendMessage :: QueueStore -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
-        sendMessage st flags msgBody
+        sendMessage st msgFlags msgBody
           | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
           | otherwise = do
             qr <- atomically $ getQueue st SSender queueId
@@ -537,7 +537,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                       q <- getMsgQueue ms (recipientId qr) msgQueueQuota
                       mapM_ (deleteExpiredMsgs q) old
                       ifM (isFull q) (pure $ err QUOTA) $ do
-                        when (notification flags) $ trySendNotification msg ntfNonceDrg
+                        when (notification msgFlags) $ trySendNotification msg ntfNonceDrg
                         writeMsg q msg
                         pure ok
                     when (sent == OK) $ do
@@ -549,9 +549,13 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 mkMessage :: m (Either C.CryptoError Message)
                 mkMessage = do
                   msgId <- randomId =<< asks (msgIdBytes . config)
-                  ts <- liftIO getSystemTime
-                  let c = C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId) msgBody (maxMessageLength + 2)
-                  pure $ Message msgId ts flags <$> c
+                  msgTs <- liftIO getSystemTime
+                  let encrypt = C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId)
+                      body = encrypt msgBody (maxMessageLength + 2)
+                      rcvMsgBody = smpEncode RcvMsgBody {msgTs, msgFlags, msgBody}
+                      -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
+                      bodyV3 = Just . MsgBodyV3 <$> encrypt rcvMsgBody (maxMessageLength + 16 + 2)
+                  pure $ Message msgId msgTs msgFlags <$> body <*> bodyV3
 
                 trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
                 trySendNotification msg ntfNonceDrg =
@@ -565,9 +569,9 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                     writeTBQueue q (CorrId "", nId, NMSG nmsgNonce encNMsgMeta)
 
                 mkMessageNotification :: Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
-                mkMessageNotification Message {msgId, ts} rcvNtfDhSecret ntfNonceDrg = do
+                mkMessageNotification Message {msgId, msgTs} rcvNtfDhSecret ntfNonceDrg = do
                   cbNonce <- C.pseudoRandomCbNonce ntfNonceDrg
-                  let msgMeta = NMsgMeta {msgId, msgTs = ts}
+                  let msgMeta = NMsgMeta {msgId, msgTs}
                       encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
                   pure . (cbNonce,) $ fromRight "" encNMsgMeta
 
@@ -576,7 +580,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
           readTVarIO sub >>= \case
             s@Sub {subThread = NoSub} ->
               case msg_ of
-                Just msg -> atomically (setDelivered s msg) $> (corrId, rId, msgCmd msg)
+                Just msg -> atomically (setDelivered s msg) $> (corrId, rId, MSG msg)
                 _ -> forkSub $> ok
             _ -> pure ok
           where
@@ -591,7 +595,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
             subscriber :: m ()
             subscriber = atomically $ do
               msg <- peekMsg q
-              writeTBQueue sndQ (CorrId "", rId, msgCmd msg)
+              writeTBQueue sndQ (CorrId "", rId, MSG msg)
               s <- readTVar sub
               void $ setDelivered s msg
               writeTVar sub s {subThread = NoSub}
@@ -604,9 +608,6 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
           ms <- asks msgStore
           quota <- asks $ msgQueueQuota . config
           atomically $ getMsgQueue ms rId quota
-
-        msgCmd :: Message -> BrokerMsg
-        msgCmd Message {msgId, ts, msgFlags, msgBody} = MSG msgId ts msgFlags msgBody
 
         delQueueAndMsgs :: QueueStore -> m (Transmission BrokerMsg)
         delQueueAndMsgs st = do

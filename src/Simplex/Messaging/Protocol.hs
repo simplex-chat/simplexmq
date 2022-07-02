@@ -78,12 +78,17 @@ module Simplex.Messaging.Protocol
     NtfPublicVerifyKey,
     RcvNtfPublicDhKey,
     RcvNtfDhSecret,
+    Message (..),
+    RcvMessage (..),
     MsgId,
     MsgBody,
+    MsgBodyV3 (..),
+    RcvMsgBody (..),
     EncNMsgMeta,
     SMPMsgMeta (..),
     NMsgMeta (..),
     MsgFlags (..),
+    rcvMessageMeta,
     noMsgFlags,
 
     -- * Parse and serialize
@@ -114,7 +119,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.Maybe (isNothing)
 import Data.String
-import Data.Time.Clock.System (SystemTime)
+import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
@@ -243,9 +248,10 @@ deriving instance Eq (Command p)
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
-  -- MSG v1 has to be supported for encoding/decoding
-  -- MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
-  MSG :: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
+  -- MSG v1/2 has to be supported for encoding/decoding
+  -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
+  -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
+  MSG :: Message -> BrokerMsg
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   END :: BrokerMsg
@@ -253,6 +259,58 @@ data BrokerMsg where
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   deriving (Eq, Show)
+
+data Message = Message
+  { msgId :: MsgId,
+    msgTs :: SystemTime,
+    msgFlags :: MsgFlags,
+    msgBody :: MsgBody,
+    msgBodyV3 :: Maybe MsgBodyV3
+  }
+  deriving (Eq, Show)
+
+-- | received message without server/recipient encryption
+data RcvMessage = RcvMessage
+  { msgId :: MsgId,
+    msgTs :: SystemTime,
+    msgFlags :: MsgFlags,
+    msgBody :: MsgBody
+  }
+
+instance StrEncoding Message where
+  strEncode Message {msgId, msgTs, msgFlags, msgBody, msgBodyV3} =
+    B.unwords $ msgV2 <> maybe [] (\(MsgBodyV3 body) -> [strEncode body]) msgBodyV3
+    where
+      msgV2 =
+        [ strEncode msgId,
+          strEncode msgTs,
+          "flags=" <> strEncode msgFlags,
+          strEncode msgBody
+        ]
+  strP = do
+    msgId <- strP_
+    msgTs <- strP_
+    msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
+    msgBody <- strP
+    msgBodyV3 <- optional $ MsgBodyV3 <$> (A.space *> strP)
+    pure Message {msgId, msgTs, msgFlags, msgBody, msgBodyV3}
+
+newtype MsgBodyV3 = MsgBodyV3 ByteString
+  deriving (Eq, Show)
+
+data RcvMsgBody = RcvMsgBody
+  { msgTs :: SystemTime,
+    msgFlags :: MsgFlags,
+    msgBody :: MsgBody
+  }
+
+instance Encoding RcvMsgBody where
+  smpEncode RcvMsgBody {msgTs, msgFlags, msgBody} = smpEncode (msgTs, msgFlags, ' ', Tail msgBody)
+  smpP = do
+    msgTs <- smpP
+    msgFlags <- smpP
+    Tail msgBody <- _smpP
+    pure RcvMsgBody {msgTs, msgFlags, msgBody}
 
 type EncNMsgMeta = ByteString
 
@@ -262,6 +320,9 @@ data SMPMsgMeta = SMPMsgMeta
     msgFlags :: MsgFlags
   }
   deriving (Show)
+
+rcvMessageMeta :: RcvMessage -> SMPMsgMeta
+rcvMessageMeta RcvMessage {msgId, msgTs, msgFlags} = SMPMsgMeta {msgId, msgTs, msgFlags}
 
 data NMsgMeta = NMsgMeta
   { msgId :: MsgId,
@@ -724,9 +785,12 @@ instance ProtocolEncoding BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
-    MSG msgId ts flags msgBody
-      | v == 1 -> e (MSG_, ' ', msgId, ts, Tail msgBody)
-      | otherwise -> e (MSG_, ' ', msgId, ts, flags, ' ', Tail msgBody)
+    MSG Message {msgId, msgTs, msgFlags, msgBody, msgBodyV3}
+      | v == 1 -> e (MSG_, ' ', msgId, msgTs, Tail msgBody)
+      | v == 2 -> e (MSG_, ' ', msgId, msgTs, msgFlags, ' ', Tail msgBody)
+      | otherwise -> case msgBodyV3 of
+        Just (MsgBodyV3 body) -> e (MSG_, ' ', msgId, ' ', Tail body)
+        _ -> e (MSG_, ' ', msgId, 'T', msgTs, msgFlags, ' ', Tail msgBody)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     END -> e END_
@@ -739,8 +803,14 @@ instance ProtocolEncoding BrokerMsg where
 
   protocolP v = \case
     MSG_
-      | v == 1 -> MSG <$> _smpP <*> smpP <*> pure noMsgFlags <*> (unTail <$> smpP)
-      | otherwise -> MSG <$> _smpP <*> smpP <*> smpP <*> (unTail <$> _smpP)
+      | v == 1 -> MSG <$> (Message <$> _smpP <*> smpP <*> pure noMsgFlags <*> (unTail <$> smpP) <*> pure Nothing)
+      | v == 2 -> MSG <$> (Message <$> _smpP <*> smpP <*> smpP <*> (unTail <$> _smpP) <*> pure Nothing)
+      | otherwise -> do
+        msgId <- _smpP
+        A.anyChar >>= \case
+          ' ' -> MSG <$> (Message msgId (MkSystemTime 0 0) noMsgFlags "" <$> (Just . MsgBodyV3 . unTail <$> smpP))
+          'T' -> MSG <$> (Message msgId <$> smpP <*> smpP <*> (unTail <$> _smpP) <*> pure Nothing)
+          _ -> fail "bad MSG"
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP

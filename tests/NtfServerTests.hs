@@ -131,7 +131,7 @@ testNotificationSubscription (ATransport t) =
           notifierId `shouldBe` nId
           send' APNSRespOk
           -- receive message
-          Resp "" _ (MSG mId1 mTs _ msg1) <- tGet rh
+          Resp "" _ (MSG (Message mId1 mTs _ msg1 _)) <- tGet rh
           mId1 `shouldBe` msgId
           mTs `shouldBe` msgTs
           let decryptedMsg = C.cbDecrypt rcvDhSecret (C.cbNonce mId1) msg1

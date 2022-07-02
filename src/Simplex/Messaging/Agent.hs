@@ -861,8 +861,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
     processSMP :: Connection c -> ConnData -> RcvQueue -> m ()
     processSMP conn cData@ConnData {connId, duplexHandshake} rq@RcvQueue {rcvDhSecret, e2ePrivKey, e2eDhSecret, status} =
       case cmd of
-        SMP.MSG srvMsgId srvTs msgFlags msgBody' -> handleNotifyAck $ do
-          msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
+        SMP.MSG msg@SMP.Message {msgId = srvMsgId} -> handleNotifyAck $ do
+          SMP.RcvMessage {msgTs = srvTs, msgFlags, msgBody} <- decryptSMPMessage rcvDhSecret msg
           clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
             parseMessage msgBody
           unless (phVer `isCompatible` SMP.smpClientVRange) . throwError $ AGENT A_VERSION

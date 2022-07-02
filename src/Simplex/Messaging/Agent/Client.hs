@@ -21,6 +21,7 @@ module Simplex.Messaging.Agent.Client
     newRcvQueue,
     subscribeQueue,
     getQueueMessage,
+    decryptSMPMessage,
     addSubscription,
     getSubscriptions,
     sendConfirmation,
@@ -96,7 +97,8 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvNtfPublicDhKey, SMPMsgMeta, SndPublicVerifyKey)
+import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvDhSecret, RcvMessage (..), RcvNtfPublicDhKey, SMPMsgMeta (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -547,10 +549,11 @@ sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) (C
         SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 
 getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> m (Maybe SMPMsgMeta)
-getQueueMessage c RcvQueue {server, rcvId, rcvPrivateKey} = do
+getQueueMessage c RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret} = do
   atomically createTakeGetLock
-  withLogClient c server rcvId "GET" $ \smp ->
+  msg_ <- withLogClient c server rcvId "GET" $ \smp ->
     getSMPMessage smp rcvPrivateKey rcvId
+  mapM (fmap SMP.rcvMessageMeta . decryptSMPMessage rcvDhSecret) msg_
   where
     createTakeGetLock = TM.alterF takeLock (server, rcvId) $ getMsgLocks c
       where
@@ -558,6 +561,18 @@ getQueueMessage c RcvQueue {server, rcvId, rcvPrivateKey} = do
           l <- maybe (newTMVar ()) pure l_
           takeTMVar l
           pure $ Just l
+
+decryptSMPMessage :: AgentMonad m => RcvDhSecret -> SMP.Message -> m RcvMessage
+decryptSMPMessage rcvDhSecret SMP.Message {msgId, msgTs = ts, msgFlags = flags, msgBody = body, msgBodyV3} =
+  case msgBodyV3 of
+    Just (SMP.MsgBodyV3 bodyV3) -> do
+      SMP.RcvMsgBody {msgTs, msgFlags, msgBody} <- liftEither . parse smpP (AGENT A_MESSAGE) =<< decrypt bodyV3
+      pure RcvMessage {msgId, msgTs, msgFlags, msgBody}
+    _ -> do
+      msgBody <- decrypt body
+      pure RcvMessage {msgId, msgTs = ts, msgFlags = flags, msgBody}
+  where
+    decrypt = agentCbDecrypt rcvDhSecret (C.cbNonce msgId)
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
 secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
