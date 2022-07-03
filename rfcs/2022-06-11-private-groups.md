@@ -44,19 +44,10 @@ However an explicit rejection message provides a speed up to the inevitable fail
 If the Propose recipient wants to add the contact to the group they:
   1. Generate a token.
   1. Store the invitation identifier, proposer's token, and their token.
-  1. Broadcast a SyncToken message that includes the invitation identifier and their token.
   1. The Leader: Rebroadcasts the Propose message to all Approvers.
   1. Approvers: Send an Invite message to the invitee that includes the invitation identifier, their token, and the count of current members.
 
 The choice to accept or reject and the generated token should be locally committed before sending messages so conflicting messages are not sent.
-
-_TODO: If a malicious member receives all tokens from the other members, they can then fabricate legitimate Accept messages.
-However, members must only listen to an Accept messages from the user they invited (who they believe to be the invitee).
-This means that when all members agree on the invitee, the ability to fabricate an Accept message is useless.
-When member(s) mistake the invitee for a collaborator of the malicious member, the malicious member can help the collaborator trick the confused member into accepting the collaborator's membership.
-Seemingly, this offers little benefit, because the malicious parties cannot fool any other member.
-The confused party now believes the collaborator to be part of the group, but to what end?
-This can be avoided by moving the TokenSync messages to after receipt of the Accept message, but is less efficient._
 
 #### Invitee
 
@@ -71,8 +62,10 @@ In the case of contact confusion between members, it is impossible for anyone ou
 
 #### Approvers (phase 2)
 
-Once a member has received a SyncToken message from all other members and an Accept message from the invitee, they compare the tokens received.
-If the invitee can present a match, then the member now knows that all parties have agreed to extend membership.
+Once a member has an Accept message from the invitee, they begin syncing their tokens with other members via a SyncToken message.
+A SyncToken message can both send a token and ack receipt of a token from another member, based on the `ack` flag within the message.
+
+Once a member has all other members' tokens, assuming they all match the Accept message, then the member knows that all parties have agreed to extend membership.
 The member locally commits this result and establishes a new connection with the invitee specifically for group communication.
 
 Each Approver notifies the Leader that they have established a connection with the invitee.

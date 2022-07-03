@@ -42,6 +42,7 @@ CONSTANTS
     \* User States
     Invited,
     Active,
+    Synchronizing,
     Committed,
     \* Request Type
     PleasePropose,
@@ -295,7 +296,6 @@ ApproverReceiveProposal(recipient) ==
                        [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] =
                            [ for_group |-> message.recipient.id
                            , state |-> Active
-                           , tokens |-> { [ for |-> message.invite_id, by |-> message.recipient.user ] }
                            ]
                        ]
                    \* It's safe to send this message right away, as it only agrees to
@@ -358,13 +358,59 @@ ApproverReceiveKick(recipient, kicked) ==
             )
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
-\* TODO: This keeps broadcasting after invitee has joined and sends the token
-\* to members who join later too.
+HandleEstablish(invite_id, invitee, inviter) ==
+    LET InviteeDoesntBelieveInviterIsKicked ==
+            /\ inviter.id /= Nothing
+            /\ approver_states[<<inviter.id, invitee>>].state = Committed
+        InviteeMember == [ id |-> invite_id, user |-> invitee ]
+    IN
+        \* We mark everything as completed, establish a connection with the
+        \* user and notify the Leader that we've completed the connection.
+        /\ approver_states' =
+            [ approver_states EXCEPT ![<<invite_id, inviter.user>>] = [ state |-> Committed ] ]
+        \* TODO: This can't be atomic
+        /\ group_perceptions' =
+            [ group_perceptions
+            EXCEPT ![inviter] = @ \union { InviteeMember }
+            ,      ![InviteeMember] = @ \union (IF InviteeDoesntBelieveInviterIsKicked THEN {} ELSE { inviter, InviteeMember })
+            ]
+        /\ AddMessage(
+                [ type |-> Established
+                , sender |-> inviter
+                , recipient |-> Leader
+                , invite_id |-> invite_id
+                ]
+           )
+
+ApproverReceiveAccept(recipient) ==
+    \E message \in messages :
+        /\ message.recipient = recipient
+        /\ message.type = Accept
+        /\ approver_states[<<message.invite_id, message.recipient>>].state = Active
+        /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>].for_group
+               RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
+           IN  IF  Cardinality(group_perceptions[RecipientMember]) = 1
+               THEN
+                   /\ HandleEstablish(message.invite_id, message.sender, RecipientMember)
+                   /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
+               ELSE
+                   /\ approver_states' =
+                       [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] =
+                           [ state |-> Synchronizing
+                           , for_group |-> RecipientId
+                           , user |-> message.sender
+                           , expected_tokens |-> message.tokens
+                           , tokens |-> [ member \in MemberSet |-> IF member = RecipientMember THEN [ for |-> message.invite_id, by |-> message.recipient ] ELSE Nothing ]
+                           , awaiting_response |-> group_perceptions[RecipientMember] \ { RecipientMember }
+                           ]
+                       ]
+                   /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
+
+\* TODO: Drive this by `Propose` messages
 BroadcastToken ==
     \E from \in MemberSet, invite_id \in InviteIds :
-        \E to \in group_perceptions[from] :
-            /\ from /= to
-            /\ approver_states[<<invite_id, from.user>>].state /= Nothing
+        /\ approver_states[<<invite_id, from.user>>].state = Synchronizing
+        /\ \E to \in approver_states[<<invite_id, from.user>>].awaiting_response :
             /\ AddMessage(
                     [ sender |-> from
                     , recipient |-> to
@@ -375,6 +421,9 @@ BroadcastToken ==
                     \* this invite_id.
                     , token |-> [ for |-> invite_id, by |-> from.user ]
                     , invite_id |-> invite_id
+                    \* If we have received their token, ack receipt and send
+                    \* our token simultaneously.
+                    , ack |-> approver_states[<<invite_id, from.user>>].tokens[to] /= Nothing
                     ]
                 )
             /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
@@ -383,10 +432,42 @@ ReceiveSyncToken ==
     \E message \in messages :
         /\ message.type = SyncToken
         /\ message.sender \in group_perceptions[message.recipient] \* Should be invariant
-        /\ approver_states[<<message.invite_id, message.recipient.user>>].state = Active
+        /\ approver_states[<<message.invite_id, message.recipient.user>>].state = Synchronizing
         /\ approver_states[<<message.invite_id, message.recipient.user>>].for_group = message.recipient.id \* Should be invariant
-        /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = [ @ EXCEPT !.tokens = @ \union { message.token } ] ]
-        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
+        /\ LET  NextApproverState ==
+                    [ approver_states[<<message.invite_id, message.recipient.user>>]
+                    EXCEPT !.tokens = [ @ EXCEPT ![message.sender] = message.token ]
+                    ,      !.awaiting_response = @ \ IF message.ack THEN { message.sender } ELSE {}
+                    ]
+
+           IN   IF  /\ { NextApproverState.tokens[member] : member \in group_perceptions[message.recipient] } = NextApproverState.expected_tokens
+                    /\ NextApproverState.awaiting_response = {}
+                THEN
+                    \* This was the final token, everything matches, and we
+                    \* have acks from all our token deliveries, so we establish
+                    \* the connection.
+                    /\ HandleEstablish(message.invite_id, NextApproverState.user, message.recipient)
+                    /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
+                ELSE
+                    /\ approver_states' =
+                        [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = NextApproverState ]
+                    /\ IF   message.ack
+                       THEN UNCHANGED <<messages>>
+                       ELSE AddMessage(
+                                [ sender |-> message.recipient
+                                , recipient |-> message.sender
+                                , type |-> SyncToken
+                                \* Note again that tokens are abstract/symbolic.  In this
+                                \* context, the spec implies that this is using a
+                                \* pregenerated token that is permanently associated for
+                                \* this invite_id.
+                                , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                                , invite_id |-> message.invite_id
+                                , ack |-> TRUE
+                                ]
+                            )
+                    /\ UNCHANGED <<group_perceptions>>
+        /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
 SendAccept ==
     \E message \in messages :
@@ -422,36 +503,6 @@ SendAccept ==
                       )
                ELSE UNCHANGED <<messages>>
             /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
-
-Establish(recipient) ==
-    \E message \in messages :
-        /\ message.recipient = recipient
-        /\ message.type = Accept
-        /\ approver_states[<<message.invite_id, message.recipient>>].state = Active
-        /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>].for_group
-               RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
-               SenderMember == [ user |-> message.sender, id |-> message.invite_id ]
-               Tokens == approver_states[<<message.invite_id, message.recipient>>].tokens
-               InviteeDoesntBelieveInviterIsKicked ==
-                   /\ RecipientId /= Nothing
-                   /\ approver_states[<<RecipientId, message.sender>>].state = Committed
-           IN  /\ Cardinality(group_perceptions[RecipientMember]) = Cardinality(Tokens)
-               /\ message.tokens = Tokens
-               /\ approver_states' = [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = [ state |-> Committed ] ]
-               \* TODO: This can't be atomic
-               /\ group_perceptions' =
-                   [ group_perceptions
-                   EXCEPT ![RecipientMember] = @ \union { SenderMember }
-                   ,      ![SenderMember] = @ \union (IF InviteeDoesntBelieveInviterIsKicked THEN {} ELSE { RecipientMember, SenderMember })
-                   ]
-               /\ AddMessage(
-                       [ type |-> Established
-                       , sender |-> RecipientMember
-                       , recipient |-> Leader
-                       , invite_id |-> message.invite_id
-                       ]
-                   )
-               /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
 \* TODO: Need to be able to Kick outside of failed proposals.
 
@@ -498,10 +549,10 @@ Next ==
     \/ LeaderReceiveKickAck
     \/ \E member \in MemberSet : ApproverReceiveProposal(member)
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
+    \/ \E user \in Users : ApproverReceiveAccept(user)
     \/ BroadcastToken
     \/ ReceiveSyncToken
     \/ SendAccept
-    \/ \E user \in Users : Establish(user)
 
 AllVars ==
     <<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
@@ -519,7 +570,7 @@ Fairness ==
     /\ SF_AllVars(ApproverReceiveProposal(Leader))
     /\ \A kicked \in SUBSET InviteIds :
         SF_AllVars(ApproverReceiveKick(Leader, kicked))
-    /\ SF_AllVars(Establish(Leader.user))
+    /\ SF_AllVars(ApproverReceiveAccept(Leader.user))
 
 
 Spec == Init /\ [][Next]_AllVars /\ Fairness
@@ -534,7 +585,14 @@ TypeOk ==
         \union
         [ state : { Active }
         , for_group : InviteIds \union { Nothing }
-        , tokens : SUBSET [ for : InviteIds, by : Users ]
+        ]
+        \union
+        [ state : { Synchronizing }
+        , for_group : InviteIds \union { Nothing }
+        , user : Users
+        , expected_tokens : SUBSET [ for : InviteIds, by : Users ]
+        , tokens : [ MemberSet -> ([ for : InviteIds, by : Users ] \union { Nothing }) ]
+        , awaiting_response : SUBSET MemberSet
         ]
         \union
         [ state : { Nothing, Committed }
