@@ -147,61 +147,61 @@ To create and start using a simplex queue Alice and Bob follow these steps:
 
 1. Alice creates a simplex queue on the server:
 
-    1. Decides which SMP server to use (can be the same or different server that Alice uses for other queues) and opens secure encrypted transport connection to the chosen SMP server (see [Appendix A](#appendix-a)).
+   1. Decides which SMP server to use (can be the same or different server that Alice uses for other queues) and opens secure encrypted transport connection to the chosen SMP server (see [Appendix A](#appendix-a)).
 
-    2. Generates a new random public/private key pair (encryption key - `EK`) that she did not use before for Bob to encrypt the messages.
+   2. Generates a new random public/private key pair (encryption key - `EK`) that she did not use before for Bob to encrypt the messages.
 
-    3. Generates another new random public/private key pair (recipient key - `RK`) that she did not use before for her to sign commands and to decrypt the transmissions received from the server.
+   3. Generates another new random public/private key pair (recipient key - `RK`) that she did not use before for her to sign commands and to decrypt the transmissions received from the server.
 
-    4. Generates one more random key pair (recipient DH key - `RDHK`) to negotiate symmetric key that will be used by the server to encrypt message bodies delivered to Alice (to avoid shared cipher-text inside transport connection).
+   4. Generates one more random key pair (recipient DH key - `RDHK`) to negotiate symmetric key that will be used by the server to encrypt message bodies delivered to Alice (to avoid shared cipher-text inside transport connection).
 
-    5. Sends `"NEW"` command to the server to create a simplex queue (see `create` in [Create queue command](#create-queue-command)). This command contains previously generated unique "public" keys `RK` and `RDHK`. `RK` will be used to verify the following commands related to the same queue signed by its private counterpart, for example to subscribe to the messages received to this queue or to update the queue, e.g. by setting the key required to send the messages (initially Alice creates the queue that accepts unsigned messages, so anybody could send the message via this queue if they knew the queue sender's ID and server address).
+   5. Sends `"NEW"` command to the server to create a simplex queue (see `create` in [Create queue command](#create-queue-command)). This command contains previously generated unique "public" keys `RK` and `RDHK`. `RK` will be used to verify the following commands related to the same queue signed by its private counterpart, for example to subscribe to the messages received to this queue or to update the queue, e.g. by setting the key required to send the messages (initially Alice creates the queue that accepts unsigned messages, so anybody could send the message via this queue if they knew the queue sender's ID and server address).
 
-    6. The server sends `"IDS"` response with queue IDs (`queueIds`):
+   6. The server sends `"IDS"` response with queue IDs (`queueIds`):
 
-        - Recipient ID `RID` for Alice to manage the queue and to receive the messages.
+      - Recipient ID `RID` for Alice to manage the queue and to receive the messages.
 
-        - Sender ID `SID` for Bob to send messages to the queue.
+      - Sender ID `SID` for Bob to send messages to the queue.
 
-        - Server public DH key (`SDHK`) to negotiate a shared secret for message body encryption, that Alice uses to derive a shared secret with the server `SS`.
+      - Server public DH key (`SDHK`) to negotiate a shared secret for message body encryption, that Alice uses to derive a shared secret with the server `SS`.
 
 2. Alice sends an out-of-band message to Bob via the alternative channel that both Alice and Bob trust (see [protocol abstract](#simplex-messaging-protocol-abstract)). The message must include:
 
-    - Unique "public" key (`EK`) that Bob must use for E2E key agreement.
+   - Unique "public" key (`EK`) that Bob must use for E2E key agreement.
 
-    - SMP server hostname and information to open secure encrypted transport connection (see [Appendix A](#appendix-a)).
+   - SMP server hostname and information to open secure encrypted transport connection (see [Appendix A](#appendix-a)).
 
-    - Sender queue ID `SID` for Bob to use.
+   - Sender queue ID `SID` for Bob to use.
 
 3. Bob, having received the out-of-band message from Alice, connects to the queue:
 
-    1. Generates a new random public/private key pair (sender key - `SK`) that he did not use before for him to sign messages sent to Alice's server.
+   1. Generates a new random public/private key pair (sender key - `SK`) that he did not use before for him to sign messages sent to Alice's server.
 
-    2. Prepares the confirmation message for Alice to secure the queue. This message includes:
+   2. Prepares the confirmation message for Alice to secure the queue. This message includes:
 
-        - Previously generated "public" key `SK` that will be used by Alice's server to authenticate Bob's messages, once the queue is secured.
+      - Previously generated "public" key `SK` that will be used by Alice's server to authenticate Bob's messages, once the queue is secured.
 
-        - Optionally, any additional information (application specific, e.g. Bob's profile name and details).
+      - Optionally, any additional information (application specific, e.g. Bob's profile name and details).
 
-    3. Encrypts the confirmation body with the "public" key `EK` (that Alice provided via the out-of-band message).
+   3. Encrypts the confirmation body with the "public" key `EK` (that Alice provided via the out-of-band message).
 
-    4. Sends the encrypted message to the server with queue ID `SID` (see `send` in [Send message](#send-message)). This initial message to the queue must not be signed - signed messages will be rejected until Alice secures the queue (below).
+   4. Sends the encrypted message to the server with queue ID `SID` (see `send` in [Send message](#send-message)). This initial message to the queue must not be signed - signed messages will be rejected until Alice secures the queue (below).
 
 4. Alice receives Bob's message from the server using recipient queue ID `RID` (possibly, via the same transport connection she already has opened - see `message` in [Deliver queue message](#deliver-queue-message)):
 
-    1. She decrypts received message body using the secret `SS`.
+   1. She decrypts received message body using the secret `SS`.
 
-    2. She decrypts received message with [key agreed with sender using] "private" key `EK`.
+   2. She decrypts received message with [key agreed with sender using] "private" key `EK`.
 
-    3. Even though anybody could have sent the message to the queue with ID `SID` before it is secured (e.g. if communication is compromised), Alice would ignore all messages until the decryption succeeds (i.e. the result contains the expected message format). Optionally, in the client application, she also may identify Bob using the information provided, but it is out of scope of SMP protocol.
+   3. Even though anybody could have sent the message to the queue with ID `SID` before it is secured (e.g. if communication is compromised), Alice would ignore all messages until the decryption succeeds (i.e. the result contains the expected message format). Optionally, in the client application, she also may identify Bob using the information provided, but it is out of scope of SMP protocol.
 
 5. Alice secures the queue `RID` with `"KEY"` command so only Bob can send messages to it (see [Secure queue command](#secure-queue-command)):
 
-    1. She sends the `KEY` command with `RID` signed with "private" key `RK` to update the queue to only accept requests signed by "private" key `SK` provided by Bob. This command contains unique "public" key `SK` previously generated by Bob.
+   1. She sends the `KEY` command with `RID` signed with "private" key `RK` to update the queue to only accept requests signed by "private" key `SK` provided by Bob. This command contains unique "public" key `SK` previously generated by Bob.
 
-    2. From this moment the server will accept only signed commands to `SID`, so only Bob will be able to send messages to the queue `SID` (corresponding to `RID` that Alice has).
+   2. From this moment the server will accept only signed commands to `SID`, so only Bob will be able to send messages to the queue `SID` (corresponding to `RID` that Alice has).
 
-    3. Once queue is secured, Alice deletes `SID` and `SK` - even if Alice's client is compromised in the future, the attacker would not be able to send messages pretending to be Bob.
+   3. Once queue is secured, Alice deletes `SID` and `SK` - even if Alice's client is compromised in the future, the attacker would not be able to send messages pretending to be Bob.
 
 6. The simplex queue `RID` is now ready to be used.
 
@@ -215,21 +215,21 @@ Bob now can securely send messages to Alice:
 
 1. Bob sends the message:
 
-    1. He encrypts the message to Alice with "public" key `EK` (provided by Alice, only known to Bob, used only for one simplex queue).
+   1. He encrypts the message to Alice with "public" key `EK` (provided by Alice, only known to Bob, used only for one simplex queue).
 
-    2. He signs `"SEND"` command to the server queue `SID` using the "private" key `SK` (that only he knows, used only for this queue).
+   2. He signs `"SEND"` command to the server queue `SID` using the "private" key `SK` (that only he knows, used only for this queue).
 
-    3. He sends the command to the server (see `send` in [Send message](#send-message)), that the server will authenticate using the "public" key `SK` (that Alice earlier received from Bob and provided to the server via `"KEY"` command).
+   3. He sends the command to the server (see `send` in [Send message](#send-message)), that the server will authenticate using the "public" key `SK` (that Alice earlier received from Bob and provided to the server via `"KEY"` command).
 
 2. Alice receives the message(s):
 
-    1. She signs `"SUB"` command to the server to subscribe to the queue `RID` with the "private" key `RK` (see `subscribe` in [Subscribe to queue](#subscribe-to-queue)).
+   1. She signs `"SUB"` command to the server to subscribe to the queue `RID` with the "private" key `RK` (see `subscribe` in [Subscribe to queue](#subscribe-to-queue)).
 
-    2. The server, having authenticated Alice's command with the "public" key `RK` that she provided, delivers Bob's message(s) (see `message` in [Deliver queue message](#deliver-queue-message)).
+   2. The server, having authenticated Alice's command with the "public" key `RK` that she provided, delivers Bob's message(s) (see `message` in [Deliver queue message](#deliver-queue-message)).
 
-    3. She decrypts Bob's message(s) with the "private" key `EK` (that only she has).
+   3. She decrypts Bob's message(s) with the "private" key `EK` (that only she has).
 
-    4. She acknowledges the message reception to the server with `"ACK"` so that the server can delete the message and deliver the next messages.
+   4. She acknowledges the message reception to the server with `"ACK"` so that the server can delete the message and deliver the next messages.
 
 This flow is show on sequence diagram below.
 
@@ -359,6 +359,8 @@ The clients can optionally instruct a dedicated push notification server to subs
 - `disableNotifications` (`"NDEL"`) - see [Disable notifications command](#disable-notifications-command).
 - `subscribeNotifications` (`"NSUB"`) - see [Subscribe to queue notifications](#subscribe-to-queue-notifications).
 - `messageNotification` (`"NMSG"`) - see [Deliver message notification](#deliver-message-notification).
+
+[`SEND` command](#send-message) includes the notification flag to instruct SMP server whether to send the notification - this flag is forwarded to the recepient inside encrypted envelope, together with the timestamp and the message body, so even if TLS is compromised this flag cannot be used for traffic correlation.
 
 ## SMP Transmission structure
 
@@ -587,7 +589,9 @@ Currently SMP defines only one command that can be used by senders - `send` mess
 This command is sent to the server by the sender both to confirm the queue after the sender received out-of-band message from the recipient and to send messages after the queue is secured:
 
 ```abnf
-send = %s"SEND " smpEncMessage
+send = %s"SEND " msgFlags SP smpEncMessage
+msgFlags = notificationFlag reserved
+notificationFlag = %s"T" / %s"F"
 smpEncMessage = smpPubHeader sentMsgBody ; message up to 16088 bytes
 smpPubHeader = smpClientVersion ("1" senderPublicDhKey / "0")
 smpClientVersion = word16
@@ -729,9 +733,13 @@ See its syntax in [Create queue command](#create-queue-command)
 The server must deliver messages to all subscribed simplex queues on the currently open transport connection. The syntax for the message delivery is:
 
 ```abnf
-message = %s"MSG " msgId SP timestamp SP encryptedMsgBody
+messageWithMeta = %s"MSG " msgId "T" timestamp msgFlags SP encryptedMsgBody
+messageNoMeta = %s"MSG " msgId SP encryptedRcvMsgBody
+message = messageWithMeta / messageNoMeta
 encryptedMsgBody = <encrypt paddedSentMsgBody> ; server-encrypted padded sent msgBody
 paddedSentMsgBody = <padded(sentMsgBody, maxMessageLength + 2)> ; maxMessageLength = 16088
+encryptedRcvMsgBody = <encrypt rcvMsgBody> ; server-encrypted meta-data and padded sent msgBody
+rcvMsgBody = timestamp msgFlags SP paddedSentMsgBody
 msgId = length 24*24OCTET
 timestamp = 8*8OCTET
 ```
@@ -823,6 +831,7 @@ ok = %s"OK"
 Both the recipient and the sender can use TCP or some other, possibly higher level, transport protocol to communicate with the server. The default TCP port for SMP server is 5223.
 
 For scenarios when meta-data privacy is critical, it is recommended that clients:
+
 - communicating over Tor network,
 - establish a separate connection for each SMP queue,
 - send noise traffic (using PING command).
@@ -830,12 +839,14 @@ For scenarios when meta-data privacy is critical, it is recommended that clients
 In addition to that, the servers can be deployed as Tor onion services.
 
 The transport protocol should provide the following:
+
 - server authentication (by matching server certificate hash with `serverIdentity`),
 - forward secrecy (by encrypting the traffic using ephemeral keys agreed during transport handshake),
 - integrity (preventing data modification by the attacker without detection),
 - unique channel binding (`sessionIdentifier`) to include in the signed part of SMP transmissions.
 
 By default, the client and server communicate using [TLS 1.3 protocol][13] restricted to:
+
 - TLS_CHACHA20_POLY1305_SHA256 cipher suite (for better performance on mobile devices),
 - ed25519 and ed448 EdDSA algorithms for signatures,
 - x25519 and x448 ECDHE groups for key exchange.
