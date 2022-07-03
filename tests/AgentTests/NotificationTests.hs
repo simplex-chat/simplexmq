@@ -269,6 +269,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     liftIO $ threadDelay 500000
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     liftIO $ print 1
+    liftIO $ threadDelay 250000
     void $ messageNotification apnsQ
     liftIO $ print 2
     ("", _, CONF confId "bob's connInfo") <- get alice
