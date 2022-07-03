@@ -139,9 +139,9 @@ processNtfSub c (connId, cmd) = do
     addNtfNTFWorker = addWorker ntfWorkers runNtfWorker
     addNtfSMPWorker = addWorker ntfSMPWorkers runNtfSMPWorker
     addWorker ::
-      (NtfSupervisor -> TMap ProtocolServer (TMVar (), Async ())) ->
-      (AgentClient -> ProtocolServer -> TMVar () -> m ()) ->
-      ProtocolServer ->
+      (NtfSupervisor -> TMap (ProtocolServer s) (TMVar (), Async ())) ->
+      (AgentClient -> ProtocolServer s -> TMVar () -> m ()) ->
+      ProtocolServer s ->
       m ()
     addWorker wsSel runWorker srv = do
       ws <- asks $ wsSel . ntfSupervisor
@@ -340,7 +340,7 @@ closeNtfSupervisor ns = do
   cancelNtfWorkers_ $ ntfWorkers ns
   cancelNtfWorkers_ $ ntfSMPWorkers ns
 
-cancelNtfWorkers_ :: TMap ProtocolServer (TMVar (), Async ()) -> IO ()
+cancelNtfWorkers_ :: TMap (ProtocolServer s) (TMVar (), Async ()) -> IO ()
 cancelNtfWorkers_ wsVar = do
   ws <- atomically $ stateTVar wsVar (,M.empty)
   forM_ ws $ uninterruptibleCancel . snd

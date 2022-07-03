@@ -127,7 +127,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, ProtocolServer (..), RcvNtfDhSecret)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NtfServer, ProtocolServer (..), RcvNtfDhSecret, pattern NtfServer)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
@@ -656,7 +656,7 @@ getSavedNtfToken db = do
       |]
   where
     ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
-      let ntfServer = ProtocolServer {host, port, keyHash}
+      let ntfServer = NtfServer host port keyHash
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
           ntfMode = fromMaybe NMPeriodic ntfMode_
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode}
@@ -736,7 +736,7 @@ getNtfSubscription db connId =
   where
     ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_) =
       let smpServer = SMPServer smpHost smpPort smpKeyHash
-          ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
+          ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
           action = case (ntfAction_, smpAction_, actionTs_) of
             (Just ntfAction, Nothing, Just actionTs) -> Just (NtfSubNTFAction ntfAction, actionTs)
             (Nothing, Just smpAction, Just actionTs) -> Just (NtfSubSMPAction smpAction, actionTs)
@@ -745,7 +745,7 @@ getNtfSubscription db connId =
 
 createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
 createNtfSubscription db ntfSubscription action actionTs = do
-  let NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (SMPServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} = ntfSubscription
+  let NtfSubscription {connId, smpServer = (SMPServer host port _), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} = ntfSubscription
   DB.execute
     db
     [sql|
@@ -761,7 +761,7 @@ createNtfSubscription db ntfSubscription action actionTs = do
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 supervisorUpdateNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
-supervisorUpdateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (ProtocolServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action actionTs = do
+supervisorUpdateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action actionTs = do
   updatedAt <- getCurrentTime
   DB.execute
     db
@@ -789,7 +789,7 @@ supervisorUpdateNtfSubAction db connId action actionTs = do
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 updateNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
-updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (ProtocolServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action actionTs = do
+updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action actionTs = do
   r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
   forM_ r $ \updatedBySupervisor -> do
     updatedAt <- getCurrentTime
@@ -848,7 +848,7 @@ deleteNtfSubscription db connId = do
       else DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
 getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs))
-getNextNtfSubNTFAction db ntfServer@(ProtocolServer ntfHost ntfPort _) = do
+getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) = do
   maybeFirstRow ntfSubAction getNtfSubAction_ $>>= \a@(NtfSubscription {connId}, _, _) -> do
     DB.execute db "UPDATE ntf_subscriptions SET updated_by_supervisor = ? WHERE conn_id = ?" (False, connId)
     pure $ Just a
@@ -891,7 +891,7 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) = do
         |]
         (smpHost, smpPort)
     ntfSubAction (connId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
-      let ntfServer = ProtocolServer ntfHost ntfPort ntfKeyHash
+      let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
           ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
        in (ntfSubscription, action, actionTs)
 
@@ -911,7 +911,7 @@ getActiveNtfToken db =
       (Only NTActive)
   where
     ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
-      let ntfServer = ProtocolServer {host, port, keyHash}
+      let ntfServer = NtfServer host port keyHash
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
           ntfMode = fromMaybe NMPeriodic ntfMode_
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode}

@@ -146,7 +146,8 @@ instance Encoding ANewNtfEntity where
       _ -> fail "bad ANewNtfEntity"
 
 instance Protocol NtfResponse where
-  type ProtocolCommand NtfResponse = NtfCmd
+  type ProtoCommand NtfResponse = NtfCmd
+  type ProtoType NtfResponse = 'PNTF
   protocolClientHandshake = ntfClientHandshake
   protocolPing = NtfCmd SSubscription PING
   protocolError = \case
@@ -323,7 +324,7 @@ instance ProtocolEncoding NtfResponse where
         | otherwise = Left $ CMD HAS_AUTH
 
 data SMPQueueNtf = SMPQueueNtf
-  { smpServer :: ProtocolServer,
+  { smpServer :: SMPServer,
     notifierId :: NotifierId
   }
   deriving (Eq, Ord, Show)

@@ -83,7 +83,7 @@ data ProtocolClient msg = ProtocolClient
     connected :: TVar Bool,
     sessionId :: SessionId,
     thVersion :: Version,
-    protocolServer :: ProtocolServer,
+    protocolServer :: ProtoServer msg,
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request msg),
@@ -95,7 +95,7 @@ data ProtocolClient msg = ProtocolClient
 type SMPClient = ProtocolClient SMP.BrokerMsg
 
 -- | Type synonym for transmission from some SPM server queue.
-type ServerTransmission msg = (ProtocolServer, Version, SessionId, QueueId, msg)
+type ServerTransmission msg = (ProtoServer msg, Version, SessionId, QueueId, msg)
 
 -- | protocol client configuration.
 data ProtocolClientConfig = ProtocolClientConfig
@@ -137,7 +137,7 @@ type Response msg = Either ProtocolClientError msg
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall msg. Protocol msg => ProtocolServer -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
+getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
 getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing, smpServerVRange} msgQ disconnected =
   (atomically mkProtocolClient >>= runClient useTransport)
     `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
@@ -378,7 +378,7 @@ sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId ->
 sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
 -- | Send Protocol command
-sendProtocolCommand :: forall msg. ProtocolEncoding (ProtocolCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtocolCommand msg -> ExceptT ProtocolClientError IO msg
+sendProtocolCommand :: forall msg. ProtocolEncoding (ProtoCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtoCommand msg -> ExceptT ProtocolClientError IO msg
 sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, thVersion, tcpTimeout} pKey qId cmd = do
   corrId <- lift_ getNextCorrId
   t <- signTransmission $ encodeTransmission thVersion sessionId (corrId, qId, cmd)
