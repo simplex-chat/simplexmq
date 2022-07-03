@@ -343,6 +343,7 @@ data MsgFlags = MsgFlags {notification :: Bool}
 
 instance ToJSON MsgFlags where toEncoding = J.genericToEncoding J.defaultOptions
 
+-- this encoding should not become bigger than 7 bytes (currently it is 1 byte)
 instance Encoding MsgFlags where
   smpEncode MsgFlags {notification} = smpEncode notification
   smpP = do

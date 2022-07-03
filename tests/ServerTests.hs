@@ -150,6 +150,15 @@ testCreateSecureV2 _ =
       Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
+      let maxAllowedMessage = B.replicate maxMessageLength '-'
+      Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
+      Resp "" _ (MsgV2 mId3 msg3) <- tGet h
+      (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
+
+      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
+      Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv h sKey ("bcda", sId, _SEND biggerMessage)
+      pure ()
+
 testCreateSecure :: ATransport -> Spec
 testCreateSecure (ATransport t) =
   it "should create (NEW) and secure (KEY) queue" $
@@ -202,6 +211,15 @@ testCreateSecure (ATransport t) =
 
       Resp "dabc" _ err5 <- sendRecv h ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
+
+      let maxAllowedMessage = B.replicate maxMessageLength '-'
+      Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
+      Resp "" _ (MsgV3 mId3 msg3) <- tGet h
+      (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
+
+      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
+      Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv h sKey ("bcda", sId, _SEND biggerMessage)
+      pure ()
 
 testCreateDelete :: ATransport -> Spec
 testCreateDelete (ATransport t) =
