@@ -536,8 +536,10 @@ getPendingMsgData db connId msgId = do
           WHERE m.conn_id = ? AND m.internal_id = ?
         |]
         (connId, msgId)
-    pendingMsgData :: (AgentMessageType, MsgFlags, MsgBody, InternalTs) -> PendingMsgData
-    pendingMsgData (msgType, msgFlags, msgBody, internalTs) = PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
+    pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, InternalTs) -> PendingMsgData
+    pendingMsgData (msgType, msgFlags_, msgBody, internalTs) =
+      let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
+       in PendingMsgData {msgId, msgType, msgFlags, msgBody, internalTs}
 
 getPendingMsgs :: DB.Connection -> ConnId -> IO [InternalId]
 getPendingMsgs db connId =
