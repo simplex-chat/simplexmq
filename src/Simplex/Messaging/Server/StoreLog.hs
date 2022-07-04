@@ -89,7 +89,7 @@ instance StrEncoding StoreLogRecord where
       <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
       <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP)
       <|> "DELETE " *> (DeleteQueue <$> strP)
-      <|> "NDELETE" *> (DeleteNotifier <$> strP)
+      <|> "NDELETE " *> (DeleteNotifier <$> strP)
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = do
