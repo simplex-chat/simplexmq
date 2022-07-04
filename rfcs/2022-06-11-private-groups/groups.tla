@@ -341,14 +341,16 @@ ApproverReceiveProposal(recipient) ==
                            )
                        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
                  [] ApproverState.state = Synchronizing ->
-                   \* In reality, we notify everyone, however this is a bit
-                   \* troublesome when modeling liveness because it means we
-                   \* need to allow for many many in-flight messages to see all
-                   \* the interesting scenarios.  This still captures the
-                   \* "message everyone" behavior, just in a roundabout way,
-                   \* where it "receives" a single proposal message for each
-                   \* member it needs to notify.
-                   \E to \in approver_states[<<message.invite_id, message.recipient.user>>].awaiting_response :
+                   \* The approver sends a token to someone _it_ needs a token
+                   \* from, this then prompts it to ack with its own token. In
+                   \* reality, we notify everyone, not just a single member.
+                   \* However this is a bit troublesome when modeling liveness
+                   \* because it means we need to allow for many many in-flight
+                   \* messages to see all the interesting scenarios.  This
+                   \* still captures the "message everyone" behavior, just in a
+                   \* roundabout way, where it "receives" a single proposal
+                   \* message for each member it needs to notify.
+                   \E to \in group_perceptions[message.recipient] \ { member \in DOMAIN ApproverState.tokens : ApproverState.tokens[member] /= Nothing } :
                        /\ AddMessage(
                                [ sender |-> message.recipient
                                , recipient |-> to
@@ -441,7 +443,6 @@ ApproverReceiveAccept(recipient) ==
                            , user |-> message.sender
                            , expected_tokens |-> message.tokens
                            , tokens |-> [ member \in MemberSet |-> IF member = RecipientMember THEN [ for |-> message.invite_id, by |-> message.recipient ] ELSE Nothing ]
-                           , awaiting_response |-> group_perceptions[RecipientMember] \ { RecipientMember }
                            ]
                        ]
                    /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
@@ -455,11 +456,9 @@ ReceiveSyncToken ==
         /\ LET  NextApproverState ==
                     [ approver_states[<<message.invite_id, message.recipient.user>>]
                     EXCEPT !.tokens = [ @ EXCEPT ![message.sender] = message.token ]
-                    ,      !.awaiting_response = @ \ IF message.ack THEN { message.sender } ELSE {}
                     ]
 
-           IN   IF  /\ { NextApproverState.tokens[member] : member \in group_perceptions[message.recipient] } = NextApproverState.expected_tokens
-                    /\ NextApproverState.awaiting_response = {}
+           IN   IF  { NextApproverState.tokens[member] : member \in group_perceptions[message.recipient] } = NextApproverState.expected_tokens
                 THEN
                     \* This was the final token, everything matches, and we
                     \* have acks from all our token deliveries, so we establish
@@ -609,7 +608,6 @@ TypeOk ==
         , user : Users
         , expected_tokens : SUBSET [ for : InviteIds, by : Users ]
         , tokens : [ MemberSet -> ([ for : InviteIds, by : Users ] \union { Nothing }) ]
-        , awaiting_response : SUBSET MemberSet
         ]
         \union
         [ state : { Nothing, Committed }
