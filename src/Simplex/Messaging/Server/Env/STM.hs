@@ -12,9 +12,7 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Set (Set)
-import qualified Data.Set as S
-import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
@@ -26,6 +24,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -57,6 +56,8 @@ data ServerConfig = ServerConfig
     -- | time of the day when the stats are logged first, to log at consistent times,
     -- irrespective of when the server is started (seconds from 00:00 UTC)
     logStatsStartTime :: Int,
+    -- | file to save and restore stats
+    serverStatsFile :: Maybe FilePath,
     -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -108,18 +109,6 @@ data Client = Client
     activeAt :: TVar SystemTime
   }
 
-data ServerStats = ServerStats
-  { qCreated :: TVar Int,
-    qSecured :: TVar Int,
-    qDeleted :: TVar Int,
-    msgSent :: TVar Int,
-    msgRecv :: TVar Int,
-    dayMsgQueues :: TVar (Set RecipientId),
-    weekMsgQueues :: TVar (Set RecipientId),
-    monthMsgQueues :: TVar (Set RecipientId),
-    fromTime :: TVar UTCTime
-  }
-
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
 
 data Sub = Sub
@@ -144,19 +133,6 @@ newClient qSize sessionId ts = do
   connected <- newTVar True
   activeAt <- newTVar ts
   return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, connected, activeAt}
-
-newServerStats :: UTCTime -> STM ServerStats
-newServerStats ts = do
-  qCreated <- newTVar 0
-  qSecured <- newTVar 0
-  qDeleted <- newTVar 0
-  msgSent <- newTVar 0
-  msgRecv <- newTVar 0
-  dayMsgQueues <- newTVar S.empty
-  weekMsgQueues <- newTVar S.empty
-  monthMsgQueues <- newTVar S.empty
-  fromTime <- newTVar ts
-  pure ServerStats {qCreated, qSecured, qDeleted, msgSent, msgRecv, dayMsgQueues, weekMsgQueues, monthMsgQueues, fromTime}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
