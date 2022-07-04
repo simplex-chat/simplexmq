@@ -28,9 +28,13 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
+import Data.Set (Set)
+import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
+import Data.Time.Format.ISO8601
 import Data.Word (Word16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
@@ -101,13 +105,25 @@ instance StrEncoding Bool where
   strP = smpP
   {-# INLINE strP #-}
 
+instance StrEncoding Int where
+  strEncode = B.pack . show
+  {-# INLINE strEncode #-}
+  strP = A.decimal
+  {-# INLINE strP #-}
+
 instance StrEncoding Int64 where
   strEncode = B.pack . show
+  {-# INLINE strEncode #-}
   strP = A.decimal
+  {-# INLINE strP #-}
 
 instance StrEncoding SystemTime where
   strEncode = strEncode . systemSeconds
   strP = MkSystemTime <$> strP <*> pure 0
+
+instance StrEncoding UTCTime where
+  strEncode = B.pack . iso8601Show
+  strP = maybe (Left "bad UTCTime") Right . iso8601ParseM . B.unpack <$?> A.takeTill (\c -> c == ' ' || c == '\n')
 
 -- lists encode/parse as comma-separated strings
 strEncodeList :: StrEncoding a => [a] -> ByteString
@@ -121,8 +137,12 @@ instance StrEncoding a => StrEncoding (L.NonEmpty a) where
   strEncode = strEncodeList . L.toList
   strP = L.fromList <$> listItem `A.sepBy1'` A.char ','
 
+instance (StrEncoding a, Ord a) => StrEncoding (Set a) where
+  strEncode = strEncodeList . S.toList
+  strP = S.fromList <$> listItem `A.sepBy'` A.char ','
+
 listItem :: StrEncoding a => Parser a
-listItem = parseAll strP <$?> A.takeTill (== ',')
+listItem = parseAll strP <$?> A.takeTill (\c -> c == ',' || c == ' ' || c == '\n')
 
 instance (StrEncoding a, StrEncoding b) => StrEncoding (a, b) where
   strEncode (a, b) = B.unwords [strEncode a, strEncode b]

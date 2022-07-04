@@ -50,10 +50,12 @@ import Data.Maybe (isNothing)
 import Data.Set (Set)
 import qualified Data.Set as S
 import qualified Data.Text as T
+import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Calendar.Month.Compat (pattern MonthDay)
 import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -66,6 +68,7 @@ import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM (MsgQueue)
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (QueueStore)
+import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -98,13 +101,14 @@ smpServer :: forall m. (MonadUnliftIO m, MonadReader Env m) => TMVar Bool -> m (
 smpServer started = do
   s <- asks server
   cfg@ServerConfig {transports} <- asks config
+  restoreServerStats
   restoreServerMessages
   raceAny_
     ( serverThread s subscribedQ subscribers subscriptions cancelSub :
       serverThread s ntfSubscribedQ notifiers ntfSubscriptions (\_ -> pure ()) :
       map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg
     )
-    `finally` (withLog closeStoreLog >> saveServerMessages)
+    `finally` (withLog closeStoreLog >> saveServerMessages >> saveServerStats)
   where
     runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
@@ -182,7 +186,7 @@ smpServer started = do
             MonthDay _ mDay = day
         (dayMsgQueues', weekMsgQueues', monthMsgQueues') <-
           atomically $ (,,) <$> periodCount 1 dayMsgQueues <*> periodCount wDay weekMsgQueues <*> periodCount mDay monthMsgQueues
-        logInfo . T.pack $ intercalate "," [show fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', show dayMsgQueues', weekMsgQueues', monthMsgQueues']
+        logInfo . T.pack $ intercalate "," [iso8601Show fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', show dayMsgQueues', weekMsgQueues', monthMsgQueues']
         threadDelay interval
       where
         periodCount :: Int -> TVar (Set RecipientId) -> STM String
@@ -638,33 +642,58 @@ randomId n = do
   gVar <- asks idsDrg
   atomically (C.pseudoRandomBytes n gVar)
 
-saveServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
+saveServerMessages :: (MonadUnliftIO m, MonadReader Env m) => m ()
 saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
   where
     saveMessages f = do
-      liftIO $ putStrLn $ "saving messages to file " <> f
+      logInfo $ "saving messages to file " <> T.pack f
       ms <- asks msgStore
       liftIO . withFile f WriteMode $ \h ->
         readTVarIO ms >>= mapM_ (saveQueueMsgs ms h) . M.keys
+      logInfo "messages saved"
       where
         saveQueueMsgs ms h rId =
           atomically (flushMsgQueue ms rId)
             >>= mapM_ (B.hPutStrLn h . strEncode . MsgLogRecord rId)
 
-restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
+restoreServerMessages :: (MonadUnliftIO m, MonadReader Env m) => m ()
 restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
   where
     restoreMessages f = whenM (doesFileExist f) $ do
-      liftIO $ putStrLn $ "restoring messages from file " <> f
+      logInfo $ "restoring messages from file " <> T.pack f
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       liftIO $ mapM_ (restoreMsg ms quota) . B.lines =<< B.readFile f
       renameFile f $ f <> ".bak"
+      logInfo $ "messages restored"
       where
         restoreMsg ms quota s = case strDecode s of
-          Left e -> B.putStrLn $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
+          Left e -> logError . decodeLatin1 $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
           Right (MsgLogRecord rId msg) -> do
             full <- atomically $ do
               q <- getMsgQueue ms rId quota
               ifM (isFull q) (pure True) (writeMsg q msg $> False)
-            when full . B.putStrLn $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
+            when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
+
+saveServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
+saveServerStats =
+  asks (serverStatsFile . config)
+    >>= mapM_ (\f -> asks serverStats >>= atomically . getServerStatsData >>= liftIO . saveStats f)
+  where
+    saveStats f stats = do
+      logInfo $ "saving server stats to file " <> T.pack f
+      B.writeFile f $ strEncode stats
+      logInfo $ "server stats saved"
+
+restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
+restoreServerStats = asks (serverStatsFile . config) >>= mapM_ restoreStats
+  where
+    restoreStats f = whenM (doesFileExist f) $ do
+      logInfo $ "restoring server stats from file " <> T.pack f
+      liftIO (strDecode <$> B.readFile f) >>= \case
+        Right d -> do
+          s <- asks serverStats
+          atomically $ setServerStatsData s d
+          renameFile f $ f <> ".bak"
+          logInfo "server stats restored"
+        Left e -> logInfo $ "error restoring server stats: " <> T.pack e
