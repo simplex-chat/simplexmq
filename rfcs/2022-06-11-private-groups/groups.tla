@@ -284,55 +284,95 @@ ApproverReceiveProposal(recipient) ==
         /\ message.recipient = recipient
         /\ message.type = Propose
         /\ LET PerceivedUser == UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]]
-           IN
-               IF
-                   /\ PerceivedUser /= Nothing
-                   /\ HasDirectConnection(message.recipient.user, PerceivedUser)
-                   /\ \A members \in group_perceptions[message.recipient] :
-                       /\ members.user /= PerceivedUser
-               THEN
-                   /\ approver_states[<<message.invite_id, message.recipient.user>>].state = Nothing
-                   /\ approver_states' =
-                       [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] =
-                           [ for_group |-> message.recipient.id
-                           , state |-> Active
+               ApproverState == approver_states[<<message.invite_id, message.recipient.user>>]
+
+           IN  CASE ApproverState.state \in { Nothing, Active } ->
+                   \* If Active, this should trigger another Invite message
+                   IF
+                       /\ PerceivedUser /= Nothing
+                       /\ HasDirectConnection(message.recipient.user, PerceivedUser)
+                       /\ \A members \in group_perceptions[message.recipient] :
+                           /\ members.user /= PerceivedUser
+                   THEN
+                       /\ approver_states' =
+                           [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] =
+                               [ for_group |-> message.recipient.id
+                               , state |-> Active
+                               ]
                            ]
-                       ]
-                   \* It's safe to send this message right away, as it only agrees to
-                   \* reveal information that everyone has agreed to share.  The invitee
-                   \* now knows that there's a group that involves this member, the
-                   \* proposer, and any other members that have sent this message, giving
-                   \* the invitee insight into how these contacts are all connected.
-                   \* However, that is exactly what they all just agreed to.  Members that
-                   \* don't agree to send this message remain private.
+                       \* It's safe to send this message right away, as it only
+                       \* agrees to reveal information that everyone has agreed
+                       \* to share.  The invitee now knows that there's a group
+                       \* that involves this member, the proposer, and any
+                       \* other members that have sent this message, giving the
+                       \* invitee insight into how these contacts are all
+                       \* connected.  However, that is exactly what they all
+                       \* just agreed to.  Members that don't agree to send
+                       \* this message remain private.
+                       /\ AddMessage(
+                               [ sender |-> message.recipient.user
+                               , recipient |-> PerceivedUser
+                               , type |-> Invite
+                               , invite_id |-> message.invite_id
+                               \* Token generation is abstract/symbolic.
+                               \* Instead of the actual value of our token, we
+                               \* just name the generator and its purpose.
+                               \* That means that 1:1 mapping of a token to an
+                               \* invite_id is implied, and it means that
+                               \* approvers must permanently commit to the
+                               \* choice of the token before issuing it.  It is
+                               \* critical that this spec treats a token as
+                               \* opaque, passing around only its value, not
+                               \* looking inside, or "generating" on in the
+                               \* wrong context, or our spec may be impossible
+                               \* to implement.
+                               , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                               , group_size |-> message.group_size
+                               ]
+                           )
+                       /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
+                   ELSE
+                       /\ AddMessage(
+                               [ sender |-> message.recipient
+                               , recipient |-> Leader
+                               , type |-> Reject
+                               , invite_id |-> message.invite_id
+                               ]
+                           )
+                       /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
+                 [] ApproverState.state = Synchronizing ->
+                   \* In reality, we notify everyone, however this is a bit
+                   \* troublesome when modeling liveness because it means we
+                   \* need to allow for many many in-flight messages to see all
+                   \* the interesting scenarios.  This still captures the
+                   \* "message everyone" behavior, just in a roundabout way,
+                   \* where it "receives" a single proposal message for each
+                   \* member it needs to notify.
+                   \E to \in approver_states[<<message.invite_id, message.recipient.user>>].awaiting_response :
+                       /\ AddMessage(
+                               [ sender |-> message.recipient
+                               , recipient |-> to
+                               , type |-> SyncToken
+                               \* Note again that tokens are abstract/symbolic.
+                               \* In this context, the spec implies that this
+                               \* is using a pregenerated token that is
+                               \* permanently associated for this invite_id.
+                               , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                               , invite_id |-> message.invite_id
+                               \* If we have received their token, ack receipt
+                               \* and send our token simultaneously.
+                               , ack |-> approver_states[<<message.invite_id, message.recipient.user>>].tokens[to] /= Nothing
+                               ]
+                          )
+                       /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
+                 [] ApproverState.state = Committed ->
                    /\ AddMessage(
-                           [ sender |-> message.recipient.user
-                           , recipient |-> PerceivedUser
-                           , type |-> Invite
-                           , invite_id |-> message.invite_id
-                           \* Token generation is abstract/symbolic.  Instead of
-                           \* the actual value of our token, we just name the
-                           \* generator and its purpose.  That means that 1:1
-                           \* mapping of a token to an invite_id is implied, and
-                           \* it means that approvers must permanently commit to
-                           \* the choice of the token before issuing it.  It is
-                           \* critical that this spec treats a token as opaque,
-                           \* passing around only its value, not looking inside,
-                           \* or "generating" on in the wrong context, or our spec
-                           \* may be impossible to implement.
-                           , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
-                           , group_size |-> message.group_size
-                           ]
-                       )
-                   /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
-               ELSE
-                   /\ AddMessage(
-                           [ sender |-> message.recipient
-                           , recipient |-> Leader
-                           , type |-> Reject
+                           [ type |-> Established
+                           , sender |-> message.recipient
+                           , recipient |-> message.sender
                            , invite_id |-> message.invite_id
                            ]
-                       )
+                      )
                    /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 ApproverReceiveKick(recipient, kicked) ==
@@ -405,28 +445,6 @@ ApproverReceiveAccept(recipient) ==
                            ]
                        ]
                    /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
-
-\* TODO: Drive this by `Propose` messages
-BroadcastToken ==
-    \E from \in MemberSet, invite_id \in InviteIds :
-        /\ approver_states[<<invite_id, from.user>>].state = Synchronizing
-        /\ \E to \in approver_states[<<invite_id, from.user>>].awaiting_response :
-            /\ AddMessage(
-                    [ sender |-> from
-                    , recipient |-> to
-                    , type |-> SyncToken
-                    \* Note again that tokens are abstract/symbolic.  In this
-                    \* context, the spec implies that this is using a
-                    \* pregenerated token that is permanently associated for
-                    \* this invite_id.
-                    , token |-> [ for |-> invite_id, by |-> from.user ]
-                    , invite_id |-> invite_id
-                    \* If we have received their token, ack receipt and send
-                    \* our token simultaneously.
-                    , ack |-> approver_states[<<invite_id, from.user>>].tokens[to] /= Nothing
-                    ]
-                )
-            /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 ReceiveSyncToken ==
     \E message \in messages :
@@ -550,7 +568,6 @@ Next ==
     \/ \E member \in MemberSet : ApproverReceiveProposal(member)
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
     \/ \E user \in Users : ApproverReceiveAccept(user)
-    \/ BroadcastToken
     \/ ReceiveSyncToken
     \/ SendAccept
 
