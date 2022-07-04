@@ -103,6 +103,7 @@ smpServerCLIConfig =
                     else Nothing,
                 logStatsInterval = Just 86400, -- seconds
                 logStatsStartTime = 0, -- seconds from 00:00 UTC
+                serverStatsFile = Just $ combine logPath "smp-server-stats.log",
                 smpServerVRange = supportedSMPServerVRange
               }
         }
