@@ -733,9 +733,7 @@ See its syntax in [Create queue command](#create-queue-command)
 The server must deliver messages to all subscribed simplex queues on the currently open transport connection. The syntax for the message delivery is:
 
 ```abnf
-messageWithMeta = %s"MSG " msgId "T" timestamp msgFlags SP encryptedMsgBody
-messageNoMeta = %s"MSG " msgId SP encryptedRcvMsgBody
-message = messageWithMeta / messageNoMeta
+message = %s"MSG " msgId encryptedRcvMsgBody
 encryptedMsgBody = <encrypt paddedSentMsgBody> ; server-encrypted padded sent msgBody
 paddedSentMsgBody = <padded(sentMsgBody, maxMessageLength + 2)> ; maxMessageLength = 16088
 encryptedRcvMsgBody = <encrypt rcvMsgBody> ; server-encrypted meta-data and padded sent msgBody
