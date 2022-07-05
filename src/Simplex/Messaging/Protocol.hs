@@ -63,9 +63,13 @@ module Simplex.Messaging.Protocol
     ClientMessage (..),
     PrivHeader (..),
     Protocol (..),
+    ProtocolType (..),
     ProtocolServer (..),
+    ProtoServer,
     SMPServer,
     pattern SMPServer,
+    NtfServer,
+    pattern NtfServer,
     SrvLoc (..),
     CorrId (..),
     QueueId,
@@ -546,41 +550,109 @@ instance Encoding ClientMessage where
   smpEncode (ClientMessage h msg) = smpEncode h <> msg
   smpP = ClientMessage <$> smpP <*> A.takeByteString
 
-type SMPServer = ProtocolServer
+type SMPServer = ProtocolServer 'PSMP
 
-pattern SMPServer :: HostName -> ServiceName -> C.KeyHash -> ProtocolServer
-pattern SMPServer host port keyHash = ProtocolServer host port keyHash
+pattern SMPServer :: HostName -> ServiceName -> C.KeyHash -> ProtocolServer 'PSMP
+pattern SMPServer host port keyHash = ProtocolServer SPSMP host port keyHash
 
 {-# COMPLETE SMPServer #-}
 
--- | SMP server location and transport key digest (hash).
-data ProtocolServer = ProtocolServer
-  { host :: HostName,
+type NtfServer = ProtocolServer 'PNTF
+
+pattern NtfServer :: HostName -> ServiceName -> C.KeyHash -> ProtocolServer 'PNTF
+pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
+
+{-# COMPLETE NtfServer #-}
+
+data ProtocolType = PSMP | PNTF
+  deriving (Eq, Ord, Show)
+
+instance StrEncoding ProtocolType where
+  strEncode = \case
+    PSMP -> "smp"
+    PNTF -> "ntf"
+  strP =
+    A.takeTill (== ':') >>= \case
+      "smp" -> pure PSMP
+      "ntf" -> pure PNTF
+      _ -> fail "bad ProtocolType"
+
+data SProtocolType (p :: ProtocolType) where
+  SPSMP :: SProtocolType 'PSMP
+  SPNTF :: SProtocolType 'PNTF
+
+deriving instance Eq (SProtocolType p)
+
+deriving instance Ord (SProtocolType p)
+
+deriving instance Show (SProtocolType p)
+
+data AProtocolType = forall p. ProtocolTypeI p => AProtocolType (SProtocolType p)
+
+instance TestEquality SProtocolType where
+  testEquality SPSMP SPSMP = Just Refl
+  testEquality SPNTF SPNTF = Just Refl
+  testEquality _ _ = Nothing
+
+protocolType :: SProtocolType p -> ProtocolType
+protocolType = \case
+  SPSMP -> PSMP
+  SPNTF -> PNTF
+
+aProtocolType :: ProtocolType -> AProtocolType
+aProtocolType = \case
+  PSMP -> AProtocolType SPSMP
+  PNTF -> AProtocolType SPNTF
+
+instance ProtocolTypeI p => StrEncoding (SProtocolType p) where
+  strEncode = strEncode . protocolType
+  strP = (\(AProtocolType p) -> checkProtocolType p) <$?> strP
+
+instance StrEncoding AProtocolType where
+  strEncode (AProtocolType p) = strEncode p
+  strP = aProtocolType <$> strP
+
+checkProtocolType :: forall t p p'. (ProtocolTypeI p, ProtocolTypeI p') => t p' -> Either String (t p)
+checkProtocolType p = case testEquality (protocolTypeI @p) (protocolTypeI @p') of
+  Just Refl -> Right p
+  Nothing -> Left "bad ProtocolType"
+
+class ProtocolTypeI (p :: ProtocolType) where
+  protocolTypeI :: SProtocolType p
+
+instance ProtocolTypeI 'PSMP where protocolTypeI = SPSMP
+
+instance ProtocolTypeI 'PNTF where protocolTypeI = SPNTF
+
+-- | server location and transport key digest (hash).
+data ProtocolServer p = ProtocolServer
+  { scheme :: SProtocolType p,
+    host :: HostName,
     port :: ServiceName,
     keyHash :: C.KeyHash
   }
   deriving (Eq, Ord, Show)
 
-instance IsString ProtocolServer where
+instance ProtocolTypeI p => IsString (ProtocolServer p) where
   fromString = parseString strDecode
 
-instance Encoding ProtocolServer where
+instance ProtocolTypeI p => Encoding (ProtocolServer p) where
   smpEncode ProtocolServer {host, port, keyHash} =
     smpEncode (host, port, keyHash)
   smpP = do
     (host, port, keyHash) <- smpP
-    pure ProtocolServer {host, port, keyHash}
+    pure ProtocolServer {scheme = protocolTypeI @p, host, port, keyHash}
 
-instance StrEncoding ProtocolServer where
-  strEncode ProtocolServer {host, port, keyHash} =
-    "smp://" <> strEncode keyHash <> "@" <> strEncode (SrvLoc host port)
+instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
+  strEncode ProtocolServer {scheme, host, port, keyHash} =
+    strEncode scheme <> "://" <> strEncode keyHash <> "@" <> strEncode (SrvLoc host port)
   strP = do
-    _ <- "smp://"
+    scheme <- strP <* "://"
     keyHash <- strP <* A.char '@'
     SrvLoc host port <- strP
-    pure ProtocolServer {host, port, keyHash}
+    pure ProtocolServer {scheme, host, port, keyHash}
 
-instance ToJSON ProtocolServer where
+instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
@@ -727,14 +799,18 @@ transmissionP = do
       command <- A.takeByteString
       pure RawTransmission {signature, signed, sessId, corrId, entityId, command}
 
-class (ProtocolEncoding msg, ProtocolEncoding (ProtocolCommand msg), Show msg) => Protocol msg where
-  type ProtocolCommand msg = cmd | cmd -> msg
+class (ProtocolEncoding msg, ProtocolEncoding (ProtoCommand msg), Show msg) => Protocol msg where
+  type ProtoCommand msg = cmd | cmd -> msg
+  type ProtoType msg = (sch :: ProtocolType) | sch -> msg
   protocolClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
-  protocolPing :: ProtocolCommand msg
+  protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe ErrorType
 
+type ProtoServer msg = ProtocolServer (ProtoType msg)
+
 instance Protocol BrokerMsg where
-  type ProtocolCommand BrokerMsg = Cmd
+  type ProtoCommand BrokerMsg = Cmd
+  type ProtoType BrokerMsg = 'PSMP
   protocolClientHandshake = smpClientHandshake
   protocolPing = Cmd SSender PING
   protocolError = \case

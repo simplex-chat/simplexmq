@@ -162,7 +162,7 @@ initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
     { smp = L.fromList [testSMPServer],
-      ntf = ["smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"]
+      ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"]
     }
 
 agentCfg :: AgentConfig

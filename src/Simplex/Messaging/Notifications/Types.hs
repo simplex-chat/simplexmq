@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.Messaging.Notifications.Types where
 
@@ -16,9 +17,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
-import Simplex.Messaging.Protocol (NotifierId, ProtocolServer, SMPServer)
-
-type NtfServer = ProtocolServer
+import Simplex.Messaging.Protocol (NotifierId, NtfServer, SMPServer)
 
 data NtfTknAction
   = NTARegister

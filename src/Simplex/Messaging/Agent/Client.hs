@@ -98,7 +98,7 @@ import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvMessage (..), RcvNtfPublicDhKey, SMPMsgMeta (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, NtfServer, ProtoServer, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvMessage (..), RcvNtfPublicDhKey, SMPMsgMeta (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -194,7 +194,7 @@ agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
 
 class ProtocolServerClient msg where
-  getProtocolServerClient :: AgentMonad m => AgentClient -> ProtocolServer -> m (ProtocolClient msg)
+  getProtocolServerClient :: AgentMonad m => AgentClient -> ProtoServer msg -> m (ProtocolClient msg)
   clientProtocolError :: ErrorType -> AgentErrorType
 
 instance ProtocolServerClient BrokerMsg where
@@ -311,7 +311,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} srv = do
       atomically $ TM.delete srv ntfClients
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-getClientVar :: forall a. ProtocolServer -> TMap ProtocolServer (TMVar a) -> STM (Either (TMVar a) (TMVar a))
+getClientVar :: forall a s. ProtocolServer s -> TMap (ProtocolServer s) (TMVar a) -> STM (Either (TMVar a) (TMVar a))
 getClientVar srv clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.lookup srv clients
   where
     newClientVar :: STM (TMVar a)
@@ -333,8 +333,8 @@ newProtocolClient ::
   forall msg m.
   AgentMonad m =>
   AgentClient ->
-  ProtocolServer ->
-  TMap ProtocolServer (ClientVar msg) ->
+  ProtoServer msg ->
+  TMap (ProtoServer msg) (ClientVar msg) ->
   m (ProtocolClient msg) ->
   m () ->
   ClientVar msg ->
@@ -383,7 +383,7 @@ closeAgentClient c = liftIO $ do
     clear :: (AgentClient -> TMap k a) -> IO ()
     clear sel = atomically $ writeTVar (sel c) M.empty
 
-closeProtocolServerClients :: Int -> TMap ProtocolServer (ClientVar msg) -> IO ()
+closeProtocolServerClients :: Int -> TMap (ProtoServer msg) (ClientVar msg) -> IO ()
 closeProtocolServerClients tcpTimeout cs = readTVarIO cs >>= mapM_ (forkIO . closeClient) >> atomically (writeTVar cs M.empty)
   where
     closeClient cVar =
@@ -400,7 +400,7 @@ withAgentLock AgentClient {lock} =
     (void . atomically $ takeTMVar lock)
     (atomically $ putTMVar lock ())
 
-withClient_ :: forall a m msg. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtocolServer -> (ProtocolClient msg -> m a) -> m a
+withClient_ :: forall a m msg. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> (ProtocolClient msg -> m a) -> m a
 withClient_ c srv action = (getProtocolServerClient c srv >>= action) `catchError` logServerError
   where
     logServerError :: AgentErrorType -> m a
@@ -408,17 +408,17 @@ withClient_ c srv action = (getProtocolServerClient c srv >>= action) `catchErro
       logServer "<--" c srv "" $ bshow e
       throwError e
 
-withLogClient_ :: (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtocolServer -> QueueId -> ByteString -> (ProtocolClient msg -> m a) -> m a
+withLogClient_ :: (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> QueueId -> ByteString -> (ProtocolClient msg -> m a) -> m a
 withLogClient_ c srv qId cmdStr action = do
   logServer "-->" c srv qId cmdStr
   res <- withClient_ c srv action
   logServer "<--" c srv qId "OK"
   return res
 
-withClient :: forall m msg a. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtocolServer -> (ProtocolClient msg -> ExceptT ProtocolClientError IO a) -> m a
+withClient :: forall m msg a. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> (ProtocolClient msg -> ExceptT ProtocolClientError IO a) -> m a
 withClient c srv action = withClient_ c srv $ liftClient (clientProtocolError @msg) . action
 
-withLogClient :: forall m msg a. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtocolServer -> QueueId -> ByteString -> (ProtocolClient msg -> ExceptT ProtocolClientError IO a) -> m a
+withLogClient :: forall m msg a. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> QueueId -> ByteString -> (ProtocolClient msg -> ExceptT ProtocolClientError IO a) -> m a
 withLogClient c srv qId cmdStr action = withLogClient_ c srv qId cmdStr $ liftClient (clientProtocolError @msg) . action
 
 liftClient :: AgentMonad m => (ErrorType -> AgentErrorType) -> ExceptT ProtocolClientError IO a -> m a
@@ -516,11 +516,11 @@ getSubscriptions AgentClient {subscrConns} = do
   m <- readTVar subscrConns
   pure $ M.keysSet m
 
-logServer :: MonadIO m => ByteString -> AgentClient -> SMPServer -> QueueId -> ByteString -> m ()
+logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 
-showServer :: SMPServer -> ByteString
+showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
   B.pack $ host <> if null port then "" else ':' : port
 

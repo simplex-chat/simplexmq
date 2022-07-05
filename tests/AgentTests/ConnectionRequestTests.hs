@@ -19,12 +19,7 @@ uri :: String
 uri = "smp.simplex.im"
 
 srv :: SMPServer
-srv =
-  ProtocolServer
-    { host = "smp.simplex.im",
-      port = "5223",
-      keyHash = C.KeyHash "\215m\248\251"
-    }
+srv = SMPServer "smp.simplex.im" "5223" (C.KeyHash "\215m\248\251")
 
 queue :: SMPQueueUri
 queue =
