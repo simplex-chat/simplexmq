@@ -684,7 +684,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
       st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
-      runExceptT (mapM_ (restoreMsg st ms quota) . B.lines =<< liftIO (B.readFile f)) >>= \case
+      runExceptT (liftIO (B.readFile f) >>= mapM_ (restoreMsg st ms quota) . B.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
