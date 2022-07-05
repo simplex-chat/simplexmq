@@ -614,10 +614,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   writeTVar sub s {subThread = NoSub}
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
-        encryptMsg qr Message {msgId, msgTs, msgFlags, msgBody} =
-          case thVersion of
-            3 -> encrypt $ encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody}
-            _ -> encrypt msgBody
+        encryptMsg qr Message {msgId, msgTs, msgFlags, msgBody}
+          | thVersion == 1 || thVersion == 2 = encrypt msgBody
+          | otherwise = encrypt $ encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody}
           where
             encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
             encrypt body =
@@ -697,9 +696,9 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
           r <- liftEither . first (msgErr "parsing") $ strDecode s
           case r of
             MLRv3 rId msg -> addToMsgQueue rId msg
-            MLRv1 rId msg -> do
+            MLRv1 rId encMsg -> do
               qr <- liftEitherError (msgErr "queue unknown") . atomically $ getQueue st SRecipient rId
-              msg' <- updateMsgV1toV3 qr msg
+              msg' <- updateMsgV1toV3 qr encMsg
               addToMsgQueue rId msg'
           where
             addToMsgQueue rId msg = do
