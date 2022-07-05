@@ -13,6 +13,7 @@ import Control.Concurrent (threadDelay)
 import Control.Monad.Except (runExceptT)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
@@ -35,7 +36,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import qualified Simplex.Messaging.Notifications.Server.Push.APNS as APNS
-import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Transport
 import Test.Hspec
@@ -131,11 +132,11 @@ testNotificationSubscription (ATransport t) =
           notifierId `shouldBe` nId
           send' APNSRespOk
           -- receive message
-          Resp "" _ (MSG mId1 mTs _ msg1) <- tGet rh
+          Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet rh
+          Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) body)
           mId1 `shouldBe` msgId
           mTs `shouldBe` msgTs
-          let decryptedMsg = C.cbDecrypt rcvDhSecret (C.cbNonce mId1) msg1
-          (decryptedMsg, Right "hello") #== "delivered from queue"
+          (msgBody, "hello") #== "delivered from queue"
           Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK mId1)
           pure ()
           -- replace token

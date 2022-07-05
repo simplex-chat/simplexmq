@@ -16,7 +16,7 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Numeric.Natural
-import Simplex.Messaging.Protocol (MsgId, RecipientId)
+import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -78,6 +78,6 @@ instance MonadMsgQueue MsgQueue STM where
   deleteExpiredMsgs (MsgQueue q) old = loop
     where
       loop = tryPeekTBQueue q >>= mapM_ delOldMsg
-      delOldMsg Message {ts} =
-        when (systemSeconds ts < old) $
+      delOldMsg Message {msgTs} =
+        when (systemSeconds msgTs < old) $
           tryReadTBQueue q >> loop

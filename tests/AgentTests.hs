@@ -325,11 +325,11 @@ testServerConnectionAfterError t _ = do
       bob #: ("1", "alice", "SUB") #> ("1", "alice", ERR (BROKER NETWORK))
       alice #: ("1", "bob", "SUB") #> ("1", "bob", ERR (BROKER NETWORK))
       withServer $ do
-        alice <# ("", "bob", SENT 4)
+        alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
+        alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
         bob <# ("", "", UP server ["alice"])
         bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
         bob #: ("2", "alice", "ACK 4") #> ("2", "alice", OK)
-        alice <# ("", "", UP server ["bob"])
         alice #: ("1", "bob", "SEND F 11\nhello again") #> ("1", "bob", MID 5)
         alice <# ("", "bob", SENT 5)
         bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False

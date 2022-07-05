@@ -11,6 +11,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Agent.Client
@@ -21,6 +22,7 @@ module Simplex.Messaging.Agent.Client
     newRcvQueue,
     subscribeQueue,
     getQueueMessage,
+    decryptSMPMessage,
     addSubscription,
     getSubscriptions,
     sendConfirmation,
@@ -83,7 +85,6 @@ import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
--- import GHC.Conc (unsafeIOToSTM)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -96,7 +97,8 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvNtfPublicDhKey, SMPMsgMeta, SndPublicVerifyKey)
+import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvMessage (..), RcvNtfPublicDhKey, SMPMsgMeta (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -547,17 +549,26 @@ sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) (C
         SMP.ClientMessage SMP.PHEmpty $ smpEncode agentEnvelope
 
 getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> m (Maybe SMPMsgMeta)
-getQueueMessage c RcvQueue {server, rcvId, rcvPrivateKey} = do
+getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
   atomically createTakeGetLock
-  withLogClient c server rcvId "GET" $ \smp ->
-    getSMPMessage smp rcvPrivateKey rcvId
+  (v, msg_) <- withLogClient c server rcvId "GET" $ \smp ->
+    (thVersion smp,) <$> getSMPMessage smp rcvPrivateKey rcvId
+  mapM (decryptMeta v) msg_
   where
+    decryptMeta v msg@SMP.RcvMessage {msgId} = SMP.rcvMessageMeta msgId <$> decryptSMPMessage v rq msg
     createTakeGetLock = TM.alterF takeLock (server, rcvId) $ getMsgLocks c
       where
         takeLock l_ = do
           l <- maybe (newTMVar ()) pure l_
           takeTMVar l
           pure $ Just l
+
+decryptSMPMessage :: AgentMonad m => Version -> RcvQueue -> SMP.RcvMessage -> m SMP.ClientRcvMsgBody
+decryptSMPMessage v rq SMP.RcvMessage {msgId, msgTs, msgFlags, msgBody = SMP.EncRcvMsgBody body}
+  | v == 1 || v == 2 = SMP.ClientRcvMsgBody msgTs msgFlags <$> decrypt body
+  | otherwise = liftEither . parse SMP.clientRcvMsgBodyP (AGENT A_MESSAGE) =<< decrypt body
+  where
+    decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
 
 secureQueue :: AgentMonad m => AgentClient -> RcvQueue -> SndPublicVerifyKey -> m ()
 secureQueue c RcvQueue {server, rcvId, rcvPrivateKey} senderKey =
@@ -582,7 +593,7 @@ sendAck c rq@RcvQueue {server, rcvId, rcvPrivateKey} msgId = do
 
 releaseGetLock :: AgentClient -> RcvQueue -> STM ()
 releaseGetLock c RcvQueue {server, rcvId} =
-  TM.lookup (server, rcvId) (getMsgLocks c) >>= mapM_ (void . (`tryPutTMVar` ()))
+  TM.lookup (server, rcvId) (getMsgLocks c) >>= mapM_ (`tryPutTMVar` ())
 
 suspendQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
 suspendQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
@@ -734,7 +745,7 @@ agentOperationBracket c op action =
   E.bracket
     (atomically $ beginAgentOperation c op)
     (\_ -> atomically $ endAgentOperation c op)
-    (\_ -> action)
+    (const action)
 
 withStore' :: AgentMonad m => AgentClient -> (DB.Connection -> IO a) -> m a
 withStore' c action = withStore c $ fmap Right . action

@@ -22,6 +22,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
+import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -56,6 +57,9 @@ testSMPClient client =
       Right th -> client th
       Left e -> error $ show e
 
+cfgV2 :: ServerConfig
+cfgV2 = cfg {smpServerVRange = mkVersionRange 1 2}
+
 cfg :: ServerConfig
 cfg =
   ServerConfig
@@ -78,6 +82,9 @@ cfg =
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedSMPServerVRange
     }
+
+withSmpServerStoreMsgLogOnV2 :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
 
 withSmpServerStoreMsgLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsFile = Just testServerStatsFile}

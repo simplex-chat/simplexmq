@@ -24,7 +24,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
-    ProtocolClient (sessionId),
+    ProtocolClient (thVersion, sessionId),
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
@@ -56,7 +56,7 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
-import Control.Monad.Trans.Class
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -95,7 +95,7 @@ data ProtocolClient msg = ProtocolClient
 type SMPClient = ProtocolClient SMP.BrokerMsg
 
 -- | Type synonym for transmission from some SPM server queue.
-type ServerTransmission msg = (ProtocolServer, SessionId, QueueId, msg)
+type ServerTransmission msg = (ProtocolServer, Version, SessionId, QueueId, msg)
 
 -- | protocol client configuration.
 data ProtocolClientConfig = ProtocolClientConfig
@@ -208,7 +208,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
       runExceptT $ sendProtocolCommand c Nothing "" protocolPing
 
     process :: ProtocolClient msg -> IO ()
-    process ProtocolClient {sessionId, rcvQ, sentCommands} = forever $ do
+    process c@ProtocolClient {rcvQ, sentCommands} = forever $ do
       (_, _, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
       if B.null $ bs corrId
         then sendMsg qId respOrErr
@@ -228,7 +228,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
       where
         sendMsg :: QueueId -> Either ErrorType msg -> IO ()
         sendMsg qId = \case
-          Right cmd -> atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, qId, cmd)) msgQ
+          Right msg -> atomically $ mapM_ (`writeTBQueue` serverTransmission c qId msg) msgQ
           -- TODO send everything else to errQ and log in agent
           _ -> return ()
 
@@ -282,23 +282,30 @@ createSMPQueue c rpKey rKey dhKey =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO ()
-subscribeSMPQueue c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
+subscribeSMPQueue c rpKey rId =
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> return ()
-    cmd@MSG {} ->
-      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
+    cmd@MSG {} -> writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
+
+writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> ExceptT ProtocolClientError IO ()
+writeSMPMessage c rId msg =
+  liftIO . atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ c)
+
+serverTransmission :: ProtocolClient msg -> RecipientId -> msg -> ServerTransmission msg
+serverTransmission ProtocolClient {protocolServer, thVersion, sessionId} entityId message =
+  (protocolServer, thVersion, sessionId, entityId, message)
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --
 -- https://github.covm/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#receive-a-message-from-the-queue
-getSMPMessage :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO (Maybe SMP.SMPMsgMeta)
-getSMPMessage c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId =
+getSMPMessage :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO (Maybe RcvMessage)
+getSMPMessage c rpKey rId =
   sendSMPCommand c (Just rpKey) rId GET >>= \case
     OK -> pure Nothing
-    cmd@(MSG msgId msgTs msgFlags _) -> do
-      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
-      pure $ Just SMP.SMPMsgMeta {msgId, msgTs, msgFlags}
+    cmd@(MSG msg) -> do
+      writeSMPMessage c rId cmd
+      pure $ Just msg
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Subscribe to the SMP queue notifications.
@@ -341,11 +348,10 @@ sendSMPMessage c spKey sId flags msg =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
 ackSMPMessage :: SMPClient -> RcvPrivateSignKey -> QueueId -> MsgId -> ExceptT ProtocolClientError IO ()
-ackSMPMessage c@ProtocolClient {protocolServer, sessionId, msgQ} rpKey rId msgId =
+ackSMPMessage c rpKey rId msgId =
   sendSMPCommand c (Just rpKey) rId (ACK msgId) >>= \case
     OK -> return ()
-    cmd@MSG {} ->
-      lift . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
+    cmd@MSG {} -> writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Irreversibly suspend SMP queue.

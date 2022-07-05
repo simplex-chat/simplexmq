@@ -469,7 +469,7 @@ testSuspendingAgentCompleteSending t = do
   Right () <- withSmpServerStoreLogOn t testPort $ \_ -> runExceptT $ do
     get b =##> \case ("", c, SENT 5) -> c == aId; ("", "", UP {}) -> True; _ -> False
     get b =##> \case ("", c, SENT 5) -> c == aId; ("", "", UP {}) -> True; _ -> False
-    get b =##> \case ("", c, SENT 6) -> c == aId; _ -> False
+    get b =##> \case ("", c, SENT 6) -> c == aId; ("", "", UP {}) -> True; _ -> False
     ("", "", SUSPENDED) <- get b
 
     ("", "", UP {}) <- get a

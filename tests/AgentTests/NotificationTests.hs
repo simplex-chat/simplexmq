@@ -268,25 +268,31 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     liftIO $ threadDelay 500000
     aliceId <- joinConnection bob qInfo "bob's connInfo"
+    liftIO $ print 0
     void $ messageNotification apnsQ
     ("", _, CONF confId "bob's connInfo") <- get alice
     liftIO $ threadDelay 500000
     allowConnection alice bobId confId "alice's connInfo"
+    liftIO $ print 1
     void $ messageNotification apnsQ
     get bob ##> ("", aliceId, INFO "alice's connInfo")
+    liftIO $ print 2
     void $ messageNotification apnsQ
     get alice ##> ("", bobId, CON)
+    liftIO $ print 3
     void $ messageNotification apnsQ
     get bob ##> ("", aliceId, CON)
     -- bob sends message
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
+    liftIO $ print 4
     void $ messageNotification apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 1
     -- alice sends message
     2 <- msgId <$> sendMessage alice bobId (SMP.MsgFlags True) "hey there"
     get alice ##> ("", bobId, SENT $ baseId + 2)
+    liftIO $ print 5
     void $ messageNotification apnsQ
     get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
     ackMessage bob aliceId $ baseId + 2
@@ -448,7 +454,7 @@ testNotificationsStoreLog t APNSMockServer {apnsQ} = do
 
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do
-  500000 `timeout` atomically (readTBQueue apnsQ) >>= \case
+  1000000 `timeout` atomically (readTBQueue apnsQ) >>= \case
     Nothing -> error "no notification"
     Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}, sendApnsResponse} -> do
       nonce <- C.cbNonce <$> ntfData .-> "nonce"

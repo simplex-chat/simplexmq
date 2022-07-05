@@ -2,7 +2,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Notifications.Server.Env where

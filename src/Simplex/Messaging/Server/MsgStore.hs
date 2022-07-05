@@ -1,44 +1,22 @@
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Server.MsgStore where
 
 import Control.Applicative ((<|>))
-import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
-import Data.Time.Clock.System (SystemTime)
 import Numeric.Natural
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, MsgId, RecipientId, noMsgFlags)
+import Simplex.Messaging.Protocol (Message (..), MsgId, RcvMessage (..), RecipientId)
 
-data Message = Message
-  { msgId :: MsgId,
-    ts :: SystemTime,
-    msgFlags :: MsgFlags,
-    msgBody :: MsgBody
-  }
-
-instance StrEncoding Message where
-  strEncode Message {msgId, ts, msgFlags, msgBody} =
-    B.unwords
-      [ strEncode msgId,
-        strEncode ts,
-        "flags=" <> strEncode msgFlags,
-        strEncode msgBody
-      ]
-  strP = do
-    msgId <- strP_
-    ts <- strP_
-    msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
-    msgBody <- strP
-    pure Message {msgId, ts, msgFlags, msgBody}
-
-data MsgLogRecord = MsgLogRecord RecipientId Message
+data MsgLogRecord = MLRv3 RecipientId Message | MLRv1 RecipientId RcvMessage
 
 instance StrEncoding MsgLogRecord where
-  strEncode (MsgLogRecord rId msg) = strEncode (rId, msg)
-  strP = MsgLogRecord <$> strP_ <*> strP
+  strEncode = \case
+    MLRv3 rId msg -> strEncode (Str "v3", rId, msg)
+    MLRv1 rId msg -> strEncode (rId, msg)
+  strP = "v3 " *> (MLRv3 <$> strP_ <*> strP) <|> MLRv1 <$> strP_ <*> strP
 
 class MonadMsgStore s q m | s -> q where
   getMsgQueue :: s -> RecipientId -> Natural -> m q

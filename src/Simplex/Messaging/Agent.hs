@@ -851,7 +851,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
       Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
-processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) =
+processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cmd) =
   withStore c (\db -> getRcvConn db srv rId) >>= \case
     SomeConn _ conn@(DuplexConnection cData rq _) -> processSMP conn cData rq
     SomeConn _ conn@(RcvConnection cData rq) -> processSMP conn cData rq
@@ -859,10 +859,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
     _ -> atomically $ writeTBQueue subQ ("", "", ERR $ CONN NOT_FOUND)
   where
     processSMP :: Connection c -> ConnData -> RcvQueue -> m ()
-    processSMP conn cData@ConnData {connId, duplexHandshake} rq@RcvQueue {rcvDhSecret, e2ePrivKey, e2eDhSecret, status} =
+    processSMP conn cData@ConnData {connId, duplexHandshake} rq@RcvQueue {e2ePrivKey, e2eDhSecret, status} =
       case cmd of
-        SMP.MSG srvMsgId srvTs msgFlags msgBody' -> handleNotifyAck $ do
-          msgBody <- agentCbDecrypt rcvDhSecret (C.cbNonce srvMsgId) msgBody'
+        SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> handleNotifyAck $ do
+          SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} <- decryptSMPMessage v rq msg
           clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
             parseMessage msgBody
           unless (phVer `isCompatible` SMP.smpClientVRange) . throwError $ AGENT A_VERSION

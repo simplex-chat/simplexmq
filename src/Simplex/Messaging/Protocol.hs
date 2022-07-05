@@ -16,8 +16,12 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
+
+{-# HLINT ignore "Use newtype instead of data" #-}
 
 -- |
 -- Module      : Simplex.Messaging.ProtocolEncoding
@@ -78,12 +82,20 @@ module Simplex.Messaging.Protocol
     NtfPublicVerifyKey,
     RcvNtfPublicDhKey,
     RcvNtfDhSecret,
+    Message (..),
+    RcvMessage (..),
     MsgId,
     MsgBody,
+    MaxMessageLen,
+    MaxRcvMessageLen,
+    EncRcvMsgBody (..),
+    RcvMsgBody (..),
+    ClientRcvMsgBody (..),
     EncNMsgMeta,
     SMPMsgMeta (..),
     NMsgMeta (..),
     MsgFlags (..),
+    rcvMessageMeta,
     noMsgFlags,
 
     -- * Parse and serialize
@@ -92,6 +104,8 @@ module Simplex.Messaging.Protocol
     encodeTransmission,
     transmissionP,
     _smpP,
+    encodeRcvMsgBody,
+    clientRcvMsgBodyP,
 
     -- * TCP transport functions
     tPut,
@@ -114,9 +128,10 @@ import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.Maybe (isNothing)
 import Data.String
-import Data.Time.Clock.System (SystemTime)
+import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import GHC.Generics (Generic)
+import GHC.TypeLits (type (+))
 import Generic.Random (genericArbitraryU)
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -136,6 +151,11 @@ smpClientVRange = mkVersionRange 1 smpClientVersion
 
 maxMessageLength :: Int
 maxMessageLength = 16088
+
+type MaxMessageLen = 16088
+
+-- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
+type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
@@ -243,9 +263,10 @@ deriving instance Eq (Command p)
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
-  -- MSG v1 has to be supported for encoding/decoding
-  -- MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
-  MSG :: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
+  -- MSG v1/2 has to be supported for encoding/decoding
+  -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
+  -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
+  MSG :: RcvMessage -> BrokerMsg
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   END :: BrokerMsg
@@ -253,6 +274,79 @@ data BrokerMsg where
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   deriving (Eq, Show)
+
+data RcvMessage = RcvMessage
+  { msgId :: MsgId,
+    msgTs :: SystemTime,
+    msgFlags :: MsgFlags,
+    msgBody :: EncRcvMsgBody -- e2e encrypted, with extra encryption for recipient
+  }
+  deriving (Eq, Show)
+
+-- | received message without server/recipient encryption
+data Message = Message
+  { msgId :: MsgId,
+    msgTs :: SystemTime,
+    msgFlags :: MsgFlags,
+    msgBody :: C.MaxLenBS MaxMessageLen
+  }
+
+instance StrEncoding RcvMessage where
+  strEncode RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body} =
+    B.unwords
+      [ strEncode msgId,
+        strEncode msgTs,
+        "flags=" <> strEncode msgFlags,
+        strEncode body
+      ]
+  strP = do
+    msgId <- strP_
+    msgTs <- strP_
+    msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
+    msgBody <- EncRcvMsgBody <$> strP
+    pure RcvMessage {msgId, msgTs, msgFlags, msgBody}
+
+newtype EncRcvMsgBody = EncRcvMsgBody ByteString
+  deriving (Eq, Show)
+
+data RcvMsgBody = RcvMsgBody
+  { msgTs :: SystemTime,
+    msgFlags :: MsgFlags,
+    msgBody :: C.MaxLenBS MaxMessageLen
+  }
+
+encodeRcvMsgBody :: RcvMsgBody -> C.MaxLenBS MaxRcvMessageLen
+encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody} =
+  let rcvMeta :: C.MaxLenBS 16 = C.unsafeMaxLenBS $ smpEncode (msgTs, msgFlags, ' ')
+   in C.appendMaxLenBS rcvMeta msgBody
+
+data ClientRcvMsgBody = ClientRcvMsgBody
+  { msgTs :: SystemTime,
+    msgFlags :: MsgFlags,
+    msgBody :: ByteString
+  }
+
+clientRcvMsgBodyP :: Parser ClientRcvMsgBody
+clientRcvMsgBodyP = do
+  msgTs <- smpP
+  msgFlags <- smpP
+  Tail msgBody <- _smpP
+  pure ClientRcvMsgBody {msgTs, msgFlags, msgBody}
+
+instance StrEncoding Message where
+  strEncode Message {msgId, msgTs, msgFlags, msgBody} =
+    B.unwords
+      [ strEncode msgId,
+        strEncode msgTs,
+        "flags=" <> strEncode msgFlags,
+        strEncode msgBody
+      ]
+  strP = do
+    msgId <- strP_
+    msgTs <- strP_
+    msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
+    msgBody <- strP
+    pure Message {msgId, msgTs, msgFlags, msgBody}
 
 type EncNMsgMeta = ByteString
 
@@ -262,6 +356,9 @@ data SMPMsgMeta = SMPMsgMeta
     msgFlags :: MsgFlags
   }
   deriving (Show)
+
+rcvMessageMeta :: MsgId -> ClientRcvMsgBody -> SMPMsgMeta
+rcvMessageMeta msgId ClientRcvMsgBody {msgTs, msgFlags} = SMPMsgMeta {msgId, msgTs, msgFlags}
 
 data NMsgMeta = NMsgMeta
   { msgId :: MsgId,
@@ -277,11 +374,13 @@ instance Encoding NMsgMeta where
     (msgId, msgTs, Tail _) <- smpP
     pure NMsgMeta {msgId, msgTs}
 
+-- it must be data for correct JSON encoding
 data MsgFlags = MsgFlags {notification :: Bool}
   deriving (Eq, Show, Generic)
 
 instance ToJSON MsgFlags where toEncoding = J.genericToEncoding J.defaultOptions
 
+-- this encoding should not become bigger than 7 bytes (currently it is 1 byte)
 instance Encoding MsgFlags where
   smpEncode MsgFlags {notification} = smpEncode notification
   smpP = do
@@ -572,7 +671,7 @@ data ErrorType
     QUOTA
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
-  | -- | sent message is too large (> maxMessageLength = 16078 bytes)
+  | -- | sent message is too large (> maxMessageLength = 16088 bytes)
     LARGE_MSG
   | -- | internal server error
     INTERNAL
@@ -724,9 +823,10 @@ instance ProtocolEncoding BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
-    MSG msgId ts flags msgBody
-      | v == 1 -> e (MSG_, ' ', msgId, ts, Tail msgBody)
-      | otherwise -> e (MSG_, ' ', msgId, ts, flags, ' ', Tail msgBody)
+    MSG RcvMessage {msgId, msgTs, msgFlags, msgBody = EncRcvMsgBody body}
+      | v == 1 -> e (MSG_, ' ', msgId, msgTs, Tail body)
+      | v == 2 -> e (MSG_, ' ', msgId, msgTs, msgFlags, ' ', Tail body)
+      | otherwise -> e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     END -> e END_
@@ -738,9 +838,14 @@ instance ProtocolEncoding BrokerMsg where
       e = smpEncode
 
   protocolP v = \case
-    MSG_
-      | v == 1 -> MSG <$> _smpP <*> smpP <*> pure noMsgFlags <*> (unTail <$> smpP)
-      | otherwise -> MSG <$> _smpP <*> smpP <*> smpP <*> (unTail <$> _smpP)
+    MSG_ -> do
+      msgId <- _smpP
+      MSG <$> case v of
+        1 -> RcvMessage msgId <$> smpP <*> pure noMsgFlags <*> bodyP
+        2 -> RcvMessage msgId <$> smpP <*> smpP <*> (A.space *> bodyP)
+        _ -> RcvMessage msgId (MkSystemTime 0 0) noMsgFlags <$> bodyP
+      where
+        bodyP = EncRcvMsgBody . unTail <$> smpP
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
