@@ -818,7 +818,7 @@ unPad padded
     (lenWrd, rest) = B.splitAt 2 padded
     len = fromIntegral $ decodeWord16 lenWrd
 
-newtype MaxLenBS (i :: Nat) = MLBS ByteString
+newtype MaxLenBS (i :: Nat) = MLBS {unMaxLenBS :: ByteString}
 
 pattern MaxLenBS :: ByteString -> MaxLenBS i
 pattern MaxLenBS s <- MLBS s
@@ -910,21 +910,17 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
-cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox <$> pad msg paddedLen
-  where
-    cryptoBox s = BA.convert tag <> c
-      where
-        (rs, c) = xSalsa20 secret nonce s
-        tag = Poly1305.auth rs c
+cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
-cbEncryptMaxLenBS secret (CbNonce nonce) = cryptoBox . padMaxLenBS
+cbEncryptMaxLenBS secret (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+
+cryptoBox :: DhSecret 'X25519 -> ByteString -> ByteString -> ByteString
+cryptoBox secret nonce s = BA.convert tag <> c
   where
-    cryptoBox (MaxLenBS s) = BA.convert tag <> c
-      where
-        (rs, c) = xSalsa20 secret nonce s
-        tag = Poly1305.auth rs c
+    (rs, c) = xSalsa20 secret nonce s
+    tag = Poly1305.auth rs c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
