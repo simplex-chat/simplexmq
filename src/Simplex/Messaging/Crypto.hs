@@ -839,9 +839,7 @@ maxLenBS s
   | otherwise = Right $ MLBS s
 
 unsafeMaxLenBS :: forall i. KnownNat i => ByteString -> MaxLenBS i
-unsafeMaxLenBS s
-  | B.length s > maxLength @i = error "unsafeMaxLenBS"
-  | otherwise = MLBS s
+unsafeMaxLenBS = MLBS
 
 padMaxLenBS :: forall i. KnownNat i => MaxLenBS i -> MaxLenBS (i + 2)
 padMaxLenBS (MLBS msg) = MLBS $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
