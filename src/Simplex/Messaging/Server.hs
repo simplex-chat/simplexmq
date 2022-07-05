@@ -78,6 +78,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
+import System.Exit (exitFailure)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
@@ -622,13 +623,6 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             encrypt body =
               let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId) body
                in RcvMessage msgId msgTs msgFlags encBody
-        -- 3 ->
-        --   let rcvMsgBody = encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody}
-        --       body = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId) rcvMsgBody
-        --    in RcvMessage msgId msgTs msgFlags body
-        -- _ ->
-        --   let body = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId) msgBody
-        --    in RcvMessage msgId msgTs msgFlags body
 
         setDelivered :: Sub -> Message -> STM Bool
         setDelivered s Message {msgId} = tryPutTMVar (delivered s) msgId
@@ -691,9 +685,13 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
       st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
-      void . runExceptT $ mapM_ (restoreMsg st ms quota) . B.lines =<< liftIO (B.readFile f)
-      renameFile f $ f <> ".bak"
-      logInfo "messages restored"
+      runExceptT (mapM_ (restoreMsg st ms quota) . B.lines =<< liftIO (B.readFile f)) >>= \case
+        Left e -> do
+          logError . T.pack $ "error restoring messages: " <> e
+          liftIO exitFailure
+        _ -> do
+          renameFile f $ f <> ".bak"
+          logInfo "messages restored"
       where
         restoreMsg st ms quota s = do
           r <- liftEither . first (msgErr "parsing") $ strDecode s
