@@ -18,7 +18,10 @@
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
+
+{-# HLINT ignore "Use newtype instead of data" #-}
 
 -- |
 -- Module      : Simplex.Messaging.ProtocolEncoding

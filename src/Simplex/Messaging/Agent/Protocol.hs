@@ -903,7 +903,7 @@ commandP =
     msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
     message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
-    connections = strP `A.sepBy'` (A.char ',')
+    connections = strP `A.sepBy'` A.char ','
     msgMetaP = do
       integrity <- strP
       recipient <- " R=" *> partyMeta A.decimal
