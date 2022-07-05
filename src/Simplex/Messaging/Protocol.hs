@@ -36,6 +36,7 @@ module Simplex.Messaging.Protocol
     smpClientVersion,
     smpClientVRange,
     maxMessageLength,
+    maxRcvMessageLength,
     e2eEncConfirmationLength,
     e2eEncMessageLength,
 
@@ -82,7 +83,7 @@ module Simplex.Messaging.Protocol
     RcvMessage (..),
     MsgId,
     MsgBody,
-    MsgBodyV3 (..),
+    EncMsgBody (..),
     RcvMsgBody (..),
     EncNMsgMeta,
     SMPMsgMeta (..),
@@ -141,6 +142,11 @@ smpClientVRange = mkVersionRange 1 smpClientVersion
 
 maxMessageLength :: Int
 maxMessageLength = 16088
+
+-- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
+-- 2 bytes for pad size
+maxRcvMessageLength :: Int
+maxRcvMessageLength = maxMessageLength + 16 + 2
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
@@ -264,9 +270,11 @@ data Message = Message
   { msgId :: MsgId,
     msgTs :: SystemTime,
     msgFlags :: MsgFlags,
-    msgBody :: MsgBody,
-    msgBodyV3 :: Maybe MsgBodyV3
+    msgBody :: EncMsgBody -- e2e encrypted, with extra encryption for recipient
   }
+  deriving (Eq, Show)
+
+newtype EncMsgBody = EncMsgBody ByteString
   deriving (Eq, Show)
 
 -- | received message without server/recipient encryption
@@ -278,25 +286,19 @@ data RcvMessage = RcvMessage
   }
 
 instance StrEncoding Message where
-  strEncode Message {msgId, msgTs, msgFlags, msgBody, msgBodyV3} =
-    B.unwords $ msgV2 <> maybe [] (\(MsgBodyV3 body) -> [strEncode body]) msgBodyV3
-    where
-      msgV2 =
-        [ strEncode msgId,
-          strEncode msgTs,
-          "flags=" <> strEncode msgFlags,
-          strEncode msgBody
-        ]
+  strEncode Message {msgId, msgTs, msgFlags, msgBody = EncMsgBody body} =
+    B.unwords
+      [ strEncode msgId,
+        strEncode msgTs,
+        "flags=" <> strEncode msgFlags,
+        strEncode body
+      ]
   strP = do
     msgId <- strP_
     msgTs <- strP_
     msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
-    msgBody <- strP
-    msgBodyV3 <- optional $ MsgBodyV3 <$> (A.space *> strP)
-    pure Message {msgId, msgTs, msgFlags, msgBody, msgBodyV3}
-
-newtype MsgBodyV3 = MsgBodyV3 ByteString
-  deriving (Eq, Show)
+    msgBody <- EncMsgBody <$> strP
+    pure Message {msgId, msgTs, msgFlags, msgBody}
 
 data RcvMsgBody = RcvMsgBody
   { msgTs :: SystemTime,
@@ -634,7 +636,7 @@ data ErrorType
     QUOTA
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
-  | -- | sent message is too large (> maxMessageLength = 16078 bytes)
+  | -- | sent message is too large (> maxMessageLength = 16088 bytes)
     LARGE_MSG
   | -- | internal server error
     INTERNAL
@@ -786,12 +788,10 @@ instance ProtocolEncoding BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
-    MSG Message {msgId, msgTs, msgFlags, msgBody, msgBodyV3}
-      | v == 1 -> e (MSG_, ' ', msgId, msgTs, Tail msgBody)
-      | v == 2 -> e (MSG_, ' ', msgId, msgTs, msgFlags, ' ', Tail msgBody)
-      | otherwise -> case msgBodyV3 of
-        Just (MsgBodyV3 body) -> e (MSG_, ' ', msgId, ' ', Tail body)
-        _ -> e (MSG_, ' ', msgId, 'T', msgTs, msgFlags, ' ', Tail msgBody)
+    MSG Message {msgId, msgTs, msgFlags, msgBody = EncMsgBody body}
+      | v == 1 -> e (MSG_, ' ', msgId, msgTs, Tail body)
+      | v == 2 -> e (MSG_, ' ', msgId, msgTs, msgFlags, ' ', Tail body)
+      | otherwise -> e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     END -> e END_
@@ -803,15 +803,14 @@ instance ProtocolEncoding BrokerMsg where
       e = smpEncode
 
   protocolP v = \case
-    MSG_
-      | v == 1 -> MSG <$> (Message <$> _smpP <*> smpP <*> pure noMsgFlags <*> (unTail <$> smpP) <*> pure Nothing)
-      | v == 2 -> MSG <$> (Message <$> _smpP <*> smpP <*> smpP <*> (unTail <$> _smpP) <*> pure Nothing)
-      | otherwise -> do
-        msgId <- _smpP
-        A.anyChar >>= \case
-          ' ' -> MSG <$> (Message msgId (MkSystemTime 0 0) noMsgFlags "" <$> (Just . MsgBodyV3 . unTail <$> smpP))
-          'T' -> MSG <$> (Message msgId <$> smpP <*> smpP <*> (unTail <$> _smpP) <*> pure Nothing)
-          _ -> fail "bad MSG"
+    MSG_ -> do
+      msgId <- _smpP
+      MSG <$> case v of
+        1 -> Message msgId <$> smpP <*> pure noMsgFlags <*> bodyP
+        2 -> Message msgId <$> smpP <*> smpP <*> (A.space *> bodyP)
+        _ -> Message msgId (MkSystemTime 0 0) noMsgFlags <$> bodyP
+      where
+        bodyP = EncMsgBody . unTail <$> smpP
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP

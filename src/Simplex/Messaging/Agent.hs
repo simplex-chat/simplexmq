@@ -91,7 +91,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
+import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
@@ -851,7 +851,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
       Right _ -> return ()
 
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
-processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) =
+processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cmd) =
   withStore c (\db -> getRcvConn db srv rId) >>= \case
     SomeConn _ conn@(DuplexConnection cData rq _) -> processSMP conn cData rq
     SomeConn _ conn@(RcvConnection cData rq) -> processSMP conn cData rq
@@ -862,7 +862,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, sessId, rId, cmd) 
     processSMP conn cData@ConnData {connId, duplexHandshake} rq@RcvQueue {rcvDhSecret, e2ePrivKey, e2eDhSecret, status} =
       case cmd of
         SMP.MSG msg@SMP.Message {msgId = srvMsgId} -> handleNotifyAck $ do
-          SMP.RcvMessage {msgTs = srvTs, msgFlags, msgBody} <- decryptSMPMessage rcvDhSecret msg
+          SMP.RcvMessage {msgTs = srvTs, msgFlags, msgBody} <- decryptSMPMessage v rcvDhSecret msg
           clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
             parseMessage msgBody
           unless (phVer `isCompatible` SMP.smpClientVRange) . throwError $ AGENT A_VERSION

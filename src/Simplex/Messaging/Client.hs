@@ -24,7 +24,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
-    ProtocolClient (sessionId),
+    ProtocolClient (thVersion, sessionId),
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
@@ -95,7 +95,7 @@ data ProtocolClient msg = ProtocolClient
 type SMPClient = ProtocolClient SMP.BrokerMsg
 
 -- | Type synonym for transmission from some SPM server queue.
-type ServerTransmission msg = (ProtocolServer, SessionId, QueueId, msg)
+type ServerTransmission msg = (ProtocolServer, Version, SessionId, QueueId, msg)
 
 -- | protocol client configuration.
 data ProtocolClientConfig = ProtocolClientConfig
@@ -208,7 +208,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
       runExceptT $ sendProtocolCommand c Nothing "" protocolPing
 
     process :: ProtocolClient msg -> IO ()
-    process ProtocolClient {sessionId, rcvQ, sentCommands} = forever $ do
+    process c@ProtocolClient {rcvQ, sentCommands} = forever $ do
       (_, _, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
       if B.null $ bs corrId
         then sendMsg qId respOrErr
@@ -228,7 +228,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
       where
         sendMsg :: QueueId -> Either ErrorType msg -> IO ()
         sendMsg qId = \case
-          Right cmd -> atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, qId, cmd)) msgQ
+          Right msg -> atomically $ mapM_ (`writeTBQueue` serverTransmission c qId msg) msgQ
           -- TODO send everything else to errQ and log in agent
           _ -> return ()
 
@@ -289,8 +289,12 @@ subscribeSMPQueue c rpKey rId =
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> ExceptT ProtocolClientError IO ()
-writeSMPMessage ProtocolClient {protocolServer, sessionId, msgQ} rId cmd =
-  liftIO . atomically $ mapM_ (`writeTBQueue` (protocolServer, sessionId, rId, cmd)) msgQ
+writeSMPMessage c rId msg =
+  liftIO . atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ c)
+
+serverTransmission :: ProtocolClient msg -> RecipientId -> msg -> ServerTransmission msg
+serverTransmission ProtocolClient {protocolServer, thVersion, sessionId} entityId message =
+  (protocolServer, thVersion, sessionId, entityId, message)
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --

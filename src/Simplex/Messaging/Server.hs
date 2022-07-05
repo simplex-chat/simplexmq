@@ -40,6 +40,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
@@ -554,12 +555,9 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ} Server {subscri
                 mkMessage = do
                   msgId <- randomId =<< asks (msgIdBytes . config)
                   msgTs <- liftIO getSystemTime
-                  let encrypt = C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId)
-                      body = encrypt msgBody (maxMessageLength + 2)
-                      rcvMsgBody = smpEncode RcvMsgBody {msgTs, msgFlags, msgBody}
-                      -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
-                      bodyV3 = Just . MsgBodyV3 <$> encrypt rcvMsgBody (maxMessageLength + 16 + 2)
-                  pure $ Message msgId msgTs msgFlags <$> body <*> bodyV3
+                  let rcvMsgBody = smpEncode RcvMsgBody {msgTs, msgFlags, msgBody}
+                      body = EncMsgBody <$> C.cbEncrypt (rcvDhSecret qr) (C.cbNonce msgId) rcvMsgBody maxRcvMessageLength
+                  pure $ Message msgId msgTs msgFlags <$> body
 
                 trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
                 trySendNotification msg ntfNonceDrg =
@@ -655,26 +653,42 @@ saveServerMessages = asks (storeMsgsFile . config) >>= mapM_ saveMessages
       where
         saveQueueMsgs ms h rId =
           atomically (flushMsgQueue ms rId)
-            >>= mapM_ (B.hPutStrLn h . strEncode . MsgLogRecord rId)
+            >>= mapM_ (B.hPutStrLn h . strEncode . MsgLogRecord MLRv3 rId)
 
-restoreServerMessages :: (MonadUnliftIO m, MonadReader Env m) => m ()
+restoreServerMessages :: forall m. (MonadUnliftIO m, MonadReader Env m) => m ()
 restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
   where
     restoreMessages f = whenM (doesFileExist f) $ do
       logInfo $ "restoring messages from file " <> T.pack f
+      st <- asks queueStore
       ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
-      liftIO $ mapM_ (restoreMsg ms quota) . B.lines =<< B.readFile f
+      void . runExceptT $ mapM_ (restoreMsg st ms quota) . B.lines =<< liftIO (B.readFile f)
       renameFile f $ f <> ".bak"
-      logInfo $ "messages restored"
+      logInfo "messages restored"
       where
-        restoreMsg ms quota s = case strDecode s of
-          Left e -> logError . decodeLatin1 $ "message parsing error (" <> B.pack e <> "): " <> B.take 100 s
-          Right (MsgLogRecord rId msg) -> do
-            full <- atomically $ do
-              q <- getMsgQueue ms rId quota
-              ifM (isFull q) (pure True) (writeMsg q msg $> False)
-            when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
+        restoreMsg st ms quota s = do
+          MsgLogRecord v rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
+          case v of
+            MLRv3 -> addToMsgQueue rId msg
+            MLRv1 -> do
+              qr <- liftEitherError (msgErr "queue unknown") . atomically $ getQueue st SRecipient rId
+              msg' <- updateMsgV1toV3 qr msg
+              addToMsgQueue rId msg'
+          where
+            addToMsgQueue rId msg = do
+              full <- atomically $ do
+                q <- getMsgQueue ms rId quota
+                ifM (isFull q) (pure True) (writeMsg q msg $> False)
+              when full . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (msgId (msg :: Message))
+            updateMsgV1toV3 QueueRec {rcvDhSecret} Message {msgId, msgTs, msgFlags, msgBody = EncMsgBody body} = do
+              let nonce = C.cbNonce msgId
+              msgBody <- liftEither . first (msgErr "v1 message decryption") $ C.cbDecrypt rcvDhSecret nonce body
+              let rcvMsgBody = smpEncode RcvMsgBody {msgTs, msgFlags, msgBody}
+              body' <- liftEither . first (msgErr "v1 message encryption") $ C.cbEncrypt rcvDhSecret nonce rcvMsgBody maxRcvMessageLength
+              pure Message {msgId, msgTs, msgFlags, msgBody = EncMsgBody body'}
+            msgErr :: Show e => String -> e -> String
+            msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
 saveServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
 saveServerStats =
@@ -684,7 +698,7 @@ saveServerStats =
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f
       B.writeFile f $ strEncode stats
-      logInfo $ "server stats saved"
+      logInfo "server stats saved"
 
 restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
 restoreServerStats = asks (serverStatsFile . config) >>= mapM_ restoreStats

@@ -1,19 +1,31 @@
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Server.MsgStore where
 
+import Control.Applicative ((<|>))
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Numeric.Natural
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 
-data MsgLogRecord = MsgLogRecord RecipientId Message
+data MsgLogRecord = MsgLogRecord MLRVersion RecipientId Message
+
+data MLRVersion = MLRv1 | MLRv3
+
+instance StrEncoding MLRVersion where
+  strEncode = \case
+    MLRv3 -> "v3 "
+    MLRv1 -> ""
+  strP = "v3 " $> MLRv3 <|> pure MLRv1
+
+data MsgLogRecordV1 = MsgLogRecordV1 RecipientId Message
 
 instance StrEncoding MsgLogRecord where
-  strEncode (MsgLogRecord rId msg) = strEncode (rId, msg)
-  strP = MsgLogRecord <$> strP_ <*> strP
+  strEncode (MsgLogRecord v rId msg) = strEncode v <> strEncode (rId, msg)
+  strP = MsgLogRecord <$> strP <*> strP_ <*> strP
 
 class MonadMsgStore s q m | s -> q where
   getMsgQueue :: s -> RecipientId -> Natural -> m q

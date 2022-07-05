@@ -11,6 +11,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Agent.Client
@@ -551,9 +552,9 @@ sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) (C
 getQueueMessage :: AgentMonad m => AgentClient -> RcvQueue -> m (Maybe SMPMsgMeta)
 getQueueMessage c RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret} = do
   atomically createTakeGetLock
-  msg_ <- withLogClient c server rcvId "GET" $ \smp ->
-    getSMPMessage smp rcvPrivateKey rcvId
-  mapM (fmap SMP.rcvMessageMeta . decryptSMPMessage rcvDhSecret) msg_
+  (v, msg_) <- withLogClient c server rcvId "GET" $ \smp ->
+    (thVersion smp,) <$> getSMPMessage smp rcvPrivateKey rcvId
+  mapM (fmap SMP.rcvMessageMeta . decryptSMPMessage v rcvDhSecret) msg_
   where
     createTakeGetLock = TM.alterF takeLock (server, rcvId) $ getMsgLocks c
       where
@@ -562,15 +563,14 @@ getQueueMessage c RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret} = do
           takeTMVar l
           pure $ Just l
 
-decryptSMPMessage :: AgentMonad m => RcvDhSecret -> SMP.Message -> m RcvMessage
-decryptSMPMessage rcvDhSecret SMP.Message {msgId, msgTs = ts, msgFlags = flags, msgBody = body, msgBodyV3} =
-  case msgBodyV3 of
-    Just (SMP.MsgBodyV3 bodyV3) -> do
-      SMP.RcvMsgBody {msgTs, msgFlags, msgBody} <- liftEither . parse smpP (AGENT A_MESSAGE) =<< decrypt bodyV3
-      pure RcvMessage {msgId, msgTs, msgFlags, msgBody}
-    _ -> do
-      msgBody <- decrypt body
-      pure RcvMessage {msgId, msgTs = ts, msgFlags = flags, msgBody}
+decryptSMPMessage :: AgentMonad m => Version -> RcvDhSecret -> SMP.Message -> m RcvMessage
+decryptSMPMessage v rcvDhSecret SMP.Message {msgId, msgTs = ts, msgFlags = flags, msgBody = SMP.EncMsgBody body}
+  | v == 1 || v == 2 = do
+    msgBody <- decrypt body
+    pure RcvMessage {msgId, msgTs = ts, msgFlags = flags, msgBody}
+  | otherwise = do
+    SMP.RcvMsgBody {msgTs, msgFlags, msgBody} <- liftEither . parse smpP (AGENT A_MESSAGE) =<< decrypt body
+    pure RcvMessage {msgId, msgTs, msgFlags, msgBody}
   where
     decrypt = agentCbDecrypt rcvDhSecret (C.cbNonce msgId)
 
