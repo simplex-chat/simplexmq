@@ -91,7 +91,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission (..))
+import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
@@ -861,8 +861,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
     processSMP :: Connection c -> ConnData -> RcvQueue -> m ()
     processSMP conn cData@ConnData {connId, duplexHandshake} rq@RcvQueue {rcvDhSecret, e2ePrivKey, e2eDhSecret, status} =
       case cmd of
-        SMP.MSG msg@SMP.Message {msgId = srvMsgId} -> handleNotifyAck $ do
-          SMP.RcvMessage {msgTs = srvTs, msgFlags, msgBody} <- decryptSMPMessage v rcvDhSecret msg
+        SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> handleNotifyAck $ do
+          SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} <- decryptSMPMessage v rcvDhSecret msg
           clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
             parseMessage msgBody
           unless (phVer `isCompatible` SMP.smpClientVRange) . throwError $ AGENT A_VERSION

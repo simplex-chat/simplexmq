@@ -104,6 +104,7 @@ data Client = Client
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (Transmission Cmd),
     sndQ :: TBQueue (Transmission BrokerMsg),
+    thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
     activeAt :: TVar SystemTime
@@ -124,15 +125,15 @@ newServer qSize = do
   notifiers <- TM.empty
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers}
 
-newClient :: Natural -> ByteString -> SystemTime -> STM Client
-newClient qSize sessionId ts = do
+newClient :: Natural -> Version -> ByteString -> SystemTime -> STM Client
+newClient qSize thVersion sessionId ts = do
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   connected <- newTVar True
   activeAt <- newTVar ts
-  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, connected, activeAt}
+  return Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, activeAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do

@@ -85,7 +85,6 @@ import Data.Set (Set)
 import Data.Text.Encoding
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
--- import GHC.Conc (unsafeIOToSTM)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -554,8 +553,9 @@ getQueueMessage c RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret} = do
   atomically createTakeGetLock
   (v, msg_) <- withLogClient c server rcvId "GET" $ \smp ->
     (thVersion smp,) <$> getSMPMessage smp rcvPrivateKey rcvId
-  mapM (fmap SMP.rcvMessageMeta . decryptSMPMessage v rcvDhSecret) msg_
+  mapM (decryptMeta v) msg_
   where
+    decryptMeta v msg@SMP.RcvMessage {msgId} = SMP.rcvMessageMeta msgId <$> decryptSMPMessage v rcvDhSecret msg
     createTakeGetLock = TM.alterF takeLock (server, rcvId) $ getMsgLocks c
       where
         takeLock l_ = do
@@ -563,14 +563,10 @@ getQueueMessage c RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret} = do
           takeTMVar l
           pure $ Just l
 
-decryptSMPMessage :: AgentMonad m => Version -> RcvDhSecret -> SMP.Message -> m RcvMessage
-decryptSMPMessage v rcvDhSecret SMP.Message {msgId, msgTs = ts, msgFlags = flags, msgBody = SMP.EncMsgBody body}
-  | v == 1 || v == 2 = do
-    msgBody <- decrypt body
-    pure RcvMessage {msgId, msgTs = ts, msgFlags = flags, msgBody}
-  | otherwise = do
-    SMP.RcvMsgBody {msgTs, msgFlags, msgBody} <- liftEither . parse smpP (AGENT A_MESSAGE) =<< decrypt body
-    pure RcvMessage {msgId, msgTs, msgFlags, msgBody}
+decryptSMPMessage :: AgentMonad m => Version -> RcvDhSecret -> SMP.RcvMessage -> m SMP.ClientRcvMsgBody
+decryptSMPMessage v rcvDhSecret SMP.RcvMessage {msgId, msgTs, msgFlags, msgBody = SMP.EncRcvMsgBody body}
+  | v == 1 || v == 2 = SMP.ClientRcvMsgBody msgTs msgFlags <$> decrypt body
+  | otherwise = liftEither . parse SMP.clientRcvMsgBodyP (AGENT A_MESSAGE) =<< decrypt body
   where
     decrypt = agentCbDecrypt rcvDhSecret (C.cbNonce msgId)
 

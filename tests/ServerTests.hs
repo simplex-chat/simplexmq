@@ -22,6 +22,7 @@ import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
@@ -62,11 +63,8 @@ pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
 pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
 
-pattern MsgV2 :: MsgId -> MsgBody -> BrokerMsg
-pattern MsgV2 msgId msgBody <- MSG Message {msgId, msgBody}
-
-pattern MsgV3 :: MsgId -> MsgBody -> BrokerMsg
-pattern MsgV3 msgId bodyV3 <- MSG Message {msgId, msgBodyV3 = Just (MsgBodyV3 bodyV3)}
+pattern Msg :: MsgId -> MsgBody -> BrokerMsg
+pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
 sendRecv :: forall c p. (Transport c, PartyI p) => THandle c -> (Maybe C.ASignature, ByteString, ByteString, Command p) -> IO (SignedTransmission BrokerMsg)
 sendRecv h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
@@ -94,8 +92,9 @@ decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.Cry
 decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.cbNonce
 
 decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either String MsgBody
-decryptMsgV3 dhShared nonce body =
-  (msgBody :: RcvMsgBody -> MsgBody) <$> (smpDecode =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body))
+decryptMsgV3 dhShared nonce body = do
+  ClientRcvMsgBody {msgBody} <- parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body)
+  pure msgBody
 
 testCreateSecureV2 :: forall c. Transport c => TProxy c -> Spec
 testCreateSecureV2 _ =
@@ -111,7 +110,7 @@ testCreateSecureV2 _ =
       (ok1, OK) #== "accepts unsigned SEND"
       (sId1, sId) #== "same queue ID in response 1"
 
-      Resp "" _ (MsgV2 mId1 msg1) <- tGet h
+      Resp "" _ (Msg mId1 msg1) <- tGet h
       (dec mId1 msg1, Right "hello") #== "delivers message"
 
       Resp "cdab" _ ok4 <- signSendRecv h rKey ("cdab", rId, ACK mId1)
@@ -141,7 +140,7 @@ testCreateSecureV2 _ =
       Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, _SEND "hello again")
       (ok3, OK) #== "accepts signed SEND"
 
-      Resp "" _ (MsgV2 mId2 msg2) <- tGet h
+      Resp "" _ (Msg mId2 msg2) <- tGet h
       (dec mId2 msg2, Right "hello again") #== "delivers message 2"
 
       Resp "cdab" _ ok5 <- signSendRecv h rKey ("cdab", rId, ACK mId2)
@@ -152,7 +151,7 @@ testCreateSecureV2 _ =
 
       let maxAllowedMessage = B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
-      Resp "" _ (MsgV2 mId3 msg3) <- tGet h
+      Resp "" _ (Msg mId3 msg3) <- tGet h
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
       let biggerMessage = B.replicate (maxMessageLength + 1) '-'
@@ -173,7 +172,7 @@ testCreateSecure (ATransport t) =
       (ok1, OK) #== "accepts unsigned SEND"
       (sId1, sId) #== "same queue ID in response 1"
 
-      Resp "" _ (MsgV3 mId1 msg1) <- tGet h
+      Resp "" _ (Msg mId1 msg1) <- tGet h
       (dec mId1 msg1, Right "hello") #== "delivers message"
 
       Resp "cdab" _ ok4 <- signSendRecv h rKey ("cdab", rId, ACK mId1)
@@ -203,7 +202,7 @@ testCreateSecure (ATransport t) =
       Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, _SEND "hello again")
       (ok3, OK) #== "accepts signed SEND"
 
-      Resp "" _ (MsgV3 mId2 msg2) <- tGet h
+      Resp "" _ (Msg mId2 msg2) <- tGet h
       (dec mId2 msg2, Right "hello again") #== "delivers message 2"
 
       Resp "cdab" _ ok5 <- signSendRecv h rKey ("cdab", rId, ACK mId2)
@@ -214,7 +213,7 @@ testCreateSecure (ATransport t) =
 
       let maxAllowedMessage = B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv h sKey ("bcda", sId, _SEND maxAllowedMessage)
-      Resp "" _ (MsgV3 mId3 msg3) <- tGet h
+      Resp "" _ (Msg mId3 msg3) <- tGet h
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
       let biggerMessage = B.replicate (maxMessageLength + 1) '-'
@@ -241,7 +240,7 @@ testCreateDelete (ATransport t) =
       Resp "dabc" _ ok7 <- signSendRecv sh sKey ("dabc", sId, _SEND "hello 2")
       (ok7, OK) #== "accepts signed SEND 2 - this message is not delivered because the first is not ACKed"
 
-      Resp "" _ (MsgV3 mId1 msg1) <- tGet rh
+      Resp "" _ (Msg mId1 msg1) <- tGet rh
       (dec mId1 msg1, Right "hello") #== "delivers message"
 
       Resp "abcd" _ err1 <- sendRecv rh (sampleSig, "abcd", rId, OFF)
@@ -263,7 +262,7 @@ testCreateDelete (ATransport t) =
       Resp "bcda" _ ok4 <- signSendRecv rh rKey ("bcda", rId, OFF)
       (ok4, OK) #== "accepts OFF when suspended"
 
-      Resp "cdab" _ (MsgV3 mId2 msg2) <- signSendRecv rh rKey ("cdab", rId, SUB)
+      Resp "cdab" _ (Msg mId2 msg2) <- signSendRecv rh rKey ("cdab", rId, SUB)
       (dec mId2 msg2, Right "hello") #== "accepts SUB when suspended and delivers the message again (because was not ACKed)"
 
       Resp "dabc" _ err5 <- sendRecv rh (sampleSig, "dabc", rId, DEL)
@@ -332,7 +331,7 @@ testDuplex (ATransport t) =
       Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, _SEND $ "key " <> strEncode bsPub)
       -- "key ..." is ad-hoc, not a part of SMP protocol
 
-      Resp "" _ (MsgV3 mId1 msg1) <- tGet alice
+      Resp "" _ (Msg mId1 msg1) <- tGet alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId1)
       Right ["key", bobKey] <- pure $ B.words <$> aDec mId1 msg1
       (bobKey, strEncode bsPub) #== "key received from Bob"
@@ -345,7 +344,7 @@ testDuplex (ATransport t) =
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
 
-      Resp "" _ (MsgV3 mId2 msg2) <- tGet alice
+      Resp "" _ (Msg mId2 msg2) <- tGet alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId2)
       Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
       (bId, encode bSnd) #== "reply queue ID received from Bob"
@@ -354,7 +353,7 @@ testDuplex (ATransport t) =
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, _SEND $ "key " <> strEncode asPub)
       -- "key ..." is ad-hoc, not a part of  SMP protocol
 
-      Resp "" _ (MsgV3 mId3 msg3) <- tGet bob
+      Resp "" _ (Msg mId3 msg3) <- tGet bob
       Resp "abcd" _ OK <- signSendRecv bob brKey ("abcd", bRcv, ACK mId3)
       Right ["key", aliceKey] <- pure $ B.words <$> bDec mId3 msg3
       (aliceKey, strEncode asPub) #== "key received from Alice"
@@ -362,13 +361,13 @@ testDuplex (ATransport t) =
 
       Resp "cdab" _ OK <- signSendRecv bob bsKey ("cdab", aSnd, _SEND "hi alice")
 
-      Resp "" _ (MsgV3 mId4 msg4) <- tGet alice
+      Resp "" _ (Msg mId4 msg4) <- tGet alice
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, ACK mId4)
       (aDec mId4 msg4, Right "hi alice") #== "message received from Bob"
 
       Resp "abcd" _ OK <- signSendRecv alice asKey ("abcd", bSnd, _SEND "how are you bob")
 
-      Resp "" _ (MsgV3 mId5 msg5) <- tGet bob
+      Resp "" _ (Msg mId5 msg5) <- tGet bob
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, ACK mId5)
       (bDec mId5 msg5, Right "how are you bob") #== "message received from alice"
 
@@ -385,12 +384,12 @@ testSwitchSub (ATransport t) =
       Resp "cdab" _ ok2 <- sendRecv sh ("", "cdab", sId, _SEND "test2, no ACK")
       (ok2, OK) #== "sent test message 2"
 
-      Resp "" _ (MsgV3 mId1 msg1) <- tGet rh1
+      Resp "" _ (Msg mId1 msg1) <- tGet rh1
       (dec mId1 msg1, Right "test1") #== "test message 1 delivered to the 1st TCP connection"
-      Resp "abcd" _ (MsgV3 mId2 msg2) <- signSendRecv rh1 rKey ("abcd", rId, ACK mId1)
+      Resp "abcd" _ (Msg mId2 msg2) <- signSendRecv rh1 rKey ("abcd", rId, ACK mId1)
       (dec mId2 msg2, Right "test2, no ACK") #== "test message 2 delivered, no ACK"
 
-      Resp "bcda" _ (MsgV3 mId2' msg2') <- signSendRecv rh2 rKey ("bcda", rId, SUB)
+      Resp "bcda" _ (Msg mId2' msg2') <- signSendRecv rh2 rKey ("bcda", rId, SUB)
       (dec mId2' msg2', Right "test2, no ACK") #== "same simplex queue via another TCP connection, tes2 delivered again (no ACK in 1st queue)"
       Resp "cdab" _ OK <- signSendRecv rh2 rKey ("cdab", rId, ACK mId2')
 
@@ -399,7 +398,7 @@ testSwitchSub (ATransport t) =
 
       Resp "dabc" _ OK <- sendRecv sh ("", "dabc", sId, _SEND "test3")
 
-      Resp "" _ (MsgV3 mId3 msg3) <- tGet rh2
+      Resp "" _ (Msg mId3 msg3) <- tGet rh2
       (dec mId3 msg3, Right "test3") #== "delivered to the 2nd TCP connection"
 
       Resp "abcd" _ err <- signSendRecv rh1 rKey ("abcd", rId, ACK mId3)
@@ -424,7 +423,7 @@ testGetCommand t =
         (sId, rId, rKey, dhShared) <- atomically $ takeTMVar queue
         let dec = decryptMsgV3 dhShared
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello")
-        Resp "2" _ (MsgV3 mId1 msg1) <- signSendRecv rh rKey ("2", rId, GET)
+        Resp "2" _ (Msg mId1 msg1) <- signSendRecv rh rKey ("2", rId, GET)
         (dec mId1 msg1, Right "hello") #== "retrieved from queue"
         Resp "3" _ OK <- signSendRecv rh rKey ("3", rId, ACK mId1)
         Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, GET)
@@ -442,8 +441,8 @@ testGetSubCommands t =
       Resp "1b" _ OK <- signSendRecv sh sKey ("1b", sId, _SEND "hello 3")
       Resp "1c" _ OK <- signSendRecv sh sKey ("1c", sId, _SEND "hello 4")
       -- both get the same if not ACK'd
-      Resp "" _ (MsgV3 mId1 msg1) <- tGet rh1
-      Resp "2" _ (MsgV3 mId1' msg1') <- signSendRecv rh2 rKey ("2", rId, GET)
+      Resp "" _ (Msg mId1 msg1) <- tGet rh1
+      Resp "2" _ (Msg mId1' msg1') <- signSendRecv rh2 rKey ("2", rId, GET)
       (dec mId1 msg1, Right "hello 1") #== "received from queue via SUB"
       (dec mId1' msg1', Right "hello 1") #== "retrieved from queue with GET"
       mId1 `shouldBe` mId1'
@@ -452,27 +451,27 @@ testGetSubCommands t =
       Resp "3" _ (ERR (CMD PROHIBITED)) <- signSendRecv rh1 rKey ("3", rId, GET)
       Resp "3a" _ (ERR (CMD PROHIBITED)) <- signSendRecv rh2 rKey ("3a", rId, SUB)
       -- ACK for SUB delivers the next message
-      Resp "4" _ (MsgV3 mId2 msg2) <- signSendRecv rh1 rKey ("4", rId, ACK mId1)
+      Resp "4" _ (Msg mId2 msg2) <- signSendRecv rh1 rKey ("4", rId, ACK mId1)
       (dec mId2 msg2, Right "hello 2") #== "received from queue via SUB"
       -- bad msgId returns error
       Resp "5" _ (ERR NO_MSG) <- signSendRecv rh2 rKey ("5", rId, ACK "1234")
       -- already ACK'd by subscriber, but still returns OK when msgId matches
       Resp "5a" _ OK <- signSendRecv rh2 rKey ("5a", rId, ACK mId1)
       -- msg2 is not lost - even if subscriber does not ACK it, it is delivered to getter
-      Resp "6" _ (MsgV3 mId2' msg2') <- signSendRecv rh2 rKey ("6", rId, GET)
+      Resp "6" _ (Msg mId2' msg2') <- signSendRecv rh2 rKey ("6", rId, GET)
       (dec mId2' msg2', Right "hello 2") #== "retrieved from queue with GET"
       mId2 `shouldBe` mId2'
       msg2 `shouldBe` msg2'
       -- getter ACK returns OK, even though there is the next message
       Resp "7" _ OK <- signSendRecv rh2 rKey ("7", rId, ACK mId2')
-      Resp "8" _ (MsgV3 mId3 msg3) <- signSendRecv rh2 rKey ("8", rId, GET)
+      Resp "8" _ (Msg mId3 msg3) <- signSendRecv rh2 rKey ("8", rId, GET)
       (dec mId3 msg3, Right "hello 3") #== "retrieved from queue with GET"
       -- subscriber ACK does not lose message
-      Resp "9" _ (MsgV3 mId3' msg3') <- signSendRecv rh1 rKey ("9", rId, ACK mId2')
+      Resp "9" _ (Msg mId3' msg3') <- signSendRecv rh1 rKey ("9", rId, ACK mId2')
       (dec mId3' msg3', Right "hello 3") #== "retrieved from queue with GET"
       mId3 `shouldBe` mId3'
       msg3 `shouldBe` msg3'
-      Resp "10" _ (MsgV3 mId4 msg4) <- signSendRecv rh1 rKey ("10", rId, ACK mId3)
+      Resp "10" _ (Msg mId4 msg4) <- signSendRecv rh1 rKey ("10", rId, ACK mId3)
       (dec mId4 msg4, Right "hello 4") #== "retrieved from queue with GET"
       Resp "11" _ OK <- signSendRecv rh1 rKey ("11", rId, ACK mId4)
       -- no more messages for getter too
@@ -504,14 +503,14 @@ testWithStoreLog at@(ATransport t) =
         writeTVar notifierId nId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
-      Resp "" _ (MsgV3 mId1 msg1) <- tGet h
+      Resp "" _ (Msg mId1 msg1) <- tGet h
       (decryptMsgV3 dhShared mId1 msg1, Right "hello") #== "delivered from queue 1"
       Resp "" _ (NMSG _ _) <- tGet h1
 
       (sId2, rId2, rKey2, dhShared2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
       Resp "cdab" _ OK <- signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too")
-      Resp "" _ (MsgV3 mId2 msg2) <- tGet h
+      Resp "" _ (Msg mId2 msg2) <- tGet h
       (decryptMsgV3 dhShared2 mId2 msg2, Right "hello too") #== "delivered from queue 2"
 
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, DEL)
@@ -534,7 +533,7 @@ testWithStoreLog at@(ATransport t) =
       nId <- readTVarIO notifierId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
-      Resp "cdab" _ (MsgV3 mId3 msg3) <- signSendRecv h rKey1 ("cdab", rId1, SUB)
+      Resp "cdab" _ (Msg mId3 msg3) <- signSendRecv h rKey1 ("cdab", rId1, SUB)
       (decryptMsgV3 dh1 mId3 msg3, Right "hello") #== "delivered from restored queue"
       Resp "" _ (NMSG _ _) <- tGet h1
       -- this queue is removed - not restored
@@ -577,7 +576,7 @@ testRestoreMessages at@(ATransport t) =
           writeTVar dhShared $ Just dh
           writeTVar senderId sId
         Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello")
-        Resp "" _ (MsgV3 mId1 msg1) <- tGet h1
+        Resp "" _ (Msg mId1 msg1) <- tGet h1
         Resp "1a" _ OK <- signSendRecv h1 rKey ("1a", rId, ACK mId1)
         (decryptMsgV3 dh mId1 msg1, Right "hello") #== "message delivered"
       -- messages below are delivered after server restart
@@ -595,11 +594,11 @@ testRestoreMessages at@(ATransport t) =
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
-      Resp "2" _ (MsgV3 mId2 msg2) <- signSendRecv h rKey ("2", rId, SUB)
+      Resp "2" _ (Msg mId2 msg2) <- signSendRecv h rKey ("2", rId, SUB)
       (dec mId2 msg2, Right "hello 2") #== "restored message delivered"
-      Resp "3" _ (MsgV3 mId3 msg3) <- signSendRecv h rKey ("3", rId, ACK mId2)
+      Resp "3" _ (Msg mId3 msg3) <- signSendRecv h rKey ("3", rId, ACK mId2)
       (dec mId3 msg3, Right "hello 3") #== "restored message delivered"
-      Resp "4" _ (MsgV3 mId4 msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
+      Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
       (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
 
     logSize testStoreLogFile `shouldReturn` 1
@@ -610,7 +609,7 @@ testRestoreMessages at@(ATransport t) =
       rId <- readTVarIO recipientId
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
-      Resp "4" _ (MsgV3 mId4 msg4) <- signSendRecv h rKey ("4", rId, SUB)
+      Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, SUB)
       Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId4)
       (decryptMsgV3 dh mId4 msg4, Right "hello 4") #== "restored message delivered"
 
@@ -646,7 +645,7 @@ testRestoreMessagesV2 at@(ATransport t) =
           writeTVar dhShared $ Just dh
           writeTVar senderId sId
         Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello")
-        Resp "" _ (MsgV2 mId1 msg1) <- tGet h1
+        Resp "" _ (Msg mId1 msg1) <- tGet h1
         Resp "1a" _ OK <- signSendRecv h1 rKey ("1a", rId, ACK mId1)
         (decryptMsgV2 dh mId1 msg1, Right "hello") #== "message delivered"
       -- messages below are delivered after server restart
@@ -664,11 +663,11 @@ testRestoreMessagesV2 at@(ATransport t) =
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV2 dh
-      Resp "2" _ (MsgV2 mId2 msg2) <- signSendRecv h rKey ("2", rId, SUB)
+      Resp "2" _ (Msg mId2 msg2) <- signSendRecv h rKey ("2", rId, SUB)
       (dec mId2 msg2, Right "hello 2") #== "restored message delivered"
-      Resp "3" _ (MsgV2 mId3 msg3) <- signSendRecv h rKey ("3", rId, ACK mId2)
+      Resp "3" _ (Msg mId3 msg3) <- signSendRecv h rKey ("3", rId, ACK mId2)
       (dec mId3 msg3, Right "hello 3") #== "restored message delivered"
-      Resp "4" _ (MsgV2 mId4 msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
+      Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
       (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
 
     logSize testStoreLogFile `shouldReturn` 1
@@ -679,7 +678,7 @@ testRestoreMessagesV2 at@(ATransport t) =
       rId <- readTVarIO recipientId
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
-      Resp "4" _ (MsgV2 mId4 msg4) <- signSendRecv h rKey ("4", rId, SUB)
+      Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, SUB)
       Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId4)
       (decryptMsgV2 dh mId4 msg4, Right "hello 4") #== "restored message delivered"
 
@@ -736,7 +735,7 @@ testTiming (ATransport t) =
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, KEY sPub)
 
       Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, _SEND "hello")
-      Resp "" _ (MsgV3 mId msg) <- tGet rh
+      Resp "" _ (Msg mId msg) <- tGet rh
       (dec mId msg, Right "hello") #== "delivered from queue"
 
       runTimingTest sh badKey sId $ _SEND "hello"
@@ -775,14 +774,14 @@ testMessageNotifications (ATransport t) =
       nId' `shouldNotBe` nId
       Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, NSUB)
       Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND' "hello")
-      Resp "" _ (MsgV3 mId1 msg1) <- tGet rh
+      Resp "" _ (Msg mId1 msg1) <- tGet rh
       (dec mId1 msg1, Right "hello") #== "delivered from queue"
       Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, ACK mId1)
       Resp "" _ (NMSG _ _) <- tGet nh1
       Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, NSUB)
       Resp "" _ END <- tGet nh1
       Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello again")
-      Resp "" _ (MsgV3 mId2 msg2) <- tGet rh
+      Resp "" _ (Msg mId2 msg2) <- tGet rh
       Resp "5a" _ OK <- signSendRecv rh rKey ("5a", rId, ACK mId2)
       (dec mId2 msg2, Right "hello again") #== "delivered from queue again"
       Resp "" _ (NMSG _ _) <- tGet nh2
@@ -791,7 +790,7 @@ testMessageNotifications (ATransport t) =
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
       Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, NDEL)
       Resp "7" _ OK <- signSendRecv sh sKey ("7", sId, _SEND' "hello there")
-      Resp "" _ (MsgV3 mId3 msg3) <- tGet rh
+      Resp "" _ (Msg mId3 msg3) <- tGet rh
       (dec mId3 msg3, Right "hello there") #== "delivered from queue again"
       1000 `timeout` tGet @BrokerMsg nh2 >>= \case
         Nothing -> pure ()
@@ -810,7 +809,7 @@ testMsgExpireOnSend t =
         threadDelay 2500000
         Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, _SEND "hello (should NOT expire)")
         testSMPClient @c $ \rh -> do
-          Resp "3" _ (MsgV3 mId msg) <- signSendRecv rh rKey ("3", rId, SUB)
+          Resp "3" _ (Msg mId msg) <- signSendRecv rh rKey ("3", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
           1000 `timeout` tGet @BrokerMsg rh >>= \case
             Nothing -> return ()
@@ -844,7 +843,7 @@ testMsgNOTExpireOnInterval t =
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should NOT expire)")
         threadDelay 2500000
         testSMPClient @c $ \rh -> do
-          Resp "2" _ (MsgV3 mId msg) <- signSendRecv rh rKey ("2", rId, SUB)
+          Resp "2" _ (Msg mId msg) <- signSendRecv rh rKey ("2", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
           1000 `timeout` tGet @BrokerMsg rh >>= \case
             Nothing -> return ()

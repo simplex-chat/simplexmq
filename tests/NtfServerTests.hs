@@ -36,7 +36,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import qualified Simplex.Messaging.Notifications.Server.Push.APNS as APNS
-import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Transport
 import Test.Hspec
@@ -132,8 +132,8 @@ testNotificationSubscription (ATransport t) =
           notifierId `shouldBe` nId
           send' APNSRespOk
           -- receive message
-          Resp "" _ (MSG Message {msgId = mId1, msgBodyV3 = Just (MsgBodyV3 bodyV3)}) <- tGet rh
-          Right RcvMsgBody {msgTs = mTs, msgBody} <- pure $ smpDecode =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) bodyV3)
+          Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet rh
+          Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) body)
           mId1 `shouldBe` msgId
           mTs `shouldBe` msgTs
           (msgBody, "hello") #== "delivered from queue"
