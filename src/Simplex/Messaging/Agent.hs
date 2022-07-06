@@ -805,18 +805,18 @@ setNtfServers' :: AgentMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers' c = atomically . writeTVar (ntfServers c)
 
 activateAgent' :: AgentMonad m => AgentClient -> m ()
-activateAgent' c = atomically $ do
-  writeTVar (agentState c) ASActive
-  mapM_ activate agentOperations
+activateAgent' c = do
+  atomically $ writeTVar (agentState c) ASActive
+  mapM_ activate $ reverse agentOperations
   where
-    activate opSel = modifyTVar' (opSel c) $ \s -> s {opSuspended = False}
+    activate opSel = atomically $ modifyTVar' (opSel c) $ \s -> s {opSuspended = False}
 
 suspendAgent' :: AgentMonad m => AgentClient -> Int -> m ()
-suspendAgent' c 0 = atomically $ do
-  writeTVar (agentState c) ASSuspended
+suspendAgent' c 0 = do
+  atomically $ writeTVar (agentState c) ASSuspended
   mapM_ suspend agentOperations
   where
-    suspend opSel = modifyTVar' (opSel c) $ \s -> s {opSuspended = True}
+    suspend opSel = atomically $ modifyTVar' (opSel c) $ \s -> s {opSuspended = True}
 suspendAgent' c@AgentClient {agentState = as} maxDelay = do
   state <-
     atomically $ do
