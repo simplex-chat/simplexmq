@@ -54,6 +54,7 @@ module Simplex.Messaging.Agent.Client
     AgentOperation (..),
     AgentOpState (..),
     AgentState (..),
+    agentOperations,
     agentOperationBracket,
     beginAgentOperation,
     endAgentOperation,
@@ -154,6 +155,9 @@ agentOpSel = \case
   AOMsgDelivery -> msgDeliveryOp
   AOSndNetwork -> sndNetworkOp
   AODatabase -> databaseOp
+
+agentOperations :: [AgentClient -> TVar AgentOpState]
+agentOperations = [ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp]
 
 data AgentOpState = AgentOpState {opSuspended :: Bool, opsInProgress :: Int}
 
