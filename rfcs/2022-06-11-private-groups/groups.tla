@@ -447,9 +447,10 @@ ApproverReceiveAccept(recipient) ==
                        ]
                    /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
 
-ReceiveSyncToken ==
+ReceiveSyncToken(recipient) ==
     \E message \in messages :
         /\ message.type = SyncToken
+        /\ message.recipient = recipient
         /\ message.sender \in group_perceptions[message.recipient] \* Should be invariant
         /\ approver_states[<<message.invite_id, message.recipient.user>>].state \in { Synchronizing, Committed }
         /\ CASE approver_states[<<message.invite_id, message.recipient.user>>].state = Synchronizing ->
@@ -504,9 +505,10 @@ ReceiveSyncToken ==
                  /\ UNCHANGED <<group_perceptions, approver_states>>
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
-UserReceiveInvite ==
+UserReceiveInvite(sender) ==
     \E message \in messages :
         /\ message.type = Invite
+        /\ message.sender = sender
         /\ LET key == <<message.invite_id, message.recipient>>
            IN
             /\ approver_states' =
@@ -585,8 +587,8 @@ Next ==
     \/ \E member \in MemberSet : ApproverReceiveProposal(member)
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
     \/ \E user \in Users : ApproverReceiveAccept(user)
-    \/ ReceiveSyncToken
-    \/ UserReceiveInvite
+    \/ \E member \in MemberSet : ReceiveSyncToken(member)
+    \/ \E user \in Users : UserReceiveInvite(user)
 
 AllVars ==
     <<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>

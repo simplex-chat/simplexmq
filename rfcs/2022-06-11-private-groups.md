@@ -105,3 +105,4 @@ Model checking our formal specification we can demonstrate three key properties:
   1. If a proposal is complete, then all members (according to the leader) agree on who is a member.
   1. Proposals always complete (successfully or otherwise), assuming the Leader is fair (other members don't need to participate).
   1. No members will connect with the invitee unless all members correctly identify them.
+  1. Under sufficiently good conditions (no confusion, a patient leader, all users remain active, no members leave) an invite will eventually succeed.
