@@ -451,39 +451,57 @@ ReceiveSyncToken ==
     \E message \in messages :
         /\ message.type = SyncToken
         /\ message.sender \in group_perceptions[message.recipient] \* Should be invariant
-        /\ approver_states[<<message.invite_id, message.recipient.user>>].state = Synchronizing
-        /\ approver_states[<<message.invite_id, message.recipient.user>>].for_group = message.recipient.id \* Should be invariant
-        /\ LET  NextApproverState ==
-                    [ approver_states[<<message.invite_id, message.recipient.user>>]
-                    EXCEPT !.tokens = [ @ EXCEPT ![message.sender] = message.token ]
-                    ]
+        /\ approver_states[<<message.invite_id, message.recipient.user>>].state \in { Synchronizing, Committed }
+        /\ CASE approver_states[<<message.invite_id, message.recipient.user>>].state = Synchronizing ->
+                /\ approver_states[<<message.invite_id, message.recipient.user>>].for_group = message.recipient.id \* Should be invariant
+                /\ LET  NextApproverState ==
+                            [ approver_states[<<message.invite_id, message.recipient.user>>]
+                            EXCEPT !.tokens = [ @ EXCEPT ![message.sender] = message.token ]
+                            ]
 
-           IN   IF  { NextApproverState.tokens[member] : member \in group_perceptions[message.recipient] } = NextApproverState.expected_tokens
-                THEN
-                    \* This was the final token, everything matches, and we
-                    \* have acks from all our token deliveries, so we establish
-                    \* the connection.
-                    /\ HandleEstablish(message.invite_id, NextApproverState.user, message.recipient)
-                    /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
-                ELSE
-                    /\ approver_states' =
-                        [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = NextApproverState ]
-                    /\ IF   message.ack
-                       THEN UNCHANGED <<messages>>
-                       ELSE AddMessage(
-                                [ sender |-> message.recipient
-                                , recipient |-> message.sender
-                                , type |-> SyncToken
-                                \* Note again that tokens are abstract/symbolic.  In this
-                                \* context, the spec implies that this is using a
-                                \* pregenerated token that is permanently associated for
-                                \* this invite_id.
-                                , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
-                                , invite_id |-> message.invite_id
-                                , ack |-> TRUE
-                                ]
-                            )
-                    /\ UNCHANGED <<group_perceptions>>
+                   IN   IF  { NextApproverState.tokens[member] : member \in group_perceptions[message.recipient] } = NextApproverState.expected_tokens
+                        THEN
+                            \* This was the final token, everything matches, so we
+                            \* establish the connection.
+                            HandleEstablish(message.invite_id, NextApproverState.user, message.recipient)
+                        ELSE
+                            /\ approver_states' =
+                                [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = NextApproverState ]
+                            /\ IF   message.ack
+                               THEN UNCHANGED <<messages>>
+                               ELSE AddMessage(
+                                        [ sender |-> message.recipient
+                                        , recipient |-> message.sender
+                                        , type |-> SyncToken
+                                        \* Note again that tokens are
+                                        \* abstract/symbolic.  In this context,
+                                        \* the spec implies that this is using
+                                        \* a pregenerated token that is
+                                        \* permanently associated for this
+                                        \* invite_id.
+                                        , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                                        , invite_id |-> message.invite_id
+                                        , ack |-> TRUE
+                                        ]
+                                    )
+                            /\ UNCHANGED <<group_perceptions>>
+             [] approver_states[<<message.invite_id, message.recipient.user>>].state = Committed ->
+                 /\ IF   message.ack
+                    THEN UNCHANGED <<messages>>
+                    ELSE AddMessage(
+                             [ sender |-> message.recipient
+                             , recipient |-> message.sender
+                             , type |-> SyncToken
+                             \* Note again that tokens are abstract/symbolic.
+                             \* In this context, the spec implies that this is
+                             \* using a pregenerated token that is permanently
+                             \* associated for this invite_id.
+                             , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                             , invite_id |-> message.invite_id
+                             , ack |-> TRUE
+                             ]
+                         )
+                 /\ UNCHANGED <<group_perceptions, approver_states>>
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
 SendAccept ==
