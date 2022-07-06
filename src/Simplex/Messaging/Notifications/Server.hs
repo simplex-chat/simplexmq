@@ -80,9 +80,10 @@ ntfServer NtfServerConfig {transports} started = do
 resubscribe :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> m ()
 resubscribe NtfSubscriber {newSubQ} subs = do
   d <- asks $ resubscribeDelay . config
-  forM_ subs $ \sub -> do
-    atomically $ writeTBQueue newSubQ $ NtfSub sub
-    threadDelay d
+  forM_ subs $ \sub@NtfSubData {} ->
+    whenM (ntfShouldSubscribe <$> readTVarIO (subStatus sub)) $ do
+      atomically $ writeTBQueue newSubQ $ NtfSub sub
+      threadDelay d
   liftIO $ logInfo "SMP connections resubscribed"
 
 ntfSubscriber :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> m ()
