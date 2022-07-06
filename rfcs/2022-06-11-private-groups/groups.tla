@@ -504,7 +504,7 @@ ReceiveSyncToken ==
                  /\ UNCHANGED <<group_perceptions, approver_states>>
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
-SendAccept ==
+UserReceiveInvite ==
     \E message \in messages :
         /\ message.type = Invite
         /\ LET key == <<message.invite_id, message.recipient>>
@@ -586,7 +586,7 @@ Next ==
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
     \/ \E user \in Users : ApproverReceiveAccept(user)
     \/ ReceiveSyncToken
-    \/ SendAccept
+    \/ UserReceiveInvite
 
 AllVars ==
     <<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
