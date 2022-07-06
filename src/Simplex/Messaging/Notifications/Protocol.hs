@@ -412,6 +412,16 @@ data NtfSubStatus
     NSErr ByteString
   deriving (Eq, Show)
 
+ntfShouldSubscribe :: NtfSubStatus -> Bool
+ntfShouldSubscribe = \case
+  NSNew -> True
+  NSPending -> True
+  NSActive -> True
+  NSInactive -> True
+  NSEnd -> False
+  NSAuth -> False
+  NSErr _ -> False
+
 instance Encoding NtfSubStatus where
   smpEncode = \case
     NSNew -> "NEW"
