@@ -117,8 +117,6 @@ AddMessage(message) ==
         LET dropped == CHOOSE x \in messages : TRUE
         IN  messages' = (messages \ { dropped }) \union { message }
 
-\* TODO: Still places were we depend on messages for state where dropping is
-\* problematic.
 DropMessage ==
     /\ MaxInFlightRequests /= Nothing
     /\ \E message \in messages :
