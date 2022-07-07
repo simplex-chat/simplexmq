@@ -115,6 +115,86 @@ Model checking our formal specification we can demonstrate three key properties:
   1. No members will connect with the invitee unless all members correctly identify them.
   1. Under sufficiently good conditions (no confusion, a patient leader, all users remain active, no members leave) an invite will eventually succeed.
 
+### Specific Examples
+
+#### Typical Success
+
+We consider a group of three (A, B, and C), trying to add an additional member (D) and succeeding.
+In this case, all members have a connection to the proposed user and no one confuses them for someone else.
+In this group, A is the leader, and B starts the initial proposal.
+
+##### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant A
+    participant B
+    participant C
+    participant D
+    B->>A: PleasePropose D as 123
+    note over A: start proposal 123
+    A->>A: Propose D as 123
+    note over A: generate token X
+    A->>D: Invite 123, token X, n=3
+    A->>B: Propose D as 123
+    note over B: generate token Y
+    B->>D: Invite 123, token Y, n=3
+    A->>C: Propose D as 123
+    note over C: generate token Z
+    C->>D: Invite 123, token Z, n=3
+    note over D: 3/3 members provided tokens
+    D->>A: Accept 123, tokens X,Y,Z
+    D->>B: Accept 123, tokens X,Y,Z
+    D->>C: Accept 123, tokens X,Y,Z
+    A->>B: SyncToken 123, token X, ack=false
+    B->>A: SyncToken 123, token Y, ack=true
+    A->>C: SyncToken 123, token X, ack=false
+    C->>A: SyncToken 123, token Z, ack=true
+    note over A: All tokens received and match
+    A->>D: Start a new connection for this group
+    A->>A: Established 123
+    B->>C: SyncToken 123, token Y, ack=false
+    note over C: All tokens received and match
+    C->>B: SyncToken 123, token Z, ack=true
+    note over B: All tokens received and match
+    B->>D: Start a new connection for this group
+    B->>A: Established 123
+    C->>D: Start a new connection for this group
+    C->>A: Established 123
+    note over A: proposal 123 complete
+```
+
+##### CLI Interactions
+
+```bash
+# User B's terminal
+> /add #g @D
+```
+
+```bash
+# User A and C's terminals
+> @B wants to add @D to #g, accept? (y/n)
+> y
+```
+
+```bash
+# User D's terminal
+> @A, @B, and @C would like to invite you to a group, accept? (y/n)
+> y
+> What would you like to name this group?
+> g
+```
+
+```bash
+# User A, B, and C's terminals
+> @D successfully added to group #g!
+```
+
+```bash
+# User D's terminals
+> You have successfully been added to group #g with @A, @B, and @C!
+```
+
 ## Variations Not Pursued
 
 ### Centralized Tokens
