@@ -114,3 +114,12 @@ Model checking our formal specification we can demonstrate three key properties:
   1. Only the Leader need "drive" the process, and can retry by simply sending more Propose messages.  All other parties simply react to requests as they see them.  This offers a simple implementation that avoids livelock.
   1. No members will connect with the invitee unless all members correctly identify them.
   1. Under sufficiently good conditions (no confusion, a patient leader, all users remain active, no members leave) an invite will eventually succeed.
+
+## Variations Not Pursued
+
+### Centralized Tokens
+
+It may seem odd that a Leader is leveraged for the management of proposals, but a more peer-to-peer style token synchronization step is also involved later.
+Message counts could be reduced if the leader was also responsible for validating tokens.
+However, this puts increased trust on the leader.
+The peer-to-peer style token synchronization ensures that a compromised leader has limited impacts to the group as a whole.
