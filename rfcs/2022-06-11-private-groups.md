@@ -8,6 +8,13 @@ Lastly, we require no modification to the underlying protocol.
 Standard duplex communication is sufficient.
 Agents need new behavior in soliciting proposals for membership changes, and for responding to them.
 
+This group protocol both captures the ethos of the SimpleX message protocol privacy, and increases trust in connections.
+Notably, this protocol can serve to _out_ an imposter rather than enable them, should at least one member of the group know the real identity.
+Say Alice, Bob, and Carol are in a group and want to add Dave.
+Only Alice actually knows Dave, but Mallory has scammed Bob and Carol into believing that she is Dave.
+This protocol will not let Dave or Mallory be admitted to the group, since neither can prove that they know all parties.
+Alice, Bob, and Carol have increased hopes of identifying Mallory as an imposter once they realize it is impossible to add Dave.
+
 ## The Protocol
 
 ### Additions
