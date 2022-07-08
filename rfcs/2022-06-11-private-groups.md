@@ -173,7 +173,7 @@ sequenceDiagram
 
 ```bash
 # User A and C's terminals
-> @B wants to add @D to #g, accept? (y/n)
+> @B wants to add @D to #g, accept? (y/n/change invitee)
 > y
 ```
 
@@ -193,6 +193,50 @@ sequenceDiagram
 ```bash
 # User D's terminals
 > You have successfully been added to group #g with @A, @B, and @C!
+```
+
+#### Success with Identity Resolution
+
+A minor variant of the success case involves a resolvable difference in names.
+Proposed member names are just that, names, they don't necessarily uniquely define the potential member.
+As such, it's possible that two members see a different contact name for the same identity, which must be resolved.
+
+Consider the same scenario as above, but user C knows user D by the contact name Dee.
+The sequence diagram is identical, because the resolution occurs via direct user interactions.
+
+Since C receives a Propose message for D, C has a different CLI interaction:
+
+```bash
+# User C's terminal
+> @B wants to add @D to #g.  Do you know this contact by a different name? (y/n)
+> y
+> Please enter contact name:
+> @Dee
+> Would you like to add @Dee to group #g? (y/n)
+> y
+```
+
+#### Success with Identity Conflict
+
+A minor variant of the success case involves a resolvable conflict in names.
+Proposed member names are just that, names, they don't necessarily uniquely define the potential member.
+As such, it's possible that two members see a different contact name for the same identity, one of whom uses the contact name for someone else.
+
+Consider the same scenario as above, but user C knows user D as D2, as they know another distinct contact named D.
+However, user C knows that A and B only know D2, not D.
+This means that user C can infer from context that B is trying to add D2 to the group, not D.
+The sequence diagram is identical, because the resolution occurs via direct user interactions.
+
+Since C receives a Propose message for D, C has a different CLI interaction:
+
+```bash
+# User C's terminal
+> @B wants to add @D to #g, accept? (y/n/change invitee)
+> change invitee
+> Who do you think @B is trying to invite?
+> @D2
+> Would you like to add @D2 to group #g? (y/n)
+> y
 ```
 
 ## Variations Not Pursued
