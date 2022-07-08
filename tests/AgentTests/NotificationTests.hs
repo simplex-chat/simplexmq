@@ -14,19 +14,22 @@ import Control.Concurrent (killThread, threadDelay)
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
-import Data.Bifunctor (bimap)
+import Data.Bifunctor (bimap, first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
-import SMPClient (withSmpServer)
+import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
+import Simplex.Messaging.Agent.Client (AgentClient)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Types (NtfToken (..))
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), SMPMsgMeta (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (ATransport)
@@ -73,11 +76,15 @@ notificationTests t =
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             withNtfServer t $ testChangeToken apns
-    describe "Notifications server store log" $ do
+    describe "Notifications server store log" $
       it "should save and restore tokens and subscriptions" $ \_ ->
         withSmpServer t $
           withAPNSMockServer $ \apns ->
             testNotificationsStoreLog t apns
+    describe "Notifications after SMP server restart" $
+      it "should resume subscriptions after SMP server is restarted" $ \_ ->
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testNotificationsSMPRestart t apns
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
@@ -430,8 +437,8 @@ testNotificationsStoreLog t APNSMockServer {apnsQ} = do
   alice <- getSMPAgentClient agentCfg initAgentServers
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right (aliceId, bobId) <- withNtfServerStoreLog t $ \threadId -> runExceptT $ do
-    _ <- registerTestToken alice "abcd" NMInstant apnsQ
     (aliceId, bobId) <- makeConnection alice bob
+    _ <- registerTestToken alice "abcd" NMInstant apnsQ
     liftIO $ threadDelay 250000
     4 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT 4)
@@ -452,6 +459,37 @@ testNotificationsStoreLog t APNSMockServer {apnsQ} = do
     liftIO $ killThread threadId
   pure ()
 
+testNotificationsSMPRestart :: ATransport -> APNSMockServer -> IO ()
+testNotificationsSMPRestart t APNSMockServer {apnsQ} = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \threadId -> runExceptT $ do
+    (aliceId, bobId) <- makeConnection alice bob
+    _ <- registerTestToken alice "abcd" NMInstant apnsQ
+    liftIO $ threadDelay 250000
+    4 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
+    get bob ##> ("", aliceId, SENT 4)
+    void $ messageNotification apnsQ
+    get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+    ackMessage alice bobId 4
+    liftIO $ killThread threadId
+    pure (aliceId, bobId)
+
+  Right () <- runExceptT $ do
+    get alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
+    get bob =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
+
+  Right () <- withSmpServerStoreLogOn t testPort $ \threadId -> runExceptT $ do
+    get alice =##> \case ("", "", UP _ [c]) -> c == bobId; _ -> False
+    get bob =##> \case ("", "", UP _ [c]) -> c == aliceId; _ -> False
+    liftIO $ threadDelay 1000000
+    5 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
+    get bob ##> ("", aliceId, SENT 5)
+    _ <- messageNotificationData alice apnsQ
+    get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
+    liftIO $ killThread threadId
+  pure ()
+
 messageNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apnsQ = do
   1000000 `timeout` atomically (readTBQueue apnsQ) >>= \case
@@ -462,6 +500,13 @@ messageNotification apnsQ = do
       liftIO $ sendApnsResponse APNSRespOk
       pure (nonce, message)
     _ -> error "bad notification"
+
+messageNotificationData :: AgentClient -> TBQueue APNSMockRequest -> ExceptT AgentErrorType IO PNMessageData
+messageNotificationData c apnsQ = do
+  (nonce, message) <- messageNotification apnsQ
+  NtfToken {ntfDhSecret = Just dhSecret} <- getNtfTokenData c
+  Right pnMsgData <- liftEither . first INTERNAL $ Right . strDecode =<< first show (C.cbDecrypt dhSecret nonce message)
+  pure pnMsgData
 
 noNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()
 noNotification apnsQ = do

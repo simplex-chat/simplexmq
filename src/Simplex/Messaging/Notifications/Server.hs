@@ -31,7 +31,7 @@ import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), Pus
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (ErrorType (..), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import qualified Simplex.Messaging.TMap as TM
@@ -147,16 +147,19 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       forever $
         atomically (readTBQueue agentQ) >>= \case
           CAConnected _ -> pure ()
-          CADisconnected srv subs ->
+          CADisconnected srv subs -> do
+            logInfo . T.pack $ "SMP server disconnected " <> host srv <> " (" <> show (length subs) <> ") subscriptions"
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
-          CAReconnected _ -> pure ()
+          CAReconnected srv ->
+            logInfo $ "SMP server reconnected " <> T.pack (host srv)
           CAResubscribed srv sub -> do
             let ntfId = snd sub
                 smpQueue = SMPQueueNtf srv ntfId
             updateSubStatus smpQueue NSActive
-          CASubError srv (_, ntfId) err ->
+          CASubError srv (_, ntfId) err -> do
+            logError . T.pack $ "SMP subscription error on server " <> host srv <> ": " <> show err
             handleSubError (SMPQueueNtf srv ntfId) err
 
     handleSubError :: SMPQueueNtf -> ProtocolClientError -> m ()
