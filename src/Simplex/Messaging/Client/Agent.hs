@@ -30,7 +30,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPS
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, tryE, whenM, ($>>=))
+import Simplex.Messaging.Util (catchAll_, tryE, unlessM, ($>>=))
 import System.Timeout (timeout)
 import UnliftIO (async, forConcurrently_)
 import UnliftIO.Exception (Exception)
@@ -47,7 +47,7 @@ data SMPClientAgentEvent
   | CASubError SMPServer SMPSub ProtocolClientError
 
 data SMPSubParty = SPRecipient | SPNotifier
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 type SMPSub = (SMPSubParty, QueueId)
 
@@ -203,7 +203,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
         notify $ CAReconnected srv
         cs <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
         forConcurrently_ (maybe [] M.assocs cs) $ \sub@(s, _) ->
-          whenM (atomically $ hasSub (srvSubs ca) srv s) $
+          unlessM (atomically $ hasSub (srvSubs ca) srv s) $
             subscribe_ smp sub `catchE` handleError s
       where
         subscribe_ :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT ProtocolClientError IO ()

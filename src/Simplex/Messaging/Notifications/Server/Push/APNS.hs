@@ -99,6 +99,7 @@ data PushNotification
   | PNMessage PNMessageData
   | PNAlert Text
   | PNCheckMessages
+  deriving (Show)
 
 data PNMessageData = PNMessageData
   { smpQueue :: SMPQueueNtf,
@@ -106,6 +107,7 @@ data PNMessageData = PNMessageData
     nmsgNonce :: C.CbNonce,
     encNMsgMeta :: EncNMsgMeta
   }
+  deriving (Show)
 
 instance StrEncoding PNMessageData where
   strEncode PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} =
