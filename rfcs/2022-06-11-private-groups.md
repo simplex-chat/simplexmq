@@ -291,6 +291,70 @@ And when user A (the Leader) receives notice that the proposal was rejected:
 > @C rejected @B's request to add @D to group #g
 ```
 
+#### Failure Due to Confusion
+
+In the event that two members agree to add an invitee, but one of the members mistakes the intended invitee for someone else, the Leader must eventually cancel the proposal.
+The Leader can't actually tell based on the protocol whether the invitee was confused or one of the parties is inactive, but cancelling remains the only option.
+No other changes to membership can occur until the pending proposal is completed.
+
+Consider A, B, and C are in a group, #g.
+B would like to add D.
+However, C does not know the real D, they instead know E and they know them by the name D.
+If this is confusing, it's because that's exactly what is happening.
+C has confused E for D.
+This means that the protocol will (purposefully) stall to ensure that groups don't add a member that not everyone knows.
+
+##### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant A
+    participant B
+    participant C
+    participant D
+    participant E
+    B->>A: PleasePropose D as 123
+    note over A: starts proposal, awaiting responses from everyone
+    A->>A: Propose D as 123
+    note over A: generate token X
+    A->>D: Invite 123, token X, n=3
+    A->>B: Propose D as 123
+    note over B: generate token Y
+    B->>D: Invite 123, token Y, n=3
+    A->>C: Propose D as 123
+    note over C: generate token Z
+    C->>E: Invite 123, token Z, n=3
+    note over D,E: Neither user ever sees all three tokens<br>so they never reply with Accept.
+    note over A: User evenutally aborts due to inactivity<br>starts a proposal to kick 123
+    A->>A: Kick 123
+    note over A: Commits that 123 is permanently kicked
+    A->>A: Kicked 123
+    A->>B: Kick 123
+    note over B: Commits that 123 is permanently kicked
+    B->>A: Kicked 123
+    A->>C: Kick 123
+    note over C: Commits that 123 is permanently kicked
+    C->>A: Kicked 123
+    note over A: all acks recieved, kick complete
+```
+
+##### CLI Example
+
+The leader can handle the cancellation directly:
+
+```bash
+> /pending #g
+> Member @B is trying to add @D.  No user have established.  Cancel? (y/n)
+> y
+```
+
+Or the leader may discover the issue when attempting a (blocked) membership change:
+
+```bash
+> Member @B wants to add @X to #g, but there is a pending invite to @D (only one at a time is allowed), cancel invite to @D? (y/n)
+> y
+```
+
 ## Variations Not Pursued
 
 ### Centralized Tokens
