@@ -239,6 +239,58 @@ Since C receives a Propose message for D, C has a different CLI interaction:
 > y
 ```
 
+#### Failure Due to Unacquainted Contacts
+
+New members can only be added if they are already known to all current members.
+This means that a proposal will fail if any user doesn't recognize the contact proposed.
+
+Consider A, B, and C are in a group.
+B would like to add D, who is known to A but not to C.
+
+##### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant A
+    participant B
+    participant C
+    participant D
+    B->>A: PleasePropose D as 123
+    note over A: starts proposal, awaiting responses from everyone
+    A->>A: Propose D as 123
+    note over A: generate token X
+    A->>D: Invite 123, token X, n=3
+    A->>B: Propose D as 123
+    note over B: generate token Y
+    B->>D: Invite 123, token Y, n=3
+    A->>C: Propose D as 123
+    note over C: User cannot identify D
+    C->>A: Reject 123
+    note over D: Neither user ever sees all three tokens<br>so they never reply with Accept.
+    note over A: proposal 123 complete
+```
+
+Note that it is safe here to simply mark the proposal as complete and leave A and B with dangling invites sent to C.
+This is because it will never be acted on again, A and B will only act upon an Accept message from D or a retried Propose message from A.
+
+##### CLI Example
+
+The notable deviations from the standard flow are when user C is prompted by the Propose message:
+
+```bash
+# User C's terminal
+> @B wants to add @D to #g.  Do you know this contact by a different name? (y/n)
+> n
+> Invite rejected.
+```
+
+And when user A (the Leader) receives notice that the proposal was rejected:
+
+```bash
+# User A's terminal
+> @C rejected @B's request to add @D to group #g
+```
+
 ## Variations Not Pursued
 
 ### Centralized Tokens
