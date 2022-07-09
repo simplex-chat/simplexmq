@@ -46,12 +46,15 @@ module Simplex.Messaging.Transport
     -- * SMP transport
     THandle (..),
     TransportError (..),
+    HandshakeError (..),
     smpServerHandshake,
     smpClientHandshake,
     tPutBlock,
     tGetBlock,
     serializeTransportError,
     transportErrorP,
+    sendHandshake,
+    getHandshake,
 
     -- * Trim trailing CR
     trimCR,
