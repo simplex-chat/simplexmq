@@ -1,0 +1,71 @@
+sequenceDiagram
+  participant A as Alice
+  participant AA as Alice's<br>agent
+  participant AS as Alice's<br>server
+  participant BS as Bob's<br>server
+  participant BA as Bob's<br>agent
+  participant B as Bob
+
+  note over AA, BA: status (receive/send): NONE/NONE
+
+  note over A, AA: 1. request connection<br>from agent
+  A ->> AA: NEW: create<br>duplex connection
+ 
+  note over AA, AS: 2. create Alice's SMP queue
+  AA ->> AS: NEW: create SMP queue
+  AS ->> AA: IDS: SMP queue IDs
+  note over AA: status: NEW/NONE
+
+  AA ->> A: INV: invitation<br>to connect
+
+  note over A, B: 3. out-of-band invitation
+  A ->> B: OOB: invitation to connect
+
+  note over BA, B: 4. accept connection
+  B ->> BA: JOIN:<br>via invitation info
+  note over BA: status: NONE/NEW
+
+  note over BA, BS: 5. create Bob's SMP queue
+  BA ->> BS: NEW: create SMP queue
+  BS ->> BA: IDS: SMP queue IDs
+  note over BA: status: NEW/NEW
+
+  note over BA, AA: 6. establish Alice's SMP queue
+  BA ->> AS: SEND: Bob's info and sender server key (SMP confirmation with reply queues)
+  note over BA: status: NEW/CONFIRMED
+
+  AS ->> AA: MSG: Bob's info and<br>sender server key
+  note over AA: status: CONFIRMED/NONE
+  AA ->> AS: ACK: confirm message
+  AA ->> A: CONF: connection request ID<br>and Bob's info
+  A ->> AA: LET: accept connection request,<br>send Alice's info
+  AA ->> AS: KEY: secure queue
+  note over AA: status: SECURED/NONE
+
+  AA ->> BS: SEND: Alice's info and sender's server key (SMP confirmation without reply queues)
+  note over AA: status: SECURED/CONFIRMED
+
+  BS ->> BA: MSG: Alice's info and<br>sender's server key
+  note over BA: status: CONFIRMED/CONFIRMED
+  BA ->> B: INFO: Alice's info
+  BA ->> BS: ACK: confirm message
+  BA ->> BS: KEY: secure queue
+  note over BA: status: SECURED/CONFIRMED
+
+  BA ->> AS: SEND: HELLO: only needs to be sent once in v2
+
+  note over BA: status: SECURED/ACTIVE
+  note over BA, B: 7a. notify Bob<br>about connection success
+  BA ->> B: CON: connected
+
+  AS ->> AA: MSG: HELLO: Alice's agent<br>knows Bob can send
+  note over AA: status: SECURED/ACTIVE
+  AA ->> AS: ACK: confirm message
+  note over A, AA: 7a. notify Alice<br>about connection success
+  AA ->> A: CON: connected
+
+  AA ->> BS: SEND: HELLO: only needs to be sent once in v2
+  note over AA: status: ACTIVE/ACTIVE
+  BS ->> BA: MSG: HELLO: Bob's agent<br>knows Alice can send
+  note over BA: status: ACTIVE/ACTIVE
+  BA ->> BS: ACK: confirm message

@@ -1,0 +1,61 @@
+sequenceDiagram
+  participant M as iOS message<br>notification
+  participant S as iOS system
+  participant N as iOS NSE
+  participant U as iOS UI
+  participant C as Core chat
+  participant A as Core agent
+
+  M ->> N: notification
+  S ->> N: get app pref
+  note over N: ignore,<br>app is active
+
+  note over M, A: app going to background
+  S ->> U: phase: background<br>(possibly, "will" method)
+  U ->> S: set app pref "pausing"
+  U ->> C: /_app phase paused, result CRCmdOk
+  C ->> A: pauseAgent<br>(no new network IO)
+  M ->> N: notification
+  S ->> N: get app pref
+  note over N: wait/poll for<br>"paused"/"suspending"/"suspended"<br>event/pref
+  A ->> C: event "IO paused"<br>(after in-flight op completed)<br>PHASE PAUSED
+  C ->> U: event "IO paused" (CRAppPaused)
+  U ->> S: set shared pref "paused"
+
+  note over M, A: process notification
+  M ->> N: notification
+  S ->> N: get app pref<br>continue if<br>"paused"/"suspending"/"suspended"
+  N ->> S: set NSE pref "active"
+  N ->> C: /_get message
+  C ->> A: getMessage
+  A ->> C: msg flags
+  C ->> N: msg flags
+  note over N: get messages<br>until notification flag set
+  A ->> C: MSG/CONF/INFO
+  C ->> N: some event
+  N ->> S: set NSE pref "completed"
+  N ->> S: show notification
+
+  note over M, A: app about to be suspended<br>(or 15-20 sec after background)
+  S ->> U: background task notice
+  U ->> S: set app pref "suspending"
+  U ->> C: /_app phase suspended, response ok
+  C ->> A: suspendAgent<br>(no new DB)
+  A ->> C: event "DB paused"<br>(after in-flight op completed)<br>PHASE SUSPENDED
+  C ->> U: event "DB paused" (CRAppSuspended)
+  U ->> S: set app pref "suspended"
+
+  note over M, A: app about to be activated
+  S ->> U: phase: active<br>(or inactive?)<br><br>(possibly, "will" method)
+  S ->> U: get NSE pref
+  U ->> S: set app pref "activating"
+  alt nse active?
+    U ->> C: /_app phase inactive
+    note over U: poll/wait till NSE pref is "completed"
+  end
+
+  U ->> C: /_app phase active (response result)
+  C ->> A: activateAgent<br>(allow IO/DB)
+  A ->> C: result ()
+  C ->> U: CRCmdOk
+  U ->> S: set app pref "active"

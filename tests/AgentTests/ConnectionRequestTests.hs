@@ -11,7 +11,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (smpClientVRange)
+import Simplex.Messaging.Protocol (ProtocolServer (..), smpClientVRange)
 import Simplex.Messaging.Version
 import Test.Hspec
 
@@ -19,12 +19,7 @@ uri :: String
 uri = "smp.simplex.im"
 
 srv :: SMPServer
-srv =
-  SMPServer
-    { host = "smp.simplex.im",
-      port = "5223",
-      keyHash = C.KeyHash "\215m\248\251"
-    }
+srv = SMPServer "smp.simplex.im" "5223" (C.KeyHash "\215m\248\251")
 
 queue :: SMPQueueUri
 queue =
@@ -48,7 +43,7 @@ connReqData :: ConnReqUriData
 connReqData =
   ConnReqUriData
     { crScheme = simplexChat,
-      crAgentVRange = smpAgentVRange,
+      crAgentVRange = mkVersionRange 1 1,
       crSmpQueues = [queue]
     }
 
@@ -70,7 +65,7 @@ connectionRequest12 :: AConnectionRequestUri
 connectionRequest12 =
   ACR SCMInvitation $
     CRInvitationUri
-      connReqData {crAgentVRange = mkVersionRange 1 2, crSmpQueues = [queue, queue]}
+      connReqData {crAgentVRange = supportedSMPAgentVRange, crSmpQueues = [queue, queue]}
       testE2ERatchetParams13
 
 connectionRequestTests :: Spec

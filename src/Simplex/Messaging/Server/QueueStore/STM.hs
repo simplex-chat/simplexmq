@@ -18,7 +18,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, ($>>=))
 import UnliftIO.STM
 
 data QueueStore = QueueStore
@@ -51,9 +51,8 @@ instance MonadQueueStore QueueStore STM where
     where
       getVar = case party of
         SRecipient -> TM.lookup qId queues
-        SSender -> TM.lookup qId senders >>= get
-        SNotifier -> TM.lookup qId notifiers >>= get
-      get = fmap join . mapM (`TM.lookup` queues)
+        SSender -> TM.lookup qId senders $>>= (`TM.lookup` queues)
+        SNotifier -> TM.lookup qId notifiers $>>= (`TM.lookup` queues)
 
   secureQueue :: QueueStore -> RecipientId -> SndPublicVerifyKey -> STM (Either ErrorType QueueRec)
   secureQueue QueueStore {queues} rId sKey =
@@ -62,16 +61,23 @@ instance MonadQueueStore QueueStore STM where
         Just _ -> pure Nothing
         _ -> writeTVar qVar q {senderKey = Just sKey} $> Just q
 
-  addQueueNotifier :: QueueStore -> RecipientId -> NotifierId -> NtfPublicVerifyKey -> STM (Either ErrorType QueueRec)
-  addQueueNotifier QueueStore {queues, notifiers} rId nId nKey = do
+  addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> STM (Either ErrorType QueueRec)
+  addQueueNotifier QueueStore {queues, notifiers} rId ntfCreds@NtfCreds {notifierId = nId} = do
     ifM (TM.member nId notifiers) (pure $ Left DUPLICATE_) $
-      withQueue rId queues $ \qVar ->
-        readTVar qVar >>= \q -> case notifier q of
-          Just _ -> pure Nothing
-          _ -> do
-            writeTVar qVar q {notifier = Just (nId, nKey)}
-            TM.insert nId rId notifiers
-            pure $ Just q
+      withQueue rId queues $ \qVar -> do
+        q <- readTVar qVar
+        forM_ (notifier q) $ (`TM.delete` notifiers) . notifierId
+        writeTVar qVar q {notifier = Just ntfCreds}
+        TM.insert nId rId notifiers
+        pure $ Just q
+
+  deleteQueueNotifier :: QueueStore -> RecipientId -> STM (Either ErrorType ())
+  deleteQueueNotifier QueueStore {queues, notifiers} rId =
+    withQueue rId queues $ \qVar -> do
+      q <- readTVar qVar
+      forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers
+      writeTVar qVar q {notifier = Nothing}
+      pure $ Just ()
 
   suspendQueue :: QueueStore -> RecipientId -> STM (Either ErrorType ())
   suspendQueue QueueStore {queues} rId =
@@ -83,7 +89,7 @@ instance MonadQueueStore QueueStore STM where
       Just qVar ->
         readTVar qVar >>= \q -> do
           TM.delete (senderId q) senders
-          forM_ (notifier q) $ \(nId, _) -> TM.delete nId notifiers
+          forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers
           pure $ Right ()
       _ -> pure $ Left AUTH
 
@@ -91,4 +97,4 @@ toResult :: Maybe a -> Either ErrorType a
 toResult = maybe (Left AUTH) Right
 
 withQueue :: RecipientId -> TMap RecipientId (TVar QueueRec) -> (TVar QueueRec -> STM (Maybe a)) -> STM (Either ErrorType a)
-withQueue rId queues f = toResult <$> (TM.lookup rId queues >>= fmap join . mapM f)
+withQueue rId queues f = toResult <$> TM.lookup rId queues $>>= f

@@ -416,7 +416,8 @@ rcDecrypt rc@Ratchet {rcRcv, rcAD = Str rcAD} rcMKSkipped msg' = do
     skipMessageKeys :: Word32 -> Ratchet a -> Either CryptoError (Ratchet a, SkippedMsgKeys)
     skipMessageKeys _ r@Ratchet {rcRcv = Nothing} = Right (r, M.empty)
     skipMessageKeys untilN r@Ratchet {rcRcv = Just rr@RcvRatchet {rcCKr, rcHKr}, rcNr}
-      | rcNr > untilN = Left CERatchetDuplicateMessage
+      | rcNr > untilN + 1 = Left CERatchetEarlierMessage
+      | rcNr == untilN + 1 = Left CERatchetDuplicateMessage
       | rcNr + maxSkip < untilN = Left CERatchetTooManySkipped
       | rcNr == untilN = Right (r, M.empty)
       | otherwise =

@@ -33,8 +33,8 @@ sequenceDiagram
   AS ->> AA: MSG: Bob's info and<br>sender server key
   note over AA: status: CONFIRMED/NONE
   AA ->> AS: ACK: confirm message
-  AA ->> A: REQ: connection request ID<br>and Bob's info
-  A ->> AA: ACPT: accept connection request,<br>send Alice's info
+  AA ->> A: CONF: connection request ID<br>and Bob's info
+  A ->> AA: LET: accept connection request,<br>send Alice's info
   AA ->> AS: KEY: secure queue
   note over AA: status: SECURED/NONE
 

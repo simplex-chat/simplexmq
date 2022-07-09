@@ -2,7 +2,8 @@
 
 module Simplex.Messaging.Transport.Client
   ( runTransportClient,
-    clientHandshake,
+    runTLSTransportClient,
+    smpClientHandshake,
   )
 where
 
@@ -26,9 +27,12 @@ import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => MonadUnliftIO m => HostName -> ServiceName -> C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
-runTransportClient host port keyHash keepAliveOpts client = do
-  let clientParams = mkTLSClientParams host port keyHash
+runTransportClient :: (Transport c, MonadUnliftIO m) => HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTransportClient = runTLSTransportClient supportedParameters Nothing
+
+runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTLSTransportClient tlsParams caStore_ host port keyHash keepAliveOpts client = do
+  let clientParams = mkTLSClientParams tlsParams caStore_ host port keyHash
   c <- liftIO $ startTCPClient host port clientParams keepAliveOpts
   client c `E.finally` liftIO (closeConnection c)
 
@@ -56,13 +60,15 @@ startTCPClient host port clientParams keepAliveOpts = withSocketsDo $ resolve >>
       ctx <- connectTLS clientParams sock
       getClientConnection ctx
 
-mkTLSClientParams :: HostName -> ServiceName -> C.KeyHash -> T.ClientParams
-mkTLSClientParams host port keyHash = do
+-- readCertificateStore :: FilePath -> IO (Maybe CertificateStore)
+
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> T.ClientParams
+mkTLSClientParams supported caStore_ host port keyHash_ = do
   let p = B.pack port
   (T.defaultParamsClient host p)
-    { T.clientShared = def,
-      T.clientHooks = def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p},
-      T.clientSupported = supportedParameters
+    { T.clientShared = maybe def (\caStore -> def {T.sharedCAStore = caStore}) caStore_,
+      T.clientHooks = maybe def (\keyHash -> def {T.onServerCertificate = \_ _ _ -> validateCertificateChain keyHash host p}) keyHash_,
+      T.clientSupported = supported
     }
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
@@ -77,7 +83,7 @@ validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, 
     x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
         hooks = XV.defaultHooks
-        checks = XV.defaultChecks
+        checks = XV.defaultChecks {XV.checkFQHN = False}
         certStore = XS.makeCertificateStore sc
         cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
         serviceID = (host, port)

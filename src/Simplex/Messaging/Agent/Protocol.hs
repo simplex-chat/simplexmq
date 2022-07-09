@@ -7,6 +7,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -31,8 +32,8 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent.Protocol
   ( -- * Protocol parameters
-    smpAgentVersion,
-    smpAgentVRange,
+    currentSMPAgentVersion,
+    supportedSMPAgentVRange,
     e2eEncConnInfoLength,
     e2eEncUserMsgLength,
 
@@ -49,7 +50,8 @@ module Simplex.Messaging.Agent.Protocol
     AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
-    SMPServer (..),
+    SMPServer,
+    pattern SMPServer,
     SrvLoc (..),
     SMPQueueUri (..),
     SMPQueueInfo (..),
@@ -80,6 +82,8 @@ module Simplex.Messaging.Agent.Protocol
     QueueStatus (..),
     ACorrId,
     AgentMsgId,
+    NotificationsMode (..),
+    NotificationInfo (..),
 
     -- * Encode/decode
     serializeCommand,
@@ -108,7 +112,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:))
+import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -116,9 +120,12 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.System (SystemTime)
 import Data.Time.ISO8601
 import Data.Type.Equality
 import Data.Typeable ()
+import Database.SQLite.Simple.FromField
+import Database.SQLite.Simple.ToField
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.Messaging.Agent.QueryString
@@ -130,10 +137,13 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( ErrorType,
     MsgBody,
+    MsgFlags,
     MsgId,
-    SMPServer (..),
+    NMsgMeta,
+    SMPServer,
     SndPublicVerifyKey,
     SrvLoc (..),
+    pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
@@ -143,11 +153,11 @@ import Test.QuickCheck (Arbitrary (..))
 import Text.Read
 import UnliftIO.Exception (Exception)
 
-smpAgentVersion :: Version
-smpAgentVersion = 1
+currentSMPAgentVersion :: Version
+currentSMPAgentVersion = 2
 
-smpAgentVRange :: VersionRange
-smpAgentVRange = mkVersionRange 1 smpAgentVersion
+supportedSMPAgentVRange :: VersionRange
+supportedSMPAgentVRange = mkVersionRange 1 currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
@@ -207,22 +217,51 @@ data ACommand (p :: AParty) where
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
   END :: ACommand Agent
-  DOWN :: ACommand Agent
-  UP :: ACommand Agent
-  SEND :: MsgBody -> ACommand Client
+  DOWN :: SMPServer -> [ConnId] -> ACommand Agent
+  UP :: SMPServer -> [ConnId] -> ACommand Agent
+  SEND :: MsgFlags -> MsgBody -> ACommand Client
   MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent
-  MSG :: MsgMeta -> MsgBody -> ACommand Agent
+  MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent
   ACK :: AgentMsgId -> ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
+  SUSPENDED :: ACommand Agent
 
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
+
+data NotificationsMode = NMPeriodic | NMInstant
+  deriving (Eq, Show)
+
+instance StrEncoding NotificationsMode where
+  strEncode = \case
+    NMPeriodic -> "PERIODIC"
+    NMInstant -> "INSTANT"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "PERIODIC" -> pure NMPeriodic
+      "INSTANT" -> pure NMInstant
+      _ -> fail "bad NotificationsMode"
+
+instance ToJSON NotificationsMode where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance ToField NotificationsMode where toField = toField . strEncode
+
+instance FromField NotificationsMode where fromField = blobFieldDecoder $ parseAll strP
+
+data NotificationInfo = NotificationInfo
+  { ntfConnId :: ConnId,
+    ntfTs :: SystemTime,
+    ntfMsgMeta :: Maybe NMsgMeta
+  }
+  deriving (Show)
 
 data ConnectionMode = CMInvitation | CMContact
   deriving (Eq, Show)
@@ -284,7 +323,9 @@ data SMPConfirmation = SMPConfirmation
     -- | sender's DH public key for simple per-queue e2e encryption
     e2ePubKey :: C.PublicKeyX25519,
     -- | sender's information to be associated with the connection, e.g. sender's profile information
-    connInfo :: ConnInfo
+    connInfo :: ConnInfo,
+    -- | optional reply queues included in confirmation (added in agent protocol v2)
+    smpReplyQueues :: [SMPQueueInfo]
   }
   deriving (Show)
 
@@ -330,31 +371,40 @@ instance Encoding AgentMsgEnvelope where
 
 -- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
-data AgentMessage = AgentConnInfo ConnInfo | AgentMessage APrivHeader AMessage
+data AgentMessage
+  = AgentConnInfo ConnInfo
+  | -- AgentConnInfoReply is only used in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
+    -- It makes REPLY message unnecessary.
+    AgentConnInfoReply (L.NonEmpty SMPQueueInfo) ConnInfo
+  | AgentMessage APrivHeader AMessage
   deriving (Show)
 
 instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
+    AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
+      'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
-data AgentMessageType = AM_CONN_INFO | AM_HELLO_ | AM_REPLY_ | AM_A_MSG_
+data AgentMessageType = AM_CONN_INFO | AM_CONN_INFO_REPLY | AM_HELLO_ | AM_REPLY_ | AM_A_MSG_
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
   smpEncode = \case
     AM_CONN_INFO -> "C"
+    AM_CONN_INFO_REPLY -> "D"
     AM_HELLO_ -> "H"
     AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
+      'D' -> pure AM_CONN_INFO_REPLY
       'H' -> pure AM_HELLO_
       'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
@@ -363,8 +413,14 @@ instance Encoding AgentMessageType where
 agentMessageType :: AgentMessage -> AgentMessageType
 agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
+  AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
   AgentMessage _ aMsg -> case aMsg of
+    -- HELLO is used both in v1 and in v2, but differently.
+    -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
+    --   until the queue is secured - the OK response from the server instead of initial AUTH errors confirms it.
+    -- - in v2 duplexHandshake it is sent only once, when it is known that the queue was secured.
     HELLO -> AM_HELLO_
+    -- REPLY is only used in v1
     REPLY _ -> AM_REPLY_
     A_MSG _ -> AM_A_MSG_
 
@@ -539,7 +595,6 @@ data SMPQueueUri = SMPQueueUri
   }
   deriving (Eq, Show)
 
--- TODO change SMP queue URI format to include version range and allow unknown parameters
 instance StrEncoding SMPQueueUri where
   -- v1 uses short SMP queue URI format
   strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVRange = _vr, dhPublicKey = k} =
@@ -684,6 +739,8 @@ data AgentErrorType
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
     SMP {smpErr :: ErrorType}
+  | -- | NTF protocol errors forwarded to agent clients
+    NTF {ntfErr :: ErrorType}
   | -- | SMP server errors
     BROKER {brokerErr :: BrokerErrorType}
   | -- | errors of other agents
@@ -761,6 +818,8 @@ data SMPAgentError
     A_VERSION
   | -- | cannot decrypt message
     A_ENCRYPTION
+  | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown
+    A_DUPLICATE
   deriving (Eq, Generic, Read, Show, Exception)
 
 instance ToJSON SMPAgentError where
@@ -772,6 +831,7 @@ instance StrEncoding AgentErrorType where
     "CMD " *> (CMD <$> parseRead1)
       <|> "CONN " *> (CONN <$> parseRead1)
       <|> "SMP " *> (SMP <$> strP)
+      <|> "NTF " *> (NTF <$> strP)
       <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> strP)
       <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
       <|> "BROKER " *> (BROKER <$> parseRead1)
@@ -781,6 +841,7 @@ instance StrEncoding AgentErrorType where
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
     SMP e -> "SMP " <> strEncode e
+    NTF e -> "NTF " <> strEncode e
     BROKER (RESPONSE e) -> "BROKER RESPONSE " <> strEncode e
     BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
     BROKER e -> "BROKER " <> bshow e
@@ -811,8 +872,8 @@ commandP =
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
-    <|> "DOWN" $> ACmd SAgent DOWN
-    <|> "UP" $> ACmd SAgent UP
+    <|> "DOWN " *> downsResp
+    <|> "UP " *> upsResp
     <|> "SEND " *> sendCmd
     <|> "MID " *> msgIdResp
     <|> "SENT " *> sentResp
@@ -834,12 +895,15 @@ commandP =
     acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
-    sendCmd = ACmd SClient . SEND <$> A.takeByteString
+    downsResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
+    upsResp = ACmd SAgent .: UP <$> strP_ <*> connections
+    sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
     msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
-    message = ACmd SAgent .: MSG <$> msgMetaP <* A.space <*> A.takeByteString
+    message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
+    connections = strP `A.sepBy'` A.char ','
     msgMetaP = do
       integrity <- strP
       recipient <- " R=" *> partyMeta A.decimal
@@ -866,22 +930,25 @@ serializeCommand = \case
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
-  DOWN -> "DOWN"
-  UP -> "UP"
-  SEND msgBody -> "SEND " <> serializeBinary msgBody
+  DOWN srv conns -> B.unwords ["DOWN", strEncode srv, connections conns]
+  UP srv conns -> B.unwords ["UP", strEncode srv, connections conns]
+  SEND msgFlags msgBody -> "SEND " <> smpEncode msgFlags <> " " <> serializeBinary msgBody
   MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
   MERR mId e -> B.unwords ["MERR", bshow mId, strEncode e]
-  MSG msgMeta msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, serializeBinary msgBody]
+  MSG msgMeta msgFlags msgBody -> B.unwords ["MSG", serializeMsgMeta msgMeta, smpEncode msgFlags, serializeBinary msgBody]
   ACK mId -> "ACK " <> bshow mId
   OFF -> "OFF"
   DEL -> "DEL"
   CON -> "CON"
   ERR e -> "ERR " <> strEncode e
   OK -> "OK"
+  SUSPENDED -> "SUSPENDED"
   where
     showTs :: UTCTime -> ByteString
     showTs = B.pack . formatISO8601Millis
+    connections :: [ConnId] -> ByteString
+    connections = B.intercalate "," . map strEncode
     serializeMsgMeta :: MsgMeta -> ByteString
     serializeMsgMeta MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId} =
       B.unwords
@@ -933,6 +1000,8 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       ACPT {} -> Right cmd
       -- ERROR response does not always have connId
       ERR _ -> Right cmd
+      DOWN {} -> Right cmd
+      UP {} -> Right cmd
       -- other responses must have connId
       _
         | B.null connId -> Left $ CMD NO_CONN
@@ -940,8 +1009,8 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
 
     cmdWithMsgBody :: ACommand p -> m (Either AgentErrorType (ACommand p))
     cmdWithMsgBody = \case
-      SEND body -> SEND <$$> getBody body
-      MSG msgMeta body -> MSG msgMeta <$$> getBody body
+      SEND msgFlags body -> SEND msgFlags <$$> getBody body
+      MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
       JOIN qUri cInfo -> JOIN qUri <$$> getBody cInfo
       CONF confId cInfo -> CONF confId <$$> getBody cInfo
       LET confId cInfo -> LET confId <$$> getBody cInfo

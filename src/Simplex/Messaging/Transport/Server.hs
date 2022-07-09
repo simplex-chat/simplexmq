@@ -5,25 +5,29 @@
 module Simplex.Messaging.Transport.Server
   ( runTransportServer,
     runTCPServer,
+    loadSupportedTLSServerParams,
     loadTLSServerParams,
     loadFingerprint,
-    serverHandshake,
+    smpServerHandshake,
   )
 where
 
+import Control.Concurrent.STM (stateTVar)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
-import Data.Set (Set)
-import qualified Data.Set as S
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
 import Network.Socket
 import qualified Network.TLS as T
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util (catchAll_)
 import System.Exit (exitFailure)
+import System.Mem.Weak (Weak, deRefWeak)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -34,37 +38,30 @@ import UnliftIO.STM
 runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> (c -> m ()) -> m ()
 runTransportServer started port serverParams server = do
   u <- askUnliftIO
-  liftIO $ do
-    clients <- newTVarIO S.empty
+  liftIO . runTCPServer started port $ \conn ->
     E.bracket
-      (startTCPServer started port)
-      (closeServer started clients)
-      $ \sock -> forever $ do
-        (connSock, _) <- accept sock
-        tid <- forkIO $ connectClient u connSock `E.catch` \(_ :: E.SomeException) -> pure ()
-        atomically . modifyTVar' clients $ S.insert tid
-  where
-    connectClient :: UnliftIO m -> Socket -> IO ()
-    connectClient u connSock =
-      E.bracket
-        (connectTLS serverParams connSock >>= getServerConnection)
-        closeConnection
-        (unliftIO u . server)
+      (connectTLS serverParams conn >>= getServerConnection)
+      closeConnection
+      (unliftIO u . server)
 
+-- | Run TCP server without TLS
 runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
 runTCPServer started port server = do
-  clients <- newTVarIO S.empty
+  clients <- atomically TM.empty
+  clientId <- newTVarIO 0
   E.bracket
     (startTCPServer started port)
     (closeServer started clients)
-    $ \sock -> forever $ do
-      (connSock, _) <- accept sock
-      tid <- forkIO $ server connSock `E.catch` \(_ :: E.SomeException) -> pure ()
-      atomically . modifyTVar' clients $ S.insert tid
+    $ \sock -> forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
+      -- catchAll_ is needed here in case the connection was closed earlier
+      cId <- atomically $ stateTVar clientId $ \cId -> let cId' = cId + 1 in (cId', cId')
+      let closeConn _ = atomically (TM.delete cId clients) >> gracefulClose conn 5000 `catchAll_` pure ()
+      tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
+      atomically $ TM.insert cId tId clients
 
-closeServer :: TMVar Bool -> TVar (Set ThreadId) -> Socket -> IO ()
+closeServer :: TMVar Bool -> TMap Int (Weak ThreadId) -> Socket -> IO ()
 closeServer started clients sock = do
-  readTVarIO clients >>= mapM_ killThread
+  readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   close sock
   void . atomically $ tryPutTMVar started False
 
@@ -84,7 +81,10 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
-loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
+loadTLSServerParams = loadSupportedTLSServerParams supportedParameters
+
+loadSupportedTLSServerParams :: T.Supported -> FilePath -> FilePath -> FilePath -> IO T.ServerParams
+loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile =
   fromCredential <$> loadServerCredential
   where
     loadServerCredential :: IO T.Credential
@@ -98,7 +98,7 @@ loadTLSServerParams caCertificateFile certificateFile privateKeyFile =
         { T.serverWantClientCert = False,
           T.serverShared = def {T.sharedCredentials = T.Credentials [credential]},
           T.serverHooks = def,
-          T.serverSupported = supportedParameters
+          T.serverSupported = serverSupported
         }
 
 loadFingerprint :: FilePath -> IO Fingerprint

@@ -1,3 +1,78 @@
+# 3.0.0
+
+SMP server:
+
+- restore undeliverd messages when the server is restarted.
+- SMP protocol v3 to support push notification:
+  - updated SEND and MSG to add message flags (for notification flag that contros whether the notification is sent and for any future extensions) and to move message meta-data sent to the recipient into the encrypted envelope.
+  - update NKEY and NID to add e2e encryption keys (for the notification meta-data encryption between SMP server and the client), and update NMSG to include this meta-data.
+  - update ACK command to include message ID (to avoid acknowledging unprocessed message).
+  - add NDEL commands to remove notification subscription credentials from SMP queue.
+  - add GET command to receive messages without subscription - to be used in iOS notification service extension to receive messages without terminating app subscriptions.
+
+SMP agent:
+
+- new protocol for duplex connection handshake reducing traffic and connection time.
+- support for SMP notifications server and managing device token.
+- remove redundant FQDN validation from TLS handshake to prepare for access via Tor.
+- support for fully stopping agent and for termporary suspending agent operations.
+- improve management of duplicate message delivery.
+
+SMP notifications server v1.0:
+
+- SMP notifications protocol with version negotiation during handshake.
+- device token registration and verification (via background notification).
+- SMP notification subscriptions and push notifications via APNS.
+- restoring notification subscriptions when the server is restarted.
+
+# 2.3.0
+
+SMP server:
+
+- Save and restore undelivered messages, to avoid losing them. To save messages the server has to be stopped with SIGINT signal, if it is stopped with SIGTERM undelivered messages would not be saved.
+
+# 2.2.0
+
+SMP server:
+
+- Fix sockets/threads/memory leak
+
+SMP agent:
+
+- Support stopping and resuming agent with `disconnectAgentClient` / `resumeAgentClient`
+
+# 2.1.1
+
+SMP server:
+
+- gracefully close sockets on client disconnection
+- CLI warning when deleting server configuration
+
+# 2.1.0
+
+SMP server:
+
+- configuration to expire inactive clients in ini file, increased TTL and check interval for client expiration
+
+# 2.0.0
+
+Push notifications server (beta):
+
+- supports APNS
+- manage device tokens verification via notification delivery
+- sending periodic background notification to check messages (not more frequent than every 20 min)
+
+SMP server:
+
+- disconnect inactive clients after some period
+- remove undelivered messages after 30 days
+- log aggregate usage daily stats: only the number of queues created/secured/deleted/used and messages sent/delivered is logged, as one line per day, so we can plan server capacity and diagnose any problems.
+
+SMP agent:
+
+- manage device tokens and notification server connection
+- DOWN/UP events to the agent user about server disconnections/reconnections are now sent once per server
+
 # 1.1.0
 
 SMP server:

@@ -13,6 +13,8 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum, toLower)
+import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
 import Data.Typeable (Typeable)
@@ -80,6 +82,14 @@ blobFieldDecoder dec = \case
       Right k -> Ok k
       Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
   f -> returnError ConversionFailed f "expecting SQLBlob column type"
+
+fromTextField_ :: (Typeable a) => (Text -> Maybe a) -> Field -> Ok a
+fromTextField_ fromText = \case
+  f@(Field (SQLText t) _) ->
+    case fromText t of
+      Just x -> Ok x
+      _ -> returnError ConversionFailed f ("invalid text: " <> T.unpack t)
+  f -> returnError ConversionFailed f "expecting SQLText column type"
 
 fstToLower :: String -> String
 fstToLower "" = ""

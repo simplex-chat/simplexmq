@@ -1,13 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Util where
 
+import qualified Control.Exception as E
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Text (Text)
+import qualified Data.Text as T
 import UnliftIO.Async
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -29,6 +33,10 @@ f <$?> m = either fail pure . f =<< m
 bshow :: Show a => a -> ByteString
 bshow = B.pack . show
 {-# INLINE bshow #-}
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show
+{-# INLINE tshow #-}
 
 maybeWord :: (a -> ByteString) -> Maybe a -> ByteString
 maybeWord f = maybe "" $ B.cons ' ' . f
@@ -54,6 +62,10 @@ tryE :: Monad m => ExceptT e m a -> ExceptT e m (Either e a)
 tryE m = (Right <$> m) `catchE` (pure . Left)
 {-# INLINE tryE #-}
 
+liftE :: (e -> e') -> ExceptT e IO a -> ExceptT e' IO a
+liftE f a = ExceptT $ first f <$> runExceptT a
+{-# INLINE liftE #-}
+
 ifM :: Monad m => m Bool -> m a -> m a -> m a
 ifM ba t f = ba >>= \b -> if b then t else f
 {-# INLINE ifM #-}
@@ -65,3 +77,18 @@ whenM b a = ifM b a $ pure ()
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM b = ifM b $ pure ()
 {-# INLINE unlessM #-}
+
+($>>=) :: (Monad m, Monad f, Traversable f) => m (f a) -> (a -> m (f b)) -> m (f b)
+f $>>= g = f >>= fmap join . mapM g
+
+catchAll :: IO a -> (E.SomeException -> IO a) -> IO a
+catchAll = E.catch
+{-# INLINE catchAll #-}
+
+catchAll_ :: IO a -> IO a -> IO a
+catchAll_ a = catchAll a . const
+{-# INLINE catchAll_ #-}
+
+eitherToMaybe :: Either a b -> Maybe b
+eitherToMaybe = either (const Nothing) Just
+{-# INLINE eitherToMaybe #-}

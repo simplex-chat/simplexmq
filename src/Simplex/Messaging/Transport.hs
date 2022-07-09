@@ -26,8 +26,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
-    smpBlockSize,
-    supportedSMPVersions,
+    supportedSMPServerVRange,
     simplexMQVersion,
 
     -- * Transport connection class
@@ -47,12 +46,15 @@ module Simplex.Messaging.Transport
     -- * SMP transport
     THandle (..),
     TransportError (..),
-    serverHandshake,
-    clientHandshake,
+    HandshakeError (..),
+    smpServerHandshake,
+    smpClientHandshake,
     tPutBlock,
     tGetBlock,
     serializeTransportError,
     transportErrorP,
+    sendHandshake,
+    getHandshake,
 
     -- * Trim trailing CR
     trimCR,
@@ -81,7 +83,7 @@ import qualified Network.TLS.Extra as TE
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (dropPrefix, parse, parseRead1, sumTypeJSON)
-import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_)
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 import UnliftIO.Exception (Exception)
@@ -93,11 +95,11 @@ import UnliftIO.STM
 smpBlockSize :: Int
 smpBlockSize = 16384
 
-supportedSMPVersions :: VersionRange
-supportedSMPVersions = mkVersionRange 1 1
+supportedSMPServerVRange :: VersionRange
+supportedSMPServerVRange = mkVersionRange 1 3
 
 simplexMQVersion :: String
-simplexMQVersion = "1.1.0"
+simplexMQVersion = "3.0.0"
 
 -- * Transport connection class
 
@@ -155,7 +157,7 @@ connectTLS :: T.TLSParams p => p -> Socket -> IO T.Context
 connectTLS params sock =
   E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
     T.handshake ctx
-      `E.catch` \(e :: E.SomeException) -> putStrLn ("exception: " <> show e) >> E.throwIO e
+      `catchAll` \e -> putStrLn ("exception: " <> show e) >> E.throwIO e
     pure ctx
 
 getTLS :: TransportPeer -> T.Context -> IO TLS
@@ -176,8 +178,9 @@ withTlsUnique peer cxt f =
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
-  (T.bye ctx >> T.contextClose ctx) -- sometimes socket was closed before 'TLS.bye'
-    `E.catch` (\(_ :: E.SomeException) -> pure ()) -- so we catch the 'Broken pipe' error here
+  T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
+    `E.finally` T.contextClose ctx
+    `catchAll_` pure ()
 
 supportedParameters :: T.Supported
 supportedParameters =
@@ -214,10 +217,11 @@ instance Transport TLS where
       readChunks :: ByteString -> IO ByteString
       readChunks b
         | B.length b >= n = pure b
-        | otherwise = readChunks . (b <>) =<< T.recvData tlsContext `E.catch` handleEOF
-      handleEOF = \case
-        T.Error_EOF -> E.throwIO TEBadBlock
-        e -> E.throwIO e
+        | otherwise =
+          T.recvData tlsContext >>= \case
+            -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
+            "" -> ioe_EOF
+            s -> readChunks $ b <> s
 
   cPut :: TLS -> ByteString -> IO ()
   cPut tls = T.sendData (tlsContext tls) . BL.fromStrict
@@ -252,8 +256,9 @@ trimCR s = if B.last s == '\r' then B.init s else s
 data THandle c = THandle
   { connection :: c,
     sessionId :: SessionId,
-    -- | agreed SMP server protocol version
-    smpVersion :: Version
+    blockSize :: Int,
+    -- | agreed server protocol version
+    thVersion :: Version
   }
 
 -- | TLS-unique channel binding
@@ -336,45 +341,45 @@ serializeTransportError = \case
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
-tPutBlock THandle {connection = c} block =
+tPutBlock THandle {connection = c, blockSize} block =
   bimapM (const $ pure TELargeMsg) (cPut c) $
-    C.pad block smpBlockSize
+    C.pad block blockSize
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle c -> IO (Either TransportError ByteString)
-tGetBlock THandle {connection = c} =
-  cGet c smpBlockSize >>= \case
+tGetBlock THandle {connection = c, blockSize} =
+  cGet c blockSize >>= \case
     "" -> ioe_EOF
     msg -> pure . first (const TELargeMsg) $ C.unPad msg
 
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-serverHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
-serverHandshake c kh = do
-  let th@THandle {sessionId} = tHandle c
-  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = supportedSMPVersions}
+smpServerHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpServerHandshake c kh smpVRange = do
+  let th@THandle {sessionId} = smpTHandle c
+  sendHandshake th $ ServerHandshake {sessionId, smpVersionRange = smpVRange}
   getHandshake th >>= \case
     ClientHandshake {smpVersion, keyHash}
       | keyHash /= kh ->
         throwE $ TEHandshake IDENTITY
-      | smpVersion `isCompatible` supportedSMPVersions -> do
-        pure (th :: THandle c) {smpVersion}
+      | smpVersion `isCompatible` smpVRange -> do
+        pure (th :: THandle c) {thVersion = smpVersion}
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-clientHandshake :: forall c. Transport c => c -> C.KeyHash -> ExceptT TransportError IO (THandle c)
-clientHandshake c keyHash = do
-  let th@THandle {sessionId} = tHandle c
+smpClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+smpClientHandshake c keyHash smpVRange = do
+  let th@THandle {sessionId} = smpTHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange} <- getHandshake th
   if sessionId /= sessId
     then throwE TEBadSession
-    else case smpVersionRange `compatibleVersion` supportedSMPVersions of
+    else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible smpVersion) -> do
         sendHandshake th $ ClientHandshake {smpVersion, keyHash}
-        pure (th :: THandle c) {smpVersion}
+        pure (th :: THandle c) {thVersion = smpVersion}
       Nothing -> throwE $ TEHandshake VERSION
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
@@ -383,6 +388,5 @@ sendHandshake th = ExceptT . tPutBlock th . smpEncode
 getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportError IO smp
 getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
 
-tHandle :: Transport c => c -> THandle c
-tHandle c =
-  THandle {connection = c, sessionId = tlsUnique c, smpVersion = 0}
+smpTHandle :: Transport c => c -> THandle c
+smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0}

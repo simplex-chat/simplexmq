@@ -8,6 +8,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -52,6 +53,7 @@ module Simplex.Messaging.Crypto
     CryptoPublicKey (..),
     CryptoPrivateKey (..),
     KeyPair,
+    ASignatureKeyPair,
     DhSecret (..),
     DhSecretX25519,
     ADhSecret (..),
@@ -100,9 +102,14 @@ module Simplex.Messaging.Crypto
     -- * NaCl crypto_box
     CbNonce (unCbNonce),
     cbEncrypt,
+    cbEncryptMaxLenBS,
     cbDecrypt,
     cbNonce,
     randomCbNonce,
+    pseudoRandomCbNonce,
+
+    -- * pseudo-random bytes
+    pseudoRandomBytes,
 
     -- * SHA256 hash
     sha256Hash,
@@ -113,9 +120,17 @@ module Simplex.Messaging.Crypto
 
     -- * Cryptography error type
     CryptoError (..),
+
+    -- * Limited size ByteStrings
+    MaxLenBS,
+    pattern MaxLenBS,
+    maxLenBS,
+    unsafeMaxLenBS,
+    appendMaxLenBS,
   )
 where
 
+import Control.Concurrent.STM
 import Control.Exception (Exception)
 import Control.Monad.Except
 import Control.Monad.Trans.Except
@@ -129,7 +144,7 @@ import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
-import Crypto.Random (getRandomBytes)
+import Crypto.Random (ChaChaDRG, getRandomBytes, randomBytesGenerate)
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
@@ -147,11 +162,11 @@ import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import Data.String
 import Data.Type.Equality
-import Data.Typeable (Typeable)
+import Data.Typeable (Proxy (Proxy), Typeable)
 import Data.X509
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
-import GHC.TypeLits (ErrorMessage (..), TypeError)
+import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
 import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -244,6 +259,12 @@ deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
 
+instance StrEncoding (PrivateKey X25519) where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey
+  {-# INLINE strDecode #-}
+
 data APrivateKey
   = forall a.
     AlgorithmI a =>
@@ -283,6 +304,18 @@ instance Eq APrivateSignKey where
     Nothing -> False
 
 deriving instance Show APrivateSignKey
+
+instance Encoding APrivateSignKey where
+  smpEncode = smpEncode . encodePrivKey
+  {-# INLINE smpEncode #-}
+  smpDecode = decodePrivKey
+  {-# INLINE smpDecode #-}
+
+instance StrEncoding APrivateSignKey where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey
+  {-# INLINE strDecode #-}
 
 data APublicVerifyKey
   = forall a.
@@ -666,7 +699,9 @@ data CryptoError
     CERatchetHeader
   | -- | too many skipped messages
     CERatchetTooManySkipped
-  | -- | duplicate message number (or, possibly, skipped message that failed to decrypt?)
+  | -- | earlier message number (or, possibly, skipped message that failed to decrypt?)
+    CERatchetEarlierMessage
+  | -- | duplicate message number
     CERatchetDuplicateMessage
   deriving (Eq, Show, Exception)
 
@@ -783,6 +818,41 @@ unPad padded
     (lenWrd, rest) = B.splitAt 2 padded
     len = fromIntegral $ decodeWord16 lenWrd
 
+newtype MaxLenBS (i :: Nat) = MLBS {unMaxLenBS :: ByteString}
+
+pattern MaxLenBS :: ByteString -> MaxLenBS i
+pattern MaxLenBS s <- MLBS s
+
+{-# COMPLETE MaxLenBS #-}
+
+instance KnownNat i => Encoding (MaxLenBS i) where
+  smpEncode (MLBS s) = smpEncode s
+  smpP = first show . maxLenBS <$?> smpP
+
+instance KnownNat i => StrEncoding (MaxLenBS i) where
+  strEncode (MLBS s) = strEncode s
+  strP = first show . maxLenBS <$?> strP
+
+maxLenBS :: forall i. KnownNat i => ByteString -> Either CryptoError (MaxLenBS i)
+maxLenBS s
+  | B.length s > maxLength @i = Left CryptoLargeMsgError
+  | otherwise = Right $ MLBS s
+
+unsafeMaxLenBS :: forall i. KnownNat i => ByteString -> MaxLenBS i
+unsafeMaxLenBS = MLBS
+
+padMaxLenBS :: forall i. KnownNat i => MaxLenBS i -> MaxLenBS (i + 2)
+padMaxLenBS (MLBS msg) = MLBS $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
+  where
+    len = B.length msg
+    padLen = maxLength @i - len
+
+appendMaxLenBS :: (KnownNat i, KnownNat j) => MaxLenBS i -> MaxLenBS j -> MaxLenBS (i + j)
+appendMaxLenBS (MLBS s1) (MLBS s2) = MLBS $ s1 <> s2
+
+maxLength :: forall i. KnownNat i => Int
+maxLength = fromIntegral (natVal $ Proxy @i)
+
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEAD (Key aesKey) (IV ivBytes) = do
   iv <- makeIV @c ivBytes
@@ -838,12 +908,17 @@ dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
-cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox <$> pad msg paddedLen
+cbEncrypt secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
+
+-- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
+cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
+cbEncryptMaxLenBS secret (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+
+cryptoBox :: DhSecret 'X25519 -> ByteString -> ByteString -> ByteString
+cryptoBox secret nonce s = BA.convert tag <> c
   where
-    cryptoBox s = BA.convert tag <> c
-      where
-        (rs, c) = xSalsa20 secret nonce s
-        tag = Poly1305.auth rs c
+    (rs, c) = xSalsa20 secret nonce s
+    tag = Poly1305.auth rs c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
@@ -857,7 +932,15 @@ cbDecrypt secret (CbNonce nonce) packet
     tag = Poly1305.auth rs c
 
 newtype CbNonce = CbNonce {unCbNonce :: ByteString}
-  deriving (Show)
+  deriving (Eq, Show)
+
+instance StrEncoding CbNonce where
+  strEncode (CbNonce s) = strEncode s
+  strP = cbNonce <$> strP
+
+instance ToJSON CbNonce where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 cbNonce :: ByteString -> CbNonce
 cbNonce s
@@ -869,6 +952,16 @@ cbNonce s
 
 randomCbNonce :: IO CbNonce
 randomCbNonce = CbNonce <$> getRandomBytes 24
+
+pseudoRandomCbNonce :: TVar ChaChaDRG -> STM CbNonce
+pseudoRandomCbNonce gVar = CbNonce <$> pseudoRandomBytes 24 gVar
+
+pseudoRandomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
+pseudoRandomBytes n gVar = do
+  g <- readTVar gVar
+  let (bytes, g') = randomBytesGenerate n g
+  writeTVar gVar g'
+  return bytes
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce

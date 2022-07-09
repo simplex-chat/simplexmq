@@ -19,10 +19,10 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
-import Simplex.Messaging.Server.StoreLog (openReadStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
+import Simplex.Messaging.Version
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -44,12 +44,21 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
 
+testStoreMsgsFile :: FilePath
+testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
+
+testServerStatsFile :: FilePath
+testServerStatsFile = "tests/tmp/smp-server-stats.log"
+
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
-  runTransportClient testHost testPort testKeyHash (Just defaultKeepAliveOpts) $ \h ->
-    liftIO (runExceptT $ clientHandshake h testKeyHash) >>= \case
+  runTransportClient testHost testPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
+    liftIO (runExceptT $ smpClientHandshake h testKeyHash supportedSMPServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
+
+cfgV2 :: ServerConfig
+cfgV2 = cfg {smpServerVRange = mkVersionRange 1 2}
 
 cfg :: ServerConfig
 cfg =
@@ -60,19 +69,28 @@ cfg =
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      storeLog = Nothing,
+      storeLogFile = Nothing,
+      storeMsgsFile = Nothing,
       allowNewQueues = True,
-      messageTTL = Just $ 7 * 86400, -- seconds, 7 days
-      expireMessagesInterval = Just 21600_000000, -- microseconds, 6 hours
+      messageExpiration = Just defaultMessageExpiration,
+      inactiveClientExpiration = Just defaultInactiveClientExpiration,
+      logStatsInterval = Nothing,
+      logStatsStartTime = 0,
+      serverStatsFile = Nothing,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt"
+      certificateFile = "tests/fixtures/server.crt",
+      smpServerVRange = supportedSMPServerVRange
     }
 
+withSmpServerStoreMsgLogOnV2 :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
+
+withSmpServerStoreMsgLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
+withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsFile = Just testServerStatsFile}
+
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerStoreLogOn t port' client = do
-  s <- liftIO $ openReadStoreLog testStoreLogFile
-  withSmpServerConfigOn t cfg {storeLog = Just s} port' client
+withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsFile = Just testServerStatsFile}
 
 withSmpServerConfigOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServerConfig -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerConfigOn t cfg' port' =

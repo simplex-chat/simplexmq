@@ -2,6 +2,7 @@ module Simplex.Messaging.TMap
   ( TMap,
     empty,
     singleton,
+    Simplex.Messaging.TMap.null,
     Simplex.Messaging.TMap.lookup,
     member,
     insert,
@@ -11,6 +12,7 @@ module Simplex.Messaging.TMap
     adjust,
     update,
     alter,
+    alterF,
     union,
   )
 where
@@ -28,6 +30,10 @@ empty = newTVar M.empty
 singleton :: k -> a -> STM (TMap k a)
 singleton k v = newTVar $ M.singleton k v
 {-# INLINE singleton #-}
+
+null :: TMap k a -> STM Bool
+null m = M.null <$> readTVar m
+{-# INLINE null #-}
 
 lookup :: Ord k => k -> TMap k a -> STM (Maybe a)
 lookup k m = M.lookup k <$> readTVar m
@@ -64,6 +70,12 @@ update f k m = modifyTVar' m $ M.update f k
 alter :: Ord k => (Maybe a -> Maybe a) -> k -> TMap k a -> STM ()
 alter f k m = modifyTVar' m $ M.alter f k
 {-# INLINE alter #-}
+
+alterF :: Ord k => (Maybe a -> STM (Maybe a)) -> k -> TMap k a -> STM ()
+alterF f k m = do
+  mv <- M.alterF f k =<< readTVar m
+  writeTVar m $! mv
+{-# INLINE alterF #-}
 
 union :: Ord k => Map k a -> TMap k a -> STM ()
 union m' m = modifyTVar' m $ M.union m'
