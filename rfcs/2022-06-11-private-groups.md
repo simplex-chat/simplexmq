@@ -432,6 +432,85 @@ Or they may notice that C is not responding when trying to change membership:
 > y
 ```
 
+#### Failure Due to Post-Establish Permanent Inactivity
+
+It's possible that an invite gets quite far along before a member goes long-term or permanently offline.
+In this case, the Leader is presented with two options, they may cancel the invite or they may kick anyone not established with the new member.
+The former looks just like the previous example, so we will detail the latter here.
+
+Consider a group #g with member A, B, and C.
+Member B would like to add D.
+Just as about the invite is about to succeed, C drops their phone in the ocean and cannot recover their connections.
+
+The Leader can decide to cancel the cancel the invite or just cut to the chase can kick out C (and accept D), which we show here.
+
+##### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant A
+    participant B
+    participant C
+    participant D
+    B->>A: PleasePropose D as 123
+    note over A: start proposal 123
+    A->>A: Propose D as 123
+    note over A: generate token X
+    A->>D: Invite 123, token X, n=3
+    A->>B: Propose D as 123
+    note over B: generate token Y
+    B->>D: Invite 123, token Y, n=3
+    A->>C: Propose D as 123
+    note over C: generate token Z
+    C->>D: Invite 123, token Z, n=3
+    note over D: 3/3 members provided tokens
+    D->>A: Accept 123, tokens X,Y,Z
+    D->>B: Accept 123, tokens X,Y,Z
+    D->>C: Accept 123, tokens X,Y,Z
+    A->>B: SyncToken 123, token X, ack=false
+    B->>A: SyncToken 123, token Y, ack=true
+    A->>C: SyncToken 123, token X, ack=false
+    C->>A: SyncToken 123, token Z, ack=true
+    note over A: All tokens received and match
+    A->>D: Start a new connection for this group
+    A->>A: Established 123
+    B->>C: SyncToken 123, token Y, ack=false
+    note over C: All tokens received and match
+    C->>B: SyncToken 123, token Z, ack=true
+    note over B: All tokens received and match
+    B->>D: Start a new connection for this group
+    B->>A: Established 123
+    note over C: Goes permanently offline
+    note over A: Knows that A and B established connections<br>but C has not<br>decides to kick C via his original invitation id (456)
+    A->>A: Kick 456
+    note over A: Commits that 456 is permanently kicked
+    A->>A: Kicked 456
+    A->>B: Kick 456
+    note over B: Commits that 456 is permanently kicked
+    B->>A: Kicked 456
+    A->>D: Kick 456
+    note over D: Commits that 456 is permanently kicked
+    D->>A: Kicked 456
+    note over A: proposal 123 complete with D added and C removed
+```
+
+##### CLI Interactions
+
+The leader can handle the cancellation directly:
+
+```bash
+> /pending #g
+> Member @B is trying to add @D.  You and @B have added @D, waiting on @C.  You may wait, cancel the invite, or kick @C: (wait/cancel/kick)
+> kick
+```
+
+Or the leader may discover the issue when attempting a (blocked) membership change:
+
+```bash
+> Member @B wants to add @X to #g, but there is a pending invite to @D (only one at a time is allowed). You and @B have added @D, waiting on @C.  You may wait, cancel the invite, or kick @C: (wait/cancel/kick)
+> y
+```
+
 ## Variations Not Pursued
 
 ### Centralized Tokens
