@@ -73,7 +73,15 @@ Once a member has an Accept message from the invitee, they begin syncing their t
 A SyncToken message can both send a token and ack receipt of a token from another member, based on the `ack` flag within the message.
 
 Once a member has all other members' tokens, assuming they all match the Accept message, then the member knows that all parties have agreed to extend membership.
-The member locally commits this result and establishes a new connection with the invitee specifically for group communication.
+
+TODO: Welcome messages are not modeled in the TLA+ or Sequence Diagrams
+
+The member locally commits this result sends a Welcome message to share the group-specific ids of each member.
+These are the original invitation ids for this member (or none if the member is the Leader).
+These ids are still used for kicking members (and the Leader can't be).
+Each member sends a message that includes a mapping of tokens to ids, which the Invitee can use to infer the correct id per member.
+
+Once the Invitee receives a Welcome message from each member (ensuring that all members provide the same token-to-id mapping), they then begin to setup new connections with each member specific to each group.
 
 Each Approver notifies the Leader that they have established a connection with the invitee.
 This both lets the Leader know that it need not continue to send reminder Propose messages, and it ensures that the Approver does not get kicked in a cancellation (see below).
