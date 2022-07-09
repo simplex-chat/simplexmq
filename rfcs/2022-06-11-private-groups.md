@@ -355,6 +355,83 @@ Or the leader may discover the issue when attempting a (blocked) membership chan
 > y
 ```
 
+#### Failure Due to Pre-Establish Permanent Inactivity
+
+It's possible that an invitation is started before members realize that one member has gone long term or permanently offline.
+
+Consider group #g with users A, B, and C.
+Member B wants to add D.
+However, member C's phone has just fallen in the ocean, and his ability to use his connections are permanently lost.
+
+The result is starts similarly to failure due to confusion, without all members sending their tokens, the invite can never succeed.
+However, since we can't be sure that an invite wasn't sent, we must Kick the new member.
+The new device will not ever ack the Kick message, which prevents the group from completing the kick, meaning now other membership changes can be made.
+
+However, the Leader can eventually complete the process by kicking any user that hasn't acknowledged the previous request.
+
+This process of kicking members not responding to kicks can happen repeatedly until only active members remain.
+
+##### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant A
+    participant B
+    participant C
+    participant D
+    B->>A: PleasePropose D as 123
+    note over A: starts proposal, awaiting responses from everyone
+    A->>A: Propose D as 123
+    note over A: generate token X
+    A->>D: Invite 123, token X, n=3
+    A->>B: Propose D as 123
+    note over B: generate token Y
+    B->>D: Invite 123, token Y, n=3
+    A-XC: Propose D as 123
+    note over D: Never sees all three tokens<br>so never replies with Accept.
+    note over A: User evenutally aborts due to inactivity<br>starts a proposal to kick 123
+    A->>A: Kick 123
+    note over A: Commits that 123 is permanently kicked
+    A->>A: Kicked 123
+    A->>B: Kick 123
+    note over B: Commits that 123 is permanently kicked
+    B->>A: Kicked 123
+    A-XC: Kick 123
+    note over A: C never acks, so A decides to kick<br>A kicks C via his original invitation id (456)
+    A->>A: Kick 456
+    note over A: Commits that 456 is permanently kicked
+    A->>A: Kicked 456
+    A->>B: Kick 456
+    note over B: Commits that 456 is permanently kicked
+    B->>A: Kicked 456
+    note over A: Everyone remaining in the group has acked all kicks<br>proposal is now complete
+```
+
+##### CLI Example
+
+The leader cancels the invite (in this example, directly):
+
+```bash
+> /pending #g
+> Member @B is trying to add @D.  No user have established.  Cancel? (y/n)
+> y
+```
+
+And then may directly kick C for inactivity:
+
+```bash
+> /pending #g
+> Cancelling invite, still waiting on @C.  Would you like to kick @C? (y/n)
+> y
+```
+
+Or they may notice that C is not responding when trying to change membership:
+
+```bash
+> Member @B wants to add @X to #g, but @C is not responding to the previous cancellation (cancellations must complete).  Would you like to kick @C? (y/n)
+> y
+```
+
 ## Variations Not Pursued
 
 ### Centralized Tokens
