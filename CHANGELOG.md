@@ -1,3 +1,31 @@
+# 3.0.0
+
+SMP server:
+
+- restore undeliverd messages when the server is restarted.
+- SMP protocol v3 to support push notification:
+  - updated SEND and MSG to add message flags (for notification flag that contros whether the notification is sent and for any future extensions) and to move message meta-data sent to the recipient into the encrypted envelope.
+  - update NKEY and NID to add e2e encryption keys (for the notification meta-data encryption between SMP server and the client), and update NMSG to include this meta-data.
+  - update ACK command to include message ID (to avoid acknowledging unprocessed message).
+  - add NDEL commands to remove notification subscription credentials from SMP queue.
+  - add GET command to receive messages without subscription - to be used in iOS notification service extension to receive messages without terminating app subscriptions.
+
+SMP agent:
+
+- new protocol for duplex connection handshake reducing traffic and connection time.
+- support for SMP notifications server and managing device token.
+- remove redundant FQDN validation from TLS handshake to prepare for access via Tor.
+- support for fully stopping agent and for termporary suspending agent operations.
+- improve management of duplicate message delivery.
+
+SMP notifications server v1.0:
+
+- SMP notifications protocol.
+- device token registration and verification (via background notification).
+- SMP subscriptions.
+- push notifications via APNS.
+- restoring notification subscriptions when the server is restarted.
+
 # 2.3.0
 
 SMP server:
