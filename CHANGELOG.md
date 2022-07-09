@@ -20,10 +20,9 @@ SMP agent:
 
 SMP notifications server v1.0:
 
-- SMP notifications protocol.
+- SMP notifications protocol with version negotiation during handshake.
 - device token registration and verification (via background notification).
-- SMP subscriptions.
-- push notifications via APNS.
+- SMP notification subscriptions and push notifications via APNS.
 - restoring notification subscriptions when the server is restarted.
 
 # 2.3.0
