@@ -61,7 +61,7 @@ The choice to accept or reject and the generated token should be locally committ
 The invitee collects all Invite messages.
 While they cannot predict who they are waiting for, each invite includes the number of members in the group.
 Upon receipt of Invites from that number that all have the same invitation identifier, the proposer now knows the full membership of the group and the user should be prompted as to whether or not to accept membership.
-If they decline, it is sufficient to ignore the messages, but more efficient to send a messages as such.
+If they decline, it is sufficient to ignore the messages, but more efficient to send a message as such.
 
 To accept, the invitee responds to all contacts with an Accept message that includes the invitation identifier and all tokens.
 
