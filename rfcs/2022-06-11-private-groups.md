@@ -74,7 +74,7 @@ A SyncToken message can both send a token and ack receipt of a token from anothe
 
 Once a member has all other members' tokens, assuming they all match the Accept message, then the member knows that all parties have agreed to extend membership.
 
-TODO: Welcome messages are not modeled in the TLA+ or Sequence Diagrams
+TODO: Welcome messages are not modeled in TLA+
 
 The member locally commits this result sends a Welcome message to share the group-specific ids of each member.
 These are the original invitation ids for this member (or none if the member is the Leader).
@@ -159,15 +159,22 @@ sequenceDiagram
     A->>C: SyncToken 123, token X, ack=false
     C->>A: SyncToken 123, token Z, ack=true
     note over A: All tokens received and match
-    A->>D: Start a new connection for this group
-    A->>A: Established 123
+    A->>D: Welcome 123, X=Leader, Y=456, Z=789
     B->>C: SyncToken 123, token Y, ack=false
     note over C: All tokens received and match
     C->>B: SyncToken 123, token Z, ack=true
     note over B: All tokens received and match
-    B->>D: Start a new connection for this group
+    B->>D: Welcome 123, X=Leader, Y=456, Z=789
+    C->>D: Welcome 123, X=Leader, Y=456, Z=789
+    note over D: Now has all Welomes and they all match.<br>Member now knows how to<br>identify everyone in this group.<br>Starts making new group specific connections
+    D->>A: Establish new queue for this group/member
+    A->>D: Establish new queue for this group/member
+    A->>A: Established 123
+    D->>B: Establish new queue for this group/member
+    B->>D: Establish new queue for this group/member
     B->>A: Established 123
-    C->>D: Start a new connection for this group
+    D->>C: Establish new queue for this group/member
+    C->>D: Establish new queue for this group/member
     C->>A: Established 123
     note over A: proposal 123 complete
 ```
@@ -480,14 +487,21 @@ sequenceDiagram
     A->>C: SyncToken 123, token X, ack=false
     C->>A: SyncToken 123, token Z, ack=true
     note over A: All tokens received and match
-    A->>D: Start a new connection for this group
-    A->>A: Established 123
+    A->>D: Welcome 123, X=Leader, Y=456, Z=789
     B->>C: SyncToken 123, token Y, ack=false
     note over C: All tokens received and match
     C->>B: SyncToken 123, token Z, ack=true
     note over B: All tokens received and match
-    B->>D: Start a new connection for this group
+    B->>D: Welcome 123, X=Leader, Y=456, Z=789
+    C->>D: Welcome 123, X=Leader, Y=456, Z=789
+    note over D: Now has all Welomes and they all match.<br>Member now knows how to<br>identify everyone in this group.<br>Starts making new group specific connections
+    D->>A: Establish new queue for this group/member
+    A->>D: Establish new queue for this group/member
+    A->>A: Established 123
+    D->>B: Establish new queue for this group/member
+    B->>D: Establish new queue for this group/member
     B->>A: Established 123
+    D->>C: Establish new queue for this group/member
     note over C: Goes permanently offline
     note over A: Knows that A and B established connections<br>but C has not<br>decides to kick C via his original invitation id (456)
     A->>A: Kick 456
