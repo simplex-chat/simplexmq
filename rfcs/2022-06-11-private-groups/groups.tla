@@ -72,10 +72,11 @@ ASSUME
     /\ \A user1, user2 \in Users : UserPerceptions[[ perceiver |-> user1, description |-> [ by |-> user1, of |-> user2 ]]] = user2
     /\ Connections \subseteq (Users \X Users)
 
-\* TODO: This is incorrectly used in places where it could not possibly be
-\* known, and instead must be based on perceptions.
 Leader ==
     CHOOSE member \in InitialMembers : member.id = Nothing
+
+PerceivedLeader(member) ==
+    CHOOSE m \in group_perceptions[member] : m.id = Nothing
 
 \* TODO: This actually has a deeper layer, in that this models the direct
 \* connections that are pre-group, which are only used for
@@ -141,7 +142,7 @@ SendPleasePropose ==
             /\ AddMessage(
                     [ type |-> PleasePropose
                     , sender |-> proposer
-                    , recipient |-> Leader
+                    , recipient |-> PerceivedLeader(proposer)
                     , invite_id |-> invite_id
                     , invitee_description |-> [ by |-> proposer.user, of |-> invitee ]
                     ]
@@ -281,6 +282,8 @@ ApproverReceiveProposal(recipient) ==
     \E message \in messages :
         /\ message.recipient = recipient
         /\ message.type = Propose
+        \* Only Propose messages from the Leader are considered
+        /\ message.sender = PerceivedLeader(message.recipient)
         /\ LET PerceivedUser == UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]]
                ApproverState == approver_states[<<message.invite_id, message.recipient.user>>]
 
@@ -332,7 +335,7 @@ ApproverReceiveProposal(recipient) ==
                    ELSE
                        /\ AddMessage(
                                [ sender |-> message.recipient
-                               , recipient |-> Leader
+                               , recipient |-> message.sender
                                , type |-> Reject
                                , invite_id |-> message.invite_id
                                ]
@@ -380,7 +383,8 @@ ApproverReceiveKick(recipient, kicked) ==
         /\ message.type = Kick
         /\ message.recipient = recipient
         /\ message.kicked = kicked
-        /\ message.sender = Leader
+        \* Only Kick messages from the Leader are considered
+        /\ message.sender = PerceivedLeader(message.recipient)
         /\ group_perceptions' = [ group_perceptions EXCEPT ![message.recipient] = { member \in @ : member.id \notin message.kicked } ]
         /\ approver_states' =
             FoldSet(
@@ -398,7 +402,7 @@ ApproverReceiveKick(recipient, kicked) ==
             )
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
-HandleEstablish(invite_id, invitee, inviter) ==
+HandleEstablish(invite_id, invitee, inviter, leader) ==
     LET InviteeDoesntBelieveInviterIsKicked ==
             /\ inviter.id /= Nothing
             /\ approver_states[<<inviter.id, invitee>>].state = Committed
@@ -417,7 +421,7 @@ HandleEstablish(invite_id, invitee, inviter) ==
         /\ AddMessage(
                 [ type |-> Established
                 , sender |-> inviter
-                , recipient |-> Leader
+                , recipient |-> leader
                 , invite_id |-> invite_id
                 ]
            )
@@ -431,7 +435,7 @@ ApproverReceiveAccept(recipient) ==
                RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
            IN  IF  Cardinality(group_perceptions[RecipientMember]) = 1
                THEN
-                   /\ HandleEstablish(message.invite_id, message.sender, RecipientMember)
+                   /\ HandleEstablish(message.invite_id, message.sender, RecipientMember, PerceivedLeader(RecipientMember))
                    /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
                ELSE
                    /\ approver_states' =
@@ -462,7 +466,7 @@ ReceiveSyncToken(recipient) ==
                         THEN
                             \* This was the final token, everything matches, so we
                             \* establish the connection.
-                            HandleEstablish(message.invite_id, NextApproverState.user, message.recipient)
+                            HandleEstablish(message.invite_id, NextApproverState.user, message.recipient, PerceivedLeader(message.recipient))
                         ELSE
                             /\ approver_states' =
                                 [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = NextApproverState ]
