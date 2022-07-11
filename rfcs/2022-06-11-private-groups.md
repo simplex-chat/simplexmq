@@ -158,6 +158,16 @@ stateDiagram-v2
     Added --> Removed : Receive Kick
 ```
 
+#### Invitee Specific States
+
+The invitee process is unique per invitation identifier, so an user tracks many such states simultaneously.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Invited : User receives Inivte
+    Invited --> Accepted : User receives all tokens
+    Accepted --> Welcomed : User receives all Welcomes
+```
 
 ### Specific Examples
 
