@@ -140,6 +140,25 @@ stateDiagram-v2
     Kicking --> [*] : All members ack
 ```
 
+#### Approver Specific States
+
+The approver process is unique per invitation identifier, so an approver tracks many such state transitions simultaneously.
+The Removed state is terminal, there is no way to restore an invitation identifier to the Added state.
+However, a kicked user can be added back to any group with a _new_ invitation identifier.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active : Member receives Propose
+    Active --> Synchronizing : Member receives Accept
+    Synchronizing --> Welcoming : Member receives<br>all other tokens
+    Welcoming --> Added : Both queues are setup
+    Active --> Removed : Receive Kick
+    Synchronizing --> Removed : Receive Kick
+    Welcoming --> Removed : Receive Kick
+    Added --> Removed : Receive Kick
+```
+
+
 ### Specific Examples
 
 #### Typical Success
