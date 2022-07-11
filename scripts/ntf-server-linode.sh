@@ -96,7 +96,6 @@ fi
 # Set up welcome script
 on_login_script="/opt/simplex-notifications/on_login.sh"
 
-# TODO fix address
 # / Welcome script
 cat > $on_login_script << EOF
 #!/bin/bash
