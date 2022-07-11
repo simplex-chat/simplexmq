@@ -96,7 +96,7 @@ smpBlockSize :: Int
 smpBlockSize = 16384
 
 supportedSMPServerVRange :: VersionRange
-supportedSMPServerVRange = mkVersionRange 1 3
+supportedSMPServerVRange = mkVersionRange 1 4
 
 simplexMQVersion :: String
 simplexMQVersion = "3.0.0"
@@ -258,7 +258,10 @@ data THandle c = THandle
     sessionId :: SessionId,
     blockSize :: Int,
     -- | agreed server protocol version
-    thVersion :: Version
+    thVersion :: Version,
+    -- | send multiple transmissions in a single block
+    -- based on protocol and protocol version
+    batch :: Bool
   }
 
 -- | TLS-unique channel binding
@@ -364,7 +367,7 @@ smpServerHandshake c kh smpVRange = do
       | keyHash /= kh ->
         throwE $ TEHandshake IDENTITY
       | smpVersion `isCompatible` smpVRange -> do
-        pure (th :: THandle c) {thVersion = smpVersion}
+        pure (th :: THandle c) {thVersion = smpVersion, batch = smpVersion >= 4}
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
@@ -379,7 +382,7 @@ smpClientHandshake c keyHash smpVRange = do
     else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible smpVersion) -> do
         sendHandshake th $ ClientHandshake {smpVersion, keyHash}
-        pure (th :: THandle c) {thVersion = smpVersion}
+        pure (th :: THandle c) {thVersion = smpVersion, batch = smpVersion >= 4}
       Nothing -> throwE $ TEHandshake VERSION
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
@@ -389,4 +392,4 @@ getHandshake :: (Transport c, Encoding smp) => THandle c -> ExceptT TransportErr
 getHandshake th = ExceptT $ (parse smpP (TEHandshake PARSE) =<<) <$> tGetBlock th
 
 smpTHandle :: Transport c => c -> THandle c
-smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0}
+smpTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = 0, batch = False}

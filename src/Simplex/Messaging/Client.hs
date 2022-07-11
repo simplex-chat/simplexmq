@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -60,6 +61,9 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (rights)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Network.Socket (ServiceName)
 import Numeric.Natural
@@ -87,12 +91,15 @@ data ProtocolClient msg = ProtocolClient
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request msg),
-    sndQ :: TBQueue SentRawTransmission,
-    rcvQ :: TBQueue (SignedTransmission msg),
+    sndQ :: TBQueue (NonEmpty (SentRawTransmission)),
+    rcvQ :: TBQueue (NonEmpty (SignedTransmission msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission msg))
   }
 
 type SMPClient = ProtocolClient SMP.BrokerMsg
+
+-- | Type for client command data
+type ClientCommand msg = (Maybe C.APrivateSignKey, QueueId, ProtoCommand msg)
 
 -- | Type synonym for transmission from some SPM server queue.
 type ServerTransmission msg = (ProtoServer msg, Version, SessionId, QueueId, msg)
@@ -208,13 +215,15 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
       runExceptT $ sendProtocolCommand c Nothing "" protocolPing
 
     process :: ProtocolClient msg -> IO ()
-    process c@ProtocolClient {rcvQ, sentCommands} = forever $ do
-      (_, _, (corrId, qId, respOrErr)) <- atomically $ readTBQueue rcvQ
+    process c = forever $ atomically (readTBQueue $ rcvQ c) >>= mapM_ (processMsg c)
+
+    processMsg :: ProtocolClient msg -> SignedTransmission msg -> IO ()
+    processMsg c@ProtocolClient {sentCommands} (_, _, (corrId, qId, respOrErr)) =
       if B.null $ bs corrId
-        then sendMsg qId respOrErr
+        then sendMsg respOrErr
         else do
           atomically (TM.lookup corrId sentCommands) >>= \case
-            Nothing -> sendMsg qId respOrErr
+            Nothing -> sendMsg respOrErr
             Just Request {queueId, responseVar} -> atomically $ do
               TM.delete corrId sentCommands
               putTMVar responseVar $
@@ -226,8 +235,8 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
                       _ -> Right r
                   else Left . PCEUnexpectedResponse $ bshow respOrErr
       where
-        sendMsg :: QueueId -> Either ErrorType msg -> IO ()
-        sendMsg qId = \case
+        sendMsg :: Either ErrorType msg -> IO ()
+        sendMsg = \case
           Right msg -> atomically $ mapM_ (`writeTBQueue` serverTransmission c qId msg) msgQ
           -- TODO send everything else to errQ and log in agent
           _ -> return ()
@@ -288,6 +297,13 @@ subscribeSMPQueue c rpKey rId =
     cmd@MSG {} -> writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
+-- | Subscribe to multiple SMP queues batching commands if supported.
+-- subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))
+-- subscribeSMPQueues c qs =
+--   sendSMPCommand c (Just rpKey) rId SUB >>= \case
+--     OK -> return ()
+--     cmd@MSG {} -> writeSMPMessage c rId cmd
+--     r -> throwE . PCEUnexpectedResponse $ bshow r
 writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> ExceptT ProtocolClientError IO ()
 writeSMPMessage c rId msg =
   liftIO . atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ c)
@@ -377,37 +393,48 @@ okSMPCommand cmd c pKey qId =
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateSignKey -> QueueId -> Command p -> ExceptT ProtocolClientError IO BrokerMsg
 sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 
+-- | Send multiple commands with batching and collect responses
+sendProtocolCommands :: forall msg. ProtocolEncoding (ProtoCommand msg) => ProtocolClient msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Either ProtocolClientError msg))
+sendProtocolCommands c@ProtocolClient {sndQ, tcpTimeout} cs = do
+  ts <- mapM (runExceptT . mkTransmission c) cs
+  mapM_ (atomically . writeTBQueue sndQ . L.map fst) . L.nonEmpty . rights $ L.toList ts
+  forConcurrently ts $ \case
+    Right (_, r) -> withTimeout . atomically $ takeTMVar r
+    Left e -> pure $ Left e
+  where
+    withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout tcpTimeout a
+
 -- | Send Protocol command
 sendProtocolCommand :: forall msg. ProtocolEncoding (ProtoCommand msg) => ProtocolClient msg -> Maybe C.APrivateSignKey -> QueueId -> ProtoCommand msg -> ExceptT ProtocolClientError IO msg
-sendProtocolCommand ProtocolClient {sndQ, sentCommands, clientCorrId, sessionId, thVersion, tcpTimeout} pKey qId cmd = do
-  corrId <- lift_ getNextCorrId
-  t <- signTransmission $ encodeTransmission thVersion sessionId (corrId, qId, cmd)
-  ExceptT $ sendRecv corrId t
+sendProtocolCommand c@ProtocolClient {sndQ, tcpTimeout} pKey qId cmd = do
+  (t, r) <- mkTransmission c (pKey, qId, cmd)
+  ExceptT $ sendRecv t r
   where
-    lift_ :: STM a -> ExceptT ProtocolClientError IO a
-    lift_ action = ExceptT $ Right <$> atomically action
+    -- two separate "atomically" needed to avoid blocking
+    sendRecv :: SentRawTransmission -> TMVar (Response msg) -> IO (Response msg)
+    sendRecv t r = atomically (writeTBQueue sndQ [t]) >> withTimeout (atomically $ takeTMVar r)
+      where
+        withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout tcpTimeout a
 
+mkTransmission :: forall msg. ProtocolEncoding (ProtoCommand msg) => ProtocolClient msg -> ClientCommand msg -> ExceptT ProtocolClientError IO (SentRawTransmission, TMVar (Response msg))
+mkTransmission ProtocolClient {clientCorrId, sessionId, thVersion, sentCommands} (pKey, qId, cmd) = do
+  corrId <- liftIO $ atomically getNextCorrId
+  t <- signTransmission $ encodeTransmission thVersion sessionId (corrId, qId, cmd)
+  r <- liftIO . atomically $ mkRequest corrId
+  pure (t, r)
+  where
     getNextCorrId :: STM CorrId
     getNextCorrId = do
       i <- stateTVar clientCorrId $ \i -> (i, i + 1)
       pure . CorrId $ bshow i
-
     signTransmission :: ByteString -> ExceptT ProtocolClientError IO SentRawTransmission
     signTransmission t = case pKey of
-      Nothing -> return (Nothing, t)
+      Nothing -> pure (Nothing, t)
       Just pk -> do
         sig <- liftError PCESignatureError $ C.sign pk t
         return (Just sig, t)
-
-    -- two separate "atomically" needed to avoid blocking
-    sendRecv :: CorrId -> SentRawTransmission -> IO (Response msg)
-    sendRecv corrId t = atomically (send corrId t) >>= withTimeout . atomically . takeTMVar
-      where
-        withTimeout a = fromMaybe (Left PCEResponseTimeout) <$> timeout tcpTimeout a
-
-    send :: CorrId -> SentRawTransmission -> STM (TMVar (Response msg))
-    send corrId t = do
+    mkRequest :: CorrId -> STM (TMVar (Response msg))
+    mkRequest corrId = do
       r <- newEmptyTMVar
       TM.insert corrId (Request qId r) sentCommands
-      writeTBQueue sndQ t
-      return r
+      pure r

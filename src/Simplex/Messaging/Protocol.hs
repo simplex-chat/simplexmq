@@ -7,6 +7,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
@@ -130,6 +131,8 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
@@ -1010,20 +1013,51 @@ instance Encoding CommandError where
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> SentRawTransmission -> IO (Either TransportError ())
-tPut th (sig, t) = tPutBlock th $ smpEncode (C.signatureBytes sig) <> t
+tPut :: Transport c => THandle c -> NonEmpty (SentRawTransmission) -> IO (NonEmpty (Either TransportError ()))
+tPut th trs
+  | batch th = tPutBatch [] $ L.map tEncode trs
+  | otherwise = forM trs $ tPutBlock th . tEncode
+  where
+    tPutBatch :: [Either TransportError ()] -> NonEmpty ByteString -> IO (NonEmpty (Either TransportError ()))
+    tPutBatch rs ts = do
+      let (n, s, ts_) = encodeBatch 0 "" ts
+      r <- if n == 0 then pure [Left TELargeMsg] else replicate n <$> tPutBlock th (lenEncode n `B.cons` s)
+      let rs' = rs <> r
+      case ts_ of
+        Just ts' -> tPutBatch rs' ts'
+        _ -> pure $ L.fromList rs'
+    encodeBatch :: Int -> ByteString -> NonEmpty ByteString -> (Int, ByteString, Maybe (NonEmpty ByteString))
+    encodeBatch n s ts@(t :| ts_)
+      | n == 255 = (n, s, Just ts)
+      | otherwise =
+        let s' = s <> smpEncode (Large t)
+            n' = n + 1
+         in if B.length s' > blockSize th - 1
+              then (n,s,) $ if n == 0 then L.nonEmpty ts_ else Just ts
+              else case L.nonEmpty ts_ of
+                Just ts' -> encodeBatch n' s' ts'
+                _ -> (n', s', Nothing)
+    tEncode (sig, tr) = smpEncode (C.signatureBytes sig) <> tr
 
 encodeTransmission :: ProtocolEncoding c => Version -> ByteString -> Transmission c -> ByteString
 encodeTransmission v sessionId (CorrId corrId, queueId, command) =
   smpEncode (sessionId, corrId, queueId) <> encodeProtocol v command
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
-tGetParse :: Transport c => THandle c -> IO (Either TransportError RawTransmission)
-tGetParse th = (parse transmissionP TEBadBlock =<<) <$> tGetBlock th
+tGetParse :: Transport c => THandle c -> IO (NonEmpty (Either TransportError RawTransmission))
+tGetParse th
+  | batch th = either ((:| []) . Left) id <$> runExceptT getBatch
+  | otherwise = (:| []) . (parse transmissionP TEBadBlock =<<) <$> tGetBlock th
+  where
+    getBatch :: ExceptT TransportError IO (NonEmpty (Either TransportError RawTransmission))
+    getBatch = do
+      s <- ExceptT $ tGetBlock th
+      ts <- liftEither $ parse smpP TEBadBlock s
+      pure $ L.map (\(Large t) -> parse transmissionP TEBadBlock t) ts
 
 -- | Receive client and server transmissions (determined by `cmd` type).
-tGet :: forall cmd c m. (ProtocolEncoding cmd, Transport c, MonadIO m) => THandle c -> m (SignedTransmission cmd)
-tGet th@THandle {sessionId, thVersion = v} = liftIO (tGetParse th) >>= decodeParseValidate
+tGet :: forall cmd c m. (ProtocolEncoding cmd, Transport c, MonadIO m) => THandle c -> m (NonEmpty (SignedTransmission cmd))
+tGet th@THandle {sessionId, thVersion = v} = liftIO (tGetParse th) >>= mapM decodeParseValidate
   where
     decodeParseValidate :: Either TransportError RawTransmission -> m (SignedTransmission cmd)
     decodeParseValidate = \case

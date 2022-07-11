@@ -69,4 +69,4 @@ ntfClientHandshake c keyHash ntfVRange = do
       Nothing -> throwError $ TEHandshake VERSION
 
 ntfTHandle :: Transport c => c -> THandle c
-ntfTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0}
+ntfTHandle c = THandle {connection = c, sessionId = tlsUnique c, blockSize = ntfBlockSize, thVersion = 0, batch = False}

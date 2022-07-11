@@ -9,6 +9,7 @@ import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
@@ -101,8 +102,8 @@ data Server = Server
 data Client = Client
   { subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
-    rcvQ :: TBQueue (Transmission Cmd),
-    sndQ :: TBQueue (Transmission BrokerMsg),
+    rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
+    sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     thVersion :: Version,
     sessionId :: ByteString,
     connected :: TVar Bool,
