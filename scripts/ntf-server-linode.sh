@@ -1,8 +1,8 @@
 #!/bin/bash
 
+# <UDF name="enable_store_log" label="Store log - persist notification subscriptions to append only log and restore them upon server restart." default="on" oneof="on, off" />
 # <UDF name="api_token" label="Linode API token - enable Linode to create tags with server address, fingerprint and version. Note: minimal permissions token should have are read/write access to `linodes` (to create tags) and `domains` (to add A record for the third level domain if FQDN is provided)." default="" />
-# TODO review
-# <UDF name="fqdn" label="FQDN (Fully Qualified Domain Name) - provide third level domain name (e.g. smp.example.com). If provided use `smp://fingerprint@FQDN` as server address in the client. If FQDN is not provided use `smp://fingerprint@IP` instead." default="" />
+# <UDF name="fqdn" label="FQDN (Fully Qualified Domain Name) - provide third level domain name (e.g. ntf.example.com). If provided use `ntf://fingerprint@FQDN` as server address in the client. If FQDN is not provided use `ntf://fingerprint@IP` instead." default="" />
 # <UDF name="apns_key_id" label="APNS key ID." default="" />
 
 # Log all stdout output to stackscript.log
@@ -74,6 +74,8 @@ ntf-server --version
 # Initialize server
 init_opts=()
 
+[[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
+
 ip_address=$(curl ifconfig.me)
 init_opts+=(--ip $ip_address)
 
@@ -85,10 +87,6 @@ ntf-server init "${init_opts[@]}"
 fingerprint=$(cat /etc/opt/simplex-notifications/fingerprint)
 
 # Determine server address to specify in welcome script and Linode tag
-# ! If FQDN was provided and used as part of server initialization, server's certificate will not pass validation at client
-# ! if client tries to connect by server's IP address, so we have to specify FQDN as server address in Linode tag and
-# ! in welcome script regardless of creation of A record in Linode
-# ! https://hackage.haskell.org/package/x509-validation-1.6.10/docs/src/Data-X509-Validation.html#validateCertificateName
 if [[ -n "$FQDN" ]]; then
   server_address=$FQDN
 else
@@ -98,7 +96,6 @@ fi
 # Set up welcome script
 on_login_script="/opt/simplex-notifications/on_login.sh"
 
-# TODO fix address
 # / Welcome script
 cat > $on_login_script << EOF
 #!/bin/bash
@@ -109,7 +106,7 @@ server_address=\$2
 cat << EOF2
 ********************************************************************************
 
-SimpleX notifications server address: smp://\$fingerprint@\$server_address
+SimpleX notifications server address: ntf://\$fingerprint@\$server_address
 Check server status with: systemctl status ntf-server
 
 To keep this server secure, the UFW firewall is enabled.

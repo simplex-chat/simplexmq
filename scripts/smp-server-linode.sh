@@ -86,10 +86,6 @@ smp-server init "${init_opts[@]}"
 fingerprint=$(cat /etc/opt/simplex/fingerprint)
 
 # Determine server address to specify in welcome script and Linode tag
-# ! If FQDN was provided and used as part of server initialization, server's certificate will not pass validation at client
-# ! if client tries to connect by server's IP address, so we have to specify FQDN as server address in Linode tag and
-# ! in welcome script regardless of creation of A record in Linode
-# ! https://hackage.haskell.org/package/x509-validation-1.6.10/docs/src/Data-X509-Validation.html#validateCertificateName
 if [[ -n "$FQDN" ]]; then
   server_address=$FQDN
 else
