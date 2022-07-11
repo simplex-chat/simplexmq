@@ -123,6 +123,23 @@ Model checking our formal specification we can demonstrate three key properties:
   1. No members will connect with the invitee unless all members correctly identify them.
   1. Under sufficiently good conditions (no confusion, a patient leader, all users remain active, no members leave) an invite will eventually succeed.
 
+### State Diagrams
+
+#### Leader Specific States
+
+Once this process activates, it _must_ terminate before it can start again.
+There cannot be simultaneous invitations.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Proposing : Member invites
+    Proposing --> Kicking : Cancel invite<br>or give up on<br>unresponsive<br>members
+    [*] --> Kicking : Member kicks
+    Kicking --> Kicking : Give up on<br>unresponsive<br> members
+    Proposing --> [*] : All members Establish
+    Kicking --> [*] : All members ack
+```
+
 ### Specific Examples
 
 #### Typical Success
