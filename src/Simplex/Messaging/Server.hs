@@ -263,10 +263,15 @@ receive th Client {rcvQ, sndQ, activeAt} = forever $ do
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> Client -> m ()
 send h@THandle {thVersion = v} Client {sndQ, sessionId, activeAt} = forever $ do
-  ts <- atomically $ readTBQueue sndQ
+  ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
   -- TODO the line below can return Lefts, but we ignore it and do not disconnect the client
   void . liftIO . tPut h $ L.map ((Nothing,) . encodeTransmission v sessionId) ts
   atomically . writeTVar activeAt =<< liftIO getSystemTime
+  where
+    tOrder :: Transmission BrokerMsg -> Int
+    tOrder (_, _, cmd) = case cmd of
+      MSG {} -> 0
+      _ -> 1
 
 disconnectTransport :: (Transport c, MonadUnliftIO m) => THandle c -> client -> (client -> TVar SystemTime) -> ExpirationConfig -> m ()
 disconnectTransport THandle {connection} c activeAt expCfg = do

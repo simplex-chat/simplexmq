@@ -45,6 +45,9 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 testStoreLogFile :: FilePath
 testStoreLogFile = "tests/tmp/smp-server-store.log"
 
+testStoreLogFile2 :: FilePath
+testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
+
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 

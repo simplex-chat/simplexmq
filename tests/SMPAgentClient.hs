@@ -158,12 +158,18 @@ smpAgentTest1_1_1 test' =
 testSMPServer :: SMPServer
 testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"
 
+testSMPServer2 :: SMPServer
+testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5002"
+
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
     { smp = L.fromList [testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"]
     }
+
+initAgentServers2 :: InitialAgentServers
+initAgentServers2 = initAgentServers {smp = L.fromList [testSMPServer, testSMPServer2]}
 
 agentCfg :: AgentConfig
 agentCfg =

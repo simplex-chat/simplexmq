@@ -17,12 +17,15 @@ module AgentTests.FunctionalAPITests
   )
 where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (killThread, threadDelay)
+import Control.Monad
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
+import Data.Int (Int64)
+import qualified Data.Map as M
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
-import SMPClient (cfg, testPort, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
@@ -102,6 +105,9 @@ functionalAPITests t = do
       testSuspendingAgentCompleteSending t
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout t
+  describe "Batching SMP commands" $ do
+    it "should subscribe to multiple subscriptions with batching" $
+      testBatchedSubscriptions t
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -503,13 +509,58 @@ testSuspendingAgentTimeout t = do
 
   pure ()
 
+testBatchedSubscriptions :: ATransport -> IO ()
+testBatchedSubscriptions t = do
+  a <- getSMPAgentClient agentCfg initAgentServers2
+  b <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers2
+  Right conns <- runServers $ do
+    conns <- forM [1 .. 200 :: Int] . const $ makeConnection a b
+    forM_ conns $ \(aId, bId) -> exchangeGreetings a bId b aId
+    liftIO $ threadDelay 1000000
+    pure conns
+  ("", "", DOWN {}) <- get a
+  ("", "", DOWN {}) <- get a
+  ("", "", DOWN {}) <- get b
+  ("", "", DOWN {}) <- get b
+  Right () <- runServers $ do
+    ("", "", UP {}) <- get a
+    ("", "", UP {}) <- get a
+    ("", "", UP {}) <- get b
+    ("", "", UP {}) <- get b
+    liftIO $ threadDelay 1000000
+    subscribe a $ map snd conns
+    subscribe b $ map fst conns
+    forM_ conns $ \(aId, bId) -> exchangeGreetingsMsgId 6 a bId b aId
+  pure ()
+  where
+    subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
+    subscribe c cs = do
+      r <- subscribeConnections c cs
+      liftIO $ all (== Right ()) r `shouldBe` True
+      liftIO $ M.keys r `shouldMatchList` cs
+    runServers :: ExceptT AgentErrorType IO a -> IO (Either AgentErrorType a)
+    runServers a = do
+      withSmpServerStoreLogOn t testPort $ \t1 -> do
+        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 -> do
+          res <- runExceptT a
+          killThread t2
+          pure res
+        killThread t1
+        pure res
+
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetings alice bobId bob aliceId = do
-  4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
-  get alice ##> ("", bobId, SENT 4)
+exchangeGreetings = exchangeGreetingsMsgId 4
+
+exchangeGreetingsMsgId :: Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+exchangeGreetingsMsgId msgId alice bobId bob aliceId = do
+  msgId1 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+  liftIO $ msgId1 `shouldBe` msgId
+  get alice ##> ("", bobId, SENT msgId)
   get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-  ackMessage bob aliceId 4
-  5 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
-  get bob ##> ("", aliceId, SENT 5)
+  ackMessage bob aliceId msgId
+  msgId2 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
+  let msgId' = msgId + 1
+  liftIO $ msgId2 `shouldBe` msgId'
+  get bob ##> ("", aliceId, SENT msgId')
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
-  ackMessage alice bobId 5
+  ackMessage alice bobId msgId'

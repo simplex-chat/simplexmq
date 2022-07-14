@@ -514,8 +514,8 @@ subscribeQueues c srv qs = do
     _ -> pure $ M.fromList errs
   where
     checkQueue rq@(connId, RcvQueue {rcvId, server}) = do
-      allowed <- atomically . TM.member (server, rcvId) $ getMsgLocks c
-      pure $ if allowed && srv == server then Right rq else Left (connId, Left $ CMD PROHIBITED)
+      prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
+      pure $ if prohibited || srv /= server then Left (connId, Left $ CMD PROHIBITED) else Right rq
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()

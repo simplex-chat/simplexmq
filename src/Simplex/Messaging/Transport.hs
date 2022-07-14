@@ -367,7 +367,7 @@ smpServerHandshake c kh smpVRange = do
       | keyHash /= kh ->
         throwE $ TEHandshake IDENTITY
       | smpVersion `isCompatible` smpVRange -> do
-        pure (th :: THandle c) {thVersion = smpVersion, batch = smpVersion >= 4}
+        pure $ smpThHandle th smpVersion
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
@@ -382,8 +382,11 @@ smpClientHandshake c keyHash smpVRange = do
     else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible smpVersion) -> do
         sendHandshake th $ ClientHandshake {smpVersion, keyHash}
-        pure (th :: THandle c) {thVersion = smpVersion, batch = smpVersion >= 4}
+        pure $ smpThHandle th smpVersion
       Nothing -> throwE $ TEHandshake VERSION
+
+smpThHandle :: forall c. THandle c -> Version -> THandle c
+smpThHandle th v = (th :: THandle c) {thVersion = v, batch = v >= 4}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle c -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
