@@ -91,9 +91,9 @@ We can initialize one with all values defined by whatever we'd like:
 ### Liveness Operators
 
 These are both more advanced and less important, but `[]` means "always," and `<>` means "eventually."
-This means that `~[]` is "never."
+This means that `[]~` is "never."
 
-So Rick Astley is `~[]GonnaGiveYouUp`.
+So Rick Astley is `[]~GonnaGiveYouUp`.
 
 A normal song `<>Ends`, but the Song That Never Ends `[]<>Sings("this is the song that never ends.")`.
 
