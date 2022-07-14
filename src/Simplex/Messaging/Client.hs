@@ -33,11 +33,14 @@ module Simplex.Messaging.Client
     -- * SMP protocol command functions
     createSMPQueue,
     subscribeSMPQueue,
+    subscribeSMPQueues,
     getSMPMessage,
     subscribeSMPQueueNotifications,
     secureSMPQueue,
     enableSMPQueueNotifications,
     disableSMPQueueNotifications,
+    enableSMPQueuesNtfs,
+    disableSMPQueuesNtfs,
     sendSMPMessage,
     ackSMPMessage,
     suspendSMPQueue,
@@ -62,6 +65,7 @@ import Control.Monad.Trans.Except
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (rights)
+import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
@@ -294,19 +298,22 @@ subscribeSMPQueue :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT Pr
 subscribeSMPQueue c rpKey rId =
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> return ()
-    cmd@MSG {} -> writeSMPMessage c rId cmd
+    cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
--- subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))
--- subscribeSMPQueues c qs =
---   sendSMPCommand c (Just rpKey) rId SUB >>= \case
---     OK -> return ()
---     cmd@MSG {} -> writeSMPMessage c rId cmd
---     r -> throwE . PCEUnexpectedResponse $ bshow r
-writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> ExceptT ProtocolClientError IO ()
-writeSMPMessage c rId msg =
-  liftIO . atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ c)
+subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))
+subscribeSMPQueues c qs = sendProtocolCommands c cs >>= mapM response . L.zip qs
+  where
+    cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
+    response ((_, rId), r) = case r of
+      Right OK -> pure $ Right ()
+      Right cmd@MSG {} -> writeSMPMessage c rId cmd $> Right ()
+      Right r' -> pure . Left . PCEUnexpectedResponse $ bshow r'
+      Left e -> pure $ Left e
+
+writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
+writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ c)
 
 serverTransmission :: ProtocolClient msg -> RecipientId -> msg -> ServerTransmission msg
 serverTransmission ProtocolClient {protocolServer, thVersion, sessionId} entityId message =
@@ -319,9 +326,7 @@ getSMPMessage :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT Protoc
 getSMPMessage c rpKey rId =
   sendSMPCommand c (Just rpKey) rId GET >>= \case
     OK -> pure Nothing
-    cmd@(MSG msg) -> do
-      writeSMPMessage c rId cmd
-      pure $ Just msg
+    cmd@(MSG msg) -> liftIO (writeSMPMessage c rId cmd) $> Just msg
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Subscribe to the SMP queue notifications.
@@ -345,11 +350,31 @@ enableSMPQueueNotifications c rpKey rId notifierKey rcvNtfPublicDhKey =
     NID nId rcvNtfSrvPublicDhKey -> pure (nId, rcvNtfSrvPublicDhKey)
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
+-- | Enable notifications for the multiple queues for push notifications server.
+enableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId, NtfPublicVerifyKey, RcvNtfPublicDhKey) -> IO (NonEmpty (Either ProtocolClientError (NotifierId, RcvNtfPublicDhKey)))
+enableSMPQueuesNtfs c qs = L.map response <$> sendProtocolCommands c cs
+  where
+    cs = L.map (\(rpKey, rId, notifierKey, rcvNtfPublicDhKey) -> (Just rpKey, rId, Cmd SRecipient $ NKEY notifierKey rcvNtfPublicDhKey)) qs
+    response = \case
+      Right (NID nId rcvNtfSrvPublicDhKey) -> Right (nId, rcvNtfSrvPublicDhKey)
+      Right r -> Left . PCEUnexpectedResponse $ bshow r
+      Left e -> Left e
+
 -- | Disable notifications for the queue for push notifications server.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#disable-notifications-command
 disableSMPQueueNotifications :: SMPClient -> RcvPrivateSignKey -> RecipientId -> ExceptT ProtocolClientError IO ()
 disableSMPQueueNotifications = okSMPCommand NDEL
+
+-- | Disable notifications for multiple queues for push notifications server.
+disableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateSignKey, RecipientId) -> IO (NonEmpty (Either ProtocolClientError ()))
+disableSMPQueuesNtfs c qs = L.map response <$> sendProtocolCommands c cs
+  where
+    cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient NDEL)) qs
+    response = \case
+      Right OK -> Right ()
+      Right r -> Left . PCEUnexpectedResponse $ bshow r
+      Left e -> Left e
 
 -- | Send SMP message.
 --
@@ -367,7 +392,7 @@ ackSMPMessage :: SMPClient -> RcvPrivateSignKey -> QueueId -> MsgId -> ExceptT P
 ackSMPMessage c rpKey rId msgId =
   sendSMPCommand c (Just rpKey) rId (ACK msgId) >>= \case
     OK -> return ()
-    cmd@MSG {} -> writeSMPMessage c rId cmd
+    cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Irreversibly suspend SMP queue.

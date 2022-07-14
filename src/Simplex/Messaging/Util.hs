@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -10,6 +11,8 @@ import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Function (on)
+import Data.List (sortBy)
 import Data.Text (Text)
 import qualified Data.Text as T
 import UnliftIO.Async
@@ -92,3 +95,20 @@ catchAll_ a = catchAll a . const
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
 {-# INLINE eitherToMaybe #-}
+
+-- | Uses a function to determine which of two output lists an input element should join
+partitionWith :: (a -> Either b c) -> [a] -> ([b], [c])
+partitionWith _ [] = ([], [])
+partitionWith f (x : xs) = case f x of
+  Left b -> (b : bs, cs)
+  Right c -> (bs, c : cs)
+  where
+    (bs, cs) = partitionWith f xs
+
+taggedEither :: (i, Either a b) -> Either (i, a) (i, b)
+taggedEither = \case
+  (t, Left a) -> Left (t, a)
+  (t, Right b) -> Right (t, b)
+
+sortTagged :: Ord i => [(i, a)] -> [a]
+sortTagged = map snd . sortBy (compare `on` fst)

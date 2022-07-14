@@ -21,6 +21,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     newRcvQueue,
     subscribeQueue,
+    subscribeQueues,
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
@@ -74,11 +75,12 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
@@ -103,7 +105,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, N
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, catchAll_, ifM, liftEitherError, liftError, tryError, unlessM, whenM)
+import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 import UnliftIO (async, pooledForConcurrentlyN)
@@ -482,8 +484,39 @@ subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
         atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
           removePendingSubscription c server connId
         throwError e
-      Right _ -> do
-        addSubscription c rq connId
+      _ -> addSubscription c rq connId
+
+-- | subscribe multiple queues - all passed queues should be on the same server
+subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> [(RcvQueue, ConnId)] -> m [Either AgentErrorType ()]
+subscribeQueues c srv qs = do
+  rs <- mapM checkQueue qs
+  let (errs, qs_ :: [(Int, (RcvQueue, ConnId))]) = partitionWith taggedEither $ zip [1 ..] rs
+  case L.nonEmpty qs_ of
+    Just qs' -> do
+      mapM_ (atomically . uncurry (addPendingSubscription c)) qs2
+      smp_ <- tryError (getSMPServerClient c srv)
+      rs2 :: [(Int, Either AgentErrorType ())] <- case smp_ of
+        Left e -> pure $ zip (map fst qs_) $ replicate (length qs_) (Left e)
+        Right smp -> do
+          logServer "-->" c srv (bshow (length qs_) <> "queues") "SUBS"
+          rs' :: [((Int, (RcvQueue, ConnId)), Either ProtocolClientError ())] <- liftIO $ zip qs_ . L.toList <$> subscribeSMPQueues smp qs3
+          forM_ rs' $ \((_, (rq, connId)), r) -> case r of
+            Left e ->
+              atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
+                removePendingSubscription c srv connId
+            _ -> addSubscription c rq connId
+          pure $ map (bimap fst (first $ protocolClientError SMP)) rs'
+      pure . sortTagged $ errs' <> rs2
+      where
+        errs' :: [(Int, Either AgentErrorType ())] = map (second Left) errs
+        qs2 :: NonEmpty (RcvQueue, ConnId) = L.map snd qs'
+        qs3 :: NonEmpty (SMP.RcvPrivateSignKey, SMP.RecipientId) = L.map (queueCreds . fst) qs2
+        queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
+    _ -> pure $ map (second $ const ()) rs
+  where
+    checkQueue (rq@RcvQueue {rcvId, server}, connId) = do
+      allowed <- atomically . TM.member (server, rcvId) $ getMsgLocks c
+      pure $ if allowed && srv == server then Right (rq, connId) else Left $ CMD PROHIBITED
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do

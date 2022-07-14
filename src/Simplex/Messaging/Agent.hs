@@ -45,6 +45,7 @@ module Simplex.Messaging.Agent
     acceptContact,
     rejectContact,
     subscribeConnection,
+    subscribeConnections,
     getConnectionMessage,
     getNotificationMessage,
     resubscribeConnection,
@@ -157,6 +158,10 @@ rejectContact c = withAgentEnv c .: rejectContact' c
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection c = withAgentEnv c . subscribeConnection' c
+
+-- | Subscribe to receive connection messages from multiple connections, batching commands when possible
+subscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m [Either AgentErrorType ()]
+subscribeConnections c = withAgentEnv c . subscribeConnections' c
 
 -- | Get connection message (GET command)
 getConnectionMessage :: AgentErrorMonad m => AgentClient -> ConnId -> m (Maybe SMPMsgMeta)
@@ -392,6 +397,40 @@ subscribeConnection' c connId =
       subscribeQueue c rq connId
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+
+subscribeConnections' :: AgentMonad m => AgentClient -> [ConnId] -> m [Either AgentErrorType ()]
+subscribeConnections' _c _connIds = pure []
+
+-- subscribeConnections' c connIds = do
+--   conns <- withStore' c (forM connIds . getConn)
+--   let (errs, cs) = partitionWith taggedEither $ zip [1 ..] conns
+--       sndRs :: [(Int, Either AgentErrorType ())] = map sndSubResult $ mapMaybe sndConn cs
+--       rcvQs :: Map SMPServer [(Int, RcvQueue)] = foldl' addRcvQueue M.empty cs
+--   mapM_ (uncurry $ resumeMsgDelivery c) $ mapMaybe sndQueue conns
+--   rcvRs <- mapConcurrently subscribe $ M.assocs rcvQs
+--   where
+--     -- groupBy connAction zip3 [1 ..]  <$>
+
+--     sndSubResult (i, conn) = case conn of
+--       SomeConn _ (SndConnection cData sq) -> case status (sq :: SndQueue) of
+--         Confirmed -> Just $ Right ()
+--         Active -> Just . Left $ CONN SIMPLEX
+--         _ -> Just . Left $ INTERNAL "unexpected queue status"
+--       _ -> Nothing
+--     addRcvQueue m (i, conn) = case rcvQueue conn of
+--       Just rq@RcvQueue {server} -> M.alter (Just . ((i, rq) :) . fromMaybe []) server m
+--       _ -> m
+--     rcvQueue = \case
+--       SomeConn _ (DuplexConnection _ rq _) -> Just rq
+--       SomeConn _ (SndConnection _ _) -> Nothing
+--       SomeConn _ (RcvConnection _ rq) -> Just rq
+--       SomeConn _ (ContactConnection _ rq) -> Just rq
+--     subscribe (srv, qs) =
+
+--     sndQueue = \case
+--       Right (SomeConn _ (DuplexConnection cData rq sq)) -> Just (cData, sq)
+--       Right (SomeConn _ (SndConnection cData sq)) -> Just (cData, sq)
+--       _ -> Nothing
 
 resubscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId =

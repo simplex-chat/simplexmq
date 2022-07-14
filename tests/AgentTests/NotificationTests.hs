@@ -22,7 +22,6 @@ import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2)
 import SMPClient (testPort, withSmpServer, withSmpServerStoreLogOn)
 import Simplex.Messaging.Agent
-import Simplex.Messaging.Agent.Client (AgentClient)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
