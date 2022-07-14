@@ -78,10 +78,12 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
+import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
@@ -106,10 +108,10 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, eitherToMaybe, liftE, liftError, tryError, unlessM, whenM, ($>>=))
+import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Random (randomR)
-import UnliftIO.Async (async, race_)
+import UnliftIO.Async (async, mapConcurrently, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -398,39 +400,37 @@ subscribeConnection' c connId =
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
-subscribeConnections' :: AgentMonad m => AgentClient -> [ConnId] -> m [Either AgentErrorType ()]
-subscribeConnections' _c _connIds = pure []
-
--- subscribeConnections' c connIds = do
---   conns <- withStore' c (forM connIds . getConn)
---   let (errs, cs) = partitionWith taggedEither $ zip [1 ..] conns
---       sndRs :: [(Int, Either AgentErrorType ())] = map sndSubResult $ mapMaybe sndConn cs
---       rcvQs :: Map SMPServer [(Int, RcvQueue)] = foldl' addRcvQueue M.empty cs
---   mapM_ (uncurry $ resumeMsgDelivery c) $ mapMaybe sndQueue conns
---   rcvRs <- mapConcurrently subscribe $ M.assocs rcvQs
---   where
---     -- groupBy connAction zip3 [1 ..]  <$>
-
---     sndSubResult (i, conn) = case conn of
---       SomeConn _ (SndConnection cData sq) -> case status (sq :: SndQueue) of
---         Confirmed -> Just $ Right ()
---         Active -> Just . Left $ CONN SIMPLEX
---         _ -> Just . Left $ INTERNAL "unexpected queue status"
---       _ -> Nothing
---     addRcvQueue m (i, conn) = case rcvQueue conn of
---       Just rq@RcvQueue {server} -> M.alter (Just . ((i, rq) :) . fromMaybe []) server m
---       _ -> m
---     rcvQueue = \case
---       SomeConn _ (DuplexConnection _ rq _) -> Just rq
---       SomeConn _ (SndConnection _ _) -> Nothing
---       SomeConn _ (RcvConnection _ rq) -> Just rq
---       SomeConn _ (ContactConnection _ rq) -> Just rq
---     subscribe (srv, qs) =
-
---     sndQueue = \case
---       Right (SomeConn _ (DuplexConnection cData rq sq)) -> Just (cData, sq)
---       Right (SomeConn _ (SndConnection cData sq)) -> Just (cData, sq)
---       _ -> Nothing
+subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m [Either AgentErrorType ()]
+subscribeConnections' c connIds = do
+  conns :: [Either StoreError SomeConn] <- withStore' c (forM connIds . getConn)
+  let (errs, cs) :: ([(Int, AgentErrorType)], [(Int, SomeConn)]) = partitionWith taggedEither . zip [1 ..] $ map (first storeError) conns
+      (sndQs, rcvQs) :: ([(Int, (SndQueue, ConnData))], [(Int, (RcvQueue, ConnData))]) = partitionWith (taggedEither . second rcvOrSndQueue) cs
+      sndRs :: [(Int, Either AgentErrorType ())] = map (second $ sndSubResult . fst) sndQs
+      srvRcvQs :: Map SMPServer [(Int, (RcvQueue, ConnData))] = foldl' addRcvQueue M.empty rcvQs
+  mapM_ (uncurry $ resumeMsgDelivery c) $ mapMaybe (sndQueue . snd) cs
+  rcvRs :: [(Int, Either AgentErrorType ())] <- concat <$> mapConcurrently subscribe (M.assocs srvRcvQs)
+  pure . sortTagged $ map (second Left) errs <> sndRs <> rcvRs
+  where
+    rcvOrSndQueue :: SomeConn -> Either (SndQueue, ConnData) (RcvQueue, ConnData)
+    rcvOrSndQueue = \case
+      SomeConn _ (DuplexConnection cData rq _) -> Right (rq, cData)
+      SomeConn _ (SndConnection cData sq) -> Left (sq, cData)
+      SomeConn _ (RcvConnection cData rq) -> Right (rq, cData)
+      SomeConn _ (ContactConnection cData rq) -> Right (rq, cData)
+    sndSubResult :: SndQueue -> Either AgentErrorType ()
+    sndSubResult sq = case status (sq :: SndQueue) of
+      Confirmed -> Right ()
+      Active -> Left $ CONN SIMPLEX
+      _ -> Left $ INTERNAL "unexpected queue status"
+    addRcvQueue :: Map SMPServer [(Int, (RcvQueue, ConnData))] -> (Int, (RcvQueue, ConnData)) -> Map SMPServer [(Int, (RcvQueue, ConnData))]
+    addRcvQueue m rq@(_, (RcvQueue {server}, _)) = M.alter (Just . (rq :) . fromMaybe []) server m
+    subscribe :: (SMPServer, [(Int, (RcvQueue, ConnData))]) -> m [(Int, Either AgentErrorType ())]
+    subscribe (srv, qs) = zip (map fst qs) <$> subscribeQueues c srv (map (second (connId :: ConnData -> ConnId) . snd) qs)
+    sndQueue :: SomeConn -> Maybe (ConnData, SndQueue)
+    sndQueue = \case
+      SomeConn _ (DuplexConnection cData _ sq) -> Just (cData, sq)
+      SomeConn _ (SndConnection cData sq) -> Just (cData, sq)
+      _ -> Nothing
 
 resubscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId =

@@ -65,6 +65,7 @@ module Simplex.Messaging.Agent.Client
     whenSuspending,
     withStore,
     withStore',
+    storeError,
   )
 where
 
@@ -795,15 +796,16 @@ withStore c action = do
   where
     handleInternal :: E.SomeException -> IO (Either StoreError a)
     handleInternal = pure . Left . SEInternal . bshow
-    storeError :: StoreError -> AgentErrorType
-    storeError = \case
-      SEConnNotFound -> CONN NOT_FOUND
-      SEConnDuplicate -> CONN DUPLICATE
-      SEBadConnType CRcv -> CONN SIMPLEX
-      SEBadConnType CSnd -> CONN SIMPLEX
-      SEInvitationNotFound -> CMD PROHIBITED
-      -- this error is never reported as store error,
-      -- it is used to wrap agent operations when "transaction-like" store access is needed
-      -- NOTE: network IO should NOT be used inside AgentStoreMonad
-      SEAgentError e -> e
-      e -> INTERNAL $ show e
+
+storeError :: StoreError -> AgentErrorType
+storeError = \case
+  SEConnNotFound -> CONN NOT_FOUND
+  SEConnDuplicate -> CONN DUPLICATE
+  SEBadConnType CRcv -> CONN SIMPLEX
+  SEBadConnType CSnd -> CONN SIMPLEX
+  SEInvitationNotFound -> CMD PROHIBITED
+  -- this error is never reported as store error,
+  -- it is used to wrap agent operations when "transaction-like" store access is needed
+  -- NOTE: network IO should NOT be used inside AgentStoreMonad
+  SEAgentError e -> e
+  e -> INTERNAL $ show e
