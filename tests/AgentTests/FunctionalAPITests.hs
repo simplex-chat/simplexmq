@@ -23,6 +23,7 @@ import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
 import Data.Int (Int64)
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
@@ -516,6 +517,9 @@ testBatchedSubscriptions t = do
   Right conns <- runServers $ do
     conns <- forM [1 .. 200 :: Int] . const $ makeConnection a b
     forM_ conns $ \(aId, bId) -> exchangeGreetings a bId b aId
+    forM_ (take 10 conns) $ \(aId, bId) -> do
+      deleteConnection a bId
+      deleteConnection b aId
     liftIO $ threadDelay 1000000
     pure conns
   ("", "", DOWN {}) <- get a
@@ -530,14 +534,17 @@ testBatchedSubscriptions t = do
     liftIO $ threadDelay 1000000
     subscribe a $ map snd conns
     subscribe b $ map fst conns
-    forM_ conns $ \(aId, bId) -> exchangeGreetingsMsgId 6 a bId b aId
+    forM_ (drop 10 conns) $ \(aId, bId) -> exchangeGreetingsMsgId 6 a bId b aId
   pure ()
   where
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     subscribe c cs = do
       r <- subscribeConnections c cs
-      liftIO $ all (== Right ()) r `shouldBe` True
-      liftIO $ M.keys r `shouldMatchList` cs
+      liftIO $ do
+        let dc = S.fromList $ take 10 cs
+        all (== Right ()) (M.withoutKeys r dc) `shouldBe` True
+        all (== Left (CONN NOT_FOUND)) (M.restrictKeys r dc) `shouldBe` True
+        M.keys r `shouldMatchList` cs
     runServers :: ExceptT AgentErrorType IO a -> IO (Either AgentErrorType a)
     runServers a = do
       withSmpServerStoreLogOn t testPort $ \t1 -> do
