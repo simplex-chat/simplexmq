@@ -613,11 +613,12 @@ Fairness ==
 
 Spec == Init /\ [][Next]_AllVars /\ Fairness
 
+Tokens == [ for : InviteIds, by : Users ]
 
 TypeOk ==
     approver_states \in [ InviteIds \X Users ->
         [ state : { Invited }
-        , tokens : SUBSET [ for : InviteIds, by : Users ]
+        , tokens : SUBSET Tokens
         , members : SUBSET Users
         ]
         \union
@@ -628,8 +629,8 @@ TypeOk ==
         [ state : { Synchronizing }
         , for_group : InviteIds \union { Nothing }
         , user : Users
-        , expected_tokens : SUBSET [ for : InviteIds, by : Users ]
-        , tokens : [ MemberSet -> ([ for : InviteIds, by : Users ] \union { Nothing }) ]
+        , expected_tokens : SUBSET Tokens
+        , tokens : [ MemberSet -> (Tokens \union { Nothing }) ]
         ]
         \union
         [ state : { Nothing, Committed }
