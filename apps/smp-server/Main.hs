@@ -60,9 +60,10 @@ smpServerCLIConfig =
             \# and restoring it when the server is started.\n\
             \# Log is compacted on start (deleted objects are removed).\n"
               <> ("enable: " <> (if enableStoreLog then "on" else "off") <> "\n")
-              <> "# The messages are optionally saved and restored when the server restarts,\n\
-                 \# they are deleted after restarting.\n"
-              <> ("restore_messages: " <> (if enableStoreLog then "on" else "off") <> "\n\n")
+              <> "# Undelivered messages are optionally saved and restored when the server restarts,\n\
+                 \# they are preserved in the .bak file until the next restart.\n"
+              <> ("restore_messages: " <> (if enableStoreLog then "on" else "off") <> "\n")
+              <> ("log_stats: off\n\n")
               <> "[TRANSPORT]\n"
               <> ("port: " <> defaultServerPort <> "\n")
               <> "websockets: off\n\n"
@@ -72,38 +73,38 @@ smpServerCLIConfig =
               <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
               <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n"),
           mkServerConfig = \storeLogFile transports ini ->
-            ServerConfig
-              { transports,
-                tbqSize = 16,
-                serverTbqSize = 64,
-                msgQueueQuota = 128,
-                queueIdBytes = 24,
-                msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
-                caCertificateFile = caCrtFile,
-                privateKeyFile = serverKeyFile,
-                certificateFile = serverCrtFile,
-                storeLogFile,
-                storeMsgsFile =
-                  let messagesPath = combine logPath "smp-server-messages.log"
-                   in case lookupValue "STORE_LOG" "restore_messages" ini of
-                        Right "on" -> Just messagesPath
-                        Right _ -> Nothing
-                        -- if the setting is not set, it is enabled when store log is enabled
-                        _ -> storeLogFile $> messagesPath,
-                allowNewQueues = True,
-                messageExpiration = Just defaultMessageExpiration,
-                inactiveClientExpiration =
-                  if lookupValue "INACTIVE_CLIENTS" "disconnect" ini == Right "on"
-                    then
-                      Just
-                        ExpirationConfig
+            let settingIsOn section name = if lookupValue section name ini == Right "on" then Just () else Nothing
+                logStats = settingIsOn "STORE_LOG" "log_stats"
+             in ServerConfig
+                  { transports,
+                    tbqSize = 16,
+                    serverTbqSize = 64,
+                    msgQueueQuota = 128,
+                    queueIdBytes = 24,
+                    msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
+                    caCertificateFile = caCrtFile,
+                    privateKeyFile = serverKeyFile,
+                    certificateFile = serverCrtFile,
+                    storeLogFile,
+                    storeMsgsFile =
+                      let messagesPath = combine logPath "smp-server-messages.log"
+                       in case lookupValue "STORE_LOG" "restore_messages" ini of
+                            Right "on" -> Just messagesPath
+                            Right _ -> Nothing
+                            -- if the setting is not set, it is enabled when store log is enabled
+                            _ -> storeLogFile $> messagesPath,
+                    allowNewQueues = True,
+                    messageExpiration = Just defaultMessageExpiration,
+                    inactiveClientExpiration =
+                      settingIsOn "INACTIVE_CLIENTS" "disconnect"
+                        $> ExpirationConfig
                           { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
                             checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
-                          }
-                    else Nothing,
-                logStatsInterval = Just 86400, -- seconds
-                logStatsStartTime = 0, -- seconds from 00:00 UTC
-                serverStatsFile = Just $ combine logPath "smp-server-stats.log",
-                smpServerVRange = supportedSMPServerVRange
-              }
+                          },
+                    logStatsInterval = logStats $> 86400, -- seconds
+                    logStatsStartTime = 0, -- seconds from 00:00 UTC
+                    serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
+                    serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
+                    smpServerVRange = supportedSMPServerVRange
+                  }
         }
