@@ -176,24 +176,24 @@ smpServer started = do
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, dayMsgQueues, weekMsgQueues, monthMsgQueues} <- asks serverStats
-      hasFile <- doesFileExist statsFilePath
       let interval = 1000000 * logInterval
-          ioMode = if hasFile then AppendMode else WriteMode
-      withFile statsFilePath ioMode $ \h -> liftIO . forever $ do
-        ts <- getCurrentTime
-        fromTime' <- atomically $ swapTVar fromTime ts
-        qCreated' <- atomically $ swapTVar qCreated 0
-        qSecured' <- atomically $ swapTVar qSecured 0
-        qDeleted' <- atomically $ swapTVar qDeleted 0
-        msgSent' <- atomically $ swapTVar msgSent 0
-        msgRecv' <- atomically $ swapTVar msgRecv 0
-        let day = utctDay ts
-            (_, wDay) = mondayStartWeek day
-            MonthDay _ mDay = day
-        (dayMsgQueues', weekMsgQueues', monthMsgQueues') <-
-          atomically $ (,,) <$> periodCount 1 dayMsgQueues <*> periodCount wDay weekMsgQueues <*> periodCount mDay monthMsgQueues
-        hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayMsgQueues', weekMsgQueues', monthMsgQueues']
-        threadDelay interval
+      withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        hSetBuffering h LineBuffering
+        forever $ do
+          ts <- getCurrentTime
+          fromTime' <- atomically $ swapTVar fromTime ts
+          qCreated' <- atomically $ swapTVar qCreated 0
+          qSecured' <- atomically $ swapTVar qSecured 0
+          qDeleted' <- atomically $ swapTVar qDeleted 0
+          msgSent' <- atomically $ swapTVar msgSent 0
+          msgRecv' <- atomically $ swapTVar msgRecv 0
+          let day = utctDay ts
+              (_, wDay) = mondayStartWeek day
+              MonthDay _ mDay = day
+          (dayMsgQueues', weekMsgQueues', monthMsgQueues') <-
+            atomically $ (,,) <$> periodCount 1 dayMsgQueues <*> periodCount wDay weekMsgQueues <*> periodCount mDay monthMsgQueues
+          hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayMsgQueues', weekMsgQueues', monthMsgQueues']
+          threadDelay interval
       where
         periodCount :: Int -> TVar (Set RecipientId) -> STM String
         periodCount 1 pVar = show . S.size <$> swapTVar pVar S.empty

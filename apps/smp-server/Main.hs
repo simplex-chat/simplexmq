@@ -101,7 +101,7 @@ smpServerCLIConfig =
                           { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
                             checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                           },
-                    logStatsInterval = logStats $> 30, -- 86400, -- seconds
+                    logStatsInterval = logStats $> 86400, -- seconds
                     logStatsStartTime = 0, -- seconds from 00:00 UTC
                     serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
                     serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
