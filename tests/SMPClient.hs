@@ -47,8 +47,8 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
-testserverStatsBackupFile :: FilePath
-testserverStatsBackupFile = "tests/tmp/smp-server-stats.log"
+testServerStatsBackupFile :: FilePath
+testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
 testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
 testSMPClient client =
@@ -87,10 +87,10 @@ withSmpServerStoreMsgLogOnV2 :: (MonadUnliftIO m, MonadRandom m) => ATransport -
 withSmpServerStoreMsgLogOnV2 t = withSmpServerConfigOn t cfgV2 {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
 
 withSmpServerStoreMsgLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testserverStatsBackupFile}
+withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerStoreLogOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServiceName -> (ThreadId -> m a) -> m a
-withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsBackupFile = Just testserverStatsBackupFile}
+withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerConfigOn :: (MonadUnliftIO m, MonadRandom m) => ATransport -> ServerConfig -> ServiceName -> (ThreadId -> m a) -> m a
 withSmpServerConfigOn t cfg' port' =
