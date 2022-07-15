@@ -55,8 +55,10 @@ data ServerConfig = ServerConfig
     -- | time of the day when the stats are logged first, to log at consistent times,
     -- irrespective of when the server is started (seconds from 00:00 UTC)
     logStatsStartTime :: Int,
+    -- | file to log stats
+    serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
-    serverStatsFile :: Maybe FilePath,
+    serverStatsBackupFile :: Maybe FilePath,
     -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,

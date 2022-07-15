@@ -78,6 +78,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
+import System.IO (hPutStrLn)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
@@ -165,19 +166,21 @@ smpServer started = do
             >>= atomically . (`deleteExpiredMsgs` old)
 
     serverStatsThread_ :: ServerConfig -> [m ()]
-    serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime} =
-      [logServerStats logStatsStartTime interval]
+    serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
+      [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
-    logServerStats :: Int -> Int -> m ()
-    logServerStats startAt logInterval = do
+    logServerStats :: Int -> Int -> FilePath -> m ()
+    logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
-      logInfo "fromTime,qCreated,qSecured,qDeleted,msgSent,msgRecv,dayMsgQueues,weekMsgQueues,monthMsgQueues"
+      liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, dayMsgQueues, weekMsgQueues, monthMsgQueues} <- asks serverStats
+      hasFile <- doesFileExist statsFilePath
       let interval = 1000000 * logInterval
-      forever $ do
-        ts <- liftIO getCurrentTime
+          ioMode = if hasFile then AppendMode else WriteMode
+      withFile statsFilePath ioMode $ \h -> liftIO . forever $ do
+        ts <- getCurrentTime
         fromTime' <- atomically $ swapTVar fromTime ts
         qCreated' <- atomically $ swapTVar qCreated 0
         qSecured' <- atomically $ swapTVar qSecured 0
@@ -189,7 +192,7 @@ smpServer started = do
             MonthDay _ mDay = day
         (dayMsgQueues', weekMsgQueues', monthMsgQueues') <-
           atomically $ (,,) <$> periodCount 1 dayMsgQueues <*> periodCount wDay weekMsgQueues <*> periodCount mDay monthMsgQueues
-        logInfo . T.pack $ intercalate "," [iso8601Show fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', show dayMsgQueues', weekMsgQueues', monthMsgQueues']
+        hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayMsgQueues', weekMsgQueues', monthMsgQueues']
         threadDelay interval
       where
         periodCount :: Int -> TVar (Set RecipientId) -> STM String
@@ -714,7 +717,7 @@ restoreServerMessages = asks (storeMsgsFile . config) >>= mapM_ restoreMessages
 
 saveServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
 saveServerStats =
-  asks (serverStatsFile . config)
+  asks (serverStatsBackupFile . config)
     >>= mapM_ (\f -> asks serverStats >>= atomically . getServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
@@ -723,7 +726,7 @@ saveServerStats =
       logInfo "server stats saved"
 
 restoreServerStats :: (MonadUnliftIO m, MonadReader Env m) => m ()
-restoreServerStats = asks (serverStatsFile . config) >>= mapM_ restoreStats
+restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
