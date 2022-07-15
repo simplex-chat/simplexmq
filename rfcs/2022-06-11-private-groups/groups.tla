@@ -517,15 +517,15 @@ UserReceiveInvite(sender) ==
                 IF  approver_states[key].state = Nothing
                 THEN
                     [ approver_states EXCEPT ![key] =
-                        [ state |-> Invited, tokens |-> { message.token }, members |-> { message.sender } ]
+                        [ state |-> Invited, user_tokens |-> { [ user |-> message.sender, token |-> message.token ] } ]
                     ]
                 ELSE
                     [ approver_states EXCEPT ![key] =
-                        [ @ EXCEPT !.tokens = @ \union { message.token }, !.members = @ \union { message.sender } ]
+                        [ @ EXCEPT !.user_tokens = @ \union { [ user |-> message.sender, token |-> message.token ] } ]
                     ]
                \* TODO: For Byzantine considerations, the invitee should be
                \* able to lose trust if things don't line up as expected
-            /\ IF   Cardinality(approver_states'[key].members) = message.group_size
+            /\ IF   Cardinality(approver_states'[key].user_tokens) = message.group_size
                THEN
                    \* IMPORTANT: The Accept may still has a chance of being
                    \* ignored (or token mismatch or something odd), so the
@@ -536,7 +536,7 @@ UserReceiveInvite(sender) ==
                            [ sender |-> message.recipient
                            , recipient |-> message.sender
                            , type |-> Accept
-                           , tokens |-> approver_states'[key].tokens
+                           , tokens |-> { x.token : x \in approver_states'[key].user_tokens }
                            , invite_id |-> message.invite_id
                            ]
                       )
@@ -618,8 +618,7 @@ Tokens == [ for : InviteIds, by : Users ]
 TypeOk ==
     approver_states \in [ InviteIds \X Users ->
         [ state : { Invited }
-        , tokens : SUBSET Tokens
-        , members : SUBSET Users
+        , user_tokens : SUBSET [ user : Users, token : Tokens ]
         ]
         \union
         [ state : { Active }
