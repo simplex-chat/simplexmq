@@ -49,6 +49,7 @@ module Simplex.Messaging.Agent
     getConnectionMessage,
     getNotificationMessage,
     resubscribeConnection,
+    resubscribeConnections,
     sendMessage,
     ackMessage,
     suspendConnection,
@@ -174,6 +175,9 @@ getNotificationMessage c = withAgentEnv c .: getNotificationMessage' c
 
 resubscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
+
+resubscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
@@ -400,6 +404,7 @@ subscribeConnection' c connId =
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
   let (errs, cs) = M.mapEither id conns
@@ -445,6 +450,14 @@ resubscribeConnection' c connId =
   unlessM
     (atomically $ hasActiveSubscription c connId)
     (subscribeConnection' c connId)
+
+resubscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+resubscribeConnections' _ [] = pure M.empty
+resubscribeConnections' c connIds = do
+  let r = M.fromList . zip connIds . repeat $ Right ()
+  connIds' <- filterM (fmap not . atomically . hasActiveSubscription c) connIds
+  -- union is left-biased, so results returned by subscribeConnections' take precedence
+  (`M.union` r) <$> subscribeConnections' c connIds'
 
 getConnectionMessage' :: AgentMonad m => AgentClient -> ConnId -> m (Maybe SMPMsgMeta)
 getConnectionMessage' c connId = do
