@@ -51,6 +51,8 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
+This document describes SMP protocol versions 3 and 4, the previous versions are discontinued.
+
 ## Introduction
 
 The objective of Simplex Messaging Protocol (SMP) is to facilitate the secure and private unidirectional transfer of messages from senders to recipients via persistent simplex queues managed by the message broker (server).
@@ -362,15 +364,16 @@ The clients can optionally instruct a dedicated push notification server to subs
 
 [`SEND` command](#send-message) includes the notification flag to instruct SMP server whether to send the notification - this flag is forwarded to the recepient inside encrypted envelope, together with the timestamp and the message body, so even if TLS is compromised this flag cannot be used for traffic correlation.
 
-## SMP Transmission structure
+## SMP Transmission andtransport block structure
 
 Each transport block (SMP transmission) has a fixed size of 16384 bytes for traffic uniformity.
 
+From SMP version 4 each block can contain multiple transmissions, version 3 blocks have 1 transmission.
 Some parts of SMP transmission are padded to a fixed size; this padding is uniformly added as a word16 encoded in network byte order - see `paddedString` syntax.
 
 In places where some part of the transmission should be padded, the syntax for `paddedNotation` is used:
 
-```
+```abnf
 paddedString = originalLength string pad
 originalLength = 2*2 OCTET
 pad = N*N"#" ; where N = paddedLength - originalLength - 2
@@ -380,9 +383,9 @@ paddedNotation = <padded(string, paddedLength)>
 ; paddedLength - required length after padding, including 2 bytes for originalLength
 ```
 
-Each transmission between the client and the server must have this format/syntax:
+Each transmission/block for SMP v3 between the client and the server must have this format/syntax:
 
-```
+```abnf
 paddedTransmission = <padded(transmission), 16384>
 transmission = [signature] SP signed
 signed = sessionIdentifier SP [corrId] SP [queueId] SP smpCommand
@@ -398,6 +401,16 @@ encoded = <base64 encoded binary>
 ```
 
 `base64` encoding should be used with padding, as defined in section 4 of [RFC 4648][9]
+
+Transport block for SMP v4 has this syntax:
+
+```abnf
+paddedTransportBlock = <padded(transportBlock), 16384>
+transportBlock = transmissionCount transmissions
+transmissionCount = 1*1 OCTET ; equal or greater than 1
+transmissions = transmissionLength transmission [transmissions]
+transmissionLength = 2*2 OCTET ; word16 encoded in network byte order
+```
 
 ## SMP commands
 
