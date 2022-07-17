@@ -301,7 +301,6 @@ verifyTransmission sig_ signed queueId cmd = do
       pure $ case q_ of
         Right q -> Just q `verified` f q
         _ -> maybe False (dummyVerifyCmd signed) sig_ `seq` VRFailed
-    -- pure $ either (const $ maybe False (dummyVerifyCmd signed) sig_ `seq` False) f q
     verifyMaybe :: Maybe C.APublicVerifyKey -> Bool
     verifyMaybe = maybe (isNothing sig_) $ verifyCmdSignature sig_ signed
     verified q cond = if cond then VRVerified q else VRFailed
