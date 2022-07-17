@@ -67,7 +67,6 @@ data AgentConfig = AgentConfig
     ntfCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
     helloTimeout :: NominalDiffTime,
-    resubscriptionConcurrency :: Int,
     ntfCron :: Word16,
     ntfWorkerDelay :: Int,
     ntfSMPWorkerDelay :: Int,
@@ -103,7 +102,6 @@ defaultAgentConfig =
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       reconnectInterval = defaultReconnectInterval,
       helloTimeout = 2 * nominalDay,
-      resubscriptionConcurrency = 16,
       ntfCron = 20, -- minutes
       ntfWorkerDelay = 100000, -- microseconds
       ntfSMPWorkerDelay = 500000, -- microseconds
