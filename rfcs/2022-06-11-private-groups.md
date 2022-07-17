@@ -75,8 +75,6 @@ A SyncToken message can both send a token and ack receipt of a token from anothe
 
 Once a member has all other members' tokens, assuming they all match the Accept message, then the member knows that all parties have agreed to extend membership.
 
-TODO: Welcome messages are not modeled in TLA+
-
 The member locally commits this result sends a Welcome message to share the group-specific ids of each member.
 These are the original invitation ids for this member (or none if the member is the Leader).
 These ids are still used for kicking members (and the Leader can't be).
