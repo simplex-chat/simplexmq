@@ -21,6 +21,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     newRcvQueue,
     subscribeQueue,
+    subscribeQueues,
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
@@ -64,6 +65,7 @@ module Simplex.Messaging.Agent.Client
     whenSuspending,
     withStore,
     withStore',
+    storeError,
   )
 where
 
@@ -74,16 +76,19 @@ import Control.Logger.Simple
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (partitionEithers)
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import Data.Text.Encoding
+import Data.Tuple (swap)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Env.SQLite
@@ -103,7 +108,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, N
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, catchAll_, ifM, liftEitherError, liftError, tryError, unlessM, whenM)
+import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 import UnliftIO (async, pooledForConcurrentlyN)
@@ -476,14 +481,42 @@ subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
   whenM (atomically . TM.member (server, rcvId) $ getMsgLocks c) . throwError $ CMD PROHIBITED
   atomically $ addPendingSubscription c rq connId
-  withLogClient c server rcvId "SUB" $ \smp -> do
-    liftIO (runExceptT $ subscribeSMPQueue smp rcvPrivateKey rcvId) >>= \case
-      Left e -> do
-        atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
-          removePendingSubscription c server connId
-        throwError e
-      Right _ -> do
-        addSubscription c rq connId
+  withLogClient c server rcvId "SUB" $ \smp ->
+    liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq connId)
+      >>= either throwError pure
+
+processSubResult :: AgentClient -> RcvQueue -> ConnId -> Either ProtocolClientError () -> IO (Either ProtocolClientError ())
+processSubResult c rq@RcvQueue {server} connId r = do
+  case r of
+    Left e ->
+      atomically . when (e /= PCENetworkError && e /= PCEResponseTimeout) $
+        removePendingSubscription c server connId
+    _ -> addSubscription c rq connId
+  pure r
+
+-- | subscribe multiple queues - all passed queues should be on the same server
+subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> Map ConnId RcvQueue -> m (Map ConnId (Either AgentErrorType ()))
+subscribeQueues c srv qs = do
+  (errs, qs_) <- partitionEithers <$> mapM checkQueue (M.assocs qs)
+  forM_ qs_ $ atomically . uncurry (addPendingSubscription c) . swap
+  case L.nonEmpty qs_ of
+    Just qs' -> do
+      smp_ <- tryError (getSMPServerClient c srv)
+      M.fromList . (errs <>) <$> case smp_ of
+        Left e -> pure $ map (second . const $ Left e) qs_
+        Right smp -> do
+          logServer "-->" c srv (bshow (length qs_) <> " queues") "SUB"
+          let qs2 = L.map (queueCreds . snd) qs'
+          rs' :: [((ConnId, RcvQueue), Either ProtocolClientError ())] <-
+            liftIO $ zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
+          forM_ rs' $ \((connId, rq), r) -> liftIO $ processSubResult c rq connId r
+          pure $ map (bimap fst (first $ protocolClientError SMP)) rs'
+    _ -> pure $ M.fromList errs
+  where
+    checkQueue rq@(connId, RcvQueue {rcvId, server}) = do
+      prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c
+      pure $ if prohibited || srv /= server then Left (connId, Left $ CMD PROHIBITED) else Right rq
+    queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
@@ -762,15 +795,16 @@ withStore c action = do
   where
     handleInternal :: E.SomeException -> IO (Either StoreError a)
     handleInternal = pure . Left . SEInternal . bshow
-    storeError :: StoreError -> AgentErrorType
-    storeError = \case
-      SEConnNotFound -> CONN NOT_FOUND
-      SEConnDuplicate -> CONN DUPLICATE
-      SEBadConnType CRcv -> CONN SIMPLEX
-      SEBadConnType CSnd -> CONN SIMPLEX
-      SEInvitationNotFound -> CMD PROHIBITED
-      -- this error is never reported as store error,
-      -- it is used to wrap agent operations when "transaction-like" store access is needed
-      -- NOTE: network IO should NOT be used inside AgentStoreMonad
-      SEAgentError e -> e
-      e -> INTERNAL $ show e
+
+storeError :: StoreError -> AgentErrorType
+storeError = \case
+  SEConnNotFound -> CONN NOT_FOUND
+  SEConnDuplicate -> CONN DUPLICATE
+  SEBadConnType CRcv -> CONN SIMPLEX
+  SEBadConnType CSnd -> CONN SIMPLEX
+  SEInvitationNotFound -> CMD PROHIBITED
+  -- this error is never reported as store error,
+  -- it is used to wrap agent operations when "transaction-like" store access is needed
+  -- NOTE: network IO should NOT be used inside AgentStoreMonad
+  SEAgentError e -> e
+  e -> INTERNAL $ show e

@@ -4,6 +4,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -248,22 +249,23 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: (Transport c, MonadUnliftIO m, MonadReader NtfEnv m) => THandle c -> NtfServerClient -> m ()
 receive th NtfServerClient {rcvQ, sndQ, activeAt} = forever $ do
-  t@(_, _, (corrId, entId, cmdOrError)) <- tGet th
-  atomically . writeTVar activeAt =<< liftIO getSystemTime
-  logDebug "received transmission"
-  case cmdOrError of
-    Left e -> write sndQ (corrId, entId, NRErr e)
-    Right cmd ->
-      verifyNtfTransmission t cmd >>= \case
-        VRVerified req -> write rcvQ req
-        VRFailed -> write sndQ (corrId, entId, NRErr AUTH)
+  ts <- tGet th
+  forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
+    atomically . writeTVar activeAt =<< liftIO getSystemTime
+    logDebug "received transmission"
+    case cmdOrError of
+      Left e -> write sndQ (corrId, entId, NRErr e)
+      Right cmd ->
+        verifyNtfTransmission t cmd >>= \case
+          VRVerified req -> write rcvQ req
+          VRFailed -> write sndQ (corrId, entId, NRErr AUTH)
   where
     write q t = atomically $ writeTBQueue q t
 
 send :: (Transport c, MonadUnliftIO m) => THandle c -> NtfServerClient -> m ()
 send h@THandle {thVersion = v} NtfServerClient {sndQ, sessionId, activeAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h (Nothing, encodeTransmission v sessionId t)
+  void . liftIO $ tPut h [(Nothing, encodeTransmission v sessionId t)]
   atomically . writeTVar activeAt =<< liftIO getSystemTime
 
 -- instance Show a => Show (TVar a) where

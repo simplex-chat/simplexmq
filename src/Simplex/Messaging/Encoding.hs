@@ -13,6 +13,7 @@ module Simplex.Messaging.Encoding
     Large (..),
     smpEncodeList,
     smpListP,
+    lenEncode,
   )
 where
 

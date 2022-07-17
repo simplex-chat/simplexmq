@@ -16,8 +16,8 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations
 where
 
 import Control.Monad (forM_)
-import Data.Function (on)
 import Data.List (intercalate, sortBy)
+import Data.Ord (comparing)
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Database.SQLite.Simple (Connection, Only (..), Query (..))
@@ -44,7 +44,7 @@ schemaMigrations =
 
 -- | The list of migrations in ascending order by date
 app :: [Migration]
-app = sortBy (compare `on` name) $ map migration schemaMigrations
+app = sortBy (comparing name) $ map migration schemaMigrations
   where
     migration (name, query) = Migration {name = name, up = fromQuery query}
 

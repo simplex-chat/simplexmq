@@ -45,9 +45,11 @@ module Simplex.Messaging.Agent
     acceptContact,
     rejectContact,
     subscribeConnection,
+    subscribeConnections,
     getConnectionMessage,
     getNotificationMessage,
     resubscribeConnection,
+    resubscribeConnections,
     sendMessage,
     ackMessage,
     suspendConnection,
@@ -79,6 +81,7 @@ import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
 import qualified Data.Text as T
@@ -105,10 +108,10 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (bshow, eitherToMaybe, liftE, liftError, tryError, unlessM, whenM, ($>>=))
+import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Random (randomR)
-import UnliftIO.Async (async, race_)
+import UnliftIO.Async (async, mapConcurrently, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -158,6 +161,10 @@ rejectContact c = withAgentEnv c .: rejectContact' c
 subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection c = withAgentEnv c . subscribeConnection' c
 
+-- | Subscribe to receive connection messages from multiple connections, batching commands when possible
+subscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+subscribeConnections c = withAgentEnv c . subscribeConnections' c
+
 -- | Get connection message (GET command)
 getConnectionMessage :: AgentErrorMonad m => AgentClient -> ConnId -> m (Maybe SMPMsgMeta)
 getConnectionMessage c = withAgentEnv c . getConnectionMessage' c
@@ -168,6 +175,9 @@ getNotificationMessage c = withAgentEnv c .: getNotificationMessage' c
 
 resubscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
+
+resubscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentErrorMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
@@ -393,11 +403,61 @@ subscribeConnection' c connId =
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
+subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+subscribeConnections' _ [] = pure M.empty
+subscribeConnections' c connIds = do
+  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
+  let (errs, cs) = M.mapEither id conns
+      errs' = M.map (Left . storeError) errs
+      (sndQs, rcvQs) = M.mapEither rcvOrSndQueue cs
+      sndRs = M.map (sndSubResult . fst) sndQs
+      srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
+  mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
+  rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
+  let rs = M.unions $ errs' : sndRs : rcvRs
+  notifyResultError rs
+  pure rs
+  where
+    rcvOrSndQueue :: SomeConn -> Either (SndQueue, ConnData) (RcvQueue, ConnData)
+    rcvOrSndQueue = \case
+      SomeConn _ (DuplexConnection cData rq _) -> Right (rq, cData)
+      SomeConn _ (SndConnection cData sq) -> Left (sq, cData)
+      SomeConn _ (RcvConnection cData rq) -> Right (rq, cData)
+      SomeConn _ (ContactConnection cData rq) -> Right (rq, cData)
+    sndSubResult :: SndQueue -> Either AgentErrorType ()
+    sndSubResult sq = case status (sq :: SndQueue) of
+      Confirmed -> Right ()
+      Active -> Left $ CONN SIMPLEX
+      _ -> Left $ INTERNAL "unexpected queue status"
+    addRcvQueue :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) -> ConnId -> (RcvQueue, ConnData) -> Map SMPServer (Map ConnId (RcvQueue, ConnData))
+    addRcvQueue m connId rq@(RcvQueue {server}, _) = M.alter (Just . maybe (M.singleton connId rq) (M.insert connId rq)) server m
+    subscribe :: (SMPServer, Map ConnId (RcvQueue, ConnData)) -> m (Map ConnId (Either AgentErrorType ()))
+    subscribe (srv, qs) = subscribeQueues c srv (M.map fst qs)
+    sndQueue :: SomeConn -> Maybe (ConnData, SndQueue)
+    sndQueue = \case
+      SomeConn _ (DuplexConnection cData _ sq) -> Just (cData, sq)
+      SomeConn _ (SndConnection cData sq) -> Just (cData, sq)
+      _ -> Nothing
+    notifyResultError :: Map ConnId (Either AgentErrorType ()) -> m ()
+    notifyResultError rs = do
+      let actual = M.size rs
+          expected = length connIds
+      when (actual /= expected) . atomically $
+        writeTBQueue (subQ c) ("", "", ERR . INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
+
 resubscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 resubscribeConnection' c connId =
   unlessM
     (atomically $ hasActiveSubscription c connId)
     (subscribeConnection' c connId)
+
+resubscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+resubscribeConnections' _ [] = pure M.empty
+resubscribeConnections' c connIds = do
+  let r = M.fromList . zip connIds . repeat $ Right ()
+  connIds' <- filterM (fmap not . atomically . hasActiveSubscription c) connIds
+  -- union is left-biased, so results returned by subscribeConnections' take precedence
+  (`M.union` r) <$> subscribeConnections' c connIds'
 
 getConnectionMessage' :: AgentMonad m => AgentClient -> ConnId -> m (Maybe SMPMsgMeta)
 getConnectionMessage' c connId = do

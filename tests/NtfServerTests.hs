@@ -25,6 +25,8 @@ import ServerTests
     samplePubKey,
     sampleSig,
     signSendRecv,
+    tGet1,
+    tPut1,
     (#==),
     _SEND',
     pattern Resp,
@@ -69,15 +71,15 @@ pattern RespNtf corrId queueId command <- (_, _, (corrId, queueId, Right command
 sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> (Maybe C.ASignature, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission NtfResponse)
 sendRecvNtf h@THandle {thVersion, sessionId} (sgn, corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
-  Right () <- tPut h (sgn, t)
-  tGet h
+  Right () <- tPut1 h (sgn, t)
+  tGet1 h
 
 signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandle c -> C.APrivateSignKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission NtfResponse)
 signSendRecvNtf h@THandle {thVersion, sessionId} pk (corrId, qId, cmd) = do
   let t = encodeTransmission thVersion sessionId (CorrId corrId, qId, cmd)
   Right sig <- runExceptT $ C.sign pk t
-  Right () <- tPut h (Just sig, t)
-  tGet h
+  Right () <- tPut1 h (Just sig, t)
+  tGet1 h
 
 (.->) :: J.Value -> J.Key -> Either String ByteString
 v .-> key =
@@ -132,7 +134,7 @@ testNotificationSubscription (ATransport t) =
           notifierId `shouldBe` nId
           send' APNSRespOk
           -- receive message
-          Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet rh
+          Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet1 rh
           Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) body)
           mId1 `shouldBe` msgId
           mTs `shouldBe` msgTs
