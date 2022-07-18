@@ -1,3 +1,9 @@
+# 3.1.0
+
+SMP server and agent:
+
+- SMP protocol v4: batching multiple server commands/responses in a transport block.
+
 # 3.0.0
 
 SMP server:
