@@ -23,7 +23,8 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (loadFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
+import Simplex.Messaging.Util (whenM)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), IOMode (..), hFlush, hGetLine, hSetBuffering, stderr, stdout, withFile)
@@ -147,7 +148,7 @@ cliCommandP ServerCLIConfig {cfgDir, logDir, iniFile} =
 
 initializeServer :: ServerCLIConfig cfg -> InitOptions -> IO ()
 initializeServer cliCfg InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
-  cleanup cliCfg
+  clearDirs cliCfg
   createDirectoryIfMissing True cfgDir
   createDirectoryIfMissing True logDir
   createX509
@@ -276,7 +277,14 @@ cleanup ServerCLIConfig {cfgDir, logDir} = do
   deleteDirIfExists cfgDir
   deleteDirIfExists logDir
   where
-    deleteDirIfExists path = doesDirectoryExist path >>= (`when` removeDirectoryRecursive path)
+    deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path
+
+clearDirs :: ServerCLIConfig cfg -> IO ()
+clearDirs ServerCLIConfig {cfgDir, logDir} = do
+  clearDirIfExists cfgDir
+  clearDirIfExists logDir
+  where
+    clearDirIfExists path = whenM (doesDirectoryExist path) $ listDirectory path >>= mapM_ (removePathForcibly . combine path)
 
 printServiceInfo :: ServerCLIConfig cfg -> ByteString -> IO ()
 printServiceInfo ServerCLIConfig {serverVersion} fpStr = do

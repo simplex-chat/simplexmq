@@ -4,3 +4,5 @@
 *.session.sql
 tests/tmp
 dist-newstyle/
+
+src/tor
