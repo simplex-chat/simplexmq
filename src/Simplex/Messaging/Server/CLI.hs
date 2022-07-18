@@ -147,7 +147,6 @@ cliCommandP ServerCLIConfig {cfgDir, logDir, iniFile} =
 
 initializeServer :: ServerCLIConfig cfg -> InitOptions -> IO ()
 initializeServer cliCfg InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
-  cleanup cliCfg
   createDirectoryIfMissing True cfgDir
   createDirectoryIfMissing True logDir
   createX509
