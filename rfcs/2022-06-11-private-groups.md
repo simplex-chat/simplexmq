@@ -1,5 +1,13 @@
 # Private Groups
 
+TODO: The original presented token based approach has a nice property in that it preserves the security properties of existing connections between two users as they establish connections for groups they are in.
+This is quite appealing in that participating in groups "do no harm;" connections are always exactly secure as they always were.
+However, the in progress secret splitting approach can do one better: the security of a connection established for a group takes on the properties of the _most secure_ connection within that (new) group.
+This means adding a user that has corrupted connections to all but a single existing member will get a clean connection to _all_ members.
+Or a new member that has a clean connection to just one member of a completely corrupted group will still have a clean connection to _all_ members.
+This also better builds upon the queue primitives that already exist, making a few group specific message types defined redundant.
+This doc and the TLA+ spec are in progress to use the improved secret splitting approach.
+
 An alternate groups approach that preserves more privacy properties.
 These groups can only be formed if all members already have direct connections to all other members.
 This eliminates the need for implicit introductions, which offer vectors for MITM attacks.
