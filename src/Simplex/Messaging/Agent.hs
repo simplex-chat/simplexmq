@@ -414,6 +414,8 @@ subscribeConnections' c connIds = do
       srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
   rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
+  ns <- asks ntfSupervisor
+  readTVarIO (ntfTkn ns) >>= void . forkIO . mapM_ (sendNtfCreate ns rcvRs)
   let rs = M.unions $ errs' : sndRs : rcvRs
   notifyResultError rs
   pure rs
@@ -432,13 +434,12 @@ subscribeConnections' c connIds = do
     addRcvQueue :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) -> ConnId -> (RcvQueue, ConnData) -> Map SMPServer (Map ConnId (RcvQueue, ConnData))
     addRcvQueue m connId rq@(RcvQueue {server}, _) = M.alter (Just . maybe (M.singleton connId rq) (M.insert connId rq)) server m
     subscribe :: (SMPServer, Map ConnId (RcvQueue, ConnData)) -> m (Map ConnId (Either AgentErrorType ()))
-    subscribe (srv, qs) = do
-      rs <- subscribeQueues c srv (M.map fst qs)
-      ns <- asks ntfSupervisor
-      forM_ (M.assocs rs) $ \case
-        (connId, Right _) -> atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+    subscribe (srv, qs) = subscribeQueues c srv (M.map fst qs)
+    sendNtfCreate :: NtfSupervisor -> [Map ConnId (Either AgentErrorType ())] -> NtfToken -> m ()
+    sendNtfCreate ns rcvRs tkn =
+      forM_ (concatMap M.assocs rcvRs) $ \case
+        (connId, Right _) -> atomically $ sendNtfSubCommand' ns (connId, NSCCreate) tkn
         _ -> pure ()
-      pure rs
     sndQueue :: SomeConn -> Maybe (ConnData, SndQueue)
     sndQueue = \case
       SomeConn _ (DuplexConnection cData _ sq) -> Just (cData, sq)

@@ -11,6 +11,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsUpdateToken,
     nsRemoveNtfToken,
     sendNtfSubCommand,
+    sendNtfSubCommand',
     closeNtfSupervisor,
     getNtfServer,
   )
@@ -327,13 +328,12 @@ nsRemoveNtfToken :: NtfSupervisor -> STM ()
 nsRemoveNtfToken ns = writeTVar (ntfTkn ns) Nothing
 
 sendNtfSubCommand :: NtfSupervisor -> (ConnId, NtfSupervisorCommand) -> STM ()
-sendNtfSubCommand ns cmd =
-  readTVar (ntfTkn ns)
-    >>= mapM_
-      ( \NtfToken {ntfTknStatus, ntfMode} ->
-          when (ntfTknStatus == NTActive && ntfMode == NMInstant) $
-            writeTBQueue (ntfSubQ ns) cmd
-      )
+sendNtfSubCommand ns cmd = readTVar (ntfTkn ns) >>= mapM_ (sendNtfSubCommand' ns cmd)
+
+sendNtfSubCommand' :: NtfSupervisor -> (ConnId, NtfSupervisorCommand) -> NtfToken -> STM ()
+sendNtfSubCommand' ns cmd NtfToken {ntfTknStatus, ntfMode} =
+  when (ntfTknStatus == NTActive && ntfMode == NMInstant) $
+    writeTBQueue (ntfSubQ ns) cmd
 
 closeNtfSupervisor :: NtfSupervisor -> IO ()
 closeNtfSupervisor ns = do
