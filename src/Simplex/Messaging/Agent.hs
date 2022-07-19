@@ -54,6 +54,7 @@ module Simplex.Messaging.Agent
     ackMessage,
     suspendConnection,
     deleteConnection,
+    getConnectionServers,
     setSMPServers,
     setNtfServers,
     registerNtfToken,
@@ -194,6 +195,10 @@ suspendConnection c = withAgentEnv c . suspendConnection' c
 deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnection c = withAgentEnv c . deleteConnection' c
 
+-- | get servers used for connection
+getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m (NonEmpty ConnServer)
+getConnectionServers c = withAgentEnv c . getConnectionServers' c
+
 -- | Change servers to be used for creating new queues
 setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers c = withAgentEnv c . setSMPServers' c
@@ -273,6 +278,7 @@ processCommand c (connId, cmd) = case cmd of
   ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
+  CHK -> (connId,) . STAT <$> getConnectionServers' c connId
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId cMode = do
@@ -707,6 +713,16 @@ deleteConnection' c connId =
       withStore' c (`deleteConn` connId)
       ns <- asks ntfSupervisor
       atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
+
+getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m (NonEmpty ConnServer)
+getConnectionServers' c connId = connServers <$> withStore c (`getConn` connId)
+  where
+    connServers :: SomeConn -> NonEmpty ConnServer
+    connServers = \case
+      SomeConn _ (RcvConnection _ RcvQueue {server}) -> [RcvServer server]
+      SomeConn _ (SndConnection _ SndQueue {server}) -> [SndServer server]
+      SomeConn _ (DuplexConnection _ RcvQueue {server = s1} SndQueue {server = s2}) -> [RcvServer s1, SndServer s2]
+      SomeConn _ (ContactConnection _ RcvQueue {server}) -> [RcvServer server]
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()

@@ -210,9 +210,9 @@ data ACommand (p :: AParty) where
   INV :: AConnectionRequestUri -> ACommand Agent
   JOIN :: AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
-  LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client, empty list of servers to allow any servers
+  LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   REQ :: InvitationId -> L.NonEmpty SMPServer -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  ACPT :: InvitationId -> ConnInfo -> ACommand Client -- ConnInfo is from client, empty list of servers to allow any servers
+  ACPT :: InvitationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   RJCT :: InvitationId -> ACommand Client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
@@ -228,6 +228,8 @@ data ACommand (p :: AParty) where
   ACK :: AgentMsgId -> ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
+  CHK :: ACommand Client
+  STAT :: L.NonEmpty ConnServer -> ACommand Agent
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
   SUSPENDED :: ACommand Agent
@@ -892,6 +894,8 @@ commandP =
     <|> "ACK " *> ackCmd
     <|> "OFF" $> ACmd SClient OFF
     <|> "DEL" $> ACmd SClient DEL
+    <|> "CHK" $> ACmd SClient CHK
+    <|> "STAT " *> statResp
     <|> "ERR " *> agentError
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
@@ -913,6 +917,7 @@ commandP =
     msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
     message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
+    statResp = ACmd SAgent . STAT <$> strP
     connections = strP `A.sepBy'` A.char ','
     msgMetaP = do
       integrity <- strP
@@ -950,6 +955,8 @@ serializeCommand = \case
   ACK mId -> "ACK " <> bshow mId
   OFF -> "OFF"
   DEL -> "DEL"
+  CHK -> "CHK"
+  STAT srvs -> "STAT " <> strEncode srvs
   CON -> "CON"
   ERR e -> "ERR " <> strEncode e
   OK -> "OK"

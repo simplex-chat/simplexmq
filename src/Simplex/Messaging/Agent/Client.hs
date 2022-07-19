@@ -420,11 +420,11 @@ liftClient = liftError . protocolClientError
 protocolClientError :: (ErrorType -> AgentErrorType) -> ProtocolClientError -> AgentErrorType
 protocolClientError protocolError_ = \case
   PCEProtocolError e -> protocolError_ e
-  PCEResponseError e -> BROKER (RESPONSE e)
+  PCEResponseError e -> BROKER $ RESPONSE e
   PCEUnexpectedResponse _ -> BROKER UNEXPECTED
   PCEResponseTimeout -> BROKER TIMEOUT
   PCENetworkError -> BROKER NETWORK
-  PCETransportError e -> BROKER (TRANSPORT e)
+  PCETransportError e -> BROKER $ TRANSPORT e
   e@PCESignatureError {} -> INTERNAL $ show e
   e@PCEIOError {} -> INTERNAL $ show e
 
