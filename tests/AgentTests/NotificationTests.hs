@@ -168,7 +168,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} = do
     -- now the second token registration is verified
     verifyNtfToken a' tkn nonce' verification'
     -- the first registration is removed
-    Left (NTF AUTH) <- tryE $ checkNtfToken a tkn
+    Left (NTF AUTH _) <- tryE $ checkNtfToken a tkn
     -- and the second is active
     NTActive <- checkNtfToken a' tkn
     pure ()
@@ -193,7 +193,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   Right () <- withNtfServer t . runExceptT $ do
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
-    Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
+    Left (NTF AUTH _) <- tryE $ verifyNtfToken a' tkn nonce verification
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
       atomically $ readTBQueue apnsQ
     verification' <- ntfData' .-> "verification"
@@ -212,8 +212,8 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     -- establish connection
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
-    allowConnection alice bobId confId "alice's connInfo"
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    allowConnection alice bobId confId [] "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
@@ -276,9 +276,9 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     liftIO $ print 0
     void $ messageNotification apnsQ
-    ("", _, CONF confId "bob's connInfo") <- get alice
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     liftIO $ threadDelay 500000
-    allowConnection alice bobId confId "alice's connInfo"
+    allowConnection alice bobId confId [] "alice's connInfo"
     liftIO $ print 1
     void $ messageNotification apnsQ
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -330,8 +330,8 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- establish connection
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
-    allowConnection alice bobId confId "alice's connInfo"
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    allowConnection alice bobId confId [] "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
@@ -395,8 +395,8 @@ testChangeToken APNSMockServer {apnsQ} = do
     -- establish connection
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
-    allowConnection alice bobId confId "alice's connInfo"
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    allowConnection alice bobId confId [] "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
@@ -414,7 +414,7 @@ testChangeToken APNSMockServer {apnsQ} = do
 
   alice1 <- getSMPAgentClient agentCfg initAgentServers
   Right () <- runExceptT $ do
-    subscribeConnection alice1 bobId
+    _ <- subscribeConnection alice1 bobId
     -- change notification token
     void $ registerTestToken alice1 "bcde" NMInstant apnsQ
     -- send message, receive notification

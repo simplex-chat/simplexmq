@@ -77,7 +77,7 @@ import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
-import Data.Composition ((.:), (.:.))
+import Data.Composition ((.:), (.:.), (.::))
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -105,7 +105,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta)
+import Simplex.Messaging.Protocol (AProtocolServer (..), BrokerMsg, ErrorType (AUTH), MsgBody, MsgFlags, NtfServer, SMPMsgMeta)
 import qualified Simplex.Messaging.Protocol as SMP
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util
@@ -146,23 +146,23 @@ joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequestUri c -> 
 joinConnection c = withAgentEnv c .: joinConn c ""
 
 -- | Allow connection to continue after CONF notification (LET command)
-allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-allowConnection c = withAgentEnv c .:. allowConnection' c
+allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> [SMPServer] -> ConnInfo -> m ()
+allowConnection c = withAgentEnv c .:: allowConnection' c
 
 -- | Accept contact after REQ notification (ACPT command)
-acceptContact :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
-acceptContact c = withAgentEnv c .: acceptContact' c ""
+acceptContact :: AgentErrorMonad m => AgentClient -> ConfirmationId -> [SMPServer] -> ConnInfo -> m ConnId
+acceptContact c = withAgentEnv c .:. acceptContact' c ""
 
 -- | Reject contact (RJCT command)
 rejectContact :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> m ()
 rejectContact c = withAgentEnv c .: rejectContact' c
 
 -- | Subscribe to receive connection messages (SUB command)
-subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+subscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m (L.NonEmpty ConnServer)
 subscribeConnection c = withAgentEnv c . subscribeConnection' c
 
 -- | Subscribe to receive connection messages from multiple connections, batching commands when possible
-subscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+subscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer)))
 subscribeConnections c = withAgentEnv c . subscribeConnections' c
 
 -- | Get connection message (GET command)
@@ -173,10 +173,10 @@ getConnectionMessage c = withAgentEnv c . getConnectionMessage' c
 getNotificationMessage :: AgentErrorMonad m => AgentClient -> C.CbNonce -> ByteString -> m (NotificationInfo, [SMPMsgMeta])
 getNotificationMessage c = withAgentEnv c .: getNotificationMessage' c
 
-resubscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+resubscribeConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m (L.NonEmpty ConnServer)
 resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
 
-resubscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+resubscribeConnections :: AgentErrorMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer)))
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 
 -- | Send message to the connection (SEND command)
@@ -265,8 +265,8 @@ processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Cl
 processCommand c (connId, cmd) = case cmd of
   NEW (ACM cMode) -> second (INV . ACR cMode) <$> newConn c connId cMode
   JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
-  LET confId ownCInfo -> allowConnection' c connId confId ownCInfo $> (connId, OK)
-  ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId invId ownCInfo
+  LET confId srvs ownCInfo -> allowConnection' c connId confId srvs ownCInfo $> (connId, OK)
+  ACPT invId srvs ownCInfo -> (,OK) <$> acceptContact' c connId invId srvs ownCInfo
   RJCT invId -> rejectContact' c connId invId $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgFlags msgBody -> (connId,) . MID <$> sendMessage' c connId msgFlags msgBody
@@ -347,8 +347,8 @@ createReplyQueue c connId = do
   pure qInfo
 
 -- | Approve confirmation (LET command) in Reader monad
-allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-allowConnection' c connId confId ownConnInfo =
+allowConnection' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> [SMPServer] -> ConnInfo -> m ()
+allowConnection' c connId confId _srvs ownConnInfo =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection cData rq) -> do
       AcceptedConfirmation {senderConf} <- withStore c $ \db -> runExceptT $ do
@@ -360,8 +360,8 @@ allowConnection' c connId confId ownConnInfo =
     _ -> throwError $ CMD PROHIBITED
 
 -- | Accept contact (ACPT command) in Reader monad
-acceptContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> ConnInfo -> m ConnId
-acceptContact' c connId invId ownConnInfo = do
+acceptContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> [SMPServer] -> ConnInfo -> m ConnId
+acceptContact' c connId invId _srvs ownConnInfo = do
   Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ ContactConnection {} -> do
@@ -382,9 +382,12 @@ processConfirmation c rq@RcvQueue {e2ePrivKey} SMPConfirmation {senderKey, e2ePu
   withStore' c $ \db -> setRcvQueueStatus db rq Secured
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
-subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
-subscribeConnection' c connId =
-  withStore c (`getConn` connId) >>= \case
+subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m (L.NonEmpty ConnServer)
+subscribeConnection' c connId = withStore c (`getConn` connId) >>= subscribeConnection_ c connId
+
+subscribeConnection_ :: forall m. AgentMonad m => AgentClient -> ConnId -> SomeConn -> m (L.NonEmpty ConnServer)
+subscribeConnection_ c connId conn = do
+  () <- case conn of
     SomeConn _ (DuplexConnection cData rq sq) -> do
       resumeMsgDelivery c cData sq
       subscribe rq
@@ -396,6 +399,7 @@ subscribeConnection' c connId =
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribe rq
     SomeConn _ (ContactConnection _ rq) -> subscribe rq
+  pure $ connServers conn
   where
     subscribe :: RcvQueue -> m ()
     subscribe rq = do
@@ -403,21 +407,26 @@ subscribeConnection' c connId =
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
-subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer)))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
-      (sndQs, rcvQs) = M.mapEither rcvOrSndQueue cs
+  M.union errs' <$> subscribeConnections_ c cs
+
+subscribeConnections_ :: forall m. AgentMonad m => AgentClient -> Map ConnId SomeConn -> m (Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer)))
+subscribeConnections_ c cs = do
+  let (sndQs, rcvQs) = M.mapEither rcvOrSndQueue cs
       sndRs = M.map (sndSubResult . fst) sndQs
+      srvs = M.map connServers cs
       srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
-  rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
+  rcvRs <- mapConcurrently (subscribe srvs) (M.assocs srvRcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
   when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs
-  let rs = M.unions $ errs' : sndRs : rcvRs
+  let rs = M.unions $ sndRs : rcvRs
   notifyResultError rs
   pure rs
   where
@@ -427,16 +436,18 @@ subscribeConnections' c connIds = do
       SomeConn _ (SndConnection cData sq) -> Left (sq, cData)
       SomeConn _ (RcvConnection cData rq) -> Right (rq, cData)
       SomeConn _ (ContactConnection cData rq) -> Right (rq, cData)
-    sndSubResult :: SndQueue -> Either AgentErrorType ()
-    sndSubResult sq = case status (sq :: SndQueue) of
-      Confirmed -> Right ()
+    sndSubResult :: SndQueue -> Either AgentErrorType (L.NonEmpty ConnServer)
+    sndSubResult SndQueue {status, server} = case status of
+      Confirmed -> Right [SndServer server]
       Active -> Left $ CONN SIMPLEX
       _ -> Left $ INTERNAL "unexpected queue status"
     addRcvQueue :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) -> ConnId -> (RcvQueue, ConnData) -> Map SMPServer (Map ConnId (RcvQueue, ConnData))
     addRcvQueue m connId rq@(RcvQueue {server}, _) = M.alter (Just . maybe (M.singleton connId rq) (M.insert connId rq)) server m
-    subscribe :: (SMPServer, Map ConnId (RcvQueue, ConnData)) -> m (Map ConnId (Either AgentErrorType ()))
-    subscribe (srv, qs) = subscribeQueues c srv (M.map fst qs)
-    sendNtfCreate :: NtfSupervisor -> [Map ConnId (Either AgentErrorType ())] -> m ()
+    subscribe :: Map ConnId (L.NonEmpty ConnServer) -> (SMPServer, Map ConnId (RcvQueue, ConnData)) -> m (Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer)))
+    subscribe srvs (srv, qs) = toServers <$> subscribeQueues c srv (M.map fst qs)
+      where
+        toServers = M.intersectionWith (either Left . const . Right) srvs
+    sendNtfCreate :: NtfSupervisor -> [Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer))] -> m ()
     sendNtfCreate ns rcvRs =
       forM_ (concatMap M.assocs rcvRs) $ \case
         (connId, Right _) -> atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
@@ -446,26 +457,32 @@ subscribeConnections' c connIds = do
       SomeConn _ (DuplexConnection cData _ sq) -> Just (cData, sq)
       SomeConn _ (SndConnection cData sq) -> Just (cData, sq)
       _ -> Nothing
-    notifyResultError :: Map ConnId (Either AgentErrorType ()) -> m ()
+    notifyResultError :: Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer)) -> m ()
     notifyResultError rs = do
       let actual = M.size rs
-          expected = length connIds
+          expected = M.size cs
       when (actual /= expected) . atomically $
         writeTBQueue (subQ c) ("", "", ERR . INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
-resubscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
-resubscribeConnection' c connId =
-  unlessM
+resubscribeConnection' :: AgentMonad m => AgentClient -> ConnId -> m (L.NonEmpty ConnServer)
+resubscribeConnection' c connId = do
+  conn <- withStore c (`getConn` connId)
+  ifM
     (atomically $ hasActiveSubscription c connId)
-    (subscribeConnection' c connId)
+    (pure $ connServers conn)
+    (subscribeConnection_ c connId conn)
 
-resubscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
+resubscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer)))
 resubscribeConnections' _ [] = pure M.empty
 resubscribeConnections' c connIds = do
-  let r = M.fromList . zip connIds . repeat $ Right ()
-  connIds' <- filterM (fmap not . atomically . hasActiveSubscription c) connIds
-  -- union is left-biased, so results returned by subscribeConnections' take precedence
-  (`M.union` r) <$> subscribeConnections' c connIds'
+  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
+  let (errs, cs) = M.mapEither id conns
+      errs' = M.map (Left . storeError) errs
+      srvs = M.map (Right . connServers) cs
+  cs' <- M.fromList <$> filterM (fmap not . atomically . hasActiveSubscription c . fst) (M.assocs cs)
+  -- union is left-biased, so results returned by subscribeConnections_ take precedence
+  rs <- subscribeConnections_ c cs'
+  pure $ M.unions ([rs, srvs, errs'] :: [Map ConnId (Either AgentErrorType (L.NonEmpty ConnServer))])
 
 getConnectionMessage' :: AgentMonad m => AgentClient -> ConnId -> m (Maybe SMPMsgMeta)
 getConnectionMessage' c connId = do
@@ -590,11 +607,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
             Left e -> do
               let err = if msgType == AM_CONN_INFO then ERR e else MERR mId e
               case e of
-                SMP SMP.QUOTA -> case msgType of
+                SMP SMP.QUOTA _ -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                   _ -> retrySending loop
-                SMP SMP.AUTH -> case msgType of
+                SMP SMP.AUTH _ -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                   AM_HELLO_
@@ -615,8 +632,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                         _ -> connError msgId NOT_ACCEPTED
                   AM_REPLY_ -> notifyDel msgId $ ERR e
                   AM_A_MSG_ -> notifyDel msgId $ MERR mId e
-                SMP (SMP.CMD _) -> notifyDel msgId err
-                SMP SMP.LARGE_MSG -> notifyDel msgId err
+                SMP (SMP.CMD _) _ -> notifyDel msgId err
+                SMP SMP.LARGE_MSG _ -> notifyDel msgId err
                 SMP {} -> notify err >> retrySending loop
                 _ -> retrySending loop
             Right () -> do
@@ -678,7 +695,7 @@ ackMessage' c connId msgId = do
       let mId = InternalId msgId
       srvMsgId <- withStore c $ \db -> setMsgUserAck db connId mId
       sendAck c rq srvMsgId `catchError` \case
-        SMP SMP.NO_MSG -> pure ()
+        SMP SMP.NO_MSG _ -> pure ()
         e -> throwError e
       withStore' c $ \db -> deleteMsg db connId mId
 
@@ -837,7 +854,7 @@ deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
     withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
     atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
     agentNtfDeleteToken c tknId tkn `catchError` \case
-      NTF AUTH -> pure ()
+      NTF AUTH _ -> pure ()
       e -> throwError e
   withStore' c $ \db -> removeNtfToken db tkn
   atomically $ nsRemoveNtfToken ns
@@ -854,7 +871,7 @@ withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = 
       let updatedToken = tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
       atomically $ nsUpdateToken ns updatedToken
       pure toStatus
-    Left e@(NTF AUTH) -> do
+    Left e@(NTF AUTH _) -> do
       withStore' c $ \db -> removeNtfToken db tkn
       atomically $ nsRemoveNtfToken ns
       void $ registerNtfToken' c deviceToken ntfMode
@@ -1004,7 +1021,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             ack :: m ()
             ack =
               sendAck c rq srvMsgId `catchError` \case
-                SMP SMP.NO_MSG -> pure ()
+                SMP SMP.NO_MSG _ -> pure ()
                 e -> throwError e
             handleNotifyAck :: m () -> m ()
             handleNotifyAck m = m `catchError` \e -> notify (ERR e) >> ack
@@ -1023,7 +1040,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             ignored = pure "END from disconnected client - ignored"
         _ -> do
           logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
-          notify . ERR $ BROKER UNEXPECTED
+          notify . ERR . BROKER UNEXPECTED $ APS srv
       where
         notify :: ACommand 'Agent -> m ()
         notify msg = atomically $ writeTBQueue subQ ("", connId, msg)
@@ -1064,7 +1081,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                     parseMessage agentMsgBody >>= \case
                       AgentConnInfo connInfo ->
                         processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = []} False
-                      AgentConnInfoReply smpQueues connInfo -> do
+                      AgentConnInfoReply smpQueues connInfo ->
                         processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues} True
                       _ -> prohibited
                     where
@@ -1074,7 +1091,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                         confId <- withStore c $ \db -> do
                           setHandshakeVersion db connId agentVersion duplexHS
                           createConfirmation db g newConfirmation
-                        notify $ CONF confId connInfo
+                        let srvs = map (\SMPQueueInfo {smpServer = s} -> s) $ smpReplyQueues senderConf
+                        notify $ CONF confId srvs connInfo
                   _ -> prohibited
               -- party accepting connection
               (DuplexConnection _ _ sq, Nothing) -> do
@@ -1120,14 +1138,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
               _ -> prohibited
 
         smpInvitation :: ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
-        smpInvitation connReq cInfo = do
+        smpInvitation connReq@(CRInvitationUri crData _) cInfo = do
           logServer "<--" c srv rId "MSG <KEY>"
           case conn of
             ContactConnection {} -> do
               g <- asks idsDrg
               let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
               invId <- withStore c $ \db -> createInvitation db g newInv
-              notify $ REQ invId cInfo
+              let srvs = L.map (\SMPQueueUri {smpServer = s} -> s) $ crSmpQueues crData
+              notify $ REQ invId srvs cInfo
             _ -> prohibited
 
         checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity

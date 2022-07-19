@@ -77,6 +77,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnId,
     ConfirmationId,
     InvitationId,
+    ConnServer (..),
     MsgIntegrity (..),
     MsgErrorType (..),
     QueueStatus (..),
@@ -135,11 +136,13 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
-  ( ErrorType,
+  ( AProtocolServer,
+    ErrorType,
     MsgBody,
     MsgFlags,
     MsgId,
     NMsgMeta,
+    NtfServer,
     SMPServer,
     SndPublicVerifyKey,
     SrvLoc (..),
@@ -208,14 +211,15 @@ data ACommand (p :: AParty) where
   NEW :: AConnectionMode -> ACommand Client -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent
   JOIN :: AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
-  CONF :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
-  REQ :: InvitationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
-  ACPT :: InvitationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
+  CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
+  LET :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Client -- ConnInfo is from client, empty list of servers to allow any servers
+  REQ :: InvitationId -> L.NonEmpty SMPServer -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  ACPT :: InvitationId -> [SMPServer] -> ConnInfo -> ACommand Client -- ConnInfo is from client, empty list of servers to allow any servers
   RJCT :: InvitationId -> ACommand Client
   INFO :: ConnInfo -> ACommand Agent
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
+  SRV :: L.NonEmpty SMPServer -> ACommand Agent -- connection rcv servers sent in response to SUB command
   END :: ACommand Agent
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent
   UP :: SMPServer -> [ConnId] -> ACommand Agent
@@ -234,6 +238,15 @@ data ACommand (p :: AParty) where
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
+
+data ConnServer = RcvServer SMPServer | SndServer SMPServer
+  deriving (Eq, Show)
+
+instance StrEncoding ConnServer where
+  strEncode = \case
+    RcvServer s -> "rcv=" <> strEncode s
+    SndServer s -> "snd=" <> strEncode s
+  strP = "rcv=" *> (RcvServer <$> strP) <|> "snd=" *> (SndServer <$> strP)
 
 data NotificationsMode = NMPeriodic | NMInstant
   deriving (Eq, Show)
@@ -738,16 +751,16 @@ data AgentErrorType
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
-    SMP {smpErr :: ErrorType}
+    SMP {smpErr :: ErrorType, smpServer :: SMPServer}
   | -- | NTF protocol errors forwarded to agent clients
-    NTF {ntfErr :: ErrorType}
+    NTF {ntfErr :: ErrorType, ntfServer :: NtfServer}
   | -- | SMP server errors
-    BROKER {brokerErr :: BrokerErrorType}
+    BROKER {brokerErr :: BrokerErrorType, brokerSrv :: AProtocolServer}
   | -- | errors of other agents
     AGENT {agentErr :: SMPAgentError}
   | -- | agent implementation or dependency errors
     INTERNAL {internalErr :: String}
-  deriving (Eq, Generic, Read, Show, Exception)
+  deriving (Eq, Generic, Show, Exception)
 
 instance ToJSON AgentErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
@@ -830,21 +843,21 @@ instance StrEncoding AgentErrorType where
   strP =
     "CMD " *> (CMD <$> parseRead1)
       <|> "CONN " *> (CONN <$> parseRead1)
-      <|> "SMP " *> (SMP <$> strP)
-      <|> "NTF " *> (NTF <$> strP)
-      <|> "BROKER RESPONSE " *> (BROKER . RESPONSE <$> strP)
-      <|> "BROKER TRANSPORT " *> (BROKER . TRANSPORT <$> transportErrorP)
-      <|> "BROKER " *> (BROKER <$> parseRead1)
+      <|> "SMP " *> (SMP <$> strP_ <*> strP)
+      <|> "NTF " *> (NTF <$> strP_ <*> strP)
+      <|> "BROKER RESPONSE " *> (BROKER <$> (RESPONSE <$> strP_) <*> strP)
+      <|> "BROKER TRANSPORT " *> (BROKER <$> (TRANSPORT <$> transportErrorP) <* A.space <*> strP)
+      <|> "BROKER " *> (BROKER <$> parseRead1 <* A.space <*> strP)
       <|> "AGENT " *> (AGENT <$> parseRead1)
       <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
   strEncode = \case
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
-    SMP e -> "SMP " <> strEncode e
-    NTF e -> "NTF " <> strEncode e
-    BROKER (RESPONSE e) -> "BROKER RESPONSE " <> strEncode e
-    BROKER (TRANSPORT e) -> "BROKER TRANSPORT " <> serializeTransportError e
-    BROKER e -> "BROKER " <> bshow e
+    SMP e srv -> "SMP " <> strEncode (e, srv)
+    NTF e srv -> "NTF " <> strEncode (e, srv)
+    BROKER (RESPONSE e) srv -> "BROKER RESPONSE " <> strEncode (e, srv)
+    BROKER (TRANSPORT e) srv -> B.unwords ["BROKER TRANSPORT", serializeTransportError e, strEncode srv]
+    BROKER e srv -> B.unwords ["BROKER", bshow e, strEncode srv]
     AGENT e -> "AGENT " <> bshow e
     INTERNAL e -> "INTERNAL " <> bshow e
 
@@ -871,6 +884,7 @@ commandP =
     <|> "RJCT " *> rjctCmd
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
+    <|> "SRV " *> srvsResp
     <|> "END" $> ACmd SAgent END
     <|> "DOWN " *> downsResp
     <|> "UP " *> upsResp
@@ -889,12 +903,13 @@ commandP =
     newCmd = ACmd SClient . NEW <$> strP
     invResp = ACmd SAgent . INV <$> strP
     joinCmd = ACmd SClient .: JOIN <$> strP_ <*> A.takeByteString
-    confMsg = ACmd SAgent .: CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
-    letCmd = ACmd SClient .: LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
-    reqMsg = ACmd SAgent .: REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
-    acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
+    confMsg = ACmd SAgent .:. CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> A.takeByteString
+    letCmd = ACmd SClient .:. LET <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> A.takeByteString
+    reqMsg = ACmd SAgent .:. REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> A.takeByteString
+    acptCmd = ACmd SClient .:. ACPT <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> A.takeByteString
     rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
+    srvsResp = ACmd SAgent . SRV <$> strP
     downsResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
     upsResp = ACmd SAgent .: UP <$> strP_ <*> connections
     sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> A.takeByteString
@@ -922,13 +937,14 @@ serializeCommand = \case
   NEW cMode -> "NEW " <> strEncode cMode
   INV cReq -> "INV " <> strEncode cReq
   JOIN cReq cInfo -> B.unwords ["JOIN", strEncode cReq, serializeBinary cInfo]
-  CONF confId cInfo -> B.unwords ["CONF", confId, serializeBinary cInfo]
-  LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
-  REQ invId cInfo -> B.unwords ["REQ", invId, serializeBinary cInfo]
-  ACPT invId cInfo -> B.unwords ["ACPT", invId, serializeBinary cInfo]
+  CONF confId srvs cInfo -> B.unwords ["CONF", confId, strEncodeList srvs, serializeBinary cInfo]
+  LET confId srvs cInfo -> B.unwords ["LET", confId, strEncodeList srvs, serializeBinary cInfo]
+  REQ invId srvs cInfo -> B.unwords ["REQ", invId, strEncode srvs, serializeBinary cInfo]
+  ACPT invId srvs cInfo -> B.unwords ["ACPT", invId, strEncodeList srvs, serializeBinary cInfo]
   RJCT invId -> "RJCT " <> invId
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
+  SRV srvs -> "SRV " <> strEncode srvs
   END -> "END"
   DOWN srv conns -> B.unwords ["DOWN", strEncode srv, connections conns]
   UP srv conns -> B.unwords ["UP", strEncode srv, connections conns]
@@ -1012,10 +1028,10 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       SEND msgFlags body -> SEND msgFlags <$$> getBody body
       MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
       JOIN qUri cInfo -> JOIN qUri <$$> getBody cInfo
-      CONF confId cInfo -> CONF confId <$$> getBody cInfo
-      LET confId cInfo -> LET confId <$$> getBody cInfo
-      REQ invId cInfo -> REQ invId <$$> getBody cInfo
-      ACPT invId cInfo -> ACPT invId <$$> getBody cInfo
+      CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
+      LET confId srvs cInfo -> LET confId srvs <$$> getBody cInfo
+      REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo
+      ACPT invId srvs cInfo -> ACPT invId srvs <$$> getBody cInfo
       INFO cInfo -> INFO <$$> getBody cInfo
       cmd -> pure $ Right cmd
 

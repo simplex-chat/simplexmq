@@ -299,8 +299,8 @@ retryOnError :: AgentMonad m => AgentClient -> Text -> m () -> (AgentErrorType -
 retryOnError c name loop done e = do
   logError $ name <> " error: " <> tshow e
   case e of
-    BROKER NETWORK -> retryLoop
-    BROKER TIMEOUT -> retryLoop
+    BROKER NETWORK _ -> retryLoop
+    BROKER TIMEOUT _ -> retryLoop
     _ -> done e
   where
     retryLoop = do

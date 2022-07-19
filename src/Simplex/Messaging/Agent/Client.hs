@@ -80,6 +80,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Composition ((.:))
 import Data.Either (partitionEithers)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -104,7 +105,7 @@ import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, NtfServer, ProtoServer, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvMessage (..), RcvNtfPublicDhKey, SMPMsgMeta (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, NtfServer, ProtoServer, ProtocolServer (..), ProtocolTypeI (..), QueueId, QueueIdsKeys (..), RcvMessage (..), RcvNtfPublicDhKey, SMPMsgMeta (..), SndPublicVerifyKey)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -202,9 +203,9 @@ newAgentClient InitialAgentServers {smp, ntf} agentEnv = do
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
 
-class ProtocolServerClient msg where
+class ProtocolTypeI (SMP.ProtoType msg) => ProtocolServerClient msg where
   getProtocolServerClient :: AgentMonad m => AgentClient -> ProtoServer msg -> m (ProtocolClient msg)
-  clientProtocolError :: ErrorType -> AgentErrorType
+  clientProtocolError :: ErrorType -> ProtoServer msg -> AgentErrorType
 
 instance ProtocolServerClient BrokerMsg where
   getProtocolServerClient = getSMPServerClient
@@ -220,13 +221,13 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
   atomically (getClientVar srv smpClients)
     >>= either
       (newProtocolClient c srv smpClients connectClient reconnectClient)
-      (waitForProtocolClient smpCfg)
+      (waitForProtocolClient smpCfg srv)
   where
     connectClient :: m SMPClient
     connectClient = do
       cfg <- asks $ smpCfg . config
       u <- askUnliftIO
-      liftEitherError (protocolClientError SMP) (getProtocolClient srv cfg (Just msgQ) $ clientDisconnected u)
+      liftEitherError (protocolClientError SMP srv) (getProtocolClient srv cfg (Just msgQ) $ clientDisconnected u)
 
     clientDisconnected :: UnliftIO m -> IO ()
     clientDisconnected u = do
@@ -292,12 +293,12 @@ getNtfServerClient c@AgentClient {active, ntfClients} srv = do
   atomically (getClientVar srv ntfClients)
     >>= either
       (newProtocolClient c srv ntfClients connectClient $ pure ())
-      (waitForProtocolClient ntfCfg)
+      (waitForProtocolClient ntfCfg srv)
   where
     connectClient :: m NtfClient
     connectClient = do
       cfg <- asks $ ntfCfg . config
-      liftEitherError (protocolClientError NTF) (getProtocolClient srv cfg Nothing clientDisconnected)
+      liftEitherError (protocolClientError NTF srv) (getProtocolClient srv cfg Nothing clientDisconnected)
 
     clientDisconnected :: IO ()
     clientDisconnected = do
@@ -313,14 +314,14 @@ getClientVar srv clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.l
       TM.insert srv var clients
       pure var
 
-waitForProtocolClient :: AgentMonad m => (AgentConfig -> ProtocolClientConfig) -> ClientVar msg -> m (ProtocolClient msg)
-waitForProtocolClient clientConfig clientVar = do
+waitForProtocolClient :: (AgentMonad m, ProtocolTypeI (SMP.ProtoType msg)) => (AgentConfig -> ProtocolClientConfig) -> ProtoServer msg -> ClientVar msg -> m (ProtocolClient msg)
+waitForProtocolClient clientConfig srv clientVar = do
   ProtocolClientConfig {tcpTimeout} <- asks $ clientConfig . config
   client_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar clientVar)
   liftEither $ case client_ of
     Just (Right smpClient) -> Right smpClient
     Just (Left e) -> Left e
-    Nothing -> Left $ BROKER TIMEOUT
+    Nothing -> Left . BROKER TIMEOUT $ SMP.APS srv
 
 newProtocolClient ::
   forall msg m.
@@ -342,7 +343,7 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
           atomically $ putTMVar clientVar r
           successAction client
         Left e -> do
-          if e == BROKER NETWORK || e == BROKER TIMEOUT
+          if temporaryAgentError e
             then retryAction
             else atomically $ do
               putTMVar clientVar (Left e)
@@ -409,24 +410,26 @@ withLogClient_ c srv qId cmdStr action = do
   return res
 
 withClient :: forall m msg a. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> (ProtocolClient msg -> ExceptT ProtocolClientError IO a) -> m a
-withClient c srv action = withClient_ c srv $ liftClient (clientProtocolError @msg) . action
+withClient c srv action = withClient_ c srv $ liftClient (clientProtocolError @msg) srv . action
 
 withLogClient :: forall m msg a. (AgentMonad m, ProtocolServerClient msg) => AgentClient -> ProtoServer msg -> QueueId -> ByteString -> (ProtocolClient msg -> ExceptT ProtocolClientError IO a) -> m a
-withLogClient c srv qId cmdStr action = withLogClient_ c srv qId cmdStr $ liftClient (clientProtocolError @msg) . action
+withLogClient c srv qId cmdStr action = withLogClient_ c srv qId cmdStr $ liftClient (clientProtocolError @msg) srv . action
 
-liftClient :: AgentMonad m => (ErrorType -> AgentErrorType) -> ExceptT ProtocolClientError IO a -> m a
-liftClient = liftError . protocolClientError
+liftClient :: (AgentMonad m, ProtocolTypeI p) => (ErrorType -> ProtocolServer p -> AgentErrorType) -> ProtocolServer p -> ExceptT ProtocolClientError IO a -> m a
+liftClient = liftError .: protocolClientError
 
-protocolClientError :: (ErrorType -> AgentErrorType) -> ProtocolClientError -> AgentErrorType
-protocolClientError protocolError_ = \case
-  PCEProtocolError e -> protocolError_ e
-  PCEResponseError e -> BROKER $ RESPONSE e
-  PCEUnexpectedResponse _ -> BROKER UNEXPECTED
-  PCEResponseTimeout -> BROKER TIMEOUT
-  PCENetworkError -> BROKER NETWORK
-  PCETransportError e -> BROKER $ TRANSPORT e
+protocolClientError :: ProtocolTypeI p => (ErrorType -> ProtocolServer p -> AgentErrorType) -> ProtocolServer p -> ProtocolClientError -> AgentErrorType
+protocolClientError protocolError_ srv = \case
+  PCEProtocolError e -> protocolError_ e srv
+  PCEResponseError e -> BROKER (RESPONSE e) srv'
+  PCEUnexpectedResponse _ -> BROKER UNEXPECTED srv'
+  PCEResponseTimeout -> BROKER TIMEOUT srv'
+  PCENetworkError -> BROKER NETWORK srv'
+  PCETransportError e -> BROKER (TRANSPORT e) srv'
   e@PCESignatureError {} -> INTERNAL $ show e
   e@PCEIOError {} -> INTERNAL $ show e
+  where
+    srv' = SMP.APS srv
 
 newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> m (RcvQueue, SMPQueueUri)
 newRcvQueue c srv =
@@ -486,8 +489,8 @@ temporaryClientError = \case
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
-  BROKER NETWORK -> True
-  BROKER TIMEOUT -> True
+  BROKER NETWORK _ -> True
+  BROKER TIMEOUT _ -> True
   _ -> False
 
 -- | subscribe multiple queues - all passed queues should be on the same server
@@ -506,7 +509,7 @@ subscribeQueues c srv qs = do
           rs' :: [((ConnId, RcvQueue), Either ProtocolClientError ())] <-
             liftIO $ zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
           forM_ rs' $ \((connId, rq), r) -> liftIO $ processSubResult c rq connId r
-          pure $ map (bimap fst (first $ protocolClientError SMP)) rs'
+          pure $ map (bimap fst (first $ protocolClientError SMP srv)) rs'
     _ -> pure $ M.fromList errs
   where
     checkQueue rq@(connId, RcvQueue {rcvId, server}) = do
@@ -565,14 +568,14 @@ sendConfirmation c sq@SndQueue {server, sndId, sndPublicKey = Just sndPublicKey,
   withLogClient_ c server sndId "SEND <CONF>" $ \smp -> do
     let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
     msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
-    liftClient SMP $ sendSMPMessage smp Nothing sndId (SMP.MsgFlags {notification = True}) msg
+    liftClient SMP server $ sendSMPMessage smp Nothing sndId (SMP.MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
 sendInvitation :: forall m. AgentMonad m => AgentClient -> Compatible SMPQueueInfo -> Compatible Version -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
 sendInvitation c (Compatible SMPQueueInfo {smpServer, senderId, dhPublicKey}) (Compatible agentVersion) connReq connInfo =
   withLogClient_ c smpServer senderId "SEND <INV>" $ \smp -> do
     msg <- mkInvitation
-    liftClient SMP $ sendSMPMessage smp Nothing senderId MsgFlags {notification = True} msg
+    liftClient SMP smpServer $ sendSMPMessage smp Nothing senderId MsgFlags {notification = True} msg
   where
     mkInvitation :: m ByteString
     -- this is only encrypted with per-queue E2E, not with double ratchet
@@ -643,7 +646,7 @@ sendAgentMessage c sq@SndQueue {server, sndId, sndPrivateKey} msgFlags agentMsg 
   withLogClient_ c server sndId "SEND <MSG>" $ \smp -> do
     let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
     msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
-    liftClient SMP $ sendSMPMessage smp (Just sndPrivateKey) sndId msgFlags msg
+    liftClient SMP server $ sendSMPMessage smp (Just sndPrivateKey) sndId msgFlags msg
 
 agentNtfRegisterToken :: AgentMonad m => AgentClient -> NtfToken -> C.APublicVerifyKey -> C.PublicKeyX25519 -> m (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =

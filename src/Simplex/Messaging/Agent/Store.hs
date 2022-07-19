@@ -3,7 +3,10 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -13,6 +16,7 @@ import Control.Exception (Exception)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
@@ -143,6 +147,13 @@ instance Eq SomeConn where
     _ -> False
 
 deriving instance Show SomeConn
+
+connServers :: SomeConn -> NonEmpty ConnServer
+connServers = \case
+  SomeConn _ (RcvConnection _ RcvQueue {server}) -> [RcvServer server]
+  SomeConn _ (SndConnection _ SndQueue {server}) -> [SndServer server]
+  SomeConn _ (DuplexConnection _ RcvQueue {server = s1} SndQueue {server = s2}) -> [RcvServer s1, SndServer s2]
+  SomeConn _ (ContactConnection _ RcvQueue {server}) -> [RcvServer server]
 
 data ConnData = ConnData
   { connId :: ConnId,
