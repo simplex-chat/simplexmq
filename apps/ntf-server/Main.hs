@@ -42,7 +42,7 @@ ntfServerCLIConfig =
           fingerprintFile = combine cfgPath "fingerprint",
           defaultServerPort = "443",
           executableName = "ntf-server",
-          serverVersion = "SMP notifications server v1.1.0",
+          serverVersion = "SMP notifications server v1.1.1",
           mkIniFile = \enableStoreLog defaultServerPort ->
             "[STORE_LOG]\n\
             \# The server uses STM memory for persistence,\n\
