@@ -608,12 +608,3 @@ Or the leader may discover the issue when attempting a (blocked) membership chan
 > Member @B wants to add @X to #g, but there is a pending invite to @D (only one at a time is allowed). You and @B have added @D, waiting on @C.  You may wait, cancel the invite, or kick @C: (wait/cancel/kick)
 > y
 ```
-
-## Variations Not Pursued
-
-### Centralized Tokens
-
-It may seem odd that a Leader is leveraged for the management of proposals, but a more peer-to-peer style token synchronization step is also involved later.
-Message counts could be reduced if the leader was also responsible for validating tokens.
-However, this puts increased trust on the leader.
-The peer-to-peer style token synchronization ensures that a compromised leader has limited impacts to the group as a whole.
