@@ -1,5 +1,12 @@
 ---- MODULE groups ----
 
+\* TODO: This still specifies the original token based approach rather than
+\* secret splitting approach. The original was quite appealing in that
+\* participating in groups "do no harm;" connections are always exactly secure
+\* as they always were. However, the in progress secret splitting approach can
+\* do one better: the security of a connection established for a group takes on
+\* the properties of the _most secure_ connection within that (new) group.
+
 EXTENDS Naturals, FiniteSets, util
 
 CONSTANTS

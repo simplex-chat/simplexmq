@@ -140,14 +140,6 @@ To ensure that the group can complete proposals, the Leader may then Kick any us
 
 TODO: Ideally, kicked members (or invitees that established connections with kicked members, who think they are part of the group) eventually learn that they are not in the group after all.
 
-----
-
-_TODO: The original token based rather than secret splitting algorithm are presented from here on._
-_This is quite appealing in that participating in groups "do no harm;" connections are always exactly secure as they always were._
-_However, the in progress secret splitting approach can do one better: the security of a connection established for a group takes on the properties of the *most secure* connection within that (new) group._
-
-----
-
 #### Properties
 
 Model checking our formal specification we can demonstrate three key properties:
@@ -184,13 +176,13 @@ However, a kicked user can be added back to any group with a _new_ invitation id
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Active : Member receives Propose
-    Active --> Synchronizing : Member receives Accept
-    Synchronizing --> Welcoming : Member receives<br>all other tokens
-    Welcoming --> Added : Both queues are setup
-    Active --> Removed : Receive Kick
+    [*] --> Synchronizing : Member receives Propose
+    Synchronizing --> Inviting : Member receives<br>all other secret shares
+    Inviting --> Establishing : Invitee confirms interaction with the queue
+    Establishing --> Added : Both new queues are ready
     Synchronizing --> Removed : Receive Kick
-    Welcoming --> Removed : Receive Kick
+    Inviting --> Removed : Receive Kick
+    Establishing --> Removed : Receive Kick
     Added --> Removed : Receive Kick
 ```
 
@@ -201,8 +193,7 @@ The invitee process is unique per invitation identifier, so an user tracks many 
 ```mermaid
 stateDiagram-v2
     [*] --> Invited : User receives Inivte
-    Invited --> Accepted : User receives all tokens
-    Accepted --> Welcomed : User receives all Welcomes
+    Invited --> Accepted : User receives all shares of all encryption keys
 ```
 
 ### Specific Examples
@@ -224,39 +215,32 @@ sequenceDiagram
     B->>A: PleasePropose D as 123
     note over A: start proposal 123
     A->>A: Propose D as 123
-    note over A: generate token X
-    A->>D: Invite 123, token X, n=3
+    note over A: generate shares XA, XB, XC<br>from new secret X
     A->>B: Propose D as 123
-    note over B: generate token Y
-    B->>D: Invite 123, token Y, n=3
+    note over B: generate shares YA, YB, YC<br>from new secret Y
     A->>C: Propose D as 123
-    note over C: generate token Z
-    C->>D: Invite 123, token Z, n=3
-    note over D: 3/3 members provided tokens
-    D->>A: Accept 123, tokens X,Y,Z
-    D->>B: Accept 123, tokens X,Y,Z
-    D->>C: Accept 123, tokens X,Y,Z
-    A->>B: SyncToken 123, token X, ack=false
-    B->>A: SyncToken 123, token Y, ack=true
-    A->>C: SyncToken 123, token X, ack=false
-    C->>A: SyncToken 123, token Z, ack=true
-    note over A: All tokens received and match
-    A->>D: Welcome 123, X=Leader, Y=456, Z=789
-    B->>C: SyncToken 123, token Y, ack=false
-    note over C: All tokens received and match
-    C->>B: SyncToken 123, token Z, ack=true
-    note over B: All tokens received and match
-    B->>D: Welcome 123, X=Leader, Y=456, Z=789
-    C->>D: Welcome 123, X=Leader, Y=456, Z=789
-    note over D: Now has all Welomes and they all match.<br>Member now knows how to<br>identify everyone in this group.<br>Starts making new group specific connections
-    D->>A: Establish new queue for this group/member
-    A->>D: Establish new queue for this group/member
+    note over C: generate shares ZA, ZB, ZC<br>from new secret Z
+    A->>B: SyncShare 123, share=XB, ack=false
+    B->>A: SyncShare 123, share=YA, ack=true
+    A->>C: SyncShare 123, share=XC, ack=false
+    C->>A: SyncShare 123, share=ZA, ack=true
+    note over A: Received all expected shares
+    A->>D: Invite 123, shares=[XA,YA,ZA],<br>EncX(queue details, X=Leader, Y=456, Z=789)
+    B->>C: SyncShare 123, share=YC, ack=false
+    note over C: Received all expected shares
+    C->>B: SyncShare 123, share=ZB, ack=true
+    note over B: Received all expected shares
+    B->>D: Invite 123, shares=[XB,YB,ZB],<br>EncY(queue details, X=Leader, Y=456, Z=789)
+    C->>D: Invite 123, shares=[XC,YC,ZC],<br>EncZ(queue details, X=Leader, Y=456, Z=789)
+    note over D: Now has all shares<br>for all secrets and can<br>decrypt queue details<br>and group identifiers.
+    D->>A: Claim queue
+    A->>D: Finish new bidirectional queue setup<br>(multiple steps)
     A->>A: Established 123
-    D->>B: Establish new queue for this group/member
-    B->>D: Establish new queue for this group/member
+    D->>B: Claim queue
+    B->>D: Finish new bidirectional queue setup<br>(multiple steps)
     B->>A: Established 123
-    D->>C: Establish new queue for this group/member
-    C->>D: Establish new queue for this group/member
+    D->>C: Claim queue
+    C->>D: Finish new bidirectional queue setup<br>(multiple steps)
     C->>A: Established 123
     note over A: proposal 123 complete
 ```
@@ -351,24 +335,21 @@ sequenceDiagram
     participant A
     participant B
     participant C
-    participant D
     B->>A: PleasePropose D as 123
-    note over A: starts proposal, awaiting responses from everyone
+    note over A: start proposal 123
     A->>A: Propose D as 123
-    note over A: generate token X
-    A->>D: Invite 123, token X, n=3
+    note over A: generate shares XA, XB, XC<br>from new secret X
     A->>B: Propose D as 123
-    note over B: generate token Y
-    B->>D: Invite 123, token Y, n=3
+    note over B: generate shares YA, YB, YC<br>from new secret Y
+    A->>B: SyncShare 123, share=XB, ack=false
+    B->>A: SyncShare 123, share=YA, ack=true
+    A->>C: SyncShare 123, share=XC, ack=false
+    B->>C: SyncShare 123, share=YC, ack=false
     A->>C: Propose D as 123
     note over C: User cannot identify D
     C->>A: Reject 123
-    note over D: Neither user ever sees all three tokens<br>so they never reply with Accept.
     note over A: proposal 123 complete
 ```
-
-Note that it is safe here to simply mark the proposal as complete and leave A and B with dangling invites sent to C.
-This is because it will never be acted on again, A and B will only act upon an Accept message from D or a retried Propose message from A.
 
 ##### CLI Example
 
@@ -413,15 +394,24 @@ sequenceDiagram
     B->>A: PleasePropose D as 123
     note over A: starts proposal, awaiting responses from everyone
     A->>A: Propose D as 123
-    note over A: generate token X
-    A->>D: Invite 123, token X, n=3
+    note over A: generate shares XA, XB, XC<br>from new secret X
     A->>B: Propose D as 123
-    note over B: generate token Y
-    B->>D: Invite 123, token Y, n=3
+    note over B: generate shares YA, YB, YC<br>from new secret Y
     A->>C: Propose D as 123
-    note over C: generate token Z
-    C->>E: Invite 123, token Z, n=3
-    note over D,E: Neither user ever sees all three tokens<br>so they never reply with Accept.
+    note over C: generate shares ZA, ZB, ZC<br>from new secret Z
+    A->>B: SyncShare 123, share=XB, ack=false
+    B->>A: SyncShare 123, share=YA, ack=true
+    A->>C: SyncShare 123, share=XC, ack=false
+    C->>A: SyncShare 123, share=ZA, ack=true
+    note over A: Received all expected shares
+    A->>D: Invite 123, shares=[XA,YA,ZA],<br>EncX(queue details, X=Leader, Y=456, Z=789)
+    B->>C: SyncShare 123, share=YC, ack=false
+    note over C: Received all expected shares
+    C->>B: SyncShare 123, share=ZB, ack=true
+    note over B: Received all expected shares
+    B->>D: Invite 123, shares=[XB,YB,ZB],<br>EncY(queue details, X=Leader, Y=456, Z=789)
+    C->>E: Invite 123, shares=[XC,YC,ZC],<br>EncZ(queue details, X=Leader, Y=456, Z=789)
+    note over D,E: Neither user ever gets all shares<br>for any secret, so neither is able<br>to ever decrypt the queue or<br>group information.
     note over A: User evenutally aborts due to inactivity<br>starts a proposal to kick 123
     A->>A: Kick 123
     note over A: Commits that 123 is permanently kicked
@@ -479,13 +469,24 @@ sequenceDiagram
     B->>A: PleasePropose D as 123
     note over A: starts proposal, awaiting responses from everyone
     A->>A: Propose D as 123
-    note over A: generate token X
-    A->>D: Invite 123, token X, n=3
+    note over A: generate shares XA, XB, XC<br>from new secret X
     A->>B: Propose D as 123
-    note over B: generate token Y
-    B->>D: Invite 123, token Y, n=3
-    A-XC: Propose D as 123
-    note over D: Never sees all three tokens<br>so never replies with Accept.
+    note over B: generate shares YA, YB, YC<br>from new secret Y
+    A->>C: Propose D as 123
+    note over C: generate shares ZA, ZB, ZC<br>from new secret Z
+    A->>B: SyncShare 123, share=XB, ack=false
+    B->>A: SyncShare 123, share=YA, ack=true
+    A->>C: SyncShare 123, share=XC, ack=false
+    C->>A: SyncShare 123, share=ZA, ack=true
+    note over A: Received all expected shares
+    A->>D: Invite 123, shares=[XA,YA,ZA],<br>EncX(queue details, X=Leader, Y=456, Z=789)
+    B->>C: SyncShare 123, share=YC, ack=false
+    note over C: Received all expected shares
+    C->>B: SyncShare 123, share=ZB, ack=true
+    note over B: Received all expected shares
+    B->>D: Invite 123, shares=[XB,YB,ZB],<br>EncY(queue details, X=Leader, Y=456, Z=789)
+    C->>E: Invite 123, shares=[XC,YC,ZC],<br>EncZ(queue details, X=Leader, Y=456, Z=789)
+    note over D,E: Neither user ever gets all shares<br>for any secret, so neither is able<br>to ever decrypt the queue or<br>group information.
     note over A: User evenutally aborts due to inactivity<br>starts a proposal to kick 123
     A->>A: Kick 123
     note over A: Commits that 123 is permanently kicked
@@ -552,38 +553,31 @@ sequenceDiagram
     B->>A: PleasePropose D as 123
     note over A: start proposal 123
     A->>A: Propose D as 123
-    note over A: generate token X
-    A->>D: Invite 123, token X, n=3
+    note over A: generate shares XA, XB, XC<br>from new secret X
     A->>B: Propose D as 123
-    note over B: generate token Y
-    B->>D: Invite 123, token Y, n=3
+    note over B: generate shares YA, YB, YC<br>from new secret Y
     A->>C: Propose D as 123
-    note over C: generate token Z
-    C->>D: Invite 123, token Z, n=3
-    note over D: 3/3 members provided tokens
-    D->>A: Accept 123, tokens X,Y,Z
-    D->>B: Accept 123, tokens X,Y,Z
-    D->>C: Accept 123, tokens X,Y,Z
-    A->>B: SyncToken 123, token X, ack=false
-    B->>A: SyncToken 123, token Y, ack=true
-    A->>C: SyncToken 123, token X, ack=false
-    C->>A: SyncToken 123, token Z, ack=true
-    note over A: All tokens received and match
-    A->>D: Welcome 123, X=Leader, Y=456, Z=789
-    B->>C: SyncToken 123, token Y, ack=false
-    note over C: All tokens received and match
-    C->>B: SyncToken 123, token Z, ack=true
-    note over B: All tokens received and match
-    B->>D: Welcome 123, X=Leader, Y=456, Z=789
-    C->>D: Welcome 123, X=Leader, Y=456, Z=789
-    note over D: Now has all Welomes and they all match.<br>Member now knows how to<br>identify everyone in this group.<br>Starts making new group specific connections
-    D->>A: Establish new queue for this group/member
-    A->>D: Establish new queue for this group/member
+    note over C: generate shares ZA, ZB, ZC<br>from new secret Z
+    A->>B: SyncShare 123, share=XB, ack=false
+    B->>A: SyncShare 123, share=YA, ack=true
+    A->>C: SyncShare 123, share=XC, ack=false
+    C->>A: SyncShare 123, share=ZA, ack=true
+    note over A: Received all expected shares
+    A->>D: Invite 123, shares=[XA,YA,ZA],<br>EncX(queue details, X=Leader, Y=456, Z=789)
+    B->>C: SyncShare 123, share=YC, ack=false
+    note over C: Received all expected shares
+    C->>B: SyncShare 123, share=ZB, ack=true
+    note over B: Received all expected shares
+    B->>D: Invite 123, shares=[XB,YB,ZB],<br>EncY(queue details, X=Leader, Y=456, Z=789)
+    C->>D: Invite 123, shares=[XC,YC,ZC],<br>EncZ(queue details, X=Leader, Y=456, Z=789)
+    note over D: Now has all shares<br>for all secrets and can<br>decrypt queue details<br>and group identifiers.
+    D->>A: Claim queue
+    A->>D: Finish new bidirectional queue setup<br>(multiple steps)
     A->>A: Established 123
-    D->>B: Establish new queue for this group/member
-    B->>D: Establish new queue for this group/member
+    D->>B: Claim queue
+    B->>D: Finish new bidirectional queue setup<br>(multiple steps)
     B->>A: Established 123
-    D->>C: Establish new queue for this group/member
+    D->>C: Claim queue
     note over C: Goes permanently offline
     note over A: Knows that A and B established connections<br>but C has not<br>decides to kick C via his original invitation id (456)
     A->>A: Kick 456
