@@ -21,7 +21,6 @@ import Control.Concurrent (killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except (ExceptT, runExceptT)
 import Control.Monad.IO.Unlift
-import Data.Either (isRight)
 import Data.Int (Int64)
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -165,7 +164,7 @@ runAgentClientTest alice bob baseId = do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
-    allowConnection alice bobId confId [] "alice's connInfo"
+    allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -188,7 +187,7 @@ runAgentClientTest alice bob baseId = do
     ackMessage alice bobId $ baseId + 4
     suspendConnection alice bobId
     5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
-    get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH testSMPServer))
+    get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   pure ()
@@ -201,9 +200,9 @@ runAgentClientContactTest alice bob baseId = do
     (_, qInfo) <- createConnection alice SCMContact
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- acceptContact alice invId [] "alice's connInfo"
+    bobId <- acceptContact alice invId "alice's connInfo"
     ("", _, CONF confId _ "alice's connInfo") <- get bob
-    allowConnection bob aliceId confId [] "bob's connInfo"
+    allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
@@ -226,7 +225,7 @@ runAgentClientContactTest alice bob baseId = do
     ackMessage alice bobId $ baseId + 4
     suspendConnection alice bobId
     5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
-    get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH testSMPServer))
+    get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   pure ()
@@ -250,9 +249,9 @@ testAsyncInitiatingOffline = do
     disconnectAgentClient alice
     aliceId <- joinConnection bob cReq "bob's connInfo"
     alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
-    _ <- subscribeConnection alice' bobId
+    subscribeConnection alice' bobId
     ("", _, CONF confId _ "bob's connInfo") <- get alice'
-    allowConnection alice' bobId confId [] "alice's connInfo"
+    allowConnection alice' bobId confId "alice's connInfo"
     get alice' ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -268,9 +267,9 @@ testAsyncJoiningOfflineBeforeActivation = do
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     disconnectAgentClient bob
     ("", _, CONF confId _ "bob's connInfo") <- get alice
-    allowConnection alice bobId confId [] "alice's connInfo"
+    allowConnection alice bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
-    _ <- subscribeConnection bob' aliceId
+    subscribeConnection bob' aliceId
     get alice ##> ("", bobId, CON)
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
     get bob' ##> ("", aliceId, CON)
@@ -287,11 +286,11 @@ testAsyncBothOffline = do
     aliceId <- joinConnection bob cReq "bob's connInfo"
     disconnectAgentClient bob
     alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
-    _ <- subscribeConnection alice' bobId
+    subscribeConnection alice' bobId
     ("", _, CONF confId _ "bob's connInfo") <- get alice'
-    allowConnection alice' bobId confId [] "alice's connInfo"
+    allowConnection alice' bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
-    _ <- subscribeConnection bob' aliceId
+    subscribeConnection bob' aliceId
     get alice' ##> ("", bobId, CON)
     get bob' ##> ("", aliceId, INFO "alice's connInfo")
     get bob' ##> ("", aliceId, CON)
@@ -306,7 +305,7 @@ testAsyncServerOffline t = do
   Right (bobId, cReq) <- withSmpServerStoreLogOn t testPort $ \_ ->
     runExceptT $ createConnection alice SCMInvitation
   -- connection fails
-  Left (BROKER NETWORK _) <- runExceptT $ joinConnection bob cReq "bob's connInfo"
+  Left (BROKER NETWORK) <- runExceptT $ joinConnection bob cReq "bob's connInfo"
   ("", "", DOWN srv conns) <- get alice
   srv `shouldBe` testSMPServer
   conns `shouldBe` [bobId]
@@ -318,7 +317,7 @@ testAsyncServerOffline t = do
       conns1 `shouldBe` [bobId]
     aliceId <- joinConnection bob cReq "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
-    allowConnection alice bobId confId [] "alice's connInfo"
+    allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -352,7 +351,7 @@ testDuplicateMessage t = do
     -- if the agent user did not send ACK, the message will be delivered again
     bob1 <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
     Right () <- runExceptT $ do
-      _ <- subscribeConnection bob1 aliceId
+      subscribeConnection bob1 aliceId
       get bob1 =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
       ackMessage bob1 aliceId 4
       5 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
@@ -366,7 +365,7 @@ testDuplicateMessage t = do
   -- commenting two lines below and uncommenting further two lines would also pass,
   -- it is the scenario tested above, when the message was not acknowledged by the user
   threadDelay 200000
-  Left (BROKER TIMEOUT _) <- runExceptT $ ackMessage bob1 aliceId 5
+  Left (BROKER TIMEOUT) <- runExceptT $ ackMessage bob1 aliceId 5
 
   disconnectAgentClient alice
   disconnectAgentClient bob1
@@ -376,8 +375,8 @@ testDuplicateMessage t = do
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     Right () <- runExceptT $ do
-      _ <- subscribeConnection bob2 aliceId
-      _ <- subscribeConnection alice2 bobId
+      subscribeConnection bob2 aliceId
+      subscribeConnection alice2 bobId
       -- get bob2 =##> \case ("", c, Msg "hello 2") -> c == aliceId; _ -> False
       -- ackMessage bob2 aliceId 5
       -- message 2 is not delivered again, even though it was delivered to the agent
@@ -391,7 +390,7 @@ makeConnection alice bob = do
   (bobId, qInfo) <- createConnection alice SCMInvitation
   aliceId <- joinConnection bob qInfo "bob's connInfo"
   ("", _, CONF confId _ "bob's connInfo") <- get alice
-  allowConnection alice bobId confId [] "alice's connInfo"
+  allowConnection alice bobId confId "alice's connInfo"
   get alice ##> ("", bobId, CON)
   get bob ##> ("", aliceId, INFO "alice's connInfo")
   get bob ##> ("", aliceId, CON)
@@ -425,7 +424,7 @@ testActiveClientNotDisconnected t = do
         then do
           -- keep sending SUB for 2.2 seconds
           liftIO $ threadDelay 200000
-          _ <- subscribeConnection alice connId
+          subscribeConnection alice connId
           keepSubscribing alice connId ts
         else do
           -- check that nothing is sent from agent
@@ -543,7 +542,7 @@ testBatchedSubscriptions t = do
       r <- subscribeConnections c cs
       liftIO $ do
         let dc = S.fromList $ take 10 cs
-        all isRight (M.withoutKeys r dc) `shouldBe` True
+        all (== Right ()) (M.withoutKeys r dc) `shouldBe` True
         all (== Left (CONN NOT_FOUND)) (M.restrictKeys r dc) `shouldBe` True
         M.keys r `shouldMatchList` cs
     runServers :: ExceptT AgentErrorType IO a -> IO (Either AgentErrorType a)

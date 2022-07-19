@@ -65,9 +65,7 @@ module Simplex.Messaging.Protocol
     PrivHeader (..),
     Protocol (..),
     ProtocolType (..),
-    ProtocolTypeI (..),
     ProtocolServer (..),
-    AProtocolServer (..),
     ProtoServer,
     SMPServer,
     pattern SMPServer,
@@ -151,7 +149,6 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
-import Test.QuickCheck.Gen (Gen (..))
 
 smpClientVersion :: Version
 smpClientVersion = 1
@@ -639,22 +636,6 @@ data ProtocolServer p = ProtocolServer
   }
   deriving (Eq, Ord, Show)
 
-data AProtocolServer = forall p. ProtocolTypeI p => APS (ProtocolServer p)
-
-instance Eq AProtocolServer where
-  APS s@ProtocolServer {scheme = sch} == APS s'@ProtocolServer {scheme = sch'} = case testEquality sch sch' of
-    Just Refl -> s == s'
-    _ -> False
-
-deriving instance Show AProtocolServer
-
--- Arbitrary instance is used in property test
-instance ProtocolTypeI p => Arbitrary (ProtocolServer p) where
-  arbitrary = MkGen $ \_ _ -> ProtocolServer protocolTypeI "127.0.0.1" "" "abcd"
-
-instance Arbitrary AProtocolServer where
-  arbitrary = MkGen $ \_ _ -> APS $ ProtocolServer SPSMP "127.0.0.1" "" "abcd"
-
 instance ProtocolTypeI p => IsString (ProtocolServer p) where
   fromString = parseString strDecode
 
@@ -675,18 +656,6 @@ instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
     pure ProtocolServer {scheme, host, port, keyHash}
 
 instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
-
-instance StrEncoding AProtocolServer where
-  strEncode (APS s) = strEncode s
-  strP = do
-    AProtocolType scheme <- strP <* "://"
-    keyHash <- strP <* A.char '@'
-    SrvLoc host port <- strP
-    pure $ APS ProtocolServer {scheme, host, port, keyHash}
-
-instance ToJSON AProtocolServer where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
@@ -833,7 +802,7 @@ transmissionP = do
       command <- A.takeByteString
       pure RawTransmission {signature, signed, sessId, corrId, entityId, command}
 
-class (ProtocolEncoding msg, ProtocolEncoding (ProtoCommand msg), ProtocolTypeI (ProtoType msg), Show msg) => Protocol msg where
+class (ProtocolEncoding msg, ProtocolEncoding (ProtoCommand msg), Show msg) => Protocol msg where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
   protocolClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)

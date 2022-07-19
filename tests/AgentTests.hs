@@ -25,7 +25,7 @@ import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpSer
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (AProtocolServer (..), ErrorType (..), MsgBody)
+import Simplex.Messaging.Protocol (ErrorType (..), MsgBody)
 import Simplex.Messaging.Transport (ATransport (..), TProxy (..), Transport (..))
 import Simplex.Messaging.Util (bshow)
 import System.Directory (removeFile)
@@ -127,7 +127,7 @@ testDuplexConnection _ alice bob = do
   let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "LET " <> confId <> "  16\nalice's connInfo") #> ("2", "bob", OK)
+  alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
   alice <# ("", "bob", CON)
@@ -150,7 +150,7 @@ testDuplexConnection _ alice bob = do
   alice #: ("4a", "bob", "ACK 7") #> ("4a", "bob", OK)
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND F 9\nmessage 3") #> ("17", "alice", MID 8)
-  bob <#= \case ("", "alice", MERR 8 (SMP AUTH s)) -> s == testSMPServer || s == testSMPServer2; _ -> False
+  bob <# ("", "alice", MERR 8 (SMP AUTH))
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
@@ -161,7 +161,7 @@ testDuplexConnRandomIds _ alice bob = do
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
   ("", bobConn', Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
-  alice #: ("2", bobConn, "LET " <> confId <> "  16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
+  alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
   bob <# ("", aliceConn, INFO "alice's connInfo")
   bob <# ("", aliceConn, CON)
   alice <# ("", bobConn, CON)
@@ -183,7 +183,7 @@ testDuplexConnRandomIds _ alice bob = do
   alice #: ("4a", bobConn, "ACK 7") #> ("4a", bobConn, OK)
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
   bob #: ("17", aliceConn, "SEND F 9\nmessage 3") #> ("17", aliceConn, MID 8)
-  bob <#= \case ("", c, MERR 8 (SMP AUTH s)) -> c == aliceConn && (s == testSMPServer || s == testSMPServer2); _ -> False
+  bob <# ("", aliceConn, MERR 8 (SMP AUTH))
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
@@ -194,9 +194,9 @@ testContactConnection _ alice bob tom = do
 
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
-  alice #: ("2", "bob", "ACPT " <> aInvId <> "  16\nalice's connInfo") #> ("2", "bob", OK)
+  alice #: ("2", "bob", "ACPT " <> aInvId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   ("", "alice", Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
-  bob #: ("12", "alice", "LET " <> bConfId <> "  16\nbob's connInfo 2") #> ("12", "alice", OK)
+  bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
   alice <# ("", "bob", INFO "bob's connInfo 2")
   alice <# ("", "bob", CON)
   bob <# ("", "alice", CON)
@@ -207,9 +207,9 @@ testContactConnection _ alice bob tom = do
 
   tom #: ("21", "alice", "JOIN " <> cReq' <> " 14\ntom's connInfo") #> ("21", "alice", OK)
   ("", "alice_contact", Right (REQ aInvId' _ "tom's connInfo")) <- (alice <#:)
-  alice #: ("4", "tom", "ACPT " <> aInvId' <> "  16\nalice's connInfo") #> ("4", "tom", OK)
+  alice #: ("4", "tom", "ACPT " <> aInvId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
   ("", "alice", Right (CONF tConfId _ "alice's connInfo")) <- (tom <#:)
-  tom #: ("22", "alice", "LET " <> tConfId <> "  16\ntom's connInfo 2") #> ("22", "alice", OK)
+  tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
   alice <# ("", "tom", INFO "tom's connInfo 2")
   alice <# ("", "tom", CON)
   tom <# ("", "alice", CON)
@@ -227,11 +227,11 @@ testContactConnRandomIds _ alice bob = do
   ("", aliceContact', Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
   aliceContact' `shouldBe` aliceContact
 
-  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> "  16\nalice's connInfo")
+  ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> " 16\nalice's connInfo")
   ("", aliceConn', Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
   aliceConn' `shouldBe` aliceConn
 
-  bob #: ("12", aliceConn, "LET " <> bConfId <> "  16\nbob's connInfo 2") #> ("12", aliceConn, OK)
+  bob #: ("12", aliceConn, "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
   alice <# ("", bobConn, INFO "bob's connInfo 2")
   alice <# ("", bobConn, CON)
   bob <# ("", aliceConn, CON)
@@ -250,7 +250,7 @@ testRejectContactRequest _ alice bob = do
   -- RJCT must use correct contact connection
   alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
   alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
-  alice #: ("3", "bob", "ACPT " <> aInvId <> "  12\nalice's info") #> ("3", "bob", ERR $ A.CMD PROHIBITED)
+  alice #: ("3", "bob", "ACPT " <> aInvId <> " 12\nalice's info") #> ("3", "bob", ERR $ A.CMD PROHIBITED)
   bob #:# "nothing should be delivered to bob"
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
@@ -279,7 +279,7 @@ testSubscrNotification t (server, _) client = do
   killThread server
   client <# ("", "", DOWN testSMPServer ["conn1"])
   withSmpServer (ATransport t) $
-    client <# ("", "conn1", ERR (SMP AUTH testSMPServer)) -- this new server does not have the queue
+    client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
 
 testMsgDeliveryServerRestart :: Transport c => TProxy c -> c -> c -> IO ()
 testMsgDeliveryServerRestart t alice bob = do
@@ -322,8 +322,8 @@ testServerConnectionAfterError t _ = do
 
   withAgent1 $ \bob -> do
     withAgent2 $ \alice -> do
-      bob #: ("1", "alice", "SUB") #> ("1", "alice", ERR (BROKER NETWORK $ APS testSMPServer2))
-      alice #: ("1", "bob", "SUB") #> ("1", "bob", ERR (BROKER NETWORK $ APS testSMPServer2))
+      bob #: ("1", "alice", "SUB") #> ("1", "alice", ERR (BROKER NETWORK))
+      alice #: ("1", "bob", "SUB") #> ("1", "bob", ERR (BROKER NETWORK))
       withServer $ do
         alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
         alice <#= \case ("", "bob", SENT 4) -> True; ("", "", UP s ["bob"]) -> s == server; _ -> False
@@ -427,7 +427,7 @@ connect (h1, name1) (h2, name2) = do
   let cReq' = strEncode cReq
   h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (CONF connId _ "info2")) <- (h1 <#:)
-  h1 #: ("c3", name2, "LET " <> connId <> "  5\ninfo1") #> ("c3", name2, OK)
+  h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
   h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)
   h1 <# ("", name2, CON)
@@ -481,7 +481,7 @@ syntaxTests t = do
             <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
             <> " 14\nbob's connInfo"
         )
-          >#> ("311", "a", "ERR SMP AUTH smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001")
+          >#> ("311", "a", "ERR SMP AUTH")
     describe "invalid" $ do
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
   where
