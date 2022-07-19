@@ -44,6 +44,7 @@ module Simplex.Messaging.Agent.Protocol
     SAParty (..),
     MsgHash,
     MsgMeta (..),
+    ConnectionStats (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
@@ -77,7 +78,6 @@ module Simplex.Messaging.Agent.Protocol
     ConnId,
     ConfirmationId,
     InvitationId,
-    ConnServer (..),
     MsgIntegrity (..),
     MsgErrorType (..),
     QueueStatus (..),
@@ -229,7 +229,7 @@ data ACommand (p :: AParty) where
   OFF :: ACommand Client
   DEL :: ACommand Client
   CHK :: ACommand Client
-  STAT :: L.NonEmpty ConnServer -> ACommand Agent
+  STAT :: ConnectionStats -> ACommand Agent
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
   SUSPENDED :: ACommand Agent
@@ -238,14 +238,21 @@ deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
 
-data ConnServer = RcvServer SMPServer | SndServer SMPServer
-  deriving (Eq, Show)
+data ConnectionStats = ConnectionStats
+  { rcvServers :: [SMPServer],
+    sndServers :: [SMPServer]
+  }
+  deriving (Eq, Show, Generic)
 
-instance StrEncoding ConnServer where
-  strEncode = \case
-    RcvServer s -> "rcv=" <> strEncode s
-    SndServer s -> "snd=" <> strEncode s
-  strP = "rcv=" *> (RcvServer <$> strP) <|> "snd=" *> (SndServer <$> strP)
+instance StrEncoding ConnectionStats where
+  strEncode ConnectionStats {rcvServers, sndServers} =
+    "rcv=" <> strEncodeList rcvServers <> " snd=" <> strEncodeList sndServers
+  strP = do
+    rcvServers <- "rcv=" *> strListP
+    sndServers <- " snd=" *> strListP
+    pure ConnectionStats {rcvServers, sndServers}
+
+instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
 data NotificationsMode = NMPeriodic | NMInstant
   deriving (Eq, Show)

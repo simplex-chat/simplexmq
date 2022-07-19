@@ -196,7 +196,7 @@ deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnection c = withAgentEnv c . deleteConnection' c
 
 -- | get servers used for connection
-getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m (NonEmpty ConnServer)
+getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers c = withAgentEnv c . getConnectionServers' c
 
 -- | Change servers to be used for creating new queues
@@ -714,15 +714,15 @@ deleteConnection' c connId =
       ns <- asks ntfSupervisor
       atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
 
-getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m (NonEmpty ConnServer)
+getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers' c connId = connServers <$> withStore c (`getConn` connId)
   where
-    connServers :: SomeConn -> NonEmpty ConnServer
+    connServers :: SomeConn -> ConnectionStats
     connServers = \case
-      SomeConn _ (RcvConnection _ RcvQueue {server}) -> [RcvServer server]
-      SomeConn _ (SndConnection _ SndQueue {server}) -> [SndServer server]
-      SomeConn _ (DuplexConnection _ RcvQueue {server = s1} SndQueue {server = s2}) -> [RcvServer s1, SndServer s2]
-      SomeConn _ (ContactConnection _ RcvQueue {server}) -> [RcvServer server]
+      SomeConn _ (RcvConnection _ RcvQueue {server}) -> ConnectionStats {rcvServers = [server], sndServers = []}
+      SomeConn _ (SndConnection _ SndQueue {server}) -> ConnectionStats {rcvServers = [], sndServers = [server]}
+      SomeConn _ (DuplexConnection _ RcvQueue {server = s1} SndQueue {server = s2}) -> ConnectionStats {rcvServers = [s1], sndServers = [s2]}
+      SomeConn _ (ContactConnection _ RcvQueue {server}) -> ConnectionStats {rcvServers = [server], sndServers = []}
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
