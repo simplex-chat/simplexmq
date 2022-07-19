@@ -1,13 +1,5 @@
 # Private Groups
 
-TODO: The original presented token based approach has a nice property in that it preserves the security properties of existing connections between two users as they establish connections for groups they are in.
-This is quite appealing in that participating in groups "do no harm;" connections are always exactly secure as they always were.
-However, the in progress secret splitting approach can do one better: the security of a connection established for a group takes on the properties of the _most secure_ connection within that (new) group.
-This means adding a user that has corrupted connections to all but a single existing member will get a clean connection to _all_ members.
-Or a new member that has a clean connection to just one member of a completely corrupted group will still have a clean connection to _all_ members.
-This also better builds upon the queue primitives that already exist, making a few group specific message types defined redundant.
-This doc and the TLA+ spec are in progress to use the improved secret splitting approach.
-
 An alternate groups approach that preserves more privacy properties.
 These groups can only be formed if all members already have direct connections to all other members.
 This eliminates the need for implicit introductions, which offer vectors for MITM attacks.
@@ -17,7 +9,11 @@ Standard duplex communication is sufficient.
 Agents need new behavior in soliciting proposals for membership changes, and for responding to them.
 
 This group protocol both captures the ethos of the SimpleX message protocol privacy, and increases trust in connections.
-Notably, this protocol can serve to _out_ an imposter rather than enable them, should at least one member of the group know the real identity.
+Due to the secret splitting strategy, the security of a new member's connections take on the properties of the _most secure_ connection within that (new) group.
+This means adding a user that has corrupted connections to all but a single existing member will get a clean connection to _all_ members.
+Or a new member that has a clean connection to just one member of an otherwise completely corrupted group will still have a clean connection to _all_ members.
+
+Also notable, this protocol can serve to _out_ an imposter rather than enable them, should at least one member of the group know the real identity.
 Say Alice, Bob, and Carol are in a group and want to add Dave.
 Only Alice actually knows Dave, but Mallory has scammed Bob and Carol into believing that she is Dave.
 This protocol will not let Dave or Mallory be admitted to the group, since neither can prove that they know all parties.
@@ -27,6 +23,8 @@ Alice, Bob, and Carol have increased hopes of identifying Mallory as an imposter
 
 ### Additions
 
+TODO: The TLA+ still refers to the token strategy rather than the secret splitting strategy.
+
 A formal specification of the protocol is defined in TLA+ and can be defined [here](./2022-06-11-private-groups/groups.tla).
 A crash course in TLA+ and the key abstractions used in the spec is [here](./2022-06-11-private-groups/README.md).
 
@@ -35,18 +33,23 @@ The protocol has four roles:
   1. The proposer, a group member who wants to add a new user
   1. The invitee, the user the proposer wants to add to the group
   1. The leader, the user who originally established the group and who orchestrates all proposals on behalf of proposers
-  1. The approvers, all current group members who are neither proposing or leading
+  1. The approvers, all current group members (including the Proposer and Leader)
 
 A centralized leader is not a drawback in for this algorithm, because in order to validate that all current members have direct connections with the invitee, all members must actively participate.
 The leader allows for a simpler centralized approach, without compromising availability.
 
-#### Proposer
+#### Proposer (phase 1)
 
-The proposer generates a random invitation identifier and a token.
-The proposer sends an Propose message to the leader that includes the invitation identifier and an informal description of the invitee (such as their contact name).
-The proposer also sends an Invite message to the invitee that includes the token and the current membership count of the group.
+The proposer generates a random invitation identifier.
+The proposer sends an PleasePropose message to the leader that includes the invitation identifier and an informal description of the invitee (such as their contact name).
 
-#### Leader and Acceptors (phase 1)
+#### Leader (phase 2)
+
+The Leader receives the PleasePropose message, and if no there is no other active proposal, it will start the requested proposal.
+The Leader broadcasts Propose messages that echo the original PleasePropose values.
+The Leader continues sending Propose messages as reminders until the proposal is complete or abandoned.
+
+#### Acceptors Sync (phase 3)
 
 Upon receipt of a Propose message, the user is prompted to see if they want to add the invitee to the group.
 Since the description of the invitee is informal, they may also have to manually select which of their contacts match the description.
@@ -58,37 +61,55 @@ If they do not want to add the invitee (possibly because they have no direct con
 However an explicit rejection message provides a speed up to the inevitable failure to add the contact.
 
 If the Propose recipient wants to add the contact to the group they:
-  1. Generate a token.
-  1. Store the invitation identifier, proposer's token, and their token.
-  1. The Leader: Rebroadcasts the Propose message to all Approvers.
-  1. Approvers: Send an Invite message to the invitee that includes the invitation identifier, their token, and the count of current members.
+  1. Generate a symmetric encryption key
+  1. Split the encryption key into shares for each member (including itself)
+  1. Store the invitation identifier, the key, and all shares
+  1. Send the corresponding share to all other members (using the ack flag to specify if they would like a share in response)
 
 The choice to accept or reject and the generated token should be locally committed before sending messages so conflicting messages are not sent.
 
-#### Invitee
+Since we want the encryption key only to be recoverable by _all_ shares, XOR based secret splitting is sufficient (vs something like Shamir Secret Sharing, which can more efficiently handle k of n schemes).
+
+#### Acceptors Invite (phase 4)
+
+Upon receipt of all shares Acceptors send invites to their perceived invitee.
+This step is much like setting up a new contact, where a new queue is created specifically for receiving messages from this new member and the current direct connection is used as the out-of-band channel.
+However, in this case the queue details are encrypted, so the invitee can only connect to the queue if they have all secret shares.
+
+The acceptor must:
+  1. Create a new queue with the SimpleX server
+  1. Send the perceived invitee an Invite message with the following:
+    1. The invitation identifier
+    1. The HMAC of each share expected
+    1. The HMAC of the encryption key
+    1. The encrypted queue data
+    1. The encrypted mapping of hashed shares members who received them (identified by the invitation identifier they joined under)
+
+Encryption must be authenticated with associated data (AEAD) to prevent tampering.
+The encryption key hash and the invitation id should be covered by the authentication.
+TODO: Hash of the queue too, for message commitment?
+
+#### Invitee (phase 5)
 
 The invitee collects all Invite messages.
-While they cannot predict who they are waiting for, each invite includes the number of members in the group.
-Upon receipt of Invites from that number that all have the same invitation identifier, the proposer now knows the full membership of the group and the user should be prompted as to whether or not to accept membership.
+While they cannot predict _who_ they are waiting for, each Invite message includes a HMAC of all other secret shares expected, so they know how many invitations to expect.
+Upon receipt of Invites from that number that all have the same invitation identifier, the invitee can check their validity against the hashes received.
+If valid, the Invitee now knows the full membership of the group and the user should be prompted as to whether or not to accept membership.
 If they decline, it is sufficient to ignore the messages, but more efficient to send a message as such.
 
-To accept, the invitee responds to all contacts with an Accept message that includes the invitation identifier and all tokens.
+To accept, the invitee should:
+  1. Reconstruct all symmetric encryption keys
+  1. Decrypt all payloads (checking associated authenticated data)
+  1. Double check that all member identifiers are consistent from each members Invite message
+  1. Locally commit all details of the group and that they have joined
+  1. Send confirmation that they are the intended recipient of each queue for each user (in the typical way)
 
-In the case of contact confusion between members, it is impossible for anyone outside of the group to send an Accept message as they never collect the correct number of tokens.
+In the case of contact confusion between members, it is impossible for anyone outside of the group to use ever claim the queue, as they will never receive all secret shares required to decrypt the queue invitation details.
 
-#### Approvers (phase 2)
+#### Approvers Establish and Inform Leader (phase 6)
 
-Once a member has an Accept message from the invitee, they begin syncing their tokens with other members via a SyncToken message.
-A SyncToken message can both send a token and ack receipt of a token from another member, based on the `ack` flag within the message.
-
-Once a member has all other members' tokens, assuming they all match the Accept message, then the member knows that all parties have agreed to extend membership.
-
-The member locally commits this result sends a Welcome message to share the group-specific ids of each member.
-These are the original invitation ids for this member (or none if the member is the Leader).
-These ids are still used for kicking members (and the Leader can't be).
-Each member sends a message that includes a mapping of tokens to ids, which the Invitee can use to infer the correct id per member.
-
-Once the Invitee receives a Welcome message from each member (ensuring that all members provide the same token-to-id mapping), they then begin to setup new connections with each member specific to each group.
+Once the invitee has confirmed receipt of the queue invitation, the approver secures the queue for them.
+The approver establishes a new queue in a typical fashion, using the previous as the out-of-band channel (this new queue is preferred to the direction connection, as it is _at least_ if not more as secure).
 
 Each Approver notifies the Leader that they have established a connection with the invitee.
 This both lets the Leader know that it need not continue to send reminder Propose messages, and it ensures that the Approver does not get kicked in a cancellation (see below).
@@ -118,6 +139,14 @@ However, it is possible that some previous members are unable to complete the in
 To ensure that the group can complete proposals, the Leader may then Kick any user that has not established a connection (except the Leader).
 
 TODO: Ideally, kicked members (or invitees that established connections with kicked members, who think they are part of the group) eventually learn that they are not in the group after all.
+
+----
+
+_TODO: The original token based rather than secret splitting algorithm are presented from here on._
+_This is quite appealing in that participating in groups "do no harm;" connections are always exactly secure as they always were._
+_However, the in progress secret splitting approach can do one better: the security of a connection established for a group takes on the properties of the *most secure* connection within that (new) group._
+
+----
 
 #### Properties
 
