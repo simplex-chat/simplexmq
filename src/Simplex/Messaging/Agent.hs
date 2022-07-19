@@ -432,7 +432,13 @@ subscribeConnections' c connIds = do
     addRcvQueue :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) -> ConnId -> (RcvQueue, ConnData) -> Map SMPServer (Map ConnId (RcvQueue, ConnData))
     addRcvQueue m connId rq@(RcvQueue {server}, _) = M.alter (Just . maybe (M.singleton connId rq) (M.insert connId rq)) server m
     subscribe :: (SMPServer, Map ConnId (RcvQueue, ConnData)) -> m (Map ConnId (Either AgentErrorType ()))
-    subscribe (srv, qs) = subscribeQueues c srv (M.map fst qs)
+    subscribe (srv, qs) = do
+      rs <- subscribeQueues c srv (M.map fst qs)
+      ns <- asks ntfSupervisor
+      forM_ (M.assocs rs) $ \case
+        (connId, Right _) -> atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+        _ -> pure ()
+      pure rs
     sndQueue :: SomeConn -> Maybe (ConnData, SndQueue)
     sndQueue = \case
       SomeConn _ (DuplexConnection cData _ sq) -> Just (cData, sq)
