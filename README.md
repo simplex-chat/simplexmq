@@ -11,7 +11,7 @@ If you have a server deployed please deploy a new server to a new host and retir
 
 ## Message broker for unidirectional (simplex) queues
 
-SimpleXMQ is a message broker for managing message queues and sending messages over public network. It consists of SMP server, SMP client library and SMP agent that implement [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md) for client-server communication and [SMP agent protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md) to manage duplex connections via simplex queues on multiple SMP servers.
+SimpleXMQ is a message broker for managing message queues and sending messages over public network. It consists of SMP server, SMP client library and SMP agent that implement [SMP protocol](./protocol/simplex-messaging.md) for client-server communication and [SMP agent protocol](./protocol/agent-protocol.md) to manage duplex connections via simplex queues on multiple SMP servers.
 
 SMP protocol is inspired by [Redis serialization protocol](https://redis.io/topics/protocol), but it is much simpler - it currently has only 10 client commands and 8 server responses.
 
@@ -27,7 +27,7 @@ SimpleXMQ is implemented in Haskell - it benefits from robust software transacti
 
 ### SMP server
 
-[SMP server](https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs) can be run on any Linux distribution, including low power/low memory devices. OpenSSL library is required for initialization.
+[SMP server](./apps/smp-server/Main.hs) can be run on any Linux distribution, including low power/low memory devices. OpenSSL library is required for initialization.
 
 To initialize the server use `smp-server init -n <fqdn>` (or `smp-server init --ip <ip>` for IP based address) command - it will generate keys and certificates for TLS transport. The fingerprint of offline certificate is used as part of the server address to protect client/server connection against man-in-the-middle attacks: `smp://<fingerprint>@<hostname>[:5223]`.
 
@@ -39,7 +39,7 @@ Starting from version 2.3.0, when store log is enabled, the server would also en
 
 > **Please note:** On initialization SMP server creates a chain of two certificates: a self-signed CA certificate ("offline") and a server certificate used for TLS handshake ("online"). **You should store CA certificate private key securely and delete it from the server. If server TLS credential is compromised this key can be used to sign a new one, keeping the same server identity and established connections.** CA private key location by default is `/etc/opt/simplex/ca.key`.
 
-SMP server implements [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md).
+SMP server implements [SMP protocol](./protocol/simplex-messaging.md).
 
 #### Running SMP server on MacOS
 
@@ -62,7 +62,7 @@ Now `openssl version` should be saying "OpenSSL". You can now run `smp-server in
 
 ### SMP client library
 
-[SMP client](https://github.com/simplex-chat/simplexmq/blob/master/src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
+[SMP client](./src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
 
 - execute commands with a functional API.
 - receive messages and other notifications via STM queue.
@@ -70,13 +70,13 @@ Now `openssl version` should be saying "OpenSSL". You can now run `smp-server in
 
 ### SMP agent
 
-[SMP agent library](https://github.com/simplex-chat/simplexmq/blob/master/src/Simplex/Messaging/Agent.hs) can be used to run SMP agent as part of another application and to communicate with the agent via STM queues, without serializing and parsing commands and responses.
+[SMP agent library](./src/Simplex/Messaging/Agent.hs) can be used to run SMP agent as part of another application and to communicate with the agent via STM queues, without serializing and parsing commands and responses.
 
-Haskell type [ACommand](https://github.com/simplex-chat/simplexmq/blob/master/src/Simplex/Messaging/Agent/Protocol.hs) represents SMP agent protocol to communicate via STM queues.
+Haskell type [ACommand](./src/Simplex/Messaging/Agent/Protocol.hs) represents SMP agent protocol to communicate via STM queues.
 
 See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for the example of integrating SMP agent into another application.
 
-[SMP agent executable](https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-agent/Main.hs) can be used to run a standalone SMP agent process that implements plaintext [SMP agent protocol](https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md) via TCP port 5224, so it can be used via telnet. It can be deployed in private networks to share access to the connections between multiple applications and services.
+[SMP agent executable](./apps/smp-agent/Main.hs) can be used to run a standalone SMP agent process that implements plaintext [SMP agent protocol](./protocol/agent-protocol.md) via TCP port 5224, so it can be used via telnet. It can be deployed in private networks to share access to the connections between multiple applications and services.
 
 ## Using SMP server and SMP agent
 
@@ -110,7 +110,15 @@ You can run your SMP server as a Linux process, optionally using a service manag
 
 See [this section](#smp-server) for more information. Run `smp-server -h` and `smp-server init -h` for explanation of commands and options.
 
-[<img alt="Linode" src="https://raw.githubusercontent.com/simplex-chat/simplexmq/master/img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
+<img alt="Docker" src="./img/docker.svg" align="right" width="200">
+
+## Deploy SMP server with Docker
+
+SMP server could also be deployed using `Docker`.
+
+See: [`scripts/docker`](./scripts/docker/)
+
+[<img alt="Linode" src="./img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
 
 ## Deploy SMP server on Linode
 
@@ -134,7 +142,7 @@ Deployment on Linode is performed via StackScripts, which serve as recipes for L
 
 Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
-[<img alt="DigitalOcean" src="https://raw.githubusercontent.com/simplex-chat/simplexmq/master/img/digitalocean.png" align="right" width="300">](https://marketplace.digitalocean.com/apps/simplex-server)
+[<img alt="DigitalOcean" src="/img/digitalocean.png" align="right" width="300">](https://marketplace.digitalocean.com/apps/simplex-server)
 
 ## Deploy SMP server on DigitalOcean
 
@@ -162,12 +170,12 @@ smp-server init [-l] -n <fqdn>
 
 ## SMP server design
 
-![SMP server design](https://raw.githubusercontent.com/simplex-chat/simplexmq/master/design/server.svg)
+![SMP server design](./design/server.svg)
 
 ## SMP agent design
 
-![SMP agent design](https://raw.githubusercontent.com/simplex-chat/simplexmq/master/design/agent2.svg)
+![SMP agent design](./design/agent2.svg)
 
 ## License
 
-[AGPL v3](https://github.com/simplex-chat/simplexmq/blob/master/LICENSE)
+[AGPL v3](./LICENSE)
