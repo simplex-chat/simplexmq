@@ -39,7 +39,7 @@ Starting from version 2.3.0, when store log is enabled, the server would also en
 
 > **Please note:** On initialization SMP server creates a chain of two certificates: a self-signed CA certificate ("offline") and a server certificate used for TLS handshake ("online"). **You should store CA certificate private key securely and delete it from the server. If server TLS credential is compromised this key can be used to sign a new one, keeping the same server identity and established connections.** CA private key location by default is `/etc/opt/simplex/ca.key`.
 
-SMP server implements [SMP protocol](/protocol/simplex-messaging.md).
+SMP server implements [SMP protocol](./protocol/simplex-messaging.md).
 
 #### Running SMP server on MacOS
 
