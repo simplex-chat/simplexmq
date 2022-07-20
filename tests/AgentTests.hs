@@ -126,7 +126,7 @@ testDuplexConnection _ alice bob = do
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW INV")
   let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "bob", Right (CONF confId "bob's connInfo")) <- (alice <#:)
+  ("", "bob", Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   bob <# ("", "alice", INFO "alice's connInfo")
   bob <# ("", "alice", CON)
@@ -159,7 +159,7 @@ testDuplexConnRandomIds _ alice bob = do
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW INV")
   let cReq' = strEncode cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
-  ("", bobConn', Right (CONF confId "bob's connInfo")) <- (alice <#:)
+  ("", bobConn', Right (CONF confId _ "bob's connInfo")) <- (alice <#:)
   bobConn' `shouldBe` bobConn
   alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
   bob <# ("", aliceConn, INFO "alice's connInfo")
@@ -193,9 +193,9 @@ testContactConnection _ alice bob tom = do
   let cReq' = strEncode cReq
 
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "alice_contact", Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
+  ("", "alice_contact", Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "ACPT " <> aInvId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
-  ("", "alice", Right (CONF bConfId "alice's connInfo")) <- (bob <#:)
+  ("", "alice", Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
   bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
   alice <# ("", "bob", INFO "bob's connInfo 2")
   alice <# ("", "bob", CON)
@@ -206,9 +206,9 @@ testContactConnection _ alice bob tom = do
   bob #: ("13", "alice", "ACK 4") #> ("13", "alice", OK)
 
   tom #: ("21", "alice", "JOIN " <> cReq' <> " 14\ntom's connInfo") #> ("21", "alice", OK)
-  ("", "alice_contact", Right (REQ aInvId' "tom's connInfo")) <- (alice <#:)
+  ("", "alice_contact", Right (REQ aInvId' _ "tom's connInfo")) <- (alice <#:)
   alice #: ("4", "tom", "ACPT " <> aInvId' <> " 16\nalice's connInfo") #> ("4", "tom", OK)
-  ("", "alice", Right (CONF tConfId "alice's connInfo")) <- (tom <#:)
+  ("", "alice", Right (CONF tConfId _ "alice's connInfo")) <- (tom <#:)
   tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
   alice <# ("", "tom", INFO "tom's connInfo 2")
   alice <# ("", "tom", CON)
@@ -224,11 +224,11 @@ testContactConnRandomIds _ alice bob = do
   let cReq' = strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN " <> cReq' <> " 14\nbob's connInfo")
-  ("", aliceContact', Right (REQ aInvId "bob's connInfo")) <- (alice <#:)
+  ("", aliceContact', Right (REQ aInvId _ "bob's connInfo")) <- (alice <#:)
   aliceContact' `shouldBe` aliceContact
 
   ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> " 16\nalice's connInfo")
-  ("", aliceConn', Right (CONF bConfId "alice's connInfo")) <- (bob <#:)
+  ("", aliceConn', Right (CONF bConfId _ "alice's connInfo")) <- (bob <#:)
   aliceConn' `shouldBe` aliceConn
 
   bob #: ("12", aliceConn, "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
@@ -246,7 +246,7 @@ testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW CON")
   let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN " <> cReq' <> " 10\nbob's info") #> ("11", "alice", OK)
-  ("", "a_contact", Right (REQ aInvId "bob's info")) <- (alice <#:)
+  ("", "a_contact", Right (REQ aInvId _ "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
   alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
   alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
@@ -387,7 +387,7 @@ testConcurrentMsgDelivery _ alice bob = do
   ("1", "bob2", Right (INV cReq)) <- alice #: ("1", "bob2", "NEW INV")
   let cReq' = strEncode cReq
   bob #: ("11", "alice2", "JOIN " <> cReq' <> " 14\nbob's connInfo") #> ("11", "alice2", OK)
-  ("", "bob2", Right (CONF _confId "bob's connInfo")) <- (alice <#:)
+  ("", "bob2", Right (CONF _confId _ "bob's connInfo")) <- (alice <#:)
   -- below commands would be needed to accept bob's connection, but alice does not
   -- alice #: ("2", "bob", "LET " <> _confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   -- bob <# ("", "alice", INFO "alice's connInfo")
@@ -426,7 +426,7 @@ connect (h1, name1) (h2, name2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW INV")
   let cReq' = strEncode cReq
   h2 #: ("c2", name1, "JOIN " <> cReq' <> " 5\ninfo2") #> ("c2", name1, OK)
-  ("", _, Right (CONF connId "info2")) <- (h1 <#:)
+  ("", _, Right (CONF connId _ "info2")) <- (h1 <#:)
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
   h2 <# ("", name1, INFO "info1")
   h2 <# ("", name1, CON)
@@ -447,7 +447,7 @@ sendMessage (h1, name1) (h2, name2) msg = do
 --   ("c1", conn2, Right (INV cReq)) <- h1 #: ("c1", "", "NEW INV")
 --   let cReq' = strEncode cReq
 --   ("c2", conn1, Right OK) <- h2 #: ("c2", "", "JOIN " <> cReq' <> " 5\ninfo2")
---   ("", _, Right (REQ connId "info2")) <- (h1 <#:)
+--   ("", _, Right (REQ connId _ "info2")) <- (h1 <#:)
 --   h1 #: ("c3", conn2, "ACPT " <> connId <> " 5\ninfo1") =#> \case ("c3", c, OK) -> c == conn2; _ -> False
 --   h2 <# ("", conn1, INFO "info1")
 --   h2 <# ("", conn1, CON)

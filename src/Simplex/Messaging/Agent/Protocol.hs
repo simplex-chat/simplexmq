@@ -44,6 +44,7 @@ module Simplex.Messaging.Agent.Protocol
     SAParty (..),
     MsgHash,
     MsgMeta (..),
+    ConnectionStats (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
@@ -208,9 +209,9 @@ data ACommand (p :: AParty) where
   NEW :: AConnectionMode -> ACommand Client -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent
   JOIN :: AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
-  CONF :: ConfirmationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
-  REQ :: InvitationId -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
+  REQ :: InvitationId -> L.NonEmpty SMPServer -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
   ACPT :: InvitationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   RJCT :: InvitationId -> ACommand Client
   INFO :: ConnInfo -> ACommand Agent
@@ -227,6 +228,8 @@ data ACommand (p :: AParty) where
   ACK :: AgentMsgId -> ACommand Client
   OFF :: ACommand Client
   DEL :: ACommand Client
+  CHK :: ACommand Client
+  STAT :: ConnectionStats -> ACommand Agent
   OK :: ACommand Agent
   ERR :: AgentErrorType -> ACommand Agent
   SUSPENDED :: ACommand Agent
@@ -234,6 +237,22 @@ data ACommand (p :: AParty) where
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
+
+data ConnectionStats = ConnectionStats
+  { rcvServers :: [SMPServer],
+    sndServers :: [SMPServer]
+  }
+  deriving (Eq, Show, Generic)
+
+instance StrEncoding ConnectionStats where
+  strEncode ConnectionStats {rcvServers, sndServers} =
+    "rcv=" <> strEncodeList rcvServers <> " snd=" <> strEncodeList sndServers
+  strP = do
+    rcvServers <- "rcv=" *> strListP
+    sndServers <- " snd=" *> strListP
+    pure ConnectionStats {rcvServers, sndServers}
+
+instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
 data NotificationsMode = NMPeriodic | NMInstant
   deriving (Eq, Show)
@@ -747,7 +766,7 @@ data AgentErrorType
     AGENT {agentErr :: SMPAgentError}
   | -- | agent implementation or dependency errors
     INTERNAL {internalErr :: String}
-  deriving (Eq, Generic, Read, Show, Exception)
+  deriving (Eq, Generic, Show, Exception)
 
 instance ToJSON AgentErrorType where
   toJSON = J.genericToJSON $ sumTypeJSON id
@@ -882,6 +901,8 @@ commandP =
     <|> "ACK " *> ackCmd
     <|> "OFF" $> ACmd SClient OFF
     <|> "DEL" $> ACmd SClient DEL
+    <|> "CHK" $> ACmd SClient CHK
+    <|> "STAT " *> statResp
     <|> "ERR " *> agentError
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
@@ -889,9 +910,9 @@ commandP =
     newCmd = ACmd SClient . NEW <$> strP
     invResp = ACmd SAgent . INV <$> strP
     joinCmd = ACmd SClient .: JOIN <$> strP_ <*> A.takeByteString
-    confMsg = ACmd SAgent .: CONF <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
+    confMsg = ACmd SAgent .:. CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> A.takeByteString
     letCmd = ACmd SClient .: LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
-    reqMsg = ACmd SAgent .: REQ <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
+    reqMsg = ACmd SAgent .:. REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> A.takeByteString
     acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
@@ -903,6 +924,7 @@ commandP =
     msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
     message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> A.takeByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
+    statResp = ACmd SAgent . STAT <$> strP
     connections = strP `A.sepBy'` A.char ','
     msgMetaP = do
       integrity <- strP
@@ -922,9 +944,9 @@ serializeCommand = \case
   NEW cMode -> "NEW " <> strEncode cMode
   INV cReq -> "INV " <> strEncode cReq
   JOIN cReq cInfo -> B.unwords ["JOIN", strEncode cReq, serializeBinary cInfo]
-  CONF confId cInfo -> B.unwords ["CONF", confId, serializeBinary cInfo]
+  CONF confId srvs cInfo -> B.unwords ["CONF", confId, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
-  REQ invId cInfo -> B.unwords ["REQ", invId, serializeBinary cInfo]
+  REQ invId srvs cInfo -> B.unwords ["REQ", invId, strEncode srvs, serializeBinary cInfo]
   ACPT invId cInfo -> B.unwords ["ACPT", invId, serializeBinary cInfo]
   RJCT invId -> "RJCT " <> invId
   INFO cInfo -> "INFO " <> serializeBinary cInfo
@@ -940,6 +962,8 @@ serializeCommand = \case
   ACK mId -> "ACK " <> bshow mId
   OFF -> "OFF"
   DEL -> "DEL"
+  CHK -> "CHK"
+  STAT srvs -> "STAT " <> strEncode srvs
   CON -> "CON"
   ERR e -> "ERR " <> strEncode e
   OK -> "OK"
@@ -1012,9 +1036,9 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       SEND msgFlags body -> SEND msgFlags <$$> getBody body
       MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
       JOIN qUri cInfo -> JOIN qUri <$$> getBody cInfo
-      CONF confId cInfo -> CONF confId <$$> getBody cInfo
+      CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
       LET confId cInfo -> LET confId <$$> getBody cInfo
-      REQ invId cInfo -> REQ invId <$$> getBody cInfo
+      REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo
       ACPT invId cInfo -> ACPT invId <$$> getBody cInfo
       INFO cInfo -> INFO <$$> getBody cInfo
       cmd -> pure $ Right cmd

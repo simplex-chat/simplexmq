@@ -212,7 +212,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     -- establish connection
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get alice ##> ("", bobId, CON)
@@ -276,7 +276,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     liftIO $ print 0
     void $ messageNotification apnsQ
-    ("", _, CONF confId "bob's connInfo") <- get alice
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     liftIO $ threadDelay 500000
     allowConnection alice bobId confId "alice's connInfo"
     liftIO $ print 1
@@ -330,7 +330,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- establish connection
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get alice ##> ("", bobId, CON)
@@ -395,7 +395,7 @@ testChangeToken APNSMockServer {apnsQ} = do
     -- establish connection
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get alice ##> ("", bobId, CON)

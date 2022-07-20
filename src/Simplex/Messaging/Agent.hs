@@ -54,6 +54,7 @@ module Simplex.Messaging.Agent
     ackMessage,
     suspendConnection,
     deleteConnection,
+    getConnectionServers,
     setSMPServers,
     setNtfServers,
     registerNtfToken,
@@ -194,6 +195,10 @@ suspendConnection c = withAgentEnv c . suspendConnection' c
 deleteConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
 deleteConnection c = withAgentEnv c . deleteConnection' c
 
+-- | get servers used for connection
+getConnectionServers :: AgentErrorMonad m => AgentClient -> ConnId -> m ConnectionStats
+getConnectionServers c = withAgentEnv c . getConnectionServers' c
+
 -- | Change servers to be used for creating new queues
 setSMPServers :: AgentErrorMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers c = withAgentEnv c . setSMPServers' c
@@ -273,6 +278,7 @@ processCommand c (connId, cmd) = case cmd of
   ACK msgId -> ackMessage' c connId msgId $> (connId, OK)
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
+  CHK -> (connId,) . STAT <$> getConnectionServers' c connId
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId cMode = do
@@ -708,6 +714,16 @@ deleteConnection' c connId =
       ns <- asks ntfSupervisor
       atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
 
+getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
+getConnectionServers' c connId = connServers <$> withStore c (`getConn` connId)
+  where
+    connServers :: SomeConn -> ConnectionStats
+    connServers = \case
+      SomeConn _ (RcvConnection _ RcvQueue {server}) -> ConnectionStats {rcvServers = [server], sndServers = []}
+      SomeConn _ (SndConnection _ SndQueue {server}) -> ConnectionStats {rcvServers = [], sndServers = [server]}
+      SomeConn _ (DuplexConnection _ RcvQueue {server = s1} SndQueue {server = s2}) -> ConnectionStats {rcvServers = [s1], sndServers = [s2]}
+      SomeConn _ (ContactConnection _ RcvQueue {server}) -> ConnectionStats {rcvServers = [server], sndServers = []}
+
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
 setSMPServers' c = atomically . writeTVar (smpServers c)
@@ -1064,7 +1080,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                     parseMessage agentMsgBody >>= \case
                       AgentConnInfo connInfo ->
                         processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = []} False
-                      AgentConnInfoReply smpQueues connInfo -> do
+                      AgentConnInfoReply smpQueues connInfo ->
                         processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues} True
                       _ -> prohibited
                     where
@@ -1074,7 +1090,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                         confId <- withStore c $ \db -> do
                           setHandshakeVersion db connId agentVersion duplexHS
                           createConfirmation db g newConfirmation
-                        notify $ CONF confId connInfo
+                        let srvs = map (\SMPQueueInfo {smpServer = s} -> s) $ smpReplyQueues senderConf
+                        notify $ CONF confId srvs connInfo
                   _ -> prohibited
               -- party accepting connection
               (DuplexConnection _ _ sq, Nothing) -> do
@@ -1120,14 +1137,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
               _ -> prohibited
 
         smpInvitation :: ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
-        smpInvitation connReq cInfo = do
+        smpInvitation connReq@(CRInvitationUri crData _) cInfo = do
           logServer "<--" c srv rId "MSG <KEY>"
           case conn of
             ContactConnection {} -> do
               g <- asks idsDrg
               let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
               invId <- withStore c $ \db -> createInvitation db g newInv
-              notify $ REQ invId cInfo
+              let srvs = L.map (\SMPQueueUri {smpServer = s} -> s) $ crSmpQueues crData
+              notify $ REQ invId srvs cInfo
             _ -> prohibited
 
         checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity

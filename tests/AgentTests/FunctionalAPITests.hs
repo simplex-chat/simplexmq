@@ -163,7 +163,7 @@ runAgentClientTest alice bob baseId = do
   Right () <- runExceptT $ do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -199,9 +199,9 @@ runAgentClientContactTest alice bob baseId = do
   Right () <- runExceptT $ do
     (_, qInfo) <- createConnection alice SCMContact
     aliceId <- joinConnection bob qInfo "bob's connInfo"
-    ("", _, REQ invId "bob's connInfo") <- get alice
+    ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContact alice invId "alice's connInfo"
-    ("", _, CONF confId "alice's connInfo") <- get bob
+    ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
     get alice ##> ("", bobId, CON)
@@ -250,7 +250,7 @@ testAsyncInitiatingOffline = do
     aliceId <- joinConnection bob cReq "bob's connInfo"
     alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
     subscribeConnection alice' bobId
-    ("", _, CONF confId "bob's connInfo") <- get alice'
+    ("", _, CONF confId _ "bob's connInfo") <- get alice'
     allowConnection alice' bobId confId "alice's connInfo"
     get alice' ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -266,7 +266,7 @@ testAsyncJoiningOfflineBeforeActivation = do
     (bobId, qInfo) <- createConnection alice SCMInvitation
     aliceId <- joinConnection bob qInfo "bob's connInfo"
     disconnectAgentClient bob
-    ("", _, CONF confId "bob's connInfo") <- get alice
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
     subscribeConnection bob' aliceId
@@ -287,7 +287,7 @@ testAsyncBothOffline = do
     disconnectAgentClient bob
     alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
     subscribeConnection alice' bobId
-    ("", _, CONF confId "bob's connInfo") <- get alice'
+    ("", _, CONF confId _ "bob's connInfo") <- get alice'
     allowConnection alice' bobId confId "alice's connInfo"
     bob' <- liftIO $ getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
     subscribeConnection bob' aliceId
@@ -316,7 +316,7 @@ testAsyncServerOffline t = do
       srv1 `shouldBe` testSMPServer
       conns1 `shouldBe` [bobId]
     aliceId <- joinConnection bob cReq "bob's connInfo"
-    ("", _, CONF confId "bob's connInfo") <- get alice
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -389,7 +389,7 @@ makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnI
 makeConnection alice bob = do
   (bobId, qInfo) <- createConnection alice SCMInvitation
   aliceId <- joinConnection bob qInfo "bob's connInfo"
-  ("", _, CONF confId "bob's connInfo") <- get alice
+  ("", _, CONF confId _ "bob's connInfo") <- get alice
   allowConnection alice bobId confId "alice's connInfo"
   get alice ##> ("", bobId, CON)
   get bob ##> ("", aliceId, INFO "alice's connInfo")

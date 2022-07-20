@@ -342,7 +342,7 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
           atomically $ putTMVar clientVar r
           successAction client
         Left e -> do
-          if e == BROKER NETWORK || e == BROKER TIMEOUT
+          if temporaryAgentError e
             then retryAction
             else atomically $ do
               putTMVar clientVar (Left e)
