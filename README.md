@@ -1,9 +1,9 @@
 # SimpleXMQ
 
 [![GitHub build](https://github.com/simplex-chat/simplexmq/workflows/build/badge.svg)](https://github.com/simplex-chat/simplexmq/actions?query=workflow%3Abuild)
-[![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplexmq)](/../../releases)
+[![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplexmq)](https://github.com/simplex-chat/simplexmq/releases)
 
-📢 SimpleXMQ v1 is released - with many security, privacy and efficiency improvements, new functionality - see [release notes](/../../releases/tag/v1.0.0).
+📢 SimpleXMQ v1 is released - with many security, privacy and efficiency improvements, new functionality - see [release notes](https://github.com/simplex-chat/simplexmq/releases/tag/v1.0.0).
 
 **Please note**: v1 is not backwards compatible, but it has the version negotiation built into all protocol layers for forwards compatibility of this version and backwards compatibility of the future versions, that will be backwards compatible for at least two versions back.
 
@@ -11,7 +11,7 @@ If you have a server deployed please deploy a new server to a new host and retir
 
 ## Message broker for unidirectional (simplex) queues
 
-SimpleXMQ is a message broker for managing message queues and sending messages over public network. It consists of SMP server, SMP client library and SMP agent that implement [SMP protocol](/protocol/simplex-messaging.md) for client-server communication and [SMP agent protocol](/protocol/agent-protocol.md) to manage duplex connections via simplex queues on multiple SMP servers.
+SimpleXMQ is a message broker for managing message queues and sending messages over public network. It consists of SMP server, SMP client library and SMP agent that implement [SMP protocol](./protocol/simplex-messaging.md) for client-server communication and [SMP agent protocol](./protocol/agent-protocol.md) to manage duplex connections via simplex queues on multiple SMP servers.
 
 SMP protocol is inspired by [Redis serialization protocol](https://redis.io/topics/protocol), but it is much simpler - it currently has only 10 client commands and 8 server responses.
 
@@ -27,7 +27,7 @@ SimpleXMQ is implemented in Haskell - it benefits from robust software transacti
 
 ### SMP server
 
-[SMP server](/apps/smp-server/Main.hs) can be run on any Linux distribution, including low power/low memory devices. OpenSSL library is required for initialization.
+[SMP server](./apps/smp-server/Main.hs) can be run on any Linux distribution, including low power/low memory devices. OpenSSL library is required for initialization.
 
 To initialize the server use `smp-server init -n <fqdn>` (or `smp-server init --ip <ip>` for IP based address) command - it will generate keys and certificates for TLS transport. The fingerprint of offline certificate is used as part of the server address to protect client/server connection against man-in-the-middle attacks: `smp://<fingerprint>@<hostname>[:5223]`.
 
@@ -62,7 +62,7 @@ Now `openssl version` should be saying "OpenSSL". You can now run `smp-server in
 
 ### SMP client library
 
-[SMP client](/src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
+[SMP client](./src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
 
 - execute commands with a functional API.
 - receive messages and other notifications via STM queue.
@@ -70,13 +70,13 @@ Now `openssl version` should be saying "OpenSSL". You can now run `smp-server in
 
 ### SMP agent
 
-[SMP agent library](/src/Simplex/Messaging/Agent.hs) can be used to run SMP agent as part of another application and to communicate with the agent via STM queues, without serializing and parsing commands and responses.
+[SMP agent library](./src/Simplex/Messaging/Agent.hs) can be used to run SMP agent as part of another application and to communicate with the agent via STM queues, without serializing and parsing commands and responses.
 
-Haskell type [ACommand](/src/Simplex/Messaging/Agent/Protocol.hs) represents SMP agent protocol to communicate via STM queues.
+Haskell type [ACommand](./src/Simplex/Messaging/Agent/Protocol.hs) represents SMP agent protocol to communicate via STM queues.
 
 See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for the example of integrating SMP agent into another application.
 
-[SMP agent executable](/apps/smp-agent/Main.hs) can be used to run a standalone SMP agent process that implements plaintext [SMP agent protocol](/protocol/agent-protocol.md) via TCP port 5224, so it can be used via telnet. It can be deployed in private networks to share access to the connections between multiple applications and services.
+[SMP agent executable](./apps/smp-agent/Main.hs) can be used to run a standalone SMP agent process that implements plaintext [SMP agent protocol](./protocol/agent-protocol.md) via TCP port 5224, so it can be used via telnet. It can be deployed in private networks to share access to the connections between multiple applications and services.
 
 ## Using SMP server and SMP agent
 
@@ -94,7 +94,7 @@ It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.
 
 You can run your SMP server as a Linux process, optionally using a service manager for booting and restarts.
 
-- For Ubuntu you can download a binary from [the latest release](/../../releases).
+- For Ubuntu you can download a binary from [the latest release](https://github.com/simplex-chat/simplexmq/releases).
 
   If you're using other Linux distribution and the binary is incompatible with it, you can build from source using [Haskell stack](https://docs.haskellstack.org/en/stable/README/):
 
@@ -110,15 +110,15 @@ You can run your SMP server as a Linux process, optionally using a service manag
 
 See [this section](#smp-server) for more information. Run `smp-server -h` and `smp-server init -h` for explanation of commands and options.
 
-<img alt="Docker" src="/img/docker.svg" align="right" width="200">
+<img alt="Docker" src="./img/docker.svg" align="right" width="200">
 
 ## Deploy SMP server with Docker
 
 SMP server could also be deployed using `Docker`.
 
-See: [`scripts/docker`](/scripts/docker/)
+See: [`scripts/docker`](./scripts/docker/)
 
-[<img alt="Linode" src="/img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
+[<img alt="Linode" src="./img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
 
 ## Deploy SMP server on Linode
 
@@ -140,7 +140,7 @@ Deployment on Linode is performed via StackScripts, which serve as recipes for L
 - Get `address` and `fingerprint` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh.
 - Great, your own SMP server is ready! If you provided FQDN use `smp://<fingerprint>@<fqdn>` as SMP server address in the client, otherwise use `smp://<fingerprint>@<ip_address>`.
 
-Please submit an [issue](/../../issues) if any problems occur.
+Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
 [<img alt="DigitalOcean" src="/img/digitalocean.png" align="right" width="300">](https://marketplace.digitalocean.com/apps/simplex-server)
 
@@ -159,7 +159,7 @@ To deploy SMP server use [SimpleX Server 1-click app](https://marketplace.digita
 - Open "Console" on your Droplet management page to get SMP server fingerprint - either from the welcome message or from `/etc/opt/simplex/fingerprint`. Alternatively you can manually SSH to created Droplet, see [DigitalOcean instruction](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
 - Great, your own SMP server is ready! Use `smp://<fingerprint>@<ip_address>` as SMP server address in the client.
 
-Please submit an [issue](/../../issues) if any problems occur.
+Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
 
 > **Please note:** SMP server uses server address as a Common Name for server certificate generated during initialization. If you would like your server address to be FQDN instead of IP address, you can log in to your Droplet and run the commands below to re-initialize the server. Alternatively you can use [Linode StackScript](https://cloud.linode.com/stackscripts/748014) which allows this parameterization.
 
@@ -170,12 +170,12 @@ smp-server init [-l] -n <fqdn>
 
 ## SMP server design
 
-![SMP server design](/design/server.svg)
+![SMP server design](./design/server.svg)
 
 ## SMP agent design
 
-![SMP agent design](/design/agent2.svg)
+![SMP agent design](./design/agent2.svg)
 
 ## License
 
-[AGPL v3](/LICENSE)
+[AGPL v3](./LICENSE)
