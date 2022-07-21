@@ -479,7 +479,7 @@ getConnectionMessage' c connId = do
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> getQueueMessage c rq
     SomeConn _ (RcvConnection _ rq) -> getQueueMessage c rq
-    SomeConn _ ContactConnection {} -> throwError $ CMD PROHIBITED
+    SomeConn _ (ContactConnection _ rq) -> getQueueMessage c rq
     SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
 
 getNotificationMessage' :: forall m. AgentMonad m => AgentClient -> C.CbNonce -> ByteString -> m (NotificationInfo, [SMPMsgMeta])
