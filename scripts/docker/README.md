@@ -2,9 +2,14 @@
 0. Install `docker` to your host.
 
 1. Build your `smp-server` image:
-```sh
-DOCKER_BUILDKIT=1 docker build -t smp-server .
-```
+    - **Option 1** - Compile `smp-server` from source:
+    ```sh
+    DOCKER_BUILDKIT=1 docker build -t smp-server -f smp-selfhosted.Dockerfile .
+    ```
+    - **Option 2** - Download latest `smp-server` from [latest Github release](https://github.com/simplex-chat/simplexmq/releases/latest):
+    ```sh
+    DOCKER_BUILDKIT=1 docker build -t smp-server -f smp-hosted.Dockerfile .
+    ```
 
 2. Run new docker container:
 ```sh
