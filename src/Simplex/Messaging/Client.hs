@@ -130,7 +130,7 @@ defaultClientConfig =
   ProtocolClientConfig
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
-      tcpTimeout = 5_000_000,
+      tcpTimeout = 10_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
       smpPing = 600_000_000, -- 10min
       smpServerVRange = supportedSMPServerVRange
