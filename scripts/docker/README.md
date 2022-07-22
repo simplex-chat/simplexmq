@@ -2,7 +2,7 @@
 0. Install `docker` to your host.
 
 1. Build your `smp-server` image:
-    - **Option 1** - Compile `smp-server` from source:
+    - **Option 1** - Compile `smp-server` from source (stable branch):
     ```sh
     DOCKER_BUILDKIT=1 docker build -t smp-server -f smp-selfhosted.Dockerfile .
     ```
