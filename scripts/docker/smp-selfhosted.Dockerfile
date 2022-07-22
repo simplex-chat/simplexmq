@@ -24,7 +24,7 @@ RUN git clone https://github.com/simplex-chat/simplexmq
 WORKDIR ./simplexmq
 
 # Checkout against master
-RUN git checkout master
+RUN git checkout stable
 
 # Adjust PATH
 ENV PATH="/root/.cabal/bin:/root/.ghcup/bin:$PATH"
