@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+confd="/etc/opt/simplex"
+logd="/var/opt/simplex/"
+
+# Check if server has been initialized
+if [ ! -f "$confd/smp-server.ini" ]; then
+	# If not, determine ip or domain
+	case $addr in
+		'') printf "Please specify \$addr environment variable.\n"; exit 1 ;;
+		*[a-zA-Z]*) smp-server init -l -n "$addr" ;;
+		*) smp-server init -l --ip "$addr" ;;
+	esac
+
+fi
+
+# backup store log
+[ -f "$logd/smp-server-store.log" ] && cp "$logd"/smp-server-store.log "$logd"/smp-server-store.log.bak
+# rotate server log
+[ -f "$logd/smp-server.log" ] && mv "$logd"/smp-server.log "$logd"/smp-server-"$(date +'%FT%T')".log
+
+# Finally, run smp-sever. Notice that "exec" here is important:
+# smp-server replaces our helper script, so that it can catch INT signal
+exec smp-server start > "$logd"/smp-server.log 2>&1
