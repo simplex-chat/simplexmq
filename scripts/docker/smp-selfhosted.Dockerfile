@@ -3,11 +3,20 @@ FROM ubuntu:focal AS build
 
 ### Build stage
 
-# Install curl and git
-RUN apt-get update && apt-get install -y curl git
+# Install curl and git and smp-related dependencies
+RUN apt-get update && apt-get install -y curl git build-essential libgmp3-dev zlib1g-dev
 
-# Install stack
-RUN curl -sSL https://get.haskellstack.org/ | sh
+# Install ghcup
+RUN curl https://downloads.haskell.org/~ghcup/x86_64-linux-ghcup -o /usr/bin/ghcup && \
+    chmod +x /usr/bin/ghcup
+
+# Install ghc
+RUN ghcup install ghc
+# Install cabal
+RUN ghcup install cabal
+# Set both as default
+RUN ghcup set ghc && \
+    ghcup set cabal
 
 # Clone simplexmq repository
 RUN git clone https://github.com/simplex-chat/simplexmq
@@ -17,9 +26,12 @@ WORKDIR ./simplexmq
 # Checkout against master
 RUN git checkout master
 
+# Adjust PATH
+ENV PATH="/root/.cabal/bin:/root/.ghcup/bin:$PATH"
+
 # Compile smp-server
-RUN stack install && \
-    strip /root/.local/bin/smp-server
+RUN cabal update
+RUN cabal install
 
 ### Final stage
 
@@ -29,7 +41,7 @@ FROM final
 RUN apt-get update && apt-get install -y openssl
 
 # Copy compiled smp-server from build stage
-COPY --from=build /root/.local/bin/smp-server /usr/bin/smp-server
+COPY --from=build /root/.cabal/bin/smp-server /usr/bin/smp-server
 
 # Copy our helper script
 COPY ./entrypoint /usr/bin/entrypoint
