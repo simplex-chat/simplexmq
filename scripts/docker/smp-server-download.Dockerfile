@@ -1,6 +1,6 @@
 FROM ubuntu:focal
 
-# Install curl 
+# Install curl
 RUN apt-get update && apt-get install -y curl
 
 # Download latest smp-server release and assign executable permission
