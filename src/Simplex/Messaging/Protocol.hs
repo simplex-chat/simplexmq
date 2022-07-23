@@ -667,7 +667,7 @@ instance StrEncoding SrvLoc where
   strP = SrvLoc <$> host <*> (port <|> pure "")
     where
       host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
-      port = B.unpack <$> (A.char ':' *> A.takeWhile1 A.isDigit)
+      port = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
 -- | Transmission correlation ID.
 newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)

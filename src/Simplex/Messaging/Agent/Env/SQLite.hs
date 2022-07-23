@@ -30,6 +30,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
 import Network.Socket
+import Network.Socks5 (SocksConf)
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -43,6 +44,7 @@ import Simplex.Messaging.Protocol (NtfServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
+import Simplex.Messaging.Transport.Client (defaultSMPPort)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
@@ -53,7 +55,9 @@ type AgentMonad m = (MonadUnliftIO m, MonadReader Env m, MonadError AgentErrorTy
 
 data InitialAgentServers = InitialAgentServers
   { smp :: NonEmpty SMPServer,
-    ntf :: [NtfServer]
+    ntf :: [NtfServer],
+    socksProxy :: Maybe SocksConf,
+    tcpTimeout :: Int
   }
 
 data AgentConfig = AgentConfig
@@ -98,7 +102,7 @@ defaultAgentConfig =
       tbqSize = 64,
       dbFile = "smp-agent.db",
       yesToMigrations = False,
-      smpCfg = defaultClientConfig {defaultTransport = ("5223", transport @TLS)},
+      smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       reconnectInterval = defaultReconnectInterval,
       helloTimeout = 2 * nominalDay,
