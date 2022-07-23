@@ -70,6 +70,7 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Network.Socket (ServiceName)
+import Network.Socks5 (SocksConf)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol as SMP
@@ -118,6 +119,8 @@ data ProtocolClientConfig = ProtocolClientConfig
     tcpTimeout :: Int,
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
+    -- | use SOCKS5 proxy
+    socksProxy :: Maybe SocksConf,
     -- | period for SMP ping commands (microseconds)
     smpPing :: Int,
     -- | SMP client-server protocol version range
@@ -130,8 +133,9 @@ defaultClientConfig =
   ProtocolClientConfig
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
-      tcpTimeout = 10_000_000,
+      tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
+      socksProxy = Nothing,
       smpPing = 600_000_000, -- 10min
       smpServerVRange = supportedSMPServerVRange
     }
@@ -149,7 +153,7 @@ type Response msg = Either ProtocolClientError msg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
-getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, smpPing, smpServerVRange} msgQ disconnected =
+getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, socksProxy, smpPing, smpServerVRange} msgQ disconnected =
   (atomically mkProtocolClient >>= runClient useTransport)
     `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
   where
@@ -180,7 +184,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
       thVar <- newEmptyTMVarIO
       action <-
         async $
-          runTransportClient (host protocolServer) port' (Just $ keyHash protocolServer) tcpKeepAlive (client t c thVar)
+          runTransportClient socksProxy (host protocolServer) port' (Just $ keyHash protocolServer) tcpKeepAlive (client t c thVar)
             `finally` atomically (putTMVar thVar $ Left PCENetworkError)
       th_ <- tcpTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case th_ of
