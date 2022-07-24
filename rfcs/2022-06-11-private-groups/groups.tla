@@ -1,13 +1,6 @@
 ---- MODULE groups ----
 
-\* TODO: This still specifies the original token based approach rather than
-\* secret splitting approach. The original was quite appealing in that
-\* participating in groups "do no harm;" connections are always exactly secure
-\* as they always were. However, the in progress secret splitting approach can
-\* do one better: the security of a connection established for a group takes on
-\* the properties of the _most secure_ connection within that (new) group.
-
-EXTENDS Naturals, FiniteSets, util
+EXTENDS Naturals, FiniteSets, util, crypto
 
 CONSTANTS
     Users,
@@ -20,7 +13,8 @@ CONSTANTS
     \* without a loss of fault tolerance.
     InitialMembers,
     \* TODO: We should call this Null, since we're using null semantics, not
-    \* Maybe semantics (or use Maybe semantics)
+    \* Maybe semantics; Nothing should be the name for the value [ is_just |->
+    \* FALSE ].
     Nothing,
     (*
     This function describes indirect perceptions about contact descriptions.
@@ -48,10 +42,9 @@ CONSTANTS
     Kicking,
     \* User States
     Invited,
-    Welcomed,
-    Active,
+    Joining,
     Synchronizing,
-    Welcoming,
+    Inviting,
     Committed,
     \* Request Type
     PleasePropose,
@@ -61,9 +54,7 @@ CONSTANTS
     Kick,
     KickAck,
     Invite,
-    Accept,
-    SyncToken,
-    Welcome
+    SyncShare
 
 VARIABLES
     messages,
@@ -89,12 +80,12 @@ PerceivedLeader(member) ==
     CHOOSE m \in group_perceptions[member] : m.id = Nothing
 
 \* TODO: This actually has a deeper layer, in that this models the direct
-\* connections that are pre-group, which are only used for
-\* Invite/Accept/Establish messages.  All other messages actually happen over
-\* the established connections that are _specific_ to the group, which only
-\* exist if _both_ parties believe each other to be in the group.  This is
-\* important for things like SyncToken, which otherwise would never occur over
-\* other channels, and could potentially cause issues if they did.
+\* connections that are pre-group, which are only used for Invite/Establish
+\* messages.  All other messages actually happen over the established
+\* connections that are _specific_ to the group, which only exist if _both_
+\* parties believe each other to be in the group.  This is important for things
+\* like SyncShare, which otherwise would never occur over other channels, and
+\* could potentially cause issues if they did.
 HasDirectConnection(x, y) ==
     \/ x = y
     \/ <<x, y>> \in Connections
@@ -146,6 +137,12 @@ SendPleasePropose ==
         /\ LET invite_id == CHOOSE x \in rng_state : TRUE
            IN
             /\ group_perceptions[proposer] /= {}
+            \* Check to see if they are the leader, an initial member, or they
+            \* must have finished joining.  Ideally we would just have a Joined
+            \* state or something here.
+            /\ /\ proposer.id /= Nothing
+               /\ approver_states[<<proposer.id, proposer.user>>].state = Joining
+               => Cardinality(group_perceptions[proposer]) = Cardinality(approver_states[<<proposer.id, proposer.user>>].members) + 1
             /\ \A members \in group_perceptions[proposer] :
                 /\ members.user /= invitee
             /\ HasDirectConnection(proposer.user, invitee)
@@ -297,8 +294,7 @@ ApproverReceiveProposal(recipient) ==
         /\ LET PerceivedUser == UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description]]
                ApproverState == approver_states[<<message.invite_id, message.recipient.user>>]
 
-           IN  CASE ApproverState.state \in { Nothing, Active } ->
-                   \* If Active, this should trigger another Invite message
+           IN  CASE ApproverState.state = Nothing ->
                    IF
                        /\ PerceivedUser /= Nothing
                        /\ HasDirectConnection(message.recipient.user, PerceivedUser)
@@ -307,41 +303,44 @@ ApproverReceiveProposal(recipient) ==
                    THEN
                        /\ approver_states' =
                            [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] =
-                               [ for_group |-> message.recipient.id
-                               , state |-> Active
+                               [ state |->
+                                   IF   Cardinality(group_perceptions[message.recipient]) = 1
+                                   THEN Inviting \* TODO: And send invite
+                                   ELSE Synchronizing
+                               , for_group |-> message.recipient.id
+                               , user |-> PerceivedUser
+                               , inviters |-> group_perceptions[message.recipient]
+                               , shares_by_member |->
+                                   \* Secret splitting is abstract/symbolic.
+                                   \* Instead of the actual value of our share
+                                   \* or secret, we ensure that that we can
+                                   \* uniquely identify what (abstract) secret
+                                   \* this divides, give each share an
+                                   \* identifier, and supply all the
+                                   \* identifiers of the shares.  That means
+                                   \* that 1:1 mapping of a secret to an
+                                   \* invite_id is implied, and it means that
+                                   \* approvers must permanently commit to the
+                                   \* choice of the secret and splits before
+                                   \* sharing them.  It is critical that this
+                                   \* spec treats a secret/shares as opaque,
+                                   \* passing around only their value, not
+                                   \* looking inside, or "generating" on in the
+                                   \* wrong context, or our spec may be
+                                   \* impossible to implement.
+                                   [ member \in MemberSet |->
+                                       IF  member = message.recipient
+                                       THEN
+                                           [ share_id |-> message.recipient
+                                           , share_ids |-> group_perceptions[message.recipient]
+                                           , secret |-> [ by |-> message.recipient.user, for |-> message.invite_id ]
+                                           ]
+                                       ELSE
+                                           Nothing
+                                   ]
                                ]
                            ]
-                       \* It's safe to send this message right away, as it only
-                       \* agrees to reveal information that everyone has agreed
-                       \* to share.  The invitee now knows that there's a group
-                       \* that involves this member, the proposer, and any
-                       \* other members that have sent this message, giving the
-                       \* invitee insight into how these contacts are all
-                       \* connected.  However, that is exactly what they all
-                       \* just agreed to.  Members that don't agree to send
-                       \* this message remain private.
-                       /\ AddMessage(
-                               [ sender |-> message.recipient.user
-                               , recipient |-> PerceivedUser
-                               , type |-> Invite
-                               , invite_id |-> message.invite_id
-                               \* Token generation is abstract/symbolic.
-                               \* Instead of the actual value of our token, we
-                               \* just name the generator and its purpose.
-                               \* That means that 1:1 mapping of a token to an
-                               \* invite_id is implied, and it means that
-                               \* approvers must permanently commit to the
-                               \* choice of the token before issuing it.  It is
-                               \* critical that this spec treats a token as
-                               \* opaque, passing around only its value, not
-                               \* looking inside, or "generating" on in the
-                               \* wrong context, or our spec may be impossible
-                               \* to implement.
-                               , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
-                               , group_size |-> message.group_size
-                               ]
-                           )
-                       /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
+                       /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
                    ELSE
                        /\ AddMessage(
                                [ sender |-> message.recipient
@@ -352,8 +351,8 @@ ApproverReceiveProposal(recipient) ==
                            )
                        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
                  [] ApproverState.state = Synchronizing ->
-                   \* The approver sends a token to someone _it_ needs a token
-                   \* from, this then prompts it to ack with its own token. In
+                   \* The approver sends a share to someone _it_ needs a share
+                   \* from, this then prompts it to ack with its own share. In
                    \* reality, we notify everyone, not just a single member.
                    \* However this is a bit troublesome when modeling liveness
                    \* because it means we need to allow for many many in-flight
@@ -361,30 +360,62 @@ ApproverReceiveProposal(recipient) ==
                    \* still captures the "message everyone" behavior, just in a
                    \* roundabout way, where it "receives" a single proposal
                    \* message for each member it needs to notify.
-                   \E to \in group_perceptions[message.recipient] \ { member \in DOMAIN ApproverState.tokens : ApproverState.tokens[member] /= Nothing } :
+                   \E to \in ApproverState.inviters \ { member \in DOMAIN ApproverState.shares_by_member : ApproverState.shares_by_member[member] /= Nothing } :
                        /\ AddMessage(
                                [ sender |-> message.recipient
                                , recipient |-> to
-                               , type |-> SyncToken
-                               \* Note again that tokens are abstract/symbolic.
+                               , type |-> SyncShare
+                               \* Note again that shares are abstract/symbolic.
                                \* In this context, the spec implies that this
-                               \* is using a pregenerated token that is
+                               \* is using a pregenerated share that is
                                \* permanently associated for this invite_id.
-                               , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                               , share |->
+                                   [ share_id |-> to
+                                   , share_ids |-> ApproverState.inviters
+                                   , secret |-> [ by |-> message.recipient.user, for |-> message.invite_id ]
+                                   ]
                                , invite_id |-> message.invite_id
-                               \* If we have received their token, ack receipt
-                               \* and send our token simultaneously.
-                               , ack |-> approver_states[<<message.invite_id, message.recipient.user>>].tokens[to] /= Nothing
+                               \* If we have received their share, ack receipt
+                               \* and send our share simultaneously.
+                               , ack |-> approver_states[<<message.invite_id, message.recipient.user>>].shares_by_member[to] /= Nothing
                                ]
                           )
                        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
-                 [] ApproverState.state = Welcoming ->
-                   /\ AddMessage(
-                           [ type |-> Welcome
+                 [] ApproverState.state = Inviting ->
+                   /\ LET
+                          SharesByMember ==
+                              ApproverState.shares_by_member
+
+                          MembersWhoShared ==
+                              { member \in DOMAIN SharesByMember : SharesByMember[member] /= Nothing }
+
+                          CollectedShares ==
+                              { SharesByMember[member] : member \in MembersWhoShared }
+
+                          OriginallyGeneratedShares ==
+                              {   [ share_id |-> member
+                                  , share_ids |-> ApproverState.inviters
+                                  , secret |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                                  ]
+                              :   member \in ApproverState.inviters
+                              }
+
+                      IN  AddMessage(
+                           [ type |-> Invite
                            , sender |-> message.recipient.user
                            , recipient |-> ApproverState.user
                            , invite_id |-> message.invite_id
-                           , group_info |-> ApproverState.group_info
+                           , shares |-> CollectedShares
+                           , expect_shares |-> { Hash(share) : share \in OriginallyGeneratedShares }
+                           , enc_group_info |->
+                               Encrypt(
+                                   [ by |-> message.recipient.user, for |-> message.invite_id ],
+                                   {   [ member_id |-> member.id
+                                       , share |-> SharesByMember[member]
+                                       ]
+                                   :   member \in MembersWhoShared
+                                   }
+                               )
                            ]
                       )
                    /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
@@ -422,80 +453,58 @@ ApproverReceiveKick(recipient, kicked) ==
             )
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
-ApproverReceiveAccept(recipient) ==
+ReceiveSyncShare(recipient) ==
     \E message \in messages :
-        /\ message.recipient = recipient
-        /\ message.type = Accept
-        /\ approver_states[<<message.invite_id, message.recipient>>].state = Active
-        /\ LET RecipientId == approver_states[<<message.invite_id, message.recipient>>].for_group
-               RecipientMember == [ user |-> message.recipient, id |-> RecipientId ]
-           IN  IF  Cardinality(group_perceptions[RecipientMember]) = 1
-               THEN
-                   /\ approver_states' =
-                       [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] =
-                           [ state |-> Welcoming
-                           , for_group |-> RecipientId
-                           , user |-> message.sender
-                           \* NOTE: It's okay to "retreive" its own token here
-                           , group_info |-> { <<[ for |-> message.invite_id, by |-> message.recipient ], Nothing>> }
-                           ]
-                       ]
-                   /\ AddMessage(
-                          [ sender |-> message.recipient
-                          , recipient |-> message.sender
-                          , type |-> Welcome
-                          , invite_id |-> message.invite_id
-                          , group_info |-> approver_states'[<<message.invite_id, message.recipient>>].group_info
-                          ]
-                      )
-               ELSE
-                   /\ approver_states' =
-                       [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] =
-                           [ state |-> Synchronizing
-                           , for_group |-> RecipientId
-                           , user |-> message.sender
-                           , expected_tokens |-> message.tokens
-                           , tokens |-> [ member \in MemberSet |-> IF member = RecipientMember THEN [ for |-> message.invite_id, by |-> message.recipient ] ELSE Nothing ]
-                           ]
-                       ]
-                   /\ UNCHANGED <<messages>>
-        /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
-
-ReceiveSyncToken(recipient) ==
-    \E message \in messages :
-        /\ message.type = SyncToken
+        /\ message.type = SyncShare
         /\ message.recipient = recipient
         /\ message.sender \in group_perceptions[message.recipient] \* Should be invariant
         \* We would never expect to see a valid request in a Committed state,
         \* because we know that if we ever move to committed, that the invitee
-        \* received _all_ Welcome messages, which are only sent from members
-        \* who have recieved all tokens.
-        /\ approver_states[<<message.invite_id, message.recipient.user>>].state \in { Synchronizing, Welcoming }
+        \* received _all_ Invite messages, which are only sent from members
+        \* who have recieved all shares.
+        /\ approver_states[<<message.invite_id, message.recipient.user>>].state \in { Synchronizing, Inviting }
         /\ CASE approver_states[<<message.invite_id, message.recipient.user>>].state = Synchronizing ->
                 /\ approver_states[<<message.invite_id, message.recipient.user>>].for_group = message.recipient.id \* Should be invariant
                 /\ LET  NextApproverState ==
                             [ approver_states[<<message.invite_id, message.recipient.user>>]
-                            EXCEPT !.tokens = [ @ EXCEPT ![message.sender] = message.token ]
+                            EXCEPT !.shares_by_member = [ @ EXCEPT ![message.sender] = message.share ]
                             ]
+                        MembersWhoShared == { member \in DOMAIN NextApproverState.shares_by_member : NextApproverState.shares_by_member[member] /= Nothing }
+                        CollectedShares == { NextApproverState.shares_by_member[member] : member \in MembersWhoShared }
+                        GroupInfo ==
+                            {   [ member_id |-> member.id
+                                , share |-> NextApproverState.shares_by_member[member]
+                                ]
+                            :   member \in MembersWhoShared
+                            }
+                        OriginallyGeneratedShares ==
+                            {   [ share_id |-> member
+                                , share_ids |-> NextApproverState.inviters
+                                , secret |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                                ]
+                            :   member \in NextApproverState.inviters
+                            }
 
-                   IN   IF  { NextApproverState.tokens[member] : member \in group_perceptions[message.recipient] } = NextApproverState.expected_tokens
+                   IN   IF  Cardinality(MembersWhoShared) = Cardinality(NextApproverState.inviters)
                         THEN
-                            \* This was the final token, everything matches, so we
-                            \* welcome the new user with the group info.
+                            \* This was the final share, so we invite the new
+                            \* user
                             /\ approver_states' =
                                 [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] =
-                                    [ state |-> Welcoming
-                                    , for_group |-> NextApproverState.for_group
-                                    , user |-> NextApproverState.user
-                                    , group_info |-> { <<NextApproverState.tokens[member], member.id>> : member \in { member \in DOMAIN NextApproverState.tokens : NextApproverState.tokens[member] /= Nothing } }
-                                    ]
+                                    [ NextApproverState EXCEPT !.state = Inviting ]
                                 ]
                             /\ AddMessage(
                                    [ sender |-> message.recipient.user
                                    , recipient |-> NextApproverState.user
-                                   , type |-> Welcome
+                                   , type |-> Invite
                                    , invite_id |-> message.invite_id
-                                   , group_info |-> approver_states'[<<message.invite_id, message.recipient.user>>].group_info
+                                   , shares |-> CollectedShares
+                                   , expect_shares |-> { Hash(share) : share \in OriginallyGeneratedShares }
+                                   , enc_group_info |->
+                                        Encrypt(
+                                            [ by |-> message.recipient.user, for |-> message.invite_id ],
+                                            GroupInfo
+                                        )
                                    ]
                                )
                             /\ UNCHANGED <<group_perceptions>>
@@ -507,31 +516,39 @@ ReceiveSyncToken(recipient) ==
                                ELSE AddMessage(
                                         [ sender |-> message.recipient
                                         , recipient |-> message.sender
-                                        , type |-> SyncToken
-                                        \* Note again that tokens are
+                                        , type |-> SyncShare
+                                        \* Note again that shares are
                                         \* abstract/symbolic.  In this context,
                                         \* the spec implies that this is using
-                                        \* a pregenerated token that is
+                                        \* a pregenerated share that is
                                         \* permanently associated for this
                                         \* invite_id.
-                                        , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                                        , share |->
+                                            [ share_id |-> message.sender
+                                            , share_ids |-> NextApproverState.inviters
+                                            , secret |-> [ by |-> message.recipient.user, for |-> message.invite_id ]
+                                            ]
                                         , invite_id |-> message.invite_id
                                         , ack |-> TRUE
                                         ]
                                     )
                             /\ UNCHANGED <<group_perceptions>>
-             [] approver_states[<<message.invite_id, message.recipient.user>>].state = Welcoming ->
+             [] approver_states[<<message.invite_id, message.recipient.user>>].state = Inviting ->
                  /\ IF   message.ack
                     THEN UNCHANGED <<messages>>
                     ELSE AddMessage(
                              [ sender |-> message.recipient
                              , recipient |-> message.sender
-                             , type |-> SyncToken
-                             \* Note again that tokens are abstract/symbolic.
+                             , type |-> SyncShare
+                             \* Note again that shares are abstract/symbolic.
                              \* In this context, the spec implies that this is
-                             \* using a pregenerated token that is permanently
+                             \* using a pregenerated share that is permanently
                              \* associated for this invite_id.
-                             , token |-> [ for |-> message.invite_id, by |-> message.recipient.user ]
+                             , share |->
+                                 [ share_id |-> message.sender
+                                 , share_ids |-> approver_states[<<message.invite_id, message.recipient.user>>].inviters
+                                 , secret |-> [ by |-> message.recipient.user, for |-> message.invite_id ]
+                                 ]
                              , invite_id |-> message.invite_id
                              , ack |-> TRUE
                              ]
@@ -539,29 +556,27 @@ ReceiveSyncToken(recipient) ==
                  /\ UNCHANGED <<group_perceptions, approver_states>>
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
-\* A member that is Welcoming an invitee realizes that the invitee has setup a
-\* queue by which the member can send messages to the invitee specifically for
-\* the group.  The member now sets up its own queue, records that everything is
-\* done, and informs the leader.
-ApproverEstablish(member) ==
+ApproverConfirmQueue(member) ==
     \E approver \in MemberSet, invite_id \in InviteIds :
         LET
             Invitee == approver_states[<<invite_id, approver.user>>].user
             InviteeMember == [ id |-> invite_id, user |-> Invitee ]
         IN
             /\ approver = member
-            /\ approver_states[<<invite_id, approver.user>>].state = Welcoming
+            /\ approver_states[<<invite_id, approver.user>>].state = Inviting
             \* There are two independent steps, which we handle with the same
             \* action, but not atomically.  The first is to establish a queue to
             \* receive group messages from the invitee.  The second is to notice
             \* the first step is done and record the invitee as committed to the
             \* group and inform the Leader.
-            /\ IF   InviteeMember \notin group_perceptions[approver]
-               THEN \* The approver can only setup its queue to receive if the
-                    \* invitee already has, by which to use as an out-of-band
-                    \* channel.
-                    /\ approver \in group_perceptions[InviteeMember]
-                    /\ group_perceptions' = [ group_perceptions EXCEPT ![approver] = @ \union { InviteeMember } ]
+            /\ IF   approver \notin group_perceptions[InviteeMember]
+               THEN \* The approver can only confirm its queue if the invitee
+                    \* already has, by which to use as an out-of-band channel.
+                    /\ InviteeMember \in group_perceptions[approver]
+                    \* The Invitee does not believe this approver has been
+                    \* kicked (Leaders can't be).
+                    /\ approver.id /= Nothing => approver_states[<<approver.id, Invitee>>].state /= Committed
+                    /\ group_perceptions' = [ group_perceptions EXCEPT ![InviteeMember] = @ \union { approver } ]
                     /\ UNCHANGED <<messages, approver_states>>
                ELSE /\ approver_states' = [ approver_states EXCEPT ![<<invite_id, approver.user>>] = [ state |-> Committed ] ]
                     /\ AddMessage(
@@ -574,86 +589,137 @@ ApproverEstablish(member) ==
                     /\ UNCHANGED <<group_perceptions>>
             /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
+\* Map each user
+\*   Turn each expected share hash into the actual share
+\*   Recover the secret from the shares
+\*   Decrypt the group info
+\*   For each info [ share, id ]
+\*     Determine the user that generated the share
+\*   Map group_info into a member set
+\* Ensure all users provided the same member set
+ConvertSharesToMembers(user_shares) ==
+    LET
+        \* The set of all shares received, ignoring who created or sent them
+        AllShares == UNION { x.shares : x \in user_shares }
+
+        UserProvidedMembersM ==
+            TraverseSetMaybe(
+                LAMBDA x :
+                    LET
+                        \* We need to find each share original split by
+                        \* this member, where each member sent one share
+                        OriginalSharesM ==
+                            TraverseSetMaybe(
+                                LAMBDA hash : FindSet(LAMBDA share : Hash(share) = hash, AllShares),
+                                x.expect_shares
+                            )
+
+                        \* With the original shares, we can now combine
+                        \* them to get the original secret (the decryption
+                        \* key)
+                        SecretM ==
+                            BindMaybe(Combine, OriginalSharesM)
+
+                        \* With the decryption key, we can now decrypt the
+                        \* group info sent by the user
+                        GroupInfoM ==
+                            BindMaybe(LAMBDA secret : Decrypt(secret, x.enc_group_info), SecretM)
+
+                    IN
+                        \* group_info is a set of [ member_id, share ]
+                        \* where the member_id is the group's identifier
+                        \* for the user who originally created this share.
+                        \* At this point, group info is still unique per
+                        \* user, since they all know a different set of
+                        \* shares by which to correlate ids.
+                        BindMaybe(LAMBDA group_info :
+                            TraverseSetMaybe(LAMBDA y :
+                                MapMaybe(
+                                    LAMBDA z : [ user |-> z.user, id |-> y.member_id ],
+                                    FindSet(
+                                        LAMBDA z : Hash(y.share) \in z.expect_shares,
+                                        user_shares
+                                    )
+                                ),
+                                group_info
+                            ),
+                            GroupInfoM
+                        ),
+                user_shares
+            )
+    IN
+        BindMaybe(
+            LAMBDA user_provided_members :
+                IF  Cardinality(user_provided_members) = 1
+                THEN
+                    FindSet(LAMBDA x : TRUE, user_provided_members)
+                ELSE
+                    [ is_just |-> FALSE ],
+            UserProvidedMembersM
+        )
+
 UserReceiveInvite(sender) ==
     \E message \in messages :
         /\ message.type = Invite
         /\ message.sender = sender
-        /\ LET key == <<message.invite_id, message.recipient>>
-           IN
-            /\ approver_states[key].state \in { Nothing, Invited }
-            /\ approver_states' =
-                IF  approver_states[key].state = Nothing
-                THEN
-                    [ approver_states EXCEPT ![key] =
-                        [ state |-> Invited, user_tokens |-> { [ user |-> message.sender, token |-> message.token ] } ]
-                    ]
-                ELSE
-                    [ approver_states EXCEPT ![key] =
-                        [ @ EXCEPT !.user_tokens = @ \union { [ user |-> message.sender, token |-> message.token ] } ]
-                    ]
-               \* TODO: For Byzantine considerations, the invitee should be
-               \* able to lose trust if things don't line up as expected
-            /\ IF   Cardinality(approver_states'[key].user_tokens) = message.group_size
-               THEN
-                   \* IMPORTANT: The Accept may still has a chance of being
-                   \* ignored (or token mismatch or something odd), so the
-                   \* invitee does not yet believe themself to be part of the
-                   \* group.  At least one member must establish a connection
-                   \* with them first.
-                   /\ AddMessage(
-                           [ sender |-> message.recipient
-                           , recipient |-> message.sender
-                           , type |-> Accept
-                           , tokens |-> { x.token : x \in approver_states'[key].user_tokens }
-                           , invite_id |-> message.invite_id
-                           ]
-                      )
-               ELSE UNCHANGED <<messages>>
-            /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals>>
-
-UserReceiveWelcome(sender) ==
-    \E message \in messages :
-        /\ message.type = Welcome
-        /\ message.sender = sender
         /\ LET
-            key == <<message.invite_id, message.recipient>>
-            Inviters == { x.user : x \in approver_states[key].user_tokens }
-            Members == { [ user |-> x.user, id |-> (CHOOSE y \in message.group_info : y[1] = x.token)[2] ] : x \in approver_states[key].user_tokens }
-            RecipientMember == [ user |-> message.recipient, id |-> message.invite_id ]
+            ApproverState ==
+                approver_states[<<message.invite_id, message.recipient>>]
+
+            InviteeMember ==
+                [ user |-> message.recipient, id |-> message.invite_id ]
            IN
-            /\ approver_states[key].state \in { Invited, Welcomed }
-            /\ message.sender \in Inviters
-            \* TODO: here the user won't act on a message if it doesn't
-            \* match the expected members.  However, it should really lose
-            \* trust entirely and refuse to interact with this invite
-            \* further.
-            /\ approver_states[key].state = Welcomed => approver_states[key].members = Members
-            /\ approver_states' =
-                [ approver_states EXCEPT ![key] =
-                    IF  approver_states[key].state = Invited
-                    THEN
-                        [ state |-> Welcomed
-                        , user_tokens |-> approver_states[key].user_tokens
-                        , members |-> Members
-                        , awaiting_response |-> Inviters \ { message.sender }
-                        ]
-                    ELSE
-                        [ approver_states[key] EXCEPT !.awaiting_response = @ \ { message.sender }]
-                ]
-            /\ IF   approver_states'[key].awaiting_response = {} /\ group_perceptions[RecipientMember] = {}
-               THEN \* NOTE: This represents a new queue being formed for
-                    \* receiving messages from each other member.  While it's
-                    \* completely impractical to be atomic in two ways (we
-                    \* can't setup a queue with everyone simultaneously and
-                    \* it's multiple steps to establish a new queue) the
-                    \* intermediate states simply aren't that interesting here,
-                    \* so we stay more abstract.  We do consider the
-                    \* intermediate steps where only the invitee has a queue to
-                    \* receive from, but the member is yet to establish a queue
-                    \* to receive from the invitee.
-                    group_perceptions' = [ group_perceptions EXCEPT ![RecipientMember] = approver_states'[key].members \union { RecipientMember } ]
-               ELSE UNCHANGED <<group_perceptions>>
-            /\ UNCHANGED <<messages, rng_state, proposal, complete_proposals>>
+            CASE ApproverState.state \in { Nothing, Invited } ->
+                    LET
+                        BeforeNewInviteData ==
+                            IF  ApproverState.state = Nothing
+                            THEN
+                                [ state |-> Invited, user_shares |-> {} ]
+                            ELSE
+                                ApproverState
+
+                        NewInviteData ==
+                            [ user |-> message.sender
+                            , shares |-> message.shares
+                            , expect_shares |-> message.expect_shares
+                            , enc_group_info |-> message.enc_group_info
+                            ]
+
+                        WithNewInviteData ==
+                            [ BeforeNewInviteData EXCEPT !.user_shares = @ \union { NewInviteData } ]
+
+                        MembersM ==
+                            ConvertSharesToMembers(WithNewInviteData.user_shares)
+
+                        NextApproverState ==
+                            IF  MembersM.is_just
+                            THEN
+                                \* Realistically, when we switch to Joining, we
+                                \* would attempt to confirm all queues
+                                \* immediately.  Each invite acts as a retry,
+                                \* in case of a crash mid-confirm, so we just
+                                \* depend on that here alone in the spec.
+                                [ state |-> Joining, members |-> MembersM.just ]
+                            ELSE
+                                WithNewInviteData
+                    IN
+                        /\ approver_states' =
+                            [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = NextApproverState ]
+                        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
+              [] ApproverState.state = Joining ->
+                    \E member \in ApproverState.members :
+                       /\ member.user = message.sender
+                       \* If the member isn't still Inviting, then they won't
+                       \* ever secure the queue to complete it
+                       \* TODO: it might be worth modeling this non-atomically.
+                       /\ approver_states[<<message.invite_id, message.sender>>].state = Inviting
+                       /\ group_perceptions' =
+                           [ group_perceptions
+                           EXCEPT ![member] = @ \union { InviteeMember }
+                           ,      ![InviteeMember] = @ \union { InviteeMember }
+                           ]
+                       /\ UNCHANGED <<messages, rng_state, proposal, complete_proposals, approver_states>>
+
 
 \* TODO: Need to be able to Kick outside of failed proposals.
 
@@ -700,11 +766,9 @@ Next ==
     \/ LeaderReceiveKickAck
     \/ \E member \in MemberSet : ApproverReceiveProposal(member)
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
-    \/ \E user \in Users : ApproverReceiveAccept(user)
-    \/ \E member \in MemberSet : ReceiveSyncToken(member)
-    \/ \E member \in MemberSet : ApproverEstablish(member)
+    \/ \E member \in MemberSet : ReceiveSyncShare(member)
+    \/ \E member \in MemberSet : ApproverConfirmQueue(member)
     \/ \E user \in Users : UserReceiveInvite(user)
-    \/ \E user \in Users : UserReceiveWelcome(user)
 
 AllVars ==
     <<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
@@ -722,40 +786,34 @@ Fairness ==
     /\ SF_AllVars(ApproverReceiveProposal(Leader))
     /\ \A kicked \in SUBSET InviteIds :
         SF_AllVars(ApproverReceiveKick(Leader, kicked))
-    /\ SF_AllVars(ApproverReceiveAccept(Leader.user))
 
 
 Spec == Init /\ [][Next]_AllVars /\ Fairness
 
-Tokens == [ for : InviteIds, by : Users ]
+SymKeys == [ for : InviteIds, by : Users ]
+
+InviteShares == Shares(MemberSet, SymKeys)
 
 TypeOk ==
     approver_states \in [ InviteIds \X Users ->
         [ state : { Invited }
-        , user_tokens : SUBSET [ user : Users, token : Tokens ]
+        , user_shares : SUBSET
+            [ user : Users
+            , shares : SUBSET InviteShares
+            , expect_shares : SUBSET Hashed(InviteShares)
+            , enc_group_info : Encrypted(SymKeys, SUBSET [ member_id : InviteIds \union { Nothing }, share : InviteShares ])
+            ]
         ]
         \union
-        [ state : { Welcomed }
-        , user_tokens : SUBSET [ user : Users, token : Tokens ]
+        [ state : { Joining }
         , members : SUBSET MemberSet
-        , awaiting_response : SUBSET Users
         ]
         \union
-        [ state : { Active }
-        , for_group : InviteIds \union { Nothing }
-        ]
-        \union
-        [ state : { Synchronizing }
+        [ state : { Inviting, Synchronizing }
         , for_group : InviteIds \union { Nothing }
         , user : Users
-        , expected_tokens : SUBSET Tokens
-        , tokens : [ MemberSet -> (Tokens \union { Nothing }) ]
-        ]
-        \union
-        [ state : { Welcoming }
-        , for_group : InviteIds \union { Nothing }
-        , user : Users
-        , group_info : SUBSET (Tokens \X (InviteIds \union { Nothing }))
+        , inviters : SUBSET MemberSet
+        , shares_by_member : [ MemberSet -> (InviteShares \union { Nothing }) ]
         ]
         \union
         [ state : { Nothing, Committed }
@@ -777,25 +835,18 @@ IdsAndLeaderMatchAcrossAllMembers ==
 
 CannotCommunicateWithoutAConnection ==
     \A message \in messages :
-        IF   message.type \in { Invite, Accept, Welcome }
+        IF   message.type \in { Invite }
         THEN HasDirectConnection(message.sender, message.recipient)
         ELSE HasDirectConnection(message.sender.user, message.recipient.user)
-
-TokensMatch ==
-    \A message \in messages :
-        /\ message.type = Invite =>
-            /\ message.token = [ for |-> message.invite_id, by |-> message.sender ]
-            /\ approver_states[<<message.invite_id, message.sender>>].state /= Nothing
-        /\ message.type = SyncToken =>
-            /\ message.token = [ for |-> message.invite_id, by |-> message.sender.user ]
-            /\ approver_states[<<message.invite_id, message.sender.user>>].state /= Nothing
 
 GroupSizesMatch ==
     \A message1, message2 \in messages :
         /\ message1.type = Invite
         /\ message2.type = Invite
         /\ message1.invite_id = message2.invite_id
-        => message1.group_size = message2.group_size
+        => /\ Cardinality(message1.expect_shares) = Cardinality(message2.expect_shares)
+           /\ Cardinality(message1.shares) = Cardinality(message2.shares)
+           /\ Cardinality(message1.expect_shares) = Cardinality(message1.shares)
 
 \* Anyone that receives two invites which share an invite id, knows that
 \* these two contacts know each other and that they are in a group together

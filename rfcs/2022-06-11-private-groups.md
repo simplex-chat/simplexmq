@@ -23,8 +23,6 @@ Alice, Bob, and Carol have increased hopes of identifying Mallory as an imposter
 
 ### Additions
 
-TODO: The TLA+ still refers to the token strategy rather than the secret splitting strategy.
-
 A formal specification of the protocol is defined in TLA+ and can be defined [here](./2022-06-11-private-groups/groups.tla).
 A crash course in TLA+ and the key abstractions used in the spec is [here](./2022-06-11-private-groups/README.md).
 

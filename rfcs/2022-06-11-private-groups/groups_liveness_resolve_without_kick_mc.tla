@@ -33,11 +33,9 @@ PatientNext ==
     \/ LeaderReceiveKickAck
     \/ \E member \in MemberSet : ApproverReceiveProposal(member)
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
-    \/ \E user \in Users : ApproverReceiveAccept(user)
-    \/ \E member \in MemberSet : ReceiveSyncToken(member)
-    \/ \E member \in MemberSet : ApproverEstablish(member)
+    \/ \E member \in MemberSet : ReceiveSyncShare(member)
+    \/ \E member \in MemberSet : ApproverConfirmQueue(member)
     \/ \E user \in Users : UserReceiveInvite(user)
-    \/ \E user \in Users : UserReceiveWelcome(user)
 
 \* There are so many fairness conditions to track that the only way we can get
 \* them to be checkable is to be very specific to the ones we need for this
@@ -56,12 +54,10 @@ AllUsersFair ==
     /\ SF_AllVars(LeaderReceiveEstablished)
     /\ \A member \in InitialMembers :
         /\ SF_AllVars(ApproverReceiveProposal(member))
-        /\ SF_AllVars(ReceiveSyncToken(member))
-        /\ SF_AllVars(ApproverEstablish(member))
+        /\ SF_AllVars(ReceiveSyncShare(member))
+        /\ SF_AllVars(ApproverConfirmQueue(member))
     /\ \A user \in { member.user : member \in InitialMembers } :
-        /\ SF_AllVars(ApproverReceiveAccept(user))
-        /\ SF_AllVars(UserReceiveInvite(user))
-        /\ SF_AllVars(UserReceiveWelcome(user))
+        SF_AllVars(UserReceiveInvite(user))
 
 FairAndPatientSpec == Init /\ [][PatientNext]_AllVars /\ AllUsersFair
 
