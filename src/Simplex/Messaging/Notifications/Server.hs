@@ -21,11 +21,13 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
 import Data.Map.Strict (Map)
 import qualified Data.Text as T
+import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock.System (getSystemTime)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderError (..))
@@ -149,18 +151,18 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         atomically (readTBQueue agentQ) >>= \case
           CAConnected _ -> pure ()
           CADisconnected srv subs -> do
-            logInfo . T.pack $ "SMP server disconnected " <> host srv <> " (" <> show (length subs) <> ") subscriptions"
+            logInfo $ "SMP server disconnected " <> decodeLatin1 (strEncode $ host srv) <> " (" <> tshow (length subs) <> ") subscriptions"
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
           CAReconnected srv ->
-            logInfo $ "SMP server reconnected " <> T.pack (host srv)
+            logInfo $ "SMP server reconnected " <> decodeLatin1 (strEncode $ host srv)
           CAResubscribed srv sub -> do
             let ntfId = snd sub
                 smpQueue = SMPQueueNtf srv ntfId
             updateSubStatus smpQueue NSActive
           CASubError srv (_, ntfId) err -> do
-            logError . T.pack $ "SMP subscription error on server " <> host srv <> ": " <> show err
+            logError $ "SMP subscription error on server " <> decodeLatin1 (strEncode $ host srv) <> ": " <> T.pack (show err)
             handleSubError (SMPQueueNtf srv ntfId) err
 
     handleSubError :: SMPQueueNtf -> ProtocolClientError -> m ()

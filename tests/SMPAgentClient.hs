@@ -9,8 +9,9 @@ module SMPAgentClient where
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import qualified Data.ByteString.Char8 as B
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
-import Network.Socket (HostName, ServiceName)
+import Network.Socket (ServiceName)
 import NtfClient (ntfTestPort)
 import SMPClient
   ( serverBracket,
@@ -33,7 +34,7 @@ import Test.Hspec
 import UnliftIO.Concurrent
 import UnliftIO.Directory
 
-agentTestHost :: HostName
+agentTestHost :: NonEmpty TransportHost
 agentTestHost = "localhost"
 
 agentTestPort :: ServiceName

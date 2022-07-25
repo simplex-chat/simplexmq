@@ -14,6 +14,7 @@ import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -30,7 +31,7 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, takeTMVar)
 import UnliftIO.Timeout (timeout)
 
-testHost :: HostName
+testHost :: NonEmpty TransportHost
 testHost = "localhost"
 
 testPort :: ServiceName
