@@ -5,11 +5,16 @@ module Simplex.Messaging.Transport.Client
     runTLSTransportClient,
     smpClientHandshake,
     defaultSMPPort,
+    defaultSocksProxy,
+    SocksProxy,
   )
 where
 
+import Control.Applicative (optional)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
+import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Default (def)
@@ -23,6 +28,7 @@ import Network.Socket
 import Network.Socks5
 import qualified Network.TLS as T
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
 import System.IO.Error
@@ -31,13 +37,13 @@ import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksConf -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
-runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksConf -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ socksConf_ host port keyHash keepAliveOpts client = do
+runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksProxy -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTLSTransportClient tlsParams caStore_ socksProxy_ host port keyHash keepAliveOpts client = do
   let clientParams = mkTLSClientParams tlsParams caStore_ host port keyHash
-      connectTCP = maybe connectTCPClient connectSocksClient socksConf_
+      connectTCP = maybe connectTCPClient connectSocksClient socksProxy_
   c <- liftIO $ connectTLSClient connectTCP host port clientParams keepAliveOpts
   client c `E.finally` liftIO (closeConnection c)
 
@@ -73,10 +79,38 @@ connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
 defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
 
-connectSocksClient :: SocksConf -> HostName -> ServiceName -> IO Socket
-connectSocksClient socksProxy host _port = do
+connectSocksClient :: SocksProxy -> HostName -> ServiceName -> IO Socket
+connectSocksClient (SocksProxy addr) host _port = do
   let port = if null _port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe _port
-  fst <$> socksConnect socksProxy (SocksAddress (SocksAddrDomainName $ B.pack host) port)
+  fst <$> socksConnect (defaultSocksConf addr) (SocksAddress (SocksAddrDomainName $ B.pack host) port)
+
+defaultSocksHost :: HostAddress
+defaultSocksHost = tupleToHostAddress (127, 0, 0, 1)
+
+defaultSocksProxy :: SocksProxy
+defaultSocksProxy = SocksProxy $ SockAddrInet 9050 defaultSocksHost
+
+newtype SocksProxy = SocksProxy SockAddr
+  deriving (Eq)
+
+instance Show SocksProxy where show (SocksProxy addr) = show addr
+
+instance StrEncoding SocksProxy where
+  strEncode = B.pack . show
+  strP = do
+    host <- maybe defaultSocksHost tupleToHostAddress <$> optional ipv4P
+    port <- fromMaybe 9050 <$> optional (A.char ':' *> (fromInteger <$> A.decimal))
+    pure . SocksProxy $ SockAddrInet port host
+    where
+      ipv4P = (,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal
+      ipNum = A.decimal <* A.char '.'
+
+instance ToJSON SocksProxy where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON SocksProxy where
+  parseJSON = strParseJSON "SocksProxy"
 
 mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> T.ClientParams
 mkTLSClientParams supported caStore_ host port keyHash_ = do
