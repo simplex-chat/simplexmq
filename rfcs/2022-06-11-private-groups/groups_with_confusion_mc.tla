@@ -22,7 +22,7 @@ ConnectionsMC ==
   Users \X Users
 
 InitialMembersMC ==
-  { [ id |-> Nothing, user |-> a ] }
+  { [ id |-> Null, user |-> a ] }
 
 \* If b ever joins the group, c and d cannot, because b confuses them.
 CantAddCOrDIfBJoins ==

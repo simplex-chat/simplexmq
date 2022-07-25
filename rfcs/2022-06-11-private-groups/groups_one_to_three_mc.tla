@@ -19,6 +19,6 @@ ConnectionsMC ==
   Users \X Users
 
 InitialMembersMC ==
-  { [ id |-> Nothing, user |-> a ] }
+  { [ id |-> Null, user |-> a ] }
 
 ====

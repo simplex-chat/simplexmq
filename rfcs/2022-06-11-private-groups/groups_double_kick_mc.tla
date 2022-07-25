@@ -21,7 +21,7 @@ ConnectionsMC ==
   (Users \X Users) \ { <<c, d>>, <<d, c>> }
 
 InitialMembersMC ==
-  { [ id |-> Nothing, user |-> a ]
+  { [ id |-> Null, user |-> a ]
   , [ id |-> 0, user |-> b ]
   , [ id |-> 1, user |-> c ]
   }

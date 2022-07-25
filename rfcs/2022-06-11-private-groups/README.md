@@ -76,7 +76,7 @@ Bulleted lists are dramatically more readable for things that TLA+ is good at.
 ### Type Sets
 
 ```tla
-MemberSet == [ user : Users, id : InviteIds \union { Nothing } ]
+MemberSet == [ user : Users, id : InviteIds \union { Null } ]
 ```
 
 ### Initialized Functions
