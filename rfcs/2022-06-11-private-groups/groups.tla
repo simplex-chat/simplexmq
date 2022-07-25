@@ -845,6 +845,14 @@ GroupSizesMatch ==
            /\ Cardinality(message1.shares) = Cardinality(message2.shares)
            /\ Cardinality(message1.expect_shares) = Cardinality(message1.shares)
 
+SyncXorReject ==
+    \A message1, message2 \in messages :
+        /\ message1 /= message2
+        /\ message1.sender = message2.sender
+        /\ message1.type = Reject
+        /\ message2.type = SyncShare
+        => message1.invite_id = message2.invite_id
+
 \* Anyone that receives two invites which share an invite id, knows that
 \* these two contacts know each other and that they are in a group together
 \* with N people.
