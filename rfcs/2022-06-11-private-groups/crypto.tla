@@ -19,7 +19,7 @@ Decrypt(key, cipher_text) ==
     THEN
         PureMaybe(cipher_text.plain_text)
     ELSE
-        [ is_just |-> FALSE ]
+        Nothing
 
 Shares(a, k) ==
     [ share_id : a
@@ -37,6 +37,6 @@ Combine(shares) ==
         THEN
             PureMaybe(One.secret)
         ELSE
-            [ is_just |-> FALSE ]
+            Nothing
 
 ====

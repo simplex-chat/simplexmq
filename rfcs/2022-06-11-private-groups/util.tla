@@ -13,6 +13,9 @@ FoldSet(f(_,_), init, set) ==
 Maybe(a) ==
     [ is_just : { TRUE }, just : a ] \union [ is_just : { FALSE } ]
 
+Nothing ==
+    [ is_just |-> FALSE ]
+
 MapMaybe(f(_), m) ==
     IF m.is_just THEN [ m EXCEPT !.just = f(@) ] ELSE m
 
@@ -37,7 +40,7 @@ TraverseSetMaybe(f(_), S) ==
                 THEN
                     [ prev EXCEPT !.just = @ \union { next_mapped.just } ]
                 ELSE
-                    [ is_just |-> FALSE ],
+                    Nothing,
         PureMaybe({}),
         S
     )
@@ -50,7 +53,7 @@ RECURSIVE FindSet(_, _)
 FindSet(f(_), S) ==
     IF  S = {}
     THEN
-        [ is_just |-> FALSE ]
+        Nothing
     ELSE
         LET x == CHOOSE y \in S : TRUE
         IN  IF f(x) THEN PureMaybe(x) ELSE FindSet(f, S \ { x })

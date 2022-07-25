@@ -651,7 +651,7 @@ ConvertSharesToMembers(user_shares) ==
                 THEN
                     FindSet(LAMBDA x : TRUE, user_provided_members)
                 ELSE
-                    [ is_just |-> FALSE ],
+                    Nothing,
             UserProvidedMembersM
         )
 
