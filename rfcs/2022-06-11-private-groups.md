@@ -9,9 +9,8 @@ Standard duplex communication is sufficient.
 Agents need new behavior in soliciting proposals for membership changes, and for responding to them.
 
 This group protocol both captures the ethos of the SimpleX message protocol privacy, and increases trust in connections.
-Due to the secret splitting strategy, the security of a new member's connections take on the properties of the _most secure_ connection within that (new) group.
-This means adding a user that has corrupted connections to all but a single existing member will get a clean connection to _all_ members.
-Or a new member that has a clean connection to just one member of an otherwise completely corrupted group will still have a clean connection to _all_ members.
+Due to the secret splitting strategy, the security of a new member's connections take on the properties of the _most secure_ pathway (direct or indirect) to existing members.
+This means that a new and existing member will have a secure group connection if they have a secure direct connection, or if they both have a secure connection to _any_ other existing member.
 
 Also notable, this protocol can serve to _out_ an imposter rather than enable them, should at least one member of the group know the real identity.
 Say Alice, Bob, and Carol are in a group and want to add Dave.
