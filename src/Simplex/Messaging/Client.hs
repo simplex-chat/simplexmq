@@ -70,14 +70,13 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Network.Socket (ServiceName)
-import Network.Socks5 (SocksConf)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksProxy, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
@@ -120,7 +119,7 @@ data ProtocolClientConfig = ProtocolClientConfig
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | use SOCKS5 proxy
-    socksProxy :: Maybe SocksConf,
+    socksProxy :: Maybe SocksProxy,
     -- | period for SMP ping commands (microseconds)
     smpPing :: Int,
     -- | SMP client-server protocol version range

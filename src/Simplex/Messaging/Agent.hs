@@ -57,6 +57,8 @@ module Simplex.Messaging.Agent
     getConnectionServers,
     setSMPServers,
     setNtfServers,
+    setNetworkConfig,
+    getNetworkConfig,
     registerNtfToken,
     verifyNtfToken,
     checkNtfToken,
@@ -205,6 +207,18 @@ setSMPServers c = withAgentEnv c . setSMPServers' c
 
 setNtfServers :: AgentErrorMonad m => AgentClient -> [NtfServer] -> m ()
 setNtfServers c = withAgentEnv c . setNtfServers' c
+
+-- | set SOCKS5 proxy on/off and optionally set TCP timeout
+setNetworkConfig :: AgentErrorMonad m => AgentClient -> NetworkConfig -> m ()
+setNetworkConfig c cfg' = do
+  cfg <- atomically $ do
+    swapTVar (useNetworkConfig c) cfg'
+  liftIO . when (socksProxy cfg /= socksProxy cfg') $ do
+    closeProtocolServerClients c smpCfg smpClients
+    closeProtocolServerClients c ntfCfg ntfClients
+
+getNetworkConfig :: AgentErrorMonad m => AgentClient -> m NetworkConfig
+getNetworkConfig = readTVarIO . useNetworkConfig
 
 -- | Register device notifications token
 registerNtfToken :: AgentErrorMonad m => AgentClient -> DeviceToken -> NotificationsMode -> m NtfTknStatus

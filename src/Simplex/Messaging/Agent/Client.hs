@@ -19,6 +19,7 @@ module Simplex.Messaging.Agent.Client
     newAgentClient,
     withAgentLock,
     closeAgentClient,
+    closeProtocolServerClients,
     newRcvQueue,
     subscribeQueue,
     subscribeQueues,
@@ -91,7 +92,6 @@ import Data.Text.Encoding
 import Data.Tuple (swap)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
-import Network.Socks5 (SocksConf)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -131,8 +131,7 @@ data AgentClient = AgentClient
     smpClients :: TMap SMPServer SMPClientVar,
     ntfServers :: TVar [NtfServer],
     ntfClients :: TMap NtfServer NtfClientVar,
-    useSocksProxy :: TVar (Maybe SocksConf),
-    useTcpTimeout :: TVar (Int),
+    useNetworkConfig :: TVar NetworkConfig,
     subscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
     pendingSubscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
     subscrConns :: TMap ConnId SMPServer,
@@ -173,7 +172,7 @@ data AgentState = ASActive | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
 newAgentClient :: InitialAgentServers -> Env -> STM AgentClient
-newAgentClient InitialAgentServers {smp, ntf, socksProxy, tcpTimeout} agentEnv = do
+newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   let qSize = tbqSize $ config agentEnv
   active <- newTVar True
   rcvQ <- newTBQueue qSize
@@ -183,8 +182,7 @@ newAgentClient InitialAgentServers {smp, ntf, socksProxy, tcpTimeout} agentEnv =
   smpClients <- TM.empty
   ntfServers <- newTVar ntf
   ntfClients <- TM.empty
-  useSocksProxy <- newTVar socksProxy
-  useTcpTimeout <- newTVar tcpTimeout
+  useNetworkConfig <- newTVar netCfg
   subscrSrvrs <- TM.empty
   pendingSubscrSrvrs <- TM.empty
   subscrConns <- TM.empty
@@ -202,7 +200,7 @@ newAgentClient InitialAgentServers {smp, ntf, socksProxy, tcpTimeout} agentEnv =
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useSocksProxy, useTcpTimeout, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -363,16 +361,15 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
       withRetryInterval ri $ \loop -> void $ tryConnectClient (const reconnectClient) loop
 
 updateClientConfig :: AgentClient -> ProtocolClientConfig -> STM ProtocolClientConfig
-updateClientConfig AgentClient {useSocksProxy, useTcpTimeout} cfg = do
-  socksProxy <- readTVar useSocksProxy
-  tcpTimeout <- readTVar useTcpTimeout
+updateClientConfig AgentClient {useNetworkConfig} cfg = do
+  NetworkConfig {socksProxy, tcpTimeout} <- readTVar useNetworkConfig
   pure (cfg :: ProtocolClientConfig) {socksProxy, tcpTimeout}
 
 closeAgentClient :: MonadIO m => AgentClient -> m ()
 closeAgentClient c = liftIO $ do
   atomically $ writeTVar (active c) False
-  closeProtocolServerClients (clientTimeout smpCfg) $ smpClients c
-  closeProtocolServerClients (clientTimeout ntfCfg) $ ntfClients c
+  closeProtocolServerClients c smpCfg smpClients
+  closeProtocolServerClients c ntfCfg ntfClients
   cancelActions $ reconnections c
   cancelActions $ asyncClients c
   cancelActions $ smpQueueMsgDeliveries c
@@ -383,13 +380,15 @@ closeAgentClient c = liftIO $ do
   clear smpQueueMsgQueues
   clear getMsgLocks
   where
-    clientTimeout sel = (tcpTimeout :: ProtocolClientConfig -> Int) . sel . config $ agentEnv c
     clear :: (AgentClient -> TMap k a) -> IO ()
     clear sel = atomically $ writeTVar (sel c) M.empty
 
-closeProtocolServerClients :: Int -> TMap (ProtoServer msg) (ClientVar msg) -> IO ()
-closeProtocolServerClients tcpTimeout cs = readTVarIO cs >>= mapM_ (forkIO . closeClient) >> atomically (writeTVar cs M.empty)
+closeProtocolServerClients :: AgentClient -> (AgentConfig -> ProtocolClientConfig) -> (AgentClient -> TMap (ProtoServer msg) (ClientVar msg)) -> IO ()
+closeProtocolServerClients c cfgSel clientsSel =
+  readTVarIO cs >>= mapM_ (forkIO . closeClient) >> atomically (writeTVar cs M.empty)
   where
+    cs = clientsSel c
+    ProtocolClientConfig {tcpTimeout} = cfgSel . config $ agentEnv c
     closeClient cVar =
       tcpTimeout `timeout` atomically (readTMVar cVar) >>= \case
         Just (Right client) -> closeProtocolClient client `catchAll_` pure ()

@@ -18,8 +18,7 @@ servers =
   InitialAgentServers
     { smp = L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"],
       ntf = [],
-      socksProxy = Nothing,
-      tcpTimeout = 5000000
+      netCfg = NetworkConfig {socksProxy = Nothing, tcpTimeout = 5000000}
     }
 
 logCfg :: LogConfig

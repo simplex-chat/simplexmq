@@ -166,8 +166,7 @@ initAgentServers =
   InitialAgentServers
     { smp = L.fromList [testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
-      socksProxy = Nothing,
-      tcpTimeout = 5000000
+      netCfg = NetworkConfig {socksProxy = Nothing, tcpTimeout = 5000000}
     }
 
 initAgentServers2 :: InitialAgentServers
