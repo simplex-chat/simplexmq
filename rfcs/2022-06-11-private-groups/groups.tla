@@ -76,13 +76,6 @@ Leader ==
 PerceivedLeader(member) ==
     CHOOSE m \in group_perceptions[member] : m.id = Null
 
-\* TODO: This actually has a deeper layer, in that this models the direct
-\* connections that are pre-group, which are only used for Invite/Establish
-\* messages.  All other messages actually happen over the established
-\* connections that are _specific_ to the group, which only exist if _both_
-\* parties believe each other to be in the group.  This is important for things
-\* like SyncShare, which otherwise would never occur over other channels, and
-\* could potentially cause issues if they did.
 HasDirectConnection(x, y) ==
     \/ x = y
     \/ <<x, y>> \in Connections
@@ -107,14 +100,24 @@ Init ==
     /\ complete_proposals = {}
     /\ approver_states = [ x \in (InviteIds \X Users) |-> [ state |-> Null ] ]
 
+FilterThenMaybeAddMessage(message_m, f(_)) ==
+    LET
+        Filtered == { message \in messages : f(message) }
+    IN
+        IF  message_m.is_just
+        THEN
+            IF  \/ MaxInFlightRequests = Null
+                \/ Cardinality(Filtered) < MaxInFlightRequests
+            THEN
+                messages' = Filtered \union { message_m.just }
+            ELSE
+                LET dropped == CHOOSE x \in Filtered : TRUE
+                IN  messages' = (Filtered \ { dropped }) \union { message_m.just }
+        ELSE
+            messages' = Filtered
+
 AddMessage(message) ==
-    IF  \/ MaxInFlightRequests = Null
-        \/ Cardinality(messages) < MaxInFlightRequests
-    THEN
-        messages' = messages \union { message }
-    ELSE
-        LET dropped == CHOOSE x \in messages : TRUE
-        IN  messages' = (messages \ { dropped }) \union { message }
+    FilterThenMaybeAddMessage(PureMaybe(message), LAMBDA x : TRUE)
 
 DropMessage ==
     /\ MaxInFlightRequests /= Null
@@ -143,6 +146,8 @@ SendPleasePropose ==
             /\ \A members \in group_perceptions[proposer] :
                 /\ members.user /= invitee
             /\ HasDirectConnection(proposer.user, invitee)
+            \* The Leader hasn't deleted their receiving queue
+            /\ proposer \in group_perceptions[PerceivedLeader(proposer)]
             /\ AddMessage(
                     [ type |-> PleasePropose
                     , sender |-> proposer
@@ -339,6 +344,8 @@ ApproverReceiveProposal(recipient) ==
                            ]
                        /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
                    ELSE
+                       \* The Leader hasn't deleted their receiving queue
+                       /\ message.recipient \in group_perceptions[message.sender]
                        /\ AddMessage(
                                [ sender |-> message.recipient
                                , recipient |-> message.sender
@@ -358,6 +365,8 @@ ApproverReceiveProposal(recipient) ==
                    \* roundabout way, where it "receives" a single proposal
                    \* message for each member it needs to notify.
                    \E to \in ApproverState.inviters \ { member \in DOMAIN ApproverState.shares_by_member : ApproverState.shares_by_member[member] /= Null } :
+                       \* The intended recipient hasn't deleted their receiving queue
+                       /\ message.recipient \in group_perceptions[to]
                        /\ AddMessage(
                                [ sender |-> message.recipient
                                , recipient |-> to
@@ -417,6 +426,8 @@ ApproverReceiveProposal(recipient) ==
                       )
                    /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
                  [] ApproverState.state = Committed ->
+                   \* The Leader hasn't deleted their receiving queue
+                   /\ message.recipient \in group_perceptions[message.sender]
                    /\ AddMessage(
                            [ type |-> Established
                            , sender |-> message.recipient
@@ -441,13 +452,26 @@ ApproverReceiveKick(recipient, kicked) ==
               approver_states,
               message.kicked
             )
-        /\ AddMessage(
-                [ type |-> KickAck
-                , sender |-> message.recipient
-                , recipient |-> message.sender
-                , kicked |-> message.kicked
-                ]
-            )
+        /\ FilterThenMaybeAddMessage(
+               IF
+                   \* The Leader hasn't deleted their queue
+                   message.recipient \in group_perceptions[PerceivedLeader(message.recipient)]
+               THEN
+                   PureMaybe(
+                       [ type |-> KickAck
+                       , sender |-> message.recipient
+                       , recipient |-> message.sender
+                       , kicked |-> message.kicked
+                       ]
+                   )
+               ELSE
+                   Nothing,
+               \* By destroying the queues, all the messages are lost
+               LAMBDA m :
+                   ~/\ m.type /= Invite
+                    /\ m.sender.id \in message.kicked
+                    /\ m.recipient = message.recipient
+           )
         /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
 ReceiveSyncShare(recipient) ==
@@ -508,7 +532,10 @@ ReceiveSyncShare(recipient) ==
                         ELSE
                             /\ approver_states' =
                                 [ approver_states EXCEPT ![<<message.invite_id, message.recipient.user>>] = NextApproverState ]
-                            /\ IF   message.ack
+                            /\ IF   \/ message.ack
+                                    \* Original sender has deleted their
+                                    \* receiving queue
+                                    \/ message.recipient \notin group_perceptions[message.sender]
                                THEN UNCHANGED <<messages>>
                                ELSE AddMessage(
                                         [ sender |-> message.recipient
@@ -531,7 +558,9 @@ ReceiveSyncShare(recipient) ==
                                     )
                             /\ UNCHANGED <<group_perceptions>>
              [] approver_states[<<message.invite_id, message.recipient.user>>].state = Inviting ->
-                 /\ IF   message.ack
+                 /\ IF   \/ message.ack
+                         \* Original sender has deleted their receiving queue
+                         \/ message.recipient \notin group_perceptions[message.sender]
                     THEN UNCHANGED <<messages>>
                     ELSE AddMessage(
                              [ sender |-> message.recipient
@@ -576,13 +605,20 @@ ApproverConfirmQueue(member) ==
                     /\ group_perceptions' = [ group_perceptions EXCEPT ![InviteeMember] = @ \union { approver } ]
                     /\ UNCHANGED <<messages, approver_states>>
                ELSE /\ approver_states' = [ approver_states EXCEPT ![<<invite_id, approver.user>>] = [ state |-> Committed ] ]
-                    /\ AddMessage(
-                            [ type |-> Established
-                            , sender |-> approver
-                            , recipient |-> PerceivedLeader(approver)
-                            , invite_id |-> invite_id
-                            ]
-                       )
+                    /\ IF
+                           \* Only send if the Leader hasn't deleted their
+                           \* receiving queue
+                           approver \in group_perceptions[PerceivedLeader(approver)]
+                       THEN
+                           AddMessage(
+                               [ type |-> Established
+                               , sender |-> approver
+                               , recipient |-> PerceivedLeader(approver)
+                               , invite_id |-> invite_id
+                               ]
+                           )
+                       ELSE
+                           UNCHANGED <<messages>>
                     /\ UNCHANGED <<group_perceptions>>
             /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
 
@@ -834,7 +870,8 @@ CannotCommunicateWithoutAConnection ==
     \A message \in messages :
         IF   message.type \in { Invite }
         THEN HasDirectConnection(message.sender, message.recipient)
-        ELSE HasDirectConnection(message.sender.user, message.recipient.user)
+        ELSE /\ HasDirectConnection(message.sender.user, message.recipient.user)
+             /\ message.sender \in group_perceptions[message.recipient]
 
 GroupSizesMatch ==
     \A message1, message2 \in messages :
