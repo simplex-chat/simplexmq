@@ -147,6 +147,7 @@ Model checking our formal specification we can demonstrate three key properties:
   1. Only the Leader need "drive" the process, and can retry by simply sending more Propose messages.  All other parties simply react to requests as they see them.  This offers a simple implementation that avoids livelock.
   1. No members will connect with the invitee unless all members correctly identify them.
   1. Under sufficiently good conditions (no confusion, a patient leader, all users remain active, no members leave) an invite will eventually succeed.
+  1. Activity eventually settles, no user can arrive to a state where they infinitely send doomed messages expecting a reply.
 
 ### State Diagrams
 

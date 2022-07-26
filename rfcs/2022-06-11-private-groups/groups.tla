@@ -125,6 +125,11 @@ DropMessage ==
         /\ messages' = messages \ { message }
         /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
+DropAllMessages ==
+    /\ MaxInFlightRequests /= Null
+    /\ messages' = {}
+    /\ UNCHANGED <<rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
+
 SendPleasePropose ==
     \* IMPORTANT: The user should still wait to receive a Propose message from
     \* the leader before acting further, since they can't send an Invite
@@ -789,6 +794,7 @@ silent agents are undetectable!).
 
 Next ==
     \/ DropMessage
+    \/ DropAllMessages
     \/ SendPleasePropose
     \/ LeaderReceivePleasePropose
     \/ \E member \in MemberSet : BroadcastProposalState(member)
@@ -807,7 +813,14 @@ AllVars ==
     <<messages, rng_state, group_perceptions, proposal, complete_proposals, approver_states>>
 
 Fairness ==
-    /\ WF_AllVars(DropMessage)
+    \* Fairness for DropAllMessages is really a proxy for fairness for dropping
+    \* each individual message.  That more ideal description essentially says
+    \* that no message is visible on the network forever without explicitly
+    \* being resent.  However, that many disjoint fairness conditions is just
+    \* too large to check.  We instead say approximate this behavior by saying
+    \* that all in-flight messages must be dumped eventually (preventing loops
+    \* where one message causes another that is immediately dropped).
+    /\ WF_AllVars(DropAllMessages)
     /\ SF_AllVars(LeaderReceivePleasePropose)
     /\ \A member \in MemberSet :
         WF_AllVars(BroadcastProposalState(member))
@@ -936,4 +949,6 @@ AllMembersAccordingToTheLeaderAgreeWithTheLeaderWithoutProposal ==
 AllProposalsResolve ==
     []<>(proposal = Null)
 
+NetworkActivitySettles ==
+    <>[](messages = {})
 ====

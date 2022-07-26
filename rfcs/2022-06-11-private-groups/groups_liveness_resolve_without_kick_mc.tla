@@ -46,7 +46,7 @@ PatientNext ==
 \* spec for something that's too large to check anyway (even just adding a
 \* fourth user instead of three is adds some multiple days).
 AllUsersFair ==
-    /\ WF_AllVars(DropMessage)
+    /\ WF_AllVars(DropAllMessages)
     /\ SF_AllVars(LeaderReceivePleasePropose)
     /\ \A member \in MemberSet :
         WF_AllVars(BroadcastProposalState(member))
