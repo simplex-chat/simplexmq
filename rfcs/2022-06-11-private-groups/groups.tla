@@ -40,6 +40,7 @@ CONSTANTS
     \* User States
     Invited,
     Joining,
+    Joined,
     Synchronizing,
     Inviting,
     Committed,
@@ -98,7 +99,10 @@ Init ==
     /\ group_perceptions = [ member \in MemberSet |-> IF member \in InitialMembers THEN InitialMembers ELSE {} ]
     /\ proposal = Null
     /\ complete_proposals = {}
-    /\ approver_states = [ x \in (InviteIds \X Users) |-> [ state |-> Null ] ]
+    /\ approver_states =
+        [ x \in (InviteIds \X Users) |->
+            [ state |-> IF [ id |-> x[1], user |-> x[2] ] \in InitialMembers THEN Joined ELSE Null ]
+        ]
 
 FilterThenMaybeAddMessage(message_m, f(_)) ==
     LET
@@ -142,12 +146,10 @@ SendPleasePropose ==
         /\ LET invite_id == CHOOSE x \in rng_state : TRUE
            IN
             /\ group_perceptions[proposer] /= {}
-            \* Check to see if they are the leader, an initial member, or they
-            \* must have finished joining.  Ideally we would just have a Joined
-            \* state or something here.
-            /\ /\ proposer.id /= Null
-               /\ approver_states[<<proposer.id, proposer.user>>].state = Joining
-               => Cardinality(group_perceptions[proposer]) = Cardinality(approver_states[<<proposer.id, proposer.user>>].members) + 1
+            \* They must be the leader, or they must have finished joining
+            \* before they start making proposals.
+            /\ proposer.id /= Null =>
+                approver_states[<<proposer.id, proposer.user>>].state = Joined
             /\ \A members \in group_perceptions[proposer] :
                 /\ members.user /= invitee
             /\ HasDirectConnection(proposer.user, invitee)
@@ -608,7 +610,17 @@ ApproverConfirmQueue(member) ==
                     \* kicked (Leaders can't be).
                     /\ approver.id /= Null => approver_states[<<approver.id, Invitee>>].state /= Committed
                     /\ group_perceptions' = [ group_perceptions EXCEPT ![InviteeMember] = @ \union { approver } ]
-                    /\ UNCHANGED <<messages, approver_states>>
+                    \* The Invitee considers themselves Joined once they've
+                    \* secured all queues.  Though, this can't actually be
+                    \* atomic with the final step.
+                    /\ approver_states' =
+                        IF  /\ approver_states[<<invite_id, Invitee>>].state = Joining
+                            /\ approver_states[<<invite_id, Invitee>>].members = group_perceptions'[InviteeMember]
+                        THEN
+                            [ approver_states EXCEPT ![<<invite_id, Invitee>>] = [ state |-> Joined ] ]
+                        ELSE
+                            approver_states
+                    /\ UNCHANGED <<messages>>
                ELSE /\ approver_states' = [ approver_states EXCEPT ![<<invite_id, approver.user>>] = [ state |-> Committed ] ]
                     /\ IF
                            \* Only send if the Leader hasn't deleted their
@@ -707,7 +719,8 @@ UserReceiveInvite(sender) ==
             InviteeMember ==
                 [ user |-> message.recipient, id |-> message.invite_id ]
            IN
-            CASE ApproverState.state \in { Null, Invited } ->
+            /\ ApproverState.state \in { Null, Invited, Joining }
+            /\ CASE ApproverState.state \in { Null, Invited } ->
                     LET
                         BeforeNewInviteData ==
                             IF  ApproverState.state = Null
@@ -744,13 +757,17 @@ UserReceiveInvite(sender) ==
                         /\ approver_states' =
                             [ approver_states EXCEPT ![<<message.invite_id, message.recipient>>] = NextApproverState ]
                         /\ UNCHANGED <<messages, rng_state, group_perceptions, proposal, complete_proposals>>
-              [] ApproverState.state = Joining ->
+                [] ApproverState.state = Joining ->
                     \E member \in ApproverState.members :
                        /\ member.user = message.sender
                        \* If the member isn't still Inviting, then they won't
                        \* ever secure the queue to complete it
                        \* TODO: it might be worth modeling this non-atomically.
                        /\ approver_states[<<message.invite_id, message.sender>>].state = Inviting
+                       \* The member will only participate with queue setup if
+                       \* they still believe themselves to be part of the
+                       \* group.
+                       /\ member.id /= Null => approver_states[<<member.id, message.sender>>].state = Joined
                        /\ group_perceptions' =
                            [ group_perceptions
                            EXCEPT ![member] = @ \union { InviteeMember }
@@ -862,7 +879,7 @@ TypeOk ==
         , shares_by_member : [ MemberSet -> (InviteShares \union { Null }) ]
         ]
         \union
-        [ state : { Null, Committed }
+        [ state : { Null, Committed, Joined }
         ]
     ]
 

@@ -191,7 +191,8 @@ The invitee process is unique per invitation identifier, so an user tracks many 
 ```mermaid
 stateDiagram-v2
     [*] --> Invited : User receives Inivte
-    Invited --> Accepted : User receives all shares of all encryption keys
+    Invited --> Joining : User receives all shares of all encryption keys
+    Joining --> Joined : All queues each direction confirmed and secured
 ```
 
 ### Specific Examples
