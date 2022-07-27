@@ -187,6 +187,9 @@ BroadcastProposalState(recipient) ==
     /\ proposal /= Null
     /\ \E member \in proposal.awaiting_response :
         /\ member = recipient
+        \* Leader can't send the message if the recipient has deleted their
+        \* queue
+        /\ Leader \in group_perceptions[member]
         /\ AddMessage(
                 CASE proposal.type = Proposing ->
                     [ sender |-> Leader
