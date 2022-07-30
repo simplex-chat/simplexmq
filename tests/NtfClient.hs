@@ -94,7 +94,12 @@ ntfServerCfg =
       -- CA certificate private key is not needed for initialization
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt"
+      certificateFile = "tests/fixtures/server.crt",
+      -- stats config
+      logStatsInterval = Nothing,
+      logStatsStartTime = 0,
+      serverStatsLogFile = "tests/ntf-server-stats.daily.log",
+      serverStatsBackupFile = Nothing
     }
 
 withNtfServerStoreLog :: (MonadUnliftIO m, MonadRandom m) => ATransport -> (ThreadId -> m a) -> m a

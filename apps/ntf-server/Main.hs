@@ -80,7 +80,7 @@ ntfServerCLIConfig =
                     certificateFile = serverCrtFile,
                     logStatsInterval = logStats $> 86400, -- seconds
                     logStatsStartTime = 0, -- seconds from 00:00 UTC
-                    serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
-                    serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log"
+                    serverStatsLogFile = combine logPath "ntf-server-stats.daily.log",
+                    serverStatsBackupFile = logStats $> combine logPath "ntf-server-stats.log"
                   }
         }
