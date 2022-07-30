@@ -1,9 +1,12 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
 import Control.Logger.Simple
+import Data.Functor (($>))
+import Data.Ini (lookupValue)
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
@@ -57,21 +60,27 @@ ntfServerCLIConfig =
               <> defaultServerPort
               <> "\n\
                  \websockets: off\n",
-          mkServerConfig = \storeLogFile transports _ ->
-            NtfServerConfig
-              { transports,
-                subIdBytes = 24,
-                regCodeBytes = 32,
-                clientQSize = 16,
-                subQSize = 64,
-                pushQSize = 128,
-                smpAgentCfg = defaultSMPClientAgentConfig,
-                apnsConfig = defaultAPNSPushClientConfig,
-                inactiveClientExpiration = Nothing,
-                storeLogFile,
-                resubscribeDelay = 50000, -- 50ms
-                caCertificateFile = caCrtFile,
-                privateKeyFile = serverKeyFile,
-                certificateFile = serverCrtFile
-              }
+          mkServerConfig = \storeLogFile transports ini ->
+            let settingIsOn section name = if lookupValue section name ini == Right "on" then Just () else Nothing
+                logStats = settingIsOn "STORE_LOG" "log_stats"
+             in NtfServerConfig
+                  { transports,
+                    subIdBytes = 24,
+                    regCodeBytes = 32,
+                    clientQSize = 16,
+                    subQSize = 64,
+                    pushQSize = 128,
+                    smpAgentCfg = defaultSMPClientAgentConfig,
+                    apnsConfig = defaultAPNSPushClientConfig,
+                    inactiveClientExpiration = Nothing,
+                    storeLogFile,
+                    resubscribeDelay = 50000, -- 50ms
+                    caCertificateFile = caCrtFile,
+                    privateKeyFile = serverKeyFile,
+                    certificateFile = serverCrtFile,
+                    logStatsInterval = logStats $> 86400, -- seconds
+                    logStatsStartTime = 0, -- seconds from 00:00 UTC
+                    serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
+                    serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log"
+                  }
         }

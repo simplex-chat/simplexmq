@@ -4,8 +4,10 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -18,17 +20,27 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.List (intercalate)
 import Data.Map.Strict (Map)
+import Data.Set (Set)
+import qualified Data.Set as S
 import qualified Data.Text as T
+import Data.Time.Calendar.Month.Compat (pattern MonthDay)
+import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
+import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
+import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderError (..))
+import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
@@ -39,9 +51,11 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
+import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
 import System.Mem.Weak (deRefWeak)
-import UnliftIO (IOMode (..), async, uninterruptibleCancel)
+import UnliftIO (IOMode (..), async, uninterruptibleCancel, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId, threadDelay)
+import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
 
@@ -54,12 +68,13 @@ runNtfServerBlocking :: (MonadRandom m, MonadUnliftIO m) => TMVar Bool -> NtfSer
 runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtfServerEnv cfg
 
 ntfServer :: forall m. (MonadUnliftIO m, MonadReader NtfEnv m) => NtfServerConfig -> TMVar Bool -> m ()
-ntfServer NtfServerConfig {transports} started = do
+ntfServer cfg@NtfServerConfig {transports} started = do
+  restoreServerStats
   s <- asks subscriber
   ps <- asks pushServer
   subs <- readTVarIO =<< asks (subscriptions . store)
   void . forkIO $ resubscribe s subs
-  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports) `finally` stopServer
+  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> serverStatsThread_ cfg) `finally` stopServer
   where
     runServer :: (ServiceName, ATransport) -> m ()
     runServer (tcpPort, ATransport t) = do
@@ -76,7 +91,63 @@ ntfServer NtfServerConfig {transports} started = do
     stopServer :: m ()
     stopServer = do
       withNtfLog closeStoreLog
+      saveServerStats
       asks (smpSubscribers . subscriber) >>= readTVarIO >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (liftIO . deRefWeak >=> mapM_ killThread))
+
+    serverStatsThread_ :: NtfServerConfig -> [m ()]
+    serverStatsThread_ NtfServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
+      [logServerStats logStatsStartTime interval serverStatsLogFile]
+    serverStatsThread_ _ = []
+
+    logServerStats :: Int -> Int -> FilePath -> m ()
+    logServerStats startAt logInterval statsFilePath = do
+      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
+      liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
+      threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, dayTokens, weekTokens, monthTokens, daySubs, weekSubs, monthSubs} <- asks serverStats
+      let interval = 1000000 * logInterval
+      withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        hSetBuffering h LineBuffering
+        forever $ do
+          ts <- getCurrentTime
+          fromTime' <- atomically $ swapTVar fromTime ts
+          tknCreated' <- atomically $ swapTVar tknCreated 0
+          tknVerified' <- atomically $ swapTVar tknVerified 0
+          tknDeleted' <- atomically $ swapTVar tknDeleted 0
+          subCreated' <- atomically $ swapTVar subCreated 0
+          subDeleted' <- atomically $ swapTVar subDeleted 0
+          ntfReceived' <- atomically $ swapTVar ntfReceived 0
+          ntfDelivered' <- atomically $ swapTVar ntfDelivered 0
+          let day = utctDay ts
+              (_, wDay) = mondayStartWeek day
+              MonthDay _ mDay = day
+          (dayTokens', weekTokens', monthTokens') <-
+            atomically $ (,,) <$> periodCount 1 dayTokens <*> periodCount wDay weekTokens <*> periodCount mDay monthTokens
+          (daySubs', weekSubs', monthSubs') <-
+            atomically $ (,,) <$> periodCount 1 daySubs <*> periodCount wDay weekSubs <*> periodCount mDay monthSubs
+          hPutStrLn h $
+            intercalate
+              ","
+              [ iso8601Show $ utctDay fromTime',
+                show tknCreated',
+                show tknVerified',
+                show tknDeleted',
+                show subCreated',
+                show subDeleted',
+                show ntfReceived',
+                show ntfDelivered',
+                dayTokens',
+                weekTokens',
+                monthTokens',
+                daySubs',
+                weekSubs',
+                monthSubs'
+              ]
+          threadDelay interval
+      where
+        periodCount :: Int -> TVar (Set a) -> STM String
+        periodCount 1 pVar = show . S.size <$> swapTVar pVar S.empty
+        periodCount _ _ = pure ""
 
 resubscribe :: (MonadUnliftIO m, MonadReader NtfEnv m) => NtfSubscriber -> Map NtfSubscriptionId NtfSubData -> m ()
 resubscribe NtfSubscriber {newSubQ} subs = do
@@ -471,3 +542,26 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
 
 withNtfLog :: (MonadUnliftIO m, MonadReader NtfEnv m) => (StoreLog 'WriteMode -> IO a) -> m ()
 withNtfLog action = liftIO . mapM_ action =<< asks storeLog
+
+saveServerStats :: (MonadUnliftIO m, MonadReader NtfEnv m) => m ()
+saveServerStats =
+  asks (serverStatsBackupFile . config)
+    >>= mapM_ (\f -> asks serverStats >>= atomically . getNtfServerStatsData >>= liftIO . saveStats f)
+  where
+    saveStats f stats = do
+      logInfo $ "saving server stats to file " <> T.pack f
+      B.writeFile f $ strEncode stats
+      logInfo "server stats saved"
+
+restoreServerStats :: (MonadUnliftIO m, MonadReader NtfEnv m) => m ()
+restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
+  where
+    restoreStats f = whenM (doesFileExist f) $ do
+      logInfo $ "restoring server stats from file " <> T.pack f
+      liftIO (strDecode <$> B.readFile f) >>= \case
+        Right d -> do
+          s <- asks serverStats
+          atomically $ setNtfServerStatsData s d
+          renameFile f $ f <> ".bak"
+          logInfo "server stats restored"
+        Left e -> logInfo $ "error restoring server stats: " <> T.pack e
