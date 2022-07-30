@@ -173,7 +173,7 @@ smpServer started = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgQueues} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
         hSetBuffering h LineBuffering
@@ -185,7 +185,7 @@ smpServer started = do
           qDeleted' <- atomically $ swapTVar qDeleted 0
           msgSent' <- atomically $ swapTVar msgSent 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
-          ps <- atomically $ periodStatCounts msgQueues ts
+          ps <- atomically $ periodStatCounts activeQueues ts
           hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayCount ps, weekCount ps, monthCount ps]
           threadDelay interval
 
@@ -526,7 +526,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             updateStats = do
               stats <- asks serverStats
               atomically $ modifyTVar (msgRecv stats) (+ 1)
-              atomically $ updatePeriodStats (msgQueues stats) queueId
+              atomically $ updatePeriodStats (activeQueues stats) queueId
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
@@ -551,7 +551,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   when (sent == OK) $ do
                     stats <- asks serverStats
                     atomically $ modifyTVar (msgSent stats) (+ 1)
-                    atomically $ updatePeriodStats (msgQueues stats) (recipientId qr)
+                    atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                   pure resp
           where
             mkMessage :: C.MaxLenBS MaxMessageLen -> m Message

@@ -24,7 +24,7 @@ data ServerStats = ServerStats
     qDeleted :: TVar Int,
     msgSent :: TVar Int,
     msgRecv :: TVar Int,
-    msgQueues :: PeriodStats RecipientId
+    activeQueues :: PeriodStats RecipientId
   }
 
 data ServerStatsData = ServerStatsData
@@ -34,7 +34,7 @@ data ServerStatsData = ServerStatsData
     _qDeleted :: Int,
     _msgSent :: Int,
     _msgRecv :: Int,
-    _msgQueues :: PeriodStatsData RecipientId
+    _activeQueues :: PeriodStatsData RecipientId
   }
 
 newServerStats :: UTCTime -> STM ServerStats
@@ -45,8 +45,8 @@ newServerStats ts = do
   qDeleted <- newTVar 0
   msgSent <- newTVar 0
   msgRecv <- newTVar 0
-  msgQueues <- newPeriodStats
-  pure ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, msgQueues}
+  activeQueues <- newPeriodStats
+  pure ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues}
 
 getServerStatsData :: ServerStats -> STM ServerStatsData
 getServerStatsData s = do
@@ -56,8 +56,8 @@ getServerStatsData s = do
   _qDeleted <- readTVar $ qDeleted s
   _msgSent <- readTVar $ msgSent s
   _msgRecv <- readTVar $ msgRecv s
-  _msgQueues <- getPeriodStatsData $ msgQueues s
-  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgQueues}
+  _activeQueues <- getPeriodStatsData $ activeQueues s
+  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _activeQueues}
 
 setServerStats :: ServerStats -> ServerStatsData -> STM ()
 setServerStats s d = do
@@ -67,10 +67,10 @@ setServerStats s d = do
   writeTVar (qDeleted s) (_qDeleted d)
   writeTVar (msgSent s) (_msgSent d)
   writeTVar (msgRecv s) (_msgRecv d)
-  setPeriodStats (msgQueues s) (_msgQueues d)
+  setPeriodStats (activeQueues s) (_activeQueues d)
 
 instance StrEncoding ServerStatsData where
-  strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgQueues} =
+  strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _activeQueues} =
     B.unlines
       [ "fromTime=" <> strEncode _fromTime,
         "qCreated=" <> strEncode _qCreated,
@@ -78,8 +78,8 @@ instance StrEncoding ServerStatsData where
         "qDeleted=" <> strEncode _qDeleted,
         "msgSent=" <> strEncode _msgSent,
         "msgRecv=" <> strEncode _msgRecv,
-        "msgQueues:",
-        strEncode _msgQueues
+        "activeQueues:",
+        strEncode _activeQueues
       ]
   strP = do
     _fromTime <- "fromTime=" *> strP <* A.endOfLine
@@ -88,15 +88,15 @@ instance StrEncoding ServerStatsData where
     _qDeleted <- "qDeleted=" *> strP <* A.endOfLine
     _msgSent <- "msgSent=" *> strP <* A.endOfLine
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
-    r <- optional ("msgQueues:" <* A.endOfLine)
-    _msgQueues <- case r of
+    r <- optional ("activeQueues:" <* A.endOfLine)
+    _activeQueues <- case r of
       Just _ -> strP
       _ -> do
         _day <- "dayMsgQueues=" *> strP <* A.endOfLine
         _week <- "weekMsgQueues=" *> strP <* A.endOfLine
         _month <- "monthMsgQueues=" *> strP <* optional A.endOfLine
         pure PeriodStatsData {_day, _week, _month}
-    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _msgQueues}
+    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeleted, _msgSent, _msgRecv, _activeQueues}
 
 data PeriodStats a = PeriodStats
   { day :: TVar (Set a),
