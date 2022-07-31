@@ -726,4 +726,6 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
           atomically $ setServerStats s d
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
-        Left e -> logInfo $ "error restoring server stats: " <> T.pack e
+        Left e -> do
+          logInfo $ "error restoring server stats: " <> T.pack e
+          liftIO exitFailure

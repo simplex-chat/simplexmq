@@ -53,9 +53,11 @@ ntfServerCLIConfig =
             \# This option enables saving memory to append only log,\n\
             \# and restoring it when the server is started.\n\
             \# Log is compacted on start (deleted objects are removed).\n\
-            \# The messages are not logged.\n"
-              <> ("enable: " <> (if enableStoreLog then "on" else "off") <> "\n\n")
-              <> "[TRANSPORT]\n\
+            \enable: "
+              <> (if enableStoreLog then "on" else "off")
+              <> "\n\
+                 \log_stats: off\n\n\
+                 \[TRANSPORT]\n\
                  \port: "
               <> defaultServerPort
               <> "\n\

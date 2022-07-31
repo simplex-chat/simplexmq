@@ -90,7 +90,7 @@ instance StrEncoding ServerStatsData where
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
     r <- optional ("activeQueues:" <* A.endOfLine)
     _activeQueues <- case r of
-      Just _ -> strP
+      Just _ -> strP <* optional A.endOfLine
       _ -> do
         _day <- "dayMsgQueues=" *> strP <* A.endOfLine
         _week <- "weekMsgQueues=" *> strP <* A.endOfLine
@@ -132,15 +132,11 @@ setPeriodStats s d = do
 
 instance (Ord a, StrEncoding a) => StrEncoding (PeriodStatsData a) where
   strEncode PeriodStatsData {_day, _week, _month} =
-    B.unlines
-      [ "day=" <> strEncode _day,
-        "week=" <> strEncode _week,
-        "month=" <> strEncode _month
-      ]
+    "day=" <> strEncode _day <> "\nweek=" <> strEncode _week <> "\nmonth=" <> strEncode _month
   strP = do
     _day <- "day=" *> strP <* A.endOfLine
     _week <- "week=" *> strP <* A.endOfLine
-    _month <- "week=" *> strP <* optional A.endOfLine
+    _month <- "month=" *> strP
     pure PeriodStatsData {_day, _week, _month}
 
 data PeriodStatCounts = PeriodStatCounts

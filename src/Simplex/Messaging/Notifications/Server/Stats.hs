@@ -4,6 +4,7 @@
 
 module Simplex.Messaging.Notifications.Server.Stats where
 
+import Control.Applicative (optional)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Time.Clock (UTCTime)
@@ -106,7 +107,7 @@ instance StrEncoding NtfServerStatsData where
     _ntfReceived <- "ntfReceived=" *> strP <* A.endOfLine
     _ntfDelivered <- "ntfDelivered=" *> strP <* A.endOfLine
     _ <- "activeTokens:" <* A.endOfLine
-    _activeTokens <- strP
+    _activeTokens <- strP <* A.endOfLine
     _ <- "activeSubs:" <* A.endOfLine
-    _activeSubs <- strP
+    _activeSubs <- strP <* optional A.endOfLine
     pure NtfServerStatsData {_fromTime, _tknCreated, _tknVerified, _tknDeleted, _subCreated, _subDeleted, _ntfReceived, _ntfDelivered, _activeTokens, _activeSubs}

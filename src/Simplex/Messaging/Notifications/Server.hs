@@ -48,6 +48,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), TProxy, Transport (..))
 import Simplex.Messaging.Transport.Server (runTransportServer)
 import Simplex.Messaging.Util
+import System.Exit (exitFailure)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (IOMode (..), async, uninterruptibleCancel, withFile)
@@ -570,4 +571,6 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
           atomically $ setNtfServerStats s d
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
-        Left e -> logInfo $ "error restoring server stats: " <> T.pack e
+        Left e -> do
+          logInfo $ "error restoring server stats: " <> T.pack e
+          liftIO exitFailure
