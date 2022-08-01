@@ -50,12 +50,8 @@ import Data.List (intercalate)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
-import Data.Set (Set)
-import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
-import Data.Time.Calendar.Month.Compat (pattern MonthDay)
-import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
@@ -177,7 +173,7 @@ smpServer started = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       threadDelay $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, dayMsgQueues, weekMsgQueues, monthMsgQueues} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeleted, msgSent, msgRecv, activeQueues} <- asks serverStats
       let interval = 1000000 * logInterval
       withFile statsFilePath AppendMode $ \h -> liftIO $ do
         hSetBuffering h LineBuffering
@@ -189,17 +185,9 @@ smpServer started = do
           qDeleted' <- atomically $ swapTVar qDeleted 0
           msgSent' <- atomically $ swapTVar msgSent 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
-          let day = utctDay ts
-              (_, wDay) = mondayStartWeek day
-              MonthDay _ mDay = day
-          (dayMsgQueues', weekMsgQueues', monthMsgQueues') <-
-            atomically $ (,,) <$> periodCount 1 dayMsgQueues <*> periodCount wDay weekMsgQueues <*> periodCount mDay monthMsgQueues
-          hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayMsgQueues', weekMsgQueues', monthMsgQueues']
+          ps <- atomically $ periodStatCounts activeQueues ts
+          hPutStrLn h $ intercalate "," [iso8601Show $ utctDay fromTime', show qCreated', show qSecured', show qDeleted', show msgSent', show msgRecv', dayCount ps, weekCount ps, monthCount ps]
           threadDelay interval
-      where
-        periodCount :: Int -> TVar (Set RecipientId) -> STM String
-        periodCount 1 pVar = show . S.size <$> swapTVar pVar S.empty
-        periodCount _ _ = pure ""
 
     runClient :: Transport c => TProxy c -> c -> m ()
     runClient _ h = do
@@ -538,15 +526,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
             updateStats = do
               stats <- asks serverStats
               atomically $ modifyTVar (msgRecv stats) (+ 1)
-              atomically $ updateActiveQueues stats queueId
-
-        updateActiveQueues :: ServerStats -> RecipientId -> STM ()
-        updateActiveQueues stats qId = do
-          updatePeriod dayMsgQueues
-          updatePeriod weekMsgQueues
-          updatePeriod monthMsgQueues
-          where
-            updatePeriod pSel = modifyTVar (pSel stats) (S.insert qId)
+              atomically $ updatePeriodStats (activeQueues stats) queueId
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> m (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
@@ -571,7 +551,7 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                   when (sent == OK) $ do
                     stats <- asks serverStats
                     atomically $ modifyTVar (msgSent stats) (+ 1)
-                    atomically $ updateActiveQueues stats $ recipientId qr
+                    atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                   pure resp
           where
             mkMessage :: C.MaxLenBS MaxMessageLen -> m Message
@@ -743,7 +723,9 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          atomically $ setServerStatsData s d
+          atomically $ setServerStats s d
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
-        Left e -> logInfo $ "error restoring server stats: " <> T.pack e
+        Left e -> do
+          logInfo $ "error restoring server stats: " <> T.pack e
+          liftIO exitFailure
