@@ -1,7 +1,5 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -29,12 +27,9 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
-import Data.Aeson (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson as J
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Word (Word16)
-import GHC.Generics (Generic)
 import Network.Socket
 import Numeric.Natural
 import Simplex.Messaging.Agent.Protocol
@@ -49,7 +44,7 @@ import Simplex.Messaging.Protocol (NtfServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (TLS, Transport (..))
-import Simplex.Messaging.Transport.Client (SocksProxy, defaultSMPPort)
+import Simplex.Messaging.Transport.Client (defaultSMPPort)
 import Simplex.Messaging.Version
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async)
@@ -63,16 +58,6 @@ data InitialAgentServers = InitialAgentServers
     ntf :: [NtfServer],
     netCfg :: NetworkConfig
   }
-
-data NetworkConfig = NetworkConfig
-  { socksProxy :: Maybe SocksProxy,
-    tcpTimeout :: Int
-  }
-  deriving (Show, Generic, FromJSON)
-
-instance ToJSON NetworkConfig where
-  toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
-  toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
 
 data AgentConfig = AgentConfig
   { tcpPort :: ServiceName,

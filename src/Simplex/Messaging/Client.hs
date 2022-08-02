@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -50,7 +51,9 @@ module Simplex.Messaging.Client
     -- * Supporting types and client configuration
     ProtocolClientError (..),
     ProtocolClientConfig (..),
+    NetworkConfig (..),
     defaultClientConfig,
+    defaultNetworkConfig,
     ServerTransmission,
   )
 where
@@ -62,6 +65,8 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
+import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (rights)
@@ -69,6 +74,7 @@ import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
+import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
@@ -108,20 +114,43 @@ type ClientCommand msg = (Maybe C.APrivateSignKey, QueueId, ProtoCommand msg)
 -- | Type synonym for transmission from some SPM server queue.
 type ServerTransmission msg = (ProtoServer msg, Version, SessionId, QueueId, msg)
 
+-- | network configuration for the client
+data NetworkConfig = NetworkConfig
+  { -- | use SOCKS5 proxy
+    socksProxy :: Maybe SocksProxy,
+    -- | timeout for the initial client TCP/TLS connection (microseconds)
+    tcpConnectTimeout :: Int,
+    -- | timeout of protocol commands (microseconds)
+    tcpTimeout :: Int,
+    -- | TCP keep-alive options, Nothing to skip enabling keep-alive
+    tcpKeepAlive :: Maybe KeepAliveOpts,
+    -- | period for SMP ping commands (microseconds)
+    smpPingInterval :: Int
+  }
+  deriving (Show, Generic, FromJSON)
+
+instance ToJSON NetworkConfig where
+  toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
+  toEncoding = J.genericToEncoding J.defaultOptions {J.omitNothingFields = True}
+
+defaultNetworkConfig :: NetworkConfig
+defaultNetworkConfig =
+  NetworkConfig
+    { socksProxy = Nothing,
+      tcpConnectTimeout = 7_500_000,
+      tcpTimeout = 5_000_000,
+      tcpKeepAlive = Just defaultKeepAliveOpts,
+      smpPingInterval = 600_000_000 -- 10min
+    }
+
 -- | protocol client configuration.
 data ProtocolClientConfig = ProtocolClientConfig
   { -- | size of TBQueue to use for server commands and responses
     qSize :: Natural,
     -- | default server port if port is not specified in ProtocolServer
     defaultTransport :: (ServiceName, ATransport),
-    -- | timeout of TCP commands (microseconds)
-    tcpTimeout :: Int,
-    -- | TCP keep-alive options, Nothing to skip enabling keep-alive
-    tcpKeepAlive :: Maybe KeepAliveOpts,
-    -- | use SOCKS5 proxy
-    socksProxy :: Maybe SocksProxy,
-    -- | period for SMP ping commands (microseconds)
-    smpPing :: Int,
+    -- | network configuration
+    networkConfig :: NetworkConfig,
     -- | SMP client-server protocol version range
     smpServerVRange :: VersionRange
   }
@@ -132,10 +161,7 @@ defaultClientConfig =
   ProtocolClientConfig
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
-      tcpTimeout = 5_000_000,
-      tcpKeepAlive = Just defaultKeepAliveOpts,
-      socksProxy = Nothing,
-      smpPing = 600_000_000, -- 10min
+      networkConfig = defaultNetworkConfig,
       smpServerVRange = supportedSMPServerVRange
     }
 
@@ -152,10 +178,11 @@ type Response msg = Either ProtocolClientError msg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
-getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tcpKeepAlive, socksProxy, smpPing, smpServerVRange} msgQ disconnected =
+getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} msgQ disconnected =
   (atomically mkProtocolClient >>= runClient useTransport)
     `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
   where
+    NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpKeepAlive, socksProxy, smpPingInterval} = networkConfig
     mkProtocolClient :: STM (ProtocolClient msg)
     mkProtocolClient = do
       connected <- newTVar False
@@ -185,7 +212,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
         async $
           runTransportClient socksProxy (host protocolServer) port' (Just $ keyHash protocolServer) tcpKeepAlive (client t c thVar)
             `finally` atomically (putTMVar thVar $ Left PCENetworkError)
-      th_ <- tcpTimeout `timeout` atomically (takeTMVar thVar)
+      th_ <- tcpConnectTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case th_ of
         Just (Right THandle {sessionId, thVersion}) -> Right c {action, sessionId, thVersion}
         Just (Left e) -> Left e
@@ -218,7 +245,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, tcpTimeout, tc
 
     ping :: ProtocolClient msg -> IO ()
     ping c = forever $ do
-      threadDelay smpPing
+      threadDelay smpPingInterval
       runExceptT $ sendProtocolCommand c Nothing "" protocolPing
 
     process :: ProtocolClient msg -> IO ()

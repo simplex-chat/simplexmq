@@ -25,7 +25,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig, defaultNetworkConfig)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
@@ -166,7 +166,7 @@ initAgentServers =
   InitialAgentServers
     { smp = L.fromList [testSMPServer],
       ntf = ["ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"],
-      netCfg = NetworkConfig {socksProxy = Nothing, tcpTimeout = 5000000}
+      netCfg = defaultNetworkConfig {tcpTimeout = 500_000}
     }
 
 initAgentServers2 :: InitialAgentServers
@@ -182,7 +182,7 @@ agentCfg =
         defaultClientConfig
           { qSize = 1,
             defaultTransport = (testPort, transport @TLS),
-            tcpTimeout = 500_000
+            networkConfig = defaultNetworkConfig {tcpTimeout = 500_000}
           },
       ntfCfg =
         defaultClientConfig

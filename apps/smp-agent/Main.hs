@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -8,6 +9,7 @@ import Control.Logger.Simple
 import qualified Data.List.NonEmpty as L
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Server (runSMPAgent)
+import Simplex.Messaging.Client (defaultNetworkConfig)
 import Simplex.Messaging.Transport (TLS, Transport (..))
 
 cfg :: AgentConfig
@@ -18,7 +20,7 @@ servers =
   InitialAgentServers
     { smp = L.fromList ["smp://bU0K-bRg24xWW__lS0umO1Zdw_SXqpJNtm1_RrPLViE=@localhost:5223"],
       ntf = [],
-      netCfg = NetworkConfig {socksProxy = Nothing, tcpTimeout = 5000000}
+      netCfg = defaultNetworkConfig
     }
 
 logCfg :: LogConfig

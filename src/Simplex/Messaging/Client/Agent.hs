@@ -125,8 +125,8 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
 
     waitForSMPClient :: SMPClientVar -> ExceptT ProtocolClientError IO SMPClient
     waitForSMPClient smpVar = do
-      let ProtocolClientConfig {tcpTimeout} = smpCfg agentCfg
-      smpClient_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar smpVar)
+      let ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
+      smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar smpVar)
       liftEither $ case smpClient_ of
         Just (Right smpClient) -> Right smpClient
         Just (Left e) -> Left e
