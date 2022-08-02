@@ -223,7 +223,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
   atomically (getClientVar srv smpClients)
     >>= either
       (newProtocolClient c srv smpClients connectClient reconnectClient)
-      (waitForProtocolClient smpCfg)
+      (waitForProtocolClient c)
   where
     connectClient :: m SMPClient
     connectClient = do
@@ -295,7 +295,7 @@ getNtfServerClient c@AgentClient {active, ntfClients} srv = do
   atomically (getClientVar srv ntfClients)
     >>= either
       (newProtocolClient c srv ntfClients connectClient $ pure ())
-      (waitForProtocolClient ntfCfg)
+      (waitForProtocolClient c)
   where
     connectClient :: m NtfClient
     connectClient = do
@@ -316,10 +316,10 @@ getClientVar srv clients = maybe (Left <$> newClientVar) (pure . Right) =<< TM.l
       TM.insert srv var clients
       pure var
 
-waitForProtocolClient :: AgentMonad m => (AgentConfig -> ProtocolClientConfig) -> ClientVar msg -> m (ProtocolClient msg)
-waitForProtocolClient clientConfig clientVar = do
-  ProtocolClientConfig {tcpTimeout} <- asks $ clientConfig . config
-  client_ <- liftIO $ tcpTimeout `timeout` atomically (readTMVar clientVar)
+waitForProtocolClient :: AgentMonad m => AgentClient -> ClientVar msg -> m (ProtocolClient msg)
+waitForProtocolClient c clientVar = do
+  NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
+  client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
   liftEither $ case client_ of
     Just (Right smpClient) -> Right smpClient
     Just (Left e) -> Left e
@@ -362,14 +362,14 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
 
 updateClientConfig :: AgentClient -> ProtocolClientConfig -> STM ProtocolClientConfig
 updateClientConfig AgentClient {useNetworkConfig} cfg = do
-  NetworkConfig {socksProxy, tcpTimeout} <- readTVar useNetworkConfig
-  pure (cfg :: ProtocolClientConfig) {socksProxy, tcpTimeout}
+  networkConfig <- readTVar useNetworkConfig
+  pure cfg {networkConfig}
 
 closeAgentClient :: MonadIO m => AgentClient -> m ()
 closeAgentClient c = liftIO $ do
   atomically $ writeTVar (active c) False
-  closeProtocolServerClients c smpCfg smpClients
-  closeProtocolServerClients c ntfCfg ntfClients
+  closeProtocolServerClients c smpClients
+  closeProtocolServerClients c ntfClients
   cancelActions $ reconnections c
   cancelActions $ asyncClients c
   cancelActions $ smpQueueMsgDeliveries c
@@ -383,14 +383,14 @@ closeAgentClient c = liftIO $ do
     clear :: (AgentClient -> TMap k a) -> IO ()
     clear sel = atomically $ writeTVar (sel c) M.empty
 
-closeProtocolServerClients :: AgentClient -> (AgentConfig -> ProtocolClientConfig) -> (AgentClient -> TMap (ProtoServer msg) (ClientVar msg)) -> IO ()
-closeProtocolServerClients c cfgSel clientsSel =
+closeProtocolServerClients :: AgentClient -> (AgentClient -> TMap (ProtoServer msg) (ClientVar msg)) -> IO ()
+closeProtocolServerClients c clientsSel =
   readTVarIO cs >>= mapM_ (forkIO . closeClient) >> atomically (writeTVar cs M.empty)
   where
     cs = clientsSel c
-    ProtocolClientConfig {tcpTimeout} = cfgSel . config $ agentEnv c
-    closeClient cVar =
-      tcpTimeout `timeout` atomically (readTMVar cVar) >>= \case
+    closeClient cVar = do
+      NetworkConfig {tcpConnectTimeout} <- readTVarIO $ useNetworkConfig c
+      tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
         Just (Right client) -> closeProtocolClient client `catchAll_` pure ()
         _ -> pure ()
 

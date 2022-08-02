@@ -214,8 +214,8 @@ setNetworkConfig c cfg' = do
   cfg <- atomically $ do
     swapTVar (useNetworkConfig c) cfg'
   liftIO . when (socksProxy cfg /= socksProxy cfg') $ do
-    closeProtocolServerClients c smpCfg smpClients
-    closeProtocolServerClients c ntfCfg ntfClients
+    closeProtocolServerClients c smpClients
+    closeProtocolServerClients c ntfClients
 
 getNetworkConfig :: AgentErrorMonad m => AgentClient -> m NetworkConfig
 getNetworkConfig = readTVarIO . useNetworkConfig
