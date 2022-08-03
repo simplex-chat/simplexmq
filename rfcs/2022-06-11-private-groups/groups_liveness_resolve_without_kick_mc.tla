@@ -30,6 +30,7 @@ PatientNext ==
     \/ \E member \in MemberSet : BroadcastProposalState(member)
     \/ LeaderReceiveReject
     \/ LeaderReceiveEstablished
+    \/ LeaderDetectLeaver
     \/ LeaderReceiveKickAck
     \/ \E member \in MemberSet : ApproverReceiveProposal(member)
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)

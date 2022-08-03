@@ -41,6 +41,7 @@ CONSTANTS
     Invited,
     Joining,
     Joined,
+    Left,
     Synchronizing,
     Inviting,
     Committed,
@@ -283,6 +284,21 @@ GiveUpOnMembers ==
             , kicked |-> { member.id : member \in proposal.awaiting_response }
             ]
         /\ UNCHANGED <<messages, rng_state, group_perceptions, approver_states>>
+
+LeaderDetectLeaver ==
+    \* If there is an existing proposal, expelling leavers is done via GiveUp
+    \* actions.
+    /\ proposal = Null
+    /\ \E member \in group_perceptions[Leader] :
+        /\ Leader \notin group_perceptions[member]
+        /\ LET new_group == group_perceptions[Leader] \ { member }
+           IN
+            /\ proposal' =
+                [ type |-> Kicking
+                , awaiting_response |-> new_group
+                , kicked |-> { member.id }
+                ]
+            /\ UNCHANGED <<messages, rng_state, group_perceptions, complete_proposals, approver_states>>
 
 LeaderReceiveKickAck ==
     /\ proposal /= Null
@@ -600,6 +616,8 @@ ApproverConfirmQueue(member) ==
         IN
             /\ approver = member
             /\ approver_states[<<invite_id, approver.user>>].state = Inviting
+            \* The approver won't confirm the queue if they've left the group
+            /\ approver.id /= Null => approver_states[<<approver.id, approver.user>>].state /= Left
             \* There are two independent steps, which we handle with the same
             \* action, but not atomically.  The first is to establish a queue to
             \* receive group messages from the invitee.  The second is to notice
@@ -609,6 +627,9 @@ ApproverConfirmQueue(member) ==
                THEN \* The approver can only confirm its queue if the invitee
                     \* already has, by which to use as an out-of-band channel.
                     /\ InviteeMember \in group_perceptions[approver]
+                    \* The Invitee hasn't left the group (otherwise they won't
+                    \* create, send out-of-band message, or secure the queue)
+                    /\ approver_states[<<invite_id, Invitee>>].state /= Left
                     \* The Invitee does not believe this approver has been
                     \* kicked (Leaders can't be).
                     /\ approver.id /= Null => approver_states[<<approver.id, Invitee>>].state /= Committed
@@ -641,6 +662,26 @@ ApproverConfirmQueue(member) ==
                            UNCHANGED <<messages>>
                     /\ UNCHANGED <<group_perceptions>>
             /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
+
+LeaveGroup ==
+    \E user \in Users, invite_id \in InviteIds :
+        LET
+            \* Note that the Leader cannot leave a group.  They instead kick
+            \* everyone and then delete their local record of it.
+            member == [ id |-> invite_id, user |-> user ]
+        IN
+            /\ approver_states[<<invite_id, user>>].state \in { Invited, Joining, Joined }
+            \* In reality, we need a Leaving state where queues are deleted one at
+            \* a time.  We gloss over that detail here.  The most important
+            \* thing is that they delete the Leader's queue first, since the
+            \* Leader will handle the rest of the clean up, even if the leaver
+            \* doesn't.
+            /\ approver_states' = [ approver_states EXCEPT ![<<invite_id, user>>] = [ state |-> Left ] ]
+            /\ group_perceptions' = [ group_perceptions EXCEPT ![member] = {} ]
+            \* All messages are lost when we delete the queues
+            /\ FilterThenMaybeAddMessage(Nothing, LAMBDA message : ~(message.type /= Invite /\ message.recipient = member))
+            /\ UNCHANGED <<rng_state, proposal, complete_proposals>>
+
 
 \* Map each user
 \*   Turn each expected share hash into the actual share
@@ -822,11 +863,13 @@ Next ==
     \/ LeaderReceiveEstablished
     \/ GiveUpOnProposal
     \/ GiveUpOnMembers
+    \/ LeaderDetectLeaver
     \/ LeaderReceiveKickAck
     \/ \E member \in MemberSet : ApproverReceiveProposal(member)
     \/ \E member \in MemberSet, kicked \in SUBSET InviteIds : ApproverReceiveKick(member, kicked)
     \/ \E member \in MemberSet : ReceiveSyncShare(member)
     \/ \E member \in MemberSet : ApproverConfirmQueue(member)
+    \/ LeaveGroup
     \/ \E user \in Users : UserReceiveInvite(user)
 
 AllVars ==
@@ -848,6 +891,7 @@ Fairness ==
     /\ SF_AllVars(LeaderReceiveEstablished)
     /\ WF_AllVars(GiveUpOnProposal)
     /\ WF_AllVars(GiveUpOnMembers)
+    /\ WF_AllVars(LeaderDetectLeaver)
     /\ SF_AllVars(LeaderReceiveKickAck)
     /\ SF_AllVars(ApproverReceiveProposal(Leader))
     /\ \A kicked \in SUBSET InviteIds :
@@ -882,7 +926,7 @@ TypeOk ==
         , shares_by_member : [ MemberSet -> (InviteShares \union { Null }) ]
         ]
         \union
-        [ state : { Null, Committed, Joined }
+        [ state : { Null, Committed, Joined, Left }
         ]
     ]
 
@@ -898,6 +942,11 @@ IdsAndLeaderMatchAcrossAllMembers ==
         IN  \/ matches1 = {}
             \/ matches2 = {}
             \/ matches1 = matches2
+
+GroupPerceptionsEmptyInCertainStates ==
+    \A invite_id \in InviteIds, user \in Users :
+        approver_states[<<invite_id, user>>].state \in { Nothing, Invited, Left } =>
+            group_perceptions[[ id |-> invite_id, user |-> user ]] = {}
 
 CannotCommunicateWithoutAConnection ==
     \A message \in messages :
@@ -961,13 +1010,10 @@ EstablishedOnlyIfAllPerceptionsMatch ==
             /\ message.invitee_description.of = member_user
             => UserPerceptions[[ perceiver |-> message.recipient.user, description |-> message.invitee_description ]] = member_user
 
-AllMembersAccordingToTheLeaderAgreeWithTheLeaderWithoutProposal ==
-    proposal = Null =>
-        \A member \in group_perceptions[Leader] :
+AllMembersEventuallyAgreeWithLeader ==
+    []<>/\ proposal = Null
+        /\ \A member \in group_perceptions[Leader] :
             group_perceptions[member] = group_perceptions[Leader]
-
-AllProposalsResolve ==
-    []<>(proposal = Null)
 
 NetworkActivitySettles ==
     <>[](messages = {})

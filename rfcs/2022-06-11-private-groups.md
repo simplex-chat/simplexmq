@@ -142,9 +142,10 @@ TODO: Ideally, kicked members (or invitees that established connections with kic
 Model checking our formal specification we can demonstrate three key properties:
   1. Users outside of the group only learn about the networks of members who agree to share such information with them.
   1. It is not possible to accidentally establish a group connection with anyone other than the invitee, even if users misidentify the invitee.
-  1. If a proposal is complete, then all members (according to the leader) agree on who is a member.
+  1. Eventually all proposals complete and everyone that the Leader believes is part of the group agrees on membership.
   1. Proposals always complete (successfully or otherwise), assuming the Leader is fair (other members don't need to participate).
   1. Only the Leader need "drive" the process, and can retry by simply sending more Propose messages.  All other parties simply react to requests as they see them.  This offers a simple implementation that avoids livelock.
+  1. Leaving a group requires only deleting a receiving queue to the leader; the group will correct itself after.
   1. No members will connect with the invitee unless all members correctly identify them.
   1. Under sufficiently good conditions (no confusion, a patient leader, all users remain active, no members leave) an invite will eventually succeed.
   1. Activity eventually settles, no user can arrive to a state where they infinitely send doomed messages expecting a reply.
@@ -193,6 +194,11 @@ stateDiagram-v2
     [*] --> Invited : User receives Inivte
     Invited --> Joining : User receives all shares of all encryption keys
     Joining --> Joined : All queues each direction confirmed and secured
+    Invited --> Leaving : Decide to leave
+    Joining --> Leaving : Decide to leave
+    Joined --> Leaving : Decide to leave
+    Leaving --> Leaving : Delete receiving queue (Leader first)
+    Leaving --> Left : All queues deleted
 ```
 
 ### Specific Examples
@@ -317,6 +323,39 @@ Since C receives a Propose message for D, C has a different CLI interaction:
 > @D2
 > Would you like to add @D2 to group #g? (y/n)
 > y
+```
+
+#### Typical Leave
+
+Existing members need only delete their queues to leave a group.
+They should always start with deleting the Leader's queue first.
+When a leader detects that a member has left and no other proposal is active, the Leader simply kicks that user.
+
+During a proposal, a multitude of things can go wrong, all of which are self-corrected and are explored below.
+These cases cover when a user leaves mid-proposal.
+
+Consider the scenario where group g lead by A also has members B and C.
+C, who originally joined under invitation identifier 456, decides to leave.
+
+##### Sequence Diagram
+
+```
+sequenceDiagram
+    participant A
+    participant B
+    participant C
+    note over C: Commit to Leaving the group
+    C->>C: Delete receiving queue for A
+    C->>C: Delete receiving queue for B
+    note over C: Commit having Left the group
+    note over A: A discovers (in trying to send<br>a message) that C deleted<br>its queue.  No other proposal is in<br>in flight. Start kicking C.
+    A->>A: Kick 456
+    note over A: Commits that 456 is permanently kicked
+    A->>A: Kicked 456
+    A->>B: Kick 456
+    note over B: Commits that 456 is permanently kicked
+    B->>A: Kicked 456
+    note over A: Everyone remaining in the group has acked all kicks<br>proposal is now complete
 ```
 
 #### Failure Due to Unacquainted Contacts
@@ -607,3 +646,11 @@ Or the leader may discover the issue when attempting a (blocked) membership chan
 > Member @B wants to add @X to #g, but there is a pending invite to @D (only one at a time is allowed). You and @B have added @D, waiting on @C.  You may wait, cancel the invite, or kick @C: (wait/cancel/kick)
 > y
 ```
+
+## Variations Not Pursued
+
+### Leave via Kicks
+
+The issue with leaving by simply issuing a PleaseKick self message is that it's hard to guarantee that it is acted on.
+This means that the user must stick around in the group and politely ensure that the message is delivered.
+If we have lower expectations of what clients can and will do in practice, then we get better results.
