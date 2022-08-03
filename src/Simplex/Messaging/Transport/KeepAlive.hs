@@ -17,7 +17,7 @@ data KeepAliveOpts = KeepAliveOpts
     keepIntvl :: Int,
     keepCnt :: Int
   }
-  deriving (Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON)
 
 instance ToJSON KeepAliveOpts where toEncoding = J.genericToEncoding J.defaultOptions
 
