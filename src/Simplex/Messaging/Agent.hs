@@ -213,7 +213,7 @@ setNetworkConfig :: AgentErrorMonad m => AgentClient -> NetworkConfig -> m ()
 setNetworkConfig c cfg' = do
   cfg <- atomically $ do
     swapTVar (useNetworkConfig c) cfg'
-  liftIO . when (socksProxy cfg /= socksProxy cfg') $ do
+  liftIO . when (cfg /= cfg') $ do
     closeProtocolServerClients c smpClients
     closeProtocolServerClients c ntfClients
 
