@@ -127,7 +127,7 @@ data NetworkConfig = NetworkConfig
     -- | period for SMP ping commands (microseconds)
     smpPingInterval :: Int
   }
-  deriving (Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON)
 
 instance ToJSON NetworkConfig where
   toJSON = J.genericToJSON J.defaultOptions {J.omitNothingFields = True}
