@@ -92,6 +92,14 @@ Next ==
     \/ GoTo2
 ```
 
+As defined above, we our `Next` operator has two possible it may take: `GoTo1` and `GoTo2`.
+`GoTo1` sets `x` to 1, but only if `x` is currently 2.
+`GoTo2` sets `x` to 2, but only if `x` is currently 1.
+Ultimately, this means that `x` simply bounces back and forth between 1 and 2.
+
+Our actions don't concern themselves with _exactly_ when, they are only concerned with order.
+So the real clock time between changing from a 1 to a 2 or a 2 to a 1 maybe be infinitely small, infinitely large or anywhere in between.
+
 Our next state relation must _completely_ define the next state of all variables.
 This means if some actions do not cause variable `x` to change we must specify that `x' = x`.
 Alternatively, we can use `UNCHANGED x` or provide it a tuple of variables to say none of them do, like `UNCHANGED <<x, y, z>>`.
