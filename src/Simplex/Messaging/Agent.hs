@@ -633,8 +633,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   AM_A_MSG_ -> notifyDel msgId $ MERR mId e
                 _
                   | temporaryAgentError e -> do
-                    let tSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
-                    ifM (msgExpired tSel) (notifyDel msgId err) (retrySending loop)
+                    let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
+                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySending loop)
                   | otherwise -> notifyDel msgId err
               where
                 msgExpired timeoutSel = do
