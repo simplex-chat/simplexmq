@@ -3,7 +3,7 @@
 This guide is both opinionated and imprecise, but aims to be a warp speed introduction to TLA+ in the context of the specifications here.
 
 TLA+ is a specification language ideal for modeling distributed systems.
-The goal is to specify possible (a) starting states(s), and define next state transitions.
+The goal is to specify possible (a) starting state(s), and define next state transitions.
 We do this mathematically, where everything is made of boolean expressions.
 
 Along side of our system specification, we can also define properties (such as invariants) it should satisfy.
@@ -31,7 +31,7 @@ Booleans:
 Sets:
   - `{ x, y, ..., z}` is `Set.fromList [ x, y, ..., z ]`
   - `a \union b` is `Set.union a b`
-  - `a \ b` is ``Set.difference a b`
+  - `a \ b` is `Set.difference a b`
   - `x \notin xs` is `Set.notMember x xs`
   - `xs \subset ys` is `Set.isSubsetOf xs ys`
   - `{ x \in xs : f(x) }` is `Set.filter f xs`
@@ -75,7 +75,7 @@ We define a simple boolean expression that describes the initial possible value(
 ### Next State
 
 Our next state transition is often broken down into distinct sets of actions via operators for readability.
-An Action is typically has two halves: the guards and the transitions.
+An Action typically has two halves: the guards and the transitions.
 More complex actions may intermix these two.
 
 ```tla
@@ -108,7 +108,7 @@ Alternatively, we can use `UNCHANGED x` or provide it a tuple of variables to sa
 
 We can take a look a slightly simplified verion of the action to kick a Leaver.
 We'll build a whole spec where `a`, `b`, and `c` are the states of the users.
-We're going to use string values to simplify things, but normally we would use Constants, introduced below.
+We're going to use string values to simplify things, but normally we would use Constants (introduced later).
 
 ```tla
 VARIABLES
@@ -139,7 +139,7 @@ LeaderDetectLeaver ==
         /\ UNCHANGED <<a, b, c>>
 
 Next ==
-    \/ Leave
+    \/ MemberLeave
     \/ LeaderDetectLeaver
 ```
 
@@ -151,11 +151,11 @@ We define two actions, `MemberLeave` and `LeaderDetectLeaver`.
 Both of these appear as options in the `Next` operator, which defines all possible things that could occur.
 
 The `MemberLeave` action has two possibilities.
-One is that `a` leaves (assuming `a` is still "Joined"), by switching its state to "Left".
-The other is the same, but `b` instead of `a`.
+One is that `b` leaves (assuming `b` is still "Joined"), by switching its state to "Left".
+The other is the same, but `c` instead of `b`.
 
 The `LeaderDetectLeaver` action can start a "Kick" proposal if the proposal is currently "Null".
-It does this by exploring a different option for each item in the set `{ a, b }`.
+It does this by exploring a different option for each item in the set `{ b, c }`.
 Each item of that set that evalutes to `TRUE` in the following expression will be explored.
 If the member chosen from the set has "Left", then the proposal will switch to "Kick".
 
@@ -166,8 +166,8 @@ This spec only has a few behaviors:
   - `c` leaves, `b` leaves, the proposal moves to "Kick"
   - Any of the above, but stopping anywhere in the middle (called stuttering)
 
-Our full spec of course has many other things to worry about.
-It needs to capture who to kick, send and receive the appropriate messages to act on the proposal, handle arbitrary members, and handle them joining in the first place.
+Our full spec has many other things to worry about.
+It needs to capture who to kick, send and receive the appropriate messages to act on the proposal, handle arbitrary members, and handle members joining in the first place.
 However, this simplified part of the spec illustrates start to finish how we can define multiple stateful entities changing to new states based on their current states.
 
 ## More Advanced Syntax
@@ -180,7 +180,7 @@ MemberSet == [ user : Users, id : InviteIds \union { Null } ]
 
 ### Initialized Functions
 
-Functions act more or less like `Map k`, where `k` is some set..
+Functions act more or less like `Map k`, where `k` is some set.
 We can initialize one with all values defined by whatever we'd like:
 
 ```tla
@@ -235,21 +235,21 @@ Cleverness here allows us to make strong guarantees about our specification with
 Assumptions help us clarify invariants around constants.
 These help clarify things to a reader and ensure we setup our Constants correctly when model checking.
 
-### Fairness
-
-An advanced topic that describes what options must _NOT_ be ignored given that they are infinitely available.
-You might try to stay awake for some time, but you can't avoid it forever: that's fairness.
-We only need this for liveness properties, not for safety.
-
 ### Invariants
 
 Our invariants define our safety properties.
 We mathematically specify what states are impossible.
 The model checker then validates that these states never manifest.
 
+### Fairness
+
+An advanced topic that describes what options must _NOT_ be ignored given that they are infinitely available.
+You might try to stay awake for some time, but you can't avoid it forever: that's fairness.
+We only need this for liveness properties, not for safety.
+
 ### Liveness Properties
 
-Liveness properties define state that we must eventually see, possibly given pre-conditions.
+An advanced topic, liveness properties define state that we must eventually see, possibly given pre-conditions.
 These are harder to specify, but are occasionally critical to a specification.
 The model checker then validates that these states are always reached via all possible paths.
 
@@ -297,7 +297,7 @@ LeaderDetectLeaver ==
                 , awaiting_response |-> new_group
                 , kicked |-> { member.id }
                 ]
-            /\ UNCHANGED <<group_perceptions, ...>
+            /\ UNCHANGED <<group_perceptions, ...>>
 
 Next ==
   ...
@@ -314,7 +314,7 @@ This member is a record, that has both an `id` and a `user` property.
 If the member doesn't believe the `Leader` is in the group, this means that they have deleted the queue by which the `Leader` can send the messages.
 The `Leader` would likely discover this when trying to send a message to the member.
 The `Leader` defines the new group, which is all the current members, but without the member that left.
-The `Leader` then sets the `proposal` to a record that hold the proposal type, who needs to ack the proposal, and who is being removed.
+The `Leader` then sets the `proposal` to a record that holds the proposal type, who needs to ack the proposal, and who is being removed.
 The `kicked` field is still a set because we _can_ kick multiple members at once, even if we don't here.
 
 This action uses the current state of `group_perceptions`, but does not change it, so we finally must specify as such.
@@ -323,21 +323,21 @@ This action uses the current state of `group_perceptions`, but does not change i
 
 ### Messaging
 
-Messaging in this specification is very simple: it is a set of messages that have ever been sent.
+Messaging in this specification is very simple: it is the set of all messages that have ever been sent.
 Senders just add a new message into the set.
-Receivers simply match against messages in the set and respond to any message that matches.
+Receivers simply search through the messages in the set and respond to any message intended for it.
 
 Messages are not removed when received, they are instead removed randomly.
 This is because we don't care about the most likely scenario: we care about all possible scenarios equally.
 Removing them randomly captures all possible scenarios: the message is never delivered (immediately removed), the message is received then dropped (happy path), the message is received many times (retries and etc).
 
 This model is pessimistic in that messages can be sent and received in any order.
-It is both better to be pessimistic and in my experience protocols that guarantee order don't usually provide ordering at the application level.
+It is safer to be pessimistic as (in my experience) protocols that guarantee order often don't guarantee ordering at the application level.
 
-Because model checking ever possible combo of every possible message ever sent is quite large, we cap the requests.
-We must be careful that we don't set the cap too low, or we will miss interesting combinations of delayed and retried requests that can cause issues.
+Because model checking explores every possible combination of every possible message ever sent, we cap the requests to limit state explosion.
+We must be careful that we don't set the cap too low, or we will miss interesting combinations of delayed and retried requests that can otherwise cause issues.
 
-When _only_ checking safety properties, we don't even remove messages from the set, because we only care about what's _possible_.
+When _only_ checking safety properties, we don't remove messages from the set, because we only care about what's _possible_.
 Dropping messages only impacts liveness properties (e.i. if an important message is lost forever without retries).
 
 ### Abstract Sets
@@ -361,7 +361,7 @@ Those are details we want to ignore; we want to validate our algorithm works ass
 
 Consider the `Hash` function.
 This function doesn't choose any algorithm or actually deal with scrambling the bytes at all.
-What is important about an ideal `Hash` function is that we can compare for equality of two hashes, that only the same inputs yeild equal hashes, and that hashes are not reversable.
+What is important about an ideal `Hash` function is that we can compare equality of two hashes, that only the same inputs yeild equal hashes, and that hashes are not reversable.
 
 To do this, we define it simply as `Hash(x) == [ original |-> x ]`.
 Our first two properties are likely more intuitive.
@@ -426,7 +426,7 @@ Concretely, this would be done via additive secret splitting via XOR.
 Secret splitting is specified absractly, much like hashing and encryption (recommended to read those first).
 All shares are always required to reconstruct the secret in this specification, so there is no need to describe details for `k/n` reconstruction, where `k /= n`.
 
-A share is represented as a record that contains an identifier for the share, the set of identifier for the other shares, and the secret value itself.
+A share is represented as a record that contains an identifier for the share, the set of identifiers used in other shares (including itself), and the secret value.
 Since this specification never splits a secret more than one time, no other data is required to ensure uniqueness, but notably, the description here doesn't quite generalize.
 
 Identifiers can be anything, including numbers, as one might traditionally expect.
@@ -460,7 +460,7 @@ Type systems are advantageous in that they disqualify invalid programs.
 The downside of types is that they _disqualify_ valid programs.
 Something like Haskell offers a very advanced type system frequently allows us to disqualify many invalid programs without too much headache in convincing the compiler not to disqualify something that is in fact valid.
 
-With TLA+, we can eschew it all together, because we can check _any invariant we want_ at _every possible state_, including that a value belongs to a particular set (synonymous to type here).
-This lets us not have to do any extra work around types, but allows us to check them frequently.
+With TLA+, we can eschew it all together, because we can check _any invariant we want_ at _every possible state_, including that a value belongs to a particular set (synonymous to types here).
+This lets us not have to do any extra work around types, but allows us to check them easily.
 Normally, it is not possible to validate every possible state of a program; types are an alternative that do quite nicely.
 But in TLA+ they are redundant.
