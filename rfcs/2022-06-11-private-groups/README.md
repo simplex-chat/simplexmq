@@ -342,6 +342,107 @@ They just are: we don't care about the details.
 This also lets us come up with a definition that is small and convenient when model checking.
 In the case of `InviteId`, we just say it is `{ 0, 1 }` or something similar.
 We can then prove our invariants are correct, under that assumption.
+### Crypto
+
+In this spec, we have a couple of cryptographic operations.
+We treat these totally abstractly and consider them ideal versions of themselves.
+So we don't reference any specific cryptographic algorithms or deal with the details of byte strings or anything like that.
+Those are details we want to ignore; we want to validate our algorithm works assuming our cryptographic functions are ideal and not fiddle with thir inner workings.
+
+#### Hashing
+
+Consider the `Hash` function.
+This function doesn't choose any algorithm or actually deal with scrambling the bytes at all.
+What is important about an ideal `Hash` function is that we can compare for equality of two hashes, that only the same inputs yeild equal hashes, and that hashes are not reversable.
+
+To do this, we define it simply as `Hash(x) == [ original |-> x ]`.
+Our first two properties are likely more intuitive.
+Since this function just wraps the original value, two different original values will never match.
+This is a perfect hash function in that they will _never_ match; we don't even have to consider The Birthday Problem for collisions.
+
+##### Comparison
+
+This at first may seem like a deviation from the TLA+/TLC ethos.
+We typically _do_ care about the unlikely cases--so much so that we ignore probabilities all together and only consider possibilities equally.
+The reality is that conclusions are fairly obvious and unhelpful when we consider collisions: things go quite badly.
+
+To make a meaningful conclusion about our specification, we must caveat it with "assuming hash collisions do not occur, then..."
+Next, we can be rigorous about this assumption using _different_ tools.
+TLA+ may not consider probabilities, but we can use statistical analysis to inform why it's reasonable to make such assumptions.
+And from here, we can see how this lines up with the TLA+/TLC ethos: by being abstract, there is frequently work to be done in _how_ a spec is implemented in a way that reasonably satisfies it.
+
+##### Reverse-ability
+
+Our last property may seem very odd: our function seems _very_ easily reversable.
+And it is true, that it is extremely easy for a spec author to write TLA+ that reverses it.
+However, it is very easy to write TLA+ where anything happens!
+The goal of TLA+ is to model everything that _can_ happen.
+Anything not specified _cannot_ happen.
+
+If at some point an action reverses a hash, we end up with a sort of contradition on our hands.
+Either the spec is unimplementable with the hash function we intend to use (since we wanted one of the unreversable ones, right?) or the spec can be implemented via an otherwise useless hash function, which is quite odd.
+
+This ultimately informs a challenge in modeling attackers: they can only do what we specify they can do.
+From that standpoint, we need to be very broad, as to not omit possibliities, but we need to be precise enough that we draw meaningful conclusions beyond, "they always win."
+
+#### Symmetric Encryption
+
+Encryption is just a slightly extended case of hashing (so read that section first).
+Not only does the abstract representation of the ciphertext carry the original plaintext, it also carries the key used to encrypt it.
+This key is again abstract, it can be anything!
+As long as two keys are equal, they result in the same ciphertext.
+
+The ciphertext can be used to recover the plaintext only if the original key is provided.
+The ciphertext isn't reversable otherwise, simply because we never specify that!
+
+##### Secrets
+
+Secrets for symmetric key encryption are also treated abstractly.
+Rather than treating them as random bytes, we want them to be something that is only available to a) the original generator b) anyone who has seen them before.
+
+To do this, we represent the key as a record that contains the user and the purpose.
+We specify that the user can construct one of their own keys for any purpose at any time.
+This represents either generation or retreival from storage.
+This eliminates the need to explicitly model the state of remembering secrets.
+This also means that entities must commit to their secrets; users must permanently store their choices of secret before using them.
+
+Other users need to explicitly store secrets they see in a variable in order to use them in the future.
+
+By not specifying any way that a user could construct a secret they have not seen or could not generate, we satisfy our goals.
+
+#### Secret Splitting
+
+The algorithm presented here depends on secret splitting to acheive its goals.
+Concretely, this would be done via additive secret splitting via XOR.
+
+Secret splitting is specified absractly, much like hashing and encryption (recommended to read those first).
+All shares are always required to reconstruct the secret in this specification, so there is no need to describe details for `k/n` reconstruction, where `k /= n`.
+
+A share is represented as a record that contains an identifier for the share, the set of identifier for the other shares, and the secret value itself.
+Since this specification never splits a secret more than one time, no other data is required to ensure uniqueness, but notably, the description here doesn't quite generalize.
+
+Identifiers can be anything, including numbers, as one might traditionally expect.
+We can split the string "SECRET" into three shares via:
+
+```tla
+Shares ==
+    { [ share_id |-> 0, share_ids |-> { 0, 1, 2 }, secret |-> "SECRET" ]
+    , [ share_id |-> 1, share_ids |-> { 0, 1, 2 }, secret |-> "SECRET" ]
+    , [ share_id |-> 2, share_ids |-> { 0, 1, 2 }, secret |-> "SECRET" ]
+    }
+```
+
+By passing these into the `Combine` helper function, we get back the original secret (wrapped in a Maybe).
+
+In this spec, the share identifiers aren't actually numbers, since that would require us to map the number to the intended recipient.
+Instead, the recipient _is_ the share identifier.
+All intended recipients then become the set of share identifiers expected to determine the original secret.
+
+The spec describes that share be conjured up at any time by the original generator, which indicates they are either constructed for the first time, or they are retreived from some storage.
+This also means that entities must commit to how a secret is split; users must permanently store their choices of how to split a secret before distributing them.
+
+Other entities must explicitly store shares they see in variables.
+Once any entity has the full set of shares, they can reconstruct the original secret.
 
 ## Misc
 
