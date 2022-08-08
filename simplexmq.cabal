@@ -104,23 +104,23 @@ library
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.10.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite >=0.27 && <0.30
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
-    , generic-random >=1.3 && <1.5
+    , generic-random >=1.3 && <1.6
     , http-types ==0.12.*
     , http2 ==3.0.*
     , ini ==0.4.*
     , iso8601-time ==0.1.*
-    , memory ==0.15.*
+    , memory >=0.15 && <0.18
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
@@ -131,9 +131,9 @@ library
     , socks ==0.6.*
     , sqlite-simple ==0.4.*
     , stm ==2.5.*
-    , template-haskell ==2.16.*
+    , template-haskell >=2.16 && <2.19
     , text ==1.2.*
-    , time ==1.9.*
+    , time >=1.9 && <1.12
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
@@ -165,23 +165,23 @@ executable ntf-server
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.10.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite >=0.27 && <0.30
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
-    , generic-random >=1.3 && <1.5
+    , generic-random >=1.3 && <1.6
     , http-types ==0.12.*
     , http2 ==3.0.*
     , ini ==0.4.*
     , iso8601-time ==0.1.*
-    , memory ==0.15.*
+    , memory >=0.15 && <0.18
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
@@ -193,9 +193,9 @@ executable ntf-server
     , socks ==0.6.*
     , sqlite-simple ==0.4.*
     , stm ==2.5.*
-    , template-haskell ==2.16.*
+    , template-haskell >=2.16 && <2.19
     , text ==1.2.*
-    , time ==1.9.*
+    , time >=1.9 && <1.12
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
@@ -227,23 +227,23 @@ executable smp-agent
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.10.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite >=0.27 && <0.30
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
-    , generic-random >=1.3 && <1.5
+    , generic-random >=1.3 && <1.6
     , http-types ==0.12.*
     , http2 ==3.0.*
     , ini ==0.4.*
     , iso8601-time ==0.1.*
-    , memory ==0.15.*
+    , memory >=0.15 && <0.18
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
@@ -255,9 +255,9 @@ executable smp-agent
     , socks ==0.6.*
     , sqlite-simple ==0.4.*
     , stm ==2.5.*
-    , template-haskell ==2.16.*
+    , template-haskell >=2.16 && <2.19
     , text ==1.2.*
-    , time ==1.9.*
+    , time >=1.9 && <1.12
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
@@ -289,23 +289,23 @@ executable smp-server
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.10.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite >=0.27 && <0.30
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
-    , generic-random >=1.3 && <1.5
+    , generic-random >=1.3 && <1.6
     , http-types ==0.12.*
     , http2 ==3.0.*
     , ini ==0.4.*
     , iso8601-time ==0.1.*
-    , memory ==0.15.*
+    , memory >=0.15 && <0.18
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
@@ -317,9 +317,9 @@ executable smp-server
     , socks ==0.6.*
     , sqlite-simple ==0.4.*
     , stm ==2.5.*
-    , template-haskell ==2.16.*
+    , template-haskell >=2.16 && <2.19
     , text ==1.2.*
-    , time ==1.9.*
+    , time >=1.9 && <1.12
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , tls >=1.6.0 && <1.7
@@ -368,25 +368,25 @@ test-suite smp-server-test
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , bytestring ==0.10.*
+    , bytestring >=0.10 && <0.12
     , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , cryptonite >=0.27 && <0.30
+    , cryptonite >=0.27 && <0.31
     , cryptostore ==0.2.*
     , data-default ==0.7.*
     , direct-sqlite ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
-    , generic-random >=1.3 && <1.5
+    , generic-random >=1.3 && <1.6
     , hspec ==2.7.*
     , hspec-core ==2.7.*
     , http-types ==0.12.*
     , http2 ==3.0.*
     , ini ==0.4.*
     , iso8601-time ==0.1.*
-    , memory ==0.15.*
+    , memory >=0.15 && <0.18
     , mtl ==2.2.*
     , network >=3.1.2.7 && <3.2
     , network-transport ==0.5.*
@@ -398,9 +398,9 @@ test-suite smp-server-test
     , socks ==0.6.*
     , sqlite-simple ==0.4.*
     , stm ==2.5.*
-    , template-haskell ==2.16.*
+    , template-haskell >=2.16 && <2.19
     , text ==1.2.*
-    , time ==1.9.*
+    , time >=1.9 && <1.12
     , time-compat ==1.9.*
     , time-manager ==0.0.*
     , timeit ==2.0.*
