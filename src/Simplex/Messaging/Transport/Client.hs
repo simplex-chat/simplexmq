@@ -1,3 +1,6 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Transport.Client
@@ -18,7 +21,11 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Default (def)
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
+import Data.String
+import Data.Word (Word8)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import Data.X509.Validation (Fingerprint (..))
@@ -28,13 +35,50 @@ import Network.Socket
 import Network.Socks5
 import qualified Network.TLS as T
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
+import Simplex.Messaging.Util (bshow, (<$?>))
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
+
+data TransportHost = THDomainName HostName | THIPv4 (Word8, Word8, Word8, Word8) | THViaSocks OnionHost
+  deriving (Eq, Ord, Show)
+
+newtype OnionHost = OnionHost ByteString
+  deriving (Eq, Ord, Show)
+
+instance Encoding TransportHost where
+  smpEncode = smpEncode . strEncode
+  smpP = parseAll strP <$?> smpP
+
+instance StrEncoding TransportHost where
+  strEncode = \case
+    THIPv4 (a1, a2, a3, a4) -> B.intercalate "." $ map bshow [a1, a2, a3, a4]
+    THViaSocks (OnionHost host) -> host
+    THDomainName host -> B.pack host
+  strP =
+    A.choice
+      [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
+        THViaSocks . OnionHost <$> ((<>) <$> A.takeTill (== '.') <*> A.string ".onion"),
+        THDomainName . B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
+      ]
+    where
+      ipNum = A.decimal <* A.char '.'
+
+newtype TransportHosts = TransportHosts {thList :: NonEmpty TransportHost}
+
+instance StrEncoding TransportHosts where
+  strEncode = strEncodeList . L.toList . thList
+  strP = TransportHosts . L.fromList <$> strP `A.sepBy1'` A.char ','
+
+instance IsString TransportHost where fromString = parseString strDecode
+
+instance IsString (NonEmpty TransportHost) where fromString = parseString strDecode
 
 -- | Connect to passed TCP host:port and pass handle to the client.
 runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a

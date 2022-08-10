@@ -658,6 +658,25 @@ instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+-- legacyEncodeServer :: ProtocolServer p -> ByteString
+-- legacyEncodeServer ProtocolServer {host, port, keyHash} =
+--   smpEncode (L.head host, port, keyHash)
+
+-- legasyServerP :: forall p. ProtocolTypeI p => Parser (ProtocolServer p)
+-- legasyServerP = do
+--   (h, port, keyHash) <- smpP
+--   pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash}
+
+-- legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> ByteString
+-- legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
+--   strEncodeServer scheme (strEncode $ L.head host) port keyHash
+
+-- strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> ByteString
+-- strEncodeServer scheme host port keyHash =
+--   strEncode scheme <> "://" <> strEncode keyHash <> "@" <> host <> portStr
+--   where
+--     portStr = B.pack $ if null port then "" else ':' : port
+
 data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
 

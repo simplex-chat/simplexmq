@@ -610,9 +610,10 @@ data SMPQueueAddress = SMPQueueAddress
   deriving (Eq, Show)
 
 instance StrEncoding SMPQueueUri where
-  -- v1 uses short SMP queue URI format
-  strEncode (SMPQueueUri _vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey = k}) =
-    strEncode srv <> "/" <> strEncode qId <> "#" <> strEncode k
+  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey}) =
+    strEncode srv <> "/" <> strEncode qId <> "#/?" <> queryStr
+    where
+      queryStr = strEncode $ QSP QEscape [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
   strP = do
     smpServer <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
