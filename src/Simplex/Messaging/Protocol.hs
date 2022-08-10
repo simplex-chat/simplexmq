@@ -110,6 +110,9 @@ module Simplex.Messaging.Protocol
     _smpP,
     encodeRcvMsgBody,
     clientRcvMsgBodyP,
+    legacyEncodeServer,
+    legacyServerP,
+    legacyStrEncodeServer,
 
     -- * TCP transport functions
     tPut,
@@ -145,12 +148,13 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, (<$?>))
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
 
 currentSMPClientVersion :: Version
-currentSMPClientVersion = 1
+currentSMPClientVersion = 2
 
 supportedSMPClientVRange :: VersionRange
 supportedSMPClientVRange = mkVersionRange 1 currentSMPClientVersion
@@ -554,14 +558,14 @@ instance Encoding ClientMessage where
 
 type SMPServer = ProtocolServer 'PSMP
 
-pattern SMPServer :: HostName -> ServiceName -> C.KeyHash -> ProtocolServer 'PSMP
+pattern SMPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PSMP
 pattern SMPServer host port keyHash = ProtocolServer SPSMP host port keyHash
 
 {-# COMPLETE SMPServer #-}
 
 type NtfServer = ProtocolServer 'PNTF
 
-pattern NtfServer :: HostName -> ServiceName -> C.KeyHash -> ProtocolServer 'PNTF
+pattern NtfServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PNTF
 pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
 
 {-# COMPLETE NtfServer #-}
@@ -629,7 +633,7 @@ instance ProtocolTypeI 'PNTF where protocolTypeI = SPNTF
 -- | server location and transport key digest (hash).
 data ProtocolServer p = ProtocolServer
   { scheme :: SProtocolType p,
-    host :: HostName,
+    host :: NonEmpty TransportHost,
     port :: ServiceName,
     keyHash :: C.KeyHash
   }
@@ -647,35 +651,38 @@ instance ProtocolTypeI p => Encoding (ProtocolServer p) where
 
 instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
   strEncode ProtocolServer {scheme, host, port, keyHash} =
-    strEncode scheme <> "://" <> strEncode keyHash <> "@" <> strEncode (SrvLoc host port)
+    strEncodeServer scheme (strEncode host) port keyHash
   strP = do
     scheme <- strP <* "://"
     keyHash <- strP <* A.char '@'
-    SrvLoc host port <- strP
+    TransportHosts host <- strP
+    port <- portP <|> pure ""
     pure ProtocolServer {scheme, host, port, keyHash}
+    where
+      portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
 instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
--- legacyEncodeServer :: ProtocolServer p -> ByteString
--- legacyEncodeServer ProtocolServer {host, port, keyHash} =
---   smpEncode (L.head host, port, keyHash)
+legacyEncodeServer :: ProtocolServer p -> ByteString
+legacyEncodeServer ProtocolServer {host, port, keyHash} =
+  smpEncode (L.head host, port, keyHash)
 
--- legasyServerP :: forall p. ProtocolTypeI p => Parser (ProtocolServer p)
--- legasyServerP = do
---   (h, port, keyHash) <- smpP
---   pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash}
+legacyServerP :: forall p. ProtocolTypeI p => Parser (ProtocolServer p)
+legacyServerP = do
+  (h, port, keyHash) <- smpP
+  pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash}
 
--- legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> ByteString
--- legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
---   strEncodeServer scheme (strEncode $ L.head host) port keyHash
+legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> ByteString
+legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
+  strEncodeServer scheme (strEncode $ L.head host) port keyHash
 
--- strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> ByteString
--- strEncodeServer scheme host port keyHash =
---   strEncode scheme <> "://" <> strEncode keyHash <> "@" <> host <> portStr
---   where
---     portStr = B.pack $ if null port then "" else ':' : port
+strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> ByteString
+strEncodeServer scheme host port keyHash =
+  strEncode scheme <> "://" <> strEncode keyHash <> "@" <> host <> portStr
+  where
+    portStr = B.pack $ if null port then "" else ':' : port
 
 data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)

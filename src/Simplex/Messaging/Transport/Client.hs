@@ -10,6 +10,9 @@ module Simplex.Messaging.Transport.Client
     defaultSMPPort,
     defaultSocksProxy,
     SocksProxy,
+    TransportHost (..),
+    TransportHosts (..),
+    TransportHosts_ (..),
   )
 where
 
@@ -76,24 +79,37 @@ instance StrEncoding TransportHosts where
   strEncode = strEncodeList . L.toList . thList
   strP = TransportHosts . L.fromList <$> strP `A.sepBy1'` A.char ','
 
+newtype TransportHosts_ = TransportHosts_ {thList_ :: [TransportHost]}
+
+instance StrEncoding TransportHosts_ where
+  strEncode = strEncodeList . thList_
+  strP = TransportHosts_ <$> strP `A.sepBy'` A.char ','
+
 instance IsString TransportHost where fromString = parseString strDecode
 
 instance IsString (NonEmpty TransportHost) where fromString = parseString strDecode
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> NonEmpty TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
-runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksProxy -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ socksProxy_ host port keyHash keepAliveOpts client = do
-  let clientParams = mkTLSClientParams tlsParams caStore_ host port keyHash
-      connectTCP = maybe connectTCPClient connectSocksClient socksProxy_
-  c <- liftIO $ connectTLSClient connectTCP host port clientParams keepAliveOpts
+runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksProxy -> NonEmpty TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTLSTransportClient tlsParams caStore_ socksProxy_ (pHost :| _) port keyHash keepAliveOpts client = do
+  let clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash
+      connectTCP = maybe (connectTCPClient hostName) (`connectSocksClient` hostAddr) socksProxy_
+  c <- liftIO $ do
+    sock <- connectTCP port
+    connectTLSClient sock clientParams keepAliveOpts
   client c `E.finally` liftIO (closeConnection c)
+  where
+    hostName = B.unpack $ strEncode pHost
+    hostAddr = case pHost of
+      THViaSocks (OnionHost host) -> SocksAddrDomainName host
+      THDomainName host -> SocksAddrDomainName $ B.pack host
+      THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
 
-connectTLSClient :: forall c. Transport c => (HostName -> ServiceName -> IO Socket) -> HostName -> ServiceName -> T.ClientParams -> Maybe KeepAliveOpts -> IO c
-connectTLSClient tcpClient host port clientParams keepAliveOpts = do
-  sock <- tcpClient host port
+connectTLSClient :: forall c. Transport c => Socket -> T.ClientParams -> Maybe KeepAliveOpts -> IO c
+connectTLSClient sock clientParams keepAliveOpts = do
   mapM_ (setSocketKeepAlive sock) keepAliveOpts
   ctx <- connectTLS clientParams sock
   getClientConnection ctx
@@ -123,10 +139,10 @@ connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
 defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
 
-connectSocksClient :: SocksProxy -> HostName -> ServiceName -> IO Socket
-connectSocksClient (SocksProxy addr) host _port = do
+connectSocksClient :: SocksProxy -> SocksHostAddress -> ServiceName -> IO Socket
+connectSocksClient (SocksProxy addr) hostAddr _port = do
   let port = if null _port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe _port
-  fst <$> socksConnect (defaultSocksConf addr) (SocksAddress (SocksAddrDomainName $ B.pack host) port)
+  fst <$> socksConnect (defaultSocksConf addr) (SocksAddress hostAddr port)
 
 defaultSocksHost :: HostAddress
 defaultSocksHost = tupleToHostAddress (127, 0, 0, 1)

@@ -117,6 +117,7 @@ import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -141,13 +142,18 @@ import Simplex.Messaging.Protocol
     MsgFlags,
     MsgId,
     NMsgMeta,
+    ProtocolServer (..),
     SMPServer,
     SndPublicVerifyKey,
     SrvLoc (..),
+    legacyEncodeServer,
+    legacyServerP,
+    legacyStrEncodeServer,
     pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport.Client (TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -576,10 +582,13 @@ data SMPQueueInfo = SMPQueueInfo {clientVersion :: Version, queueAddress :: SMPQ
   deriving (Eq, Show)
 
 instance Encoding SMPQueueInfo where
-  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}) =
-    smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey})
+    | clientVersion > 1 = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+    | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
   smpP = do
-    (clientVersion, smpServer, senderId, dhPublicKey) <- smpP
+    clientVersion <- smpP
+    smpServer <- if clientVersion > 1 then smpP else legacyServerP
+    (senderId, dhPublicKey) <- smpP
     pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
@@ -610,23 +619,29 @@ data SMPQueueAddress = SMPQueueAddress
   deriving (Eq, Show)
 
 instance StrEncoding SMPQueueUri where
-  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey}) =
-    strEncode srv <> "/" <> strEncode qId <> "#/?" <> queryStr
+  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey})
+    | minVersion vr > 1 = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
+    | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
-      queryStr = strEncode $ QSP QEscape [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
+      query = strEncode . QSP QEscape
+      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
+      srvParam = [("srv", strEncode $ TransportHosts_ hs) | length hs > 0]
+      hs = L.tail $ host srv
   strP = do
-    smpServer <- strP <* A.char '/'
+    srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
-    (vr, dhPublicKey) <- unversioned <|> versioned
+    (vr, hs, dhPublicKey) <- unversioned <|> versioned
+    let smpServer = srv {host = h :| host <> hs}
     pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
     where
-      unversioned = (SMP.supportedSMPClientVRange,) <$> strP <* A.endOfInput
+      unversioned = (SMP.supportedSMPClientVRange,[],) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP
         vr <- queryParam "v" query
         dhKey <- maybe (queryParam "dh" query) pure dhKey_
-        pure (vr, dhKey)
+        hs_ <- queryParam_ "srv" query
+        pure (vr, maybe [] thList_ hs_, dhKey)
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation

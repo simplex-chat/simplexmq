@@ -28,3 +28,9 @@ queryParam name (QSP _ q) =
   case find ((== name) . fst) q of
     Just (_, p) -> either fail pure $ parseAll strP p
     _ -> fail $ "no qs param " <> B.unpack name
+
+queryParam_ :: StrEncoding a => ByteString -> QueryStringParams -> Parser (Maybe a)
+queryParam_ name (QSP _ q) =
+  case find ((== name) . fst) q of
+    Just (_, p) -> either fail pure $ parseAll strP p
+    _ -> pure Nothing

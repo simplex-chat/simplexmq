@@ -24,6 +24,7 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import GHC.Generics (Generic)
 import Network.HTTP.Types (Status)
@@ -51,7 +52,7 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 
-testHost :: HostName
+testHost :: NonEmpty TransportHost
 testHost = "localhost"
 
 ntfTestPort :: ServiceName

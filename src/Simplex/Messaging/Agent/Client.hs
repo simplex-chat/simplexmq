@@ -101,6 +101,7 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
@@ -567,7 +568,7 @@ logServer dir AgentClient {clientId} srv qId cmdStr =
 
 showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
-  B.pack $ host <> if null port then "" else ':' : port
+  strEncode host <> B.pack (if null port then "" else ':' : port)
 
 logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs

@@ -104,6 +104,8 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.List (find, foldl')
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -129,6 +131,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
 import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NtfServer, ProtocolServer (..), RcvNtfDhSecret, pattern NtfServer)
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -984,6 +987,10 @@ instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . s
 instance ToField [SMPQueueInfo] where toField = toField . smpEncodeList
 
 instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP
+
+instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1 . strEncode . L.head
+
+instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ fmap (:| []) . eitherToMaybe . strDecode . encodeUtf8
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
