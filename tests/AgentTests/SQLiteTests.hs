@@ -161,6 +161,7 @@ rcvQueue1 =
       e2eDhSecret = Nothing,
       sndId = Just "2345",
       status = New,
+      smpClientVersion = 1,
       clientNtfCreds = Nothing
     }
 
@@ -173,7 +174,8 @@ sndQueue1 =
       sndPrivateKey = testPrivateSignKey,
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
-      status = New
+      status = New,
+      smpClientVersion = 1
     }
 
 testCreateRcvConn :: SpecWith SQLiteStore
@@ -305,7 +307,8 @@ testUpgradeRcvConnToDuplex =
               sndPrivateKey = testPrivateSignKey,
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
-              status = New
+              status = New,
+              smpClientVersion = 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType CSnd)
@@ -328,6 +331,7 @@ testUpgradeSndConnToDuplex =
               e2eDhSecret = Nothing,
               sndId = Just "4567",
               status = New,
+              smpClientVersion = 1,
               clientNtfCreds = Nothing
             }
     upgradeSndConnToDuplex db "conn1" anotherRcvQueue

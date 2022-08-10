@@ -32,7 +32,6 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent.Protocol
   ( -- * Protocol parameters
-    currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
     e2eEncUserMsgLength,
@@ -56,6 +55,7 @@ module Simplex.Messaging.Agent.Protocol
     SrvLoc (..),
     SMPQueueUri (..),
     SMPQueueInfo (..),
+    SMPQueueAddress (..),
     ConnectionMode (..),
     SConnectionMode (..),
     AConnectionMode (..),
@@ -572,20 +572,15 @@ type ConfirmationId = ByteString
 
 type InvitationId = ByteString
 
-data SMPQueueInfo = SMPQueueInfo
-  { clientVersion :: Version,
-    smpServer :: SMPServer,
-    senderId :: SMP.SenderId,
-    dhPublicKey :: C.PublicKeyX25519
-  }
+data SMPQueueInfo = SMPQueueInfo {clientVersion :: Version, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
 
 instance Encoding SMPQueueInfo where
-  smpEncode SMPQueueInfo {clientVersion, smpServer, senderId, dhPublicKey} =
+  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}) =
     smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
   smpP = do
     (clientVersion, smpServer, senderId, dhPublicKey) <- smpP
-    pure SMPQueueInfo {clientVersion, smpServer, senderId, dhPublicKey}
+    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
@@ -594,37 +589,37 @@ instance Encoding SMPQueueInfo where
 instance VersionI SMPQueueInfo where
   type VersionRangeT SMPQueueInfo = SMPQueueUri
   version = clientVersion
-  toVersionRangeT SMPQueueInfo {smpServer, senderId, dhPublicKey} vr =
-    SMPQueueUri {clientVRange = vr, smpServer, senderId, dhPublicKey}
+  toVersionRangeT (SMPQueueInfo _v addr) vr = SMPQueueUri vr addr
 
 instance VersionRangeI SMPQueueUri where
   type VersionT SMPQueueUri = SMPQueueInfo
   versionRange = clientVRange
-  toVersionT SMPQueueUri {smpServer, senderId, dhPublicKey} v =
-    SMPQueueInfo {clientVersion = v, smpServer, senderId, dhPublicKey}
+  toVersionT (SMPQueueUri _vr addr) v = SMPQueueInfo v addr
 
 -- | SMP queue information sent out-of-band.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
-data SMPQueueUri = SMPQueueUri
+data SMPQueueUri = SMPQueueUri {clientVRange :: VersionRange, queueAddress :: SMPQueueAddress}
+  deriving (Eq, Show)
+
+data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    clientVRange :: VersionRange,
     dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)
 
 instance StrEncoding SMPQueueUri where
   -- v1 uses short SMP queue URI format
-  strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVRange = _vr, dhPublicKey = k} =
+  strEncode (SMPQueueUri _vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey = k}) =
     strEncode srv <> "/" <> strEncode qId <> "#" <> strEncode k
   strP = do
     smpServer <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
     (vr, dhPublicKey) <- unversioned <|> versioned
-    pure SMPQueueUri {smpServer, senderId, clientVRange = vr, dhPublicKey}
+    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
     where
-      unversioned = (SMP.smpClientVRange,) <$> strP <* A.endOfInput
+      unversioned = (SMP.supportedSMPClientVRange,) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP

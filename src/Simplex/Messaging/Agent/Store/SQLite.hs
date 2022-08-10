@@ -1062,9 +1062,9 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status) VALUES (?,?,?,?,?,?,?,?,?,?);
+        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?);
     |]
-    (host server, port server, rcvId, connId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status)
+    ((host server, port server, rcvId, connId) :. (rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion))
 
 -- * createSndConn helpers
 
@@ -1074,9 +1074,9 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     dbConn
     [sql|
       INSERT INTO snd_queues
-        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status) VALUES (?,?,?,?,?, ?,?, ?,?);
+        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?);
     |]
-    (host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)
+    (host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion)
 
 -- * getConn helpers
 
@@ -1109,7 +1109,7 @@ getRcvQueueByConnId_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
+          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status, q.smp_client_version,
           q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
@@ -1117,12 +1117,13 @@ getRcvQueueByConnId_ dbConn connId =
       |]
       (Only connId)
   where
-    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
       let server = SMPServer host port keyHash
+          smpClientVersion = fromMaybe 1 smpClientVersion_
           clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
             (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
             _ -> Nothing
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, clientNtfCreds}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion, clientNtfCreds}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =
@@ -1130,16 +1131,16 @@ getSndQueueByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.smp_client_version
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)] =
+    sndQueue [(keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion)] =
       let server = SMPServer host port keyHash
-       in Just SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status}
+       in Just SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion}
     sndQueue _ = Nothing
 
 -- * updateRcvIds helpers
