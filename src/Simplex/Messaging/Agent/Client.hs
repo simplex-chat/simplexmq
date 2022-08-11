@@ -29,7 +29,7 @@ module Simplex.Messaging.Agent.Client
     getSubscriptions,
     sendConfirmation,
     sendInvitation,
-    RetryInterval (..),
+    temporaryAgentError,
     secureQueue,
     enableQueueNotifications,
     disableQueueNotifications,

@@ -69,6 +69,8 @@ data AgentConfig = AgentConfig
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
     reconnectInterval :: RetryInterval,
+    messageRetryInterval :: RetryInterval,
+    messageTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     ntfCron :: Word16,
     ntfWorkerDelay :: Int,
@@ -85,12 +87,18 @@ data AgentConfig = AgentConfig
 defaultReconnectInterval :: RetryInterval
 defaultReconnectInterval =
   RetryInterval
-    { initialInterval = second,
-      increaseAfter = 10 * second,
-      maxInterval = 10 * second
+    { initialInterval = 1_000000,
+      increaseAfter = 10_000000,
+      maxInterval = 10_000000
     }
-  where
-    second = 1_000_000
+
+defaultMessageRetryInterval :: RetryInterval
+defaultMessageRetryInterval =
+  RetryInterval
+    { initialInterval = 1_000000,
+      increaseAfter = 10_000000,
+      maxInterval = 60_000000
+    }
 
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
@@ -104,6 +112,8 @@ defaultAgentConfig =
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
       reconnectInterval = defaultReconnectInterval,
+      messageRetryInterval = defaultMessageRetryInterval,
+      messageTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
       ntfCron = 20, -- minutes
       ntfWorkerDelay = 100000, -- microseconds
