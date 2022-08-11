@@ -634,7 +634,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   AM_REPLY_ -> notifyDel msgId $ ERR e
                   AM_A_MSG_ -> notifyDel msgId $ MERR mId e
                 _
-                  | temporaryAgentError e -> do
+                  -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
+                  -- the message sending would be retried
+                  | temporaryAgentError e || e == BROKER HOST -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
                     ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySending loop)
                   | otherwise -> notifyDel msgId err

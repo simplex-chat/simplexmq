@@ -16,6 +16,7 @@ import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
+import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
@@ -55,9 +56,10 @@ testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
-testSMPClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
-testSMPClient client =
-  runTransportClient Nothing testHost testPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
+testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
+testSMPClient client = do
+  Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
+  runTransportClient Nothing useHost testPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
     liftIO (runExceptT $ smpClientHandshake h testKeyHash supportedSMPServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
@@ -126,10 +128,10 @@ withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 withSmpServer :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
 withSmpServer t = withSmpServerOn t testPort
 
-runSmpTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => (THandle c -> m a) -> m a
+runSmpTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => (THandle c -> m a) -> m a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
 
-runSmpTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => Int -> ([THandle c] -> m a) -> m a
+runSmpTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => Int -> ([THandle c] -> m a) -> m a
 runSmpTestN nClients test = withSmpServer (transport @c) $ run nClients []
   where
     run :: Int -> [THandle c] -> m a

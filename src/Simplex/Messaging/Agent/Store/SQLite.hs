@@ -105,7 +105,6 @@ import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.List (find, foldl')
 import Data.List.NonEmpty (NonEmpty (..))
-import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -988,9 +987,9 @@ instance ToField [SMPQueueInfo] where toField = toField . smpEncodeList
 
 instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP
 
-instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1 . strEncode . L.head
+instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1 . strEncode
 
-instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ fmap (:| []) . eitherToMaybe . strDecode . encodeUtf8
+instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x

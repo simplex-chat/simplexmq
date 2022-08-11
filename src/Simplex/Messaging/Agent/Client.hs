@@ -435,6 +435,7 @@ protocolClientError protocolError_ = \case
   PCEUnexpectedResponse _ -> BROKER UNEXPECTED
   PCEResponseTimeout -> BROKER TIMEOUT
   PCENetworkError -> BROKER NETWORK
+  PCEIncompatibleHost -> BROKER HOST
   PCETransportError e -> BROKER $ TRANSPORT e
   e@PCESignatureError {} -> INTERNAL $ show e
   e@PCEIOError {} -> INTERNAL $ show e

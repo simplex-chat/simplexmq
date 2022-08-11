@@ -827,6 +827,8 @@ data BrokerErrorType
     UNEXPECTED
   | -- | network error
     NETWORK
+  | -- | no compatible server host (e.g. onion when public is required, or vice versa)
+    HOST
   | -- | handshake or other transport error
     TRANSPORT {transportErr :: TransportError}
   | -- | command response timeout

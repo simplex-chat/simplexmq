@@ -1,6 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -123,7 +122,7 @@ sendRequest HTTP2Client {reqQ, config} req = do
 
 runHTTP2Client :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe KeepAliveOpts -> ((Request -> (Response -> IO ()) -> IO ()) -> IO ()) -> IO ()
 runHTTP2Client tlsParams caStore host port keepAliveOpts client =
-  runTLSTransportClient tlsParams caStore Nothing [THDomainName host] port Nothing keepAliveOpts $ \c ->
+  runTLSTransportClient tlsParams caStore Nothing (THDomainName host) port Nothing keepAliveOpts $ \c ->
     withTlsConfig c 16384 (`run` client)
   where
     run = H.run $ ClientConfig "https" (B.pack host) 20

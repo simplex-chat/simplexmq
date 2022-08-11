@@ -24,7 +24,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Default (def)
-import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
@@ -50,10 +49,10 @@ import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 
-data TransportHost = THDomainName HostName | THIPv4 (Word8, Word8, Word8, Word8) | THViaSocks OnionHost
-  deriving (Eq, Ord, Show)
-
-newtype OnionHost = OnionHost ByteString
+data TransportHost
+  = THIPv4 (Word8, Word8, Word8, Word8)
+  | THOnionHost ByteString
+  | THDomainName HostName
   deriving (Eq, Ord, Show)
 
 instance Encoding TransportHost where
@@ -63,12 +62,12 @@ instance Encoding TransportHost where
 instance StrEncoding TransportHost where
   strEncode = \case
     THIPv4 (a1, a2, a3, a4) -> B.intercalate "." $ map bshow [a1, a2, a3, a4]
-    THViaSocks (OnionHost host) -> host
+    THOnionHost host -> host
     THDomainName host -> B.pack host
   strP =
     A.choice
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
-        THViaSocks . OnionHost <$> ((<>) <$> A.takeTill (== '.') <*> A.string ".onion"),
+        THOnionHost <$> ((<>) <$> A.takeTill (== '.') <*> A.string ".onion"),
         THDomainName . B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
       ]
     where
@@ -91,32 +90,25 @@ instance IsString TransportHost where fromString = parseString strDecode
 instance IsString (NonEmpty TransportHost) where fromString = parseString strDecode
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> NonEmpty TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
-runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksProxy -> NonEmpty TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ socksProxy_ hosts@(h :| _) port keyHash keepAliveOpts client = do
-  let clientParams = mkTLSClientParams tlsParams caStore_ (B.unpack $ strEncode h) port keyHash
+runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksProxy -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTLSTransportClient tlsParams caStore_ socksProxy_ host port keyHash keepAliveOpts client = do
+  let clientParams = mkTLSClientParams tlsParams caStore_ (B.unpack $ strEncode host) port keyHash
       connectTCP = case socksProxy_ of
-        Just proxy -> connectSocksClient proxy . hostAddr $ findHost isSocksHost
-        _ -> connectTCPClient . B.unpack . strEncode $ findHost (not . isSocksHost)
+        Just proxy -> connectSocksClient proxy $ hostAddr host
+        _ -> connectTCPClient . B.unpack $ strEncode host
   c <- liftIO $ do
     sock <- connectTCP port
-    connectTLSClient sock clientParams keepAliveOpts
+    mapM_ (setSocketKeepAlive sock) keepAliveOpts
+    connectTLS clientParams sock >>= getClientConnection
   client c `E.finally` liftIO (closeConnection c)
   where
-    findHost cond = fromMaybe h $ find cond hosts
-    isSocksHost = \case THViaSocks _ -> True; _ -> False
     hostAddr = \case
-      THViaSocks (OnionHost host) -> SocksAddrDomainName host
-      THDomainName host -> SocksAddrDomainName $ B.pack host
       THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
-
-connectTLSClient :: forall c. Transport c => Socket -> T.ClientParams -> Maybe KeepAliveOpts -> IO c
-connectTLSClient sock clientParams keepAliveOpts = do
-  mapM_ (setSocketKeepAlive sock) keepAliveOpts
-  ctx <- connectTLS clientParams sock
-  getClientConnection ctx
+      THOnionHost h -> SocksAddrDomainName h
+      THDomainName h -> SocksAddrDomainName $ B.pack h
 
 connectTCPClient :: HostName -> ServiceName -> IO Socket
 connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err

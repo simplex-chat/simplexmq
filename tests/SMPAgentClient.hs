@@ -26,7 +26,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
-import Simplex.Messaging.Client (ProtocolClientConfig (..), defaultClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
@@ -58,12 +58,12 @@ testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
 smpAgentTest :: forall c. Transport c => TProxy c -> ARawTransmission -> IO ARawTransmission
 smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> tGetRaw h
 
-runSmpAgentTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => (c -> m a) -> m a
+runSmpAgentTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => (c -> m a) -> m a
 runSmpAgentTest test = withSmpServer t . withSmpAgent t $ testSMPAgentClient test
   where
     t = transport @c
 
-runSmpAgentServerTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => ((ThreadId, ThreadId) -> c -> m a) -> m a
+runSmpAgentServerTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => ((ThreadId, ThreadId) -> c -> m a) -> m a
 runSmpAgentServerTest test =
   withSmpServerThreadOn t testPort $
     \server -> withSmpAgentThreadOn t (agentTestPort, testPort, testDB) $
@@ -74,7 +74,7 @@ runSmpAgentServerTest test =
 smpAgentServerTest :: Transport c => ((ThreadId, ThreadId) -> c -> IO ()) -> Expectation
 smpAgentServerTest test' = runSmpAgentServerTest test' `shouldReturn` ()
 
-runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => [(ServiceName, ServiceName, String)] -> ([c] -> m a) -> m a
+runSmpAgentTestN :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => [(ServiceName, ServiceName, String)] -> ([c] -> m a) -> m a
 runSmpAgentTestN agents test = withSmpServer t $ run agents []
   where
     run :: [(ServiceName, ServiceName, String)] -> [c] -> m a
@@ -82,7 +82,7 @@ runSmpAgentTestN agents test = withSmpServer t $ run agents []
     run (a@(p, _, _) : as) hs = withSmpAgentOn t a $ testSMPAgentClientOn p $ \h -> run as (h : hs)
     t = transport @c
 
-runSmpAgentTestN_1 :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => Int -> ([c] -> m a) -> m a
+runSmpAgentTestN_1 :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => Int -> ([c] -> m a) -> m a
 runSmpAgentTestN_1 nClients test = withSmpServer t . withSmpAgent t $ run nClients []
   where
     run :: Int -> [c] -> m a
@@ -215,14 +215,15 @@ withSmpAgentOn t (port', smpPort', db') = withSmpAgentThreadOn t (port', smpPort
 withSmpAgent :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
 withSmpAgent t = withSmpAgentOn t (agentTestPort, testPort, testDB)
 
-testSMPAgentClientOn :: (Transport c, MonadUnliftIO m) => ServiceName -> (c -> m a) -> m a
+testSMPAgentClientOn :: (Transport c, MonadUnliftIO m, MonadFail m) => ServiceName -> (c -> m a) -> m a
 testSMPAgentClientOn port' client = do
-  runTransportClient Nothing agentTestHost port' (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h -> do
+  Right useHost <- pure $ chooseTransportHost defaultNetworkConfig agentTestHost
+  runTransportClient Nothing useHost port' (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h -> do
     line <- liftIO $ getLn h
     if line == "Welcome to SMP agent v" <> B.pack simplexMQVersion
       then client h
       else do
         error $ "wrong welcome message: " <> B.unpack line
 
-testSMPAgentClient :: (Transport c, MonadUnliftIO m) => (c -> m a) -> m a
+testSMPAgentClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (c -> m a) -> m a
 testSMPAgentClient = testSMPAgentClientOn agentTestPort

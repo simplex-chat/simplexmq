@@ -87,9 +87,9 @@ data AgentConfig = AgentConfig
 defaultReconnectInterval :: RetryInterval
 defaultReconnectInterval =
   RetryInterval
-    { initialInterval = 1_000000,
+    { initialInterval = 2_000000,
       increaseAfter = 10_000000,
-      maxInterval = 10_000000
+      maxInterval = 180_000000
     }
 
 defaultMessageRetryInterval :: RetryInterval
