@@ -113,7 +113,8 @@ CREATE TABLE conn_confirmations(
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
   ,
-  smp_reply_queues BLOB NULL
+  smp_reply_queues BLOB NULL,
+  smp_client_version INTEGER
 ) WITHOUT ROWID;
 CREATE TABLE conn_invitations(
   invitation_id BLOB NOT NULL PRIMARY KEY,

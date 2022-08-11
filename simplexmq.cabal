@@ -50,6 +50,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto

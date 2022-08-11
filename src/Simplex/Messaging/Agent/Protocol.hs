@@ -6,6 +6,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
@@ -95,6 +96,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeQueueStatus,
     queueStatusT,
     agentMessageType,
+    extraSMPServerHosts,
 
     -- * TCP transport functions
     tPut,
@@ -119,6 +121,8 @@ import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Map (Map)
+import qualified Data.Map as M
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
@@ -153,7 +157,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
-import Simplex.Messaging.Transport.Client (TransportHosts_ (..))
+import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -350,7 +354,9 @@ data SMPConfirmation = SMPConfirmation
     -- | sender's information to be associated with the connection, e.g. sender's profile information
     connInfo :: ConnInfo,
     -- | optional reply queues included in confirmation (added in agent protocol v2)
-    smpReplyQueues :: [SMPQueueInfo]
+    smpReplyQueues :: [SMPQueueInfo],
+    -- | SMP client version
+    smpClientVersion :: Version
   }
   deriving (Show)
 
@@ -578,6 +584,25 @@ type ConfirmationId = ByteString
 
 type InvitationId = ByteString
 
+extraSMPServerHosts :: Map TransportHost TransportHost
+extraSMPServerHosts =
+  M.fromList
+    [ ("smp4.simplex.im", "o5vmywmrnaxalvz6wi3zicyftgio6psuvyniis6gco6bp6ekl4cqj4id.onion"),
+      ("smp5.simplex.im", "jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"),
+      ("smp6.simplex.im", "bylepyau3ty4czmn77q4fglvperknl4bi2eb2fdy2bh4jxtf32kf73yd.onion"),
+      ("smp8.simplex.im", "beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion"),
+      ("smp9.simplex.im", "jssqzccmrcws6bhmn77vgmhfjmhwlyr3u7puw4erkyoosywgl67slqqd.onion"),
+      ("smp10.simplex.im", "rb2pbttocvnbrngnwziclp2f4ckjq65kebafws6g4hy22cdaiv5dwjqd.onion"),
+      ("ntf2.simplex.im", "ntg7jdjy2i3qbib3sykiho3enekwiaqg3icctliqhtqcg6jmoh6cxiad.onion")
+    ]
+
+updateSMPServerHosts :: SMPServer -> SMPServer
+updateSMPServerHosts srv@ProtocolServer {host} = case host of
+  h :| [] -> case M.lookup h extraSMPServerHosts of
+    Just h' -> srv {host = [h, h']}
+    _ -> srv
+  _ -> srv
+
 data SMPQueueInfo = SMPQueueInfo {clientVersion :: Version, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
 
@@ -587,7 +612,7 @@ instance Encoding SMPQueueInfo where
     | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
   smpP = do
     clientVersion <- smpP
-    smpServer <- if clientVersion > 1 then smpP else legacyServerP
+    smpServer <- if clientVersion > 1 then smpP else updateSMPServerHosts <$> legacyServerP
     (senderId, dhPublicKey) <- smpP
     pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}
 
@@ -631,10 +656,11 @@ instance StrEncoding SMPQueueUri where
     srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
     (vr, hs, dhPublicKey) <- unversioned <|> versioned
-    let smpServer = srv {host = h :| host <> hs}
+    let srv' = srv {host = h :| host <> hs}
+        smpServer = if maxVersion vr == 1 then updateSMPServerHosts srv' else srv'
     pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
     where
-      unversioned = (SMP.supportedSMPClientVRange,[],) <$> strP <* A.endOfInput
+      unversioned = (versionToRange 1,[],) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP

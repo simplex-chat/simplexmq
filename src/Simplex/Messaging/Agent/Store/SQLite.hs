@@ -128,7 +128,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NtfServer, ProtocolServer (..), RcvNtfDhSecret, pattern NtfServer)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NtfServer, ProtocolServer (..), RcvNtfDhSecret, SndPublicVerifyKey, pattern NtfServer)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
@@ -321,18 +321,20 @@ setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} stat
     |]
     [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
-setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> IO ()
-setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret =
+setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> Version -> IO ()
+setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
   DB.executeNamed
     db
     [sql|
       UPDATE rcv_queues
       SET e2e_dh_secret = :e2e_dh_secret,
-          status = :status
+          status = :status,
+          smp_client_version = :smp_client_version
       WHERE host = :host AND port = :port AND rcv_id = :rcv_id
     |]
     [ ":status" := Confirmed,
       ":e2e_dh_secret" := e2eDhSecret,
+      ":smp_client_version" := smpClientVersion,
       ":host" := host,
       ":port" := port,
       ":rcv_id" := rcvId
@@ -369,16 +371,28 @@ setRcvQueueNtfCreds db connId clientNtfCreds =
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} -> (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
       Nothing -> (Nothing, Nothing, Nothing, Nothing)
 
+type SMPConfirmationRow = (SndPublicVerifyKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe Version)
+
+smpConfirmation :: SMPConfirmationRow -> SMPConfirmation
+smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersion_) =
+  SMPConfirmation
+    { senderKey,
+      e2ePubKey,
+      connInfo,
+      smpReplyQueues = fromMaybe [] smpReplyQueues_,
+      smpClientVersion = fromMaybe 1 smpClientVersion_
+    }
+
 createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
-createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
+createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues, smpClientVersion}, ratchetState} =
   createWithRandomId gVar $ \confirmationId ->
     DB.execute
       db
       [sql|
         INSERT INTO conn_confirmations
-        (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, 0);
+        (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, smp_client_version, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0);
       |]
-      (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues)
+      (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues, smpClientVersion)
 
 acceptConfirmation :: DB.Connection -> ConfirmationId -> ConnInfo -> IO (Either StoreError AcceptedConfirmation)
 acceptConfirmation db confirmationId ownConnInfo = do
@@ -397,17 +411,17 @@ acceptConfirmation db confirmationId ownConnInfo = do
     DB.query
       db
       [sql|
-        SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues
+        SELECT conn_id, ratchet_state, sender_key, e2e_snd_pub_key, sender_conn_info, smp_reply_queues, smp_client_version
         FROM conn_confirmations
         WHERE confirmation_id = ?;
       |]
       (Only confirmationId)
   where
-    confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_) =
+    confirmation ((connId, ratchetState) :. confRow) =
       AcceptedConfirmation
         { confirmationId,
           connId,
-          senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
+          senderConf = smpConfirmation confRow,
           ratchetState,
           ownConnInfo
         }
@@ -418,17 +432,17 @@ getAcceptedConfirmation db connId =
     DB.query
       db
       [sql|
-        SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, own_conn_info
+        SELECT confirmation_id, ratchet_state, own_conn_info, sender_key, e2e_snd_pub_key, sender_conn_info, smp_reply_queues, smp_client_version
         FROM conn_confirmations
         WHERE conn_id = ? AND accepted = 1;
       |]
       (Only connId)
   where
-    confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_, ownConnInfo) =
+    confirmation ((confirmationId, ratchetState, ownConnInfo) :. confRow) =
       AcceptedConfirmation
         { confirmationId,
           connId,
-          senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
+          senderConf = smpConfirmation confRow,
           ratchetState,
           ownConnInfo
         }
