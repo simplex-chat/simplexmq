@@ -590,7 +590,7 @@ getPendingMsgQ c connId SndQueue {server, sndId} = do
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandshake} sq = do
   mq <- atomically $ getPendingMsgQ c connId sq
-  ri <- asks $ reconnectInterval . config
+  ri <- asks $ messageRetryInterval . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     msgId <- atomically $ readTQueue mq
@@ -621,12 +621,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                     -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     | duplexHandshake == Just True -> connErr
-                    | otherwise -> do
-                      helloTimeout <- asks $ helloTimeout . config
-                      currentTime <- liftIO getCurrentTime
-                      if diffUTCTime currentTime internalTs > helloTimeout
-                        then connErr
-                        else retrySending loop
+                    | otherwise ->
+                      ifM (msgExpired helloTimeout) connErr (retrySending loop)
                     where
                       connErr = case rq_ of
                         -- party initiating connection
@@ -635,10 +631,16 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                         _ -> connError msgId NOT_ACCEPTED
                   AM_REPLY_ -> notifyDel msgId $ ERR e
                   AM_A_MSG_ -> notifyDel msgId $ MERR mId e
-                SMP (SMP.CMD _) -> notifyDel msgId err
-                SMP SMP.LARGE_MSG -> notifyDel msgId err
-                SMP {} -> notify err >> retrySending loop
-                _ -> retrySending loop
+                _
+                  | temporaryAgentError e -> do
+                    let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
+                    ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySending loop)
+                  | otherwise -> notifyDel msgId err
+              where
+                msgExpired timeoutSel = do
+                  msgTimeout <- asks $ timeoutSel . config
+                  currentTime <- liftIO getCurrentTime
+                  pure $ diffUTCTime currentTime internalTs > msgTimeout
             Right () -> do
               case msgType of
                 AM_CONN_INFO -> do
