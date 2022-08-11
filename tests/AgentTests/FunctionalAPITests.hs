@@ -56,9 +56,7 @@ smpCfgV1 :: ProtocolClientConfig
 smpCfgV1 = (smpCfg agentCfg) {smpServerVRange = mkVersionRange 1 1}
 
 agentCfgV1 :: AgentConfig
--- agentCfgV1 = agentCfg {smpClientVRange = mkVersionRange 1 1, smpCfg = smpCfgV1}
--- agentCfgV1 = agentCfg {smpAgentVRange = mkVersionRange 1 1, smpClientVRange = mkVersionRange 1 1, smpCfg = smpCfgV1}
-agentCfgV1 = agentCfg {smpAgentVRange = mkVersionRange 1 1, smpCfg = smpCfgV1}
+agentCfgV1 = agentCfg {smpAgentVRange = mkVersionRange 1 1, smpClientVRange = mkVersionRange 1 1, smpCfg = smpCfgV1}
 
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
