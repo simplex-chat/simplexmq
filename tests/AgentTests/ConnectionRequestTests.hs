@@ -11,7 +11,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ProtocolServer (..), smpClientVRange)
+import Simplex.Messaging.Protocol (ProtocolServer (..), supportedSMPClientVRange)
 import Simplex.Messaging.Version
 import Test.Hspec
 
@@ -21,14 +21,22 @@ uri = "smp.simplex.im"
 srv :: SMPServer
 srv = SMPServer "smp.simplex.im" "5223" (C.KeyHash "\215m\248\251")
 
-queue :: SMPQueueUri
-queue =
-  SMPQueueUri
+queueAddr :: SMPQueueAddress
+queueAddr =
+  SMPQueueAddress
     { smpServer = srv,
       senderId = "\223\142z\251",
-      clientVRange = smpClientVRange,
       dhPublicKey = testDhKey
     }
+
+queueAddrNoPort :: SMPQueueAddress
+queueAddrNoPort = queueAddr {smpServer = srv {port = ""}}
+
+queue :: SMPQueueUri
+queue = SMPQueueUri supportedSMPClientVRange queueAddr
+
+queueV1 :: SMPQueueUri
+queueV1 = SMPQueueUri (mkVersionRange 1 1) queueAddr
 
 testDhKey :: C.PublicKeyX25519
 testDhKey = "MCowBQYDK2VuAyEAjiswwI3O/NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
@@ -44,7 +52,7 @@ connReqData =
   ConnReqUriData
     { crScheme = simplexChat,
       crAgentVRange = mkVersionRange 1 1,
-      crSmpQueues = [queue]
+      crSmpQueues = [queueV1]
     }
 
 testDhPubKey :: C.PublicKeyX448
@@ -65,40 +73,40 @@ connectionRequest12 :: AConnectionRequestUri
 connectionRequest12 =
   ACR SCMInvitation $
     CRInvitationUri
-      connReqData {crAgentVRange = supportedSMPAgentVRange, crSmpQueues = [queue, queue]}
+      connReqData {crAgentVRange = supportedSMPAgentVRange, crSmpQueues = [queueV1, queueV1]}
       testE2ERatchetParams13
 
 connectionRequestTests :: Spec
 connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
-      strEncode (queue :: SMPQueueUri) {smpServer = srv {port = ""}}
-        `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr
+      strEncode (queue :: SMPQueueUri) {queueAddress = queueAddrNoPort}
+        `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-2&dh=" <> testDhKeyStrUri
       strEncode queue {clientVRange = mkVersionRange 1 2}
-        `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr
+        `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-2&dh=" <> testDhKeyStrUri
     it "should parse SMP queue URIs" $ do
-      strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1&dh=" <> testDhKeyStr)
-        `shouldBe` Right (queue :: SMPQueueUri) {smpServer = srv {port = ""}}
+      strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-2&dh=" <> testDhKeyStr)
+        `shouldBe` Right (queue :: SMPQueueUri) {queueAddress = queueAddrNoPort}
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
-        `shouldBe` Right (queue :: SMPQueueUri) {smpServer = srv {port = ""}}
+        `shouldBe` Right (queueV1 :: SMPQueueUri) {queueAddress = queueAddrNoPort}
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
-        `shouldBe` Right queue
-      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1&extra_param=abc")
-        `shouldBe` Right queue
-      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?extra_param=abc&v=1-2&dh=" <> testDhKeyStr)
-        `shouldBe` Right queue {clientVRange = mkVersionRange 1 2}
+        `shouldBe` Right queueV1
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-2&extra_param=abc")
-        `shouldBe` Right queue {clientVRange = mkVersionRange 1 2}
+        `shouldBe` Right queue
+      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?extra_param=abc&v=1&dh=" <> testDhKeyStr)
+        `shouldBe` Right queueV1
+      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1&extra_param=abc")
+        `shouldBe` Right queueV1
     it "should serialize connection requests" $ do
       strEncode connectionRequest
-        `shouldBe` "https://simplex.chat/invitation#/?v=1&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
-        <> testDhKeyStrUri
+        `shouldBe` "https://simplex.chat/invitation#/?v=1&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
+        <> urlEncode True testDhKeyStrUri
         <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
       strEncode connectionRequest12
-        `shouldBe` "https://simplex.chat/invitation#/?v=1-2&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
-        <> testDhKeyStrUri
-        <> "%2Csmp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23"
-        <> testDhKeyStrUri
+        `shouldBe` "https://simplex.chat/invitation#/?v=1-2&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
+        <> urlEncode True testDhKeyStrUri
+        <> "%2Csmp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
+        <> urlEncode True testDhKeyStrUri
         <> "&e2e=v%3D1-3%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
     it "should parse connection requests" $ do
       strDecode

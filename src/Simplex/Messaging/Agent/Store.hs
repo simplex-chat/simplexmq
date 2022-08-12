@@ -52,6 +52,8 @@ data RcvQueue = RcvQueue
     sndId :: Maybe SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
+    -- | SMP client version
+    smpClientVersion :: Version,
     -- | credentials used in context of notifications
     clientNtfCreds :: Maybe ClientNtfCreds
   }
@@ -81,7 +83,9 @@ data SndQueue = SndQueue
     -- | shared DH secret agreed for simple per-queue e2e encryption
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
-    status :: QueueStatus
+    status :: QueueStatus,
+    -- | SMP client version
+    smpClientVersion :: Version
   }
   deriving (Eq, Show)
 

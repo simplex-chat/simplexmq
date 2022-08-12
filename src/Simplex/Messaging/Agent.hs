@@ -297,10 +297,11 @@ processCommand c (connId, cmd) = case cmd of
 newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId cMode = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueue c srv
+  clientVRange <- asks $ smpClientVRange . config
+  (rq, qUri) <- newRcvQueue c srv clientVRange
   g <- asks idsDrg
-  agentVersion <- asks $ smpAgentVersion . config
-  let cData = ConnData {connId, connAgentVersion = agentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
+  connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
+  let cData = ConnData {connId, connAgentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId' <- withStore c $ \db -> createRcvConn db g cData rq cMode
   addSubscription c rq connId'
   ns <- asks ntfSupervisor
@@ -317,7 +318,8 @@ newConn c connId cMode = do
 joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
 joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
-  case ( qUri `compatibleVersion` SMP.smpClientVRange,
+  clientVRange <- asks $ smpClientVRange . config
+  case ( qUri `compatibleVersion` clientVRange,
          e2eRcvParamsUri `compatibleVersion` CR.e2eEncryptVRange,
          agentVRange `compatibleVersion` aVRange
        ) of
@@ -345,7 +347,8 @@ joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2
     _ -> throwError $ AGENT A_VERSION
 joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
-  case ( qUri `compatibleVersion` SMP.smpClientVRange,
+  clientVRange <- asks $ smpClientVRange . config
+  case ( qUri `compatibleVersion` clientVRange,
          agentVRange `compatibleVersion` aVRange
        ) of
     (Just qInfo, Just vrsn) -> do
@@ -354,12 +357,11 @@ joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInf
       pure connId'
     _ -> throwError $ AGENT A_VERSION
 
-createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> m SMPQueueInfo
-createReplyQueue c connId = do
+createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> m SMPQueueInfo
+createReplyQueue c connId SndQueue {smpClientVersion} = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueue c srv
-  -- TODO reply queue version should be the same as send queue, ignoring it in v1
-  let qInfo = toVersionT qUri SMP.smpClientVersion
+  (rq, qUri) <- newRcvQueue c srv $ versionToRange smpClientVersion
+  let qInfo = toVersionT qUri smpClientVersion
   addSubscription c rq connId
   withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   ns <- asks ntfSupervisor
@@ -395,9 +397,9 @@ rejectContact' c contactConnId invId =
   withStore c $ \db -> deleteInvitation db contactConnId invId
 
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SMPConfirmation -> m ()
-processConfirmation c rq@RcvQueue {e2ePrivKey} SMPConfirmation {senderKey, e2ePubKey} = do
+processConfirmation c rq@RcvQueue {e2ePrivKey, smpClientVersion = v} SMPConfirmation {senderKey, e2ePubKey, smpClientVersion = v'} = do
   let dhSecret = C.dh' e2ePubKey e2ePrivKey
-  withStore' c $ \db -> setRcvQueueConfirmedE2E db rq dhSecret
+  withStore' c $ \db -> setRcvQueueConfirmedE2E db rq dhSecret $ min v v'
   secureQueue c rq senderKey
   withStore' c $ \db -> setRcvQueueStatus db rq Secured
 
@@ -632,7 +634,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                   AM_REPLY_ -> notifyDel msgId $ ERR e
                   AM_A_MSG_ -> notifyDel msgId $ MERR mId e
                 _
-                  | temporaryAgentError e -> do
+                  -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
+                  -- the message sending would be retried
+                  | temporaryAgentError e || e == BROKER HOST -> do
                     let timeoutSel = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
                     ifM (msgExpired timeoutSel) (notifyDel msgId err) (retrySending loop)
                   | otherwise -> notifyDel msgId err
@@ -668,7 +672,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                     -- and this branch should never be reached as receive is created before the confirmation,
                     -- so the condition is not necessary here, strictly speaking.
                     _ -> unless (duplexHandshake == Just True) $ do
-                      qInfo <- createReplyQueue c connId
+                      qInfo <- createReplyQueue c connId sq
                       void . enqueueMessage c cData sq SMP.noMsgFlags $ REPLY [qInfo]
                 AM_A_MSG_ -> notify $ SENT mId
                 _ -> pure ()
@@ -976,13 +980,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
           SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} <- decryptSMPMessage v rq msg
           clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
             parseMessage msgBody
-          unless (phVer `isCompatible` SMP.smpClientVRange) . throwError $ AGENT A_VERSION
+          clientVRange <- asks $ smpClientVRange . config
+          unless (phVer `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
           case (e2eDhSecret, e2ePubKey_) of
             (Nothing, Just e2ePubKey) -> do
               let e2eDh = C.dh' e2ePubKey e2ePrivKey
               decryptClientMessage e2eDh clientMsg >>= \case
                 (SMP.PHConfirmation senderKey, AgentConfirmation {e2eEncryption, encConnInfo, agentVersion}) ->
-                  smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo agentVersion >> ack
+                  smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo phVer agentVersion >> ack
                 (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
                   smpInvitation connReq connInfo >> ack
                 _ -> prohibited >> ack
@@ -1079,11 +1084,13 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         parseMessage :: Encoding a => ByteString -> m a
         parseMessage = liftEither . parse smpP (AGENT A_MESSAGE)
 
-        smpConfirmation :: C.APublicVerifyKey -> C.PublicKeyX25519 -> Maybe (CR.E2ERatchetParams 'C.X448) -> ByteString -> Version -> m ()
-        smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo agentVersion = do
+        smpConfirmation :: C.APublicVerifyKey -> C.PublicKeyX25519 -> Maybe (CR.E2ERatchetParams 'C.X448) -> ByteString -> Version -> Version -> m ()
+        smpConfirmation senderKey e2ePubKey e2eEncryption encConnInfo smpClientVersion agentVersion = do
           logServer "<--" c srv rId "MSG <CONF>"
-          aVRange <- asks $ smpAgentVRange . config
-          unless (agentVersion `isCompatible` aVRange) . throwError $ AGENT A_VERSION
+          AgentConfig {smpAgentVRange, smpClientVRange} <- asks config
+          unless
+            (agentVersion `isCompatible` smpAgentVRange && smpClientVersion `isCompatible` smpClientVRange)
+            (throwError $ AGENT A_VERSION)
           case status of
             New -> case (conn, e2eEncryption) of
               -- party initiating connection
@@ -1095,9 +1102,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                   (Right agentMsgBody, CR.SMDNoChange) ->
                     parseMessage agentMsgBody >>= \case
                       AgentConnInfo connInfo ->
-                        processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = []} False
+                        processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = [], smpClientVersion} False
                       AgentConnInfoReply smpQueues connInfo ->
-                        processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues} True
+                        processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion} True
                       _ -> prohibited
                     where
                       processConf connInfo senderConf duplexHS = do
@@ -1106,15 +1113,16 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                         confId <- withStore c $ \db -> do
                           setHandshakeVersion db connId agentVersion duplexHS
                           createConfirmation db g newConfirmation
-                        let srvs = map (\SMPQueueInfo {smpServer = s} -> s) $ smpReplyQueues senderConf
+                        let srvs = map queueServer $ smpReplyQueues senderConf
                         notify $ CONF confId srvs connInfo
+                      queueServer (SMPQueueInfo _ SMPQueueAddress {smpServer}) = smpServer
                   _ -> prohibited
               -- party accepting connection
               (DuplexConnection _ _ sq, Nothing) -> do
                 withStore c (\db -> runExceptT $ agentRatchetDecrypt db connId encConnInfo) >>= parseMessage >>= \case
                   AgentConnInfo connInfo -> do
                     notify $ INFO connInfo
-                    processConfirmation c rq $ SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = []}
+                    processConfirmation c rq $ SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = [], smpClientVersion}
                     when (duplexHandshake == Just True) $ enqueueDuplexHello sq
                   _ -> prohibited
               _ -> prohibited
@@ -1160,9 +1168,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
               g <- asks idsDrg
               let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
               invId <- withStore c $ \db -> createInvitation db g newInv
-              let srvs = L.map (\SMPQueueUri {smpServer = s} -> s) $ crSmpQueues crData
+              let srvs = L.map queueServer $ crSmpQueues crData
               notify $ REQ invId srvs cInfo
             _ -> prohibited
+          where
+            queueServer (SMPQueueUri _ SMPQueueAddress {smpServer}) = smpServer
 
         checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
         checkMsgIntegrity prevExtSndId extSndId internalPrevMsgHash receivedPrevMsgHash
@@ -1175,8 +1185,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
 
 connectReplyQueues :: AgentMonad m => AgentClient -> ConnData -> ConnInfo -> L.NonEmpty SMPQueueInfo -> m ()
 connectReplyQueues c cData@ConnData {connId} ownConnInfo (qInfo :| _) = do
-  -- TODO make this proof on receiving confirmation too
-  case qInfo `proveCompatible` SMP.smpClientVRange of
+  clientVRange <- asks $ smpClientVRange . config
+  case qInfo `proveCompatible` clientVRange of
     Nothing -> throwError $ AGENT A_VERSION
     Just qInfo' -> do
       sq <- newSndQueue qInfo'
@@ -1198,7 +1208,7 @@ confirmQueue (Compatible agentVersion) c connId sq connInfo e2eEncryption = do
     mkAgentMessage :: Version -> m AgentMessage
     mkAgentMessage 1 = pure $ AgentConnInfo connInfo
     mkAgentMessage _ = do
-      qInfo <- createReplyQueue c connId
+      qInfo <- createReplyQueue c connId sq
       pure $ AgentConnInfoReply (qInfo :| []) connInfo
 
 enqueueConfirmation :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
@@ -1248,7 +1258,7 @@ newSndQueue_ ::
   C.SAlgorithm a ->
   Compatible SMPQueueInfo ->
   m SndQueue
-newSndQueue_ a (Compatible (SMPQueueInfo _clientVersion smpServer senderId rcvE2ePubDhKey)) = do
+newSndQueue_ a (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
   -- this function assumes clientVersion is compatible - it was tested before
   (sndPublicKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
@@ -1260,5 +1270,6 @@ newSndQueue_ a (Compatible (SMPQueueInfo _clientVersion smpServer senderId rcvE2
         sndPrivateKey,
         e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
         e2ePubKey = Just e2ePubKey,
-        status = New
+        status = New,
+        smpClientVersion
       }

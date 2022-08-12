@@ -6,6 +6,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PolyKinds #-}
@@ -32,7 +33,6 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent.Protocol
   ( -- * Protocol parameters
-    currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
     e2eEncUserMsgLength,
@@ -56,6 +56,7 @@ module Simplex.Messaging.Agent.Protocol
     SrvLoc (..),
     SMPQueueUri (..),
     SMPQueueInfo (..),
+    SMPQueueAddress (..),
     ConnectionMode (..),
     SConnectionMode (..),
     AConnectionMode (..),
@@ -95,6 +96,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeQueueStatus,
     queueStatusT,
     agentMessageType,
+    extraSMPServerHosts,
 
     -- * TCP transport functions
     tPut,
@@ -117,7 +119,10 @@ import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Map (Map)
+import qualified Data.Map as M
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
@@ -141,13 +146,18 @@ import Simplex.Messaging.Protocol
     MsgFlags,
     MsgId,
     NMsgMeta,
+    ProtocolServer (..),
     SMPServer,
     SndPublicVerifyKey,
     SrvLoc (..),
+    legacyEncodeServer,
+    legacyServerP,
+    legacyStrEncodeServer,
     pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Test.QuickCheck (Arbitrary (..))
@@ -344,7 +354,9 @@ data SMPConfirmation = SMPConfirmation
     -- | sender's information to be associated with the connection, e.g. sender's profile information
     connInfo :: ConnInfo,
     -- | optional reply queues included in confirmation (added in agent protocol v2)
-    smpReplyQueues :: [SMPQueueInfo]
+    smpReplyQueues :: [SMPQueueInfo],
+    -- | SMP client version
+    smpClientVersion :: Version
   }
   deriving (Show)
 
@@ -572,20 +584,36 @@ type ConfirmationId = ByteString
 
 type InvitationId = ByteString
 
-data SMPQueueInfo = SMPQueueInfo
-  { clientVersion :: Version,
-    smpServer :: SMPServer,
-    senderId :: SMP.SenderId,
-    dhPublicKey :: C.PublicKeyX25519
-  }
+extraSMPServerHosts :: Map TransportHost TransportHost
+extraSMPServerHosts =
+  M.fromList
+    [ ("smp4.simplex.im", "o5vmywmrnaxalvz6wi3zicyftgio6psuvyniis6gco6bp6ekl4cqj4id.onion"),
+      ("smp5.simplex.im", "jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"),
+      ("smp6.simplex.im", "bylepyau3ty4czmn77q4fglvperknl4bi2eb2fdy2bh4jxtf32kf73yd.onion"),
+      ("smp8.simplex.im", "beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion"),
+      ("smp9.simplex.im", "jssqzccmrcws6bhmn77vgmhfjmhwlyr3u7puw4erkyoosywgl67slqqd.onion"),
+      ("smp10.simplex.im", "rb2pbttocvnbrngnwziclp2f4ckjq65kebafws6g4hy22cdaiv5dwjqd.onion")
+    ]
+
+updateSMPServerHosts :: SMPServer -> SMPServer
+updateSMPServerHosts srv@ProtocolServer {host} = case host of
+  h :| [] -> case M.lookup h extraSMPServerHosts of
+    Just h' -> srv {host = [h, h']}
+    _ -> srv
+  _ -> srv
+
+data SMPQueueInfo = SMPQueueInfo {clientVersion :: Version, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
 
 instance Encoding SMPQueueInfo where
-  smpEncode SMPQueueInfo {clientVersion, smpServer, senderId, dhPublicKey} =
-    smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey})
+    | clientVersion > 1 = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+    | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
   smpP = do
-    (clientVersion, smpServer, senderId, dhPublicKey) <- smpP
-    pure SMPQueueInfo {clientVersion, smpServer, senderId, dhPublicKey}
+    clientVersion <- smpP
+    smpServer <- if clientVersion > 1 then smpP else updateSMPServerHosts <$> legacyServerP
+    (senderId, dhPublicKey) <- smpP
+    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
@@ -594,43 +622,51 @@ instance Encoding SMPQueueInfo where
 instance VersionI SMPQueueInfo where
   type VersionRangeT SMPQueueInfo = SMPQueueUri
   version = clientVersion
-  toVersionRangeT SMPQueueInfo {smpServer, senderId, dhPublicKey} vr =
-    SMPQueueUri {clientVRange = vr, smpServer, senderId, dhPublicKey}
+  toVersionRangeT (SMPQueueInfo _v addr) vr = SMPQueueUri vr addr
 
 instance VersionRangeI SMPQueueUri where
   type VersionT SMPQueueUri = SMPQueueInfo
   versionRange = clientVRange
-  toVersionT SMPQueueUri {smpServer, senderId, dhPublicKey} v =
-    SMPQueueInfo {clientVersion = v, smpServer, senderId, dhPublicKey}
+  toVersionT (SMPQueueUri _vr addr) v = SMPQueueInfo v addr
 
 -- | SMP queue information sent out-of-band.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#out-of-band-messages
-data SMPQueueUri = SMPQueueUri
+data SMPQueueUri = SMPQueueUri {clientVRange :: VersionRange, queueAddress :: SMPQueueAddress}
+  deriving (Eq, Show)
+
+data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    clientVRange :: VersionRange,
     dhPublicKey :: C.PublicKeyX25519
   }
   deriving (Eq, Show)
 
 instance StrEncoding SMPQueueUri where
-  -- v1 uses short SMP queue URI format
-  strEncode SMPQueueUri {smpServer = srv, senderId = qId, clientVRange = _vr, dhPublicKey = k} =
-    strEncode srv <> "/" <> strEncode qId <> "#" <> strEncode k
-  strP = do
-    smpServer <- strP <* A.char '/'
-    senderId <- strP <* optional (A.char '/') <* A.char '#'
-    (vr, dhPublicKey) <- unversioned <|> versioned
-    pure SMPQueueUri {smpServer, senderId, clientVRange = vr, dhPublicKey}
+  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey})
+    | minVersion vr > 1 = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
+    | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
-      unversioned = (SMP.smpClientVRange,) <$> strP <* A.endOfInput
+      query = strEncode . QSP QEscape
+      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
+      srvParam = [("srv", strEncode $ TransportHosts_ hs) | length hs > 0]
+      hs = L.tail $ host srv
+  strP = do
+    srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
+    senderId <- strP <* optional (A.char '/') <* A.char '#'
+    (vr, hs, dhPublicKey) <- unversioned <|> versioned
+    let srv' = srv {host = h :| host <> hs}
+        smpServer = if maxVersion vr == 1 then updateSMPServerHosts srv' else srv'
+    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
+    where
+      unversioned = (versionToRange 1,[],) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP
         vr <- queryParam "v" query
         dhKey <- maybe (queryParam "dh" query) pure dhKey_
-        pure (vr, dhKey)
+        hs_ <- queryParam_ "srv" query
+        pure (vr, maybe [] thList_ hs_, dhKey)
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> E2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
@@ -816,6 +852,8 @@ data BrokerErrorType
     UNEXPECTED
   | -- | network error
     NETWORK
+  | -- | no compatible server host (e.g. onion when public is required, or vice versa)
+    HOST
   | -- | handshake or other transport error
     TRANSPORT {transportErr :: TransportError}
   | -- | command response timeout

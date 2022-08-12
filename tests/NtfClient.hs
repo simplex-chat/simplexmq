@@ -24,12 +24,14 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import GHC.Generics (Generic)
 import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
+import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -51,7 +53,7 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 
-testHost :: HostName
+testHost :: NonEmpty TransportHost
 testHost = "localhost"
 
 ntfTestPort :: ServiceName
@@ -66,9 +68,10 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 ntfTestStoreLogFile :: FilePath
 ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 
-testNtfClient :: (Transport c, MonadUnliftIO m) => (THandle c -> m a) -> m a
-testNtfClient client =
-  runTransportClient Nothing testHost ntfTestPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
+testNtfClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
+testNtfClient client = do
+  Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
+  runTransportClient Nothing host ntfTestPort (Just testKeyHash) (Just defaultKeepAliveOpts) $ \h ->
     liftIO (runExceptT $ ntfClientHandshake h testKeyHash supportedNTFServerVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
@@ -133,7 +136,7 @@ withNtfServerOn t port' = withNtfServerThreadOn t port' . const
 withNtfServer :: (MonadUnliftIO m, MonadRandom m) => ATransport -> m a -> m a
 withNtfServer t = withNtfServerOn t ntfTestPort
 
-runNtfTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m) => (THandle c -> m a) -> m a
+runNtfTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => (THandle c -> m a) -> m a
 runNtfTest test = withNtfServer (transport @c) $ testNtfClient test
 
 ntfServerTest ::

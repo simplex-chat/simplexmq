@@ -25,6 +25,7 @@ import Data.Functor (($>))
 import Data.List (intercalate)
 import Data.Map.Strict (Map)
 import qualified Data.Text as T
+import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
@@ -212,19 +213,21 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         atomically (readTBQueue agentQ) >>= \case
           CAConnected _ -> pure ()
           CADisconnected srv subs -> do
-            logInfo . T.pack $ "SMP server disconnected " <> host srv <> " (" <> show (length subs) <> ") subscriptions"
+            logInfo $ "SMP server disconnected " <> showServer' srv <> " (" <> tshow (length subs) <> ") subscriptions"
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
           CAReconnected srv ->
-            logInfo $ "SMP server reconnected " <> T.pack (host srv)
+            logInfo $ "SMP server reconnected " <> showServer' srv
           CAResubscribed srv sub -> do
             let ntfId = snd sub
                 smpQueue = SMPQueueNtf srv ntfId
             updateSubStatus smpQueue NSActive
           CASubError srv (_, ntfId) err -> do
-            logError . T.pack $ "SMP subscription error on server " <> host srv <> ": " <> show err
+            logError $ "SMP subscription error on server " <> showServer' srv <> ": " <> tshow err
             handleSubError (SMPQueueNtf srv ntfId) err
+      where
+        showServer' = decodeLatin1 . strEncode . host
 
     handleSubError :: SMPQueueNtf -> ProtocolClientError -> m ()
     handleSubError smpQueue = \case
@@ -235,6 +238,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       PCEUnexpectedResponse r -> updateErr "UnexpectedResponse " r
       PCETransportError e -> updateErr "TransportError " e
       PCESignatureError e -> updateErr "SignatureError " e
+      PCEIncompatibleHost -> updateSubStatus smpQueue $ NSErr "IncompatibleHost"
       PCEResponseTimeout -> pure ()
       PCENetworkError -> pure ()
       where

@@ -26,6 +26,7 @@ import Numeric.Natural
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BrokerMsg, ProtocolServer (..), QueueId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -264,7 +265,7 @@ subscribeQueue ca srv sub = do
 
 showServer :: SMPServer -> ByteString
 showServer ProtocolServer {host, port} =
-  B.pack $ host <> if null port then "" else ':' : port
+  strEncode host <> (B.pack $ if null port then "" else ':' : port)
 
 smpSubscribe :: SMPClient -> (SMPSub, C.APrivateSignKey) -> ExceptT ProtocolClientError IO ()
 smpSubscribe smp ((party, queueId), privKey) = subscribe_ smp privKey queueId

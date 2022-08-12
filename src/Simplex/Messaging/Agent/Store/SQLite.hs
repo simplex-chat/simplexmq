@@ -104,6 +104,7 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.List (find, foldl')
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -127,8 +128,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (blobFieldParser, fromTextField_)
-import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NtfServer, ProtocolServer (..), RcvNtfDhSecret, pattern NtfServer)
+import Simplex.Messaging.Protocol (MsgBody, MsgFlags, NtfServer, ProtocolServer (..), RcvNtfDhSecret, SndPublicVerifyKey, pattern NtfServer)
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (bshow, eitherToMaybe, ($>>=), (<$$>))
 import Simplex.Messaging.Version
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -319,18 +321,20 @@ setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} stat
     |]
     [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
-setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> IO ()
-setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret =
+setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> Version -> IO ()
+setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
   DB.executeNamed
     db
     [sql|
       UPDATE rcv_queues
       SET e2e_dh_secret = :e2e_dh_secret,
-          status = :status
+          status = :status,
+          smp_client_version = :smp_client_version
       WHERE host = :host AND port = :port AND rcv_id = :rcv_id
     |]
     [ ":status" := Confirmed,
       ":e2e_dh_secret" := e2eDhSecret,
+      ":smp_client_version" := smpClientVersion,
       ":host" := host,
       ":port" := port,
       ":rcv_id" := rcvId
@@ -367,16 +371,28 @@ setRcvQueueNtfCreds db connId clientNtfCreds =
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} -> (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
       Nothing -> (Nothing, Nothing, Nothing, Nothing)
 
+type SMPConfirmationRow = (SndPublicVerifyKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe Version)
+
+smpConfirmation :: SMPConfirmationRow -> SMPConfirmation
+smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersion_) =
+  SMPConfirmation
+    { senderKey,
+      e2ePubKey,
+      connInfo,
+      smpReplyQueues = fromMaybe [] smpReplyQueues_,
+      smpClientVersion = fromMaybe 1 smpClientVersion_
+    }
+
 createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
-createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues}, ratchetState} =
+createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues, smpClientVersion}, ratchetState} =
   createWithRandomId gVar $ \confirmationId ->
     DB.execute
       db
       [sql|
         INSERT INTO conn_confirmations
-        (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, 0);
+        (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, smp_client_version, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0);
       |]
-      (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues)
+      (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues, smpClientVersion)
 
 acceptConfirmation :: DB.Connection -> ConfirmationId -> ConnInfo -> IO (Either StoreError AcceptedConfirmation)
 acceptConfirmation db confirmationId ownConnInfo = do
@@ -395,17 +411,17 @@ acceptConfirmation db confirmationId ownConnInfo = do
     DB.query
       db
       [sql|
-        SELECT conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues
+        SELECT conn_id, ratchet_state, sender_key, e2e_snd_pub_key, sender_conn_info, smp_reply_queues, smp_client_version
         FROM conn_confirmations
         WHERE confirmation_id = ?;
       |]
       (Only confirmationId)
   where
-    confirmation (connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_) =
+    confirmation ((connId, ratchetState) :. confRow) =
       AcceptedConfirmation
         { confirmationId,
           connId,
-          senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
+          senderConf = smpConfirmation confRow,
           ratchetState,
           ownConnInfo
         }
@@ -416,17 +432,17 @@ getAcceptedConfirmation db connId =
     DB.query
       db
       [sql|
-        SELECT confirmation_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, own_conn_info
+        SELECT confirmation_id, ratchet_state, own_conn_info, sender_key, e2e_snd_pub_key, sender_conn_info, smp_reply_queues, smp_client_version
         FROM conn_confirmations
         WHERE conn_id = ? AND accepted = 1;
       |]
       (Only connId)
   where
-    confirmation (confirmationId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues_, ownConnInfo) =
+    confirmation ((confirmationId, ratchetState, ownConnInfo) :. confRow) =
       AcceptedConfirmation
         { confirmationId,
           connId,
-          senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = fromMaybe [] smpReplyQueues_},
+          senderConf = smpConfirmation confRow,
           ratchetState,
           ownConnInfo
         }
@@ -985,6 +1001,10 @@ instance ToField [SMPQueueInfo] where toField = toField . smpEncodeList
 
 instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP
 
+instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1 . strEncode
+
+instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
+
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
@@ -1062,9 +1082,9 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status) VALUES (?,?,?,?,?,?,?,?,?,?);
+        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?);
     |]
-    (host server, port server, rcvId, connId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status)
+    ((host server, port server, rcvId, connId) :. (rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion))
 
 -- * createSndConn helpers
 
@@ -1074,9 +1094,9 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     dbConn
     [sql|
       INSERT INTO snd_queues
-        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status) VALUES (?,?,?,?,?, ?,?, ?,?);
+        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?);
     |]
-    (host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)
+    (host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion)
 
 -- * getConn helpers
 
@@ -1109,7 +1129,7 @@ getRcvQueueByConnId_ dbConn connId =
       dbConn
       [sql|
         SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
+          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status, q.smp_client_version,
           q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
@@ -1117,12 +1137,13 @@ getRcvQueueByConnId_ dbConn connId =
       |]
       (Only connId)
   where
-    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
       let server = SMPServer host port keyHash
+          smpClientVersion = fromMaybe 1 smpClientVersion_
           clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
             (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
             _ -> Nothing
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, clientNtfCreds}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion, clientNtfCreds}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =
@@ -1130,16 +1151,16 @@ getSndQueueByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status
+        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.smp_client_version
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
         WHERE q.conn_id = ?;
       |]
       (Only connId)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)] =
+    sndQueue [(keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion)] =
       let server = SMPServer host port keyHash
-       in Just SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status}
+       in Just SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion}
     sndQueue _ = Nothing
 
 -- * updateRcvIds helpers

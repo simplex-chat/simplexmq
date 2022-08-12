@@ -1,3 +1,6 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Transport.Client
@@ -7,6 +10,9 @@ module Simplex.Messaging.Transport.Client
     defaultSMPPort,
     defaultSocksProxy,
     SocksProxy,
+    TransportHost (..),
+    TransportHosts (..),
+    TransportHosts_ (..),
   )
 where
 
@@ -18,7 +24,11 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Default (def)
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
+import Data.String
+import Data.Word (Word8)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import Data.X509.Validation (Fingerprint (..))
@@ -28,31 +38,77 @@ import Network.Socket
 import Network.Socks5
 import qualified Network.TLS as T
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
+import Simplex.Messaging.Util (bshow, (<$?>))
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
 
+data TransportHost
+  = THIPv4 (Word8, Word8, Word8, Word8)
+  | THOnionHost ByteString
+  | THDomainName HostName
+  deriving (Eq, Ord, Show)
+
+instance Encoding TransportHost where
+  smpEncode = smpEncode . strEncode
+  smpP = parseAll strP <$?> smpP
+
+instance StrEncoding TransportHost where
+  strEncode = \case
+    THIPv4 (a1, a2, a3, a4) -> B.intercalate "." $ map bshow [a1, a2, a3, a4]
+    THOnionHost host -> host
+    THDomainName host -> B.pack host
+  strP =
+    A.choice
+      [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
+        THOnionHost <$> ((<>) <$> A.takeTill (== '.') <*> A.string ".onion"),
+        THDomainName . B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
+      ]
+    where
+      ipNum = A.decimal <* A.char '.'
+
+newtype TransportHosts = TransportHosts {thList :: NonEmpty TransportHost}
+
+instance StrEncoding TransportHosts where
+  strEncode = strEncodeList . L.toList . thList
+  strP = TransportHosts . L.fromList <$> strP `A.sepBy1'` A.char ','
+
+newtype TransportHosts_ = TransportHosts_ {thList_ :: [TransportHost]}
+
+instance StrEncoding TransportHosts_ where
+  strEncode = strEncodeList . thList_
+  strP = TransportHosts_ <$> strP `A.sepBy'` A.char ','
+
+instance IsString TransportHost where fromString = parseString strDecode
+
+instance IsString (NonEmpty TransportHost) where fromString = parseString strDecode
+
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTransportClient :: (Transport c, MonadUnliftIO m) => Maybe SocksProxy -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
-runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksProxy -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
+runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> Maybe SocksProxy -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe KeepAliveOpts -> (c -> m a) -> m a
 runTLSTransportClient tlsParams caStore_ socksProxy_ host port keyHash keepAliveOpts client = do
-  let clientParams = mkTLSClientParams tlsParams caStore_ host port keyHash
-      connectTCP = maybe connectTCPClient connectSocksClient socksProxy_
-  c <- liftIO $ connectTLSClient connectTCP host port clientParams keepAliveOpts
+  let clientParams = mkTLSClientParams tlsParams caStore_ (B.unpack $ strEncode host) port keyHash
+      connectTCP = case socksProxy_ of
+        Just proxy -> connectSocksClient proxy $ hostAddr host
+        _ -> connectTCPClient . B.unpack $ strEncode host
+  c <- liftIO $ do
+    sock <- connectTCP port
+    mapM_ (setSocketKeepAlive sock) keepAliveOpts
+    connectTLS clientParams sock >>= getClientConnection
   client c `E.finally` liftIO (closeConnection c)
-
-connectTLSClient :: forall c. Transport c => (HostName -> ServiceName -> IO Socket) -> HostName -> ServiceName -> T.ClientParams -> Maybe KeepAliveOpts -> IO c
-connectTLSClient tcpClient host port clientParams keepAliveOpts = do
-  sock <- tcpClient host port
-  mapM_ (setSocketKeepAlive sock) keepAliveOpts
-  ctx <- connectTLS clientParams sock
-  getClientConnection ctx
+  where
+    hostAddr = \case
+      THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
+      THOnionHost h -> SocksAddrDomainName h
+      THDomainName h -> SocksAddrDomainName $ B.pack h
 
 connectTCPClient :: HostName -> ServiceName -> IO Socket
 connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
@@ -79,10 +135,10 @@ connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
 defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
 
-connectSocksClient :: SocksProxy -> HostName -> ServiceName -> IO Socket
-connectSocksClient (SocksProxy addr) host _port = do
+connectSocksClient :: SocksProxy -> SocksHostAddress -> ServiceName -> IO Socket
+connectSocksClient (SocksProxy addr) hostAddr _port = do
   let port = if null _port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe _port
-  fst <$> socksConnect (defaultSocksConf addr) (SocksAddress (SocksAddrDomainName $ B.pack host) port)
+  fst <$> socksConnect (defaultSocksConf addr) (SocksAddress hostAddr port)
 
 defaultSocksHost :: HostAddress
 defaultSocksHost = tupleToHostAddress (127, 0, 0, 1)

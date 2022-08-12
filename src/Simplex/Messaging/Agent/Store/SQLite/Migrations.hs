@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -17,18 +18,25 @@ where
 
 import Control.Monad (forM_)
 import Data.List (intercalate, sortBy)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.Map as M
 import Data.Ord (comparing)
 import Data.Text (Text)
+import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (getCurrentTime)
 import Database.SQLite.Simple (Connection, Only (..), Query (..))
 import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
+import Simplex.Messaging.Agent.Protocol (extraSMPServerHosts)
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Transport.Client (TransportHost)
 
 data Migration = Migration {name :: String, up :: Text}
   deriving (Show)
@@ -39,7 +47,8 @@ schemaMigrations =
     ("20220301_snd_queue_keys", m20220301_snd_queue_keys),
     ("20220322_notifications", m20220322_notifications),
     ("20220607_v2", m20220608_v2),
-    ("m20220625_v2_ntf_mode", m20220625_v2_ntf_mode)
+    ("m20220625_v2_ntf_mode", m20220625_v2_ntf_mode),
+    ("m20220811_onion_hosts", m20220811_onion_hosts)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -55,10 +64,15 @@ get conn migrations =
 
 run :: Connection -> [Migration] -> IO ()
 run conn ms = DB.withImmediateTransaction conn . forM_ ms $
-  \Migration {name, up} -> insert name >> execSQL up
+  \Migration {name, up} -> insert name >> execSQL up >> updateServers name
   where
     insert name = DB.execute conn "INSERT INTO migrations (name, ts) VALUES (?, ?);" . (name,) =<< getCurrentTime
     execSQL = SQLite3.exec $ DB.connectionHandle conn
+    updateServers = \case
+      "m20220811_onion_hosts" -> forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
+        let hs = decodeLatin1 . strEncode $ ([h, h'] :: NonEmpty TransportHost)
+         in DB.execute conn "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)
+      _ -> pure ()
 
 initialize :: Connection -> IO ()
 initialize conn =

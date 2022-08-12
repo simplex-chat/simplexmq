@@ -54,6 +54,7 @@ module Simplex.Messaging.Client
     NetworkConfig (..),
     defaultClientConfig,
     defaultNetworkConfig,
+    chooseTransportHost,
     ServerTransmission,
   )
 where
@@ -71,6 +72,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (rights)
 import Data.Functor (($>))
+import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
@@ -78,11 +80,12 @@ import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Parsers (dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksProxy, runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, liftError, raceAny_)
@@ -114,10 +117,30 @@ type ClientCommand msg = (Maybe C.APrivateSignKey, QueueId, ProtoCommand msg)
 -- | Type synonym for transmission from some SPM server queue.
 type ServerTransmission msg = (ProtoServer msg, Version, SessionId, QueueId, msg)
 
+data HostMode
+  = -- | prefer (or require) onion hosts when connecting via SOCKS proxy
+    HMOnionViaSocks
+  | -- | prefer (or require) onion hosts
+    HMOnion
+  | -- | prefer (or require) public hosts
+    HMPublic
+  deriving (Eq, Show, Generic)
+
+instance FromJSON HostMode where
+  parseJSON = J.genericParseJSON . enumJSON $ dropPrefix "HM"
+
+instance ToJSON HostMode where
+  toJSON = J.genericToJSON . enumJSON $ dropPrefix "HM"
+  toEncoding = J.genericToEncoding . enumJSON $ dropPrefix "HM"
+
 -- | network configuration for the client
 data NetworkConfig = NetworkConfig
   { -- | use SOCKS5 proxy
     socksProxy :: Maybe SocksProxy,
+    -- | determines critera which host is chosen from the list
+    hostMode :: HostMode,
+    -- | if above criteria is not met, if the below setting is True return error, otherwise use the first host
+    requiredHostMode :: Bool,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -137,6 +160,8 @@ defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
   NetworkConfig
     { socksProxy = Nothing,
+      hostMode = HMOnionViaSocks,
+      requiredHostMode = False,
       tcpConnectTimeout = 7_500_000,
       tcpTimeout = 5_000_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
@@ -172,15 +197,32 @@ data Request msg = Request
 
 type Response msg = Either ProtocolClientError msg
 
+chooseTransportHost :: NetworkConfig -> NonEmpty TransportHost -> Either ProtocolClientError TransportHost
+chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts =
+  firstOrError $ case hostMode of
+    HMOnionViaSocks -> maybe publicHost (const onionHost) socksProxy
+    HMOnion -> onionHost
+    HMPublic -> publicHost
+  where
+    firstOrError
+      | requiredHostMode = maybe (Left PCEIncompatibleHost) Right
+      | otherwise = Right . fromMaybe (L.head hosts)
+    isOnionHost = \case THOnionHost _ -> True; _ -> False
+    onionHost = find isOnionHost hosts
+    publicHost = find (not . isOnionHost) hosts
+
 -- | Connects to 'ProtocolServer' using passed client configuration
 -- and queue for messages and notifications.
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
-getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} msgQ disconnected =
-  (atomically mkProtocolClient >>= runClient useTransport)
-    `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
+getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} msgQ disconnected = do
+  case chooseTransportHost networkConfig (host protocolServer) of
+    Right useHost ->
+      (atomically mkProtocolClient >>= runClient useTransport useHost)
+        `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
+    Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpKeepAlive, socksProxy, smpPingInterval} = networkConfig
     mkProtocolClient :: STM (ProtocolClient msg)
@@ -205,12 +247,12 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
             msgQ
           }
 
-    runClient :: (ServiceName, ATransport) -> ProtocolClient msg -> IO (Either ProtocolClientError (ProtocolClient msg))
-    runClient (port', ATransport t) c = do
+    runClient :: (ServiceName, ATransport) -> TransportHost -> ProtocolClient msg -> IO (Either ProtocolClientError (ProtocolClient msg))
+    runClient (port', ATransport t) useHost c = do
       thVar <- newEmptyTMVarIO
       action <-
         async $
-          runTransportClient socksProxy (host protocolServer) port' (Just $ keyHash protocolServer) tcpKeepAlive (client t c thVar)
+          runTransportClient socksProxy useHost port' (Just $ keyHash protocolServer) tcpKeepAlive (client t c thVar)
             `finally` atomically (putTMVar thVar $ Left PCENetworkError)
       th_ <- tcpConnectTimeout `timeout` atomically (takeTMVar thVar)
       pure $ case th_ of
@@ -298,6 +340,8 @@ data ProtocolClientError
   | -- | Failure to establish TCP connection.
     -- Forwarded to the agent client as `ERR BROKER NETWORK`.
     PCENetworkError
+  | -- | No host compatible with network configuration
+    PCEIncompatibleHost
   | -- | TCP transport handshake or some other transport error.
     -- Forwarded to the agent client as `ERR BROKER TRANSPORT e`.
     PCETransportError TransportError
