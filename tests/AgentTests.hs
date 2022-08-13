@@ -78,9 +78,17 @@ agentTests (ATransport t) = do
     it "should deliver messages if one of connections has quota exceeded" $
       smpAgentTest2_2_1 $ testMsgDeliveryQuotaExceeded t
 
+tGetAgent :: Transport c => c -> IO (ATransmissionOrError 'Agent)
+tGetAgent h = do
+  t@(_, _, cmd) <- tGet SAgent h
+  case cmd of
+    Right CONNECT {} -> tGetAgent h
+    Right DISCONNECT {} -> tGetAgent h
+    _ -> pure t
+
 -- | receive message to handle `h`
 (<#:) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
-(<#:) = tGet SAgent
+(<#:) = tGetAgent
 
 -- | send transmission `t` to handle `h` and get response
 (#:) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (ATransmissionOrError 'Agent)
@@ -114,7 +122,7 @@ h <#= p = (h <#:) >>= (`shouldSatisfy` p . correctTransmission)
 h #:# err = tryGet `shouldReturn` ()
   where
     tryGet =
-      10000 `timeout` tGet SAgent h >>= \case
+      10000 `timeout` tGetAgent h >>= \case
         Just _ -> error err
         _ -> return ()
 

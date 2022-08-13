@@ -106,10 +106,31 @@ import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, ErrorType, MsgFlags (..), MsgId, NotifierId, NtfPrivateSignKey, NtfPublicVerifyKey, NtfServer, ProtoServer, ProtocolServer (..), QueueId, QueueIdsKeys (..), RcvMessage (..), RcvNtfPublicDhKey, SMPMsgMeta (..), SndPublicVerifyKey)
+import Simplex.Messaging.Protocol
+  ( AProtocolType (..),
+    BrokerMsg,
+    ErrorType,
+    MsgFlags (..),
+    MsgId,
+    NotifierId,
+    NtfPrivateSignKey,
+    NtfPublicVerifyKey,
+    NtfServer,
+    ProtoServer,
+    Protocol (..),
+    ProtocolServer (..),
+    ProtocolTypeI (..),
+    QueueId,
+    QueueIdsKeys (..),
+    RcvMessage (..),
+    RcvNtfPublicDhKey,
+    SMPMsgMeta (..),
+    SndPublicVerifyKey,
+  )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
@@ -232,46 +253,47 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
       u <- askUnliftIO
       liftEitherError (protocolClientError SMP) (getProtocolClient srv cfg (Just msgQ) $ clientDisconnected u)
 
-    clientDisconnected :: UnliftIO m -> IO ()
-    clientDisconnected u = do
-      removeClientAndSubs >>= (`forM_` serverDown u)
+    clientDisconnected :: UnliftIO m -> SMPClient -> IO ()
+    clientDisconnected u client = do
+      removeClientAndSubs >>= (`forM_` serverDown)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
-
-    removeClientAndSubs :: IO (Maybe (Map ConnId RcvQueue))
-    removeClientAndSubs = atomically $ do
-      TM.delete srv smpClients
-      TM.lookupDelete srv (subscrSrvrs c) >>= mapM updateSubs
       where
-        updateSubs cVar = do
-          cs <- readTVar cVar
-          modifyTVar' (subscrConns c) (`M.withoutKeys` M.keysSet cs)
-          addPendingSubs cVar cs
-          pure cs
+        removeClientAndSubs :: IO (Maybe (Map ConnId RcvQueue))
+        removeClientAndSubs = atomically $ do
+          TM.delete srv smpClients
+          TM.lookupDelete srv (subscrSrvrs c) >>= mapM updateSubs
+          where
+            updateSubs cVar = do
+              cs <- readTVar cVar
+              modifyTVar' (subscrConns c) (`M.withoutKeys` M.keysSet cs)
+              addPendingSubs cVar cs
+              pure cs
 
-        addPendingSubs cVar cs = do
-          let ps = pendingSubscrSrvrs c
-          TM.lookup srv ps >>= \case
-            Just v -> TM.union cs v
-            _ -> TM.insert srv cVar ps
+            addPendingSubs cVar cs = do
+              let ps = pendingSubscrSrvrs c
+              TM.lookup srv ps >>= \case
+                Just v -> TM.union cs v
+                _ -> TM.insert srv cVar ps
 
-    serverDown :: UnliftIO m -> Map ConnId RcvQueue -> IO ()
-    serverDown u cs = unless (M.null cs) $
-      whenM (readTVarIO active) $ do
-        let conns = M.keys cs
-        unless (null conns) . notifySub "" $ DOWN srv conns
-        atomically $ mapM_ (releaseGetLock c) cs
-        unliftIO u reconnectServer
+        serverDown :: Map ConnId RcvQueue -> IO ()
+        serverDown cs = unless (M.null cs) $
+          whenM (readTVarIO active) $ do
+            let conns = M.keys cs
+            notifySub "" $ hostEvent DISCONNECT client
+            unless (null conns) . notifySub "" $ DOWN srv conns
+            atomically $ mapM_ (releaseGetLock c) cs
+            unliftIO u reconnectServer
 
-    reconnectServer :: m ()
-    reconnectServer = do
-      a <- async tryReconnectClient
-      atomically $ modifyTVar' (reconnections c) (a :)
+        reconnectServer :: m ()
+        reconnectServer = do
+          a <- async tryReconnectClient
+          atomically $ modifyTVar' (reconnections c) (a :)
 
-    tryReconnectClient :: m ()
-    tryReconnectClient = do
-      ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \loop ->
-        reconnectClient `catchError` const loop
+        tryReconnectClient :: m ()
+        tryReconnectClient = do
+          ri <- asks $ reconnectInterval . config
+          withRetryInterval ri $ \loop ->
+            reconnectClient `catchError` const loop
 
     reconnectClient :: m ()
     reconnectClient =
@@ -281,8 +303,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
       where
         resubscribe :: Map ConnId RcvQueue -> m ()
         resubscribe qs = do
-          (errs, oks) <- M.mapEither id <$> subscribeQueues c srv qs
-          liftIO . unless (M.null oks) . notifySub "" . UP srv $ M.keys oks
+          (client_, (errs, oks)) <- second (M.mapEither id) <$> subscribeQueues c srv qs
+          liftIO $ do
+            mapM_ (notifySub "" . hostEvent CONNECT) client_
+            unless (M.null oks) $ do
+              notifySub "" . UP srv $ M.keys oks
           let (tempErrs, finalErrs) = M.partition temporaryAgentError errs
           liftIO . mapM_ (\(connId, e) -> notifySub connId $ ERR e) $ M.assocs finalErrs
           mapM_ throwError . listToMaybe $ M.elems tempErrs
@@ -303,9 +328,10 @@ getNtfServerClient c@AgentClient {active, ntfClients} srv = do
       cfg <- atomically . updateClientConfig c =<< asks (ntfCfg . config)
       liftEitherError (protocolClientError NTF) (getProtocolClient srv cfg Nothing clientDisconnected)
 
-    clientDisconnected :: IO ()
-    clientDisconnected = do
+    clientDisconnected :: NtfClient -> IO ()
+    clientDisconnected client = do
       atomically $ TM.delete srv ntfClients
+      atomically $ writeTBQueue (subQ c) ("", "", hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getClientVar :: forall a s. ProtocolServer s -> TMap (ProtocolServer s) (TMVar a) -> STM (Either (TMVar a) (TMVar a))
@@ -328,7 +354,7 @@ waitForProtocolClient c clientVar = do
 
 newProtocolClient ::
   forall msg m.
-  AgentMonad m =>
+  (AgentMonad m, ProtocolTypeI (ProtoType msg)) =>
   AgentClient ->
   ProtoServer msg ->
   TMap (ProtoServer msg) (ClientVar msg) ->
@@ -344,6 +370,7 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
         Right client -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
           atomically $ putTMVar clientVar r
+          atomically $ writeTBQueue (subQ c) ("", "", hostEvent CONNECT client)
           successAction client
         Left e -> do
           if temporaryAgentError e
@@ -360,6 +387,9 @@ newProtocolClient c srv clients connectClient reconnectClient clientVar = tryCon
     connectAsync = do
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \loop -> void $ tryConnectClient (const reconnectClient) loop
+
+hostEvent :: forall msg. ProtocolTypeI (ProtoType msg) => (AProtocolType -> TransportHost -> ACommand 'Agent) -> ProtocolClient msg -> ACommand 'Agent
+hostEvent event client = event (AProtocolType $ protocolTypeI @(ProtoType msg)) $ transportHost client
 
 updateClientConfig :: AgentClient -> ProtocolClientConfig -> STM ProtocolClientConfig
 updateClientConfig AgentClient {useNetworkConfig} cfg = do
@@ -505,14 +535,14 @@ temporaryAgentError = \case
   _ -> False
 
 -- | subscribe multiple queues - all passed queues should be on the same server
-subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> Map ConnId RcvQueue -> m (Map ConnId (Either AgentErrorType ()))
+subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> Map ConnId RcvQueue -> m (Maybe SMPClient, Map ConnId (Either AgentErrorType ()))
 subscribeQueues c srv qs = do
   (errs, qs_) <- partitionEithers <$> mapM checkQueue (M.assocs qs)
   forM_ qs_ $ atomically . uncurry (addPendingSubscription c) . swap
   case L.nonEmpty qs_ of
     Just qs' -> do
       smp_ <- tryError (getSMPServerClient c srv)
-      M.fromList . (errs <>) <$> case smp_ of
+      (eitherToMaybe smp_,) . M.fromList . (errs <>) <$> case smp_ of
         Left e -> pure $ map (second . const $ Left e) qs_
         Right smp -> do
           logServer "-->" c srv (bshow (length qs_) <> " queues") "SUB"
@@ -521,7 +551,7 @@ subscribeQueues c srv qs = do
             liftIO $ zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
           forM_ rs' $ \((connId, rq), r) -> liftIO $ processSubResult c rq connId r
           pure $ map (bimap fst (first $ protocolClientError SMP)) rs'
-    _ -> pure $ M.fromList errs
+    _ -> pure $ (Nothing, M.fromList errs)
   where
     checkQueue rq@(connId, RcvQueue {rcvId, server}) = do
       prohibited <- atomically . TM.member (server, rcvId) $ getMsgLocks c

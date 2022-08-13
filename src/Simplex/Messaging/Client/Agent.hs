@@ -162,8 +162,8 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ} srv =
     connectClient :: ExceptT ProtocolClientError IO SMPClient
     connectClient = ExceptT $ getProtocolClient srv (smpCfg agentCfg) (Just msgQ) clientDisconnected
 
-    clientDisconnected :: IO ()
-    clientDisconnected = do
+    clientDisconnected :: SMPClient -> IO ()
+    clientDisconnected _ = do
       removeClientAndSubs >>= (`forM_` serverDown)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 

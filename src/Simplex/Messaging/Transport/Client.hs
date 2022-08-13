@@ -73,6 +73,10 @@ instance StrEncoding TransportHost where
     where
       ipNum = A.decimal <* A.char '.'
 
+instance ToJSON TransportHost where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
 newtype TransportHosts = TransportHosts {thList :: NonEmpty TransportHost}
 
 instance StrEncoding TransportHosts where

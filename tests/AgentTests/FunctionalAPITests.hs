@@ -47,7 +47,12 @@ a ##> t = a >>= \t' -> liftIO (t' `shouldBe` t)
 a =##> p = a >>= \t -> liftIO (t `shouldSatisfy` p)
 
 get :: MonadIO m => AgentClient -> m (ATransmission 'Agent)
-get c = atomically (readTBQueue $ subQ c)
+get c = do
+  t@(_, _, cmd) <- atomically (readTBQueue $ subQ c)
+  case cmd of
+    CONNECT {} -> get c
+    DISCONNECT {} -> get c
+    _ -> pure t
 
 pattern Msg :: MsgBody -> ACommand 'Agent
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk} _ msgBody

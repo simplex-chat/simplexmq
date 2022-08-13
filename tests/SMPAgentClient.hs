@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -27,6 +28,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.KeepAlive
@@ -56,7 +58,14 @@ testDB3 :: String
 testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
 
 smpAgentTest :: forall c. Transport c => TProxy c -> ARawTransmission -> IO ARawTransmission
-smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> tGetRaw h
+smpAgentTest _ cmd = runSmpAgentTest $ \(h :: c) -> tPutRaw h cmd >> get h
+  where
+    get h = do
+      t@(_, _, cmdStr) <- tGetRaw h
+      case parseAll commandP cmdStr of
+        Right (ACmd SAgent CONNECT {}) -> get h
+        Right (ACmd SAgent DISCONNECT {}) -> get h
+        _ -> pure t
 
 runSmpAgentTest :: forall c m a. (Transport c, MonadUnliftIO m, MonadRandom m, MonadFail m) => (c -> m a) -> m a
 runSmpAgentTest test = withSmpServer t . withSmpAgent t $ testSMPAgentClient test
@@ -177,7 +186,7 @@ agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig
     { tcpPort = agentTestPort,
-      tbqSize = 1,
+      tbqSize = 4,
       dbFile = testDB,
       smpCfg =
         defaultClientConfig

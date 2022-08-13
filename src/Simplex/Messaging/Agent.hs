@@ -457,7 +457,7 @@ subscribeConnections' c connIds = do
     addRcvQueue :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) -> ConnId -> (RcvQueue, ConnData) -> Map SMPServer (Map ConnId (RcvQueue, ConnData))
     addRcvQueue m connId rq@(RcvQueue {server}, _) = M.alter (Just . maybe (M.singleton connId rq) (M.insert connId rq)) server m
     subscribe :: (SMPServer, Map ConnId (RcvQueue, ConnData)) -> m (Map ConnId (Either AgentErrorType ()))
-    subscribe (srv, qs) = subscribeQueues c srv (M.map fst qs)
+    subscribe (srv, qs) = snd <$> subscribeQueues c srv (M.map fst qs)
     sendNtfCreate :: NtfSupervisor -> [Map ConnId (Either AgentErrorType ())] -> m ()
     sendNtfCreate ns rcvRs =
       forM_ (concatMap M.assocs rcvRs) $ \case
