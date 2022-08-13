@@ -26,7 +26,7 @@
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
-    ProtocolClient (thVersion, sessionId),
+    ProtocolClient (thVersion, sessionId, transportHost),
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
@@ -101,6 +101,7 @@ data ProtocolClient msg = ProtocolClient
     sessionId :: SessionId,
     thVersion :: Version,
     protocolServer :: ProtoServer msg,
+    transportHost :: TransportHost,
     tcpTimeout :: Int,
     clientCorrId :: TVar Natural,
     sentCommands :: TMap CorrId (Request msg),
@@ -216,17 +217,17 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> IO () -> IO (Either ProtocolClientError (ProtocolClient msg))
+getProtocolClient :: forall msg. Protocol msg => ProtoServer msg -> ProtocolClientConfig -> Maybe (TBQueue (ServerTransmission msg)) -> (ProtocolClient msg -> IO ()) -> IO (Either ProtocolClientError (ProtocolClient msg))
 getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig, smpServerVRange} msgQ disconnected = do
   case chooseTransportHost networkConfig (host protocolServer) of
     Right useHost ->
-      (atomically mkProtocolClient >>= runClient useTransport useHost)
+      (atomically (mkProtocolClient useHost) >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpKeepAlive, socksProxy, smpPingInterval} = networkConfig
-    mkProtocolClient :: STM (ProtocolClient msg)
-    mkProtocolClient = do
+    mkProtocolClient :: TransportHost -> STM (ProtocolClient msg)
+    mkProtocolClient transportHost = do
       connected <- newTVar False
       clientCorrId <- newTVar 0
       sentCommands <- TM.empty
@@ -239,6 +240,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
             thVersion = undefined,
             connected,
             protocolServer,
+            transportHost,
             tcpTimeout,
             clientCorrId,
             sentCommands,
@@ -277,7 +279,7 @@ getProtocolClient protocolServer cfg@ProtocolClientConfig {qSize, networkConfig,
           let c' = c {sessionId, thVersion} :: ProtocolClient msg
           -- TODO remove ping if 0 is passed (or Nothing?)
           raceAny_ [send c' th, process c', receive c' th, ping c']
-            `finally` disconnected
+            `finally` disconnected c'
 
     send :: Transport c => ProtocolClient msg -> THandle c -> IO ()
     send ProtocolClient {sndQ} h = forever $ atomically (readTBQueue sndQ) >>= tPut h

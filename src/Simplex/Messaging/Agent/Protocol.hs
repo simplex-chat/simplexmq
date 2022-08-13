@@ -40,6 +40,7 @@ module Simplex.Messaging.Agent.Protocol
     -- * SMP agent protocol types
     ConnInfo,
     ACommand (..),
+    ACmd (..),
     AParty (..),
     SAParty (..),
     MsgHash,
@@ -141,7 +142,8 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
-  ( ErrorType,
+  ( AProtocolType,
+    ErrorType,
     MsgBody,
     MsgFlags,
     MsgId,
@@ -228,6 +230,8 @@ data ACommand (p :: AParty) where
   CON :: ACommand Agent -- notification that connection is established
   SUB :: ACommand Client
   END :: ACommand Agent
+  CONNECT :: AProtocolType -> TransportHost -> ACommand Agent
+  DISCONNECT :: AProtocolType -> TransportHost -> ACommand Agent
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent
   UP :: SMPServer -> [ConnId] -> ACommand Agent
   SEND :: MsgFlags -> MsgBody -> ACommand Client
@@ -929,8 +933,10 @@ commandP =
     <|> "INFO " *> infoCmd
     <|> "SUB" $> ACmd SClient SUB
     <|> "END" $> ACmd SAgent END
-    <|> "DOWN " *> downsResp
-    <|> "UP " *> upsResp
+    <|> "CONNECT " *> connectResp
+    <|> "DISCONNECT " *> disconnectResp
+    <|> "DOWN " *> downResp
+    <|> "UP " *> upResp
     <|> "SEND " *> sendCmd
     <|> "MID " *> msgIdResp
     <|> "SENT " *> sentResp
@@ -954,8 +960,10 @@ commandP =
     acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
     infoCmd = ACmd SAgent . INFO <$> A.takeByteString
-    downsResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
-    upsResp = ACmd SAgent .: UP <$> strP_ <*> connections
+    connectResp = ACmd SAgent .: CONNECT <$> strP_ <*> strP
+    disconnectResp = ACmd SAgent .: DISCONNECT <$> strP_ <*> strP
+    downResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
+    upResp = ACmd SAgent .: UP <$> strP_ <*> connections
     sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
@@ -990,6 +998,8 @@ serializeCommand = \case
   INFO cInfo -> "INFO " <> serializeBinary cInfo
   SUB -> "SUB"
   END -> "END"
+  CONNECT p h -> B.unwords ["CONNECT", strEncode p, strEncode h]
+  DISCONNECT p h -> B.unwords ["DISCONNECT", strEncode p, strEncode h]
   DOWN srv conns -> B.unwords ["DOWN", strEncode srv, connections conns]
   UP srv conns -> B.unwords ["UP", strEncode srv, connections conns]
   SEND msgFlags msgBody -> "SEND " <> smpEncode msgFlags <> " " <> serializeBinary msgBody
@@ -1062,6 +1072,8 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
       ACPT {} -> Right cmd
       -- ERROR response does not always have connId
       ERR _ -> Right cmd
+      CONNECT {} -> Right cmd
+      DISCONNECT {} -> Right cmd
       DOWN {} -> Right cmd
       UP {} -> Right cmd
       -- other responses must have connId

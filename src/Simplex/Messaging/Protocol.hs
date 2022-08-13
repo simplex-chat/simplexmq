@@ -64,6 +64,8 @@ module Simplex.Messaging.Protocol
     PrivHeader (..),
     Protocol (..),
     ProtocolType (..),
+    AProtocolType (..),
+    ProtocolTypeI (..),
     ProtocolServer (..),
     ProtoServer,
     SMPServer,
@@ -135,7 +137,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
@@ -578,7 +580,7 @@ instance StrEncoding ProtocolType where
     PSMP -> "smp"
     PNTF -> "ntf"
   strP =
-    A.takeTill (== ':') >>= \case
+    A.takeTill (\c -> c == ':' || c == ' ') >>= \case
       "smp" -> pure PSMP
       "ntf" -> pure PNTF
       _ -> fail "bad ProtocolType"
@@ -594,6 +596,11 @@ deriving instance Ord (SProtocolType p)
 deriving instance Show (SProtocolType p)
 
 data AProtocolType = forall p. ProtocolTypeI p => AProtocolType (SProtocolType p)
+
+deriving instance Show AProtocolType
+
+instance Eq AProtocolType where
+  AProtocolType p == AProtocolType p' = isJust $ testEquality p p'
 
 instance TestEquality SProtocolType where
   testEquality SPSMP SPSMP = Just Refl
@@ -617,6 +624,10 @@ instance ProtocolTypeI p => StrEncoding (SProtocolType p) where
 instance StrEncoding AProtocolType where
   strEncode (AProtocolType p) = strEncode p
   strP = aProtocolType <$> strP
+
+instance ToJSON AProtocolType where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
 
 checkProtocolType :: forall t p p'. (ProtocolTypeI p, ProtocolTypeI p') => t p' -> Either String (t p)
 checkProtocolType p = case testEquality (protocolTypeI @p) (protocolTypeI @p') of
