@@ -940,9 +940,9 @@ getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} 
       [sql|
         SELECT conn_id, rcv_ntf_dh_secret
         FROM rcv_queues
-        WHERE (host = ? OR host LIKE ? || ',%') AND port = ? AND ntf_id = ?
+        WHERE host = ? AND port = ? AND ntf_id = ?
       |]
-      (host, host, port, notifierId)
+      (host, port, notifierId)
   where
     res (connId, Just rcvNtfDhSecret) = Right (connId, rcvNtfDhSecret)
     res _ = Left SEConnNotFound

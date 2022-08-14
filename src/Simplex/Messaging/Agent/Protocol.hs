@@ -98,6 +98,7 @@ module Simplex.Messaging.Agent.Protocol
     queueStatusT,
     agentMessageType,
     extraSMPServerHosts,
+    updateSMPServerHosts,
 
     -- * TCP transport functions
     tPut,
