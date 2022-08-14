@@ -1,4 +1,4 @@
-# SMP queue rotation
+# SMP queue rotation and redundancy
 
 ## Problem
 
@@ -6,34 +6,44 @@
 
 2. If the user changes the configured SMP server(s), the previously created contacts do not migrate to the new server(s).
 
+3. Server can lose messages.
+
 ## Solution
 
-Additional messages exchanged by SMP agents to negotiate migration of the connection to other receiving queue.
+Additional messages exchanged by SMP agents to negotiate addition and removal of queues to the connection.
+
+This approach allows for both rotation and redundancy, as changing queue will be done be adding a queue and then removing the existing queue.
+
+The reason for this approach is that otherwise it's non-trivial to switch from one queue to another without losing messages or delivering them out of order, it's easier to have messages delivered via both queues during the switch, however short or long time it is.
 
 ### Messages
 
-Only two additional message is required:
+Additional agent messages required for the protocol:
 
-`NEW` agent message to add the new queue address(es), having the same format as `REPLY` message, encoded as `N`.
+`ADD`: add the new queue address(es), the same format as `REPLY` message, encoded as `A`.
 
-`USE` agent message to remove the queue with sender's queue ID as parameter, encoded as `U`.
+`KEY`: pass sender's key via existing connection (SMP confirmation message will not be used, to avoid the same "race" of the initial key exchange that would create the risk of intercepting the queue for the attacker), encoded as `K`.
+
+`USE`: instruct the sender to use the new queue with sender's queue ID as parameter, encoded as `U`.
+
+`DEL`: instruct the sender to stop using the previous queue, encoded as `X`
 
 ### Protocol
 
 ```
 participant A as Alice
 participant B as Bob
-participant S as Server
+participant R as Server that has A's receive queue
+participant S as Server that has A's send queue (B's receive queue)
+participant R' as Server that hosts the new A's receive queue
 
-A ->> S: createnew queue
-A ->> S ->> B: NEW queue, sent to B's receive queue
-B ->> S: confirm queue
-A ->> S: secure queue
-A ->> S ->> B: USE queue, sent to B's receive queue
-B ->> S ->> A: HELLO
-A ->> S: delete previous queue
+A ->> R': create new queue
+A ->> S ->> B: ADD (R'): address of the new queue
+B ->> R ->> A: KEY (R'): sender's key for the new queue (to avoid the race of SMP confirmation for the initial exchange)
+A ->> R': secure queue
+A ->> S ->> B: USE (R'): instruction to use new queue
+B ->> R' ->> A: HELLO
+B ->> R,R' ->> A: send all new messages to both queues
+A ->> S: DEL (R): the previous queue deleted
+B ->> R' ->> A: send all new messages to the new queue only
 ```
-
-The problem with the above protocol is that during switching from one queue to another the messages can be delivered out of order. One of the ways to avoid it is by having additional messages in the protocol so that the receiving client can communicate to the sending the last message it received via the queue, and the sending client will start sending to the new queue starting from this message. That would require sending agent to stop deleting sent messages as soon as it received NEW message and only delete them once the switch is complete.
-
-Another approach would be considering queue rotation and redundancy as one problem and manage out-of-order delivery on the recipient side - e.g. if the message is delivered with the gap, there could be timeout before it's delivered to the user, and further timeout before integrity violation is reported, and also deduplication of messages - in this case all messages during the switch would be sent to both queues until the original queue is deleted.
