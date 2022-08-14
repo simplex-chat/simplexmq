@@ -23,6 +23,7 @@ import Data.Type.Equality
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -332,12 +333,16 @@ data SMPQueueNtf = SMPQueueNtf
 instance Encoding SMPQueueNtf where
   smpEncode SMPQueueNtf {smpServer, notifierId} = smpEncode (smpServer, notifierId)
   smpP = do
-    (smpServer, notifierId) <- smpP
-    pure $ SMPQueueNtf {smpServer, notifierId}
+    smpServer <- updateSMPServerHosts <$> smpP
+    notifierId <- smpP
+    pure SMPQueueNtf {smpServer, notifierId}
 
 instance StrEncoding SMPQueueNtf where
   strEncode SMPQueueNtf {smpServer, notifierId} = strEncode smpServer <> "/" <> strEncode notifierId
-  strP = SMPQueueNtf <$> strP <* A.char '/' <*> strP
+  strP = do
+    smpServer <- updateSMPServerHosts <$> strP
+    notifierId <- A.char '/' *> strP
+    pure SMPQueueNtf {smpServer, notifierId}
 
 data PushProvider = PPApnsDev | PPApnsProd | PPApnsTest
   deriving (Eq, Ord, Show)

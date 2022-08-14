@@ -91,7 +91,6 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
--- import GHC.Conc (unsafeIOToSTM)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.NtfSubSupervisor
@@ -118,6 +117,8 @@ import UnliftIO.Async (async, mapConcurrently, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+
+-- import GHC.Conc (unsafeIOToSTM)
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m AgentClient
