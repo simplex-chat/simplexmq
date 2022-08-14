@@ -79,7 +79,6 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.Bifunctor (bimap, first, second)
-import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
