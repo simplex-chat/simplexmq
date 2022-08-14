@@ -79,6 +79,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.Reader
 import Crypto.Random (MonadRandom)
 import Data.Bifunctor (bimap, first, second)
+import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
@@ -91,7 +92,6 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.SQLite.Simple as DB
--- import GHC.Conc (unsafeIOToSTM)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.NtfSubSupervisor
@@ -104,7 +104,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
@@ -118,6 +118,8 @@ import UnliftIO.Async (async, mapConcurrently, race_)
 import UnliftIO.Concurrent (forkFinally, forkIO, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+
+-- import GHC.Conc (unsafeIOToSTM)
 
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: (MonadRandom m, MonadUnliftIO m) => AgentConfig -> InitialAgentServers -> m AgentClient
