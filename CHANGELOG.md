@@ -1,3 +1,11 @@
+# 3.2.0
+
+SMP agent:
+
+- Support multiple server hostnames (including onion hostnames) in server addresses.
+- Network configuration options.
+- Options to define rules to choose server hostname.
+
 # 3.1.0
 
 SMP server and agent:
