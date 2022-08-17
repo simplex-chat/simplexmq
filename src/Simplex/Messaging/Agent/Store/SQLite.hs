@@ -84,6 +84,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getNextNtfSubSMPAction,
     getActiveNtfToken,
     getNtfRcvQueue,
+    setConnectionNtfs,
 
     -- * utilities
     withConnection,
@@ -256,17 +257,17 @@ createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
   ConnData {connId} -> create connId $> Right connId
 
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
-createRcvConn db gVar cData q@RcvQueue {server} cMode =
+createRcvConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
   createConn_ gVar cData $ \connId -> do
     upsertServer_ db server
-    DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, cMode, connAgentVersion cData, duplexHandshake cData)
+    DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?, ?, ?, ?, ?)" (connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
     insertRcvQueue_ db connId q
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
-createSndConn db gVar cData q@SndQueue {server} =
+createSndConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
   createConn_ gVar cData $ \connId -> do
     upsertServer_ db server
-    DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, duplex_handshake) VALUES (?, ?, ?, ?)" (connId, SCMInvitation, connAgentVersion cData, duplexHandshake cData)
+    DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?, ?, ?, ?, ?)" (connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
     insertSndQueue_ db connId q
 
 getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError SomeConn)
@@ -947,6 +948,10 @@ getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} 
     res (connId, Just rcvNtfDhSecret) = Right (connId, rcvNtfDhSecret)
     res _ = Left SEConnNotFound
 
+setConnectionNtfs :: DB.Connection -> ConnId -> Bool -> IO ()
+setConnectionNtfs db connId enableNtfs =
+  DB.execute db "UPDATE connections SET enable_ntfs = ? WHERE conn_id = ?" (enableNtfs, connId)
+
 -- * Auxiliary helpers
 
 instance ToField QueueStatus where toField = toField . serializeQueueStatus
@@ -1117,9 +1122,9 @@ getConn dbConn connId =
 getConnData_ :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData_ dbConn connId' =
   connData
-    <$> DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, duplex_handshake FROM connections WHERE conn_id = ?;" (Only connId')
+    <$> DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake FROM connections WHERE conn_id = ?;" (Only connId')
   where
-    connData [(connId, cMode, connAgentVersion, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, duplexHandshake}, cMode)
+    connData [(connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake}, cMode)
     connData _ = Nothing
 
 getRcvQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
