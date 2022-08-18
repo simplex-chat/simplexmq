@@ -273,34 +273,28 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     -- establish connection
     liftIO $ threadDelay 50000
     (bobId, qInfo) <- createConnection alice True SCMInvitation
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay 750000
     aliceId <- joinConnection bob True qInfo "bob's connInfo"
-    liftIO $ threadDelay 500000
-    liftIO $ print 0
+    liftIO $ threadDelay 750000
     void $ messageNotification apnsQ
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     liftIO $ threadDelay 500000
     allowConnection alice bobId confId "alice's connInfo"
-    liftIO $ print 1
     void $ messageNotification apnsQ
     get bob ##> ("", aliceId, INFO "alice's connInfo")
-    liftIO $ print 2
     void $ messageNotification apnsQ
     get alice ##> ("", bobId, CON)
-    liftIO $ print 3
     void $ messageNotification apnsQ
     get bob ##> ("", aliceId, CON)
     -- bob sends message
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
-    liftIO $ print 4
     void $ messageNotification apnsQ
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 1
     -- alice sends message
     2 <- msgId <$> sendMessage alice bobId (SMP.MsgFlags True) "hey there"
     get alice ##> ("", bobId, SENT $ baseId + 2)
-    liftIO $ print 5
     void $ messageNotification apnsQ
     get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
     ackMessage bob aliceId $ baseId + 2
