@@ -250,6 +250,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     ackMessage alice bobId $ baseId + 1
     -- delete notification subscription
     toggleConnectionNtfs alice bobId False
+    liftIO $ threadDelay 250000
     -- send message
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
