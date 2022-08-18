@@ -927,10 +927,10 @@ sendNtfConnCommands c cmd = do
   connIds <- atomically $ getSubscriptions c
   forM_ connIds $ \connId -> do
     withStore' c (\db -> getConnData db connId) >>= \case
-      Just ConnData {enableNtfs} ->
+      Just (ConnData {enableNtfs}, _) ->
         when enableNtfs . atomically $ sendNtfSubCommand ns (connId, cmd)
       _ ->
-        atomically $ writeTBQueue subQ ("", connId, ERR $ INTERNAL "no connection data")
+        atomically $ writeTBQueue (subQ c) ("", connId, ERR $ INTERNAL "no connection data")
 
 -- TODO
 -- There should probably be another function to cancel all subscriptions that would flush the queue first,
