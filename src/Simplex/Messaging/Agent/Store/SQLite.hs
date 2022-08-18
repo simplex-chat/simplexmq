@@ -27,6 +27,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createRcvConn,
     createSndConn,
     getConn,
+    getConnData,
     getRcvConn,
     deleteConn,
     upgradeRcvConnToDuplex,
@@ -1107,7 +1108,7 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getConn dbConn connId =
-  getConnData_ dbConn connId >>= \case
+  getConnData dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
     Just (connData, cMode) -> do
       rQ <- getRcvQueueByConnId_ dbConn connId
@@ -1119,12 +1120,12 @@ getConn dbConn connId =
         (Just rcvQ, Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection connData rcvQ)
         _ -> Left SEConnNotFound
 
-getConnData_ :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
-getConnData_ dbConn connId' =
+getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
+getConnData dbConn connId' =
   connData
     <$> DB.query dbConn "SELECT conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake FROM connections WHERE conn_id = ?;" (Only connId')
   where
-    connData [(connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake}, cMode)
+    connData [(connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake}, cMode)
     connData _ = Nothing
 
 getRcvQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)

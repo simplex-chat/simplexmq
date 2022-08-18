@@ -913,17 +913,24 @@ withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = 
     Left e -> throwError e
 
 initializeNtfSubs :: AgentMonad m => AgentClient -> m ()
-initializeNtfSubs c = do
-  ns <- asks ntfSupervisor
-  connIds <- atomically $ getSubscriptions c
-  forM_ connIds $ \connId -> atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+initializeNtfSubs c = sendNtfConnCommands c NSCCreate
 
 smpDeleteNtfSubs :: AgentMonad m => AgentClient -> m ()
 smpDeleteNtfSubs c = do
   ns <- asks ntfSupervisor
   void . atomically . flushTBQueue $ ntfSubQ ns
+  sendNtfConnCommands c NSCDelete
+
+sendNtfConnCommands :: AgentMonad m => AgentClient -> NtfSupervisorCommand -> m ()
+sendNtfConnCommands c cmd = do
+  ns <- asks ntfSupervisor
   connIds <- atomically $ getSubscriptions c
-  forM_ connIds $ \connId -> atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCSmpDelete)
+  forM_ connIds $ \connId -> do
+    withStore' c (\db -> getConnData db connId) >>= \case
+      Just ConnData {enableNtfs} ->
+        when enableNtfs . atomically $ sendNtfSubCommand ns (connId, cmd)
+      _ ->
+        atomically $ writeTBQueue subQ ("", connId, ERR $ INTERNAL "no connection data")
 
 -- TODO
 -- There should probably be another function to cancel all subscriptions that would flush the queue first,
