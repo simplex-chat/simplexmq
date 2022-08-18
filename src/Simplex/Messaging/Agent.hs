@@ -776,7 +776,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               cron <- asks $ ntfCron . config
               agentNtfEnableCron c tknId tkn cron
               when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
-              when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ smpDeleteNtfSubs c
+              when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCDelete
             pure ntfTknStatus -- TODO
             -- agentNtfCheckToken c tknId tkn >>= \case
           | otherwise -> replaceToken tknId $> NTRegistered
@@ -847,7 +847,7 @@ deleteNtfToken' c deviceToken =
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
       when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
       deleteToken_ c tkn
-      smpDeleteNtfSubs c
+      deleteNtfSubs c NSCSmpDelete
     _ -> throwError $ CMD PROHIBITED
 
 getNtfToken' :: AgentMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
@@ -915,11 +915,11 @@ withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = 
 initializeNtfSubs :: AgentMonad m => AgentClient -> m ()
 initializeNtfSubs c = sendNtfConnCommands c NSCCreate
 
-smpDeleteNtfSubs :: AgentMonad m => AgentClient -> m ()
-smpDeleteNtfSubs c = do
+deleteNtfSubs :: AgentMonad m => AgentClient -> NtfSupervisorCommand -> m ()
+deleteNtfSubs c deleteCmd = do
   ns <- asks ntfSupervisor
   void . atomically . flushTBQueue $ ntfSubQ ns
-  sendNtfConnCommands c NSCDelete
+  sendNtfConnCommands c deleteCmd
 
 sendNtfConnCommands :: AgentMonad m => AgentClient -> NtfSupervisorCommand -> m ()
 sendNtfConnCommands c cmd = do
