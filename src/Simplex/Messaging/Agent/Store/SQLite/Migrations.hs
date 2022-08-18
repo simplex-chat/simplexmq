@@ -64,8 +64,8 @@ get conn migrations =
 
 run :: Connection -> [Migration] -> IO ()
 run conn ms = forM_ ms $ \Migration {name, up} -> do
-  DB.withImmediateTransaction conn $ insert name >> execSQL up
   when (name == "m20220811_onion_hosts") updateServers
+  DB.withImmediateTransaction conn $ insert name >> execSQL up
   where
     insert name = DB.execute conn "INSERT INTO migrations (name, ts) VALUES (?, ?);" . (name,) =<< getCurrentTime
     execSQL = SQLite3.exec $ DB.connectionHandle conn
