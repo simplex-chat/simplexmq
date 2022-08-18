@@ -928,7 +928,7 @@ sendNtfConnCommands c cmd = do
   forM_ connIds $ \connId -> do
     withStore' c (\db -> getConnData db connId) >>= \case
       Just (ConnData {enableNtfs}, _) ->
-        when enableNtfs . atomically $ sendNtfSubCommand ns (connId, cmd)
+        when enableNtfs . atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
       _ ->
         atomically $ writeTBQueue (subQ c) ("", connId, ERR $ INTERNAL "no connection data")
 

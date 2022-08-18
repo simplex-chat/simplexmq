@@ -275,6 +275,7 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     (bobId, qInfo) <- createConnection alice True SCMInvitation
     liftIO $ threadDelay 500000
     aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    liftIO $ threadDelay 500000
     liftIO $ print 0
     void $ messageNotification apnsQ
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -348,7 +349,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- set mode to NMPeriodic
     NTActive <- registerNtfToken alice tkn NMPeriodic
     -- send message, no notification
-    liftIO $ threadDelay 1250000
+    liftIO $ threadDelay 750000
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     noNotification apnsQ
