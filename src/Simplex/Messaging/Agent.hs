@@ -65,7 +65,7 @@ module Simplex.Messaging.Agent
     deleteNtfToken,
     getNtfToken,
     getNtfTokenData,
-    deleteNtfSub,
+    toggleConnectionNtfs,
     activateAgent,
     suspendAgent,
     logConnection,
@@ -142,20 +142,20 @@ resumeAgentClient c = atomically $ writeTVar (active c) True
 type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: AgentErrorMonad m => AgentClient -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
-createConnection c cMode = withAgentEnv c $ newConn c "" cMode
+createConnection :: AgentErrorMonad m => AgentClient -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
+createConnection c enableNtfs cMode = withAgentEnv c $ newConn c "" enableNtfs cMode
 
 -- | Join SMP agent connection (JOIN command)
-joinConnection :: AgentErrorMonad m => AgentClient -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConnection c = withAgentEnv c .: joinConn c ""
+joinConnection :: AgentErrorMonad m => AgentClient -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
+joinConnection c enableNtfs = withAgentEnv c .: joinConn c "" enableNtfs
 
 -- | Allow connection to continue after CONF notification (LET command)
 allowConnection :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
 allowConnection c = withAgentEnv c .:. allowConnection' c
 
 -- | Accept contact after REQ notification (ACPT command)
-acceptContact :: AgentErrorMonad m => AgentClient -> ConfirmationId -> ConnInfo -> m ConnId
-acceptContact c = withAgentEnv c .: acceptContact' c ""
+acceptContact :: AgentErrorMonad m => AgentClient -> Bool -> ConfirmationId -> ConnInfo -> m ConnId
+acceptContact c enableNtfs = withAgentEnv c .: acceptContact' c "" enableNtfs
 
 -- | Reject contact (RJCT command)
 rejectContact :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> m ()
@@ -241,9 +241,9 @@ getNtfToken c = withAgentEnv c $ getNtfToken' c
 getNtfTokenData :: AgentErrorMonad m => AgentClient -> m NtfToken
 getNtfTokenData c = withAgentEnv c $ getNtfTokenData' c
 
--- | Delete notification subscription for connection
-deleteNtfSub :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
-deleteNtfSub c = withAgentEnv c . deleteNtfSub' c
+-- | Set connection notifications on/off
+toggleConnectionNtfs :: AgentErrorMonad m => AgentClient -> ConnId -> Bool -> m ()
+toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 
 -- | Activate operations
 activateAgent :: AgentErrorMonad m => AgentClient -> m ()
@@ -283,10 +283,10 @@ client c@AgentClient {rcvQ, subQ} = forever $ do
 -- | execute any SMP agent command
 processCommand :: forall m. AgentMonad m => AgentClient -> (ConnId, ACommand 'Client) -> m (ConnId, ACommand 'Agent)
 processCommand c (connId, cmd) = case cmd of
-  NEW (ACM cMode) -> second (INV . ACR cMode) <$> newConn c connId cMode
-  JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId cReq connInfo
+  NEW (ACM cMode) -> second (INV . ACR cMode) <$> newConn c connId True cMode
+  JOIN (ACR _ cReq) connInfo -> (,OK) <$> joinConn c connId True cReq connInfo
   LET confId ownCInfo -> allowConnection' c connId confId ownCInfo $> (connId, OK)
-  ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId invId ownCInfo
+  ACPT invId ownCInfo -> (,OK) <$> acceptContact' c connId True invId ownCInfo
   RJCT invId -> rejectContact' c connId invId $> (connId, OK)
   SUB -> subscribeConnection' c connId $> (connId, OK)
   SEND msgFlags msgBody -> (connId,) . MID <$> sendMessage' c connId msgFlags msgBody
@@ -295,18 +295,19 @@ processCommand c (connId, cmd) = case cmd of
   DEL -> deleteConnection' c connId $> (connId, OK)
   CHK -> (connId,) . STAT <$> getConnectionServers' c connId
 
-newConn :: AgentMonad m => AgentClient -> ConnId -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
-newConn c connId cMode = do
+newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
+newConn c connId enableNtfs cMode = do
   srv <- getSMPServer c
   clientVRange <- asks $ smpClientVRange . config
   (rq, qUri) <- newRcvQueue c srv clientVRange
   g <- asks idsDrg
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
-  let cData = ConnData {connId, connAgentVersion, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
+  let cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
   connId' <- withStore c $ \db -> createRcvConn db g cData rq cMode
   addSubscription c rq connId'
-  ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (connId', NSCCreate)
+  when enableNtfs $ do
+    ns <- asks ntfSupervisor
+    atomically $ sendNtfSubCommand ns (connId', NSCCreate)
   aVRange <- asks $ smpAgentVRange . config
   let crData = ConnReqUriData simplexChat aVRange [qUri]
   case cMode of
@@ -316,8 +317,8 @@ newConn c connId cMode = do
       withStore' c $ \db -> createRatchetX3dhKeys db connId' pk1 pk2
       pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams CR.e2eEncryptVRange)
 
-joinConn :: AgentMonad m => AgentClient -> ConnId -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo = do
+joinConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
+joinConn c connId enableNtfs (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
   clientVRange <- asks $ smpClientVRange . config
   case ( qUri `compatibleVersion` clientVRange,
@@ -331,13 +332,13 @@ joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2
       sq <- newSndQueue qInfo
       g <- asks idsDrg
       let duplexHS = connAgentVersion /= 1
-          cData = ConnData {connId, connAgentVersion, duplexHandshake = Just duplexHS}
+          cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
       connId' <- withStore c $ \db -> runExceptT $ do
         connId' <- ExceptT $ createSndConn db g cData sq
         liftIO $ createRatchet db connId' rc
         pure connId'
       let cData' = (cData :: ConnData) {connId = connId'}
-      tryError (confirmQueue aVersion c connId' sq cInfo $ Just e2eSndParams) >>= \case
+      tryError (confirmQueue aVersion c cData' sq cInfo $ Just e2eSndParams) >>= \case
         Right _ -> do
           unless duplexHS . void $ enqueueMessage c cData' sq SMP.noMsgFlags HELLO
           pure connId'
@@ -346,27 +347,28 @@ joinConn c connId (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2
           withStore' c (`deleteConn` connId')
           throwError e
     _ -> throwError $ AGENT A_VERSION
-joinConn c connId (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo = do
+joinConn c connId enableNtfs (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
   clientVRange <- asks $ smpClientVRange . config
   case ( qUri `compatibleVersion` clientVRange,
          agentVRange `compatibleVersion` aVRange
        ) of
     (Just qInfo, Just vrsn) -> do
-      (connId', cReq) <- newConn c connId SCMInvitation
+      (connId', cReq) <- newConn c connId enableNtfs SCMInvitation
       sendInvitation c qInfo vrsn cReq cInfo
       pure connId'
     _ -> throwError $ AGENT A_VERSION
 
-createReplyQueue :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> m SMPQueueInfo
-createReplyQueue c connId SndQueue {smpClientVersion} = do
+createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> m SMPQueueInfo
+createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} = do
   srv <- getSMPServer c
   (rq, qUri) <- newRcvQueue c srv $ versionToRange smpClientVersion
   let qInfo = toVersionT qUri smpClientVersion
   addSubscription c rq connId
   withStore c $ \db -> upgradeSndConnToDuplex db connId rq
-  ns <- asks ntfSupervisor
-  atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+  when enableNtfs $ do
+    ns <- asks ntfSupervisor
+    atomically $ sendNtfSubCommand ns (connId, NSCCreate)
   pure qInfo
 
 -- | Approve confirmation (LET command) in Reader monad
@@ -383,13 +385,13 @@ allowConnection' c connId confId ownConnInfo =
     _ -> throwError $ CMD PROHIBITED
 
 -- | Accept contact (ACPT command) in Reader monad
-acceptContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> ConnInfo -> m ConnId
-acceptContact' c connId invId ownConnInfo = do
+acceptContact' :: AgentMonad m => AgentClient -> ConnId -> Bool -> InvitationId -> ConnInfo -> m ConnId
+acceptContact' c connId enableNtfs invId ownConnInfo = do
   Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ ContactConnection {} -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConn c connId connReq ownConnInfo
+      joinConn c connId enableNtfs connReq ownConnInfo
     _ -> throwError $ CMD PROHIBITED
 
 -- | Reject contact (RJCT command) in Reader monad
@@ -673,7 +675,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                     -- and this branch should never be reached as receive is created before the confirmation,
                     -- so the condition is not necessary here, strictly speaking.
                     _ -> unless (duplexHandshake == Just True) $ do
-                      qInfo <- createReplyQueue c connId sq
+                      qInfo <- createReplyQueue c cData sq
                       void . enqueueMessage c cData sq SMP.noMsgFlags $ REPLY [qInfo]
                 AM_A_MSG_ -> notify $ SENT mId
                 _ -> pure ()
@@ -774,7 +776,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               cron <- asks $ ntfCron . config
               agentNtfEnableCron c tknId tkn cron
               when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
-              when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ smpDeleteNtfSubs c
+              when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCDelete
             pure ntfTknStatus -- TODO
             -- agentNtfCheckToken c tknId tkn >>= \case
           | otherwise -> replaceToken tknId $> NTRegistered
@@ -845,7 +847,7 @@ deleteNtfToken' c deviceToken =
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
       when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
       deleteToken_ c tkn
-      smpDeleteNtfSubs c
+      deleteNtfSubs c NSCSmpDelete
     _ -> throwError $ CMD PROHIBITED
 
 getNtfToken' :: AgentMonad m => AgentClient -> m (DeviceToken, NtfTknStatus, NotificationsMode)
@@ -860,11 +862,23 @@ getNtfTokenData' c =
     Just tkn -> pure tkn
     _ -> throwError $ CMD PROHIBITED
 
--- | Delete notification subscription for connection, in Reader monad
-deleteNtfSub' :: AgentMonad m => AgentClient -> ConnId -> m ()
-deleteNtfSub' _c connId = do
-  ns <- asks ntfSupervisor
-  atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
+-- | Set connection notifications, in Reader monad
+toggleConnectionNtfs' :: forall m. AgentMonad m => AgentClient -> ConnId -> Bool -> m ()
+toggleConnectionNtfs' c connId enable = do
+  withStore c (`getConn` connId) >>= \case
+    SomeConn _ (DuplexConnection cData _ _) -> toggle cData
+    SomeConn _ (RcvConnection cData _) -> toggle cData
+    SomeConn _ (ContactConnection cData _) -> toggle cData
+    _ -> throwError $ CONN SIMPLEX
+  where
+    toggle :: ConnData -> m ()
+    toggle cData
+      | enableNtfs cData == enable = pure ()
+      | otherwise = do
+        withStore' c $ \db -> setConnectionNtfs db connId enable
+        ns <- asks ntfSupervisor
+        let cmd = if enable then NSCCreate else NSCDelete
+        atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
@@ -899,17 +913,24 @@ withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = 
     Left e -> throwError e
 
 initializeNtfSubs :: AgentMonad m => AgentClient -> m ()
-initializeNtfSubs c = do
-  ns <- asks ntfSupervisor
-  connIds <- atomically $ getSubscriptions c
-  forM_ connIds $ \connId -> atomically $ sendNtfSubCommand ns (connId, NSCCreate)
+initializeNtfSubs c = sendNtfConnCommands c NSCCreate
 
-smpDeleteNtfSubs :: AgentMonad m => AgentClient -> m ()
-smpDeleteNtfSubs c = do
+deleteNtfSubs :: AgentMonad m => AgentClient -> NtfSupervisorCommand -> m ()
+deleteNtfSubs c deleteCmd = do
   ns <- asks ntfSupervisor
   void . atomically . flushTBQueue $ ntfSubQ ns
+  sendNtfConnCommands c deleteCmd
+
+sendNtfConnCommands :: AgentMonad m => AgentClient -> NtfSupervisorCommand -> m ()
+sendNtfConnCommands c cmd = do
+  ns <- asks ntfSupervisor
   connIds <- atomically $ getSubscriptions c
-  forM_ connIds $ \connId -> atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCSmpDelete)
+  forM_ connIds $ \connId -> do
+    withStore' c (\db -> getConnData db connId) >>= \case
+      Just (ConnData {enableNtfs}, _) ->
+        when enableNtfs . atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
+      _ ->
+        atomically $ writeTBQueue (subQ c) ("", connId, ERR $ INTERNAL "no connection data")
 
 -- TODO
 -- There should probably be another function to cancel all subscriptions that would flush the queue first,
@@ -1194,8 +1215,8 @@ connectReplyQueues c cData@ConnData {connId} ownConnInfo (qInfo :| _) = do
       withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
       enqueueConfirmation c cData sq ownConnInfo Nothing
 
-confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnId -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
-confirmQueue (Compatible agentVersion) c connId sq connInfo e2eEncryption = do
+confirmQueue :: forall m. AgentMonad m => Compatible Version -> AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
+confirmQueue (Compatible agentVersion) c cData@ConnData {connId} sq connInfo e2eEncryption = do
   aMessage <- mkAgentMessage agentVersion
   msg <- mkConfirmation aMessage
   sendConfirmation c sq msg
@@ -1209,7 +1230,7 @@ confirmQueue (Compatible agentVersion) c connId sq connInfo e2eEncryption = do
     mkAgentMessage :: Version -> m AgentMessage
     mkAgentMessage 1 = pure $ AgentConnInfo connInfo
     mkAgentMessage _ = do
-      qInfo <- createReplyQueue c connId sq
+      qInfo <- createReplyQueue c cData sq
       pure $ AgentConnInfoReply (qInfo :| []) connInfo
 
 enqueueConfirmation :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.E2ERatchetParams 'C.X448) -> m ()
