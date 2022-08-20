@@ -878,7 +878,7 @@ toggleConnectionNtfs' c connId enable = do
         withStore' c $ \db -> setConnectionNtfs db connId enable
         ns <- asks ntfSupervisor
         let cmd = if enable then NSCCreate else NSCDelete
-        atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
+        atomically $ sendNtfSubCommand ns (connId, cmd)
 
 deleteToken_ :: AgentMonad m => AgentClient -> NtfToken -> m ()
 deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
