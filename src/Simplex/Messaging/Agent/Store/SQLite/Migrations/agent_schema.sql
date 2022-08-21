@@ -20,7 +20,8 @@ CREATE TABLE connections(
   last_snd_msg_hash BLOB NOT NULL DEFAULT x'',
   smp_agent_version INTEGER NOT NULL DEFAULT 1
   ,
-  duplex_handshake INTEGER NULL DEFAULT 0
+  duplex_handshake INTEGER NULL DEFAULT 0,
+  enable_ntfs INTEGER
 ) WITHOUT ROWID;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,

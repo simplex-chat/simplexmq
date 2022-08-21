@@ -16,7 +16,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations
   )
 where
 
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.List (intercalate, sortBy)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
@@ -35,6 +35,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport.Client (TransportHost)
 
@@ -48,7 +49,8 @@ schemaMigrations =
     ("20220322_notifications", m20220322_notifications),
     ("20220607_v2", m20220608_v2),
     ("m20220625_v2_ntf_mode", m20220625_v2_ntf_mode),
-    ("m20220811_onion_hosts", m20220811_onion_hosts)
+    ("m20220811_onion_hosts", m20220811_onion_hosts),
+    ("m20220817_connection_ntfs", m20220817_connection_ntfs)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -63,16 +65,16 @@ get conn migrations =
     <$> DB.query_ conn "SELECT name FROM migrations ORDER BY name ASC;"
 
 run :: Connection -> [Migration] -> IO ()
-run conn ms = DB.withImmediateTransaction conn . forM_ ms $
-  \Migration {name, up} -> insert name >> execSQL up >> updateServers name
+run conn ms = forM_ ms $ \Migration {name, up} -> do
+  when (name == "m20220811_onion_hosts") updateServers
+  DB.withImmediateTransaction conn $ insert name >> execSQL up
   where
     insert name = DB.execute conn "INSERT INTO migrations (name, ts) VALUES (?, ?);" . (name,) =<< getCurrentTime
     execSQL = SQLite3.exec $ DB.connectionHandle conn
-    updateServers = \case
-      "m20220811_onion_hosts" -> forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
+    updateServers = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
+      DB.withImmediateTransaction conn $
         let hs = decodeLatin1 . strEncode $ ([h, h'] :: NonEmpty TransportHost)
          in DB.execute conn "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)
-      _ -> pure ()
 
 initialize :: Connection -> IO ()
 initialize conn =

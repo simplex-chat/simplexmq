@@ -151,6 +151,7 @@ deriving instance Show SomeConn
 data ConnData = ConnData
   { connId :: ConnId,
     connAgentVersion :: Version,
+    enableNtfs :: Bool,
     duplexHandshake :: Maybe Bool -- added in agent protocol v2
   }
   deriving (Eq, Show)

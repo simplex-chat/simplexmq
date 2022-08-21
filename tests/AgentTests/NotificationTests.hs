@@ -210,8 +210,8 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right (bobId, aliceId, nonce, message) <- runExceptT $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice SCMInvitation
-    aliceId <- joinConnection bob qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice True SCMInvitation
+    aliceId <- joinConnection bob True qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -249,7 +249,8 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} = do
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 1
     -- delete notification subscription
-    deleteNtfSub alice bobId
+    toggleConnectionNtfs alice bobId False
+    liftIO $ threadDelay 250000
     -- send message
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
@@ -271,9 +272,10 @@ testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} = do
     _ <- registerTestToken bob "bcde" NMInstant apnsQ
     -- establish connection
     liftIO $ threadDelay 50000
-    (bobId, qInfo) <- createConnection alice SCMInvitation
-    liftIO $ threadDelay 500000
-    aliceId <- joinConnection bob qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice True SCMInvitation
+    liftIO $ threadDelay 1000000
+    aliceId <- joinConnection bob True qInfo "bob's connInfo"
+    liftIO $ threadDelay 750000
     liftIO $ print 0
     void $ messageNotification apnsQ
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -328,8 +330,8 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice SCMInvitation
-    aliceId <- joinConnection bob qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice True SCMInvitation
+    aliceId <- joinConnection bob True qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
@@ -347,7 +349,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} = do
     -- set mode to NMPeriodic
     NTActive <- registerNtfToken alice tkn NMPeriodic
     -- send message, no notification
-    liftIO $ threadDelay 500000
+    liftIO $ threadDelay 750000
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     noNotification apnsQ
@@ -393,8 +395,8 @@ testChangeToken APNSMockServer {apnsQ} = do
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right (aliceId, bobId) <- runExceptT $ do
     -- establish connection
-    (bobId, qInfo) <- createConnection alice SCMInvitation
-    aliceId <- joinConnection bob qInfo "bob's connInfo"
+    (bobId, qInfo) <- createConnection alice True SCMInvitation
+    aliceId <- joinConnection bob True qInfo "bob's connInfo"
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
