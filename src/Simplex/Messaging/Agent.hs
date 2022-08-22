@@ -636,10 +636,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                         _ -> connError msgId NOT_ACCEPTED
                   AM_REPLY_ -> notifyDel msgId $ ERR e
                   AM_A_MSG_ -> notifyDel msgId $ MERR mId e
-                  AM_A_ADD_ -> pure ()
-                  AM_A_KEY_ -> pure ()
-                  AM_A_USE_ -> pure ()
-                  AM_A_DEL_ -> pure ()
+                  AM_SWITCH_ -> pure ()
+                  AM_KEYS_ -> pure ()
+                  AM_USE_ -> pure ()
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
@@ -1028,10 +1027,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                       A_MSG body -> do
                         logServer "<--" c srv rId "MSG <MSG>"
                         notify $ MSG msgMeta msgFlags body
-                      A_ADD _ -> pure ()
-                      A_KEY _ _ -> pure ()
-                      A_USE _ _ -> pure ()
-                      A_DEL _ _ -> pure ()
+                      SWITCH _ _ -> pure ()
+                      KEYS _ _ -> pure ()
+                      USE _ -> pure ()
                     Right _ -> prohibited >> ack
                     Left e@(AGENT A_DUPLICATE) -> do
                       withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case

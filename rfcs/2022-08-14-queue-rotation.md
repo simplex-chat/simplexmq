@@ -1,4 +1,4 @@
-# SMP queue rotation and redundancy
+# SMP queue rotation
 
 ## Problem
 
@@ -6,27 +6,21 @@
 
 2. If the user changes the configured SMP server(s), the previously created contacts do not migrate to the new server(s).
 
-3. Server can lose messages.
-
 ## Solution
 
-Additional messages exchanged by SMP agents to negotiate addition and removal of queues to the connection.
+Additional messages exchanged by SMP agents to negotiate migration of the queues to the new server. I considered combining this with queue redundancy, but it increases scope and adds a lot of complexity before it is needed.
 
-This approach allows for both rotation and redundancy, as changing queue will be done be adding a queue and then removing the existing queue.
-
-The reason for this approach is that otherwise it's non-trivial to switch from one queue to another without losing messages or delivering them out of order, it's easier to have messages delivered via both queues during the switch, however short or long time it is.
+The proposed approach separates queue rotation from any queue redundancy that may be added in the future.
 
 ### Messages
 
 Additional agent messages required for the protocol:
 
-`ADD`: add the new queue address(es), the same format as `REPLY` message, encoded as `A`.
+`SWITCH`: notify the sender that the queue has to be rotated to the new one, includes the address (server, sender ID and DH key) of the new queue. Encoded as `S`.
 
-`KEY`: pass sender's key via existing connection (SMP confirmation message will not be used, to avoid the same "race" of the initial key exchange that would create the risk of intercepting the queue for the attacker), encoded as `K`.
+`KEYS`: pass sender's server key and DH key via existing connection (SMP confirmation message will not be used, to avoid the same "race" of the initial key exchange that would create the risk of intercepting the queue for the attacker), encoded as `K`.
 
 `USE`: instruct the sender to use the new queue with sender's queue ID as parameter, encoded as `U`.
-
-`DEL`: instruct the sender to stop using the previous queue, encoded as `X`
 
 ### Protocol
 
@@ -37,13 +31,20 @@ participant R as Server that has A's receive queue
 participant S as Server that has A's send queue (B's receive queue)
 participant R' as Server that hosts the new A's receive queue
 
-A ->> R': create new queue
-A ->> S ->> B: ADD (R'): address of the new queue
-B ->> R ->> A: KEY (R'): sender's key for the new queue (to avoid the race of SMP confirmation for the initial exchange)
+A ->> R': create new queue without subscription
+A ->> S ->> B: SWITCH (R'): address of the new queue
+B ->> R ->> A: KEYS (R'): sender's key for the new queue (to avoid the race of SMP confirmation for the initial exchange)
+B ->> R ->> A: continue sending new messages to the old queue
 A ->> R': secure queue
 A ->> S ->> B: USE (R'): instruction to use new queue
-B ->> R' ->> A: HELLO
-B ->> R,R' ->> A: send all new messages to both queues
-A ->> S: DEL (R): the previous queue deleted
-B ->> R' ->> A: send all new messages to the new queue only
+B ->> R' ->> A: HELLO: to validate that the sender can send messages to the new queue before switching to it
+A ->> R: suspend queue, receive all messages
+A ->> R: delete queue
+A ->> R': subscribe to the new queue
+B ->> R' ->> A: once sending fails with AUTH error, start sending new (and any undelivered) messages to the new queue
 ```
+
+It will also require extending SMP protocol:
+
+- allow creating the queue without subscribing to it (to avoid processing the messages that can arrive out of order).
+- add message flag / meta-data indicating that this is the last message and the server has no more messages available (so that the recipient knows when it's safe to delete the queue).

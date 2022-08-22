@@ -433,10 +433,9 @@ data AgentMessageType
   | AM_HELLO_
   | AM_REPLY_
   | AM_A_MSG_
-  | AM_A_ADD_
-  | AM_A_KEY_
-  | AM_A_USE_
-  | AM_A_DEL_
+  | AM_SWITCH_
+  | AM_KEYS_
+  | AM_USE_
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
@@ -446,10 +445,9 @@ instance Encoding AgentMessageType where
     AM_HELLO_ -> "H"
     AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
-    AM_A_ADD_ -> "A"
-    AM_A_KEY_ -> "K"
-    AM_A_USE_ -> "U"
-    AM_A_DEL_ -> "X"
+    AM_SWITCH_ -> "S"
+    AM_KEYS_ -> "K"
+    AM_USE_ -> "U"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
@@ -457,10 +455,9 @@ instance Encoding AgentMessageType where
       'H' -> pure AM_HELLO_
       'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
-      'A' -> pure AM_A_ADD_
-      'K' -> pure AM_A_KEY_
-      'U' -> pure AM_A_USE_
-      'X' -> pure AM_A_DEL_
+      'S' -> pure AM_SWITCH_
+      'K' -> pure AM_KEYS_
+      'U' -> pure AM_USE_
       _ -> fail "bad AgentMessageType"
 
 agentMessageType :: AgentMessage -> AgentMessageType
@@ -476,10 +473,9 @@ agentMessageType = \case
     -- REPLY is only used in v1
     REPLY _ -> AM_REPLY_
     A_MSG _ -> AM_A_MSG_
-    A_ADD _ -> AM_A_ADD_
-    A_KEY {} -> AM_A_KEY_
-    A_USE {} -> AM_A_USE_
-    A_DEL {} -> AM_A_DEL_
+    SWITCH {} -> AM_SWITCH_
+    KEYS {} -> AM_KEYS_
+    USE {} -> AM_USE_
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -498,10 +494,9 @@ data AMsgType
   = HELLO_
   | REPLY_
   | A_MSG_
-  | A_ADD_
-  | A_KEY_
-  | A_USE_
-  | A_DEL_
+  | SWITCH_
+  | KEYS_
+  | USE_
   deriving (Eq)
 
 instance Encoding AMsgType where
@@ -509,19 +504,17 @@ instance Encoding AMsgType where
     HELLO_ -> "H"
     REPLY_ -> "R"
     A_MSG_ -> "M"
-    A_ADD_ -> "A"
-    A_KEY_ -> "K"
-    A_USE_ -> "U"
-    A_DEL_ -> "X"
+    SWITCH_ -> "S"
+    KEYS_ -> "K"
+    USE_ -> "U"
   smpP =
     smpP >>= \case
       'H' -> pure HELLO_
       'R' -> pure REPLY_
       'M' -> pure A_MSG_
-      'A' -> pure A_ADD_
-      'K' -> pure A_KEY_
-      'U' -> pure A_USE_
-      'X' -> pure A_DEL_
+      'S' -> pure SWITCH_
+      'K' -> pure KEYS_
+      'U' -> pure USE_
       _ -> fail "bad AMsgType"
 
 -- | Messages sent between SMP agents once SMP queue is secured.
@@ -534,14 +527,12 @@ data AMessage
     REPLY (L.NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
-  | -- add queue to connection
-    A_ADD SMPQueueInfo
-  | -- key to secure the added queue and agree e2e encryption key
-    A_KEY SMPQueueInfo SndPublicVerifyKey
-  | -- inform that the queue is ready to use
-    A_USE SMPServer SMP.SenderId
-  | -- inform that the queue will be deleted
-    A_DEL SMPServer SMP.SenderId
+  | -- switch the queue to another
+    SWITCH (SMPServer, SMP.SenderId) SMPQueueInfo
+  | -- server key to secure the new queue and DH key to agree e2e encryption
+    KEYS SndPublicVerifyKey SMPQueueInfo
+  | -- inform the sender that the queue is ready to use
+    USE (SMPServer, SMP.SenderId)
   deriving (Show)
 
 instance Encoding AMessage where
@@ -549,20 +540,18 @@ instance Encoding AMessage where
     HELLO -> smpEncode HELLO_
     REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
     A_MSG body -> smpEncode (A_MSG_, Tail body)
-    A_ADD qInfo -> smpEncode (A_ADD_, qInfo)
-    A_KEY qInfo sKey -> smpEncode (A_KEY_, qInfo, sKey)
-    A_USE srv sndId -> smpEncode (A_USE_, srv, sndId)
-    A_DEL srv sndId -> smpEncode (A_DEL_, srv, sndId)
+    SWITCH addr qInfo -> smpEncode (SWITCH_, addr, qInfo)
+    KEYS qInfo sKey -> smpEncode (KEYS_, qInfo, sKey)
+    USE addr -> smpEncode (USE_, addr)
   smpP =
     smpP
       >>= \case
         HELLO_ -> pure HELLO
         REPLY_ -> REPLY <$> smpP
         A_MSG_ -> A_MSG . unTail <$> smpP
-        A_ADD_ -> A_ADD <$> smpP
-        A_KEY_ -> A_KEY <$> smpP <*> smpP
-        A_USE_ -> A_USE <$> smpP <*> smpP
-        A_DEL_ -> A_DEL <$> smpP <*> smpP
+        SWITCH_ -> SWITCH <$> smpP <*> smpP
+        KEYS_ -> KEYS <$> smpP <*> smpP
+        USE_ -> USE <$> smpP
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
