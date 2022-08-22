@@ -3,7 +3,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -13,11 +15,13 @@ import Control.Exception (Exception)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
@@ -105,10 +109,10 @@ data ConnType = CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 -- - DuplexConnection is a connection that has both receive and send queues set up,
 --   typically created by upgrading a receive or a send connection with a missing queue.
 data Connection (d :: ConnType) where
-  RcvConnection :: ConnData -> RcvQueue -> Connection CRcv
-  SndConnection :: ConnData -> SndQueue -> Connection CSnd
-  DuplexConnection :: ConnData -> RcvQueue -> SndQueue -> Connection CDuplex
-  ContactConnection :: ConnData -> RcvQueue -> Connection CContact
+  RcvConnection :: ConnData -> NonEmpty RcvQueue -> Connection CRcv
+  SndConnection :: ConnData -> NonEmpty SndQueue -> Connection CSnd
+  DuplexConnection :: ConnData -> NonEmpty RcvQueue -> NonEmpty SndQueue -> Connection CDuplex
+  ContactConnection :: ConnData -> NonEmpty RcvQueue -> Connection CContact
 
 deriving instance Eq (Connection d)
 
@@ -151,10 +155,30 @@ deriving instance Show SomeConn
 data ConnData = ConnData
   { connId :: ConnId,
     connAgentVersion :: Version,
+    connStatus :: ConnStatus,
     enableNtfs :: Bool,
     duplexHandshake :: Maybe Bool -- added in agent protocol v2
   }
   deriving (Eq, Show)
+
+connData :: Connection d -> ConnData
+connData = \case
+  RcvConnection cData _ -> cData
+  SndConnection cData _ -> cData
+  DuplexConnection cData _ _ -> cData
+  ContactConnection cData _ -> cData
+
+data ConnStatus = CSNew | CSConnected
+  deriving (Eq, Show)
+
+instance TextEncoding ConnStatus where
+  textEncode = \case
+    CSNew -> "new"
+    CSConnected -> "connected"
+  textDecode = \case
+    "new" -> Just CSNew
+    "connected" -> Just CSConnected
+    _ -> Nothing
 
 -- * Confirmation types
 
