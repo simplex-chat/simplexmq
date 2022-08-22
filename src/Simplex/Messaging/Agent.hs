@@ -90,6 +90,7 @@ import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
+import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
@@ -191,7 +192,7 @@ ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage c = withAgentEnv c .: ackMessage' c
 
 -- | Suspend SMP agent connection (OFF command)
-suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m Word16
 suspendConnection c = withAgentEnv c . suspendConnection' c
 
 -- | Delete SMP agent connection (DEL command)
@@ -715,7 +716,7 @@ ackMessage' c connId msgId = do
       withStore' c $ \db -> deleteMsg db connId mId
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
-suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
+suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m Word16
 suspendConnection' c connId =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection _ rq _) -> suspendQueue c rq

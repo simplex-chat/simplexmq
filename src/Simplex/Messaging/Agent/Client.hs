@@ -672,7 +672,7 @@ releaseGetLock :: AgentClient -> RcvQueue -> STM ()
 releaseGetLock c RcvQueue {server, rcvId} =
   TM.lookup (server, rcvId) (getMsgLocks c) >>= mapM_ (`tryPutTMVar` ())
 
-suspendQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
+suspendQueue :: AgentMonad m => AgentClient -> RcvQueue -> m Word16
 suspendQueue c RcvQueue {server, rcvId, rcvPrivateKey} =
   withLogClient c server rcvId "OFF" $ \smp ->
     suspendSMPQueue smp rcvPrivateKey rcvId

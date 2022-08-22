@@ -261,8 +261,7 @@ testCreateDelete (ATransport t) =
       Resp "bcda" _ err2 <- signSendRecv rh rKey ("bcda", sId, OFF)
       (err2, ERR AUTH) #== "rejects OFF with sender's ID"
 
-      Resp "cdab" rId2 ok3 <- signSendRecv rh rKey ("cdab", rId, OFF)
-      (ok3, OK) #== "suspends queue"
+      Resp "cdab" rId2 (LEN _) <- signSendRecv rh rKey ("cdab", rId, OFF)
       (rId2, rId) #== "same queue ID in response 2"
 
       Resp "dabc" _ err3 <- signSendRecv sh sKey ("dabc", sId, _SEND "hello")
@@ -271,8 +270,7 @@ testCreateDelete (ATransport t) =
       Resp "abcd" _ err4 <- sendRecv sh ("", "abcd", sId, _SEND "hello")
       (err4, ERR AUTH) #== "reject unsigned SEND too"
 
-      Resp "bcda" _ ok4 <- signSendRecv rh rKey ("bcda", rId, OFF)
-      (ok4, OK) #== "accepts OFF when suspended"
+      Resp "bcda" _ (LEN _) <- signSendRecv rh rKey ("bcda", rId, OFF)
 
       Resp "cdab" _ (Msg mId2 msg2) <- signSendRecv rh rKey ("cdab", rId, SUB)
       (dec mId2 msg2, Right "hello") #== "accepts SUB when suspended and delivers the message again (because was not ACKed)"

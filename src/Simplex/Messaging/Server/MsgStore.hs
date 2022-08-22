@@ -25,6 +25,7 @@ class MonadMsgStore s q m | s -> q where
 
 class MonadMsgQueue q m where
   isFull :: q -> m Bool
+  queueLength :: q -> m Natural
   writeMsg :: q -> Message -> m () -- non blocking
   tryPeekMsg :: q -> m (Maybe Message) -- non blocking
   peekMsg :: q -> m Message -- blocking

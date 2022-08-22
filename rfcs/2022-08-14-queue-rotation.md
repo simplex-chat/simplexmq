@@ -31,20 +31,20 @@ participant R as Server that has A's receive queue
 participant S as Server that has A's send queue (B's receive queue)
 participant R' as Server that hosts the new A's receive queue
 
-A ->> R': create new queue without subscription
+A ->> R': create new queue
 A ->> S ->> B: SWITCH (R'): address of the new queue
 B ->> R ->> A: KEYS (R'): sender's key for the new queue (to avoid the race of SMP confirmation for the initial exchange)
 B ->> R ->> A: continue sending new messages to the old queue
 A ->> R': secure queue
 A ->> S ->> B: USE (R'): instruction to use new queue
 B ->> R' ->> A: HELLO: to validate that the sender can send messages to the new queue before switching to it
+B ->> R' ->> A: the first message received to the new queue before the old one is drained and deleted should not be processed, it should be stored in the agent memory (and not acknowledged) and only processed once the old queue is drained.
 A ->> R: suspend queue, receive all messages
 A ->> R: delete queue
-A ->> R': subscribe to the new queue
 B ->> R' ->> A: once sending fails with AUTH error, start sending new (and any undelivered) messages to the new queue
 ```
 
 It will also require extending SMP protocol:
 
-- allow creating the queue without subscribing to it (to avoid processing the messages that can arrive out of order).
-- add message flag / meta-data indicating that this is the last message and the server has no more messages available (so that the recipient knows when it's safe to delete the queue).
+- add message flag / meta-data indicating that this is the last message and the server has no more messages available (so that the recipient knows when it's safe to delete the queue). Alternatively it can be NUL message that is sent after the last suspended message is received and in response to OFF command.
+- when queue is suspended the server should return the remaining message count. It should be ok to suspend the queue again, so that if the agent is restarted and the queue status is suspended it can be suspended again to check the number of remaining messages.

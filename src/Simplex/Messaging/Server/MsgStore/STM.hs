@@ -48,6 +48,9 @@ instance MonadMsgQueue MsgQueue STM where
   isFull :: MsgQueue -> STM Bool
   isFull = isFullTBQueue . msgQueue
 
+  queueLength :: MsgQueue -> STM Natural
+  queueLength = lengthTBQueue . msgQueue
+
   writeMsg :: MsgQueue -> Message -> STM ()
   writeMsg = writeTBQueue . msgQueue
 

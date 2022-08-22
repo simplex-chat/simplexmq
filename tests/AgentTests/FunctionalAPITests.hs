@@ -190,7 +190,7 @@ runAgentClientTest alice bob baseId = do
     ackMessage alice bobId $ baseId + 3
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 4
-    suspendConnection alice bobId
+    _ <- suspendConnection alice bobId
     5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId
@@ -228,7 +228,7 @@ runAgentClientContactTest alice bob baseId = do
     ackMessage alice bobId $ baseId + 3
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessage alice bobId $ baseId + 4
-    suspendConnection alice bobId
+    _ <- suspendConnection alice bobId
     5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
     deleteConnection alice bobId

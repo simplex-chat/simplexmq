@@ -17,6 +17,7 @@ module Simplex.Messaging.Server.StoreLog
     logCreateQueue,
     logSecureQueue,
     logAddNotifier,
+    logSuspendQueue,
     logDeleteQueue,
     logDeleteNotifier,
     readWriteStoreLog,
@@ -51,6 +52,7 @@ data StoreLogRecord
   = CreateQueue QueueRec
   | SecureQueue QueueId SndPublicVerifyKey
   | AddNotifier QueueId NtfCreds
+  | SuspendQueue QueueId
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
 
@@ -81,6 +83,7 @@ instance StrEncoding StoreLogRecord where
     CreateQueue q -> strEncode (Str "CREATE", q)
     SecureQueue rId sKey -> strEncode (Str "SECURE", rId, sKey)
     AddNotifier rId ntfCreds -> strEncode (Str "NOTIFIER", rId, ntfCreds)
+    SuspendQueue rId -> strEncode (Str "SUSPEND", rId)
     DeleteQueue rId -> strEncode (Str "DELETE", rId)
     DeleteNotifier rId -> strEncode (Str "NDELETE", rId)
 
@@ -88,6 +91,7 @@ instance StrEncoding StoreLogRecord where
     "CREATE " *> (CreateQueue <$> strP)
       <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
       <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP)
+      <|> "SUSPEND " *> (SuspendQueue <$> strP)
       <|> "DELETE " *> (DeleteQueue <$> strP)
       <|> "NDELETE " *> (DeleteNotifier <$> strP)
 
@@ -126,6 +130,9 @@ logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
 logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NtfCreds -> IO ()
 logAddNotifier s qId ntfCreds = writeStoreLogRecord s $ AddNotifier qId ntfCreds
 
+logSuspendQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
+logSuspendQueue s = writeStoreLogRecord s . SuspendQueue
+
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
 
@@ -161,6 +168,7 @@ readQueues (ReadStoreLog _ h) = LB.hGetContents h >>= returnResult . procStoreLo
       CreateQueue q -> M.insert (recipientId q) q m
       SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
       AddNotifier qId ntfCreds -> M.adjust (\q -> q {notifier = Just ntfCreds}) qId m
+      SuspendQueue qId -> M.adjust (\q -> q {status = QueueOff}) qId m
       DeleteQueue qId -> M.delete qId m
       DeleteNotifier qId -> M.adjust (\q -> q {notifier = Nothing}) qId m
     printError :: LogParsingError -> IO ()

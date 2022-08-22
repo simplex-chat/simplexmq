@@ -429,8 +429,13 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
 
         suspendQueue_ :: QueueStore -> m (Transmission BrokerMsg)
         suspendQueue_ st = do
-          withLog (`logDeleteQueue` queueId)
-          okResp <$> atomically (suspendQueue st queueId)
+          withLog (`logSuspendQueue` queueId)
+          ms <- asks msgStore
+          quota <- asks $ msgQueueQuota . config
+          let queueLen _ = fmap fromIntegral . queueLength =<< getMsgQueue ms queueId quota
+          len <- atomically (suspendQueue st queueId >>= mapM queueLen)
+          liftIO $ putStrLn $ "suspendQueue_ " <> show len
+          pure (corrId, queueId, either ERR LEN len)
 
         subscribeQueue :: QueueRec -> RecipientId -> m (Transmission BrokerMsg)
         subscribeQueue qr rId =

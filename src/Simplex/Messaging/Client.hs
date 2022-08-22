@@ -76,6 +76,7 @@ import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
+import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Network.Socket (ServiceName)
 import Numeric.Natural
@@ -475,8 +476,11 @@ ackSMPMessage c rpKey rId msgId =
 -- The existing messages from the queue will still be delivered.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#suspend-queue
-suspendSMPQueue :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT ProtocolClientError IO ()
-suspendSMPQueue = okSMPCommand OFF
+suspendSMPQueue :: SMPClient -> RcvPrivateSignKey -> QueueId -> ExceptT ProtocolClientError IO Word16
+suspendSMPQueue c pKey qId =
+  sendSMPCommand c (Just pKey) qId OFF >>= \case
+    LEN len -> return len
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Irreversibly delete SMP queue and all messages in it.
 --

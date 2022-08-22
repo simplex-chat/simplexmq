@@ -141,6 +141,7 @@ import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
+import Data.Word (Word16)
 import GHC.Generics (Generic)
 import GHC.TypeLits (type (+))
 import Generic.Random (genericArbitraryU)
@@ -282,6 +283,7 @@ data BrokerMsg where
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   END :: BrokerMsg
+  LEN :: Word16 -> BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
@@ -436,6 +438,7 @@ data BrokerMsgTag
   | NID_
   | NMSG_
   | END_
+  | LEN_
   | OK_
   | ERR_
   | PONG_
@@ -495,6 +498,7 @@ instance Encoding BrokerMsgTag where
     NID_ -> "NID"
     NMSG_ -> "NMSG"
     END_ -> "END"
+    LEN_ -> "LEN"
     OK_ -> "OK"
     ERR_ -> "ERR"
     PONG_ -> "PONG"
@@ -507,6 +511,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
     "END" -> Just END_
+    "LEN" -> Just LEN_
     "OK" -> Just OK_
     "ERR" -> Just ERR_
     "PONG" -> Just PONG_
@@ -945,6 +950,7 @@ instance ProtocolEncoding BrokerMsg where
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     END -> e END_
+    LEN len -> e (LEN_, ' ', len)
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
     PONG -> e PONG_
@@ -965,6 +971,7 @@ instance ProtocolEncoding BrokerMsg where
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     END_ -> pure END
+    LEN_ -> LEN <$> _smpP
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
