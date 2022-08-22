@@ -434,7 +434,6 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
           quota <- asks $ msgQueueQuota . config
           let queueLen _ = fmap fromIntegral . queueLength =<< getMsgQueue ms queueId quota
           len <- atomically (suspendQueue st queueId >>= mapM queueLen)
-          liftIO $ putStrLn $ "suspendQueue_ " <> show len
           pure (corrId, queueId, either ERR LEN len)
 
         subscribeQueue :: QueueRec -> RecipientId -> m (Transmission BrokerMsg)
