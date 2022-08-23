@@ -642,9 +642,10 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                         _ -> connError msgId NOT_ACCEPTED
                   AM_REPLY_ -> notifyDel msgId $ ERR e
                   AM_A_MSG_ -> notifyDel msgId $ MERR mId e
-                  AM_SWITCH_ -> pure ()
-                  AM_KEYS_ -> pure ()
-                  AM_USE_ -> pure ()
+                  AM_QNEW_ -> pure ()
+                  AM_QKEYS_ -> pure ()
+                  AM_QREADY_ -> pure ()
+                  AM_QSWITCH_ -> pure ()
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
@@ -721,15 +722,24 @@ ackMessage' c connId msgId = do
       withStore' c $ \db -> deleteMsg db connId mId
 
 -- | Switch connection to the new receive queue
-switchConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 switchConnection' c connId =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq _) -> switchQueue rq
+    SomeConn _ (DuplexConnection _ _rq _) -> do
+      -- rcv_queue_action = RQACreateNewQueue
+      -- createNewRcvQueue rq
+      pure ()
     SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
     _ -> throwError $ CMD PROHIBITED
-  where
-    switchQueue :: RcvQueue -> m ()
-    switchQueue _rq = pure ()
+
+createNewRcvQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
+createNewRcvQueue _c _rq = do
+  -- unless new rcv queue exists
+  --   then newRcvQueue
+  --        store to the database
+  -- enqueueSwitchMessage
+  -- rcv_queue_action = null
+  pure ()
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m Word16
@@ -1046,9 +1056,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                       A_MSG body -> do
                         logServer "<--" c srv rId "MSG <MSG>"
                         notify $ MSG msgMeta msgFlags body
-                      SWITCH _ _ -> pure ()
-                      KEYS _ _ -> pure ()
-                      USE _ -> pure ()
+                      QNEW _ _ -> pure ()
+                      QKEYS _ _ -> pure ()
+                      QREADY _ -> pure ()
+                      QSWITCH _ -> pure ()
                     Right _ -> prohibited >> ack
                     Left e@(AGENT A_DUPLICATE) -> do
                       withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
