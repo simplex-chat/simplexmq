@@ -41,6 +41,9 @@ CREATE TABLE rcv_queues(
   ntf_private_key BLOB,
   ntf_id BLOB,
   rcv_ntf_dh_secret BLOB,
+  rcv_queue_id INTEGER NULL,
+  next_rcv_queue INTEGER DEFAULT 0,
+  next_rcv_queue_id INTEGER NULL,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -58,6 +61,9 @@ CREATE TABLE snd_queues(
   smp_client_version INTEGER NOT NULL DEFAULT 1,
   snd_public_key BLOB,
   e2e_pub_key BLOB,
+  snd_queue_id INTEGER NULL,
+  next_snd_queue INTEGER DEFAULT 0,
+  next_snd_queue_id INTEGER NULL,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE

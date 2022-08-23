@@ -52,6 +52,8 @@ data RcvQueue = RcvQueue
     sndId :: Maybe SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
+    -- | database ID of the new queue created for this queue to switch to (queue rotation)
+    dbNextRcvQueueId :: Maybe Int64,
     -- | SMP client version
     smpClientVersion :: Version,
     -- | credentials used in context of notifications
@@ -84,6 +86,8 @@ data SndQueue = SndQueue
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
     status :: QueueStatus,
+    -- | database ID of the new queue created for this queue to switch to (queue rotation)
+    dbNextSndQueueId :: Maybe Int64,
     -- | SMP client version
     smpClientVersion :: Version
   }

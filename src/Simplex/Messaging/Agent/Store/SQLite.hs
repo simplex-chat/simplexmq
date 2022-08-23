@@ -265,10 +265,11 @@ createRcvConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandsh
     insertRcvQueue_ db connId q
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SndQueue -> IO (Either StoreError ConnId)
-createSndConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} =
+createSndConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandshake} q@SndQueue {server} = do
   createConn_ gVar cData $ \connId -> do
     upsertServer_ db server
     DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?, ?, ?, ?, ?)" (connId, SCMInvitation, connAgentVersion, enableNtfs, duplexHandshake)
+    -- TODO add queue ID in insertSndQueue_
     insertSndQueue_ db connId q
 
 getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError SomeConn)
@@ -297,6 +298,7 @@ upgradeRcvConnToDuplex db connId sq@SndQueue {server} =
   getConn db connId $>>= \case
     (SomeConn _ RcvConnection {}) -> do
       upsertServer_ db server
+      -- TODO save with queue ID
       insertSndQueue_ db connId sq
       pure $ Right ()
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
@@ -1128,46 +1130,50 @@ getConnData dbConn connId' =
     connData [(connId, cMode, connAgentVersion, enableNtfs_, duplexHandshake)] = Just (ConnData {connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, duplexHandshake}, cMode)
     connData _ = Nothing
 
+type ServerRow = (NonEmpty TransportHost, String, C.KeyHash)
+
+toSMPServer :: ServerRow -> SMPServer
+toSMPServer (host, port, keyHash) = SMPServer host port keyHash
+
 getRcvQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe RcvQueue)
 getRcvQueueByConnId_ dbConn connId =
   listToMaybe . map rcvQueue
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status, q.smp_client_version,
+        SELECT q.host, q.port, s.key_hash, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
+          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status, q.next_rcv_queue_id, q.smp_client_version,
           q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.conn_id = ?;
+        WHERE q.conn_id = ? AND (q.next_rcv_queue = ? OR q.next_rcv_queue IS NULL)
       |]
-      (Only connId)
+      (connId, False)
   where
-    rcvQueue ((keyHash, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
-      let server = SMPServer host port keyHash
+    rcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbNextRcvQueueId, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+      let server = toSMPServer srvRow
           smpClientVersion = fromMaybe 1 smpClientVersion_
           clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
             (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
             _ -> Nothing
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion, clientNtfCreds}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbNextRcvQueueId, smpClientVersion, clientNtfCreds}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =
-  sndQueue
+  listToMaybe . map sndQueue
     <$> DB.query
       dbConn
       [sql|
-        SELECT s.key_hash, q.host, q.port, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.smp_client_version
+        SELECT q.host, q.port, s.key_hash, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.next_snd_queue_id, q.smp_client_version
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.conn_id = ?;
+        WHERE q.conn_id = ? AND (q.next_snd_queue = ? OR q.next_snd_queue IS NULL)
       |]
-      (Only connId)
+      (connId, False)
   where
-    sndQueue [(keyHash, host, port, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion)] =
-      let server = SMPServer host port keyHash
-       in Just SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion}
-    sndQueue _ = Nothing
+    sndQueue (srvRow :. (sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbNextSndQueueId, smpClientVersion)) =
+      let server = toSMPServer srvRow
+       in SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbNextSndQueueId, smpClientVersion}
 
 -- * updateRcvIds helpers
 

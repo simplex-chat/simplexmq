@@ -500,6 +500,7 @@ newRcvQueue_ a c srv vRange = do
             e2eDhSecret = Nothing,
             sndId = Just sndId,
             status = New,
+            dbNextRcvQueueId = Nothing,
             smpClientVersion = maxVersion vRange,
             clientNtfCreds = Nothing
           }

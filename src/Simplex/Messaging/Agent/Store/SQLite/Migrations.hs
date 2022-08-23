@@ -36,6 +36,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220822_queue_rotation
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport.Client (TransportHost)
 
@@ -50,7 +51,8 @@ schemaMigrations =
     ("20220607_v2", m20220608_v2),
     ("m20220625_v2_ntf_mode", m20220625_v2_ntf_mode),
     ("m20220811_onion_hosts", m20220811_onion_hosts),
-    ("m20220817_connection_ntfs", m20220817_connection_ntfs)
+    ("m20220817_connection_ntfs", m20220817_connection_ntfs),
+    ("m20220822_queue_rotation", m20220822_queue_rotation)
   ]
 
 -- | The list of migrations in ascending order by date

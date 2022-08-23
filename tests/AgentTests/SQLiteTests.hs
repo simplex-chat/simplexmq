@@ -161,6 +161,7 @@ rcvQueue1 =
       e2eDhSecret = Nothing,
       sndId = Just "2345",
       status = New,
+      dbNextRcvQueueId = Nothing,
       smpClientVersion = 1,
       clientNtfCreds = Nothing
     }
@@ -175,6 +176,7 @@ sndQueue1 =
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
       status = New,
+      dbNextSndQueueId = Nothing,
       smpClientVersion = 1
     }
 
@@ -308,6 +310,7 @@ testUpgradeRcvConnToDuplex =
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
               status = New,
+              dbNextSndQueueId = Nothing,
               smpClientVersion = 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
@@ -331,6 +334,7 @@ testUpgradeSndConnToDuplex =
               e2eDhSecret = Nothing,
               sndId = Just "4567",
               status = New,
+              dbNextRcvQueueId = Nothing,
               smpClientVersion = 1,
               clientNtfCreds = Nothing
             }

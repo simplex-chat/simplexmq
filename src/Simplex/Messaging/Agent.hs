@@ -746,10 +746,12 @@ getConnectionServers' c connId = connServers <$> withStore c (`getConn` connId)
   where
     connServers :: SomeConn -> ConnectionStats
     connServers = \case
-      SomeConn _ (RcvConnection _ RcvQueue {server}) -> ConnectionStats {rcvServers = [server], sndServers = []}
-      SomeConn _ (SndConnection _ SndQueue {server}) -> ConnectionStats {rcvServers = [], sndServers = [server]}
-      SomeConn _ (DuplexConnection _ RcvQueue {server = s1} SndQueue {server = s2}) -> ConnectionStats {rcvServers = [s1], sndServers = [s2]}
-      SomeConn _ (ContactConnection _ RcvQueue {server}) -> ConnectionStats {rcvServers = [server], sndServers = []}
+      SomeConn _ (RcvConnection _ rq) -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = []}
+      SomeConn _ (SndConnection _ sq) -> ConnectionStats {rcvServers = [], sndServers = sndSrvs sq}
+      SomeConn _ (DuplexConnection _ rq sq) -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = sndSrvs sq}
+      SomeConn _ (ContactConnection _ rq) -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = []}
+    rcvSrvs RcvQueue {server} = [server]
+    sndSrvs SndQueue {server} = [server]
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()
@@ -1300,5 +1302,6 @@ newSndQueue_ a (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpSe
         e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
         e2ePubKey = Just e2ePubKey,
         status = New,
+        dbNextSndQueueId = Nothing,
         smpClientVersion
       }

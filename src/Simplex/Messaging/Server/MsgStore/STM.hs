@@ -9,7 +9,7 @@
 
 module Simplex.Messaging.Server.MsgStore.STM where
 
-import Control.Concurrent.STM.TBQueue (flushTBQueue)
+import Control.Concurrent.STM.TBQueue (flushTBQueue, lengthTBQueue)
 import Control.Monad (when)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
