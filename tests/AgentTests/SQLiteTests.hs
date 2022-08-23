@@ -27,6 +27,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Protocol as SMP
+import System.IO.Unsafe (unsafePerformIO)
 import System.Random
 import Test.Hspec
 import UnliftIO.Directory (removeFile)
@@ -150,6 +151,9 @@ testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOp
 testDhSecret :: C.DhSecretX25519
 testDhSecret = "01234567890123456789012345678901"
 
+currentTime :: UTCTime
+currentTime = unsafePerformIO getCurrentTime
+
 rcvQueue1 :: RcvQueue
 rcvQueue1 =
   RcvQueue
@@ -162,8 +166,11 @@ rcvQueue1 =
       sndId = Just "2345",
       status = New,
       dbNextRcvQueueId = Nothing,
+      rcvQueueAction = Nothing,
+      clientNtfCreds = Nothing,
       smpClientVersion = 1,
-      clientNtfCreds = Nothing
+      createdAt = currentTime,
+      updatedAt = currentTime
     }
 
 sndQueue1 :: SndQueue
@@ -177,7 +184,10 @@ sndQueue1 =
       e2eDhSecret = testDhSecret,
       status = New,
       dbNextSndQueueId = Nothing,
-      smpClientVersion = 1
+      sndQueueAction = Nothing,
+      smpClientVersion = 1,
+      createdAt = currentTime,
+      updatedAt = currentTime
     }
 
 testCreateRcvConn :: SpecWith SQLiteStore
@@ -311,7 +321,10 @@ testUpgradeRcvConnToDuplex =
               e2eDhSecret = testDhSecret,
               status = New,
               dbNextSndQueueId = Nothing,
-              smpClientVersion = 1
+              sndQueueAction = Nothing,
+              smpClientVersion = 1,
+              createdAt = currentTime,
+              updatedAt = currentTime
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType CSnd)
@@ -335,8 +348,11 @@ testUpgradeSndConnToDuplex =
               sndId = Just "4567",
               status = New,
               dbNextRcvQueueId = Nothing,
+              rcvQueueAction = Nothing,
+              clientNtfCreds = Nothing,
               smpClientVersion = 1,
-              clientNtfCreds = Nothing
+              createdAt = currentTime,
+              updatedAt = currentTime
             }
     upgradeSndConnToDuplex db "conn1" anotherRcvQueue
       `shouldReturn` Left (SEBadConnType CRcv)

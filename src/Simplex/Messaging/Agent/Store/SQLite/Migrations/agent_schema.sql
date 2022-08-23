@@ -42,8 +42,12 @@ CREATE TABLE rcv_queues(
   ntf_id BLOB,
   rcv_ntf_dh_secret BLOB,
   rcv_queue_id INTEGER NULL,
-  next_rcv_queue INTEGER DEFAULT 0,
+  rcv_queue_action TEXT NULL,
+  rcv_queue_action_ts TEXT NULL,
+  next_rcv_queue INTEGER DEFAULT 0 CHECK(next_rcv_queue NOT NULL),
   next_rcv_queue_id INTEGER NULL,
+  created_at TEXT CHECK(created_at NOT NULL),
+  updated_at TEXT CHECK(updated_at NOT NULL),
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -62,8 +66,12 @@ CREATE TABLE snd_queues(
   snd_public_key BLOB,
   e2e_pub_key BLOB,
   snd_queue_id INTEGER NULL,
-  next_snd_queue INTEGER DEFAULT 0,
+  snd_queue_action TEXT NULL,
+  snd_queue_action_ts TEXT NULL,
+  next_snd_queue INTEGER DEFAULT 0 CHECK(next_snd_queue NOT NULL),
   next_snd_queue_id INTEGER NULL,
+  created_at TEXT CHECK(created_at NOT NULL),
+  updated_at TEXT CHECK(updated_at NOT NULL),
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE

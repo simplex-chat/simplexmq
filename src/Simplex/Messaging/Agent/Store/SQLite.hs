@@ -1013,6 +1013,14 @@ instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1
 
 instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
+instance ToField RcvQueueAction where toField = toField . textEncode
+
+instance FromField RcvQueueAction where fromField = fromTextField_ textDecode
+
+instance ToField SndQueueAction where toField = toField . textEncode
+
+instance FromField SndQueueAction where fromField = fromTextField_ textDecode
+
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
@@ -1090,9 +1098,9 @@ insertRcvQueue_ dbConn connId RcvQueue {..} = do
     dbConn
     [sql|
       INSERT INTO rcv_queues
-        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?,?);
+        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, smp_client_version, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, rcvId, connId) :. (rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, smpClientVersion))
+    ((host server, port server, rcvId, connId) :. (rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (smpClientVersion, createdAt, updatedAt))
 
 -- * createSndConn helpers
 
@@ -1102,9 +1110,9 @@ insertSndQueue_ dbConn connId SndQueue {..} = do
     dbConn
     [sql|
       INSERT INTO snd_queues
-        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, smp_client_version) VALUES (?,?,?,?,?,?,?,?,?,?);
+        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, smp_client_version, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    (host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, smpClientVersion)
+    ((host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (smpClientVersion, createdAt, updatedAt))
 
 -- * getConn helpers
 
@@ -1141,22 +1149,25 @@ getRcvQueueByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT q.host, q.port, s.key_hash, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-          q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status, q.next_rcv_queue_id, q.smp_client_version,
-          q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
+        SELECT q.host, q.port, s.key_hash,
+          q.rcv_id, q.rcv_private_key, q.rcv_dh_secret, q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
+          q.rcv_queue_action, q.rcv_queue_action_ts, q.next_rcv_queue_id,
+          q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
+          q.smp_client_version, q.created_at, q.updated_at
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.conn_id = ? AND (q.next_rcv_queue = ? OR q.next_rcv_queue IS NULL)
+        WHERE q.conn_id = ? AND q.next_rcv_queue = ?
       |]
       (connId, False)
   where
-    rcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbNextRcvQueueId, smpClientVersion_) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+    rcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, rqAction_, rqActionTs_, dbNextRcvQueueId) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) :. (smpClientVersion_, createdAt, updatedAt)) =
       let server = toSMPServer srvRow
           smpClientVersion = fromMaybe 1 smpClientVersion_
+          rcvQueueAction = (,) <$> rqAction_ <*> rqActionTs_
           clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
             (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
             _ -> Nothing
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbNextRcvQueueId, smpClientVersion, clientNtfCreds}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, rcvQueueAction, dbNextRcvQueueId, smpClientVersion, clientNtfCreds, createdAt, updatedAt}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =
@@ -1164,16 +1175,20 @@ getSndQueueByConnId_ dbConn connId =
     <$> DB.query
       dbConn
       [sql|
-        SELECT q.host, q.port, s.key_hash, q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status, q.next_snd_queue_id, q.smp_client_version
+        SELECT q.host, q.port, s.key_hash,
+          q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status,
+          q.snd_queue_action, q.snd_queue_action_ts, q.next_snd_queue_id,
+          q.smp_client_version, q.created_at, q.updated_at
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.conn_id = ? AND (q.next_snd_queue = ? OR q.next_snd_queue IS NULL)
+        WHERE q.conn_id = ? AND q.next_snd_queue = ?
       |]
       (connId, False)
   where
-    sndQueue (srvRow :. (sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbNextSndQueueId, smpClientVersion)) =
+    sndQueue (srvRow :. (sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, sqAction_, sqActionTs_, dbNextSndQueueId) :. (smpClientVersion, createdAt, updatedAt)) =
       let server = toSMPServer srvRow
-       in SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbNextSndQueueId, smpClientVersion}
+          sndQueueAction = (,) <$> sqAction_ <*> sqActionTs_
+       in SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, sndQueueAction, dbNextSndQueueId, smpClientVersion, createdAt, updatedAt}
 
 -- * updateRcvIds helpers
 

@@ -52,6 +52,7 @@ module Simplex.Messaging.Agent
     resubscribeConnections,
     sendMessage,
     ackMessage,
+    switchConnection,
     suspendConnection,
     deleteConnection,
     getConnectionServers,
@@ -190,6 +191,10 @@ sendMessage c = withAgentEnv c .:. sendMessage' c
 
 ackMessage :: AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage c = withAgentEnv c .: ackMessage' c
+
+-- | Switch connection to the new receive queue
+switchConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m ()
+switchConnection c = withAgentEnv c . switchConnection' c
 
 -- | Suspend SMP agent connection (OFF command)
 suspendConnection :: AgentErrorMonad m => AgentClient -> ConnId -> m Word16
@@ -714,6 +719,17 @@ ackMessage' c connId msgId = do
         SMP SMP.NO_MSG -> pure ()
         e -> throwError e
       withStore' c $ \db -> deleteMsg db connId mId
+
+-- | Switch connection to the new receive queue
+switchConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+switchConnection' c connId =
+  withStore c (`getConn` connId) >>= \case
+    SomeConn _ (DuplexConnection _ rq _) -> switchQueue rq
+    SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
+    _ -> throwError $ CMD PROHIBITED
+  where
+    switchQueue :: RcvQueue -> m ()
+    switchQueue _rq = pure ()
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m Word16
@@ -1293,6 +1309,7 @@ newSndQueue_ a (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpSe
   -- this function assumes clientVersion is compatible - it was tested before
   (sndPublicKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
+  createdAt <- liftIO getCurrentTime
   pure
     SndQueue
       { server = smpServer,
@@ -1303,5 +1320,8 @@ newSndQueue_ a (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpSe
         e2ePubKey = Just e2ePubKey,
         status = New,
         dbNextSndQueueId = Nothing,
-        smpClientVersion
+        sndQueueAction = Nothing,
+        smpClientVersion,
+        createdAt,
+        updatedAt = createdAt
       }

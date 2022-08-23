@@ -89,6 +89,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import Data.Text.Encoding
+import Data.Time.Clock (getCurrentTime)
 import Data.Tuple (swap)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
@@ -489,6 +490,7 @@ newRcvQueue_ a c srv vRange = do
   logServer "-->" c srv "" "NEW"
   QIK {rcvId, sndId, rcvPublicDhKey} <-
     withClient c srv $ \smp -> createSMPQueue smp rcvPrivateKey recipientKey dhKey
+  createdAt <- liftIO getCurrentTime
   logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
@@ -500,9 +502,12 @@ newRcvQueue_ a c srv vRange = do
             e2eDhSecret = Nothing,
             sndId = Just sndId,
             status = New,
+            rcvQueueAction = Nothing,
             dbNextRcvQueueId = Nothing,
+            clientNtfCreds = Nothing,
             smpClientVersion = maxVersion vRange,
-            clientNtfCreds = Nothing
+            createdAt,
+            updatedAt = createdAt
           }
   pure (rq, SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey)
 

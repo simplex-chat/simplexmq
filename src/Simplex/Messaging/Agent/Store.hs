@@ -3,7 +3,9 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -18,6 +20,7 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (RatchetX448)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
@@ -52,12 +55,16 @@ data RcvQueue = RcvQueue
     sndId :: Maybe SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
+    -- | action to perform, to be done on connection subscription, if it fails and not reset
+    rcvQueueAction :: Maybe (RcvQueueAction, UTCTime),
     -- | database ID of the new queue created for this queue to switch to (queue rotation)
     dbNextRcvQueueId :: Maybe Int64,
+    -- | credentials used in context of notifications
+    clientNtfCreds :: Maybe ClientNtfCreds,
     -- | SMP client version
     smpClientVersion :: Version,
-    -- | credentials used in context of notifications
-    clientNtfCreds :: Maybe ClientNtfCreds
+    createdAt :: UTCTime,
+    updatedAt :: UTCTime
   }
   deriving (Eq, Show)
 
@@ -86,10 +93,14 @@ data SndQueue = SndQueue
     e2eDhSecret :: C.DhSecretX25519,
     -- | queue status
     status :: QueueStatus,
+    -- | action to perform, to be done on connection subscription, if it fails and not reset
+    sndQueueAction :: Maybe (SndQueueAction, UTCTime),
     -- | database ID of the new queue created for this queue to switch to (queue rotation)
     dbNextSndQueueId :: Maybe Int64,
     -- | SMP client version
-    smpClientVersion :: Version
+    smpClientVersion :: Version,
+    createdAt :: UTCTime,
+    updatedAt :: UTCTime
   }
   deriving (Eq, Show)
 
@@ -159,6 +170,36 @@ data ConnData = ConnData
     duplexHandshake :: Maybe Bool -- added in agent protocol v2
   }
   deriving (Eq, Show)
+
+data RcvQueueAction = RQACreateNewQueue | RQASecureNewQueue | RQASuspendQueue | RQADeleteQueue
+  deriving (Eq, Show)
+
+instance TextEncoding RcvQueueAction where
+  textEncode = \case
+    RQACreateNewQueue -> "create"
+    RQASecureNewQueue -> "secure"
+    RQASuspendQueue -> "suspend"
+    RQADeleteQueue -> "delete"
+  textDecode = \case
+    "create" -> Just RQACreateNewQueue
+    "secure" -> Just RQASecureNewQueue
+    "suspend" -> Just RQASuspendQueue
+    "delete" -> Just RQADeleteQueue
+    _ -> Nothing
+
+data SndQueueAction = SQASendKeys | SQASendHello | SQASwitchQueue
+  deriving (Eq, Show)
+
+instance TextEncoding SndQueueAction where
+  textEncode = \case
+    SQASendKeys -> "send_keys"
+    SQASendHello -> "send_hello"
+    SQASwitchQueue -> "switch_queue"
+  textDecode = \case
+    "send_keys" -> Just SQASendKeys
+    "send_hello" -> Just SQASendHello
+    "switch_queue" -> Just SQASwitchQueue
+    _ -> Nothing
 
 -- * Confirmation types
 
