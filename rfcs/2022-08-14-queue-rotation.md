@@ -40,7 +40,7 @@ A ->> S ->> B: QNEW (R'): address of the new queue
 B ->> R ->> A: QKEYS (R'): sender's key for the new queue (to avoid the race of SMP confirmation for the initial exchange)
 B ->> R ->> A: continue sending new messages to the old queue
 A ->> R': secure queue
-A ->> S ->> B: QREADY (R'): instruction to use new queue
+A ->> S ->> B: QREADY (R'): notify sender that the queue is secured
 B ->> R' ->> A: QHELLO: to validate that the sender can send messages to the new queue before switching to it
 A ->> S ->> B: QSWITCH (R'): instruction to start using the new queue
 B ->> R' ->> A: the first message received to the new queue before the old one is drained and deleted should not be processed, it should be stored in the agent memory (and not acknowledged) and only processed once the old queue is drained.

@@ -1173,7 +1173,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                 | otherwise -> ignored
               _ -> ignored
             ignored = pure "END from disconnected client - ignored"
-        LEN 0 -> do
+        SMP.LEN 0 -> do
           -- load nextRq
           -- currRcvQueueDrained c rq nextRq
           pure ()
