@@ -171,34 +171,34 @@ data ConnData = ConnData
   }
   deriving (Eq, Show)
 
-data RcvQueueAction = RQACreateNewQueue | RQASecureNewQueue | RQASuspendQueue | RQADeleteQueue
+data RcvQueueAction
+  = RQACreateNextQueue
+  | RQASecureNextQueue
+  | RQASuspendCurrQueue
+  | RQADeleteCurrQueue
   deriving (Eq, Show)
 
 instance TextEncoding RcvQueueAction where
   textEncode = \case
-    RQACreateNewQueue -> "create"
-    RQASecureNewQueue -> "secure"
-    RQASuspendQueue -> "suspend"
-    RQADeleteQueue -> "delete"
+    RQACreateNextQueue -> "create"
+    RQASecureNextQueue -> "secure"
+    RQASuspendCurrQueue -> "suspend"
+    RQADeleteCurrQueue -> "delete"
   textDecode = \case
-    "create" -> Just RQACreateNewQueue
-    "secure" -> Just RQASecureNewQueue
-    "suspend" -> Just RQASuspendQueue
-    "delete" -> Just RQADeleteQueue
+    "create" -> Just RQACreateNextQueue
+    "secure" -> Just RQASecureNextQueue
+    "suspend" -> Just RQASuspendCurrQueue
+    "delete" -> Just RQADeleteCurrQueue
     _ -> Nothing
 
-data SndQueueAction = SQASendKeys | SQASendHello | SQASwitchQueue
+data SndQueueAction = SQASwitchQueue
   deriving (Eq, Show)
 
 instance TextEncoding SndQueueAction where
   textEncode = \case
-    SQASendKeys -> "send_keys"
-    SQASendHello -> "send_hello"
-    SQASwitchQueue -> "switch_queue"
+    SQASwitchQueue -> "switch"
   textDecode = \case
-    "send_keys" -> Just SQASendKeys
-    "send_hello" -> Just SQASendHello
-    "switch_queue" -> Just SQASwitchQueue
+    "switch" -> Just SQASwitchQueue
     _ -> Nothing
 
 -- * Confirmation types

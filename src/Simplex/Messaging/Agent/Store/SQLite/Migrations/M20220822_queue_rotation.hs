@@ -28,6 +28,9 @@ UPDATE rcv_queues SET created_at = '1970-01-01 00:00:00';
 ALTER TABLE rcv_queues ADD COLUMN updated_at TEXT CHECK (updated_at NOT NULL);
 UPDATE rcv_queues SET updated_at = '1970-01-01 00:00:00';
 
+CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(rcv_queue_id);
+CREATE UNIQUE INDEX idx_next_rcv_queue_id ON rcv_queues(next_rcv_queue_id);
+
 -- * snd_queues
 
 ALTER TABLE snd_queues ADD COLUMN snd_queue_id INTEGER NULL;
@@ -47,4 +50,7 @@ UPDATE snd_queues SET created_at = '1970-01-01 00:00:00';
 
 ALTER TABLE snd_queues ADD COLUMN updated_at TEXT CHECK (updated_at NOT NULL);
 UPDATE snd_queues SET updated_at = '1970-01-01 00:00:00';
+
+CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(snd_queue_id);
+CREATE UNIQUE INDEX idx_next_snd_queue_id ON snd_queues(next_snd_queue_id);
 |]

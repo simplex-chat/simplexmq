@@ -436,6 +436,7 @@ data AgentMessageType
   | AM_QNEW_
   | AM_QKEYS_
   | AM_QREADY_
+  | AM_QHELLO_
   | AM_QSWITCH_
   deriving (Eq, Show)
 
@@ -449,6 +450,7 @@ instance Encoding AgentMessageType where
     AM_QNEW_ -> "QN"
     AM_QKEYS_ -> "QK"
     AM_QREADY_ -> "QR"
+    AM_QHELLO_ -> "QH"
     AM_QSWITCH_ -> "QS"
   smpP =
     A.anyChar >>= \case
@@ -462,6 +464,7 @@ instance Encoding AgentMessageType where
           'N' -> pure AM_QNEW_
           'K' -> pure AM_QKEYS_
           'R' -> pure AM_QREADY_
+          'H' -> pure AM_QHELLO_
           'S' -> pure AM_QSWITCH_
           _ -> fail "bad AgentMessageType"
       _ -> fail "bad AgentMessageType"
@@ -482,6 +485,7 @@ agentMessageType = \case
     QNEW {} -> AM_QNEW_
     QKEYS {} -> AM_QKEYS_
     QREADY {} -> AM_QREADY_
+    QHELLO -> AM_QHELLO_
     QSWITCH {} -> AM_QSWITCH_
 
 data APrivHeader = APrivHeader
@@ -504,6 +508,7 @@ data AMsgType
   | QNEW_
   | QKEYS_
   | QREADY_
+  | QHELLO_
   | QSWITCH_
   deriving (Eq)
 
@@ -515,17 +520,19 @@ instance Encoding AMsgType where
     QNEW_ -> "QN"
     QKEYS_ -> "QK"
     QREADY_ -> "QR"
+    QHELLO_ -> "QH"
     QSWITCH_ -> "QS"
   smpP =
-    smpP >>= \case
+    A.anyChar >>= \case
       'H' -> pure HELLO_
       'R' -> pure REPLY_
       'M' -> pure A_MSG_
       'Q' ->
-        smpP >>= \case
+        A.anyChar >>= \case
           'N' -> pure QNEW_
           'K' -> pure QKEYS_
           'R' -> pure QREADY_
+          'H' -> pure QHELLO_
           'S' -> pure QSWITCH_
           _ -> fail "bad AMsgType"
       _ -> fail "bad AMsgType"
@@ -542,11 +549,13 @@ data AMessage
     A_MSG MsgBody
   | -- instruct sender to switch the queue to another
     QNEW (SMPServer, SMP.SenderId) SMPQueueInfo
-  | -- send to the recipient server key to secure the new queue and DH key to agree e2e encryption
+  | -- send server key and queue e2e DH key to the recipient
     QKEYS SndPublicVerifyKey SMPQueueInfo
-  | -- inform the sender that the queue is ready to use
+  | -- inform the sender that the queue is ready to use - sender sends QHELLO to it
     QREADY (SMPServer, SMP.SenderId)
-  | -- inform the sender that the queue is ready to use
+  | -- the first message sent by the sender to the new queue
+    QHELLO
+  | -- instruct the sender to start sending messages to the new queue - after recipient receives HELLO
     QSWITCH (SMPServer, SMP.SenderId)
   deriving (Show)
 
@@ -558,6 +567,7 @@ instance Encoding AMessage where
     QNEW addr qInfo -> smpEncode (QNEW_, addr, qInfo)
     QKEYS qInfo sKey -> smpEncode (QKEYS_, qInfo, sKey)
     QREADY addr -> smpEncode (QREADY_, addr)
+    QHELLO -> smpEncode QHELLO_
     QSWITCH addr -> smpEncode (QSWITCH_, addr)
   smpP =
     smpP
@@ -568,6 +578,7 @@ instance Encoding AMessage where
         QNEW_ -> QNEW <$> smpP <*> smpP
         QKEYS_ -> QKEYS <$> smpP <*> smpP
         QREADY_ -> QREADY <$> smpP
+        QHELLO_ -> pure QHELLO
         QSWITCH_ -> QSWITCH <$> smpP
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where

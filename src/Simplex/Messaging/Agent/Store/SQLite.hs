@@ -37,6 +37,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setSndQueueStatus,
     getRcvQueue,
     setRcvQueueNtfCreds,
+    getNextRcvQueue,
     -- Confirmations
     createConfirmation,
     acceptConfirmation,
@@ -105,6 +106,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (find, foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
@@ -374,6 +376,11 @@ setRcvQueueNtfCreds db connId clientNtfCreds =
     (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) = case clientNtfCreds of
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} -> (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
       Nothing -> (Nothing, Nothing, Nothing, Nothing)
+
+getNextRcvQueue :: DB.Connection -> Maybe Int64 -> IO (Maybe RcvQueue)
+getNextRcvQueue _db = \case
+  Just _rqId -> pure Nothing
+  _ -> pure Nothing
 
 type SMPConfirmationRow = (SndPublicVerifyKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe Version)
 

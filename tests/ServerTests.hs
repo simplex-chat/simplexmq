@@ -146,8 +146,10 @@ testCreateSecureV2 _ =
       (ok2, OK) #== "secures queue"
       (rId2, rId) #== "same queue ID in response 3"
 
-      Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, KEY sPub)
-      (err4, ERR AUTH) #== "rejects KEY if already secured"
+      Resp "abcd" _ OK <- signSendRecv h rKey ("abcd", rId, KEY sPub)
+      (sPub', _) <- C.generateSignatureKeyPair C.SEd448
+      Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, KEY sPub')
+      (err4, ERR AUTH) #== "rejects if secured with different key"
 
       Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, _SEND "hello again")
       (ok3, OK) #== "accepts signed SEND"
@@ -208,8 +210,10 @@ testCreateSecure (ATransport t) =
       (ok2, OK) #== "secures queue"
       (rId2, rId) #== "same queue ID in response 3"
 
-      Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, KEY sPub)
-      (err4, ERR AUTH) #== "rejects KEY if already secured"
+      Resp "abcd" _ OK <- signSendRecv h rKey ("abcd", rId, KEY sPub)
+      (sPub', _) <- C.generateSignatureKeyPair C.SEd448
+      Resp "abcd" _ err4 <- signSendRecv h rKey ("abcd", rId, KEY sPub')
+      (err4, ERR AUTH) #== "rejects if secured with different key"
 
       Resp "bcda" _ ok3 <- signSendRecv h sKey ("bcda", sId, _SEND "hello again")
       (ok3, OK) #== "accepts signed SEND"

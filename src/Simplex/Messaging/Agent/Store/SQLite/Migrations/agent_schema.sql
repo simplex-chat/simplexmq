@@ -208,3 +208,7 @@ CREATE TABLE ntf_subscriptions(
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID;
+CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(rcv_queue_id);
+CREATE UNIQUE INDEX idx_next_rcv_queue_id ON rcv_queues(next_rcv_queue_id);
+CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(snd_queue_id);
+CREATE UNIQUE INDEX idx_next_snd_queue_id ON snd_queues(next_snd_queue_id);

@@ -611,13 +611,13 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
         encryptMsg qr Message {msgId, msgTs, msgFlags, msgBody}
-          | thVersion == 1 || thVersion == 2 = encrypt msgBody
-          | otherwise = encrypt $ encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody}
+          | thVersion == 1 || thVersion == 2 = encrypt msgTs msgFlags msgBody
+          | otherwise = encrypt (MkSystemTime 0 0) noMsgFlags $ encodeRcvMsgBody RcvMsgBody {msgTs, msgFlags, msgBody}
           where
-            encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
-            encrypt body =
+            encrypt :: KnownNat i => SystemTime -> MsgFlags -> C.MaxLenBS i -> RcvMessage
+            encrypt msgTs' msgFlags' body =
               let encBody = EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId) body
-               in RcvMessage msgId msgTs msgFlags encBody
+               in RcvMessage msgId msgTs' msgFlags' encBody
 
         setDelivered :: Sub -> Message -> STM Bool
         setDelivered s Message {msgId} = tryPutTMVar (delivered s) msgId
