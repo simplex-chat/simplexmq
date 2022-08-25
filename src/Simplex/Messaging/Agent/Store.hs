@@ -85,6 +85,8 @@ data SndQueue = SndQueue
     -- | sender queue ID
     sndId :: SMP.SenderId,
     -- | key pair used by the sender to sign transmissions
+    -- This is Maybe as previously it was not saved - old queues may have NULL in it.
+    -- For all new queues it is never cleared.
     sndPublicKey :: Maybe C.APublicVerifyKey,
     sndPrivateKey :: SndPrivateSignKey,
     -- | DH public key used to negotiate per-queue e2e encryption
