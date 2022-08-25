@@ -409,6 +409,8 @@ processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SMPConfirmatio
 processConfirmation c rq@RcvQueue {e2ePrivKey, smpClientVersion = v} SMPConfirmation {senderKey, e2ePubKey, smpClientVersion = v'} = do
   let dhSecret = C.dh' e2ePubKey e2ePrivKey
   withStore' c $ \db -> setRcvQueueConfirmedE2E db rq dhSecret $ min v v'
+  -- TODO if this call to secureQueue fails the connection will not complete
+  -- add secure rcv queue on subscription
   secureQueue c rq senderKey
   withStore' c $ \db -> setRcvQueueStatus db rq Secured
 
@@ -423,7 +425,7 @@ subscribeConnection' c connId =
     SomeConn _ (SndConnection cData sq) -> do
       resumeMsgDelivery c cData sq
       case status (sq :: SndQueue) of
-        Confirmed -> pure ()
+        Confirmed -> pure () -- TODO secure queue if this is a new server version
         Active -> throwError $ CONN SIMPLEX
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribe rq
@@ -517,6 +519,7 @@ subscribeConnections' c connIds = do
   void . forkIO . forM_ cs $ \case
     SomeConn _ (DuplexConnection cData rq sq) -> doRcvQueueAction c cData rq sq
     _ -> pure ()
+  -- TODO secure Confirmed queues if this is a new server version
   pure rs
   where
     rcvOrSndQueue :: SomeConn -> Either (SndQueue, ConnData) (RcvQueue, ConnData)
@@ -1300,7 +1303,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                 case sndPublicKey of
                   Just nextSenderKey ->
                     void . enqueueMessage c cData sq SMP.noMsgFlags $ QKEYS {nextSenderKey, nextQueueInfo}
-                  -- TODO possibly, notify user that the queue is rotating
+                  -- TODO possibly, notify user that send queue is rotating
                   _ -> do
                     -- TODO notify user: internal error
                     pure ()
