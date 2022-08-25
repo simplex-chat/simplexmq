@@ -419,6 +419,7 @@ subscribeConnection' c connId =
     SomeConn _ (DuplexConnection cData rq sq) -> do
       resumeMsgDelivery c cData sq
       subscribe rq
+      doRcvQueueAction c cData rq sq
     SomeConn _ (SndConnection cData sq) -> do
       resumeMsgDelivery c cData sq
       case status (sq :: SndQueue) of
@@ -434,25 +435,31 @@ subscribeConnection' c connId =
       subscribeQueue c rq connId
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
-      doRcvQueueAction c rq
 
 -- TODO expire actions
-doRcvQueueAction :: AgentMonad m => AgentClient -> RcvQueue -> m ()
-doRcvQueueAction c rq@RcvQueue {rcvQueueAction} = forM_ rcvQueueAction $ \(a, _ts) -> case a of
-  RQACreateNextQueue -> createNextRcvQueue c rq
-  RQASecureNextQueue -> withNextRcvQueue c rq secureNextRcvQueue
-  RQASuspendCurrQueue -> withNextRcvQueue c rq suspendCurrRcvQueue
-  RQADeleteCurrQueue -> withNextRcvQueue c rq deleteCurrRcvQueue
+doRcvQueueAction :: AgentMonad m => AgentClient -> ConnData -> RcvQueue -> SndQueue -> m ()
+doRcvQueueAction c cData rq@RcvQueue {rcvQueueAction} sq =
+  forM_ rcvQueueAction $ \(a, _ts) -> case a of
+    RQACreateNextQueue -> createNextRcvQueue c cData rq sq
+    RQASecureNextQueue -> withNextRcvQueue c rq secureNextRcvQueue
+    RQASuspendCurrQueue -> withNextRcvQueue c rq suspendCurrRcvQueue
+    RQADeleteCurrQueue -> withNextRcvQueue c rq deleteCurrRcvQueue
 
-createNextRcvQueue :: AgentMonad m => AgentClient -> RcvQueue -> m ()
-createNextRcvQueue c rq = do
-  _nextRq_ <- withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq)
-  -- unless new rcv queue exists
-  --   then newRcvQueue
-  --        store to the database
-  -- enqueue QNEW message
-  -- rcv_queue_action = null
-  pure ()
+createNextRcvQueue :: AgentMonad m => AgentClient -> ConnData -> RcvQueue -> SndQueue -> m ()
+createNextRcvQueue c cData rq@RcvQueue {server, sndId} sq = do
+  clientVRange <- asks $ smpClientVRange . config
+  nextQueueUri <-
+    withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq) >>= \case
+      Just RcvQueue {server = smpServer, sndId = senderId, e2ePrivKey} -> do
+        let queueAddress = SMPQueueAddress {smpServer, senderId, dhPublicKey = C.publicKey e2ePrivKey}
+        pure SMPQueueUri {clientVRange, queueAddress}
+      _ -> do
+        srv <- getSMPServer c
+        (rq', qUri) <- newRcvQueue c srv clientVRange
+        withStore' c $ \db -> dbCreateNextRcvQueue db rq rq'
+        pure qUri
+  void $ enqueueMessage c cData sq SMP.noMsgFlags QNEW {currentAddress = (server, sndId), nextQueueUri}
+  withStore' c $ \db -> setRcvQueueAction db rq Nothing
 
 secureNextRcvQueue :: AgentMonad m => AgentClient -> RcvQueue -> RcvQueue -> m ()
 secureNextRcvQueue _c _mainRq _nextRq = do
@@ -507,7 +514,9 @@ subscribeConnections' c connIds = do
   when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs
   let rs = M.unions $ errs' : sndRs : rcvRs
   notifyResultError rs
-  void . forkIO . forM_ rcvQs $ doRcvQueueAction c . fst
+  void . forkIO . forM_ cs $ \case
+    SomeConn _ (DuplexConnection cData rq sq) -> doRcvQueueAction c cData rq sq
+    _ -> pure ()
   pure rs
   where
     rcvOrSndQueue :: SomeConn -> Either (SndQueue, ConnData) (RcvQueue, ConnData)
@@ -788,10 +797,10 @@ ackMessage' c connId msgId = do
 switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 switchConnection' c connId =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq _) -> do
-      -- rcv_queue_action = RQACreateNewQueue
-      createNextRcvQueue c rq
-      pure ()
+    SomeConn _ (DuplexConnection cData rq sq) -> do
+      -- TODO check that rotation is possible (whether the current server supports it)
+      withStore' c $ \db -> setRcvQueueAction db rq $ Just RQACreateNextQueue
+      createNextRcvQueue c cData rq sq
     SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
     _ -> throwError $ CMD PROHIBITED
 
@@ -1110,8 +1119,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
                       A_MSG body -> do
                         logServer "<--" c srv rId "MSG <MSG>"
                         notify $ MSG msgMeta msgFlags body
-                      QNEW addr qInfo -> rqNewMsg addr qInfo >> ackDelete msgId
-                      QKEYS sKey qInfo -> rqKeys sKey qInfo $ ackDelete msgId
+                      QNEW currAddr nextQUri -> rqNewMsg currAddr nextQUri >> ackDelete msgId
+                      QKEYS sKey nextQInfo -> rqKeys sKey nextQInfo $ ackDelete msgId
                       QREADY addr -> rqReady addr >> ackDelete msgId
                       QHELLO -> rqHello $ ackDelete msgId
                       QSWITCH addr -> rqSwitch addr >> ackDelete msgId
@@ -1280,16 +1289,31 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
               _ -> prohibited
 
         -- processed by queue sender
-        rqNewMsg :: (SMPServer, SMP.SenderId) -> SMPQueueInfo -> m ()
-        rqNewMsg _addr _qInfo = do
-          -- generate sender and DH keys
-          -- store new send queue, update current send queue with queue ID of the new queue
-          -- Enqueue QKEYS message to the main rcv queue
-          pure ()
+        rqNewMsg :: (SMPServer, SMP.SenderId) -> SMPQueueUri -> m ()
+        rqNewMsg _currAddr nextQUri = case conn of
+          DuplexConnection _ _ sq -> do
+            clientVRange <- asks $ smpClientVRange . config
+            case (nextQUri `compatibleVersion` clientVRange) of
+              Just qInfo@(Compatible nextQueueInfo) -> do
+                sq'@SndQueue {sndPublicKey} <- newSndQueue qInfo
+                withStore' c $ \db -> dbCreateNextSndQueue db sq sq'
+                case sndPublicKey of
+                  Just nextSenderKey ->
+                    void . enqueueMessage c cData sq SMP.noMsgFlags $ QKEYS {nextSenderKey, nextQueueInfo}
+                  -- TODO possibly, notify user that the queue is rotating
+                  _ -> do
+                    -- TODO notify user: internal error
+                    pure ()
+              _ -> do
+                -- TODO notify user: incompatible version
+                pure ()
+          _ -> do
+            -- TODO notify user: message can only be sent to duplex connection
+            pure ()
 
         -- processed by queue recipient
         rqKeys :: SndPublicVerifyKey -> SMPQueueInfo -> m () -> m ()
-        rqKeys _sKey _qInfo ackDelete = do
+        rqKeys _sKey _nextQInfo ackDelete = do
           -- store sender keys
           -- new rcv queue status = Confirmed
           -- old rcv_queue_action = RQASecureNewQueue

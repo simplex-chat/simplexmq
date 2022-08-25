@@ -38,6 +38,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     getRcvQueue,
     setRcvQueueNtfCreds,
     getNextRcvQueue,
+    dbCreateNextRcvQueue,
+    dbCreateNextSndQueue,
+    setRcvQueueAction,
     -- Confirmations
     createConfirmation,
     acceptConfirmation,
@@ -404,6 +407,15 @@ getNextRcvQueue db = \case
               _ -> Nothing
          in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, rcvQueueAction, dbNextRcvQueueId, smpClientVersion, clientNtfCreds, createdAt, updatedAt}
   _ -> pure Nothing
+
+dbCreateNextRcvQueue :: DB.Connection -> RcvQueue -> RcvQueue -> IO ()
+dbCreateNextRcvQueue _db _rq _nextRq = pure ()
+
+dbCreateNextSndQueue :: DB.Connection -> SndQueue -> SndQueue -> IO ()
+dbCreateNextSndQueue _db _sq _nextSq = pure ()
+
+setRcvQueueAction :: DB.Connection -> RcvQueue -> Maybe RcvQueueAction -> IO ()
+setRcvQueueAction _db _rq _rqAction_ = pure ()
 
 type SMPConfirmationRow = (SndPublicVerifyKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe Version)
 
@@ -1129,7 +1141,7 @@ insertRcvQueue_ db connId RcvQueue {..} = do
     db
     [sql|
       INSERT INTO rcv_queues
-        (rcv_queue_id, host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, smp_client_version, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?);
+        (rcv_queue_id, host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, smp_client_version, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ((qId, host server, port server, rcvId, connId) :. (rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (smpClientVersion, createdAt, updatedAt))
 
@@ -1142,7 +1154,7 @@ insertSndQueue_ db connId SndQueue {..} = do
     db
     [sql|
       INSERT INTO snd_queues
-        (snd_queue_id, host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, smp_client_version, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?);
+        (snd_queue_id, host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, smp_client_version, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ((qId, host server, port server, sndId, connId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status) :. (smpClientVersion, createdAt, updatedAt))
 

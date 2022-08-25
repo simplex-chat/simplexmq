@@ -500,7 +500,7 @@ newRcvQueue_ a c srv vRange = do
             rcvDhSecret = C.dh' rcvPublicDhKey privDhKey,
             e2ePrivKey,
             e2eDhSecret = Nothing,
-            sndId = Just sndId,
+            sndId,
             status = New,
             rcvQueueAction = Nothing,
             dbNextRcvQueueId = Nothing,

@@ -548,15 +548,15 @@ data AMessage
   | -- | agent envelope for the client message
     A_MSG MsgBody
   | -- instruct sender to switch the queue to another
-    QNEW (SMPServer, SMP.SenderId) SMPQueueInfo
+    QNEW {currentAddress :: (SMPServer, SMP.SenderId), nextQueueUri :: SMPQueueUri}
   | -- send server key and queue e2e DH key to the recipient
-    QKEYS SndPublicVerifyKey SMPQueueInfo
+    QKEYS {nextSenderKey :: SndPublicVerifyKey, nextQueueInfo :: SMPQueueInfo}
   | -- inform the sender that the queue is ready to use - sender sends QHELLO to it
-    QREADY (SMPServer, SMP.SenderId)
+    QREADY {nextAddress :: (SMPServer, SMP.SenderId)}
   | -- the first message sent by the sender to the new queue
     QHELLO
   | -- instruct the sender to start sending messages to the new queue - after recipient receives HELLO
-    QSWITCH (SMPServer, SMP.SenderId)
+    QSWITCH {nextAddress :: (SMPServer, SMP.SenderId)}
   deriving (Show)
 
 instance Encoding AMessage where
@@ -564,8 +564,8 @@ instance Encoding AMessage where
     HELLO -> smpEncode HELLO_
     REPLY smpQueues -> smpEncode (REPLY_, smpQueues)
     A_MSG body -> smpEncode (A_MSG_, Tail body)
-    QNEW addr qInfo -> smpEncode (QNEW_, addr, qInfo)
-    QKEYS qInfo sKey -> smpEncode (QKEYS_, qInfo, sKey)
+    QNEW currAddr nextQUri -> smpEncode (QNEW_, currAddr, strEncode nextQUri)
+    QKEYS sKey nextQInfo -> smpEncode (QKEYS_, sKey, nextQInfo)
     QREADY addr -> smpEncode (QREADY_, addr)
     QHELLO -> smpEncode QHELLO_
     QSWITCH addr -> smpEncode (QSWITCH_, addr)
@@ -575,7 +575,10 @@ instance Encoding AMessage where
         HELLO_ -> pure HELLO
         REPLY_ -> REPLY <$> smpP
         A_MSG_ -> A_MSG . unTail <$> smpP
-        QNEW_ -> QNEW <$> smpP <*> smpP
+        QNEW_ -> do
+          currentAddress <- smpP
+          nextQueueUri <- strDecode <$?> smpP
+          pure QNEW {currentAddress, nextQueueUri}
         QKEYS_ -> QKEYS <$> smpP <*> smpP
         QREADY_ -> QREADY <$> smpP
         QHELLO_ -> pure QHELLO

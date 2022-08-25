@@ -52,7 +52,7 @@ data RcvQueue = RcvQueue
     -- | public sender's DH key and agreed shared DH secret for simple per-queue e2e
     e2eDhSecret :: Maybe C.DhSecretX25519,
     -- | sender queue ID
-    sndId :: Maybe SMP.SenderId,
+    sndId :: SMP.SenderId,
     -- | queue status
     status :: QueueStatus,
     -- | action to perform, to be done on connection subscription, if it fails and not reset
