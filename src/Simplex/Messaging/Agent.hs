@@ -836,14 +836,18 @@ deleteConnection' c connId =
       atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
 
 getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
-getConnectionServers' c connId = connServers <$> withStore c (`getConn` connId)
+getConnectionServers' c connId = do
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  -- TODO load next queues
+  pure $ connectionStats conn Nothing Nothing
+
+connectionStats :: Connection c -> Maybe RcvQueue -> Maybe SndQueue -> ConnectionStats
+connectionStats conn nextRq_ nextSq_ = case conn of
+  RcvConnection _ rq -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = [], nextRcvServers = [], nextSndServers = []}
+  SndConnection _ sq -> ConnectionStats {rcvServers = [], sndServers = sndSrvs sq, nextRcvServers = [], nextSndServers = []}
+  DuplexConnection _ rq sq -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = sndSrvs sq, nextRcvServers = maybe [] rcvSrvs nextRq_, nextSndServers = maybe [] sndSrvs nextSq_}
+  ContactConnection _ rq -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = [], nextRcvServers = [], nextSndServers = []}
   where
-    connServers :: SomeConn -> ConnectionStats
-    connServers = \case
-      SomeConn _ (RcvConnection _ rq) -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = []}
-      SomeConn _ (SndConnection _ sq) -> ConnectionStats {rcvServers = [], sndServers = sndSrvs sq}
-      SomeConn _ (DuplexConnection _ rq sq) -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = sndSrvs sq}
-      SomeConn _ (ContactConnection _ rq) -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = []}
     rcvSrvs RcvQueue {server} = [server]
     sndSrvs SndQueue {server} = [server]
 
@@ -1296,16 +1300,19 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         -- processed by queue sender
         rqNewMsg :: (SMPServer, SMP.SenderId) -> SMPQueueUri -> m ()
         rqNewMsg _currAddr nextQUri = case conn of
-          DuplexConnection _ _ sq -> do
+          DuplexConnection _ rq sq -> do
             clientVRange <- asks $ smpClientVRange . config
             case (nextQUri `compatibleVersion` clientVRange) of
-              Just qInfo@(Compatible nextQueueInfo) -> do
-                sq'@SndQueue {sndPublicKey} <- newSndQueue qInfo
+              Just qInfo@(Compatible nextQInfo) -> do
+                sq'@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue qInfo
                 withStore' c $ \db -> dbCreateNextSndQueue db sq sq'
-                case sndPublicKey of
-                  Just nextSenderKey ->
+                rq' <- withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq)
+                case (sndPublicKey, e2ePubKey) of
+                  (Just nextSenderKey, Just dhPublicKey) -> do
+                    let qAddr = (queueAddress (nextQInfo :: SMPQueueInfo)) {dhPublicKey}
+                        nextQueueInfo = (nextQInfo :: SMPQueueInfo) {queueAddress = qAddr}
                     void . enqueueMessage c cData sq SMP.noMsgFlags $ QKEYS {nextSenderKey, nextQueueInfo}
-                  -- TODO possibly, notify user that send queue is rotating
+                    notify . SWITCH SPStarted $ connectionStats conn rq' (Just sq')
                   _ -> do
                     -- TODO notify user: internal error
                     pure ()
@@ -1318,7 +1325,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
 
         -- processed by queue recipient
         rqKeys :: SndPublicVerifyKey -> SMPQueueInfo -> m () -> m ()
-        rqKeys _sKey _nextQInfo ackDelete = do
+        rqKeys _sKey (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey}) ackDelete = do
+          -- withStore c (`getNextRcvQueue` dbNextRcvQueueId rq) >>= \case
+          --   Just rq'
+          --     |  -> do
+          --     | otherwise
+
           -- store sender keys
           -- new rcv queue status = Confirmed
           -- old rcv_queue_action = RQASecureNewQueue

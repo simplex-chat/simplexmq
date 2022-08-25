@@ -45,6 +45,7 @@ module Simplex.Messaging.Agent.Protocol
     SAParty (..),
     MsgHash,
     MsgMeta (..),
+    SwitchPhase (..),
     ConnectionStats (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
@@ -235,6 +236,7 @@ data ACommand (p :: AParty) where
   DISCONNECT :: AProtocolType -> TransportHost -> ACommand Agent
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent
   UP :: SMPServer -> [ConnId] -> ACommand Agent
+  SWITCH :: SwitchPhase -> ConnectionStats -> ACommand Agent
   SEND :: MsgFlags -> MsgBody -> ACommand Client
   MID :: AgentMsgId -> ACommand Agent
   SENT :: AgentMsgId -> ACommand Agent
@@ -253,19 +255,41 @@ deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
 
+data SwitchPhase = SPStarted | SPCompleted
+  deriving (Eq, Show)
+
+instance StrEncoding SwitchPhase where
+  strEncode = \case
+    SPStarted -> "started"
+    SPCompleted -> "completed"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "started" -> pure SPStarted
+      "completed" -> pure SPCompleted
+      _ -> fail "bad SwitchPhase"
+
 data ConnectionStats = ConnectionStats
   { rcvServers :: [SMPServer],
-    sndServers :: [SMPServer]
+    sndServers :: [SMPServer],
+    nextRcvServers :: [SMPServer],
+    nextSndServers :: [SMPServer]
   }
   deriving (Eq, Show, Generic)
 
 instance StrEncoding ConnectionStats where
-  strEncode ConnectionStats {rcvServers, sndServers} =
-    "rcv=" <> strEncodeList rcvServers <> " snd=" <> strEncodeList sndServers
+  strEncode s =
+    B.unwords
+      [ "rcv=" <> strEncodeList (rcvServers s),
+        "snd=" <> strEncodeList (sndServers s),
+        "next_rcv=" <> strEncodeList (nextRcvServers s),
+        "next_snd=" <> strEncodeList (nextSndServers s)
+      ]
   strP = do
     rcvServers <- "rcv=" *> strListP
     sndServers <- " snd=" *> strListP
-    pure ConnectionStats {rcvServers, sndServers}
+    nextRcvServers <- " next_rcv=" *> strListP
+    nextSndServers <- " next_snd=" *> strListP
+    pure ConnectionStats {rcvServers, sndServers, nextRcvServers, nextSndServers}
 
 instance ToJSON ConnectionStats where toEncoding = J.genericToEncoding J.defaultOptions
 
@@ -1010,6 +1034,7 @@ commandP =
     <|> "DISCONNECT " *> disconnectResp
     <|> "DOWN " *> downResp
     <|> "UP " *> upResp
+    <|> "SWITCH " *> switchResp
     <|> "SEND " *> sendCmd
     <|> "MID " *> msgIdResp
     <|> "SENT " *> sentResp
@@ -1037,6 +1062,7 @@ commandP =
     disconnectResp = ACmd SAgent .: DISCONNECT <$> strP_ <*> strP
     downResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
     upResp = ACmd SAgent .: UP <$> strP_ <*> connections
+    switchResp = ACmd SAgent .: SWITCH <$> strP_ <*> strP
     sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> A.takeByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
@@ -1075,6 +1101,7 @@ serializeCommand = \case
   DISCONNECT p h -> B.unwords ["DISCONNECT", strEncode p, strEncode h]
   DOWN srv conns -> B.unwords ["DOWN", strEncode srv, connections conns]
   UP srv conns -> B.unwords ["UP", strEncode srv, connections conns]
+  SWITCH phase srvs -> B.unwords ["SWITCH", strEncode phase, strEncode srvs]
   SEND msgFlags msgBody -> "SEND " <> smpEncode msgFlags <> " " <> serializeBinary msgBody
   MID mId -> "MID " <> bshow mId
   SENT mId -> "SENT " <> bshow mId
