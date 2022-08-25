@@ -14,8 +14,8 @@ ALTER TABLE rcv_queues ADD COLUMN rcv_queue_id INTEGER NULL;
 ALTER TABLE rcv_queues ADD COLUMN rcv_queue_action TEXT NULL;
 ALTER TABLE rcv_queues ADD COLUMN rcv_queue_action_ts TEXT NULL;
 
-ALTER TABLE rcv_queues ADD COLUMN next_rcv_queue INTEGER DEFAULT 0 CHECK (next_rcv_queue NOT NULL);
-UPDATE rcv_queues SET next_rcv_queue = 0;
+ALTER TABLE rcv_queues ADD COLUMN curr_rcv_queue INTEGER DEFAULT 1 CHECK (curr_rcv_queue NOT NULL);
+UPDATE rcv_queues SET curr_rcv_queue = 1;
 
 ALTER TABLE rcv_queues ADD COLUMN next_rcv_queue_id INTEGER NULL;
   -- REFERENCES rcv_queues (rcv_queue_id) ON DELETE SET NULL;
@@ -37,8 +37,8 @@ ALTER TABLE snd_queues ADD COLUMN snd_queue_id INTEGER NULL;
 ALTER TABLE snd_queues ADD COLUMN snd_queue_action TEXT NULL;
 ALTER TABLE snd_queues ADD COLUMN snd_queue_action_ts TEXT NULL;
 
-ALTER TABLE snd_queues ADD COLUMN next_snd_queue INTEGER DEFAULT 0 CHECK (next_snd_queue NOT NULL);
-UPDATE snd_queues SET next_snd_queue = 0;
+ALTER TABLE snd_queues ADD COLUMN curr_snd_queue INTEGER DEFAULT 1 CHECK (curr_snd_queue NOT NULL);
+UPDATE snd_queues SET curr_snd_queue = 1;
 
 ALTER TABLE snd_queues ADD COLUMN next_snd_queue_id INTEGER NULL;
   -- REFERENCES snd_queues (snd_queue_id) ON DELETE SET NULL;

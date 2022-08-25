@@ -472,9 +472,9 @@ protocolClientError protocolError_ = \case
   e@PCEIOError {} -> INTERNAL $ show e
 
 newRcvQueue :: AgentMonad m => AgentClient -> SMPServer -> VersionRange -> Bool -> m (RcvQueue, SMPQueueUri)
-newRcvQueue c srv vRange next =
+newRcvQueue c srv vRange current =
   asks (cmdSignAlg . config) >>= \case
-    C.SignAlg a -> newRcvQueue_ a c srv vRange next
+    C.SignAlg a -> newRcvQueue_ a c srv vRange current
 
 newRcvQueue_ ::
   (C.SignatureAlgorithm a, C.AlgorithmI a, AgentMonad m) =>
@@ -484,7 +484,7 @@ newRcvQueue_ ::
   VersionRange ->
   Bool ->
   m (RcvQueue, SMPQueueUri)
-newRcvQueue_ a c srv vRange next = do
+newRcvQueue_ a c srv vRange current = do
   (recipientKey, rcvPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (dhKey, privDhKey) <- liftIO C.generateKeyPair'
   (e2eDhKey, e2ePrivKey) <- liftIO C.generateKeyPair'
@@ -505,7 +505,7 @@ newRcvQueue_ a c srv vRange next = do
             sndPublicKey = Nothing,
             status = New,
             rcvQueueAction = Nothing,
-            nextRcvQueue = next,
+            currRcvQueue = current,
             dbNextRcvQueueId = Nothing,
             clientNtfCreds = Nothing,
             smpClientVersion = maxVersion vRange,

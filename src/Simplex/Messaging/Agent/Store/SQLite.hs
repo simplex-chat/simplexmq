@@ -394,14 +394,14 @@ getNextRcvQueue db = \case
         [sql|
           SELECT q.host, q.port, s.key_hash,
             q.rcv_id, q.rcv_private_key, q.rcv_dh_secret, q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.snd_key, q.status,
-            q.rcv_queue_action, q.rcv_queue_action_ts, q.next_rcv_queue, q.next_rcv_queue_id,
+            q.rcv_queue_action, q.rcv_queue_action_ts, q.curr_rcv_queue, q.next_rcv_queue_id,
             q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
             q.smp_client_version, q.created_at, q.updated_at
           FROM rcv_queues q
           INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-          WHERE q.rcv_queue_id = ? AND q.next_rcv_queue = ?
+          WHERE q.rcv_queue_id = ? AND q.curr_rcv_queue = ?
         |]
-        (rqId, True)
+        (rqId, False)
   _ -> pure Nothing
 
 getNextSndQueue :: DB.Connection -> Maybe Int64 -> IO (Maybe SndQueue)
@@ -1203,12 +1203,12 @@ type ServerRow = (NonEmpty TransportHost, String, C.KeyHash)
 type NtfCredsRow = (Maybe SMP.NtfPublicVerifyKey, Maybe SMP.NtfPrivateSignKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret)
 
 toRcvQueue :: RcvQueueRow -> RcvQueue
-toRcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndPublicKey, status) :. (rqAction_, rqActionTs_, nextRcvQueue, dbNextRcvQueueId) :. ntfCredsRow :. (smpClientVersion_, createdAt, updatedAt)) =
+toRcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndPublicKey, status) :. (rqAction_, rqActionTs_, currRcvQueue, dbNextRcvQueueId) :. ntfCredsRow :. (smpClientVersion_, createdAt, updatedAt)) =
   let server = toSMPServer srvRow
       smpClientVersion = fromMaybe 1 smpClientVersion_
       rcvQueueAction = (,) <$> rqAction_ <*> rqActionTs_
       clientNtfCreds = toNtfCreds ntfCredsRow
-   in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndPublicKey, status, rcvQueueAction, nextRcvQueue, dbNextRcvQueueId, smpClientVersion, clientNtfCreds, createdAt, updatedAt}
+   in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndPublicKey, status, rcvQueueAction, currRcvQueue, dbNextRcvQueueId, smpClientVersion, clientNtfCreds, createdAt, updatedAt}
 
 toSMPServer :: ServerRow -> SMPServer
 toSMPServer (host, port, keyHash) = SMPServer host port keyHash
@@ -1225,14 +1225,14 @@ getRcvQueueByConnId_ dbConn connId =
       [sql|
         SELECT q.host, q.port, s.key_hash,
           q.rcv_id, q.rcv_private_key, q.rcv_dh_secret, q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.snd_key, q.status,
-          q.rcv_queue_action, q.rcv_queue_action_ts, q.next_rcv_queue, q.next_rcv_queue_id,
+          q.rcv_queue_action, q.rcv_queue_action_ts, q.curr_rcv_queue, q.next_rcv_queue_id,
           q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
           q.smp_client_version, q.created_at, q.updated_at
         FROM rcv_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.conn_id = ? AND q.next_rcv_queue = ?
+        WHERE q.conn_id = ? AND q.curr_rcv_queue = ?
       |]
-      (connId, False)
+      (connId, True)
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =
@@ -1242,18 +1242,18 @@ getSndQueueByConnId_ dbConn connId =
       [sql|
         SELECT q.host, q.port, s.key_hash,
           q.snd_id, q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status,
-          q.snd_queue_action, q.snd_queue_action_ts, q.next_snd_queue_id,
+          q.snd_queue_action, q.snd_queue_action_ts, q.curr_snd_queue, q.next_snd_queue_id,
           q.smp_client_version, q.created_at, q.updated_at
         FROM snd_queues q
         INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-        WHERE q.conn_id = ? AND q.next_snd_queue = ?
+        WHERE q.conn_id = ? AND q.curr_snd_queue = ?
       |]
-      (connId, False)
+      (connId, True)
   where
-    sndQueue (srvRow :. (sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, sqAction_, sqActionTs_, dbNextSndQueueId) :. (smpClientVersion, createdAt, updatedAt)) =
+    sndQueue (srvRow :. (sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, sqAction_, sqActionTs_, currSndQueue, dbNextSndQueueId) :. (smpClientVersion, createdAt, updatedAt)) =
       let server = toSMPServer srvRow
           sndQueueAction = (,) <$> sqAction_ <*> sqActionTs_
-       in SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, sndQueueAction, dbNextSndQueueId, smpClientVersion, createdAt, updatedAt}
+       in SndQueue {server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, sndQueueAction, currSndQueue, dbNextSndQueueId, smpClientVersion, createdAt, updatedAt}
 
 -- * updateRcvIds helpers
 

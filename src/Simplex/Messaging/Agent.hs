@@ -305,7 +305,7 @@ newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> SConnectionMode c ->
 newConn c connId enableNtfs cMode = do
   srv <- getSMPServer c
   clientVRange <- asks $ smpClientVRange . config
-  (rq, qUri) <- newRcvQueue c srv clientVRange False
+  (rq, qUri) <- newRcvQueue c srv clientVRange True
   g <- asks idsDrg
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
   let cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
@@ -335,7 +335,7 @@ joinConn c connId enableNtfs (CRInvitationUri (ConnReqUriData _ agentVRange (qUr
       (pk1, pk2, e2eSndParams) <- liftIO . CR.generateE2EParams $ version e2eRcvParams
       (_, rcDHRs) <- liftIO C.generateKeyPair'
       let rc = CR.initSndRatchet rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
-      sq <- newSndQueue qInfo
+      sq <- newSndQueue qInfo True
       g <- asks idsDrg
       let duplexHS = connAgentVersion /= 1
           cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
@@ -368,7 +368,7 @@ joinConn c connId enableNtfs (CRContactUri (ConnReqUriData _ agentVRange (qUri :
 createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> m SMPQueueInfo
 createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueue c srv (versionToRange smpClientVersion) False
+  (rq, qUri) <- newRcvQueue c srv (versionToRange smpClientVersion) True
   let qInfo = toVersionT qUri smpClientVersion
   addSubscription c rq connId
   withStore c $ \db -> upgradeSndConnToDuplex db connId rq
@@ -459,7 +459,7 @@ createNextRcvQueue c cData rq@RcvQueue {server, sndId} sq = do
         pure SMPQueueUri {clientVRange, queueAddress}
       _ -> do
         srv <- getSMPServer c
-        (rq', qUri) <- newRcvQueue c srv clientVRange True
+        (rq', qUri) <- newRcvQueue c srv clientVRange False
         withStore' c $ \db -> dbCreateNextRcvQueue db rq rq'
         pure qUri
   void $ enqueueMessage c cData sq SMP.noMsgFlags QNEW {currentAddress = (server, sndId), nextQueueUri}
@@ -1310,7 +1310,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
             clientVRange <- asks $ smpClientVRange . config
             case (nextQUri `compatibleVersion` clientVRange) of
               Just qInfo@(Compatible nextQInfo) -> do
-                sq'@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue qInfo
+                sq'@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue qInfo False
                 withStore' c $ \db -> dbCreateNextSndQueue db sq sq'
                 case (sndPublicKey, e2ePubKey) of
                   (Just nextSenderKey, Just dhPublicKey) -> do
@@ -1409,7 +1409,7 @@ connectReplyQueues c cData@ConnData {connId} ownConnInfo (qInfo :| _) = do
   case qInfo `proveCompatible` clientVRange of
     Nothing -> throwError $ AGENT A_VERSION
     Just qInfo' -> do
-      sq <- newSndQueue qInfo'
+      sq <- newSndQueue qInfo' True
       withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
       enqueueConfirmation c cData sq ownConnInfo Nothing
 
@@ -1468,17 +1468,18 @@ agentRatchetDecrypt db connId encAgentMsg = do
   liftIO $ updateRatchet db connId rc' skippedDiff
   liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
 
-newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueueInfo -> m SndQueue
-newSndQueue qInfo =
+newSndQueue :: (MonadUnliftIO m, MonadReader Env m) => Compatible SMPQueueInfo -> Bool -> m SndQueue
+newSndQueue qInfo current =
   asks (cmdSignAlg . config) >>= \case
-    C.SignAlg a -> newSndQueue_ a qInfo
+    C.SignAlg a -> newSndQueue_ a qInfo current
 
 newSndQueue_ ::
   (C.SignatureAlgorithm a, C.AlgorithmI a, MonadUnliftIO m) =>
   C.SAlgorithm a ->
   Compatible SMPQueueInfo ->
+  Bool ->
   m SndQueue
-newSndQueue_ a (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
+newSndQueue_ a (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) current = do
   -- this function assumes clientVersion is compatible - it was tested before
   (sndPublicKey, sndPrivateKey) <- liftIO $ C.generateSignatureKeyPair a
   (e2ePubKey, e2ePrivKey) <- liftIO C.generateKeyPair'
@@ -1492,6 +1493,7 @@ newSndQueue_ a (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpSe
         e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
         e2ePubKey = Just e2ePubKey,
         status = New,
+        currSndQueue = current,
         dbNextSndQueueId = Nothing,
         sndQueueAction = Nothing,
         smpClientVersion,
