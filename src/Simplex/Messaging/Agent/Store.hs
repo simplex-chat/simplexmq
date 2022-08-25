@@ -53,6 +53,10 @@ data RcvQueue = RcvQueue
     e2eDhSecret :: Maybe C.DhSecretX25519,
     -- | sender queue ID
     sndId :: SMP.SenderId,
+    -- | public key used by the server to verify sender's transmissions
+    -- it is Maybe as previously it was not saved - old queues may have NULL in it.
+    -- For all new queues it is never cleared.
+    sndPublicKey :: Maybe C.APublicVerifyKey,
     -- | queue status
     status :: QueueStatus,
     -- | action to perform, to be done on connection subscription, if it fails and not reset
@@ -85,7 +89,7 @@ data SndQueue = SndQueue
     -- | sender queue ID
     sndId :: SMP.SenderId,
     -- | key pair used by the sender to sign transmissions
-    -- This is Maybe as previously it was not saved - old queues may have NULL in it.
+    -- sndPublicKey is Maybe as previously it was not saved - old queues may have NULL in it.
     -- For all new queues it is never cleared.
     sndPublicKey :: Maybe C.APublicVerifyKey,
     sndPrivateKey :: SndPrivateSignKey,
@@ -130,6 +134,13 @@ data Connection (d :: ConnType) where
 deriving instance Eq (Connection d)
 
 deriving instance Show (Connection d)
+
+connData :: Connection d -> ConnData
+connData = \case
+  RcvConnection cData _ -> cData
+  SndConnection cData _ -> cData
+  DuplexConnection cData _ _ -> cData
+  ContactConnection cData _ -> cData
 
 data SConnType :: ConnType -> Type where
   SCRcv :: SConnType CRcv

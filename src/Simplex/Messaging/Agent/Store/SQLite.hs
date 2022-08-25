@@ -38,6 +38,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getRcvQueue,
     setRcvQueueNtfCreds,
     getNextRcvQueue,
+    getNextSndQueue,
     dbCreateNextRcvQueue,
     dbCreateNextSndQueue,
     setRcvQueueAction,
@@ -331,19 +332,21 @@ setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} stat
     |]
     [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
 
-setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> Version -> IO ()
-setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
+setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.APublicVerifyKey -> C.DhSecretX25519 -> Version -> IO ()
+setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} sndPublicKey e2eDhSecret smpClientVersion =
   DB.executeNamed
     db
     [sql|
       UPDATE rcv_queues
       SET e2e_dh_secret = :e2e_dh_secret,
+          snd_key = :snd_key,
           status = :status,
           smp_client_version = :smp_client_version
       WHERE host = :host AND port = :port AND rcv_id = :rcv_id
     |]
     [ ":status" := Confirmed,
       ":e2e_dh_secret" := e2eDhSecret,
+      ":snd_key" := sndPublicKey,
       ":smp_client_version" := smpClientVersion,
       ":host" := host,
       ":port" := port,
@@ -389,7 +392,7 @@ getNextRcvQueue db = \case
         db
         [sql|
           SELECT q.host, q.port, s.key_hash,
-            q.rcv_id, q.rcv_private_key, q.rcv_dh_secret, q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
+            q.rcv_id, q.rcv_private_key, q.rcv_dh_secret, q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.snd_key, q.status,
             q.rcv_queue_action, q.rcv_queue_action_ts, q.next_rcv_queue_id,
             q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
             q.smp_client_version, q.created_at, q.updated_at
@@ -399,21 +402,27 @@ getNextRcvQueue db = \case
         |]
         (rqId, True)
     where
-      rcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, rqAction_, rqActionTs_, dbNextRcvQueueId) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) :. (smpClientVersion_, createdAt, updatedAt)) =
+      rcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndPublicKey, status) :. (rqAction_, rqActionTs_, dbNextRcvQueueId) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) :. (smpClientVersion_, createdAt, updatedAt)) =
         let server = toSMPServer srvRow
             smpClientVersion = fromMaybe 1 smpClientVersion_
             rcvQueueAction = (,) <$> rqAction_ <*> rqActionTs_
             clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
               (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
               _ -> Nothing
-         in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, rcvQueueAction, dbNextRcvQueueId, smpClientVersion, clientNtfCreds, createdAt, updatedAt}
+         in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndPublicKey, status, rcvQueueAction, dbNextRcvQueueId, smpClientVersion, clientNtfCreds, createdAt, updatedAt}
   _ -> pure Nothing
+
+getNextSndQueue :: DB.Connection -> Maybe Int64 -> IO (Maybe SndQueue)
+getNextSndQueue _db _sqId_ = pure Nothing
 
 dbCreateNextRcvQueue :: DB.Connection -> RcvQueue -> RcvQueue -> IO ()
 dbCreateNextRcvQueue _db _rq _nextRq = pure ()
 
 dbCreateNextSndQueue :: DB.Connection -> SndQueue -> SndQueue -> IO ()
-dbCreateNextSndQueue _db _sq _nextSq = pure ()
+dbCreateNextSndQueue _db _sq _nextSq = do
+  -- create next queue record
+  -- update current queue with the next queue ID
+  pure ()
 
 setRcvQueueAction :: DB.Connection -> RcvQueue -> Maybe RcvQueueAction -> IO ()
 setRcvQueueAction _db _rq _rqAction_ = pure ()
@@ -1203,7 +1212,7 @@ getRcvQueueByConnId_ dbConn connId =
       dbConn
       [sql|
         SELECT q.host, q.port, s.key_hash,
-          q.rcv_id, q.rcv_private_key, q.rcv_dh_secret, q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
+          q.rcv_id, q.rcv_private_key, q.rcv_dh_secret, q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.snd_key, q.status,
           q.rcv_queue_action, q.rcv_queue_action_ts, q.next_rcv_queue_id,
           q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
           q.smp_client_version, q.created_at, q.updated_at
@@ -1213,14 +1222,14 @@ getRcvQueueByConnId_ dbConn connId =
       |]
       (connId, False)
   where
-    rcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, rqAction_, rqActionTs_, dbNextRcvQueueId) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) :. (smpClientVersion_, createdAt, updatedAt)) =
+    rcvQueue (srvRow :. (rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndPublicKey, status) :. (rqAction_, rqActionTs_, dbNextRcvQueueId) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) :. (smpClientVersion_, createdAt, updatedAt)) =
       let server = toSMPServer srvRow
           smpClientVersion = fromMaybe 1 smpClientVersion_
           rcvQueueAction = (,) <$> rqAction_ <*> rqActionTs_
           clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
             (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
             _ -> Nothing
-       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, rcvQueueAction, dbNextRcvQueueId, smpClientVersion, clientNtfCreds, createdAt, updatedAt}
+       in RcvQueue {server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndPublicKey, status, rcvQueueAction, dbNextRcvQueueId, smpClientVersion, clientNtfCreds, createdAt, updatedAt}
 
 getSndQueueByConnId_ :: DB.Connection -> ConnId -> IO (Maybe SndQueue)
 getSndQueueByConnId_ dbConn connId =

@@ -410,7 +410,7 @@ rejectContact' c contactConnId invId =
 processConfirmation :: AgentMonad m => AgentClient -> RcvQueue -> SMPConfirmation -> m ()
 processConfirmation c rq@RcvQueue {e2ePrivKey, smpClientVersion = v} SMPConfirmation {senderKey, e2ePubKey, smpClientVersion = v'} = do
   let dhSecret = C.dh' e2ePubKey e2ePrivKey
-  withStore' c $ \db -> setRcvQueueConfirmedE2E db rq dhSecret $ min v v'
+  withStore' c $ \db -> setRcvQueueConfirmedE2E db rq senderKey dhSecret $ min v v'
   -- TODO if this call to secureQueue fails the connection will not complete
   -- add secure rcv queue on subscription
   secureQueue c rq senderKey
@@ -423,7 +423,7 @@ subscribeConnection' c connId =
     SomeConn _ (DuplexConnection cData rq sq) -> do
       resumeMsgDelivery c cData sq
       subscribe rq
-      doRcvQueueAction c cData rq sq
+      void . forkIO $ doRcvQueueAction c cData rq sq
     SomeConn _ (SndConnection cData sq) -> do
       resumeMsgDelivery c cData sq
       case status (sq :: SndQueue) of
@@ -445,7 +445,7 @@ doRcvQueueAction :: AgentMonad m => AgentClient -> ConnData -> RcvQueue -> SndQu
 doRcvQueueAction c cData rq@RcvQueue {rcvQueueAction} sq =
   forM_ rcvQueueAction $ \(a, _ts) -> case a of
     RQACreateNextQueue -> createNextRcvQueue c cData rq sq
-    RQASecureNextQueue -> withNextRcvQueue c rq secureNextRcvQueue
+    RQASecureNextQueue -> withNextRcvQueue c rq $ secureNextRcvQueue cData sq
     RQASuspendCurrQueue -> withNextRcvQueue c rq suspendCurrRcvQueue
     RQADeleteCurrQueue -> withNextRcvQueue c rq deleteCurrRcvQueue
 
@@ -465,13 +465,17 @@ createNextRcvQueue c cData rq@RcvQueue {server, sndId} sq = do
   void $ enqueueMessage c cData sq SMP.noMsgFlags QNEW {currentAddress = (server, sndId), nextQueueUri}
   withStore' c $ \db -> setRcvQueueAction db rq Nothing
 
-secureNextRcvQueue :: AgentMonad m => AgentClient -> RcvQueue -> RcvQueue -> m ()
-secureNextRcvQueue _c _mainRq _nextRq = do
-  -- if not yet secured, secure new queue (it can be repeated with the same key)
-  -- set queue status to Secured
-  -- Enqueue QREADY message
-  -- rcv_queue_action = null
-  pure ()
+secureNextRcvQueue :: AgentMonad m => ConnData -> SndQueue -> AgentClient -> RcvQueue -> RcvQueue -> m ()
+secureNextRcvQueue cData sq c rq nextRq@RcvQueue {server, sndId, status, sndPublicKey} = do
+  when (status == Confirmed) $ case sndPublicKey of
+    Just sKey -> do
+      secureQueue c rq sKey
+      withStore' c $ \db -> setRcvQueueStatus db nextRq Secured
+    _ -> do
+      -- notify user: no sender key
+      pure ()
+  void . enqueueMessage c cData sq SMP.noMsgFlags $ QREADY (server, sndId)
+  withStore' c $ \db -> setRcvQueueAction db rq Nothing
 
 suspendCurrRcvQueue :: AgentMonad m => AgentClient -> RcvQueue -> RcvQueue -> m ()
 suspendCurrRcvQueue c currRq nextRq = do
@@ -1094,6 +1098,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
 processSMPTransmission :: forall m. AgentMonad m => AgentClient -> ServerTransmission BrokerMsg -> m ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cmd) =
   withStore c (\db -> getRcvConn db srv rId) >>= \case
+    -- TODO somehow it should get next queue if the message is to it
     SomeConn _ conn@(DuplexConnection cData rq _) -> processSMP conn cData rq
     SomeConn _ conn@(RcvConnection cData rq) -> processSMP conn cData rq
     SomeConn _ conn@(ContactConnection cData rq) -> processSMP conn cData rq
@@ -1300,51 +1305,58 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (srv, v, sessId, rId, cm
         -- processed by queue sender
         rqNewMsg :: (SMPServer, SMP.SenderId) -> SMPQueueUri -> m ()
         rqNewMsg _currAddr nextQUri = case conn of
-          DuplexConnection _ rq sq -> do
+          DuplexConnection _ _ sq -> do
+            -- TODO check that current address matches
             clientVRange <- asks $ smpClientVRange . config
             case (nextQUri `compatibleVersion` clientVRange) of
               Just qInfo@(Compatible nextQInfo) -> do
                 sq'@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue qInfo
                 withStore' c $ \db -> dbCreateNextSndQueue db sq sq'
-                rq' <- withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq)
                 case (sndPublicKey, e2ePubKey) of
                   (Just nextSenderKey, Just dhPublicKey) -> do
                     let qAddr = (queueAddress (nextQInfo :: SMPQueueInfo)) {dhPublicKey}
                         nextQueueInfo = (nextQInfo :: SMPQueueInfo) {queueAddress = qAddr}
                     void . enqueueMessage c cData sq SMP.noMsgFlags $ QKEYS {nextSenderKey, nextQueueInfo}
+                    rq' <- withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq)
                     notify . SWITCH SPStarted $ connectionStats conn rq' (Just sq')
-                  _ -> do
-                    -- TODO notify user: internal error
-                    pure ()
-              _ -> do
-                -- TODO notify user: incompatible version
-                pure ()
-          _ -> do
-            -- TODO notify user: message can only be sent to duplex connection
-            pure ()
+                  _ -> throwError $ INTERNAL "absent sender keys"
+              _ -> throwError $ AGENT A_VERSION
+          _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
         -- processed by queue recipient
         rqKeys :: SndPublicVerifyKey -> SMPQueueInfo -> m () -> m ()
-        rqKeys _sKey (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey}) ackDelete = do
-          -- withStore c (`getNextRcvQueue` dbNextRcvQueueId rq) >>= \case
-          --   Just rq'
-          --     |  -> do
-          --     | otherwise
-
-          -- store sender keys
-          -- new rcv queue status = Confirmed
-          -- old rcv_queue_action = RQASecureNewQueue
-          -- load nextRq - this and all above can be one store function, at least one transaction
-          --
-          ackDelete
-          -- secureNextRcvQueue c rq nextRq
-          pure ()
+        rqKeys senderKey qInfo ackDelete =
+          case conn of
+            DuplexConnection _ _ sq -> do
+              clientVRange <- asks $ smpClientVRange . config
+              case qInfo `proveCompatible` clientVRange of
+                Just (Compatible (SMPQueueInfo clntVer' SMPQueueAddress {smpServer, senderId, dhPublicKey})) -> do
+                  withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq) >>= \case
+                    Just rq'@RcvQueue {server, sndId, e2ePrivKey = dhPrivKey, smpClientVersion = clntVer}
+                      | server == smpServer && sndId == senderId -> do
+                        let dhSecret = C.dh' dhPublicKey dhPrivKey
+                        withStore' c $ \db -> do
+                          setRcvQueueConfirmedE2E db rq' senderKey dhSecret $ min clntVer clntVer'
+                          setRcvQueueAction db rq $ Just RQASecureNextQueue
+                        ackDelete
+                        secureNextRcvQueue cData sq c rq rq'
+                      | otherwise -> throwError $ INTERNAL "incorrect queue address"
+                    _ -> throwError $ INTERNAL "message can only be sent during rotation"
+                _ -> throwError $ AGENT A_VERSION
+            _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
         -- processed by queue sender
         rqReady :: (SMPServer, SMP.SenderId) -> m ()
-        rqReady _addr = do
-          -- Enqueue QHELLO message to the new queue
-          pure ()
+        rqReady (smpServer, senderId) =
+          case conn of
+            DuplexConnection _ _ sq ->
+              withStore' c (`getNextSndQueue` dbNextSndQueueId sq) >>= \case
+                Just sq'@SndQueue {server, sndId}
+                  | server == smpServer && sndId == senderId ->
+                    void . enqueueMessage c cData sq' SMP.noMsgFlags $ QHELLO
+                  | otherwise -> throwError $ INTERNAL "incorrect queue address"
+                _ -> throwError $ INTERNAL "message can only be sent during rotation"
+            _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
         -- processed by queue recipient, received from the new queue
         rqHello :: m () -> m ()
