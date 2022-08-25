@@ -397,7 +397,9 @@ acceptContact' c connId enableNtfs invId ownConnInfo = do
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ ContactConnection {} -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConn c connId enableNtfs connReq ownConnInfo
+      joinConn c connId enableNtfs connReq ownConnInfo `catchError` \err -> do
+        withStore' c (`unacceptInvitation` invId)
+        throwError err
     _ -> throwError $ CMD PROHIBITED
 
 -- | Reject contact (RJCT command) in Reader monad
