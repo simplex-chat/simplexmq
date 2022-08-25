@@ -43,6 +43,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     dbCreateNextRcvQueue,
     dbCreateNextSndQueue,
     setRcvQueueAction,
+    switchCurrRcvQueue,
     -- Confirmations
     createConfirmation,
     acceptConfirmation,
@@ -280,19 +281,26 @@ createSndConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandsh
     -- TODO add queue ID in insertSndQueue_
     insertSndQueue_ db connId q
 
-getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError SomeConn)
-getRcvConn db ProtocolServer {host, port} rcvId =
-  DB.queryNamed
-    db
-    [sql|
-      SELECT q.conn_id
-      FROM rcv_queues q
-      WHERE q.host = :host AND q.port = :port AND q.rcv_id = :rcv_id;
-    |]
-    [":host" := host, ":port" := port, ":rcv_id" := rcvId]
-    >>= \case
-      [Only connId] -> getConn db connId
-      _ -> pure $ Left SEConnNotFound
+getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError (RcvQueue, SomeConn))
+getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
+  (rq, connId) <-
+    ExceptT . firstRow (\(qRow :. Only connId) -> (toRcvQueue qRow, connId)) SEConnNotFound $
+      DB.query
+        db
+        [sql|
+          SELECT q.host, q.port, s.key_hash,
+            q.rcv_id, q.rcv_private_key, q.rcv_dh_secret, q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.snd_key, q.status,
+            q.rcv_queue_action, q.rcv_queue_action_ts, q.curr_rcv_queue, q.next_rcv_queue_id,
+            q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
+            q.smp_client_version, q.created_at, q.updated_at,
+            q.conn_id
+          FROM rcv_queues q
+          INNER JOIN servers s ON q.host = s.host AND q.port = s.port
+          WHERE q.host = ? AND q.port = ? AND q.rcv_id = ?
+        |]
+        (host, port, rcvId)
+  conn <- ExceptT $ getConn db connId
+  pure (rq, conn)
 
 deleteConn :: DB.Connection -> ConnId -> IO ()
 deleteConn db connId =
@@ -313,13 +321,12 @@ upgradeRcvConnToDuplex db connId sq@SndQueue {server} =
 
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError ())
 upgradeSndConnToDuplex db connId rq@RcvQueue {server} =
-  getConn db connId >>= \case
-    Right (SomeConn _ SndConnection {}) -> do
+  getConn db connId $>>= \case
+    SomeConn _ SndConnection {} -> do
       upsertServer_ db server
       insertRcvQueue_ db connId rq
       pure $ Right ()
-    Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
-    _ -> pure $ Left SEConnNotFound
+    SomeConn c _ -> pure . Left . SEBadConnType $ connType c
 
 setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
 setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
@@ -418,6 +425,11 @@ dbCreateNextSndQueue _db _sq _nextSq = do
 
 setRcvQueueAction :: DB.Connection -> RcvQueue -> Maybe RcvQueueAction -> IO ()
 setRcvQueueAction _db _rq _rqAction_ = pure ()
+
+switchCurrRcvQueue :: DB.Connection -> RcvQueue -> RcvQueue -> IO ()
+switchCurrRcvQueue _db _rq _nextRq = do
+  -- make a new queue a main one
+  pure ()
 
 type SMPConfirmationRow = (SndPublicVerifyKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe Version)
 
