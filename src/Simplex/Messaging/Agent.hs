@@ -394,7 +394,7 @@ acceptContact' c connId enableNtfs invId ownConnInfo = do
       joinConn c connId enableNtfs connReq ownConnInfo `catchError` \err -> do
         withStore' c (`unacceptInvitation` invId)
         throwError err
-    conn -> throwError $ CMD PROHIBITED
+    _ -> throwError $ CMD PROHIBITED
 
 -- | Reject contact (RJCT command) in Reader monad
 rejectContact' :: AgentMonad m => AgentClient -> ConnId -> InvitationId -> m ()
