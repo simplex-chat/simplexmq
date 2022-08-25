@@ -47,6 +47,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createInvitation,
     getInvitation,
     acceptInvitation,
+    unacceptInvitation,
     deleteInvitation,
     -- Messages
     updateRcvIds,
@@ -503,6 +504,10 @@ acceptInvitation db invitationId ownConnInfo =
     [ ":own_conn_info" := ownConnInfo,
       ":invitation_id" := invitationId
     ]
+
+unacceptInvitation :: DB.Connection -> InvitationId -> IO ()
+unacceptInvitation db invitationId =
+  DB.execute db "UPDATE conn_invitations SET accepted = 0, own_conn_info = NULL WHERE invitation_id = ?" (Only invitationId)
 
 deleteInvitation :: DB.Connection -> ConnId -> InvitationId -> IO (Either StoreError ())
 deleteInvitation db contactConnId invId =
