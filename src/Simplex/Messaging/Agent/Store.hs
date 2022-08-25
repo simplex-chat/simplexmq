@@ -61,6 +61,8 @@ data RcvQueue = RcvQueue
     status :: QueueStatus,
     -- | action to perform, to be done on connection subscription, if it fails and not reset
     rcvQueueAction :: Maybe (RcvQueueAction, UTCTime),
+    -- | True if this is the queue the connection is switching to, rather than the current queue
+    nextRcvQueue :: Bool,
     -- | database ID of the new queue created for this queue to switch to (queue rotation)
     dbNextRcvQueueId :: Maybe Int64,
     -- | credentials used in context of notifications

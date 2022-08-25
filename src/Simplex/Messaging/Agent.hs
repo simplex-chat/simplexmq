@@ -305,7 +305,7 @@ newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> SConnectionMode c ->
 newConn c connId enableNtfs cMode = do
   srv <- getSMPServer c
   clientVRange <- asks $ smpClientVRange . config
-  (rq, qUri) <- newRcvQueue c srv clientVRange
+  (rq, qUri) <- newRcvQueue c srv clientVRange False
   g <- asks idsDrg
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
   let cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
@@ -368,7 +368,7 @@ joinConn c connId enableNtfs (CRContactUri (ConnReqUriData _ agentVRange (qUri :
 createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> m SMPQueueInfo
 createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} = do
   srv <- getSMPServer c
-  (rq, qUri) <- newRcvQueue c srv $ versionToRange smpClientVersion
+  (rq, qUri) <- newRcvQueue c srv (versionToRange smpClientVersion) False
   let qInfo = toVersionT qUri smpClientVersion
   addSubscription c rq connId
   withStore c $ \db -> upgradeSndConnToDuplex db connId rq
@@ -459,7 +459,7 @@ createNextRcvQueue c cData rq@RcvQueue {server, sndId} sq = do
         pure SMPQueueUri {clientVRange, queueAddress}
       _ -> do
         srv <- getSMPServer c
-        (rq', qUri) <- newRcvQueue c srv clientVRange
+        (rq', qUri) <- newRcvQueue c srv clientVRange True
         withStore' c $ \db -> dbCreateNextRcvQueue db rq rq'
         pure qUri
   void $ enqueueMessage c cData sq SMP.noMsgFlags QNEW {currentAddress = (server, sndId), nextQueueUri}
