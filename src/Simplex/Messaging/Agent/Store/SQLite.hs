@@ -44,6 +44,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     dbCreateNextSndQueue,
     setRcvQueueAction,
     switchCurrRcvQueue,
+    switchCurrSndQueue,
     -- Confirmations
     createConfirmation,
     acceptConfirmation,
@@ -429,6 +430,13 @@ setRcvQueueAction _db _rq _rqAction_ = pure ()
 switchCurrRcvQueue :: DB.Connection -> RcvQueue -> RcvQueue -> IO ()
 switchCurrRcvQueue _db _rq _nextRq = do
   -- make a new queue a main one
+  -- delete old queue from the database
+  pure ()
+
+switchCurrSndQueue :: DB.Connection -> SndQueue -> SndQueue -> IO ()
+switchCurrSndQueue _db _sq _nextSq = do
+  -- make new queue active
+  -- delete old queue from the database
   pure ()
 
 type SMPConfirmationRow = (SndPublicVerifyKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe Version)
@@ -601,10 +609,11 @@ createSndMsg db connId sndMsgData = do
   insertSndMsgDetails_ db connId sndMsgData
   updateHashSnd_ db connId sndMsgData
 
-getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
-getPendingMsgData db connId msgId = do
-  rq_ <- getRcvQueueByConnId_ db connId
-  (rq_,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
+getPendingMsgData :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (Maybe RcvQueue, SndQueue, PendingMsgData))
+getPendingMsgData db connId msgId = runExceptT $ do
+  rq_ <- liftIO $ getRcvQueueByConnId_ db connId
+  sq <- ExceptT $ maybe (Left SEConnNotFound) Right <$> getSndQueueByConnId_ db connId
+  ExceptT $ (rq_,sq,) <$$> firstRow pendingMsgData SEMsgNotFound getMsgData_
   where
     getMsgData_ =
       DB.query
