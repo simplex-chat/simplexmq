@@ -16,6 +16,7 @@
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
+    MsgDeliveryKey,
     newAgentClient,
     withAgentLock,
     closeAgentClient,
@@ -145,6 +146,8 @@ type SMPClientVar = TMVar (Either AgentErrorType SMPClient)
 
 type NtfClientVar = TMVar (Either AgentErrorType NtfClient)
 
+type MsgDeliveryKey = (ConnId, SMPServer, SMP.SenderId)
+
 data AgentClient = AgentClient
   { active :: TVar Bool,
     rcvQ :: TBQueue (ATransmission 'Client),
@@ -159,8 +162,8 @@ data AgentClient = AgentClient
     pendingSubscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
     subscrConns :: TMap ConnId SMPServer,
     connMsgsQueued :: TMap ConnId Bool,
-    smpQueueMsgQueues :: TMap (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId),
-    smpQueueMsgDeliveries :: TMap (ConnId, SMPServer, SMP.SenderId) (Async ()),
+    smpQueueMsgQueues :: TMap MsgDeliveryKey (TQueue InternalId),
+    smpQueueMsgDeliveries :: TMap MsgDeliveryKey (Async ()),
     nextRcvQueueMsgs :: TMap (ConnId, SMPServer, SMP.RecipientId) [ServerTransmission BrokerMsg],
     ntfNetworkOp :: TVar AgentOpState,
     rcvNetworkOp :: TVar AgentOpState,
