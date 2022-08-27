@@ -590,7 +590,9 @@ client clnt@Client {thVersion, subscriptions, ntfSubscriptions, rcvQ, sndQ} Serv
                 Just msg ->
                   let encMsg = encryptMsg qr msg
                    in atomically (setDelivered s msg) $> (corrId, rId, MSG encMsg)
-                _ -> forkSub $> ok
+                _
+                  | status qr == QueueActive -> forkSub $> ok
+                  | otherwise -> pure (corrId, rId, LEN 0)
             _ -> pure ok
           where
             forkSub :: m ()
