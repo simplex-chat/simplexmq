@@ -452,24 +452,24 @@ doRcvQueueAction c cData rq@RcvQueue {rcvQueueAction} sq =
   where
     withNextRcvQueue :: AgentMonad m => (AgentClient -> ConnData -> RcvQueue -> SndQueue -> RcvQueue -> m ()) -> m ()
     withNextRcvQueue action = do
-      withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq) >>= \case
+      withStore' c (`getNextRcvQueue` rq) >>= \case
         Just rq' -> action c cData rq sq rq'
         _ -> do
           -- notify agent internal error
           pure ()
 
 createNextRcvQueue :: AgentMonad m => AgentClient -> ConnData -> RcvQueue -> SndQueue -> m ()
-createNextRcvQueue c cData rq@RcvQueue {server, sndId} sq = do
+createNextRcvQueue c cData@ConnData {connId} rq@RcvQueue {server, sndId} sq = do
   clientVRange <- asks $ smpClientVRange . config
   nextQueueUri <-
-    withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq) >>= \case
+    withStore' c (`getNextRcvQueue` rq) >>= \case
       Just RcvQueue {server = smpServer, sndId = senderId, e2ePrivKey} -> do
         let queueAddress = SMPQueueAddress {smpServer, senderId, dhPublicKey = C.publicKey e2ePrivKey}
         pure SMPQueueUri {clientVRange, queueAddress}
       _ -> do
         srv <- getSMPServer c server
         (rq', qUri) <- newRcvQueue c srv clientVRange False
-        withStore' c $ \db -> dbCreateNextRcvQueue db rq rq'
+        withStore' c $ \db -> dbCreateNextRcvQueue db connId rq rq'
         pure qUri
   void $ enqueueMessage c cData sq SMP.noMsgFlags QNEW {currentAddress = (server, sndId), nextQueueUri}
   withStore' c $ \db -> setRcvQueueAction db rq Nothing
@@ -1341,13 +1341,13 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
             case (nextQUri `compatibleVersion` clientVRange) of
               Just qInfo@(Compatible nextQInfo) -> do
                 sq'@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue qInfo False
-                withStore' c $ \db -> dbCreateNextSndQueue db sq sq'
+                withStore' c $ \db -> dbCreateNextSndQueue db connId sq sq'
                 case (sndPublicKey, e2ePubKey) of
                   (Just nextSenderKey, Just dhPublicKey) -> do
                     let qAddr = (queueAddress (nextQInfo :: SMPQueueInfo)) {dhPublicKey}
                         nextQueueInfo = (nextQInfo :: SMPQueueInfo) {queueAddress = qAddr}
                     void . enqueueMessage c cData sq SMP.noMsgFlags $ QKEYS {nextSenderKey, nextQueueInfo}
-                    rq' <- withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq)
+                    rq' <- withStore' c (`getNextRcvQueue` rq)
                     notify . SWITCH SPStarted $ connectionStats conn rq' (Just sq')
                   _ -> throwError $ INTERNAL "absent sender keys"
               _ -> throwError $ AGENT A_VERSION
@@ -1361,7 +1361,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
             DuplexConnection _ _ sq -> do
               clientVRange <- asks $ smpClientVRange . config
               unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
-              withStore' c (`getNextRcvQueue` dbNextRcvQueueId rq) >>= \case
+              withStore' c (`getNextRcvQueue` rq) >>= \case
                 Just rq'@RcvQueue {server, sndId, e2ePrivKey = dhPrivKey, smpClientVersion = clntVer} -> do
                   unless (smpServer == server && senderId == sndId) . throwError $ INTERNAL "incorrect queue address"
                   let dhSecret = C.dh' dhPublicKey dhPrivKey
@@ -1377,7 +1377,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         rqReady :: (SMPServer, SMP.SenderId) -> m ()
         rqReady (smpServer, senderId) = case conn of
           DuplexConnection _ _ sq ->
-            withStore' c (`getNextSndQueue` dbNextSndQueueId sq) >>= \case
+            withStore' c (`getNextSndQueue` sq) >>= \case
               Just sq'@SndQueue {server, sndId} -> do
                 unless (smpServer == server && senderId == sndId) . throwError $ INTERNAL "incorrect queue address"
                 void $ enqueueMessage c cData sq' SMP.noMsgFlags QTEST
@@ -1398,7 +1398,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         rqSwitch :: (SMPServer, SMP.SenderId) -> m ()
         rqSwitch (smpServer, senderId) = case conn of
           DuplexConnection _ _ sq@SndQueue {server, sndId} -> do
-            withStore' c (`getNextSndQueue` dbNextSndQueueId sq) >>= \case
+            withStore' c (`getNextSndQueue` sq) >>= \case
               Just sq'@SndQueue {server = server', sndId = sndId'} -> do
                 unless (smpServer == server' && senderId == sndId') . throwError $ INTERNAL "incorrect queue address"
                 let qKey = (connId, server, sndId)
