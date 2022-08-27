@@ -22,9 +22,11 @@ Additional agent messages required for the protocol:
 
 `QREADY`: instruct the sender that the new is ready to use with sender's queue address as parameter, encoded as `QR` - sender will send HELLO to the new queue.
 
-`QHELLO`: sender sends to the new queue to confirm it's working, encoded as `QH`
+`QTEST`: sender sends to the new queue to confirm it's working, encoded as `QT`
 
-`QSWITCH`: instruct the sender to use the new queue with sender's queue ID as parameter, encoded as `QR` - sent after receiving `QHELLO`.
+`QSWITCH`: instruct the sender to use the new queue with sender's queue ID as parameter, encoded as `QS` - sent after receiving `QTEST`.
+
+`QHELLO`: sender sends to the new queue to confirm switch was successful - all new messages after this message will be sent to the new queue. Encoded as `QH`
 
 ### Protocol
 
@@ -41,12 +43,12 @@ B ->> R ->> A: QKEYS (R'): sender's key for the new queue (to avoid the race of 
 B ->> R ->> A: continue sending new messages to the old queue
 A ->> R': secure queue
 A ->> S ->> B: QREADY (R'): notify sender that the queue is secured
-B ->> R' ->> A: QHELLO: to validate that the sender can send messages to the new queue before switching to it
+B ->> R' ->> A: QTEST: to validate that the sender can send messages to the new queue before switching to it
 A ->> S ->> B: QSWITCH (R'): instruction to start using the new queue
+B ->> R' ->> A: QHELLO: to confirm that the delivery is now switched to the new queue
 B ->> R' ->> A: the first message received to the new queue before the old one is drained and deleted should not be processed, it should be stored in the agent memory (and not acknowledged) and only processed once the old queue is drained.
 A ->> R: suspend queue, receive all messages
 A ->> R: delete queue
-B ->> R' ->> A: once sending fails with AUTH error, start sending new (and any undelivered) messages to the new queue
 ```
 
 It will also require extending SMP protocol:

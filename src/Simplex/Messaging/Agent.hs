@@ -699,6 +699,12 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                 SMP SMP.QUOTA -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
+                  AM_QTEST_ -> do
+                    -- cancel switching, delete new send queue
+                    pure ()
+                  AM_QHELLO_ -> do
+                    -- cancel switching, delete new send queue
+                    pure ()
                   _ -> retrySending loop
                 SMP SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
@@ -722,10 +728,13 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
                     -- TODO new send queue status = Confirmed
                     pure ()
                   AM_QREADY_ -> pure ()
-                  AM_QHELLO_ -> do
+                  AM_QTEST_ -> do
                     -- cancel switching, delete new send queue
                     pure ()
                   AM_QSWITCH_ -> pure ()
+                  AM_QHELLO_ -> do
+                    -- cancel switching, delete new send queue
+                    pure ()
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
@@ -1136,8 +1145,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
                       QNEW currAddr nextQUri -> rqNewMsg currAddr nextQUri >> ackDelete msgId
                       QKEYS sKey nextQInfo -> rqKeys sKey nextQInfo $ ackDelete msgId
                       QREADY addr -> rqReady addr >> ackDelete msgId
-                      QHELLO -> rqHello $ ackDelete msgId
+                      QTEST -> rqTest >> ackDelete msgId
                       QSWITCH addr -> rqSwitch addr >> ackDelete msgId
+                      QHELLO -> rqHello $ ackDelete msgId
                     Right _ -> prohibited >> ack
                     Left e@(AGENT A_DUPLICATE) -> do
                       withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
@@ -1361,23 +1371,18 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
             withStore' c (`getNextSndQueue` dbNextSndQueueId sq) >>= \case
               Just sq'@SndQueue {server, sndId} -> do
                 unless (smpServer == server && senderId == sndId) . throwError $ INTERNAL "incorrect queue address"
-                void $ enqueueMessage c cData sq' SMP.noMsgFlags QHELLO
+                void $ enqueueMessage c cData sq' SMP.noMsgFlags QTEST
               _ -> throwError $ INTERNAL "message can only be sent during rotation"
           _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
         -- processed by queue recipient, received from the new queue
-        rqHello :: m () -> m ()
-        rqHello ackDelete = do
+        rqTest :: m ()
+        rqTest = do
           when currRcvQueue . throwError $ INTERNAL "message can only be sent to the next queue"
           case conn of
-            DuplexConnection _ currRq sq -> do
+            DuplexConnection _ _ sq -> do
               let RcvQueue {server, sndId} = rq
               void . enqueueMessage c cData sq SMP.noMsgFlags $ QSWITCH (server, sndId)
-              withStore' c $ \db -> do
-                setRcvQueueStatus db rq Active
-                setRcvQueueAction db currRq $ Just RQASuspendCurrQueue
-              ackDelete
-              suspendCurrRcvQueue c cData currRq sq rq
             _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
         -- processed by queue sender
@@ -1394,6 +1399,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
                     atomically (switchDeliveries qKey' qKey)
                     throwError e
                 unless ok $ throwError $ INTERNAL "switching snd queue failed in STM"
+                void $ enqueueMessage c cData sq' SMP.noMsgFlags QHELLO
                 where
                   switchQueues :: MsgDeliveryKey -> MsgDeliveryKey -> m Bool
                   switchQueues k k' = withStore' c $ \db -> do
@@ -1411,6 +1417,19 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
                       _ -> retry
               _ -> throwError $ INTERNAL "message can only be sent during rotation"
           _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
+
+        -- processed by queue recipient, received from the new queue
+        rqHello :: m () -> m ()
+        rqHello ackDelete = do
+          when currRcvQueue . throwError $ INTERNAL "message can only be sent to the next queue"
+          case conn of
+            DuplexConnection _ currRq sq -> do
+              withStore' c $ \db -> do
+                setRcvQueueStatus db rq Active
+                setRcvQueueAction db currRq $ Just RQASuspendCurrQueue
+              ackDelete
+              suspendCurrRcvQueue c cData currRq sq rq
+            _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
         smpInvitation :: ConnectionRequestUri 'CMInvitation -> ConnInfo -> m ()
         smpInvitation connReq@(CRInvitationUri crData _) cInfo = do

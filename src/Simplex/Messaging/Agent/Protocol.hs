@@ -460,8 +460,9 @@ data AgentMessageType
   | AM_QNEW_
   | AM_QKEYS_
   | AM_QREADY_
-  | AM_QHELLO_
+  | AM_QTEST_
   | AM_QSWITCH_
+  | AM_QHELLO_
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
@@ -474,8 +475,9 @@ instance Encoding AgentMessageType where
     AM_QNEW_ -> "QN"
     AM_QKEYS_ -> "QK"
     AM_QREADY_ -> "QR"
-    AM_QHELLO_ -> "QH"
+    AM_QTEST_ -> "QT"
     AM_QSWITCH_ -> "QS"
+    AM_QHELLO_ -> "QH"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
@@ -488,8 +490,9 @@ instance Encoding AgentMessageType where
           'N' -> pure AM_QNEW_
           'K' -> pure AM_QKEYS_
           'R' -> pure AM_QREADY_
-          'H' -> pure AM_QHELLO_
+          'T' -> pure AM_QTEST_
           'S' -> pure AM_QSWITCH_
+          'H' -> pure AM_QHELLO_
           _ -> fail "bad AgentMessageType"
       _ -> fail "bad AgentMessageType"
 
@@ -509,8 +512,9 @@ agentMessageType = \case
     QNEW {} -> AM_QNEW_
     QKEYS {} -> AM_QKEYS_
     QREADY {} -> AM_QREADY_
-    QHELLO -> AM_QHELLO_
+    QTEST -> AM_QTEST_
     QSWITCH {} -> AM_QSWITCH_
+    QHELLO -> AM_QHELLO_
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -532,8 +536,9 @@ data AMsgType
   | QNEW_
   | QKEYS_
   | QREADY_
-  | QHELLO_
+  | QTEST_
   | QSWITCH_
+  | QHELLO_
   deriving (Eq)
 
 instance Encoding AMsgType where
@@ -544,8 +549,9 @@ instance Encoding AMsgType where
     QNEW_ -> "QN"
     QKEYS_ -> "QK"
     QREADY_ -> "QR"
-    QHELLO_ -> "QH"
+    QTEST_ -> "QT"
     QSWITCH_ -> "QS"
+    QHELLO_ -> "QH"
   smpP =
     A.anyChar >>= \case
       'H' -> pure HELLO_
@@ -556,8 +562,9 @@ instance Encoding AMsgType where
           'N' -> pure QNEW_
           'K' -> pure QKEYS_
           'R' -> pure QREADY_
-          'H' -> pure QHELLO_
+          'T' -> pure QTEST_
           'S' -> pure QSWITCH_
+          'H' -> pure QHELLO_
           _ -> fail "bad AMsgType"
       _ -> fail "bad AMsgType"
 
@@ -571,16 +578,18 @@ data AMessage
     REPLY (L.NonEmpty SMPQueueInfo)
   | -- | agent envelope for the client message
     A_MSG MsgBody
-  | -- instruct sender to switch the queue to another
+  | -- | instruct sender to switch the queue to another
     QNEW {currentAddress :: (SMPServer, SMP.SenderId), nextQueueUri :: SMPQueueUri}
-  | -- send server key and queue e2e DH key to the recipient
+  | -- | send server key and queue e2e DH key to the recipient
     QKEYS {nextSenderKey :: SndPublicVerifyKey, nextQueueInfo :: SMPQueueInfo}
-  | -- inform the sender that the queue is ready to use - sender sends QHELLO to it
+  | -- | inform the sender that the queue is ready to use - sender sends QHELLO to it
     QREADY {nextAddress :: (SMPServer, SMP.SenderId)}
-  | -- the first message sent by the sender to the new queue
-    QHELLO
-  | -- instruct the sender to start sending messages to the new queue - after recipient receives HELLO
+  | -- | the message sent by the sender to the new queue to test delivery
+    QTEST
+  | -- | instruct the sender to start sending messages to the new queue - after recipient receives HELLO
     QSWITCH {nextAddress :: (SMPServer, SMP.SenderId)}
+  | -- | confirm that the delivery is switched, all new messages will be sent to the new queue
+    QHELLO
   deriving (Show)
 
 instance Encoding AMessage where
@@ -591,8 +600,9 @@ instance Encoding AMessage where
     QNEW currAddr nextQUri -> smpEncode (QNEW_, currAddr, strEncode nextQUri)
     QKEYS sKey nextQInfo -> smpEncode (QKEYS_, sKey, nextQInfo)
     QREADY addr -> smpEncode (QREADY_, addr)
-    QHELLO -> smpEncode QHELLO_
+    QTEST -> smpEncode QTEST_
     QSWITCH addr -> smpEncode (QSWITCH_, addr)
+    QHELLO -> smpEncode QHELLO_
   smpP =
     smpP
       >>= \case
@@ -605,8 +615,9 @@ instance Encoding AMessage where
           pure QNEW {currentAddress, nextQueueUri}
         QKEYS_ -> QKEYS <$> smpP <*> smpP
         QREADY_ -> QREADY <$> smpP
-        QHELLO_ -> pure QHELLO
+        QTEST_ -> pure QTEST
         QSWITCH_ -> QSWITCH <$> smpP
+        QHELLO_ -> pure QHELLO
 
 instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
