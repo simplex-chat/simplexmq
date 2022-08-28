@@ -26,7 +26,7 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPAgentClient
-import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..))
 import Simplex.Messaging.Agent.Protocol
@@ -114,6 +114,9 @@ functionalAPITests t = do
   describe "Batching SMP commands" $ do
     it "should subscribe to multiple subscriptions with batching" $
       testBatchedSubscriptions t
+  describe "Switching receive queues" $
+    xit "should switch to a new queue" $
+      testSwitchRcvQueue t
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -559,6 +562,22 @@ testBatchedSubscriptions t = do
           pure res
         killThread t1
         pure res
+
+testSwitchRcvQueue :: ATransport -> IO ()
+testSwitchRcvQueue t = do
+  a <- getSMPAgentClient agentCfg initAgentServers2
+  b <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers2
+  Right () <- withSmpServer t . withSmpServerOn t testPort2 . runExceptT $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetings a bId b aId
+    switchConnection a bId
+    r1 <- get b
+    liftIO $ print r1
+    -- r2 <- get b
+    -- liftIO $ print r2
+    r3 <- get a
+    liftIO $ print r3
+  pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4

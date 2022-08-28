@@ -421,7 +421,7 @@ processConfirmation c rq@RcvQueue {e2ePrivKey, smpClientVersion = v} SMPConfirma
 subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData rq sq) -> do
+    SomeConn _ (DuplexConnection cData rq sq _ _) -> do
       resumeMsgDelivery c cData sq
       subscribe rq
       void . forkIO $ doRcvQueueAction c cData rq sq
@@ -498,12 +498,15 @@ currRcvQueueDrained c cData rq sq rq' = do
   deleteCurrRcvQueue c cData rq sq rq'
 
 deleteCurrRcvQueue :: AgentMonad m => AgentClient -> ConnData -> RcvQueue -> SndQueue -> RcvQueue -> m ()
-deleteCurrRcvQueue c ConnData {connId} rq _sq rq'@RcvQueue {server, rcvId} = do
+deleteCurrRcvQueue c cData@ConnData {connId} rq sq rq'@RcvQueue {server, rcvId} = do
   deleteQueue c rq
   withStore' c $ \db -> switchCurrRcvQueue db rq rq'
   atomically $
     TM.lookupDelete (connId, server, rcvId) (nextRcvQueueMsgs c)
       >>= mapM_ ((mapM_ . writeTBQueue $ msgQ c) . reverse)
+  sq' <- withStore' c (`getNextSndQueue` sq)
+  let sStats = connectionStats $ DuplexConnection cData rq' sq Nothing sq'
+  atomically $ writeTBQueue (subQ c) ("", connId, SWITCH SPCompleted sStats)
 
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
@@ -522,14 +525,14 @@ subscribeConnections' c connIds = do
   let rs = M.unions $ errs' : sndRs : rcvRs
   notifyResultError rs
   void . forkIO . forM_ cs $ \case
-    SomeConn _ (DuplexConnection cData rq sq) -> doRcvQueueAction c cData rq sq
+    SomeConn _ (DuplexConnection cData rq sq _ _) -> doRcvQueueAction c cData rq sq
     _ -> pure ()
   -- TODO secure Confirmed queues if this is a new server version
   pure rs
   where
     rcvOrSndQueue :: SomeConn -> Either (SndQueue, ConnData) (RcvQueue, ConnData)
     rcvOrSndQueue = \case
-      SomeConn _ (DuplexConnection cData rq _) -> Right (rq, cData)
+      SomeConn _ (DuplexConnection cData rq _ _ _) -> Right (rq, cData)
       SomeConn _ (SndConnection cData sq) -> Left (sq, cData)
       SomeConn _ (RcvConnection cData rq) -> Right (rq, cData)
       SomeConn _ (ContactConnection cData rq) -> Right (rq, cData)
@@ -549,7 +552,7 @@ subscribeConnections' c connIds = do
         _ -> pure ()
     sndQueue :: SomeConn -> Maybe (ConnData, SndQueue)
     sndQueue = \case
-      SomeConn _ (DuplexConnection cData _ sq) -> Just (cData, sq)
+      SomeConn _ (DuplexConnection cData _ sq _ _) -> Just (cData, sq)
       SomeConn _ (SndConnection cData sq) -> Just (cData, sq)
       _ -> Nothing
     notifyResultError :: Map ConnId (Either AgentErrorType ()) -> m ()
@@ -577,7 +580,7 @@ getConnectionMessage' :: AgentMonad m => AgentClient -> ConnId -> m (Maybe SMPMs
 getConnectionMessage' c connId = do
   whenM (atomically $ hasActiveSubscription c connId) . throwError $ CMD PROHIBITED
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq _) -> getQueueMessage c rq
+    SomeConn _ (DuplexConnection _ rq _ _ _) -> getQueueMessage c rq
     SomeConn _ (RcvConnection _ rq) -> getQueueMessage c rq
     SomeConn _ (ContactConnection _ rq) -> getQueueMessage c rq
     SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
@@ -613,7 +616,7 @@ getNotificationMessage' c nonce encNtfInfo = do
 sendMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> MsgFlags -> MsgBody -> m AgentMsgId
 sendMessage' c connId msgFlags msg =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData _ sq) -> enqueueMsg cData sq
+    SomeConn _ (DuplexConnection cData _ sq _ _) -> enqueueMsg cData sq
     SomeConn _ (SndConnection cData sq) -> enqueueMsg cData sq
     _ -> throwError $ CONN SIMPLEX
   where
@@ -796,7 +799,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandsh
 ackMessage' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessage' c connId msgId = do
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq _) -> ack rq
+    SomeConn _ (DuplexConnection _ rq _ _ _) -> ack rq
     SomeConn _ (RcvConnection _ rq) -> ack rq
     SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
     SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
@@ -814,7 +817,7 @@ ackMessage' c connId msgId = do
 switchConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
 switchConnection' c connId =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData rq sq) -> do
+    SomeConn _ (DuplexConnection cData rq sq _ _) -> do
       -- TODO check that rotation is possible (whether the current server supports it)
       withStore' c $ \db -> setRcvQueueAction db rq $ Just RQACreateNextQueue
       createNextRcvQueue c cData rq sq
@@ -825,7 +828,7 @@ switchConnection' c connId =
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m Word16
 suspendConnection' c connId =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq _) -> suspendQueue c rq
+    SomeConn _ (DuplexConnection _ rq _ _ _) -> suspendQueue c rq
     SomeConn _ (RcvConnection _ rq) -> suspendQueue c rq
     SomeConn _ (ContactConnection _ rq) -> suspendQueue c rq
     SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
@@ -834,7 +837,7 @@ suspendConnection' c connId =
 deleteConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 deleteConnection' c connId =
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection _ rq _) -> delete rq
+    SomeConn _ (DuplexConnection _ rq _ nextRq_ _) -> delete rq >> mapM_ (deleteQueue c) nextRq_
     SomeConn _ (RcvConnection _ rq) -> delete rq
     SomeConn _ (ContactConnection _ rq) -> delete rq
     SomeConn _ (SndConnection _ _) -> withStore' c (`deleteConn` connId)
@@ -850,14 +853,13 @@ deleteConnection' c connId =
 getConnectionServers' :: AgentMonad m => AgentClient -> ConnId -> m ConnectionStats
 getConnectionServers' c connId = do
   SomeConn _ conn <- withStore c (`getConn` connId)
-  -- TODO load next queues
-  pure $ connectionStats conn Nothing Nothing
+  pure $ connectionStats conn
 
-connectionStats :: Connection c -> Maybe RcvQueue -> Maybe SndQueue -> ConnectionStats
-connectionStats conn nextRq_ nextSq_ = case conn of
+connectionStats :: Connection c -> ConnectionStats
+connectionStats conn = case conn of
   RcvConnection _ rq -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = [], nextRcvServers = [], nextSndServers = []}
   SndConnection _ sq -> ConnectionStats {rcvServers = [], sndServers = sndSrvs sq, nextRcvServers = [], nextSndServers = []}
-  DuplexConnection _ rq sq -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = sndSrvs sq, nextRcvServers = maybe [] rcvSrvs nextRq_, nextSndServers = maybe [] sndSrvs nextSq_}
+  DuplexConnection _ rq sq nextRq_ nextSq_ -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = sndSrvs sq, nextRcvServers = maybe [] rcvSrvs nextRq_, nextSndServers = maybe [] sndSrvs nextSq_}
   ContactConnection _ rq -> ConnectionStats {rcvServers = rcvSrvs rq, sndServers = [], nextRcvServers = [], nextSndServers = []}
   where
     rcvSrvs RcvQueue {server} = [server]
@@ -982,7 +984,7 @@ getNtfTokenData' c =
 toggleConnectionNtfs' :: forall m. AgentMonad m => AgentClient -> ConnId -> Bool -> m ()
 toggleConnectionNtfs' c connId enable = do
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData _ _) -> toggle cData
+    SomeConn _ (DuplexConnection cData _ _ _ _) -> toggle cData
     SomeConn _ (RcvConnection cData _) -> toggle cData
     SomeConn _ (ContactConnection cData _) -> toggle cData
     _ -> throwError $ CONN SIMPLEX
@@ -1288,7 +1290,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
                       queueServer (SMPQueueInfo _ SMPQueueAddress {smpServer}) = smpServer
                   _ -> prohibited
               -- party accepting connection
-              (DuplexConnection _ _ sq, Nothing) -> do
+              (DuplexConnection _ _ sq _ _, Nothing) -> do
                 withStore c (\db -> runExceptT $ agentRatchetDecrypt db connId encConnInfo) >>= parseMessage >>= \case
                   AgentConnInfo connInfo -> do
                     notify $ INFO connInfo
@@ -1307,7 +1309,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
             _ -> do
               withStore' c $ \db -> setRcvQueueStatus db rq Active
               case conn of
-                DuplexConnection _ _ sq@SndQueue {status = sndStatus}
+                DuplexConnection _ _ sq@SndQueue {status = sndStatus} _ _
                   -- `sndStatus == Active` when HELLO was previously sent, and this is the reply HELLO
                   -- this branch is executed by the accepting party in duplexHandshake mode (v2)
                   -- and by the initiating party in v1
@@ -1335,20 +1337,22 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         -- processed by queue sender
         rqNewMsg :: (SMPServer, SMP.SenderId) -> SMPQueueUri -> m ()
         rqNewMsg (smpServer, senderId) nextQUri = case conn of
-          DuplexConnection _ _ sq@SndQueue {server, sndId} -> do
+          DuplexConnection _ _ sq@SndQueue {server, sndId} nextRq_ _ -> do
+            liftIO $ print $ "rqNewMsg " <> show (SMP.port server) <> " " <> show (currSndQueue sq)
             unless (smpServer == server && senderId == sndId) . throwError $ INTERNAL "incorrect queue address"
             clientVRange <- asks $ smpClientVRange . config
             case (nextQUri `compatibleVersion` clientVRange) of
               Just qInfo@(Compatible nextQInfo) -> do
-                sq'@SndQueue {sndPublicKey, e2ePubKey} <- newSndQueue qInfo False
+                sq'@SndQueue {sndPublicKey, e2ePubKey, server = srv'} <- newSndQueue qInfo False
                 withStore' c $ \db -> dbCreateNextSndQueue db connId sq sq'
+                liftIO $ print $ "rqNewMsg: next SndQueue " <> show (SMP.port srv') <> " " <> show (currSndQueue sq')
                 case (sndPublicKey, e2ePubKey) of
                   (Just nextSenderKey, Just dhPublicKey) -> do
                     let qAddr = (queueAddress (nextQInfo :: SMPQueueInfo)) {dhPublicKey}
                         nextQueueInfo = (nextQInfo :: SMPQueueInfo) {queueAddress = qAddr}
                     void . enqueueMessage c cData sq SMP.noMsgFlags $ QKEYS {nextSenderKey, nextQueueInfo}
-                    rq' <- withStore' c (`getNextRcvQueue` rq)
-                    notify . SWITCH SPStarted $ connectionStats conn rq' (Just sq')
+                    let conn' = DuplexConnection cData rq sq nextRq_ (Just sq')
+                    notify . SWITCH SPStarted $ connectionStats conn'
                   _ -> throwError $ INTERNAL "absent sender keys"
               _ -> throwError $ AGENT A_VERSION
           _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
@@ -1357,12 +1361,14 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         rqKeys :: SndPublicVerifyKey -> SMPQueueInfo -> m () -> m ()
         rqKeys senderKey qInfo@(SMPQueueInfo clntVer' SMPQueueAddress {smpServer, senderId, dhPublicKey}) ackDelete = do
           unless currRcvQueue . throwError $ INTERNAL "message can only be sent to current queue"
+          liftIO $ print $ "rqKeys " <> show (SMP.port srv) <> " " <> show currRcvQueue
           case conn of
-            DuplexConnection _ _ sq -> do
+            DuplexConnection _ _ sq nextRq_ _ -> do
               clientVRange <- asks $ smpClientVRange . config
               unless (qInfo `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
-              withStore' c (`getNextRcvQueue` rq) >>= \case
-                Just rq'@RcvQueue {server, sndId, e2ePrivKey = dhPrivKey, smpClientVersion = clntVer} -> do
+              case nextRq_ of
+                Just rq'@RcvQueue {server, sndId, e2ePrivKey = dhPrivKey, smpClientVersion = clntVer, currRcvQueue = curr'} -> do
+                  liftIO $ print $ "rqKeys next RcvQueue " <> show (SMP.port server) <> " " <> show curr'
                   unless (smpServer == server && senderId == sndId) . throwError $ INTERNAL "incorrect queue address"
                   let dhSecret = C.dh' dhPublicKey dhPrivKey
                   withStore' c $ \db -> do
@@ -1376,9 +1382,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         -- processed by queue sender
         rqReady :: (SMPServer, SMP.SenderId) -> m ()
         rqReady (smpServer, senderId) = case conn of
-          DuplexConnection _ _ sq ->
-            withStore' c (`getNextSndQueue` sq) >>= \case
-              Just sq'@SndQueue {server, sndId} -> do
+          DuplexConnection _ _ sq@SndQueue {server = srv1} _ nextSq_ -> do
+            liftIO $ print $ "rqReady " <> show (SMP.port srv1) <> " " <> show (currSndQueue sq)
+            case nextSq_ of
+              Just sq'@SndQueue {server, sndId, currSndQueue = curr'} -> do
+                liftIO $ print $ "rqReady next SndQueue " <> show (SMP.port server) <> " " <> show curr'
                 unless (smpServer == server && senderId == sndId) . throwError $ INTERNAL "incorrect queue address"
                 void $ enqueueMessage c cData sq' SMP.noMsgFlags QTEST
               _ -> throwError $ INTERNAL "message can only be sent during rotation"
@@ -1387,9 +1395,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         -- processed by queue recipient, received from the new queue
         rqTest :: m ()
         rqTest = do
-          when currRcvQueue . throwError $ INTERNAL "message can only be sent to the next queue"
+          liftIO $ print $ "rqTest " <> show (SMP.port srv) <> " " <> show currRcvQueue
+          when currRcvQueue . throwError $ INTERNAL "2: message can only be sent to the next queue"
           case conn of
-            DuplexConnection _ _ sq -> do
+            DuplexConnection _ _ sq _ _ -> do
               let RcvQueue {server, sndId} = rq
               void . enqueueMessage c cData sq SMP.noMsgFlags $ QSWITCH (server, sndId)
             _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
@@ -1397,42 +1406,43 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
         -- processed by queue sender
         rqSwitch :: (SMPServer, SMP.SenderId) -> m ()
         rqSwitch (smpServer, senderId) = case conn of
-          DuplexConnection _ _ sq@SndQueue {server, sndId} -> do
-            withStore' c (`getNextSndQueue` sq) >>= \case
-              Just sq'@SndQueue {server = server', sndId = sndId'} -> do
-                unless (smpServer == server' && senderId == sndId') . throwError $ INTERNAL "incorrect queue address"
-                let qKey = (connId, server, sndId)
-                    qKey' = (connId, server', sndId')
-                ok <-
-                  switchQueues qKey qKey' `catchError` \e -> do
-                    atomically (switchDeliveries qKey' qKey)
-                    throwError e
-                unless ok $ throwError $ INTERNAL "switching snd queue failed in STM"
-                void $ enqueueMessage c cData sq' SMP.noMsgFlags QHELLO
-                where
-                  switchQueues :: MsgDeliveryKey -> MsgDeliveryKey -> m Bool
-                  switchQueues k k' = withStore' c $ \db -> do
-                    ok <- atomically $ (switchDeliveries k k' $> True) `orElse` pure False
-                    when ok $ switchCurrSndQueue db sq sq'
-                    pure ok
-                  switchDeliveries :: MsgDeliveryKey -> MsgDeliveryKey -> STM ()
-                  switchDeliveries k k' = do
-                    switchDelivery smpQueueMsgQueues k k'
-                    switchDelivery smpQueueMsgDeliveries k k'
-                  switchDelivery :: (AgentClient -> TMap MsgDeliveryKey a) -> MsgDeliveryKey -> MsgDeliveryKey -> STM ()
-                  switchDelivery sel k k' =
-                    TM.lookupDelete k (sel c) >>= \case
-                      Just d -> TM.insert k' d (sel c)
-                      _ -> retry
-              _ -> throwError $ INTERNAL "message can only be sent during rotation"
+          DuplexConnection _ _ sq@SndQueue {server, sndId} nextRq_ nextSq_ -> case nextSq_ of
+            Just sq'@SndQueue {server = server', sndId = sndId'} -> do
+              unless (smpServer == server' && senderId == sndId') . throwError $ INTERNAL "incorrect queue address"
+              let qKey = (connId, server, sndId)
+                  qKey' = (connId, server', sndId')
+              ok <-
+                switchQueues qKey qKey' `catchError` \e -> do
+                  atomically (switchDeliveries qKey' qKey)
+                  throwError e
+              unless ok $ throwError $ INTERNAL "switching snd queue failed in STM"
+              void $ enqueueMessage c cData sq' SMP.noMsgFlags QHELLO
+              let conn' = DuplexConnection cData rq sq' nextRq_ Nothing
+              notify . SWITCH SPCompleted $ connectionStats conn'
+              where
+                switchQueues :: MsgDeliveryKey -> MsgDeliveryKey -> m Bool
+                switchQueues k k' = withStore' c $ \db -> do
+                  ok <- atomically $ (switchDeliveries k k' $> True) `orElse` pure False
+                  when ok $ switchCurrSndQueue db sq sq'
+                  pure ok
+                switchDeliveries :: MsgDeliveryKey -> MsgDeliveryKey -> STM ()
+                switchDeliveries k k' = do
+                  switchDelivery smpQueueMsgQueues k k'
+                  switchDelivery smpQueueMsgDeliveries k k'
+                switchDelivery :: (AgentClient -> TMap MsgDeliveryKey a) -> MsgDeliveryKey -> MsgDeliveryKey -> STM ()
+                switchDelivery sel k k' =
+                  TM.lookupDelete k (sel c) >>= \case
+                    Just d -> TM.insert k' d (sel c)
+                    _ -> retry
+            _ -> throwError $ INTERNAL "message can only be sent during rotation"
           _ -> throwError $ INTERNAL "message can only be sent to duplex connection"
 
         -- processed by queue recipient, received from the new queue
         rqHello :: m () -> m ()
         rqHello ackDelete = do
-          when currRcvQueue . throwError $ INTERNAL "message can only be sent to the next queue"
+          when currRcvQueue . throwError $ INTERNAL "1: message can only be sent to the next queue"
           case conn of
-            DuplexConnection _ currRq sq -> do
+            DuplexConnection _ currRq sq _ _ -> do
               withStore' c $ \db -> do
                 setRcvQueueStatus db rq Active
                 setRcvQueueAction db currRq $ Just RQASuspendCurrQueue

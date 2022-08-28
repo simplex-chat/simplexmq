@@ -132,7 +132,7 @@ data ConnType = CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 data Connection (d :: ConnType) where
   RcvConnection :: ConnData -> RcvQueue -> Connection CRcv
   SndConnection :: ConnData -> SndQueue -> Connection CSnd
-  DuplexConnection :: ConnData -> RcvQueue -> SndQueue -> Connection CDuplex
+  DuplexConnection :: ConnData -> RcvQueue -> SndQueue -> Maybe RcvQueue -> Maybe SndQueue -> Connection CDuplex
   ContactConnection :: ConnData -> RcvQueue -> Connection CContact
 
 deriving instance Eq (Connection d)
@@ -143,7 +143,7 @@ connData :: Connection d -> ConnData
 connData = \case
   RcvConnection cData _ -> cData
   SndConnection cData _ -> cData
-  DuplexConnection cData _ _ -> cData
+  DuplexConnection cData _ _ _ _ -> cData
   ContactConnection cData _ -> cData
 
 data SConnType :: ConnType -> Type where

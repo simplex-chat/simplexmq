@@ -425,7 +425,7 @@ getNextSndQueue db SndQueue {dbNextSndQueueId} = case dbNextSndQueueId of
             q.smp_client_version, q.created_at, q.updated_at
           FROM snd_queues q
           INNER JOIN servers s ON q.host = s.host AND q.port = s.port
-          WHERE q.snd_queue_id = ? AND q.curr_rcv_queue = ?
+          WHERE q.snd_queue_id = ? AND q.curr_snd_queue = ?
         |]
         (sqId, False)
   _ -> pure Nothing
@@ -1231,18 +1231,21 @@ newQueueId_ (Only maxId_ : _) = maybe 1 (+ 1) maxId_
 -- * getConn helpers
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getConn dbConn connId =
-  getConnData dbConn connId >>= \case
+getConn db connId =
+  getConnData db connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
     Just (cData, cMode) -> do
-      rQ <- getRcvQueueByConnId_ dbConn connId
-      sQ <- getSndQueueByConnId_ dbConn connId
-      pure $ case (rQ, sQ, cMode) of
-        (Just rcvQ, Just sndQ, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rcvQ sndQ)
-        (Just rcvQ, Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rcvQ)
-        (Nothing, Just sndQ, CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sndQ)
-        (Just rcvQ, Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rcvQ)
-        _ -> Left SEConnNotFound
+      rq_ <- getRcvQueueByConnId_ db connId
+      sq_ <- getSndQueueByConnId_ db connId
+      case (rq_, sq_, cMode) of
+        (Just rq, Just sq, CMInvitation) -> do
+          rq' <- getNextRcvQueue db rq
+          sq' <- getNextSndQueue db sq
+          pure . Right $ SomeConn SCDuplex (DuplexConnection cData rq sq rq' sq')
+        (Just rq, Nothing, CMInvitation) -> pure . Right $ SomeConn SCRcv (RcvConnection cData rq)
+        (Nothing, Just sq, CMInvitation) -> pure . Right $ SomeConn SCSnd (SndConnection cData sq)
+        (Just rq, Nothing, CMContact) -> pure . Right $ SomeConn SCContact (ContactConnection cData rq)
+        _ -> pure $ Left SEConnNotFound
 
 getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData dbConn connId' =

@@ -204,7 +204,7 @@ testCreateRcvConn =
     upgradeRcvConnToDuplex db "conn1" sndQueue1
       `shouldReturn` Right ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1 Nothing Nothing))
 
 testCreateRcvConnRandomId :: SpecWith SQLiteStore
 testCreateRcvConnRandomId =
@@ -216,7 +216,7 @@ testCreateRcvConnRandomId =
     upgradeRcvConnToDuplex db connId sndQueue1
       `shouldReturn` Right ()
     getConn db connId
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 sndQueue1 Nothing Nothing))
 
 testCreateRcvConnDuplicate :: SpecWith SQLiteStore
 testCreateRcvConnDuplicate =
@@ -237,7 +237,7 @@ testCreateSndConn =
     upgradeSndConnToDuplex db "conn1" rcvQueue1
       `shouldReturn` Right ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1 Nothing Nothing))
 
 testCreateSndConnRandomID :: SpecWith SQLiteStore
 testCreateSndConnRandomID =
@@ -249,7 +249,7 @@ testCreateSndConnRandomID =
     upgradeSndConnToDuplex db connId rcvQueue1
       `shouldReturn` Right ()
     getConn db connId
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} rcvQueue1 sndQueue1 Nothing Nothing))
 
 testCreateSndConnDuplicate :: SpecWith SQLiteStore
 testCreateSndConnDuplicate =
@@ -302,7 +302,7 @@ testDeleteDuplexConn =
     _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1 Nothing Nothing))
     deleteConn db "conn1"
       `shouldReturn` ()
     -- TODO check queues are deleted as well
@@ -397,15 +397,15 @@ testSetQueueStatusDuplex =
     _ <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 sndQueue1 Nothing Nothing))
     setRcvQueueStatus db rcvQueue1 Secured
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 {status = Secured} sndQueue1))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 {status = Secured} sndQueue1 Nothing Nothing))
     setSndQueueStatus db sndQueue1 Confirmed
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 {status = Secured} sndQueue1 {status = Confirmed}))
+      `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 rcvQueue1 {status = Secured} sndQueue1 {status = Confirmed} Nothing Nothing))
 
 hw :: ByteString
 hw = encodeUtf8 "Hello world!"
