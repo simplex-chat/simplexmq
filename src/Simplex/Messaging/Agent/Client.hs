@@ -569,6 +569,7 @@ subscribeQueues c srv qs = do
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
   TM.insert connId server $ activeSubscrConns c
+  modifyTVar (subscrConns c) $ S.insert connId
   addSubs_ (subscrSrvrs c) rq connId
   removePendingSubscription c server connId
 
@@ -585,9 +586,9 @@ addSubs_ ss rq@RcvQueue {server} connId =
     _ -> TM.singleton connId rq >>= \m -> TM.insert server m ss
 
 removeSubscription :: AgentClient -> ConnId -> STM ()
-removeSubscription c@AgentClient {activeSubscrConns} connId = do
+removeSubscription c connId = do
   modifyTVar (subscrConns c) $ S.delete connId
-  server_ <- TM.lookupDelete connId activeSubscrConns
+  server_ <- TM.lookupDelete connId $ activeSubscrConns c
   mapM_ (\server -> removeSubs_ (subscrSrvrs c) server connId) server_
 
 removePendingSubscription :: AgentClient -> SMPServer -> ConnId -> STM ()
