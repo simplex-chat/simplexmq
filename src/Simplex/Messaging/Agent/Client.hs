@@ -225,7 +225,7 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrSrvrs, pendingSubscrSrvrs, subscrConns, activeSubscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, nextRcvQueueMsgs, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrSrvrs, pendingSubscrSrvrs, subscrConns, activeSubscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -415,8 +415,8 @@ closeAgentClient c = liftIO $ do
   clear smpQueueMsgQueues
   clear getMsgLocks
   where
-    clear :: (AgentClient -> TMap k a) -> IO ()
-    clear sel = atomically $ writeTVar (sel c) M.empty
+    clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
+    clear sel = atomically $ writeTVar (sel c) mempty
 
 closeProtocolServerClients :: AgentClient -> (AgentClient -> TMap (ProtoServer msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
