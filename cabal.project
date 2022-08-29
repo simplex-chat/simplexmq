@@ -1,16 +1,17 @@
-packages: .
+-- packages: .
+packages: . ../direct-sqlcipher ../sqlcipher-simple
 
 source-repository-package
     type: git
     location: https://github.com/simplex-chat/aeson.git
     tag: 3eb66f9a68f103b5f1489382aad89f5712a64db7
 
-source-repository-package
-    type: git
-    location: https://github.com/simplex-chat/direct-sqlcipher.git
-    tag: 11eff1abc98b58587d764d075acbb215eb13a444
+-- source-repository-package
+    -- type: git
+    -- location: https://github.com/simplex-chat/direct-sqlcipher.git
+    -- tag: 355647880bede89afdeb5eb1ae237314db04a56a
 
-source-repository-package
-    type: git
-    location: https://github.com/simplex-chat/sqlcipher-simple.git
-    tag: 3d51d763b210d940174f263f3368455997f8cd89
+-- source-repository-package
+    -- type: git
+    -- location: https://github.com/simplex-chat/sqlcipher-simple.git
+    -- tag: bf99eb18dda26d613ccc4f4fda25ca5081f15cf5

@@ -152,11 +152,11 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-createSQLiteStore :: FilePath -> [Migration] -> Bool -> IO SQLiteStore
-createSQLiteStore dbFilePath migrations yesToMigrations = do
+createSQLiteStore :: FilePath -> String -> [Migration] -> Bool -> IO SQLiteStore
+createSQLiteStore dbFilePath dbKey migrations yesToMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
-  st <- connectSQLiteStore dbFilePath
+  st <- connectSQLiteStore dbFilePath dbKey
   checkThreadsafe st
   migrateSchema st migrations yesToMigrations
   pure st
@@ -192,24 +192,27 @@ confirmOrExit s = do
   ok <- getLine
   when (map toLower ok /= "y") exitFailure
 
-connectSQLiteStore :: FilePath -> IO SQLiteStore
-connectSQLiteStore dbFilePath = do
+connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
+connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConnection <- newTMVarIO =<< connectDB dbFilePath
+  dbConnection <- newTMVarIO =<< connectDB dbFilePath dbKey
   pure SQLiteStore {dbFilePath, dbConnection, dbNew}
 
-connectDB :: FilePath -> IO DB.Connection
-connectDB path = do
-  dbConn <- DB.open path
-  SQLite3.exec (DB.connectionHandle dbConn) . fromQuery $
+connectDB :: FilePath -> String -> IO DB.Connection
+connectDB path key = do
+  db <- DB.open path
+  let exec = SQLite3.exec $ DB.connectionHandle db
+  -- TODO escape key
+  unless (null key) . exec $ "PRAGMA key = '" <> T.pack key <> "';"
+  exec . fromQuery $
     [sql|
       PRAGMA foreign_keys = ON;
       -- PRAGMA trusted_schema = OFF;
       PRAGMA secure_delete = ON;
       PRAGMA auto_vacuum = FULL;
     |]
-  -- _printPragmas dbConn path
-  pure dbConn
+  -- _printPragmas db path
+  pure db
 
 -- _printPragmas :: DB.Connection -> FilePath -> IO ()
 -- _printPragmas db path = do
