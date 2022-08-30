@@ -65,6 +65,7 @@ data AgentConfig = AgentConfig
     connIdBytes :: Int,
     tbqSize :: Natural,
     dbFile :: FilePath,
+    dbKey :: String,
     yesToMigrations :: Bool,
     smpCfg :: ProtocolClientConfig,
     ntfCfg :: ProtocolClientConfig,
@@ -108,6 +109,7 @@ defaultAgentConfig =
       connIdBytes = 12,
       tbqSize = 64,
       dbFile = "smp-agent.db",
+      dbKey = "",
       yesToMigrations = False,
       smpCfg = defaultClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultClientConfig {defaultTransport = ("443", transport @TLS)},
@@ -139,9 +141,9 @@ data Env = Env
   }
 
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
-newSMPAgentEnv config@AgentConfig {dbFile, yesToMigrations} = do
+newSMPAgentEnv config@AgentConfig {dbFile, dbKey, yesToMigrations} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createSQLiteStore dbFile Migrations.app yesToMigrations
+  store <- liftIO $ createSQLiteStore dbFile dbKey Migrations.app yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config

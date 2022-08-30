@@ -48,6 +48,12 @@ extra-deps:
   - time-compat-1.9.6.1@sha256:42d8f2e08e965e1718917d54ad69e1d06bd4b87d66c41dc7410f59313dba4ed1,5033
   - github: simplex-chat/aeson
     commit: 3eb66f9a68f103b5f1489382aad89f5712a64db7
+  # - ../direct-sqlcipher
+  - github: simplex-chat/direct-sqlcipher
+    commit: 477955063df65a2776c2a958b656ff359b76374d
+  # - ../sqlcipher-simple
+  - github: simplex-chat/sqlcipher-simple
+    commit: 0738c7957e971b84a2a156d297596206b948c4f6
   # - ../hs-tls/core
   # - github: simplex-chat/hs-tls
   #   commit: f6cc753611f80af300401cfae63846e9d7c40d9e
