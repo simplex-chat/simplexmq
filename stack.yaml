@@ -50,10 +50,10 @@ extra-deps:
     commit: 3eb66f9a68f103b5f1489382aad89f5712a64db7
   # - ../direct-sqlcipher
   - github: simplex-chat/direct-sqlcipher
-    commit: 355647880bede89afdeb5eb1ae237314db04a56a
+    commit: 477955063df65a2776c2a958b656ff359b76374d
   # - ../sqlcipher-simple
   - github: simplex-chat/sqlcipher-simple
-    commit: cadb4d3ee4fa6ab134d432b646035d0199ffa4fb
+    commit: 0738c7957e971b84a2a156d297596206b948c4f6
   # - ../hs-tls/core
   # - github: simplex-chat/hs-tls
   #   commit: f6cc753611f80af300401cfae63846e9d7c40d9e
