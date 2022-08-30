@@ -706,12 +706,22 @@ ackMessage' c connId msgId = do
   where
     ack :: RcvQueue -> m ()
     ack rq = do
-      let mId = InternalId msgId
-      srvMsgId <- withStore c $ \db -> setMsgUserAck db connId mId
-      sendAck c rq srvMsgId `catchError` \case
-        SMP SMP.NO_MSG -> pure ()
-        e -> throwError e
-      withStore' c $ \db -> deleteMsg db connId mId
+      srvMsgId <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
+      retrySendAck srvMsgId $ \e -> do
+        ri <- asks $ messageRetryInterval . config
+        void . forkIO . withRetryInterval ri $ \loop ->
+          retrySendAck srvMsgId $ \_ -> loop
+        throwError e
+      where
+        retrySendAck :: SMP.MsgId -> (AgentErrorType -> m ()) -> m ()
+        retrySendAck srvMsgId retryAck = do
+          sendAck c rq srvMsgId `catchError` \case
+            SMP SMP.NO_MSG -> pure ()
+            SMP AUTH -> pure ()
+            e
+              | temporaryAgentError e || e == BROKER HOST -> retryAck e
+              | otherwise -> throwError e
+          withStore' c $ \db -> deleteMsg db connId $ InternalId msgId
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentMonad m => AgentClient -> ConnId -> m ()
