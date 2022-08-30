@@ -88,6 +88,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Set (Set)
+import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Tuple (swap)
 import Data.Word (Word16)
@@ -156,7 +157,8 @@ data AgentClient = AgentClient
     useNetworkConfig :: TVar NetworkConfig,
     subscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
     pendingSubscrSrvrs :: TMap SMPServer (TMap ConnId RcvQueue),
-    subscrConns :: TMap ConnId SMPServer,
+    subscrConns :: TVar (Set ConnId),
+    activeSubscrConns :: TMap ConnId SMPServer,
     connMsgsQueued :: TMap ConnId Bool,
     smpQueueMsgQueues :: TMap (ConnId, SMPServer, SMP.SenderId) (TQueue InternalId),
     smpQueueMsgDeliveries :: TMap (ConnId, SMPServer, SMP.SenderId) (Async ()),
@@ -207,7 +209,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   useNetworkConfig <- newTVar netCfg
   subscrSrvrs <- TM.empty
   pendingSubscrSrvrs <- TM.empty
-  subscrConns <- TM.empty
+  subscrConns <- newTVar S.empty
+  activeSubscrConns <- TM.empty
   connMsgsQueued <- TM.empty
   smpQueueMsgQueues <- TM.empty
   smpQueueMsgDeliveries <- TM.empty
@@ -222,7 +225,7 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrSrvrs, pendingSubscrSrvrs, subscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrSrvrs, pendingSubscrSrvrs, subscrConns, activeSubscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
@@ -265,7 +268,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
           where
             updateSubs cVar = do
               cs <- readTVar cVar
-              modifyTVar' (subscrConns c) (`M.withoutKeys` M.keysSet cs)
+              modifyTVar' (activeSubscrConns c) (`M.withoutKeys` M.keysSet cs)
               addPendingSubs cVar cs
               pure cs
 
@@ -407,12 +410,13 @@ closeAgentClient c = liftIO $ do
   clear subscrSrvrs
   clear pendingSubscrSrvrs
   clear subscrConns
+  clear activeSubscrConns
   clear connMsgsQueued
   clear smpQueueMsgQueues
   clear getMsgLocks
   where
-    clear :: (AgentClient -> TMap k a) -> IO ()
-    clear sel = atomically $ writeTVar (sel c) M.empty
+    clear :: Monoid m => (AgentClient -> TVar m) -> IO ()
+    clear sel = atomically $ writeTVar (sel c) mempty
 
 closeProtocolServerClients :: AgentClient -> (AgentClient -> TMap (ProtoServer msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
@@ -508,7 +512,9 @@ newRcvQueue_ a c srv vRange = do
 subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
 subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
   whenM (atomically . TM.member (server, rcvId) $ getMsgLocks c) . throwError $ CMD PROHIBITED
-  atomically $ addPendingSubscription c rq connId
+  atomically $ do
+    modifyTVar (subscrConns c) $ S.insert connId
+    addPendingSubscription c rq connId
   withLogClient c server rcvId "SUB" $ \smp ->
     liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq connId)
       >>= either throwError pure
@@ -538,7 +544,9 @@ temporaryAgentError = \case
 subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> Map ConnId RcvQueue -> m (Maybe SMPClient, Map ConnId (Either AgentErrorType ()))
 subscribeQueues c srv qs = do
   (errs, qs_) <- partitionEithers <$> mapM checkQueue (M.assocs qs)
-  forM_ qs_ $ atomically . uncurry (addPendingSubscription c) . swap
+  forM_ qs_ $ \q -> atomically $ do
+    modifyTVar (subscrConns c) . S.insert $ fst q
+    uncurry (addPendingSubscription c) $ swap q
   case L.nonEmpty qs_ of
     Just qs' -> do
       smp_ <- tryError (getSMPServerClient c srv)
@@ -560,12 +568,13 @@ subscribeQueues c srv qs = do
 
 addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
 addSubscription c rq@RcvQueue {server} connId = atomically $ do
-  TM.insert connId server $ subscrConns c
+  TM.insert connId server $ activeSubscrConns c
+  modifyTVar (subscrConns c) $ S.insert connId
   addSubs_ (subscrSrvrs c) rq connId
   removePendingSubscription c server connId
 
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
-hasActiveSubscription c connId = TM.member connId (subscrConns c)
+hasActiveSubscription c connId = TM.member connId (activeSubscrConns c)
 
 addPendingSubscription :: AgentClient -> RcvQueue -> ConnId -> STM ()
 addPendingSubscription = addSubs_ . pendingSubscrSrvrs
@@ -577,8 +586,9 @@ addSubs_ ss rq@RcvQueue {server} connId =
     _ -> TM.singleton connId rq >>= \m -> TM.insert server m ss
 
 removeSubscription :: AgentClient -> ConnId -> STM ()
-removeSubscription c@AgentClient {subscrConns} connId = do
-  server_ <- TM.lookupDelete connId subscrConns
+removeSubscription c connId = do
+  modifyTVar (subscrConns c) $ S.delete connId
+  server_ <- TM.lookupDelete connId $ activeSubscrConns c
   mapM_ (\server -> removeSubs_ (subscrSrvrs c) server connId) server_
 
 removePendingSubscription :: AgentClient -> SMPServer -> ConnId -> STM ()
@@ -589,9 +599,7 @@ removeSubs_ ss server connId =
   TM.lookup server ss >>= mapM_ (TM.delete connId)
 
 getSubscriptions :: AgentClient -> STM (Set ConnId)
-getSubscriptions AgentClient {subscrConns} = do
-  m <- readTVar subscrConns
-  pure $ M.keysSet m
+getSubscriptions = readTVar . subscrConns
 
 logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> m ()
 logServer dir AgentClient {clientId} srv qId cmdStr =
