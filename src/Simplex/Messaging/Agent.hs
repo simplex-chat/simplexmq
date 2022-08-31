@@ -812,7 +812,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
   where
     t tkn = withToken c tkn Nothing
     createToken :: m NtfTknStatus
-    createToken = do
+    createToken =
       getNtfServer c >>= \case
         Just ntfServer ->
           asks (cmdSignAlg . config) >>= \case
