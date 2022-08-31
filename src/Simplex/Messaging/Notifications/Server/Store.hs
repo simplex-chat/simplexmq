@@ -106,6 +106,7 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
       forM_ tIds $ \(regKey, tId') -> do
         TM.delete regKey tknRegs
         TM.delete tId' $ tokens st
+        -- TODO remove token subscriptions as in deleteNtfToken
       pure $ map snd tIds
 
 removeTokenRegistration :: NtfStore -> NtfTknData -> STM ()
@@ -130,6 +131,7 @@ deleteNtfToken st tknId = do
               )
       )
 
+  -- TODO refactor
   qs <-
     TM.lookupDelete tknId (tokenSubscriptions st)
       >>= mapM

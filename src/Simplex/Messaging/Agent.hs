@@ -794,9 +794,14 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
       where
         replaceToken :: NtfTokenId -> m ()
         replaceToken tknId = do
-          agentNtfReplaceToken c tknId tkn suppliedDeviceToken
-          withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
           ns <- asks ntfSupervisor
+          agentNtfReplaceToken c tknId tkn suppliedDeviceToken `catchError` \e ->
+            if temporaryAgentError e || e == BROKER HOST
+              then throwError e
+              else do
+                withStore' c $ \db -> removeNtfToken db tkn
+                atomically $ nsRemoveNtfToken ns
+          withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
           atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
     _ ->
       getNtfServer c >>= \case
