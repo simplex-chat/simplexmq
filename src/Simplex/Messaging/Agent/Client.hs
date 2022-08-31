@@ -52,7 +52,7 @@ module Simplex.Messaging.Agent.Client
     logServer,
     removeSubscription,
     hasActiveSubscription,
-    agentDbPath,
+    agentStore,
     AgentOperation (..),
     AgentOpState (..),
     AgentState (..),
@@ -227,8 +227,8 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   lock <- newTMVar ()
   return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrSrvrs, pendingSubscrSrvrs, subscrConns, activeSubscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
-agentDbPath :: AgentClient -> FilePath
-agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
+agentStore :: AgentClient -> SQLiteStore
+agentStore AgentClient {agentEnv = Env {store}} = store
 
 class ProtocolServerClient msg where
   getProtocolServerClient :: AgentMonad m => AgentClient -> ProtoServer msg -> m (ProtocolClient msg)

@@ -22,6 +22,7 @@ module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
     createSQLiteStore,
     connectSQLiteStore,
+    sqlString,
 
     -- * Queues and connections
     createRcvConn,
@@ -148,6 +149,7 @@ import UnliftIO.STM
 
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
+    dbKey :: String,
     dbConnection :: TMVar DB.Connection,
     dbNew :: Bool
   }
@@ -196,14 +198,13 @@ connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConnection <- newTMVarIO =<< connectDB dbFilePath dbKey
-  pure SQLiteStore {dbFilePath, dbConnection, dbNew}
+  pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbNew}
 
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
   db <- DB.open path
   let exec = SQLite3.exec $ DB.connectionHandle db
-  -- TODO escape key
-  unless (null key) . exec $ "PRAGMA key = '" <> T.pack key <> "';"
+  unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
   exec . fromQuery $
     [sql|
       PRAGMA foreign_keys = ON;
@@ -213,6 +214,11 @@ connectDB path key = do
     |]
   -- _printPragmas db path
   pure db
+
+sqlString :: String -> Text
+sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
+  where
+    quote = "'"
 
 -- _printPragmas :: DB.Connection -> FilePath -> IO ()
 -- _printPragmas db path = do
