@@ -765,11 +765,11 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         (Just tknId, Nothing)
           | savedDeviceToken == suppliedDeviceToken ->
             when (ntfTknStatus == NTRegistered) (registerToken tkn) $> NTRegistered
-          | otherwise -> replaceToken tknId $> NTRegistered
+          | otherwise -> replaceToken tknId
         (Just tknId, Just (NTAVerify code))
           | savedDeviceToken == suppliedDeviceToken ->
             t tkn (NTActive, Just NTACheck) $ agentNtfVerifyToken c tknId tkn code
-          | otherwise -> replaceToken tknId $> NTRegistered
+          | otherwise -> replaceToken tknId
         (Just tknId, Just NTACheck)
           | savedDeviceToken == suppliedDeviceToken -> do
             ns <- asks ntfSupervisor
@@ -781,7 +781,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCDelete
             pure ntfTknStatus -- TODO
             -- agentNtfCheckToken c tknId tkn >>= \case
-          | otherwise -> replaceToken tknId $> NTRegistered
+          | otherwise -> replaceToken tknId
         (Just tknId, Just NTADelete) -> do
           agentNtfDeleteToken c tknId tkn
           withStore' c (`removeNtfToken` tkn)
@@ -792,18 +792,27 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
       withStore' c $ \db -> updateNtfMode db tkn suppliedNtfMode
       pure status
       where
-        replaceToken :: NtfTokenId -> m ()
+        replaceToken :: NtfTokenId -> m NtfTknStatus
         replaceToken tknId = do
           ns <- asks ntfSupervisor
-          agentNtfReplaceToken c tknId tkn suppliedDeviceToken `catchError` \e ->
+          tryReplace ns `catchError` \e ->
             if temporaryAgentError e || e == BROKER HOST
               then throwError e
               else do
                 withStore' c $ \db -> removeNtfToken db tkn
                 atomically $ nsRemoveNtfToken ns
-          withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
-          atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
-    _ ->
+                createToken
+          where
+            tryReplace ns = do
+              agentNtfReplaceToken c tknId tkn suppliedDeviceToken
+              withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
+              atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
+              pure NTRegistered
+    _ -> createToken
+  where
+    t tkn = withToken c tkn Nothing
+    createToken :: m NtfTknStatus
+    createToken = do
       getNtfServer c >>= \case
         Just ntfServer ->
           asks (cmdSignAlg . config) >>= \case
@@ -815,8 +824,6 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               registerToken tkn
               pure NTRegistered
         _ -> throwError $ CMD PROHIBITED
-  where
-    t tkn = withToken c tkn Nothing
     registerToken :: NtfToken -> m ()
     registerToken tkn@NtfToken {ntfPubKey, ntfDhKeys = (pubDhKey, privDhKey)} = do
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
