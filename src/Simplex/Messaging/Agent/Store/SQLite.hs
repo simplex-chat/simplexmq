@@ -22,6 +22,7 @@ module Simplex.Messaging.Agent.Store.SQLite
   ( SQLiteStore (..),
     createSQLiteStore,
     connectSQLiteStore,
+    closeSQLiteStore,
     sqlString,
 
     -- * Queues and connections
@@ -107,7 +108,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
-import Data.List (find, foldl')
+import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -141,7 +142,7 @@ import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
-import UnliftIO.Exception (bracket)
+import UnliftIO.Exception (bracket, onException)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -159,18 +160,8 @@ createSQLiteStore dbFilePath dbKey migrations yesToMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing False dbDir
   st <- connectSQLiteStore dbFilePath dbKey
-  checkThreadsafe st
-  migrateSchema st migrations yesToMigrations
+  migrateSchema st migrations yesToMigrations `onException` closeSQLiteStore st
   pure st
-
-checkThreadsafe :: SQLiteStore -> IO ()
-checkThreadsafe st = withConnection st $ \db -> do
-  compileOptions <- DB.query_ db "pragma COMPILE_OPTIONS;" :: IO [[Text]]
-  let threadsafeOption = find (T.isPrefixOf "THREADSAFE=") (concat compileOptions)
-  case threadsafeOption of
-    Just "THREADSAFE=0" -> confirmOrExit "SQLite compiled with non-threadsafe code."
-    Nothing -> putStrLn "Warning: SQLite THREADSAFE compile option not found"
-    _ -> return ()
 
 migrateSchema :: SQLiteStore -> [Migration] -> Bool -> IO ()
 migrateSchema st migrations yesToMigrations = withConnection st $ \db -> do
@@ -203,17 +194,23 @@ connectSQLiteStore dbFilePath dbKey = do
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
   db <- DB.open path
-  let exec = SQLite3.exec $ DB.connectionHandle db
-  unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
-  exec . fromQuery $
-    [sql|
-      PRAGMA foreign_keys = ON;
-      -- PRAGMA trusted_schema = OFF;
-      PRAGMA secure_delete = ON;
-      PRAGMA auto_vacuum = FULL;
-    |]
+  prepare db `onException` DB.close db
   -- _printPragmas db path
   pure db
+  where
+    prepare db = do
+      let exec = SQLite3.exec $ DB.connectionHandle db
+      unless (null key) . exec $ "PRAGMA key = " <> sqlString key <> ";"
+      exec . fromQuery $
+        [sql|
+          PRAGMA foreign_keys = ON;
+          -- PRAGMA trusted_schema = OFF;
+          PRAGMA secure_delete = ON;
+          PRAGMA auto_vacuum = FULL;
+        |]
+
+closeSQLiteStore :: SQLiteStore -> IO ()
+closeSQLiteStore st = atomically (takeTMVar $ dbConnection st) >>= DB.close
 
 sqlString :: String -> Text
 sqlString s = quote <> T.replace quote "''" (T.pack s) <> quote
