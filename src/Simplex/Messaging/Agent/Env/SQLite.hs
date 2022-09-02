@@ -18,6 +18,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     defaultReconnectInterval,
     Env (..),
     newSMPAgentEnv,
+    createAgentStore,
     NtfSupervisor (..),
     NtfSupervisorCommand (..),
   )
@@ -143,11 +144,14 @@ data Env = Env
 newSMPAgentEnv :: (MonadUnliftIO m, MonadRandom m) => AgentConfig -> m Env
 newSMPAgentEnv config@AgentConfig {dbFile, dbKey, yesToMigrations} = do
   idsDrg <- newTVarIO =<< drgNew
-  store <- liftIO $ createSQLiteStore dbFile dbKey Migrations.app yesToMigrations
+  store <- liftIO $ createAgentStore dbFile dbKey yesToMigrations
   clientCounter <- newTVarIO 0
   randomServer <- newTVarIO =<< liftIO newStdGen
   ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
   return Env {config, store, idsDrg, clientCounter, randomServer, ntfSupervisor}
+
+createAgentStore :: FilePath -> String -> Bool -> IO SQLiteStore
+createAgentStore dbFilePath dbKey = createSQLiteStore dbFilePath dbKey Migrations.app
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
