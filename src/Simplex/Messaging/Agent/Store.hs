@@ -92,7 +92,7 @@ data SndQueue = SndQueue
 -- * Connection types
 
 -- | Type of a connection.
-data ConnType = CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
+data ConnType = CNew | CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 
 -- | Connection of a specific type.
 --
@@ -105,6 +105,7 @@ data ConnType = CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 -- - DuplexConnection is a connection that has both receive and send queues set up,
 --   typically created by upgrading a receive or a send connection with a missing queue.
 data Connection (d :: ConnType) where
+  NewConnection :: ConnData -> Connection CNew
   RcvConnection :: ConnData -> RcvQueue -> Connection CRcv
   SndConnection :: ConnData -> SndQueue -> Connection CSnd
   DuplexConnection :: ConnData -> RcvQueue -> SndQueue -> Connection CDuplex
@@ -272,6 +273,8 @@ newtype InternalId = InternalId {unId :: Int64} deriving (Eq, Show)
 
 type InternalTs = UTCTime
 
+type AsyncCmdId = Int64
+
 -- * Store errors
 
 -- | Agent store error.
@@ -293,6 +296,8 @@ data StoreError
     SEInvitationNotFound
   | -- | Message not found
     SEMsgNotFound
+  | -- | Command not found
+    SECmdNotFound
   | -- | Currently not used. The intention was to pass current expected queue status in methods,
     -- as we always know what it should be at any stage of the protocol,
     -- and in case it does not match use this error.

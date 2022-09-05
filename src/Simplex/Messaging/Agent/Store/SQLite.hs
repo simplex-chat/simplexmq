@@ -24,6 +24,9 @@ module Simplex.Messaging.Agent.Store.SQLite
     connectSQLiteStore,
 
     -- * Queues and connections
+    createNewConn,
+    updateNewConnRcv,
+    updateNewConnSnd,
     createRcvConn,
     createSndConn,
     getConn,
@@ -66,6 +69,12 @@ module Simplex.Messaging.Agent.Store.SQLite
     getRatchet,
     getSkippedMsgKeys,
     updateRatchet,
+    -- Async commands
+    getPendingCommandsServers,
+    createCommand,
+    getPendingCommands,
+    getPendingCommand,
+    deleteCommand,
     -- Notification device token persistence
     createNtfToken,
     getSavedNtfToken,
@@ -257,6 +266,31 @@ createConn_ ::
 createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
   ConnData {connId = ""} -> createWithRandomId gVar create
   ConnData {connId} -> create connId $> Right connId
+
+createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
+createNewConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandshake} cMode =
+  createConn_ gVar cData $ \connId -> do
+    DB.execute db "INSERT INTO connections (conn_id, conn_mode, smp_agent_version, enable_ntfs, duplex_handshake) VALUES (?, ?, ?, ?, ?)" (connId, cMode, connAgentVersion, enableNtfs, duplexHandshake)
+
+updateNewConnRcv :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError ())
+updateNewConnRcv db connId rq@RcvQueue {server} =
+  getConn db connId $>>= \case
+    (SomeConn _ NewConnection {}) -> do
+      upsertServer_ db server
+      insertRcvQueue_ db connId rq
+      pure $ Right ()
+    (SomeConn _ RcvConnection {}) -> pure $ Right () -- to allow retries
+    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+
+updateNewConnSnd :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError ())
+updateNewConnSnd db connId sq@SndQueue {server} =
+  getConn db connId $>>= \case
+    (SomeConn _ NewConnection {}) -> do
+      upsertServer_ db server
+      insertSndQueue_ db connId sq
+      pure $ Right ()
+    (SomeConn _ SndConnection {}) -> pure $ Right () -- to allow retries
+    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
 createRcvConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
@@ -653,6 +687,37 @@ updateRatchet db connId rc skipped = do
       forM_ (M.assocs smks) $ \(hk, mks) ->
         forM_ (M.assocs mks) $ \(msgN, mk) ->
           DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
+
+getPendingCommandsServers :: DB.Connection -> IO [Maybe SMPServer]
+getPendingCommandsServers db =
+  map toMaybeServer
+    <$> DB.query_
+      db
+      [sql|
+        SELECT DISTINCT c.host, c.port, s.key_hash
+        FROM commands c
+        LEFT JOIN servers s ON s.host = c.host AND s.port = c.port
+      |]
+  where
+    toMaybeServer (Just host, Just port, Just keyHash) = Just $ SMPServer host port keyHash
+    toMaybeServer _ = Nothing
+
+createCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> ACommand 'Client -> IO AsyncCmdId
+createCommand _db _connId _server _command =
+  pure 1
+
+getPendingCommands :: DB.Connection -> Maybe SMPServer -> IO [AsyncCmdId]
+getPendingCommands _db _server =
+  pure []
+
+getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ConnId, ACommand 'Client))
+getPendingCommand _db _msgId =
+  pure $ Left SECmdNotFound
+
+deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
+deleteCommand _db _cmdId =
+  -- DB.execute db "DELETE FROM commands WHERE command_id = ?" (Only cmdId)
+  pure ()
 
 createNtfToken :: DB.Connection -> NtfToken -> IO ()
 createNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey), ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode} = do

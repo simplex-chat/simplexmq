@@ -219,9 +219,9 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) where
-  NEW :: AConnectionMode -> ACommand Client -- response INV
+  NEW :: Bool -> AConnectionMode -> ACommand Client -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent
-  JOIN :: AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
+  JOIN :: Bool -> AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   REQ :: InvitationId -> L.NonEmpty SMPServer -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
@@ -952,9 +952,9 @@ commandP =
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
-    newCmd = ACmd SClient . NEW <$> strP
+    newCmd = ACmd SClient .: NEW <$> strP_ <*> strP
     invResp = ACmd SAgent . INV <$> strP
-    joinCmd = ACmd SClient .: JOIN <$> strP_ <*> A.takeByteString
+    joinCmd = ACmd SClient .:. JOIN <$> strP_ <*> strP_ <*> A.takeByteString
     confMsg = ACmd SAgent .:. CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> A.takeByteString
     letCmd = ACmd SClient .: LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
     reqMsg = ACmd SAgent .:. REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> A.takeByteString
@@ -988,9 +988,9 @@ parseCommand = parse commandP $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW cMode -> "NEW " <> strEncode cMode
+  NEW enableNtfs cMode -> B.unwords ["NEW", strEncode enableNtfs, strEncode cMode]
   INV cReq -> "INV " <> strEncode cReq
-  JOIN cReq cInfo -> B.unwords ["JOIN", strEncode cReq, serializeBinary cInfo]
+  JOIN enableNtfs cReq cInfo -> B.unwords ["JOIN", strEncode enableNtfs, strEncode cReq, serializeBinary cInfo]
   CONF confId srvs cInfo -> B.unwords ["CONF", confId, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
   REQ invId srvs cInfo -> B.unwords ["REQ", invId, strEncode srvs, serializeBinary cInfo]
@@ -1068,7 +1068,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     tConnId :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnId (_, connId, _) cmd = case cmd of
       -- NEW, JOIN and ACPT have optional connId
-      NEW _ -> Right cmd
+      NEW _ _ -> Right cmd
       JOIN {} -> Right cmd
       ACPT {} -> Right cmd
       -- ERROR response does not always have connId
@@ -1086,7 +1086,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody = \case
       SEND msgFlags body -> SEND msgFlags <$$> getBody body
       MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
-      JOIN qUri cInfo -> JOIN qUri <$$> getBody cInfo
+      JOIN enableNtfs qUri cInfo -> JOIN enableNtfs qUri <$$> getBody cInfo
       CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
       LET confId cInfo -> LET confId <$$> getBody cInfo
       REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo
