@@ -150,7 +150,7 @@ import UnliftIO.STM
 
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
-    dbKey :: String,
+    dbEncrypted :: TVar Bool,
     dbConnection :: TMVar DB.Connection,
     dbNew :: Bool
   }
@@ -189,7 +189,8 @@ connectSQLiteStore :: FilePath -> String -> IO SQLiteStore
 connectSQLiteStore dbFilePath dbKey = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConnection <- newTMVarIO =<< connectDB dbFilePath dbKey
-  pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbNew}
+  dbEncrypted <- newTVarIO . not $ null dbKey
+  pure SQLiteStore {dbFilePath, dbEncrypted, dbConnection, dbNew}
 
 connectDB :: FilePath -> String -> IO DB.Connection
 connectDB path key = do
