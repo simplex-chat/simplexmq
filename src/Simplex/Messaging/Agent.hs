@@ -545,7 +545,7 @@ enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue 
 enqueueMessage c cData@ConnData {connId, connAgentVersion} sq msgFlags aMessage = do
   resumeMsgDelivery c cData sq
   msgId <- storeSentMsg
-  queuePendingMsgs c connId sq [msgId]
+  queuePendingMsgs c sq [msgId]
   pure $ unId msgId
   where
     storeSentMsg :: m InternalId
@@ -565,28 +565,28 @@ enqueueMessage c cData@ConnData {connId, connAgentVersion} sq msgFlags aMessage 
 
 resumeMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 resumeMsgDelivery c cData@ConnData {connId} sq@SndQueue {server, sndId} = do
-  let qKey = (connId, server, sndId)
+  let qKey = (server, sndId)
   unlessM (queueDelivering qKey) $
     async (runSmpQueueMsgDelivery c cData sq)
       >>= \a -> atomically (TM.insert qKey a $ smpQueueMsgDeliveries c)
   unlessM connQueued $
     withStore' c (`getPendingMsgs` connId)
-      >>= queuePendingMsgs c connId sq
+      >>= queuePendingMsgs c sq
   where
     queueDelivering qKey = atomically $ TM.member qKey (smpQueueMsgDeliveries c)
     connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connMsgsQueued c)
 
-queuePendingMsgs :: AgentMonad m => AgentClient -> ConnId -> SndQueue -> [InternalId] -> m ()
-queuePendingMsgs c connId sq msgIds = atomically $ do
+queuePendingMsgs :: AgentMonad m => AgentClient -> SndQueue -> [InternalId] -> m ()
+queuePendingMsgs c sq msgIds = atomically $ do
   modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + length msgIds}
   -- s <- readTVar (msgDeliveryOp c)
   -- unsafeIOToSTM $ putStrLn $ "msgDeliveryOp: " <> show (opsInProgress s)
-  q <- getPendingMsgQ c connId sq
+  q <- getPendingMsgQ c sq
   mapM_ (writeTQueue q) msgIds
 
-getPendingMsgQ :: AgentClient -> ConnId -> SndQueue -> STM (TQueue InternalId)
-getPendingMsgQ c connId SndQueue {server, sndId} = do
-  let qKey = (connId, server, sndId)
+getPendingMsgQ :: AgentClient -> SndQueue -> STM (TQueue InternalId)
+getPendingMsgQ c SndQueue {server, sndId} = do
+  let qKey = (server, sndId)
   maybe (newMsgQueue qKey) pure =<< TM.lookup qKey (smpQueueMsgQueues c)
   where
     newMsgQueue qKey = do
@@ -596,7 +596,7 @@ getPendingMsgQ c connId SndQueue {server, sndId} = do
 
 runSmpQueueMsgDelivery :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> m ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} cData@ConnData {connId, duplexHandshake} sq = do
-  mq <- atomically $ getPendingMsgQ c connId sq
+  mq <- atomically $ getPendingMsgQ c sq
   ri <- asks $ messageRetryInterval . config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -1251,7 +1251,7 @@ enqueueConfirmation :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQ
 enqueueConfirmation c cData@ConnData {connId, connAgentVersion} sq connInfo e2eEncryption = do
   resumeMsgDelivery c cData sq
   msgId <- storeConfirmation
-  queuePendingMsgs c connId sq [msgId]
+  queuePendingMsgs c sq [msgId]
   where
     storeConfirmation :: m InternalId
     storeConfirmation = withStore c $ \db -> runExceptT $ do
