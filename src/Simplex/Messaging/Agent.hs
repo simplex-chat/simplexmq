@@ -502,7 +502,7 @@ deleteCurrRcvQueue c cData@ConnData {connId} rq sq rq'@RcvQueue {server, rcvId} 
   deleteQueue c rq
   withStore' c $ \db -> switchCurrRcvQueue db rq rq'
   atomically $
-    TM.lookupDelete (connId, server, rcvId) (nextRcvQueueMsgs c)
+    TM.lookupDelete (server, rcvId) (nextRcvQueueMsgs c)
       >>= mapM_ ((mapM_ . writeTBQueue $ msgQ c) . reverse)
   sq' <- withStore' c (`getNextSndQueue` sq)
   let sStats = connectionStats $ DuplexConnection cData rq' sq Nothing sq'
@@ -1162,7 +1162,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
                         | currRcvQueue -> do
                           logServer "<--" c srv rId "MSG <MSG>"
                           notify $ MSG msgMeta msgFlags body
-                        | otherwise -> atomically $ TM.alter addTransmission (connId, srv, rId) (nextRcvQueueMsgs c)
+                        | otherwise -> atomically $ TM.alter addTransmission (srv, rId) (nextRcvQueueMsgs c)
                         where
                           addTransmission = Just . maybe [transmission] (transmission :)
                       QNEW currAddr nextQUri -> rqNewMsg currAddr nextQUri >> ackDelete msgId
@@ -1184,7 +1184,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} transmission@(srv, v, se
                                 | currRcvQueue -> do
                                   logServer "<--" c srv rId "MSG <MSG>"
                                   notify $ MSG msgMeta msgFlags body
-                                | otherwise -> atomically $ TM.alter addTransmission (connId, srv, rId) (nextRcvQueueMsgs c)
+                                | otherwise -> atomically $ TM.alter addTransmission (srv, rId) (nextRcvQueueMsgs c)
                                 where
                                   addTransmission = Just . maybe [transmission] prependIfDifferent
                                   prependIfDifferent = \case

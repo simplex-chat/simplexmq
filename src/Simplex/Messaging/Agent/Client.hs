@@ -166,7 +166,7 @@ data AgentClient = AgentClient
     connMsgsQueued :: TMap ConnId Bool,
     smpQueueMsgQueues :: TMap MsgDeliveryKey (TQueue InternalId),
     smpQueueMsgDeliveries :: TMap MsgDeliveryKey (Async ()),
-    nextRcvQueueMsgs :: TMap (ConnId, SMPServer, SMP.RecipientId) [ServerTransmission BrokerMsg],
+    nextRcvQueueMsgs :: TMap (SMPServer, SMP.RecipientId) [ServerTransmission BrokerMsg],
     ntfNetworkOp :: TVar AgentOpState,
     rcvNetworkOp :: TVar AgentOpState,
     msgDeliveryOp :: TVar AgentOpState,
