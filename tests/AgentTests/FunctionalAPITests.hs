@@ -114,6 +114,9 @@ functionalAPITests t = do
   describe "Batching SMP commands" $ do
     it "should subscribe to multiple subscriptions with batching" $
       testBatchedSubscriptions t
+  describe "Async agent commands" $ do
+    it "should connect using async agent commands" $
+      withSmpServer t testAsyncCommands
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -559,6 +562,41 @@ testBatchedSubscriptions t = do
           pure res
         killThread t1
         pure res
+
+testAsyncCommands :: IO ()
+testAsyncCommands = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
+  Right () <- runExceptT $ do
+    bobId <- createConnectionAsync alice True SCMInvitation
+    ("", _, INV (ACR _ qInfo)) <- get alice
+    aliceId <- joinConnectionAsync bob True qInfo "bob's connInfo"
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    allowConnectionAsync alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, CON)
+    -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
+    1 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT $ baseId + 1)
+    2 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
+    get alice ##> ("", bobId, SENT $ baseId + 2)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessageAsync bob aliceId $ baseId + 1
+    get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
+    ackMessageAsync bob aliceId $ baseId + 2
+    3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
+    get bob ##> ("", aliceId, SENT $ baseId + 3)
+    4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
+    get bob ##> ("", aliceId, SENT $ baseId + 4)
+    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
+    ackMessageAsync alice bobId $ baseId + 3
+    get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
+    ackMessageAsync alice bobId $ baseId + 4
+  pure ()
+  where
+    baseId = 3
+    msgId = subtract baseId
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4

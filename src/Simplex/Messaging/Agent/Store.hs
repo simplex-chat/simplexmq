@@ -116,12 +116,14 @@ deriving instance Eq (Connection d)
 deriving instance Show (Connection d)
 
 data SConnType :: ConnType -> Type where
+  SCNew :: SConnType CNew
   SCRcv :: SConnType CRcv
   SCSnd :: SConnType CSnd
   SCDuplex :: SConnType CDuplex
   SCContact :: SConnType CContact
 
 connType :: SConnType c -> ConnType
+connType SCNew = CNew
 connType SCRcv = CRcv
 connType SCSnd = CSnd
 connType SCDuplex = CDuplex

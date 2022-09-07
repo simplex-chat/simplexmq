@@ -205,6 +205,7 @@ ackMessageAsync c connId msgId =
       SomeConn _ (RcvConnection _ rq) -> enqueueAck rq
       SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
       SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
+      SomeConn _ (NewConnection _) -> throwError $ CONN NEW_CONN
   where
     enqueueAck :: RcvQueue -> ReaderT Env m ()
     enqueueAck RcvQueue {server} = do
@@ -265,7 +266,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
             ACK msgId -> ackMessage' c connId msgId
             _ -> notify "" $ ERR (INTERNAL "")
           case resp of
-            Left _ -> do
+            Left _ ->
               -- TODO retry NEW and JOIN on different server
               -- TODO depending on command, some errors shouldn't be retried
               retryCommand loop
@@ -580,6 +581,7 @@ subscribeConnection' c connId =
         _ -> throwError $ INTERNAL "unexpected queue status"
     SomeConn _ (RcvConnection _ rq) -> subscribe rq
     SomeConn _ (ContactConnection _ rq) -> subscribe rq
+    SomeConn _ (NewConnection _) -> pure ()
   where
     subscribe :: RcvQueue -> m ()
     subscribe rq = do
@@ -590,10 +592,11 @@ subscribeConnection' c connId =
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
-  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
-  let (errs, cs) = M.mapEither id conns
+  conns :: [(ConnId, Either StoreError SomeConn)] <- zip connIds <$> withStore' c (forM connIds . getConn)
+  let (errs, cs) = M.mapEither id (M.fromList conns)
       errs' = M.map (Left . storeError) errs
-      (sndQs, rcvQs) = M.mapEither rcvOrSndQueue cs
+      rcvQs = M.fromList $ mapMaybe toRcvQueue conns
+      sndQs = M.fromList $ mapMaybe toSndQueue conns
       sndRs = M.map (sndSubResult . fst) sndQs
       srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
@@ -605,12 +608,25 @@ subscribeConnections' c connIds = do
   notifyResultError rs
   pure rs
   where
-    rcvOrSndQueue :: SomeConn -> Either (SndQueue, ConnData) (RcvQueue, ConnData)
-    rcvOrSndQueue = \case
-      SomeConn _ (DuplexConnection cData rq _) -> Right (rq, cData)
-      SomeConn _ (SndConnection cData sq) -> Left (sq, cData)
-      SomeConn _ (RcvConnection cData rq) -> Right (rq, cData)
-      SomeConn _ (ContactConnection cData rq) -> Right (rq, cData)
+    mapMaybe :: (a -> Maybe b) -> [a] -> [b]
+    mapMaybe _ [] = []
+    mapMaybe f (x : xs) =
+      let rs = mapMaybe f xs
+       in case f x of
+            Nothing -> rs
+            Just r -> r : rs
+    toRcvQueue :: (ConnId, Either StoreError SomeConn) -> Maybe (ConnId, (RcvQueue, ConnData))
+    toRcvQueue = \case
+      (_, Left _) -> Nothing
+      (connId, Right (SomeConn _ (DuplexConnection cData rq _))) -> Just (connId, (rq, cData))
+      (connId, Right (SomeConn _ (RcvConnection cData rq))) -> Just (connId, (rq, cData))
+      (connId, Right (SomeConn _ (ContactConnection cData rq))) -> Just (connId, (rq, cData))
+      _ -> Nothing
+    toSndQueue :: (ConnId, Either StoreError SomeConn) -> Maybe (ConnId, (SndQueue, ConnData))
+    toSndQueue = \case
+      (_, Left _) -> Nothing
+      (connId, Right (SomeConn _ (SndConnection cData sq))) -> Just (connId, (sq, cData))
+      _ -> Nothing
     sndSubResult :: SndQueue -> Either AgentErrorType ()
     sndSubResult sq = case status (sq :: SndQueue) of
       Confirmed -> Right ()
@@ -659,6 +675,7 @@ getConnectionMessage' c connId = do
     SomeConn _ (RcvConnection _ rq) -> getQueueMessage c rq
     SomeConn _ (ContactConnection _ rq) -> getQueueMessage c rq
     SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
+    SomeConn _ NewConnection {} -> throwError $ CONN NEW_CONN
 
 getNotificationMessage' :: forall m. AgentMonad m => AgentClient -> C.CbNonce -> ByteString -> m (NotificationInfo, [SMPMsgMeta])
 getNotificationMessage' c nonce encNtfInfo = do
@@ -860,6 +877,7 @@ ackMessage' c connId msgId = do
     SomeConn _ (RcvConnection _ rq) -> ack rq
     SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
     SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
+    SomeConn _ (NewConnection _) -> throwError $ CONN NEW_CONN
   where
     ack :: RcvQueue -> m ()
     ack rq = do
@@ -878,6 +896,7 @@ suspendConnection' c connId =
     SomeConn _ (RcvConnection _ rq) -> suspendQueue c rq
     SomeConn _ (ContactConnection _ rq) -> suspendQueue c rq
     SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
+    SomeConn _ (NewConnection _) -> throwError $ CONN NEW_CONN
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
 deleteConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
@@ -887,6 +906,7 @@ deleteConnection' c connId =
     SomeConn _ (RcvConnection _ rq) -> delete rq
     SomeConn _ (ContactConnection _ rq) -> delete rq
     SomeConn _ (SndConnection _ _) -> withStore' c (`deleteConn` connId)
+    SomeConn _ (NewConnection _) -> withStore' c (`deleteConn` connId)
   where
     delete :: RcvQueue -> m ()
     delete rq = do
@@ -905,6 +925,7 @@ getConnectionServers' c connId = connServers <$> withStore c (`getConn` connId)
       SomeConn _ (SndConnection _ SndQueue {server}) -> ConnectionStats {rcvServers = [], sndServers = [server]}
       SomeConn _ (DuplexConnection _ RcvQueue {server = s1} SndQueue {server = s2}) -> ConnectionStats {rcvServers = [s1], sndServers = [s2]}
       SomeConn _ (ContactConnection _ RcvQueue {server}) -> ConnectionStats {rcvServers = [server], sndServers = []}
+      SomeConn _ (NewConnection _) -> ConnectionStats {rcvServers = [], sndServers = []}
 
 -- | Change servers to be used for creating new queues, in Reader monad
 setSMPServers' :: AgentMonad m => AgentClient -> NonEmpty SMPServer -> m ()

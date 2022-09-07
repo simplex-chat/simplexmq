@@ -276,22 +276,28 @@ createNewConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandsh
 updateNewConnRcv :: DB.Connection -> ConnId -> RcvQueue -> IO (Either StoreError ())
 updateNewConnRcv db connId rq@RcvQueue {server} =
   getConn db connId $>>= \case
-    (SomeConn _ NewConnection {}) -> do
+    (SomeConn _ NewConnection {}) -> updateConn
+    (SomeConn _ RcvConnection {}) -> updateConn -- to allow retries
+    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+  where
+    updateConn :: IO (Either StoreError ())
+    updateConn = do
       upsertServer_ db server
       insertRcvQueue_ db connId rq
       pure $ Right ()
-    (SomeConn _ RcvConnection {}) -> pure $ Right () -- to allow retries
-    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
 updateNewConnSnd :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError ())
 updateNewConnSnd db connId sq@SndQueue {server} =
   getConn db connId $>>= \case
-    (SomeConn _ NewConnection {}) -> do
+    (SomeConn _ NewConnection {}) -> updateConn
+    (SomeConn _ SndConnection {}) -> updateConn -- to allow retries
+    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+  where
+    updateConn :: IO (Either StoreError ())
+    updateConn = do
       upsertServer_ db server
       insertSndQueue_ db connId sq
       pure $ Right ()
-    (SomeConn _ SndConnection {}) -> pure $ Right () -- to allow retries
-    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> RcvQueue -> SConnectionMode c -> IO (Either StoreError ConnId)
 createRcvConn db gVar cData@ConnData {connAgentVersion, enableNtfs, duplexHandshake} q@RcvQueue {server} cMode =
@@ -1105,7 +1111,7 @@ instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ e
 
 instance ToField (ACommand p) where toField = toField . serializeCommand
 
-instance FromField ACmd where fromField = blobFieldParser commandP
+instance FromField ACmd where fromField = blobFieldParser dbCommandP
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
@@ -1214,6 +1220,7 @@ getConn dbConn connId =
         (Just rcvQ, Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection connData rcvQ)
         (Nothing, Just sndQ, CMInvitation) -> Right $ SomeConn SCSnd (SndConnection connData sndQ)
         (Just rcvQ, Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection connData rcvQ)
+        (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection connData)
         _ -> Left SEConnNotFound
 
 getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
