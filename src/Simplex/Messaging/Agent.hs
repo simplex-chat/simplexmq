@@ -438,13 +438,13 @@ processCommand c (connId, cmd) = case cmd of
   CHK -> (connId,) . STAT <$> getConnectionServers' c connId
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
-newConn c connId connExists enableNtfs cMode = do
+newConn c connId asyncMode enableNtfs cMode = do
   srv <- getSMPServer c
   clientVRange <- asks $ smpClientVRange . config
   (rq, qUri) <- newRcvQueue c srv clientVRange
   g <- asks idsDrg
   connId' <-
-    if connExists
+    if asyncMode
       then do
         -- connection was created with async command
         withStore c $ \db -> updateNewConnRcv db connId rq
@@ -468,7 +468,7 @@ newConn c connId connExists enableNtfs cMode = do
       pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams CR.e2eEncryptVRange)
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConn c connId connExists enableNtfs (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo = do
+joinConn c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
   clientVRange <- asks $ smpClientVRange . config
   case ( qUri `compatibleVersion` clientVRange,
@@ -484,7 +484,7 @@ joinConn c connId connExists enableNtfs (CRInvitationUri (ConnReqUriData _ agent
       let duplexHS = connAgentVersion /= 1
           cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
       connId' <-
-        if connExists
+        if asyncMode
           then -- connection was created with async command
           withStore c $ \db -> runExceptT $ do
             ExceptT $ updateNewConnSnd db connId sq
@@ -502,17 +502,17 @@ joinConn c connId connExists enableNtfs (CRInvitationUri (ConnReqUriData _ agent
           pure connId'
         Left e -> do
           -- TODO recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
-          withStore' c (`deleteConn` connId')
+          unless asyncMode $ withStore' c (`deleteConn` connId')
           throwError e
     _ -> throwError $ AGENT A_VERSION
-joinConn c connId connExists enableNtfs (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo = do
+joinConn c connId asyncMode enableNtfs (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
   clientVRange <- asks $ smpClientVRange . config
   case ( qUri `compatibleVersion` clientVRange,
          agentVRange `compatibleVersion` aVRange
        ) of
     (Just qInfo, Just vrsn) -> do
-      (connId', cReq) <- newConn c connId connExists enableNtfs SCMInvitation
+      (connId', cReq) <- newConn c connId asyncMode enableNtfs SCMInvitation
       sendInvitation c qInfo vrsn cReq cInfo
       pure connId'
     _ -> throwError $ AGENT A_VERSION
