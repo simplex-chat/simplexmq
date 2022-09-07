@@ -115,6 +115,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (find, foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
@@ -703,21 +704,35 @@ getPendingCommandsServers db =
     toMaybeServer _ = Nothing
 
 createCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> ACommand 'Client -> IO AsyncCmdId
-createCommand _db _connId _server _command =
-  pure 1
+createCommand db connId (Just (SMPServer host port _)) command = do
+  DB.execute
+    db
+    "INSERT INTO commands (host, port, conn_id, command, command_version) VALUES (?, ?, ?, ?, 1)"
+    (host, port, connId, serializeCommand command)
+  insertedRowId db
+createCommand db connId Nothing command = do
+  DB.execute
+    db
+    "INSERT INTO commands (conn_id, command, command_version) VALUES (?, ?, 1)"
+    (connId, serializeCommand command)
+  insertedRowId db
+
+insertedRowId :: DB.Connection -> IO Int64
+insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
 getPendingCommands :: DB.Connection -> Maybe SMPServer -> IO [AsyncCmdId]
-getPendingCommands _db _server =
-  pure []
+getPendingCommands db (Just (SMPServer host port _)) =
+  map fromOnly <$> DB.query db "SELECT command_id FROM commands WHERE host = ? AND port = ?" (host, port)
+getPendingCommands db Nothing =
+  map fromOnly <$> DB.query_ db "SELECT command_id FROM commands WHERE host IS NULL AND port IS NULL"
 
 getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ConnId, ACommand 'Client))
 getPendingCommand _db _msgId =
   pure $ Left SECmdNotFound
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
-deleteCommand _db _cmdId =
-  -- DB.execute db "DELETE FROM commands WHERE command_id = ?" (Only cmdId)
-  pure ()
+deleteCommand db cmdId =
+  DB.execute db "DELETE FROM commands WHERE command_id = ?" (Only cmdId)
 
 createNtfToken :: DB.Connection -> NtfToken -> IO ()
 createNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = srv@ProtocolServer {host, port}, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey), ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode} = do

@@ -90,6 +90,7 @@ module Simplex.Messaging.Agent.Protocol
 
     -- * Encode/decode
     serializeCommand,
+    parseCommand,
     connMode,
     connMode',
     commandP,
@@ -982,6 +983,7 @@ commandP =
     partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
     agentError = ACmd SAgent . ERR <$> strP
 
+-- | Parse SMP agent command.
 parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse commandP $ CMD SYNTAX
 

@@ -200,6 +200,7 @@ CREATE TABLE commands(
   port TEXT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   command TEXT NOT NULL,
+  command_version INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 );
