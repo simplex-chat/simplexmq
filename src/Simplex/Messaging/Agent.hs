@@ -135,10 +135,7 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
     restoreCommands c =
       runExceptT (withStore' c $ \db -> getPendingCommandsServers db) >>= \case
         Left e -> liftIO $ print e
-        Right servers ->
-          runExceptT (forM servers $ \s -> resumeCommandProcessing c s) >>= \case
-            Left e -> liftIO $ print e
-            Right _ -> pure ()
+        Right servers -> forM_ servers $ \s -> runExceptT (resumeCommandProcessing c s)
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns}} = do
