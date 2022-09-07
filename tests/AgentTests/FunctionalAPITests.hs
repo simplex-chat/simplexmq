@@ -117,6 +117,8 @@ functionalAPITests t = do
   describe "Async agent commands" $ do
     it "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
+    it "should restore and complete async commands on restart" $
+      testAsyncCommandsRestore t
 
 testAgentClient :: IO ()
 testAgentClient = do
@@ -597,6 +599,19 @@ testAsyncCommands = do
   where
     baseId = 3
     msgId = subtract baseId
+
+testAsyncCommandsRestore :: ATransport -> IO ()
+testAsyncCommandsRestore t = do
+  alice <- getSMPAgentClient agentCfg initAgentServers
+  Right _bobId <- runExceptT $ createConnectionAsync alice True SCMInvitation
+  liftIO $ noMessages alice "alice doesn't receive INV because server is down"
+  disconnectAgentClient alice
+  alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
+  withSmpServerStoreLogOn t testPort $ \_ -> do
+    Right () <- runExceptT $ do
+      ("", _, INV _) <- get alice'
+      pure ()
+    pure ()
 
 exchangeGreetings :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetingsMsgId 4
