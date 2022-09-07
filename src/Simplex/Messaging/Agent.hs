@@ -254,7 +254,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
     E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
       Left (e :: E.SomeException) ->
         notify "" $ ERR (INTERNAL $ show e)
-      Right (connId, cmd) ->
+      Right (connId, ACmd _ cmd) ->
         withRetryInterval ri $ \loop -> do
           resp <- tryError $ case cmd of
             NEW enableNtfs (ACM cMode) -> do

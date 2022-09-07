@@ -707,14 +707,14 @@ createCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> ACommand 'Client 
 createCommand db connId (Just (SMPServer host port _)) command = do
   DB.execute
     db
-    "INSERT INTO commands (host, port, conn_id, command, command_version) VALUES (?, ?, ?, ?, 1)"
+    "INSERT INTO commands (host, port, conn_id, command) VALUES (?, ?, ?, ?)"
     (host, port, connId, serializeCommand command)
   insertedRowId db
 createCommand db connId Nothing command = do
   DB.execute
     db
-    "INSERT INTO commands (conn_id, command, command_version) VALUES (?, ?, 1)"
-    (connId, serializeCommand command)
+    "INSERT INTO commands (conn_id, command) VALUES (?, ?)"
+    (connId, command)
   insertedRowId db
 
 insertedRowId :: DB.Connection -> IO Int64
@@ -726,9 +726,16 @@ getPendingCommands db (Just (SMPServer host port _)) =
 getPendingCommands db Nothing =
   map fromOnly <$> DB.query_ db "SELECT command_id FROM commands WHERE host IS NULL AND port IS NULL"
 
-getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ConnId, ACommand 'Client))
-getPendingCommand _db _msgId =
-  pure $ Left SECmdNotFound
+getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ConnId, ACmd))
+getPendingCommand db msgId = do
+  firstRow pendingCmd SECmdNotFound $
+    DB.query
+      db
+      "SELECT conn_id, command FROM commands WHERE command_id = ?"
+      (Only msgId)
+  where
+    pendingCmd :: (ConnId, ACmd) -> (ConnId, ACmd)
+    pendingCmd (connId, commandStr) = (connId, commandStr)
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
 deleteCommand db cmdId =
@@ -1095,6 +1102,10 @@ instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP
 instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1 . strEncode
 
 instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
+
+instance ToField (ACommand p) where toField = toField . serializeCommand
+
+instance FromField ACmd where fromField = blobFieldParser commandP
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
