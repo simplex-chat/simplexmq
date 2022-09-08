@@ -839,8 +839,6 @@ data ConnectionErrorType
     NOT_FOUND
   | -- | connection already exists
     DUPLICATE
-  | -- | connection is new, but operation requires another queue
-    NEW_CONN
   | -- | connection is simplex, but operation requires another queue
     SIMPLEX
   | -- | connection not accepted on join HELLO after timeout

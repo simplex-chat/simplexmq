@@ -434,7 +434,7 @@ ackMessageAsync' c connId msgId =
     SomeConn _ (RcvConnection _ rq) -> enqueueAck rq
     SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
     SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
-    SomeConn _ (NewConnection _) -> throwError $ CONN NEW_CONN
+    SomeConn _ (NewConnection _) -> throwError $ CMD PROHIBITED
   where
     enqueueAck :: RcvQueue -> m ()
     enqueueAck RcvQueue {server} = do
@@ -682,7 +682,7 @@ getConnectionMessage' c connId = do
     SomeConn _ (RcvConnection _ rq) -> getQueueMessage c rq
     SomeConn _ (ContactConnection _ rq) -> getQueueMessage c rq
     SomeConn _ SndConnection {} -> throwError $ CONN SIMPLEX
-    SomeConn _ NewConnection {} -> throwError $ CONN NEW_CONN
+    SomeConn _ NewConnection {} -> throwError $ CMD PROHIBITED
 
 getNotificationMessage' :: forall m. AgentMonad m => AgentClient -> C.CbNonce -> ByteString -> m (NotificationInfo, [SMPMsgMeta])
 getNotificationMessage' c nonce encNtfInfo = do
@@ -884,7 +884,7 @@ ackMessage' c connId msgId = do
     SomeConn _ (RcvConnection _ rq) -> ack rq
     SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
     SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
-    SomeConn _ (NewConnection _) -> throwError $ CONN NEW_CONN
+    SomeConn _ (NewConnection _) -> throwError $ CMD PROHIBITED
   where
     ack :: RcvQueue -> m ()
     ack rq = do
@@ -903,7 +903,7 @@ suspendConnection' c connId =
     SomeConn _ (RcvConnection _ rq) -> suspendQueue c rq
     SomeConn _ (ContactConnection _ rq) -> suspendQueue c rq
     SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
-    SomeConn _ (NewConnection _) -> throwError $ CONN NEW_CONN
+    SomeConn _ (NewConnection _) -> throwError $ CMD PROHIBITED
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
 deleteConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
