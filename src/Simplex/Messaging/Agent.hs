@@ -490,21 +490,21 @@ processConfirmation c rq@RcvQueue {e2ePrivKey, smpClientVersion = v} SMPConfirma
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
 subscribeConnection' c connId =
-  withStore c (`getConn` connId) >>= \case
-    SomeConn _ (DuplexConnection cData rq sq) -> do
-      resumeMsgDelivery c cData sq
-      subscribe rq
-      resumeConnCmds c connId
-    SomeConn _ (SndConnection cData sq) -> do
-      resumeMsgDelivery c cData sq
-      case status (sq :: SndQueue) of
-        Confirmed -> pure ()
-        Active -> throwError $ CONN SIMPLEX
-        _ -> throwError $ INTERNAL "unexpected queue status"
-      resumeConnCmds c connId
-    SomeConn _ (RcvConnection _ rq) -> subscribe rq >> resumeConnCmds c connId
-    SomeConn _ (ContactConnection _ rq) -> subscribe rq >> resumeConnCmds c connId
-    SomeConn _ (NewConnection _) -> resumeConnCmds c connId
+  withStore c (`getConn` connId) >>= \conn -> do
+    resumeConnCmds c connId
+    case conn of
+      SomeConn _ (DuplexConnection cData rq sq) -> do
+        resumeMsgDelivery c cData sq
+        subscribe rq
+      SomeConn _ (SndConnection cData sq) -> do
+        resumeMsgDelivery c cData sq
+        case status (sq :: SndQueue) of
+          Confirmed -> pure ()
+          Active -> throwError $ CONN SIMPLEX
+          _ -> throwError $ INTERNAL "unexpected queue status"
+      SomeConn _ (RcvConnection _ rq) -> subscribe rq
+      SomeConn _ (ContactConnection _ rq) -> subscribe rq
+      SomeConn _ (NewConnection _) -> pure ()
   where
     subscribe :: RcvQueue -> m ()
     subscribe rq = do
@@ -521,7 +521,7 @@ subscribeConnections' c connIds = do
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
       srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
-  forM_ (M.keys cs) $ resumeConnCmds c
+  mapM_ (resumeConnCmds c) $ M.keys cs
   rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
