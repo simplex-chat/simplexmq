@@ -930,12 +930,7 @@ networkCommandP = commandP A.takeByteString
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
 dbCommandP :: Parser ACmd
-dbCommandP = commandP parseBinary
-  where
-    parseBinary = do
-      n <- A.decimal
-      _ <- "\n"
-      A.take n
+dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
 
 -- | SMP agent command and response parser
 commandP :: Parser ByteString -> Parser ACmd
