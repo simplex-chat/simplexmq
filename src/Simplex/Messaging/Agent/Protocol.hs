@@ -1005,9 +1005,9 @@ parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW enableNtfs cMode -> B.unwords ["NEW", strEncode enableNtfs, strEncode cMode]
+  NEW ntfs cMode -> B.unwords ["NEW", strEncode ntfs, strEncode cMode]
   INV cReq -> "INV " <> strEncode cReq
-  JOIN enableNtfs cReq cInfo -> B.unwords ["JOIN", strEncode enableNtfs, strEncode cReq, serializeBinary cInfo]
+  JOIN ntfs cReq cInfo -> B.unwords ["JOIN", strEncode ntfs, strEncode cReq, serializeBinary cInfo]
   CONF confId srvs cInfo -> B.unwords ["CONF", confId, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
   REQ invId srvs cInfo -> B.unwords ["REQ", invId, strEncode srvs, serializeBinary cInfo]
@@ -1103,7 +1103,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody = \case
       SEND msgFlags body -> SEND msgFlags <$$> getBody body
       MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
-      JOIN enableNtfs qUri cInfo -> JOIN enableNtfs qUri <$$> getBody cInfo
+      JOIN ntfs qUri cInfo -> JOIN ntfs qUri <$$> getBody cInfo
       CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
       LET confId cInfo -> LET confId <$$> getBody cInfo
       REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo
