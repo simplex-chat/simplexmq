@@ -705,8 +705,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
             Left e
               | temporaryAgentError e || e == BROKER HOST -> retryCommand loop
               | otherwise -> notify connId $ ERR e
-            Right () -> do
-              delCmd cmdId
+            Right () -> withStore' c (`deleteCommand` cmdId)
   where
     withNextSrv :: TVar [SMPServer] -> (SMPServer -> m ()) -> m ()
     withNextSrv usedSrvs action = do
@@ -717,8 +716,6 @@ runCommandProcessing c@AgentClient {subQ} server = do
         let used' = if length used + 1 >= L.length srvs then [] else srv : used
         writeTVar usedSrvs used'
       action srv
-    delCmd :: AsyncCmdId -> m ()
-    delCmd cmdId = withStore' c $ \db -> deleteCommand db cmdId
     notify :: ConnId -> ACommand 'Agent -> m ()
     notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
     retryCommand loop = do
