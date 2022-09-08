@@ -92,6 +92,8 @@ module Simplex.Messaging.Agent.Protocol
     serializeCommand,
     connMode,
     connMode',
+    networkCommandP,
+    dbCommandP,
     commandP,
     connModeT,
     serializeQueueStatus,
@@ -219,9 +221,9 @@ type ConnInfo = ByteString
 
 -- | Parameterized type for SMP agent protocol commands and responses from all participants.
 data ACommand (p :: AParty) where
-  NEW :: AConnectionMode -> ACommand Client -- response INV
+  NEW :: Bool -> AConnectionMode -> ACommand Client -- response INV
   INV :: AConnectionRequestUri -> ACommand Agent
-  JOIN :: AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
+  JOIN :: Bool -> AConnectionRequestUri -> ConnInfo -> ACommand Client -- response OK
   CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand Agent -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   LET :: ConfirmationId -> ConnInfo -> ACommand Client -- ConnInfo is from client
   REQ :: InvitationId -> L.NonEmpty SMPServer -> ConnInfo -> ACommand Agent -- ConnInfo is from sender
@@ -920,9 +922,17 @@ instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary SMPAgentError where arbitrary = genericArbitraryU
 
+-- | SMP agent command and response parser for commands passed via network (only parses binary length)
+networkCommandP :: Parser ACmd
+networkCommandP = commandP A.takeByteString
+
+-- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
+dbCommandP :: Parser ACmd
+dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
+
 -- | SMP agent command and response parser
-commandP :: Parser ACmd
-commandP =
+commandP :: Parser ByteString -> Parser ACmd
+commandP parseByteString =
   "NEW " *> newCmd
     <|> "INV " *> invResp
     <|> "JOIN " *> joinCmd
@@ -952,24 +962,24 @@ commandP =
     <|> "CON" $> ACmd SAgent CON
     <|> "OK" $> ACmd SAgent OK
   where
-    newCmd = ACmd SClient . NEW <$> strP
+    newCmd = ACmd SClient .: NEW <$> strP_ <*> strP
     invResp = ACmd SAgent . INV <$> strP
-    joinCmd = ACmd SClient .: JOIN <$> strP_ <*> A.takeByteString
-    confMsg = ACmd SAgent .:. CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> A.takeByteString
-    letCmd = ACmd SClient .: LET <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
-    reqMsg = ACmd SAgent .:. REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> A.takeByteString
-    acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> A.takeByteString
+    joinCmd = ACmd SClient .:. JOIN <$> strP_ <*> strP_ <*> parseByteString
+    confMsg = ACmd SAgent .:. CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> parseByteString
+    letCmd = ACmd SClient .: LET <$> A.takeTill (== ' ') <* A.space <*> parseByteString
+    reqMsg = ACmd SAgent .:. REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> parseByteString
+    acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> parseByteString
     rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
-    infoCmd = ACmd SAgent . INFO <$> A.takeByteString
+    infoCmd = ACmd SAgent . INFO <$> parseByteString
     connectResp = ACmd SAgent .: CONNECT <$> strP_ <*> strP
     disconnectResp = ACmd SAgent .: DISCONNECT <$> strP_ <*> strP
     downResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
     upResp = ACmd SAgent .: UP <$> strP_ <*> connections
-    sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> A.takeByteString
+    sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> parseByteString
     msgIdResp = ACmd SAgent . MID <$> A.decimal
     sentResp = ACmd SAgent . SENT <$> A.decimal
     msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
-    message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> A.takeByteString
+    message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> parseByteString
     ackCmd = ACmd SClient . ACK <$> A.decimal
     statResp = ACmd SAgent . STAT <$> strP
     connections = strP `A.sepBy'` A.char ','
@@ -983,14 +993,14 @@ commandP =
     agentError = ACmd SAgent . ERR <$> strP
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse commandP $ CMD SYNTAX
+parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
 
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p -> ByteString
 serializeCommand = \case
-  NEW cMode -> "NEW " <> strEncode cMode
+  NEW ntfs cMode -> B.unwords ["NEW", strEncode ntfs, strEncode cMode]
   INV cReq -> "INV " <> strEncode cReq
-  JOIN cReq cInfo -> B.unwords ["JOIN", strEncode cReq, serializeBinary cInfo]
+  JOIN ntfs cReq cInfo -> B.unwords ["JOIN", strEncode ntfs, strEncode cReq, serializeBinary cInfo]
   CONF confId srvs cInfo -> B.unwords ["CONF", confId, strEncodeList srvs, serializeBinary cInfo]
   LET confId cInfo -> B.unwords ["LET", confId, serializeBinary cInfo]
   REQ invId srvs cInfo -> B.unwords ["REQ", invId, strEncode srvs, serializeBinary cInfo]
@@ -1068,7 +1078,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     tConnId :: ARawTransmission -> ACommand p -> Either AgentErrorType (ACommand p)
     tConnId (_, connId, _) cmd = case cmd of
       -- NEW, JOIN and ACPT have optional connId
-      NEW _ -> Right cmd
+      NEW _ _ -> Right cmd
       JOIN {} -> Right cmd
       ACPT {} -> Right cmd
       -- ERROR response does not always have connId
@@ -1086,7 +1096,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     cmdWithMsgBody = \case
       SEND msgFlags body -> SEND msgFlags <$$> getBody body
       MSG msgMeta msgFlags body -> MSG msgMeta msgFlags <$$> getBody body
-      JOIN qUri cInfo -> JOIN qUri <$$> getBody cInfo
+      JOIN ntfs qUri cInfo -> JOIN ntfs qUri <$$> getBody cInfo
       CONF confId srvs cInfo -> CONF confId srvs <$$> getBody cInfo
       LET confId cInfo -> LET confId <$$> getBody cInfo
       REQ invId srvs cInfo -> REQ invId srvs <$$> getBody cInfo
