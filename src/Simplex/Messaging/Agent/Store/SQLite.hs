@@ -113,9 +113,10 @@ import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import Data.Char (toLower)
+import Data.Function (on)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (find, foldl')
+import Data.List (find, foldl', groupBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
@@ -711,9 +712,9 @@ createCommand db connId Nothing command = do
 insertedRowId :: DB.Connection -> IO Int64
 insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
-getPendingCommands :: DB.Connection -> ConnId -> IO [(Maybe SMPServer, AsyncCmdId)]
-getPendingCommands db connId =
-  map toCmdIdAndServer
+getPendingCommands :: DB.Connection -> ConnId -> IO [(Maybe SMPServer, [AsyncCmdId])]
+getPendingCommands db connId = do
+  map (\ids -> (fst $ head ids, map snd ids)) . groupBy ((==) `on` fst) . map srvCmdId
     <$> DB.query
       db
       [sql|
@@ -721,10 +722,11 @@ getPendingCommands db connId =
         FROM commands c
         LEFT JOIN servers s ON s.host = c.host AND s.port = c.port
         WHERE conn_id = ?
+        ORDER BY c.host, c.port, c.command_id ASC
       |]
       (Only connId)
   where
-    toCmdIdAndServer (host_, port_, keyHash_, cmdId) = (SMPServer <$> host_ <*> port_ <*> keyHash_, cmdId)
+    srvCmdId (host, port, keyHash, cmdId) = (SMPServer <$> host <*> port <*> keyHash, cmdId)
 
 getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ConnId, ACmd))
 getPendingCommand db msgId = do
