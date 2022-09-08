@@ -596,41 +596,27 @@ subscribeConnection' c connId =
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
-  conns :: [(ConnId, Either StoreError SomeConn)] <- zip connIds <$> withStore' c (forM connIds . getConn)
-  let (errs, cs) = M.mapEither id (M.fromList conns)
+  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
+  let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
-      rcvQs = M.fromList $ mapMaybe toRcvQueue conns
-      sndQs = M.fromList $ mapMaybe toSndQueue conns
-      sndRs = M.map (sndSubResult . fst) sndQs
+      (newRs, (sndRs, rcvQs)) = second (M.mapEither id) $ M.mapEither rcvOrSndQueue cs
       srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
   rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
   when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs
-  let rs = M.unions $ errs' : sndRs : rcvRs
+  let rs = M.unions $ errs' : newRs : sndRs : rcvRs
   notifyResultError rs
   pure rs
   where
-    mapMaybe :: (a -> Maybe b) -> [a] -> [b]
-    mapMaybe _ [] = []
-    mapMaybe f (x : xs) =
-      let rs = mapMaybe f xs
-       in case f x of
-            Nothing -> rs
-            Just r -> r : rs
-    toRcvQueue :: (ConnId, Either StoreError SomeConn) -> Maybe (ConnId, (RcvQueue, ConnData))
-    toRcvQueue = \case
-      (_, Left _) -> Nothing
-      (connId, Right (SomeConn _ (DuplexConnection cData rq _))) -> Just (connId, (rq, cData))
-      (connId, Right (SomeConn _ (RcvConnection cData rq))) -> Just (connId, (rq, cData))
-      (connId, Right (SomeConn _ (ContactConnection cData rq))) -> Just (connId, (rq, cData))
-      _ -> Nothing
-    toSndQueue :: (ConnId, Either StoreError SomeConn) -> Maybe (ConnId, (SndQueue, ConnData))
-    toSndQueue = \case
-      (_, Left _) -> Nothing
-      (connId, Right (SomeConn _ (SndConnection cData sq))) -> Just (connId, (sq, cData))
-      _ -> Nothing
+    rcvOrSndQueue :: SomeConn -> Either (Either AgentErrorType ()) (Either (Either AgentErrorType ()) (RcvQueue, ConnData))
+    rcvOrSndQueue = \case
+      SomeConn _ (DuplexConnection cData rq _) -> Right $ Right (rq, cData)
+      SomeConn _ (SndConnection _ sq) -> Right $ Left $ sndSubResult sq
+      SomeConn _ (RcvConnection cData rq) -> Right $ Right (rq, cData)
+      SomeConn _ (ContactConnection cData rq) -> Right $ Right (rq, cData)
+      SomeConn _ (NewConnection _) -> Left (Right ())
     sndSubResult :: SndQueue -> Either AgentErrorType ()
     sndSubResult sq = case status (sq :: SndQueue) of
       Confirmed -> Right ()
