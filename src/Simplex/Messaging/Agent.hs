@@ -160,87 +160,6 @@ allowConnectionAsync c = withAgentEnv c .:. allowConnectionAsync' c
 ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
 ackMessageAsync c = withAgentEnv c .: ackMessageAsync' c
 
-enqueueCommand :: forall m. AgentMonad m => AgentClient -> ConnId -> Maybe SMPServer -> ACommand 'Client -> m ()
-enqueueCommand c connId server aCommand = do
-  resumeSrvCmds c server
-  commandId <- withStore c $ \db -> runExceptT . liftIO $ createCommand db connId server aCommand
-  queuePendingCommands c server [commandId]
-
-resumeSrvCmds :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
-resumeSrvCmds c server =
-  unlessM (cmdProcessExists c server) $
-    async (runCommandProcessing c server)
-      >>= \a -> atomically (TM.insert server a $ asyncCmdProcesses c)
-
-resumeConnCmds :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
-resumeConnCmds c connId = do
-  unlessM connQueued $ do
-    cmdIdsSrvs <- withStore' c (`getPendingCommands` connId)
-    let srvCmdIds = groupCmdsBySrvs cmdIdsSrvs
-    forM_ srvCmdIds $ \(srv, cmdIds) -> unlessM (cmdProcessExists c srv) $ do
-      a <- async (runCommandProcessing c srv)
-      atomically (TM.insert srv a $ asyncCmdProcesses c)
-      queuePendingCommands c srv cmdIds
-  where
-    connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
-    groupCmdsBySrvs assocs = M.toList $ M.fromListWith (++) [(k, [v]) | (k, v) <- assocs]
-
-cmdProcessExists :: AgentMonad m => AgentClient -> Maybe SMPServer -> m Bool
-cmdProcessExists c srv = atomically $ TM.member srv (asyncCmdProcesses c)
-
-queuePendingCommands :: AgentMonad m => AgentClient -> Maybe SMPServer -> [AsyncCmdId] -> m ()
-queuePendingCommands c server cmdIds = atomically $ do
-  q <- getPendingCommandQ c server
-  mapM_ (writeTQueue q) cmdIds
-
-getPendingCommandQ :: AgentClient -> Maybe SMPServer -> STM (TQueue AsyncCmdId)
-getPendingCommandQ c server = do
-  maybe newMsgQueue pure =<< TM.lookup server (asyncCmdQueues c)
-  where
-    newMsgQueue = do
-      cq <- newTQueue
-      TM.insert server cq $ asyncCmdQueues c
-      pure cq
-
-runCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
-runCommandProcessing c@AgentClient {subQ} server = do
-  cq <- atomically $ getPendingCommandQ c server
-  ri <- asks $ messageRetryInterval . config -- different retry interval?
-  forever $ do
-    atomically $ endAgentOperation c AOSndNetwork
-    cmdId <- atomically $ readTQueue cq
-    atomically $ beginAgentOperation c AOSndNetwork
-    E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
-      Left (e :: E.SomeException) ->
-        notify "" $ ERR (INTERNAL $ show e)
-      Right (connId, ACmd _ cmd) ->
-        withRetryInterval ri $ \loop -> do
-          resp <- tryError $ case cmd of
-            NEW enableNtfs (ACM cMode) -> do
-              (_, cReq) <- newConn c connId True enableNtfs cMode
-              notify connId $ INV (ACR cMode cReq)
-            JOIN enableNtfs (ACR _ cReq) connInfo -> void $ joinConn c connId True enableNtfs cReq connInfo
-            LET confId ownCInfo -> allowConnection' c connId confId ownCInfo
-            ACK msgId -> ackMessage' c connId msgId
-            _ -> notify "" $ ERR (INTERNAL "")
-          case resp of
-            Left _ ->
-              -- TODO retry NEW and JOIN on different server
-              -- TODO depending on command, some errors shouldn't be retried
-              retryCommand loop
-            Right () -> do
-              delCmd cmdId
-  where
-    delCmd :: AsyncCmdId -> m ()
-    delCmd cmdId = withStore' c $ \db -> deleteCommand db cmdId
-    notify :: ConnId -> ACommand 'Agent -> m ()
-    notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
-    retryCommand loop = do
-      -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
-      atomically $ endAgentOperation c AOSndNetwork
-      atomically $ beginAgentOperation c AOSndNetwork
-      loop
-
 -- | Create SMP agent connection (NEW command)
 createConnection :: AgentErrorMonad m => AgentClient -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 createConnection c enableNtfs cMode = withAgentEnv c $ newConn c "" False enableNtfs cMode
@@ -705,6 +624,90 @@ sendMessage' c connId msgFlags msg =
   where
     enqueueMsg :: ConnData -> SndQueue -> m AgentMsgId
     enqueueMsg cData sq = enqueueMessage c cData sq msgFlags $ A_MSG msg
+
+-- / async command processing v v v
+
+enqueueCommand :: forall m. AgentMonad m => AgentClient -> ConnId -> Maybe SMPServer -> ACommand 'Client -> m ()
+enqueueCommand c connId server aCommand = do
+  resumeSrvCmds c server
+  commandId <- withStore c $ \db -> runExceptT . liftIO $ createCommand db connId server aCommand
+  queuePendingCommands c server [commandId]
+
+resumeSrvCmds :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
+resumeSrvCmds c server =
+  unlessM (cmdProcessExists c server) $
+    async (runCommandProcessing c server)
+      >>= \a -> atomically (TM.insert server a $ asyncCmdProcesses c)
+
+resumeConnCmds :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+resumeConnCmds c connId = do
+  unlessM connQueued $ do
+    cmdIdsSrvs <- withStore' c (`getPendingCommands` connId)
+    let srvCmdIds = groupCmdsBySrvs cmdIdsSrvs
+    forM_ srvCmdIds $ \(srv, cmdIds) -> unlessM (cmdProcessExists c srv) $ do
+      a <- async (runCommandProcessing c srv)
+      atomically (TM.insert srv a $ asyncCmdProcesses c)
+      queuePendingCommands c srv cmdIds
+  where
+    connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
+    groupCmdsBySrvs assocs = M.toList $ M.fromListWith (++) [(k, [v]) | (k, v) <- assocs]
+
+cmdProcessExists :: AgentMonad m => AgentClient -> Maybe SMPServer -> m Bool
+cmdProcessExists c srv = atomically $ TM.member srv (asyncCmdProcesses c)
+
+queuePendingCommands :: AgentMonad m => AgentClient -> Maybe SMPServer -> [AsyncCmdId] -> m ()
+queuePendingCommands c server cmdIds = atomically $ do
+  q <- getPendingCommandQ c server
+  mapM_ (writeTQueue q) cmdIds
+
+getPendingCommandQ :: AgentClient -> Maybe SMPServer -> STM (TQueue AsyncCmdId)
+getPendingCommandQ c server = do
+  maybe newMsgQueue pure =<< TM.lookup server (asyncCmdQueues c)
+  where
+    newMsgQueue = do
+      cq <- newTQueue
+      TM.insert server cq $ asyncCmdQueues c
+      pure cq
+
+runCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
+runCommandProcessing c@AgentClient {subQ} server = do
+  cq <- atomically $ getPendingCommandQ c server
+  ri <- asks $ messageRetryInterval . config -- different retry interval?
+  forever $ do
+    atomically $ endAgentOperation c AOSndNetwork
+    cmdId <- atomically $ readTQueue cq
+    atomically $ beginAgentOperation c AOSndNetwork
+    E.try (withStore c $ \db -> getPendingCommand db cmdId) >>= \case
+      Left (e :: E.SomeException) ->
+        notify "" $ ERR (INTERNAL $ show e)
+      Right (connId, ACmd _ cmd) ->
+        withRetryInterval ri $ \loop -> do
+          resp <- tryError $ case cmd of
+            NEW enableNtfs (ACM cMode) -> do
+              (_, cReq) <- newConn c connId True enableNtfs cMode
+              notify connId $ INV (ACR cMode cReq)
+            JOIN enableNtfs (ACR _ cReq) connInfo -> void $ joinConn c connId True enableNtfs cReq connInfo
+            LET confId ownCInfo -> allowConnection' c connId confId ownCInfo
+            ACK msgId -> ackMessage' c connId msgId
+            _ -> notify "" $ ERR (INTERNAL "")
+          case resp of
+            Left _ ->
+              -- TODO retry NEW and JOIN on different server
+              -- TODO depending on command, some errors shouldn't be retried
+              retryCommand loop
+            Right () -> do
+              delCmd cmdId
+  where
+    delCmd :: AsyncCmdId -> m ()
+    delCmd cmdId = withStore' c $ \db -> deleteCommand db cmdId
+    notify :: ConnId -> ACommand 'Agent -> m ()
+    notify connId cmd = atomically $ writeTBQueue subQ ("", connId, cmd)
+    retryCommand loop = do
+      -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
+      atomically $ endAgentOperation c AOSndNetwork
+      atomically $ beginAgentOperation c AOSndNetwork
+      loop
+-- ^ ^ ^ async command processing /
 
 enqueueMessage :: forall m. AgentMonad m => AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> m AgentMsgId
 enqueueMessage c cData@ConnData {connId, connAgentVersion} sq msgFlags aMessage = do
