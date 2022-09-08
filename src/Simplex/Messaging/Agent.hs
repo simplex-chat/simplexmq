@@ -169,7 +169,7 @@ enqueueCommand c connId server aCommand = do
 
 resumeCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
 resumeCommandProcessing c server =
-  unlessM (queueProcessing c server) $
+  unlessM (commandQueueProcessing c server) $
     async (runCommandProcessing c server)
       >>= \a -> atomically (TM.insert server a $ asyncCmdProcesses c)
 
@@ -178,7 +178,7 @@ resumeConnCommandsProcessing c connId = do
   unlessM connQueued $ do
     cmdIdsSrvs <- withStore' c (`getPendingCommands` connId)
     let srvCmdIds = groupCmdsBySrvs cmdIdsSrvs
-    forM_ srvCmdIds $ \(srv, cmdIds) -> unlessM (queueProcessing c srv) $ do
+    forM_ srvCmdIds $ \(srv, cmdIds) -> unlessM (commandQueueProcessing c srv) $ do
       a <- async (runCommandProcessing c srv)
       atomically (TM.insert srv a $ asyncCmdProcesses c)
       queuePendingCommands c srv cmdIds
@@ -186,8 +186,8 @@ resumeConnCommandsProcessing c connId = do
     connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
     groupCmdsBySrvs assocs = M.toList $ fromListWith (++) [(v, [k]) | (k, v) <- assocs]
 
-queueProcessing :: AgentMonad m => AgentClient -> Maybe SMPServer -> m Bool
-queueProcessing c srv = atomically $ TM.member srv (asyncCmdProcesses c)
+commandQueueProcessing :: AgentMonad m => AgentClient -> Maybe SMPServer -> m Bool
+commandQueueProcessing c srv = atomically $ TM.member srv (asyncCmdProcesses c)
 
 queuePendingCommands :: AgentMonad m => AgentClient -> Maybe SMPServer -> [AsyncCmdId] -> m ()
 queuePendingCommands c server cmdIds = atomically $ do
