@@ -412,13 +412,8 @@ joinConnAsync c enableNtfs cReqUri@(CRInvitationUri (ConnReqUriData _ agentVRang
       enqueueCommand c connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
       pure connId
     _ -> throwError $ AGENT A_VERSION
-joinConnAsync c enableNtfs cReqUri@(CRContactUri _) cInfo = do
-  g <- asks idsDrg
-  connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
-  let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
-  connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
-  enqueueCommand c connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
-  pure connId
+joinConnAsync _c _enableNtfs (CRContactUri _) _cInfo =
+  throwError $ CMD PROHIBITED
 
 allowConnectionAsync' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
 allowConnectionAsync' c connId confId ownConnInfo =
@@ -512,17 +507,19 @@ joinConn c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ agentV
             liftIO $ createRatchet db connId' rc
             pure connId'
     _ -> throwError $ AGENT A_VERSION
-joinConn c connId asyncMode enableNtfs (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo = do
+joinConn c connId False enableNtfs (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
   clientVRange <- asks $ smpClientVRange . config
   case ( qUri `compatibleVersion` clientVRange,
          agentVRange `compatibleVersion` aVRange
        ) of
     (Just qInfo, Just vrsn) -> do
-      (connId', cReq) <- newConn c connId asyncMode enableNtfs SCMInvitation
+      (connId', cReq) <- newConn c connId False enableNtfs SCMInvitation
       sendInvitation c qInfo vrsn cReq cInfo
       pure connId'
     _ -> throwError $ AGENT A_VERSION
+joinConn _c _connId True _enableNtfs (CRContactUri _) _cInfo = do
+  throwError $ CMD PROHIBITED
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> m SMPQueueInfo
 createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} = do
