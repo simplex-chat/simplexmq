@@ -151,61 +151,19 @@ type AgentErrorMonad m = (MonadUnliftIO m, MonadError AgentErrorType m)
 
 -- | Create SMP agent connection (NEW command) asynchronously, synchronous response is new connection id
 createConnectionAsync :: forall m c. (AgentErrorMonad m, ConnectionModeI c) => AgentClient -> Bool -> SConnectionMode c -> m ConnId
-createConnectionAsync c enableNtfs cMode =
-  withAgentEnv c $ do
-    g <- asks idsDrg
-    connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
-    let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
-    connId <- withStore c $ \db -> createNewConn db g cData cMode
-    enqueueCommand c connId Nothing $ NEW enableNtfs (ACM cMode)
-    pure connId
+createConnectionAsync c enableNtfs cMode = withAgentEnv c $ newConnAsync c enableNtfs cMode
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id
 joinConnectionAsync :: AgentErrorMonad m => AgentClient -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
-joinConnectionAsync c enableNtfs cReqUri@(CRInvitationUri (ConnReqUriData _ agentVRange _) _) cInfo =
-  withAgentEnv c $ do
-    aVRange <- asks $ smpAgentVRange . config
-    case agentVRange `compatibleVersion` aVRange of
-      Just (Compatible connAgentVersion) -> do
-        g <- asks idsDrg
-        let duplexHS = connAgentVersion /= 1
-            cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
-        connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
-        enqueueCommand c connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
-        pure connId
-      _ -> throwError $ AGENT A_VERSION
-joinConnectionAsync c enableNtfs cReqUri@(CRContactUri _) cInfo = do
-  withAgentEnv c $ do
-    g <- asks idsDrg
-    connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
-    let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
-    connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
-    enqueueCommand c connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
-    pure connId
+joinConnectionAsync c enableNtfs = withAgentEnv c .: joinConnAsync c enableNtfs
 
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
 allowConnectionAsync :: AgentErrorMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
-allowConnectionAsync c connId confId ownConnInfo =
-  withAgentEnv c $ do
-    withStore c (`getConn` connId) >>= \case
-      SomeConn _ (RcvConnection _ RcvQueue {server}) ->
-        enqueueCommand c connId (Just server) $ LET confId ownConnInfo
-      _ -> throwError $ CMD PROHIBITED
+allowConnectionAsync c = withAgentEnv c .:. allowConnectionAsync' c
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
 ackMessageAsync :: forall m. AgentErrorMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
-ackMessageAsync c connId msgId =
-  withAgentEnv c $
-    withStore c (`getConn` connId) >>= \case
-      SomeConn _ (DuplexConnection _ rq _) -> enqueueAck rq
-      SomeConn _ (RcvConnection _ rq) -> enqueueAck rq
-      SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
-      SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
-      SomeConn _ (NewConnection _) -> throwError $ CONN NEW_CONN
-  where
-    enqueueAck :: RcvQueue -> ReaderT Env m ()
-    enqueueAck RcvQueue {server} = do
-      enqueueCommand c connId (Just server) $ ACK msgId
+ackMessageAsync c = withAgentEnv c .: ackMessageAsync' c
 
 enqueueCommand :: forall m. AgentMonad m => AgentClient -> ConnId -> Maybe SMPServer -> ACommand 'Client -> m ()
 enqueueCommand c connId server aCommand = do
@@ -432,6 +390,55 @@ processCommand c (connId, cmd) = case cmd of
   OFF -> suspendConnection' c connId $> (connId, OK)
   DEL -> deleteConnection' c connId $> (connId, OK)
   CHK -> (connId,) . STAT <$> getConnectionServers' c connId
+
+newConnAsync :: forall m c. (AgentMonad m, ConnectionModeI c) => AgentClient -> Bool -> SConnectionMode c -> m ConnId
+newConnAsync c enableNtfs cMode = do
+  g <- asks idsDrg
+  connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
+  let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
+  connId <- withStore c $ \db -> createNewConn db g cData cMode
+  enqueueCommand c connId Nothing $ NEW enableNtfs (ACM cMode)
+  pure connId
+
+joinConnAsync :: AgentMonad m => AgentClient -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
+joinConnAsync c enableNtfs cReqUri@(CRInvitationUri (ConnReqUriData _ agentVRange _) _) cInfo = do
+  aVRange <- asks $ smpAgentVRange . config
+  case agentVRange `compatibleVersion` aVRange of
+    Just (Compatible connAgentVersion) -> do
+      g <- asks idsDrg
+      let duplexHS = connAgentVersion /= 1
+          cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
+      connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
+      enqueueCommand c connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
+      pure connId
+    _ -> throwError $ AGENT A_VERSION
+joinConnAsync c enableNtfs cReqUri@(CRContactUri _) cInfo = do
+  g <- asks idsDrg
+  connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
+  let cData = ConnData {connId = "", connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
+  connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
+  enqueueCommand c connId Nothing $ JOIN enableNtfs (ACR sConnectionMode cReqUri) cInfo
+  pure connId
+
+allowConnectionAsync' :: AgentMonad m => AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> m ()
+allowConnectionAsync' c connId confId ownConnInfo =
+  withStore c (`getConn` connId) >>= \case
+    SomeConn _ (RcvConnection _ RcvQueue {server}) ->
+      enqueueCommand c connId (Just server) $ LET confId ownConnInfo
+    _ -> throwError $ CMD PROHIBITED
+
+ackMessageAsync' :: forall m. AgentMonad m => AgentClient -> ConnId -> AgentMsgId -> m ()
+ackMessageAsync' c connId msgId =
+  withStore c (`getConn` connId) >>= \case
+    SomeConn _ (DuplexConnection _ rq _) -> enqueueAck rq
+    SomeConn _ (RcvConnection _ rq) -> enqueueAck rq
+    SomeConn _ (SndConnection _ _) -> throwError $ CONN SIMPLEX
+    SomeConn _ (ContactConnection _ _) -> throwError $ CMD PROHIBITED
+    SomeConn _ (NewConnection _) -> throwError $ CONN NEW_CONN
+  where
+    enqueueAck :: RcvQueue -> m ()
+    enqueueAck RcvQueue {server} = do
+      enqueueCommand c connId (Just server) $ ACK msgId
 
 newConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> SConnectionMode c -> m (ConnId, ConnectionRequestUri c)
 newConn c connId asyncMode enableNtfs cMode = do
