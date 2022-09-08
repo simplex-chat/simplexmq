@@ -438,18 +438,10 @@ newConn c connId asyncMode enableNtfs cMode = do
   srv <- getSMPServer c
   clientVRange <- asks $ smpClientVRange . config
   (rq, qUri) <- newRcvQueue c srv clientVRange
-  g <- asks idsDrg
   connId' <-
     if asyncMode
-      then do
-        -- connection was created with async command
-        withStore c $ \db -> updateNewConnRcv db connId rq
-        pure connId
-      else do
-        -- regular command
-        connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
-        let cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
-        withStore c $ \db -> createRcvConn db g cData rq cMode
+      then setUpConnAsync rq
+      else setUpConnSync rq
   addSubscription c rq connId'
   when enableNtfs $ do
     ns <- asks ntfSupervisor
@@ -462,6 +454,15 @@ newConn c connId asyncMode enableNtfs cMode = do
       (pk1, pk2, e2eRcvParams) <- liftIO $ CR.generateE2EParams CR.e2eEncryptVersion
       withStore' c $ \db -> createRatchetX3dhKeys db connId' pk1 pk2
       pure (connId', CRInvitationUri crData $ toVersionRangeT e2eRcvParams CR.e2eEncryptVRange)
+  where
+    setUpConnAsync rq = do
+      withStore c $ \db -> updateNewConnRcv db connId rq
+      pure connId
+    setUpConnSync rq = do
+      g <- asks idsDrg
+      connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
+      let cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Nothing} -- connection mode is determined by the accepting agent
+      withStore c $ \db -> createRcvConn db g cData rq cMode
 
 joinConn :: AgentMonad m => AgentClient -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> m ConnId
 joinConn c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ agentVRange (qUri :| _)) e2eRcvParamsUri) cInfo = do
@@ -476,21 +477,12 @@ joinConn c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ agentV
       (_, rcDHRs) <- liftIO C.generateKeyPair'
       let rc = CR.initSndRatchet rcDHRr rcDHRs $ CR.x3dhSnd pk1 pk2 e2eRcvParams
       sq <- newSndQueue qInfo
-      g <- asks idsDrg
       let duplexHS = connAgentVersion /= 1
           cData = ConnData {connId, connAgentVersion, enableNtfs, duplexHandshake = Just duplexHS}
       connId' <-
         if asyncMode
-          then -- connection was created with async command
-          withStore c $ \db -> runExceptT $ do
-            ExceptT $ updateNewConnSnd db connId sq
-            liftIO $ createRatchet db connId rc
-            pure connId
-          else -- regular command
-          withStore c $ \db -> runExceptT $ do
-            connId' <- ExceptT $ createSndConn db g cData sq
-            liftIO $ createRatchet db connId' rc
-            pure connId'
+          then setUpConnAsync sq rc
+          else setUpConnSync cData sq rc
       let cData' = (cData :: ConnData) {connId = connId'}
       tryError (confirmQueue aVersion c cData' sq cInfo $ Just e2eSndParams) >>= \case
         Right _ -> do
@@ -500,6 +492,18 @@ joinConn c connId asyncMode enableNtfs (CRInvitationUri (ConnReqUriData _ agentV
           -- TODO recovery for failure on network timeout, see rfcs/2022-04-20-smp-conf-timeout-recovery.md
           unless asyncMode $ withStore' c (`deleteConn` connId')
           throwError e
+      where
+        setUpConnAsync sq rc =
+          withStore c $ \db -> runExceptT $ do
+            ExceptT $ updateNewConnSnd db connId sq
+            liftIO $ createRatchet db connId rc
+            pure connId
+        setUpConnSync cData sq rc = do
+          g <- asks idsDrg
+          withStore c $ \db -> runExceptT $ do
+            connId' <- ExceptT $ createSndConn db g cData sq
+            liftIO $ createRatchet db connId' rc
+            pure connId'
     _ -> throwError $ AGENT A_VERSION
 joinConn c connId asyncMode enableNtfs (CRContactUri (ConnReqUriData _ agentVRange (qUri :| _))) cInfo = do
   aVRange <- asks $ smpAgentVRange . config
