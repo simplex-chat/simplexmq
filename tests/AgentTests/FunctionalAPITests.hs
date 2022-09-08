@@ -114,7 +114,7 @@ functionalAPITests t = do
   describe "Batching SMP commands" $ do
     it "should subscribe to multiple subscriptions with batching" $
       testBatchedSubscriptions t
-  fdescribe "Async agent commands" $ do
+  describe "Async agent commands" $ do
     it "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
     it "should restore and complete async commands on restart" $

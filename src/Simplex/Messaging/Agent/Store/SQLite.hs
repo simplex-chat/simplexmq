@@ -713,8 +713,8 @@ insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
 getPendingCommands :: DB.Connection -> ConnId -> IO [(AsyncCmdId, Maybe SMPServer)]
 getPendingCommands db connId =
-  map toCmdIdAndServer <$>
-    DB.query
+  map toCmdIdAndServer
+    <$> DB.query
       db
       [sql|
         SELECT c.command_id, c.host, c.port, s.key_hash
