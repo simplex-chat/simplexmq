@@ -711,21 +711,20 @@ createCommand db connId Nothing command = do
 insertedRowId :: DB.Connection -> IO Int64
 insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
-getPendingCommands :: DB.Connection -> ConnId -> IO [(AsyncCmdId, Maybe SMPServer)]
+getPendingCommands :: DB.Connection -> ConnId -> IO [(Maybe SMPServer, AsyncCmdId)]
 getPendingCommands db connId =
   map toCmdIdAndServer
     <$> DB.query
       db
       [sql|
-        SELECT c.command_id, c.host, c.port, s.key_hash
+        SELECT c.host, c.port, s.key_hash, c.command_id
         FROM commands c
         LEFT JOIN servers s ON s.host = c.host AND s.port = c.port
         WHERE conn_id = ?
       |]
       (Only connId)
   where
-    toCmdIdAndServer (cmdId, Just host, Just port, Just keyHash) = (cmdId, Just $ SMPServer host port keyHash)
-    toCmdIdAndServer (cmdId, _, _, _) = (cmdId, Nothing)
+    toCmdIdAndServer (host_, port_, keyHash_, cmdId) = (SMPServer <$> host_ <*> port_ <*> keyHash_, cmdId)
 
 getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ConnId, ACmd))
 getPendingCommand db msgId = do
