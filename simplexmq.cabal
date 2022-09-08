@@ -53,6 +53,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220822_queue_rotation
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Crypto
