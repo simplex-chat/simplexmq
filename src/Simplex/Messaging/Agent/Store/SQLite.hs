@@ -70,7 +70,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     getSkippedMsgKeys,
     updateRatchet,
     -- Async commands
-    getPendingCommandsServers,
     createCommand,
     getPendingCommands,
     getPendingCommand,
@@ -695,20 +694,6 @@ updateRatchet db connId rc skipped = do
         forM_ (M.assocs mks) $ \(msgN, mk) ->
           DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, hk, msgN, mk)
 
-getPendingCommandsServers :: DB.Connection -> IO [Maybe SMPServer]
-getPendingCommandsServers db =
-  map toMaybeServer
-    <$> DB.query_
-      db
-      [sql|
-        SELECT DISTINCT c.host, c.port, s.key_hash
-        FROM commands c
-        LEFT JOIN servers s ON s.host = c.host AND s.port = c.port
-      |]
-  where
-    toMaybeServer (Just host, Just port, Just keyHash) = Just $ SMPServer host port keyHash
-    toMaybeServer _ = Nothing
-
 createCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> ACommand 'Client -> IO AsyncCmdId
 createCommand db connId (Just (SMPServer host port _)) command = do
   DB.execute
@@ -726,11 +711,21 @@ createCommand db connId Nothing command = do
 insertedRowId :: DB.Connection -> IO Int64
 insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
 
-getPendingCommands :: DB.Connection -> Maybe SMPServer -> IO [AsyncCmdId]
-getPendingCommands db (Just (SMPServer host port _)) =
-  map fromOnly <$> DB.query db "SELECT command_id FROM commands WHERE host = ? AND port = ?" (host, port)
-getPendingCommands db Nothing =
-  map fromOnly <$> DB.query_ db "SELECT command_id FROM commands WHERE host IS NULL AND port IS NULL"
+getPendingCommands :: DB.Connection -> ConnId -> IO [(AsyncCmdId, Maybe SMPServer)]
+getPendingCommands db connId =
+  map toCmdIdAndServer <$>
+    DB.query
+      db
+      [sql|
+        SELECT c.command_id, c.host, c.port, s.key_hash
+        FROM commands c
+        LEFT JOIN servers s ON s.host = c.host AND s.port = c.port
+        WHERE conn_id = ?
+      |]
+      (Only connId)
+  where
+    toCmdIdAndServer (cmdId, Just host, Just port, Just keyHash) = (cmdId, Just $ SMPServer host port keyHash)
+    toCmdIdAndServer (cmdId, _, _, _) = (cmdId, Nothing)
 
 getPendingCommand :: DB.Connection -> AsyncCmdId -> IO (Either StoreError (ConnId, ACmd))
 getPendingCommand db msgId = do

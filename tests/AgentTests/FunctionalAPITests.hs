@@ -114,7 +114,7 @@ functionalAPITests t = do
   describe "Batching SMP commands" $ do
     it "should subscribe to multiple subscriptions with batching" $
       testBatchedSubscriptions t
-  describe "Async agent commands" $ do
+  fdescribe "Async agent commands" $ do
     it "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
     it "should restore and complete async commands on restart" $
@@ -603,12 +603,13 @@ testAsyncCommands = do
 testAsyncCommandsRestore :: ATransport -> IO ()
 testAsyncCommandsRestore t = do
   alice <- getSMPAgentClient agentCfg initAgentServers
-  Right _bobId <- runExceptT $ createConnectionAsync alice True SCMInvitation
+  Right bobId <- runExceptT $ createConnectionAsync alice True SCMInvitation
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disconnectAgentClient alice
   alice' <- liftIO $ getSMPAgentClient agentCfg initAgentServers
   withSmpServerStoreLogOn t testPort $ \_ -> do
     Right () <- runExceptT $ do
+      subscribeConnection alice' bobId
       ("", _, INV _) <- get alice'
       pure ()
     pure ()

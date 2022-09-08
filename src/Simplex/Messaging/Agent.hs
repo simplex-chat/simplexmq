@@ -87,6 +87,7 @@ import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Map (fromListWith)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
@@ -130,12 +131,7 @@ getSMPAgentClient cfg initServers = newSMPAgentEnv cfg >>= runReaderT runAgent
     runAgent = do
       c <- getAgentClient initServers
       void $ race_ (subscriber c) (runNtfSupervisor c) `forkFinally` const (disconnectAgentClient c)
-      restoreCommands c
       pure c
-    restoreCommands c =
-      runExceptT (withStore' c $ \db -> getPendingCommandsServers db) >>= \case
-        Left e -> liftIO $ print e
-        Right servers -> forM_ servers $ \s -> runExceptT (resumeCommandProcessing c s)
 
 disconnectAgentClient :: MonadUnliftIO m => AgentClient -> m ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns}} = do
@@ -172,21 +168,31 @@ enqueueCommand c connId server aCommand = do
   queuePendingCommands c server [commandId]
 
 resumeCommandProcessing :: forall m. AgentMonad m => AgentClient -> Maybe SMPServer -> m ()
-resumeCommandProcessing c server = do
-  unlessM (queueProcessing server) $
+resumeCommandProcessing c server =
+  unlessM (queueProcessing c server) $
     async (runCommandProcessing c server)
       >>= \a -> atomically (TM.insert server a $ asyncCmdProcesses c)
-  unlessM serverQueued $
-    withStore' c (`getPendingCommands` server)
-      >>= queuePendingCommands c server
+
+resumeConnCommandsProcessing :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
+resumeConnCommandsProcessing c connId = do
+  unlessM connQueued $ do
+    cmdIdsSrvs <- withStore' c (`getPendingCommands` connId)
+    let srvCmdIds = groupCmdsBySrvs cmdIdsSrvs
+    forM_ srvCmdIds $ \(srv, cmdIds) -> unlessM (queueProcessing c srv) $ do
+      a <- async (runCommandProcessing c srv)
+      atomically (TM.insert srv a $ asyncCmdProcesses c)
+      queuePendingCommands c srv cmdIds
   where
-    queueProcessing qKey = atomically $ TM.member qKey (asyncCmdProcesses c)
-    serverQueued = atomically $ isJust <$> TM.lookupInsert server True (serverCmdsQueued c)
+    connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
+    groupCmdsBySrvs assocs = M.toList $ fromListWith (++) [(v, [k]) | (k, v) <- assocs]
+
+queueProcessing :: AgentMonad m => AgentClient -> Maybe SMPServer -> m Bool
+queueProcessing c srv = atomically $ TM.member srv (asyncCmdProcesses c)
 
 queuePendingCommands :: AgentMonad m => AgentClient -> Maybe SMPServer -> [AsyncCmdId] -> m ()
-queuePendingCommands c server msgIds = atomically $ do
+queuePendingCommands c server cmdIds = atomically $ do
   q <- getPendingCommandQ c server
-  mapM_ (writeTQueue q) msgIds
+  mapM_ (writeTQueue q) cmdIds
 
 getPendingCommandQ :: AgentClient -> Maybe SMPServer -> STM (TQueue AsyncCmdId)
 getPendingCommandQ c server = do
@@ -572,20 +578,22 @@ processConfirmation c rq@RcvQueue {e2ePrivKey, smpClientVersion = v} SMPConfirma
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: forall m. AgentMonad m => AgentClient -> ConnId -> m ()
-subscribeConnection' c connId =
+subscribeConnection' c connId = do
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (DuplexConnection cData rq sq) -> do
       resumeMsgDelivery c cData sq
       subscribe rq
+      resumeConnCommandsProcessing c connId
     SomeConn _ (SndConnection cData sq) -> do
       resumeMsgDelivery c cData sq
       case status (sq :: SndQueue) of
         Confirmed -> pure ()
         Active -> throwError $ CONN SIMPLEX
         _ -> throwError $ INTERNAL "unexpected queue status"
-    SomeConn _ (RcvConnection _ rq) -> subscribe rq
-    SomeConn _ (ContactConnection _ rq) -> subscribe rq
-    SomeConn _ (NewConnection _) -> pure ()
+      resumeConnCommandsProcessing c connId
+    SomeConn _ (RcvConnection _ rq) -> subscribe rq >> resumeConnCommandsProcessing c connId
+    SomeConn _ (ContactConnection _ rq) -> subscribe rq >> resumeConnCommandsProcessing c connId
+    SomeConn _ (NewConnection _) -> resumeConnCommandsProcessing c connId
   where
     subscribe :: RcvQueue -> m ()
     subscribe rq = do
@@ -602,6 +610,7 @@ subscribeConnections' c connIds = do
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
       srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
+  forM_ (M.keys cs) $ resumeConnCommandsProcessing c
   rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)

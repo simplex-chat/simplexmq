@@ -162,7 +162,7 @@ data AgentClient = AgentClient
     connMsgsQueued :: TMap ConnId Bool,
     smpQueueMsgQueues :: TMap (SMPServer, SMP.SenderId) (TQueue InternalId),
     smpQueueMsgDeliveries :: TMap (SMPServer, SMP.SenderId) (Async ()),
-    serverCmdsQueued :: TMap (Maybe SMPServer) Bool,
+    connCmdsQueued :: TMap ConnId Bool,
     asyncCmdQueues :: TMap (Maybe SMPServer) (TQueue AsyncCmdId),
     asyncCmdProcesses :: TMap (Maybe SMPServer) (Async ()),
     ntfNetworkOp :: TVar AgentOpState,
@@ -217,7 +217,7 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   connMsgsQueued <- TM.empty
   smpQueueMsgQueues <- TM.empty
   smpQueueMsgDeliveries <- TM.empty
-  serverCmdsQueued <- TM.empty
+  connCmdsQueued <- TM.empty
   asyncCmdQueues <- TM.empty
   asyncCmdProcesses <- TM.empty
   ntfNetworkOp <- newTVar $ AgentOpState False 0
@@ -231,7 +231,7 @@ newAgentClient InitialAgentServers {smp, ntf, netCfg} agentEnv = do
   asyncClients <- newTVar []
   clientId <- stateTVar (clientCounter agentEnv) $ \i -> let i' = i + 1 in (i', i')
   lock <- newTMVar ()
-  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrSrvrs, pendingSubscrSrvrs, subscrConns, activeSubscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, serverCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
+  return AgentClient {active, rcvQ, subQ, msgQ, smpServers, smpClients, ntfServers, ntfClients, useNetworkConfig, subscrSrvrs, pendingSubscrSrvrs, subscrConns, activeSubscrConns, connMsgsQueued, smpQueueMsgQueues, smpQueueMsgDeliveries, connCmdsQueued, asyncCmdQueues, asyncCmdProcesses, ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp, agentState, getMsgLocks, reconnections, asyncClients, clientId, agentEnv, lock}
 
 agentDbPath :: AgentClient -> FilePath
 agentDbPath AgentClient {agentEnv = Env {store = SQLiteStore {dbFilePath}}} = dbFilePath
