@@ -599,23 +599,23 @@ subscribeConnections' c connIds = do
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
-      (newRs, (sndRs, rcvQs)) = second (M.mapEither id) $ M.mapEither rcvOrSndQueue cs
+      (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
       srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
   rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
   when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs
-  let rs = M.unions $ errs' : newRs : sndRs : rcvRs
+  let rs = M.unions $ errs' : subRs : rcvRs
   notifyResultError rs
   pure rs
   where
-    rcvOrSndQueue :: SomeConn -> Either (Either AgentErrorType ()) (Either (Either AgentErrorType ()) (RcvQueue, ConnData))
-    rcvOrSndQueue = \case
-      SomeConn _ (DuplexConnection cData rq _) -> Right $ Right (rq, cData)
-      SomeConn _ (SndConnection _ sq) -> Right $ Left $ sndSubResult sq
-      SomeConn _ (RcvConnection cData rq) -> Right $ Right (rq, cData)
-      SomeConn _ (ContactConnection cData rq) -> Right $ Right (rq, cData)
+    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType ()) (RcvQueue, ConnData)
+    rcvQueueOrResult = \case
+      SomeConn _ (DuplexConnection cData rq _) -> Right (rq, cData)
+      SomeConn _ (SndConnection _ sq) -> Left $ sndSubResult sq
+      SomeConn _ (RcvConnection cData rq) -> Right (rq, cData)
+      SomeConn _ (ContactConnection cData rq) -> Right (rq, cData)
       SomeConn _ (NewConnection _) -> Left (Right ())
     sndSubResult :: SndQueue -> Either AgentErrorType ()
     sndSubResult sq = case status (sq :: SndQueue) of
