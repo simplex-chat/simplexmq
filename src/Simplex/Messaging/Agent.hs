@@ -448,7 +448,6 @@ joinConnSrv _c _connId True _enableNtfs (CRContactUri _) _cInfo _srv = do
 
 createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPServer -> m SMPQueueInfo
 createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} srv = do
-  -- srv <- getSMPServer c
   (rq, qUri) <- newRcvQueue c srv $ versionToRange smpClientVersion
   let qInfo = toVersionT qUri smpClientVersion
   addSubscription c rq connId
