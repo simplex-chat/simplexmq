@@ -90,7 +90,6 @@ import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
-import Data.Tuple (swap)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as DB
 import Simplex.Messaging.Agent.Env.SQLite
@@ -511,7 +510,7 @@ subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
   whenM (atomically . TM.member (server, rcvId) $ getMsgLocks c) . throwError $ CMD PROHIBITED
   atomically $ do
     modifyTVar (subscrConns c) $ S.insert connId
-    addPendingSubscription c rq connId
+    TM2.insert server connId rq $ pendingSubs c
   withLogClient c server rcvId "SUB" $ \smp ->
     liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq connId)
       >>= either throwError pure
@@ -541,9 +540,9 @@ temporaryAgentError = \case
 subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> Map ConnId RcvQueue -> m (Maybe SMPClient, Map ConnId (Either AgentErrorType ()))
 subscribeQueues c srv qs = do
   (errs, qs_) <- partitionEithers <$> mapM checkQueue (M.assocs qs)
-  forM_ qs_ $ \q -> atomically $ do
-    modifyTVar (subscrConns c) . S.insert $ fst q
-    uncurry (addPendingSubscription c) $ swap q
+  forM_ qs_ $ \(connId, rq@RcvQueue {server}) -> atomically $ do
+    modifyTVar (subscrConns c) $ S.insert connId
+    TM2.insert server connId rq $ pendingSubs c
   case L.nonEmpty qs_ of
     Just qs' -> do
       smp_ <- tryError (getSMPServerClient c srv)
@@ -571,9 +570,6 @@ addSubscription c rq@RcvQueue {server} connId = atomically $ do
 
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
 hasActiveSubscription c connId = TM2.member connId $ activeSubs c
-
-addPendingSubscription :: AgentClient -> RcvQueue -> ConnId -> STM ()
-addPendingSubscription c rq@RcvQueue {server} connId = TM2.insert server connId rq $ pendingSubs c
 
 removeSubscription :: AgentClient -> ConnId -> STM ()
 removeSubscription c connId = do

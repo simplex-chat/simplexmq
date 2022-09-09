@@ -40,6 +40,7 @@ lookup k2 TMap2 {_m1, _m2} = do
 
 lookup1 :: Ord k1 => k1 -> TMap2 k1 k2 a -> STM (Maybe (TMap k2 a))
 lookup1 k1 TMap2 {_m1} = TM.lookup k1 _m1
+{-# INLINE lookup1 #-}
 
 member :: Ord k2 => k2 -> TMap2 k1 k2 a -> STM Bool
 member k2 TMap2 {_m2} = TM.member k2 _m2
