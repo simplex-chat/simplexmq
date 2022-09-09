@@ -375,7 +375,7 @@ newConnSrv c connId asyncMode enableNtfs cMode srv = do
   clientVRange <- asks $ smpClientVRange . config
   (rq, qUri) <- newRcvQueue c srv clientVRange True
   connId' <- setUpConn asyncMode rq
-  addSubscription c rq connId'
+  addSubscription c rq connId' True
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId', NSCCreate)
@@ -461,7 +461,7 @@ createReplyQueue :: AgentMonad m => AgentClient -> ConnData -> SndQueue -> SMPSe
 createReplyQueue c ConnData {connId, enableNtfs} SndQueue {smpClientVersion} srv = do
   (rq, qUri) <- newRcvQueue c srv (versionToRange smpClientVersion) True
   let qInfo = toVersionT qUri smpClientVersion
-  addSubscription c rq connId
+  addSubscription c rq connId True
   withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   when enableNtfs $ do
     ns <- asks ntfSupervisor
@@ -513,10 +513,11 @@ subscribeConnection' c connId =
   withStore c (`getConn` connId) >>= \conn -> do
     resumeConnCmds c connId
     case conn of
-      SomeConn _ (DuplexConnection cData rq sq _ _) -> do
+      SomeConn _ (DuplexConnection cData rq sq rq' _) -> do
         resumeMsgDelivery c cData sq
-        subscribe rq
         void . forkIO $ doRcvQueueAction c cData rq sq
+        mapM_ subscribe rq' `catchError` \_ -> pure ()
+        subscribe rq
       SomeConn _ (SndConnection cData sq) -> do
         resumeMsgDelivery c cData sq
         case status (sq :: SndQueue) of
@@ -529,8 +530,8 @@ subscribeConnection' c connId =
   where
     -- TODO sndQueueAction?
     subscribe :: RcvQueue -> m ()
-    subscribe rq = do
-      subscribeQueue c rq connId
+    subscribe rq@RcvQueue {currRcvQueue} = do
+      subscribeQueue c rq connId currRcvQueue
       ns <- asks ntfSupervisor
       atomically $ sendNtfSubCommand ns (connId, NSCCreate)
 
@@ -604,41 +605,57 @@ deleteCurrRcvQueue c cData@ConnData {connId} rq sq rq'@RcvQueue {server, rcvId} 
 subscribeConnections' :: forall m. AgentMonad m => AgentClient -> [ConnId] -> m (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
+  -- load connections or errors if they are absent
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (forM connIds . getConn)
+  -- split errors to separate map
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
+      -- split subscription results for connections without rcvQs from rcvQs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
-      srvRcvQs :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) = M.foldlWithKey' addRcvQueue M.empty rcvQs
+      -- prepare map for batch subscriptions
+      srvRcvQs :: Map SMPServer (Map (ConnId, Bool) RcvQueue) = M.foldlWithKey' addRcvQueues M.empty rcvQs
+  -- TODO start message delivery for non-current queues
   mapM_ (mapM_ (uncurry $ resumeMsgDelivery c) . sndQueue) cs
   mapM_ (resumeConnCmds c) $ M.keys cs
+  -- send batch subscriptions concurrently to all servers
   rcvRs <- mapConcurrently subscribe (M.assocs srvRcvQs)
+  -- filter out results for secondary queues, leaving only results for the current queues
+  let rcvRs' = map (M.mapKeys fst . M.filterWithKey (\(_, current) _ -> current)) rcvRs
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
-  when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs
-  let rs = M.unions $ errs' : subRs : rcvRs
+  when (instantNotifications tkn) . void . forkIO $ sendNtfCreate ns rcvRs'
+  let rs = M.unions $ errs' : subRs : rcvRs'
+  -- send notification to the user in case results have a different size from expected
   notifyResultError rs
+  -- perform pending rcvQ actions
   void . forkIO . forM_ cs $ \case
     SomeConn _ (DuplexConnection cData rq sq _ _) -> doRcvQueueAction c cData rq sq
     _ -> pure ()
   -- TODO secure Confirmed queues if this is a new server version
   pure rs
   where
-    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType ()) (RcvQueue, ConnData)
+    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType ()) (RcvQueue, Maybe RcvQueue)
     rcvQueueOrResult = \case
-      SomeConn _ (DuplexConnection cData rq _ _ _) -> Right (rq, cData)
+      SomeConn _ (DuplexConnection _ rq _ rq' _) -> Right (rq, rq')
       SomeConn _ (SndConnection _ sq) -> Left $ sndSubResult sq
-      SomeConn _ (RcvConnection cData rq) -> Right (rq, cData)
-      SomeConn _ (ContactConnection cData rq) -> Right (rq, cData)
-      SomeConn _ (NewConnection _) -> Left (Right ())
+      SomeConn _ (RcvConnection _ rq) -> Right (rq, Nothing)
+      SomeConn _ (ContactConnection _ rq) -> Right (rq, Nothing)
+      SomeConn _ (NewConnection _) -> Left $ Right ()
     sndSubResult :: SndQueue -> Either AgentErrorType ()
     sndSubResult sq = case status (sq :: SndQueue) of
       Confirmed -> Right ()
       Active -> Left $ CONN SIMPLEX
       _ -> Left $ INTERNAL "unexpected queue status"
-    addRcvQueue :: Map SMPServer (Map ConnId (RcvQueue, ConnData)) -> ConnId -> (RcvQueue, ConnData) -> Map SMPServer (Map ConnId (RcvQueue, ConnData))
-    addRcvQueue m connId rq@(RcvQueue {server}, _) = M.alter (Just . maybe (M.singleton connId rq) (M.insert connId rq)) server m
-    subscribe :: (SMPServer, Map ConnId (RcvQueue, ConnData)) -> m (Map ConnId (Either AgentErrorType ()))
-    subscribe (srv, qs) = snd <$> subscribeQueues c srv (M.map fst qs)
+    addRcvQueues :: Map SMPServer (Map (ConnId, Bool) RcvQueue) -> ConnId -> (RcvQueue, Maybe RcvQueue) -> Map SMPServer (Map (ConnId, Bool) RcvQueue)
+    addRcvQueues m connId (rq, rq') =
+      let m' = addRcvQueue m connId rq
+       in maybe m' (addRcvQueue m' connId) rq'
+    addRcvQueue :: Map SMPServer (Map (ConnId, Bool) RcvQueue) -> ConnId -> RcvQueue -> Map SMPServer (Map (ConnId, Bool) RcvQueue)
+    addRcvQueue m connId rq@RcvQueue {server, currRcvQueue} =
+      let sub = (connId, currRcvQueue)
+       in M.alter (Just . maybe (M.singleton sub rq) (M.insert sub rq)) server m
+    subscribe :: (SMPServer, Map (ConnId, Bool) RcvQueue) -> m (Map (ConnId, Bool) (Either AgentErrorType ()))
+    subscribe (srv, qs) = snd <$> subscribeQueues c srv qs
     sendNtfCreate :: NtfSupervisor -> [Map ConnId (Either AgentErrorType ())] -> m ()
     sendNtfCreate ns rcvRs =
       forM_ (concatMap M.assocs rcvRs) $ \case
@@ -780,6 +797,7 @@ runCommandProcessing c@AgentClient {subQ} server = do
               withNextSrv usedSrvs $ \srv -> do
                 (_, cReq) <- newConnSrv c connId True enableNtfs cMode srv
                 notify connId $ INV (ACR cMode cReq)
+            -- TODO exclude the server of the invitation, as in joinConn
             JOIN enableNtfs (ACR _ cReq) connInfo ->
               withNextSrv usedSrvs $ \srv ->
                 void $ joinConnSrv c connId True enableNtfs cReq connInfo srv

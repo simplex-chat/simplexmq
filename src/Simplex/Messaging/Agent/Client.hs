@@ -161,8 +161,9 @@ data AgentClient = AgentClient
     ntfClients :: TMap NtfServer NtfClientVar,
     useNetworkConfig :: TVar NetworkConfig,
     subscrConns :: TVar (Set ConnId),
-    activeSubs :: TMap2 SMPServer ConnId RcvQueue,
-    pendingSubs :: TMap2 SMPServer ConnId RcvQueue,
+    -- Bool in tuple keys shows whether the queue is the current one (True) or the one the connection switches to (False)
+    activeSubs :: TMap2 SMPServer (ConnId, Bool) RcvQueue,
+    pendingSubs :: TMap2 SMPServer (ConnId, Bool) RcvQueue,
     connMsgsQueued :: TMap ConnId Bool,
     smpQueueMsgQueues :: TMap MsgDeliveryKey (TQueue InternalId),
     smpQueueMsgDeliveries :: TMap MsgDeliveryKey (Async ()),
@@ -272,7 +273,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
       removeClientAndSubs >>= (`forM_` serverDown)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
       where
-        removeClientAndSubs :: IO (Maybe (Map ConnId RcvQueue))
+        removeClientAndSubs :: IO (Maybe (Map (ConnId, Bool) RcvQueue))
         removeClientAndSubs = atomically $ do
           TM.delete srv smpClients
           TM2.lookupDelete1 srv (activeSubs c) >>= mapM updateSubs
@@ -281,12 +282,12 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
               TM2.insert1 srv cVar $ pendingSubs c
               readTVar cVar
 
-        serverDown :: Map ConnId RcvQueue -> IO ()
+        serverDown :: Map (ConnId, Bool) RcvQueue -> IO ()
         serverDown cs = whenM (readTVarIO active) $ do
           notifySub "" $ hostEvent DISCONNECT client
-          let conns = M.keys cs
-          unless (null conns) $ do
-            notifySub "" $ DOWN srv conns
+          let conns = map fst . filter snd $ M.keys cs
+          unless (null conns) $ notifySub "" $ DOWN srv conns
+          unless (null cs) $ do
             atomically $ mapM_ (releaseGetLock c) cs
             unliftIO u reconnectServer
 
@@ -307,15 +308,15 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
         atomically (TM2.lookup1 srv (pendingSubs c) >>= mapM readTVar)
           >>= mapM_ resubscribe
       where
-        resubscribe :: Map ConnId RcvQueue -> m ()
+        resubscribe :: Map (ConnId, Bool) RcvQueue -> m ()
         resubscribe qs = do
           (client_, (errs, oks)) <- second (M.mapEither id) <$> subscribeQueues c srv qs
           liftIO $ do
             mapM_ (notifySub "" . hostEvent CONNECT) client_
-            unless (M.null oks) $ do
-              notifySub "" . UP srv $ M.keys oks
+            let conns = map fst . filter snd $ M.keys oks
+            unless (null conns) $ notifySub "" $ UP srv conns
           let (tempErrs, finalErrs) = M.partition temporaryAgentError errs
-          liftIO . mapM_ (\(connId, e) -> notifySub connId $ ERR e) $ M.assocs finalErrs
+          liftIO . mapM_ (\((connId, current), e) -> when current . notifySub connId $ ERR e) $ M.assocs finalErrs
           mapM_ throwError . listToMaybe $ M.elems tempErrs
 
     notifySub :: ConnId -> ACommand 'Agent -> IO ()
@@ -519,23 +520,23 @@ newRcvQueue_ a c srv vRange current = do
           }
   pure (rq, SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey)
 
-subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> m ()
-subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId = do
+subscribeQueue :: AgentMonad m => AgentClient -> RcvQueue -> ConnId -> Bool -> m ()
+subscribeQueue c rq@RcvQueue {server, rcvPrivateKey, rcvId} connId current = do
   whenM (atomically . TM.member (server, rcvId) $ getMsgLocks c) . throwError $ CMD PROHIBITED
   atomically $ do
-    modifyTVar (subscrConns c) $ S.insert connId
-    TM2.insert server connId rq $ pendingSubs c
+    when current $ modifyTVar (subscrConns c) $ S.insert connId
+    TM2.insert server (connId, current) rq $ pendingSubs c
   withLogClient c server rcvId "SUB" $ \smp ->
-    liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq connId)
+    liftIO (runExceptT (subscribeSMPQueue smp rcvPrivateKey rcvId) >>= processSubResult c rq connId current)
       >>= either throwError pure
 
-processSubResult :: AgentClient -> RcvQueue -> ConnId -> Either ProtocolClientError () -> IO (Either ProtocolClientError ())
-processSubResult c rq connId r = do
+processSubResult :: AgentClient -> RcvQueue -> ConnId -> Bool -> Either ProtocolClientError () -> IO (Either ProtocolClientError ())
+processSubResult c rq connId current r = do
   case r of
     Left e ->
       atomically . unless (temporaryClientError e) $
-        TM2.delete connId (pendingSubs c)
-    _ -> addSubscription c rq connId
+        TM2.delete (connId, current) (pendingSubs c)
+    _ -> addSubscription c rq connId current
   pure r
 
 temporaryClientError :: ProtocolClientError -> Bool
@@ -551,12 +552,12 @@ temporaryAgentError = \case
   _ -> False
 
 -- | subscribe multiple queues - all passed queues should be on the same server
-subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> Map ConnId RcvQueue -> m (Maybe SMPClient, Map ConnId (Either AgentErrorType ()))
+subscribeQueues :: AgentMonad m => AgentClient -> SMPServer -> Map (ConnId, Bool) RcvQueue -> m (Maybe SMPClient, Map (ConnId, Bool) (Either AgentErrorType ()))
 subscribeQueues c srv qs = do
   (errs, qs_) <- partitionEithers <$> mapM checkQueue (M.assocs qs)
-  forM_ qs_ $ \(connId, rq@RcvQueue {server}) -> atomically $ do
-    modifyTVar (subscrConns c) $ S.insert connId
-    TM2.insert server connId rq $ pendingSubs c
+  forM_ qs_ $ \(sub@(connId, current), rq@RcvQueue {server}) -> atomically $ do
+    when current . modifyTVar (subscrConns c) $ S.insert connId
+    TM2.insert server sub rq $ pendingSubs c
   case L.nonEmpty qs_ of
     Just qs' -> do
       smp_ <- tryError (getSMPServerClient c srv)
@@ -565,9 +566,9 @@ subscribeQueues c srv qs = do
         Right smp -> do
           logServer "-->" c srv (bshow (length qs_) <> " queues") "SUB"
           let qs2 = L.map (queueCreds . snd) qs'
-          rs' :: [((ConnId, RcvQueue), Either ProtocolClientError ())] <-
+          rs' :: [(((ConnId, Bool), RcvQueue), Either ProtocolClientError ())] <-
             liftIO $ zip qs_ . L.toList <$> subscribeSMPQueues smp qs2
-          forM_ rs' $ \((connId, rq), r) -> liftIO $ processSubResult c rq connId r
+          forM_ rs' $ \(((connId, current), rq), r) -> liftIO $ processSubResult c rq connId current r
           pure $ map (bimap fst (first $ protocolClientError SMP)) rs'
     _ -> pure $ (Nothing, M.fromList errs)
   where
@@ -576,20 +577,25 @@ subscribeQueues c srv qs = do
       pure $ if prohibited || srv /= server then Left (connId, Left $ CMD PROHIBITED) else Right rq
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
-addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> m ()
-addSubscription c rq@RcvQueue {server} connId = atomically $ do
+addSubscription :: MonadIO m => AgentClient -> RcvQueue -> ConnId -> Bool -> m ()
+addSubscription c rq@RcvQueue {server} connId current = atomically $ do
   modifyTVar (subscrConns c) $ S.insert connId
-  TM2.insert server connId rq $ activeSubs c
-  TM2.delete connId $ pendingSubs c
+  let sub = (connId, current)
+  TM2.insert server sub rq $ activeSubs c
+  TM2.delete sub $ pendingSubs c
 
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
-hasActiveSubscription c connId = TM2.member connId $ activeSubs c
+hasActiveSubscription c connId = TM2.member (connId, True) $ activeSubs c
 
 removeSubscription :: AgentClient -> ConnId -> STM ()
 removeSubscription c connId = do
   modifyTVar (subscrConns c) $ S.delete connId
-  TM2.delete connId $ activeSubs c
-  TM2.delete connId $ pendingSubs c
+  delete (connId, True)
+  delete (connId, False)
+  where
+    delete sub = do
+      TM2.delete sub $ activeSubs c
+      TM2.delete sub $ pendingSubs c
 
 getSubscriptions :: AgentClient -> STM (Set ConnId)
 getSubscriptions = readTVar . subscrConns
