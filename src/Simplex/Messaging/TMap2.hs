@@ -22,7 +22,8 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM, ($>>=))
 
--- | this type is designed for k2 being unique in the whole data, to allow direct access both via k1 and via k2
+-- | this type is designed for k2 being unique in the whole data, and k1 grouping multiple values with k2 keys.
+-- It allows direct access via k1 to a group of k2 values and via k2 to one value
 data TMap2 k1 k2 a = TMap2
   { _m1 :: TMap k1 (TMap k2 a),
     _m2 :: TMap k2 k1
