@@ -277,11 +277,11 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} srv = do
               readTVar cVar
 
         serverDown :: Map ConnId RcvQueue -> IO ()
-        serverDown cs = unless (M.null cs) $
-          whenM (readTVarIO active) $ do
-            let conns = M.keys cs
-            notifySub "" $ hostEvent DISCONNECT client
-            unless (null conns) . notifySub "" $ DOWN srv conns
+        serverDown cs = whenM (readTVarIO active) $ do
+          notifySub "" $ hostEvent DISCONNECT client
+          let conns = M.keys cs
+          unless (null conns) $ do
+            notifySub "" $ DOWN srv conns
             atomically $ mapM_ (releaseGetLock c) cs
             unliftIO u reconnectServer
 
