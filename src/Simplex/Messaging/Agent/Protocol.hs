@@ -297,6 +297,8 @@ data ACommandTag (p :: AParty) where
   ERR_ :: ACommandTag Agent
   SUSPENDED_ :: ACommandTag Agent
 
+deriving instance Eq (ACommandTag p)
+
 deriving instance Show (ACommandTag p)
 
 aCommandTag :: ACommand p -> ACommandTag p
