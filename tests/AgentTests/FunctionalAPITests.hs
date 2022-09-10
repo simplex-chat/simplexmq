@@ -571,11 +571,14 @@ testAsyncCommands = do
   bob <- getSMPAgentClient agentCfg {dbFile = testDB2} initAgentServers
   Right () <- runExceptT $ do
     bobId <- createConnectionAsync alice "1" True SCMInvitation
-    ("1", _, INV (ACR _ qInfo)) <- get alice
+    ("1", bobId', INV (ACR _ qInfo)) <- get alice
+    liftIO $ bobId' `shouldBe` bobId
     aliceId <- joinConnectionAsync bob "2" True qInfo "bob's connInfo"
-    ("2", _, CONF confId _ "bob's connInfo") <- get alice
+    ("2", aliceId', OK) <- get bob
+    liftIO $ aliceId' `shouldBe` aliceId
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnectionAsync alice "3" bobId confId "alice's connInfo"
-    -- OK
+    ("3", _, OK) <- get alice
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
@@ -586,20 +589,21 @@ testAsyncCommands = do
     get alice ##> ("", bobId, SENT $ baseId + 2)
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     ackMessageAsync bob "4" aliceId $ baseId + 1
-    -- OK
+    ("4", _, OK) <- get bob
     get bob =##> \case ("", c, Msg "how are you?") -> c == aliceId; _ -> False
     ackMessageAsync bob "5" aliceId $ baseId + 2
-    -- OK
+    ("5", _, OK) <- get bob
     3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "hello too"
     get bob ##> ("", aliceId, SENT $ baseId + 3)
     4 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 1"
     get bob ##> ("", aliceId, SENT $ baseId + 4)
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
     ackMessageAsync alice "6" bobId $ baseId + 3
-    -- OK
+    ("6", _, OK) <- get alice
     get alice =##> \case ("", c, Msg "message 1") -> c == bobId; _ -> False
     ackMessageAsync alice "7" bobId $ baseId + 4
-  -- OK
+    ("7", _, OK) <- get alice
+    pure ()
   pure ()
   where
     baseId = 3
