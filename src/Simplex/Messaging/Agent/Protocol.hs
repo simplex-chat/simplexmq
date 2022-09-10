@@ -119,7 +119,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -213,6 +212,12 @@ instance TestEquality SAParty where
   testEquality SClient SClient = Just Refl
   testEquality _ _ = Nothing
 
+class APartyI (p :: AParty) where sAParty :: SAParty p
+
+instance APartyI Agent where sAParty = SAgent
+
+instance APartyI Client where sAParty = SClient
+
 data ACmd = forall p. ACmd (SAParty p) (ACommand p)
 
 deriving instance Show ACmd
@@ -254,6 +259,39 @@ data ACommand (p :: AParty) where
 deriving instance Eq (ACommand p)
 
 deriving instance Show (ACommand p)
+
+data ACmdTag = forall p. APartyI p => ACmdTag (SAParty p) (ACommandTag p)
+
+data ACommandTag (p :: AParty) where
+  NEW_ :: ACommandTag Client
+  INV_ :: ACommandTag Agent
+  JOIN_ :: ACommandTag Client
+  CONF_ :: ACommandTag Agent
+  LET_ :: ACommandTag Client
+  REQ_ :: ACommandTag Agent
+  ACPT_ :: ACommandTag Client
+  RJCT_ :: ACommandTag Client
+  INFO_ :: ACommandTag Agent
+  CON_ :: ACommandTag Agent
+  SUB_ :: ACommandTag Client
+  END_ :: ACommandTag Agent
+  CONNECT_ :: ACommandTag Agent
+  DISCONNECT_ :: ACommandTag Agent
+  DOWN_ :: ACommandTag Agent
+  UP_ :: ACommandTag Agent
+  SEND_ :: ACommandTag Client
+  MID_ :: ACommandTag Agent
+  SENT_ :: ACommandTag Agent
+  MERR_ :: ACommandTag Agent
+  MSG_ :: ACommandTag Agent
+  ACK_ :: ACommandTag Client
+  OFF_ :: ACommandTag Client
+  DEL_ :: ACommandTag Client
+  CHK_ :: ACommandTag Client
+  STAT_ :: ACommandTag Agent
+  OK_ :: ACommandTag Agent
+  ERR_ :: ACommandTag Agent
+  SUSPENDED_ :: ACommandTag Agent
 
 data ConnectionStats = ConnectionStats
   { rcvServers :: [SMPServer],
@@ -930,58 +968,121 @@ networkCommandP = commandP A.takeByteString
 dbCommandP :: Parser ACmd
 dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
 
+instance Encoding ACmdTag where
+  smpEncode (ACmdTag _ cmd) = smpEncode cmd
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "NEW" -> pure $ ACmdTag SClient NEW_
+      "INV" -> pure $ ACmdTag SAgent INV_
+      "JOIN" -> pure $ ACmdTag SClient JOIN_
+      "CONF" -> pure $ ACmdTag SAgent CONF_
+      "LET" -> pure $ ACmdTag SClient LET_
+      "REQ" -> pure $ ACmdTag SAgent REQ_
+      "ACPT" -> pure $ ACmdTag SClient ACPT_
+      "RJCT" -> pure $ ACmdTag SClient RJCT_
+      "INFO" -> pure $ ACmdTag SAgent INFO_
+      "CON" -> pure $ ACmdTag SAgent CON_
+      "SUB" -> pure $ ACmdTag SClient SUB_
+      "END" -> pure $ ACmdTag SAgent END_
+      "CONNECT" -> pure $ ACmdTag SAgent CONNECT_
+      "DISCONNECT" -> pure $ ACmdTag SAgent DISCONNECT_
+      "DOWN" -> pure $ ACmdTag SAgent DOWN_
+      "UP" -> pure $ ACmdTag SAgent UP_
+      "SEND" -> pure $ ACmdTag SClient SEND_
+      "MID" -> pure $ ACmdTag SAgent MID_
+      "SENT" -> pure $ ACmdTag SAgent SENT_
+      "MERR" -> pure $ ACmdTag SAgent MERR_
+      "MSG" -> pure $ ACmdTag SAgent MSG_
+      "ACK" -> pure $ ACmdTag SClient ACK_
+      "OFF" -> pure $ ACmdTag SClient OFF_
+      "DEL" -> pure $ ACmdTag SClient DEL_
+      "CHK" -> pure $ ACmdTag SClient CHK_
+      "STAT" -> pure $ ACmdTag SAgent STAT_
+      "OK" -> pure $ ACmdTag SAgent OK_
+      "ERR" -> pure $ ACmdTag SAgent ERR_
+      "SUSPENDED" -> pure $ ACmdTag SAgent SUSPENDED_
+      _ -> fail "bad ACmdTag"
+
+instance APartyI p => Encoding (ACommandTag p) where
+  smpEncode = \case
+    NEW_ -> "NEW"
+    INV_ -> "INV"
+    JOIN_ -> "JOIN"
+    CONF_ -> "CONF"
+    LET_ -> "LET"
+    REQ_ -> "REQ"
+    ACPT_ -> "ACPT"
+    RJCT_ -> "RJCT"
+    INFO_ -> "INFO"
+    CON_ -> "CON"
+    SUB_ -> "SUB"
+    END_ -> "END"
+    CONNECT_ -> "CONNECT"
+    DISCONNECT_ -> "DISCONNECT"
+    DOWN_ -> "DOWN"
+    UP_ -> "UP"
+    SEND_ -> "SEND"
+    MID_ -> "MID"
+    SENT_ -> "SENT"
+    MERR_ -> "MERR"
+    MSG_ -> "MSG"
+    ACK_ -> "ACK"
+    OFF_ -> "OFF"
+    DEL_ -> "DEL"
+    CHK_ -> "CHK"
+    STAT_ -> "STAT"
+    OK_ -> "OK"
+    ERR_ -> "ERR"
+    SUSPENDED_ -> "SUSPENDED"
+  smpP = (\(ACmdTag _ t) -> checkParty t) <$?> smpP
+
+checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
+checkParty x = case testEquality (sAParty @p) (sAParty @p') of
+  Just Refl -> Right x
+  Nothing -> Left "bad party"
+
 -- | SMP agent command and response parser
 commandP :: Parser ByteString -> Parser ACmd
-commandP parseByteString =
-  "NEW " *> newCmd
-    <|> "INV " *> invResp
-    <|> "JOIN " *> joinCmd
-    <|> "CONF " *> confMsg
-    <|> "LET " *> letCmd
-    <|> "REQ " *> reqMsg
-    <|> "ACPT " *> acptCmd
-    <|> "RJCT " *> rjctCmd
-    <|> "INFO " *> infoCmd
-    <|> "SUB" $> ACmd SClient SUB
-    <|> "END" $> ACmd SAgent END
-    <|> "CONNECT " *> connectResp
-    <|> "DISCONNECT " *> disconnectResp
-    <|> "DOWN " *> downResp
-    <|> "UP " *> upResp
-    <|> "SEND " *> sendCmd
-    <|> "MID " *> msgIdResp
-    <|> "SENT " *> sentResp
-    <|> "MERR " *> msgErrResp
-    <|> "MSG " *> message
-    <|> "ACK " *> ackCmd
-    <|> "OFF" $> ACmd SClient OFF
-    <|> "DEL" $> ACmd SClient DEL
-    <|> "CHK" $> ACmd SClient CHK
-    <|> "STAT " *> statResp
-    <|> "ERR " *> agentError
-    <|> "CON" $> ACmd SAgent CON
-    <|> "OK" $> ACmd SAgent OK
+commandP binaryP =
+  smpP
+    >>= \case
+      ACmdTag SClient cmd ->
+        ACmd SClient <$> case cmd of
+          NEW_ -> _ (NEW <$> strP_ <*> strP)
+          JOIN_ -> _ (JOIN <$> strP_ <*> strP_ <*> binaryP)
+          LET_ -> _ (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
+          ACPT_ -> _ (ACPT <$> A.takeTill (== ' ') <* A.space <*> binaryP)
+          RJCT_ -> _ (RJCT <$> A.takeByteString)
+          SUB_ -> pure SUB
+          SEND_ -> _ (SEND <$> smpP <* A.space <*> binaryP)
+          ACK_ -> _ (ACK <$> A.decimal)
+          OFF_ -> pure OFF
+          DEL_ -> pure DEL
+          CHK_ -> pure CHK
+      ACmdTag SAgent cmd ->
+        ACmd SAgent <$> case cmd of
+          INV_ -> _ (INV <$> strP)
+          CONF_ -> _ (CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> binaryP)
+          REQ_ -> _ (REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> binaryP)
+          INFO_ -> _ (INFO <$> binaryP)
+          CON_ -> pure CON
+          END_ -> pure END
+          CONNECT_ -> _ (CONNECT <$> strP_ <*> strP)
+          DISCONNECT_ -> _ (DISCONNECT <$> strP_ <*> strP)
+          DOWN_ -> _ (DOWN <$> strP_ <*> connections)
+          UP_ -> _ (UP <$> strP_ <*> connections)
+          MID_ -> _ (MID <$> A.decimal)
+          SENT_ -> _ (SENT <$> A.decimal)
+          MERR_ -> _ (MERR <$> A.decimal <* A.space <*> strP)
+          MSG_ -> _ (MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> binaryP)
+          STAT_ -> _ (STAT <$> strP)
+          OK_ -> pure OK
+          ERR_ -> _ (ERR <$> strP)
+          SUSPENDED_ -> pure SUSPENDED
   where
-    newCmd = ACmd SClient .: NEW <$> strP_ <*> strP
-    invResp = ACmd SAgent . INV <$> strP
-    joinCmd = ACmd SClient .:. JOIN <$> strP_ <*> strP_ <*> parseByteString
-    confMsg = ACmd SAgent .:. CONF <$> A.takeTill (== ' ') <* A.space <*> strListP <* A.space <*> parseByteString
-    letCmd = ACmd SClient .: LET <$> A.takeTill (== ' ') <* A.space <*> parseByteString
-    reqMsg = ACmd SAgent .:. REQ <$> A.takeTill (== ' ') <* A.space <*> strP_ <*> parseByteString
-    acptCmd = ACmd SClient .: ACPT <$> A.takeTill (== ' ') <* A.space <*> parseByteString
-    rjctCmd = ACmd SClient . RJCT <$> A.takeByteString
-    infoCmd = ACmd SAgent . INFO <$> parseByteString
-    connectResp = ACmd SAgent .: CONNECT <$> strP_ <*> strP
-    disconnectResp = ACmd SAgent .: DISCONNECT <$> strP_ <*> strP
-    downResp = ACmd SAgent .: DOWN <$> strP_ <*> connections
-    upResp = ACmd SAgent .: UP <$> strP_ <*> connections
-    sendCmd = ACmd SClient .: SEND <$> smpP <* A.space <*> parseByteString
-    msgIdResp = ACmd SAgent . MID <$> A.decimal
-    sentResp = ACmd SAgent . SENT <$> A.decimal
-    msgErrResp = ACmd SAgent .: MERR <$> A.decimal <* A.space <*> strP
-    message = ACmd SAgent .:. MSG <$> msgMetaP <* A.space <*> smpP <* A.space <*> parseByteString
-    ackCmd = ACmd SClient . ACK <$> A.decimal
-    statResp = ACmd SAgent . STAT <$> strP
+    _ :: Parser a -> Parser a
+    _ p = A.space *> p
+    connections :: Parser [ConnId]
     connections = strP `A.sepBy'` A.char ','
     msgMetaP = do
       integrity <- strP
@@ -990,7 +1091,6 @@ commandP parseByteString =
       sndMsgId <- " S=" *> A.decimal
       pure MsgMeta {integrity, recipient, broker, sndMsgId}
     partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
-    agentError = ACmd SAgent . ERR <$> strP
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
 parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
